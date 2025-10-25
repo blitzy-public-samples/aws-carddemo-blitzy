@@ -9,8 +9,14 @@ target/
 *.jar
 *.war
 *.ear
+*.nar
 .mvn/
 dependency-reduced-pom.xml
+buildNumber.properties
+.flattened-pom.xml
+.factorypath
+.apt_generated
+.apt_generated_tests
 
 # ============================================
 # Node.js / NPM
@@ -19,11 +25,18 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+lerna-debug.log*
 dist/
 build/
 .npm
 .yarn
+.yarn/
+.pnp.*
+.eslintcache
+.stylelintcache
 coverage/
+*.tsbuildinfo
+.parcel-cache/
 
 # ============================================
 # IDE Files
@@ -127,3 +140,59 @@ kube-config-local.yaml
 *.swo
 *.bak
 *.tmp
+*.orig
+*.rej
+
+# ============================================
+# Python Virtual Environments (migration scripts)
+# ============================================
+venv/
+.venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ============================================
+# Temporary Test Files (Blitzy)
+# ============================================
+blitzy_adhoc_test_*
+*_test_temp*
+.test_data/
+
+# ============================================
+# Spring Boot Specific
+# ============================================
+spring-shell.log
+.springBeans
+.sts4-cache/
+
+# ============================================
+# React / Vite Specific
+# ============================================
+.vite/
+.env.development.local
+.env.test.local
+.env.production.local
+*.local
+
+# ============================================
+# Terraform State Files
+# ============================================
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
