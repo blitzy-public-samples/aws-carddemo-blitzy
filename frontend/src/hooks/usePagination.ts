@@ -235,7 +235,8 @@ export function usePagination(
   // This prevents showing an empty page when filters reduce the result set
   // COBOL equivalent: IF CURRENT-PAGE > TOTAL-PAGES MOVE 1 TO CURRENT-PAGE END-IF
   useEffect(() => {
-    if (totalPages > 0 && currentPage >= totalPages) {
+    // Reset if current page is out of bounds OR if data becomes empty
+    if (currentPage > 0 && (totalPages === 0 || currentPage >= totalPages)) {
       setCurrentPage(0);
     }
   }, [totalItems, totalPages, currentPage]);
