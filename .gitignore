@@ -1,0 +1,129 @@
+# CardDemo Modernization Project - Git Ignore Patterns
+# This file supports the Java/Spring Boot/React/PostgreSQL stack
+
+# ============================================
+# Java / Maven
+# ============================================
+target/
+*.class
+*.jar
+*.war
+*.ear
+.mvn/
+dependency-reduced-pom.xml
+
+# ============================================
+# Node.js / NPM
+# ============================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dist/
+build/
+.npm
+.yarn
+coverage/
+
+# ============================================
+# IDE Files
+# ============================================
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Eclipse
+.project
+.classpath
+.settings/
+bin/
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# NetBeans
+nbproject/
+nbbuild/
+
+# ============================================
+# Operating System Files
+# ============================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Linux
+.directory
+*~
+
+# ============================================
+# Environment and Configuration
+# ============================================
+.env
+.env.local
+.env.*.local
+application-local.yml
+application-local.properties
+
+# Secrets and credentials
+secrets/
+credentials/
+*.key
+*.pem
+*.p12
+*.jks
+
+# ============================================
+# Logs and Temporary Files
+# ============================================
+logs/
+*.log
+tmp/
+temp/
+.cache/
+
+# ============================================
+# Test Artifacts
+# ============================================
+surefire-reports/
+failsafe-reports/
+jacoco/
+test-results/
+
+# ============================================
+# Database Files
+# ============================================
+*.db
+*.sqlite
+*.sqlite3
+data/postgres/
+
+# ============================================
+# Docker
+# ============================================
+.docker/
+docker-compose.override.yml
+
+# ============================================
+# Kubernetes Local Files
+# ============================================
+k8s-local/
+kube-config-local.yaml
+
+# ============================================
+# Build Artifacts
+# ============================================
+*.swp
+*.swo
+*.bak
+*.tmp
