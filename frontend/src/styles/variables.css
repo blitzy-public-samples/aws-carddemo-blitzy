@@ -1,0 +1,379 @@
+/**
+ * CardDemo Design System - CSS Custom Properties (Design Tokens)
+ * 
+ * This file defines all design tokens for the CardDemo application.
+ * Colors are mapped from BMS 3270 terminal colors to modern web semantics.
+ * All values use CSS custom properties (--property-name) for maintainability
+ * and runtime theme switching capability.
+ * 
+ * BMS Color Mapping:
+ * - BLUE → Primary colors (labels, structure, headings)
+ * - YELLOW → Warning colors (titles, important instructions)
+ * - TURQUOISE → Info colors (prompts, informational text)
+ * - GREEN → Success colors (input fields, positive actions)
+ * - RED → Error colors (error messages, validation failures)
+ * - NEUTRAL → Text colors (body text, general content)
+ */
+
+:root {
+  /* ========================================
+     COLOR PALETTE - Semantic Colors
+     Mapped from BMS terminal colors
+     ======================================== */
+  
+  /* Primary Colors (from BMS BLUE) */
+  --color-primary-50: #e3f2fd;
+  --color-primary-100: #bbdefb;
+  --color-primary-200: #90caf9;
+  --color-primary-300: #64b5f6;
+  --color-primary-400: #42a5f5;
+  --color-primary-500: #2196f3;  /* Base primary - BMS BLUE */
+  --color-primary-600: #1e88e5;
+  --color-primary-700: #1976d2;
+  --color-primary-800: #1565c0;
+  --color-primary-900: #0d47a1;
+  
+  /* Secondary Colors (darker blue for contrast) */
+  --color-secondary-50: #e8eaf6;
+  --color-secondary-100: #c5cae9;
+  --color-secondary-200: #9fa8da;
+  --color-secondary-300: #7986cb;
+  --color-secondary-400: #5c6bc0;
+  --color-secondary-500: #3f51b5;  /* Base secondary */
+  --color-secondary-600: #3949ab;
+  --color-secondary-700: #303f9f;
+  --color-secondary-800: #283593;
+  --color-secondary-900: #1a237e;
+  
+  /* Success Colors (from BMS GREEN) */
+  --color-success-50: #e8f5e9;
+  --color-success-100: #c8e6c9;
+  --color-success-200: #a5d6a7;
+  --color-success-300: #81c784;
+  --color-success-400: #66bb6a;
+  --color-success-500: #4caf50;  /* Base success - BMS GREEN */
+  --color-success-600: #43a047;
+  --color-success-700: #388e3c;
+  --color-success-800: #2e7d32;
+  --color-success-900: #1b5e20;
+  
+  /* Error Colors (from BMS RED) */
+  --color-error-50: #ffebee;
+  --color-error-100: #ffcdd2;
+  --color-error-200: #ef9a9a;
+  --color-error-300: #e57373;
+  --color-error-400: #ef5350;
+  --color-error-500: #f44336;  /* Base error - BMS RED */
+  --color-error-600: #e53935;
+  --color-error-700: #d32f2f;
+  --color-error-800: #c62828;
+  --color-error-900: #b71c1c;
+  
+  /* Warning Colors (from BMS YELLOW) */
+  --color-warning-50: #fffde7;
+  --color-warning-100: #fff9c4;
+  --color-warning-200: #fff59d;
+  --color-warning-300: #fff176;
+  --color-warning-400: #ffee58;
+  --color-warning-500: #ffeb3b;  /* Base warning - BMS YELLOW */
+  --color-warning-600: #fdd835;
+  --color-warning-700: #fbc02d;
+  --color-warning-800: #f9a825;
+  --color-warning-900: #f57f17;
+  
+  /* Info Colors (from BMS TURQUOISE) */
+  --color-info-50: #e0f7fa;
+  --color-info-100: #b2ebf2;
+  --color-info-200: #80deea;
+  --color-info-300: #4dd0e1;
+  --color-info-400: #26c6da;
+  --color-info-500: #00bcd4;  /* Base info - BMS TURQUOISE */
+  --color-info-600: #00acc1;
+  --color-info-700: #0097a7;
+  --color-info-800: #00838f;
+  --color-info-900: #006064;
+  
+  /* ========================================
+     NEUTRAL COLORS - Grayscale
+     Used for backgrounds, text, and borders
+     ======================================== */
+  
+  --color-neutral-0: #ffffff;    /* Pure white */
+  --color-neutral-50: #fafafa;   /* Lightest gray */
+  --color-neutral-100: #f5f5f5;  /* Very light gray */
+  --color-neutral-200: #eeeeee;  /* Light gray */
+  --color-neutral-300: #e0e0e0;  /* Medium light gray */
+  --color-neutral-400: #bdbdbd;  /* Medium gray */
+  --color-neutral-500: #9e9e9e;  /* Base neutral - BMS NEUTRAL */
+  --color-neutral-600: #757575;  /* Medium dark gray */
+  --color-neutral-700: #616161;  /* Dark gray */
+  --color-neutral-800: #424242;  /* Very dark gray */
+  --color-neutral-900: #212121;  /* Almost black */
+  --color-neutral-1000: #000000; /* Pure black */
+  
+  /* ========================================
+     TEXT COLORS - Semantic text colors
+     ======================================== */
+  
+  --color-text-primary: var(--color-neutral-900);
+  --color-text-secondary: var(--color-neutral-700);
+  --color-text-disabled: var(--color-neutral-400);
+  --color-text-hint: var(--color-neutral-500);
+  --color-text-inverse: var(--color-neutral-0);
+  
+  /* ========================================
+     BACKGROUND COLORS - Semantic backgrounds
+     ======================================== */
+  
+  --color-background-default: var(--color-neutral-0);
+  --color-background-paper: var(--color-neutral-0);
+  --color-background-subtle: var(--color-neutral-50);
+  --color-background-hover: var(--color-neutral-100);
+  --color-background-disabled: var(--color-neutral-200);
+  
+  /* ========================================
+     BORDER COLORS - Semantic borders
+     ======================================== */
+  
+  --color-border-default: var(--color-neutral-300);
+  --color-border-light: var(--color-neutral-200);
+  --color-border-strong: var(--color-neutral-400);
+  
+  /* ========================================
+     SPACING SCALE - Material-UI 8px system
+     Base unit: 8px for consistency with MUI
+     ======================================== */
+  
+  --spacing-xs: 4px;    /* 0.5 units */
+  --spacing-sm: 8px;    /* 1 unit */
+  --spacing-md: 16px;   /* 2 units */
+  --spacing-lg: 24px;   /* 3 units */
+  --spacing-xl: 32px;   /* 4 units */
+  --spacing-2xl: 40px;  /* 5 units */
+  --spacing-3xl: 48px;  /* 6 units */
+  --spacing-4xl: 64px;  /* 8 units */
+  --spacing-5xl: 80px;  /* 10 units */
+  
+  /* ========================================
+     TYPOGRAPHY SCALE
+     ======================================== */
+  
+  /* Font Families */
+  --font-family-base: 'Roboto', 'Helvetica', 'Arial', sans-serif;
+  --font-family-monospace: 'Roboto Mono', 'Courier New', monospace;
+  
+  /* Font Sizes */
+  --font-size-xs: 0.75rem;    /* 12px */
+  --font-size-sm: 0.875rem;   /* 14px */
+  --font-size-base: 1rem;     /* 16px - Base body text */
+  --font-size-md: 1.125rem;   /* 18px */
+  --font-size-lg: 1.25rem;    /* 20px */
+  --font-size-xl: 1.5rem;     /* 24px */
+  --font-size-2xl: 1.875rem;  /* 30px */
+  --font-size-3xl: 2.25rem;   /* 36px */
+  --font-size-4xl: 3rem;      /* 48px */
+  
+  /* Font Weights */
+  --font-weight-light: 300;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  
+  /* Line Heights */
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+  --line-height-loose: 2;
+  
+  /* Letter Spacing */
+  --letter-spacing-tight: -0.025em;
+  --letter-spacing-normal: 0;
+  --letter-spacing-wide: 0.025em;
+  --letter-spacing-wider: 0.05em;
+  
+  /* ========================================
+     BORDER RADIUS - Rounded corners
+     ======================================== */
+  
+  --radius-none: 0;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 24px;
+  --radius-full: 9999px;  /* Circular */
+  
+  /* ========================================
+     SHADOWS - Elevation levels
+     Material Design inspired shadows
+     ======================================== */
+  
+  --shadow-none: none;
+  
+  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  
+  --shadow-sm: 
+    0 1px 3px 0 rgba(0, 0, 0, 0.1),
+    0 1px 2px -1px rgba(0, 0, 0, 0.1);
+  
+  --shadow-md: 
+    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+    0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  
+  --shadow-lg: 
+    0 10px 15px -3px rgba(0, 0, 0, 0.1),
+    0 4px 6px -4px rgba(0, 0, 0, 0.1);
+  
+  --shadow-xl: 
+    0 20px 25px -5px rgba(0, 0, 0, 0.1),
+    0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  
+  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  
+  --shadow-inner: inset 0 2px 4px 0 rgba(0, 0, 0, 0.05);
+  
+  /* ========================================
+     Z-INDEX SCALE - Layering management
+     Consistent stacking order for UI elements
+     ======================================== */
+  
+  --z-index-base: 0;
+  --z-index-dropdown: 1000;
+  --z-index-sticky: 1100;
+  --z-index-fixed: 1200;
+  --z-index-modal-backdrop: 1300;
+  --z-index-modal: 1400;
+  --z-index-popover: 1500;
+  --z-index-tooltip: 1600;
+  --z-index-toast: 1700;
+  --z-index-notification: 1800;
+  
+  /* ========================================
+     TRANSITIONS - Animation timing
+     ======================================== */
+  
+  /* Durations */
+  --duration-instant: 0ms;
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 350ms;
+  --duration-slower: 500ms;
+  
+  /* Easing Functions */
+  --ease-linear: linear;
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-sharp: cubic-bezier(0.4, 0, 0.6, 1);
+  
+  /* Common Transitions */
+  --transition-fast: all var(--duration-fast) var(--ease-in-out);
+  --transition-normal: all var(--duration-normal) var(--ease-in-out);
+  --transition-slow: all var(--duration-slow) var(--ease-in-out);
+  
+  /* ========================================
+     BREAKPOINTS - Responsive design
+     Mobile-first approach
+     ======================================== */
+  
+  --breakpoint-xs: 0px;      /* Extra small devices (phones) */
+  --breakpoint-sm: 600px;    /* Small devices (tablets portrait) */
+  --breakpoint-md: 960px;    /* Medium devices (tablets landscape) */
+  --breakpoint-lg: 1280px;   /* Large devices (laptops) */
+  --breakpoint-xl: 1920px;   /* Extra large devices (desktops) */
+  
+  /* ========================================
+     CONTAINER WIDTHS - Max content width
+     ======================================== */
+  
+  --container-sm: 640px;
+  --container-md: 768px;
+  --container-lg: 1024px;
+  --container-xl: 1280px;
+  --container-2xl: 1536px;
+  
+  /* ========================================
+     COMPONENT-SPECIFIC VARIABLES
+     ======================================== */
+  
+  /* Form Controls */
+  --input-height-sm: 32px;
+  --input-height-md: 40px;
+  --input-height-lg: 48px;
+  --input-border-width: 1px;
+  --input-focus-ring-width: 3px;
+  --input-focus-ring-color: rgba(33, 150, 243, 0.25); /* primary with opacity */
+  
+  /* Buttons */
+  --button-height-sm: 32px;
+  --button-height-md: 40px;
+  --button-height-lg: 48px;
+  --button-padding-x-sm: 12px;
+  --button-padding-x-md: 16px;
+  --button-padding-x-lg: 24px;
+  
+  /* Table */
+  --table-row-height: 48px;
+  --table-header-height: 56px;
+  --table-border-color: var(--color-border-default);
+  
+  /* Card */
+  --card-padding: var(--spacing-lg);
+  --card-border-radius: var(--radius-md);
+  --card-shadow: var(--shadow-md);
+  
+  /* Modal */
+  --modal-padding: var(--spacing-lg);
+  --modal-border-radius: var(--radius-lg);
+  --modal-max-width: 600px;
+  --modal-backdrop-color: rgba(0, 0, 0, 0.5);
+  
+  /* Header/Navigation */
+  --header-height: 64px;
+  --sidebar-width: 240px;
+  --sidebar-collapsed-width: 64px;
+  
+  /* ========================================
+     OPACITY VALUES
+     ======================================== */
+  
+  --opacity-disabled: 0.38;
+  --opacity-hover: 0.08;
+  --opacity-selected: 0.12;
+  --opacity-focus: 0.12;
+  
+  /* ========================================
+     FOCUS OUTLINE
+     Accessible focus indicators
+     ======================================== */
+  
+  --focus-outline-width: 2px;
+  --focus-outline-offset: 2px;
+  --focus-outline-color: var(--color-primary-500);
+  --focus-outline: var(--focus-outline-width) solid var(--focus-outline-color);
+}
+
+/**
+ * Dark Mode Theme Variables
+ * Commented out for initial implementation, can be enabled for theme switching
+ */
+/*
+[data-theme="dark"] {
+  --color-text-primary: var(--color-neutral-50);
+  --color-text-secondary: var(--color-neutral-300);
+  --color-text-disabled: var(--color-neutral-600);
+  --color-text-hint: var(--color-neutral-500);
+  --color-text-inverse: var(--color-neutral-900);
+  
+  --color-background-default: var(--color-neutral-900);
+  --color-background-paper: var(--color-neutral-800);
+  --color-background-subtle: var(--color-neutral-800);
+  --color-background-hover: var(--color-neutral-700);
+  --color-background-disabled: var(--color-neutral-700);
+  
+  --color-border-default: var(--color-neutral-700);
+  --color-border-light: var(--color-neutral-800);
+  --color-border-strong: var(--color-neutral-600);
+}
+*/
