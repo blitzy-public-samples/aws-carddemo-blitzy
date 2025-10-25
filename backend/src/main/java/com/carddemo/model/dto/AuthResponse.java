@@ -89,20 +89,21 @@ public record AuthResponse(
 ) {
     
     /**
-     * Compact constructor for validation and normalization.
+     * Canonical constructor for validation and normalization.
      * 
-     * Validates all required fields and ensures data integrity:
+     * Trims userId and userType to match COBOL field behavior (trailing spaces removed),
+     * then validates all required fields and ensures data integrity:
      * - Token must not be null or empty
      * - ExpiresIn must be positive
-     * - UserId must not be null or empty and must be 8 characters or less
-     * - UserType must be a valid single character (A, U, or O)
+     * - UserId must not be null or empty and must be 8 characters or less (after trimming)
+     * - UserType must be a valid single character (A, U, or O) (after trimming)
      * 
-     * This constructor is automatically invoked by the Java record mechanism
-     * for every instance creation, ensuring immutability and data validation.
+     * This constructor explicitly trims COBOL-style padded fields before validation,
+     * preserving mainframe data handling semantics while ensuring data validation.
      * 
      * @throws IllegalArgumentException if any validation fails
      */
-    public AuthResponse {
+    public AuthResponse(String token, long expiresIn, String userId, String userType) {
         // Validate token
         if (token == null || token.trim().isEmpty()) {
             throw new IllegalArgumentException("Token must not be null or empty");
@@ -113,30 +114,37 @@ public record AuthResponse(
             throw new IllegalArgumentException("ExpiresIn must be positive");
         }
         
-        // Validate userId
-        if (userId == null || userId.trim().isEmpty()) {
+        // Trim userId and userType to match COBOL field behavior (trailing spaces removed)
+        // This must be done BEFORE validation to handle COBOL PIC X fields correctly
+        String trimmedUserId = (userId != null) ? userId.trim() : null;
+        String trimmedUserType = (userType != null) ? userType.trim() : null;
+        
+        // Validate userId (after trimming)
+        if (trimmedUserId == null || trimmedUserId.isEmpty()) {
             throw new IllegalArgumentException("UserId must not be null or empty");
         }
-        if (userId.length() > 8) {
+        if (trimmedUserId.length() > 8) {
             throw new IllegalArgumentException("UserId must not exceed 8 characters");
         }
         
-        // Validate userType
-        if (userType == null || userType.trim().isEmpty()) {
+        // Validate userType (after trimming)
+        if (trimmedUserType == null || trimmedUserType.isEmpty()) {
             throw new IllegalArgumentException("UserType must not be null or empty");
         }
-        if (userType.length() != 1) {
+        if (trimmedUserType.length() != 1) {
             throw new IllegalArgumentException("UserType must be a single character");
         }
-        if (!userType.matches("[AUO]")) {
+        if (!trimmedUserType.matches("[AUO]")) {
             throw new IllegalArgumentException(
                 "UserType must be 'A' (Admin), 'U' (User), or 'O' (Operator)"
             );
         }
         
-        // Trim userId to match COBOL field behavior (trailing spaces removed)
-        userId = userId.trim();
-        userType = userType.trim();
+        // Assign trimmed values to record fields
+        this.token = token;
+        this.expiresIn = expiresIn;
+        this.userId = trimmedUserId;
+        this.userType = trimmedUserType;
     }
     
     /**
