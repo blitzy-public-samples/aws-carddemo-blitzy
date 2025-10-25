@@ -305,8 +305,10 @@ public class DatabaseConfig {
         // Set default transaction timeout (30 seconds - matches CICS SYNCPOINT patterns)
         transactionManager.setDefaultTimeout(30);
         
-        // Set default isolation level to READ_COMMITTED (VSAM RLS equivalent)
-        transactionManager.setIsolationLevel(Isolation.READ_COMMITTED.value());
+        // Note: Default isolation level READ_COMMITTED (VSAM RLS equivalent) is set at
+        // the transaction level using @Transactional(isolation = Isolation.READ_COMMITTED)
+        // Spring's JpaTransactionManager does not support setting a default isolation level
+        // at the manager level; it must be specified per transaction.
         
         return transactionManager;
     }
