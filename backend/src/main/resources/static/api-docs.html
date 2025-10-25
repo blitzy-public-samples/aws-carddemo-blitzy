@@ -1,0 +1,2073 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="CardDemo REST API Documentation - Complete reference for all REST endpoints replacing COBOL CICS programs">
+    <title>CardDemo REST API Documentation</title>
+    <style>
+        /* ===== GLOBAL STYLES ===== */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary-color: #2c3e50;
+            --secondary-color: #3498db;
+            --success-color: #27ae60;
+            --warning-color: #f39c12;
+            --danger-color: #e74c3c;
+            --background-color: #ecf0f1;
+            --card-background: #ffffff;
+            --text-color: #2c3e50;
+            --border-color: #bdc3c7;
+            --code-background: #f8f9fa;
+            --shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--background-color);
+        }
+
+        /* ===== HEADER ===== */
+        header {
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            color: white;
+            padding: 2rem 0;
+            box-shadow: var(--shadow);
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+        }
+
+        .header-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .subtitle {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .swagger-link {
+            display: inline-block;
+            margin-top: 1rem;
+            padding: 0.5rem 1rem;
+            background-color: rgba(255, 255, 255, 0.2);
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            transition: background-color 0.3s;
+        }
+
+        .swagger-link:hover {
+            background-color: rgba(255, 255, 255, 0.3);
+        }
+
+        /* ===== NAVIGATION ===== */
+        nav {
+            background-color: var(--card-background);
+            padding: 1rem 0;
+            box-shadow: var(--shadow);
+            position: sticky;
+            top: 140px;
+            z-index: 999;
+        }
+
+        .nav-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+
+        .nav-links {
+            list-style: none;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .nav-links a {
+            color: var(--text-color);
+            text-decoration: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            transition: background-color 0.3s;
+        }
+
+        .nav-links a:hover {
+            background-color: var(--background-color);
+        }
+
+        /* ===== MAIN CONTENT ===== */
+        main {
+            max-width: 1200px;
+            margin: 2rem auto;
+            padding: 0 2rem 4rem;
+        }
+
+        section {
+            background-color: var(--card-background);
+            margin-bottom: 2rem;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+        }
+
+        h2 {
+            color: var(--primary-color);
+            font-size: 2rem;
+            margin-bottom: 1.5rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 3px solid var(--secondary-color);
+        }
+
+        h3 {
+            color: var(--secondary-color);
+            font-size: 1.5rem;
+            margin-top: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        h4 {
+            color: var(--text-color);
+            font-size: 1.2rem;
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        p, ul, ol {
+            margin-bottom: 1rem;
+        }
+
+        ul {
+            list-style-position: inside;
+            padding-left: 1rem;
+        }
+
+        /* ===== ENDPOINT CARDS ===== */
+        .endpoint {
+            background-color: var(--code-background);
+            border-left: 4px solid var(--secondary-color);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border-radius: 4px;
+        }
+
+        .endpoint-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .http-method {
+            font-weight: bold;
+            padding: 0.3rem 0.8rem;
+            border-radius: 4px;
+            color: white;
+            font-size: 0.9rem;
+        }
+
+        .method-get { background-color: var(--success-color); }
+        .method-post { background-color: var(--secondary-color); }
+        .method-put { background-color: var(--warning-color); }
+        .method-delete { background-color: var(--danger-color); }
+
+        .endpoint-path {
+            font-family: 'Courier New', monospace;
+            font-size: 1.1rem;
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+
+        .endpoint-description {
+            margin-bottom: 1rem;
+            color: #555;
+        }
+
+        /* ===== CODE BLOCKS ===== */
+        .code-block {
+            background-color: #282c34;
+            color: #abb2bf;
+            padding: 1rem;
+            border-radius: 4px;
+            overflow-x: auto;
+            margin-bottom: 1rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        .code-block pre {
+            margin: 0;
+        }
+
+        .json-key { color: #e06c75; }
+        .json-string { color: #98c379; }
+        .json-number { color: #d19a66; }
+        .json-boolean { color: #56b6c2; }
+
+        /* ===== BADGES ===== */
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.6rem;
+            border-radius: 12px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-right: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .badge-auth { background-color: #e8f4f8; color: var(--secondary-color); border: 1px solid var(--secondary-color); }
+        .badge-role { background-color: #fff3cd; color: #856404; border: 1px solid #ffc107; }
+        .badge-public { background-color: #d4edda; color: #155724; border: 1px solid var(--success-color); }
+
+        /* ===== TABLES ===== */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+        }
+
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        th {
+            background-color: var(--code-background);
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+
+        tr:hover {
+            background-color: var(--code-background);
+        }
+
+        code {
+            background-color: var(--code-background);
+            padding: 0.2rem 0.4rem;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            color: var(--danger-color);
+        }
+
+        /* ===== MIGRATION CONTEXT ===== */
+        .migration-note {
+            background-color: #fff3cd;
+            border-left: 4px solid var(--warning-color);
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border-radius: 4px;
+        }
+
+        .migration-note strong {
+            color: var(--warning-color);
+        }
+
+        /* ===== RESPONSIVE DESIGN ===== */
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 1.8rem;
+            }
+
+            h2 {
+                font-size: 1.5rem;
+            }
+
+            .nav-links {
+                flex-direction: column;
+            }
+
+            .endpoint-header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            table {
+                font-size: 0.9rem;
+            }
+
+            .header-content,
+            .nav-content,
+            main {
+                padding: 0 1rem;
+            }
+        }
+
+        /* ===== FOOTER ===== */
+        footer {
+            background-color: var(--primary-color);
+            color: white;
+            text-align: center;
+            padding: 2rem;
+            margin-top: 4rem;
+        }
+
+        footer a {
+            color: var(--secondary-color);
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <!-- HEADER -->
+    <header>
+        <div class="header-content">
+            <h1>🏦 CardDemo REST API Documentation</h1>
+            <p class="subtitle">Comprehensive REST API reference for the modernized CardDemo credit card management system</p>
+            <p class="subtitle">Replaces 17 COBOL CICS online programs with modern HTTP endpoints</p>
+            <a href="/swagger-ui.html" class="swagger-link" target="_blank">📖 Interactive API Testing (Swagger UI) →</a>
+        </div>
+    </header>
+
+    <!-- NAVIGATION -->
+    <nav>
+        <div class="nav-content">
+            <ul class="nav-links">
+                <li><a href="#overview">Overview</a></li>
+                <li><a href="#authentication">Authentication</a></li>
+                <li><a href="#auth-controller">Auth</a></li>
+                <li><a href="#menu-controller">Menu</a></li>
+                <li><a href="#account-controller">Accounts</a></li>
+                <li><a href="#card-controller">Cards</a></li>
+                <li><a href="#transaction-controller">Transactions</a></li>
+                <li><a href="#billing-controller">Billing</a></li>
+                <li><a href="#report-controller">Reports</a></li>
+                <li><a href="#user-controller">Users</a></li>
+                <li><a href="#health-controller">Health</a></li>
+                <li><a href="#response-codes">Response Codes</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- MAIN CONTENT -->
+    <main>
+        <!-- OVERVIEW SECTION -->
+        <section id="overview">
+            <h2>📋 API Overview</h2>
+            
+            <div class="migration-note">
+                <strong>Migration Context:</strong> This REST API represents the complete modernization of the CardDemo mainframe application. 
+                All COBOL EXEC CICS SEND MAP/RECEIVE MAP commands have been replaced with REST JSON request/response patterns, 
+                providing a cloud-native, scalable alternative to the original CICS transaction processing system.
+            </div>
+
+            <h3>Base URL</h3>
+            <div class="code-block">
+                <pre>http://localhost:8080/api</pre>
+            </div>
+
+            <h3>Technology Stack</h3>
+            <ul>
+                <li><strong>Framework:</strong> Spring Boot 3.4.5</li>
+                <li><strong>Java Version:</strong> Java 21 LTS</li>
+                <li><strong>Security:</strong> Spring Security 6.4.x with JWT authentication</li>
+                <li><strong>Database:</strong> PostgreSQL 16.x</li>
+                <li><strong>Documentation:</strong> SpringDoc OpenAPI 2.6.0</li>
+            </ul>
+
+            <h3>API Controllers</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Controller</th>
+                        <th>Base Path</th>
+                        <th>COBOL Programs Replaced</th>
+                        <th>Function</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>AuthController</strong></td>
+                        <td><code>/api/auth</code></td>
+                        <td>COSGN00C</td>
+                        <td>User authentication and session management</td>
+                    </tr>
+                    <tr>
+                        <td><strong>MenuController</strong></td>
+                        <td><code>/api/menu</code></td>
+                        <td>COMEN01C, COADM01C</td>
+                        <td>Navigation menus for users and administrators</td>
+                    </tr>
+                    <tr>
+                        <td><strong>AccountController</strong></td>
+                        <td><code>/api/accounts</code></td>
+                        <td>COACTUPC, COACTVWC</td>
+                        <td>Account inquiry, creation, and updates</td>
+                    </tr>
+                    <tr>
+                        <td><strong>CardController</strong></td>
+                        <td><code>/api/cards</code></td>
+                        <td>COCRDLIC, COCRDSLC, COCRDUPC</td>
+                        <td>Credit card management operations</td>
+                    </tr>
+                    <tr>
+                        <td><strong>TransactionController</strong></td>
+                        <td><code>/api/transactions</code></td>
+                        <td>COTRN00C, COTRN01C, COTRN02C</td>
+                        <td>Transaction processing and inquiry</td>
+                    </tr>
+                    <tr>
+                        <td><strong>BillingController</strong></td>
+                        <td><code>/api/billing</code></td>
+                        <td>COBIL00C</td>
+                        <td>Billing statement generation and retrieval</td>
+                    </tr>
+                    <tr>
+                        <td><strong>ReportController</strong></td>
+                        <td><code>/api/reports</code></td>
+                        <td>CORPT00C</td>
+                        <td>Report generation and management</td>
+                    </tr>
+                    <tr>
+                        <td><strong>UserController</strong></td>
+                        <td><code>/api/users</code></td>
+                        <td>COUSR00C, COUSR01C, COUSR02C, COUSR03C</td>
+                        <td>User administration (CRUD operations)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>HealthCheckController</strong></td>
+                        <td><code>/api/health</code></td>
+                        <td>N/A (New capability)</td>
+                        <td>Application health monitoring</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- AUTHENTICATION SECTION -->
+        <section id="authentication">
+            <h2>🔐 Authentication & Authorization</h2>
+
+            <h3>JWT Authentication Scheme</h3>
+            <p>
+                The CardDemo API uses <strong>JWT (JSON Web Token)</strong> for authentication, replacing the mainframe RACF security system. 
+                All endpoints except <code>/api/auth/login</code> and <code>/api/health</code> require a valid JWT token in the Authorization header.
+            </p>
+
+            <h4>Obtaining a Token</h4>
+            <p>Send a POST request to <code>/api/auth/login</code> with valid credentials to receive a JWT token.</p>
+
+            <div class="code-block">
+                <pre><span class="json-key">POST</span> /api/auth/login
+<span class="json-key">Content-Type:</span> application/json
+
+{
+  <span class="json-key">"userId"</span>: <span class="json-string">"ADMIN001"</span>,
+  <span class="json-key">"password"</span>: <span class="json-string">"yourPassword"</span>
+}</pre>
+            </div>
+
+            <h4>Using the Token</h4>
+            <p>Include the JWT token in the Authorization header of all subsequent requests:</p>
+
+            <div class="code-block">
+                <pre><span class="json-key">Authorization:</span> Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...</pre>
+            </div>
+
+            <h3>Role-Based Access Control (RBAC)</h3>
+            <p>The API implements role-based access control with three primary roles:</p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Role</th>
+                        <th>Access Permissions</th>
+                        <th>RACF Equivalent</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>ROLE_ADMIN</code></td>
+                        <td>Full system access including user management and administrative functions</td>
+                        <td>RACF Administrator</td>
+                    </tr>
+                    <tr>
+                        <td><code>ROLE_USER</code></td>
+                        <td>Access to accounts, cards, and transactions; read-only for reports</td>
+                        <td>RACF Standard User</td>
+                    </tr>
+                    <tr>
+                        <td><code>ROLE_OPERATOR</code></td>
+                        <td>Access to batch operations and operational reports</td>
+                        <td>RACF Operator</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Access Control by Endpoint</h3>
+            <ul>
+                <li><strong>Public Access (no JWT required):</strong>
+                    <ul>
+                        <li><code>POST /api/auth/login</code></li>
+                        <li><code>GET /api/health</code></li>
+                    </ul>
+                </li>
+                <li><strong>ROLE_ADMIN only:</strong>
+                    <ul>
+                        <li>All <code>/api/users/**</code> endpoints</li>
+                        <li><code>GET /api/menu/admin</code></li>
+                    </ul>
+                </li>
+                <li><strong>ROLE_USER or higher:</strong>
+                    <ul>
+                        <li>All <code>/api/accounts/**</code> endpoints</li>
+                        <li>All <code>/api/cards/**</code> endpoints</li>
+                        <li>All <code>/api/transactions/**</code> endpoints</li>
+                        <li>All <code>/api/billing/**</code> endpoints</li>
+                    </ul>
+                </li>
+                <li><strong>ROLE_OPERATOR or higher:</strong>
+                    <ul>
+                        <li>All <code>/api/reports/**</code> endpoints</li>
+                    </ul>
+                </li>
+            </ul>
+
+            <h3>Token Expiration</h3>
+            <p>JWT tokens expire after <strong>1 hour</strong>. Clients must obtain a new token by re-authenticating when receiving a 401 Unauthorized response.</p>
+        </section>
+
+        <!-- AUTH CONTROLLER SECTION -->
+        <section id="auth-controller">
+            <h2>🔑 AuthController</h2>
+            <p><strong>Base Path:</strong> <code>/api/auth</code></p>
+            <p><strong>COBOL Program:</strong> COSGN00C.cbl (Signon Screen)</p>
+            <p><strong>Function:</strong> Handles user authentication and session management, replacing CICS signon screen functionality.</p>
+
+            <!-- POST /api/auth/login -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-post">POST</span>
+                    <span class="endpoint-path">/api/auth/login</span>
+                    <span class="badge badge-public">Public</span>
+                </div>
+                <p class="endpoint-description">
+                    Authenticates a user with userId and password, returning a JWT token for subsequent API calls. 
+                    Replaces COBOL EXEC CICS READ FILE('USRSEC') for user validation.
+                </p>
+
+                <h4>Request Body</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"userId"</span>: <span class="json-string">"ADMIN001"</span>,
+  <span class="json-key">"password"</span>: <span class="json-string">"SecurePass123!"</span>
+}</pre>
+                </div>
+
+                <h4>Request Parameters</h4>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Field</th>
+                            <th>Type</th>
+                            <th>Required</th>
+                            <th>Description</th>
+                            <th>COBOL Field</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>userId</code></td>
+                            <td>String</td>
+                            <td>Yes</td>
+                            <td>User ID (8 characters max)</td>
+                            <td>WS-USER-ID</td>
+                        </tr>
+                        <tr>
+                            <td><code>password</code></td>
+                            <td>String</td>
+                            <td>Yes</td>
+                            <td>User password (8-100 characters)</td>
+                            <td>WS-USER-PWD</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"token"</span>: <span class="json-string">"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJBRE1JTjAwMSIsInJvbGVzIjpbIlJPTEVfQURNSU4iXSwiaWF0IjoxNzE2MjM5MDIyLCJleHAiOjE3MTYyNDI2MjJ9.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"</span>,
+  <span class="json-key">"expiresIn"</span>: <span class="json-number">3600</span>,
+  <span class="json-key">"userType"</span>: <span class="json-string">"A"</span>,
+  <span class="json-key">"userId"</span>: <span class="json-string">"ADMIN001"</span>,
+  <span class="json-key">"firstName"</span>: <span class="json-string">"John"</span>,
+  <span class="json-key">"lastName"</span>: <span class="json-string">"Administrator"</span>
+}</pre>
+                </div>
+
+                <h4>Error Response (401 Unauthorized)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"timestamp"</span>: <span class="json-string">"2025-01-15T10:30:00.000Z"</span>,
+  <span class="json-key">"status"</span>: <span class="json-number">401</span>,
+  <span class="json-key">"error"</span>: <span class="json-string">"Unauthorized"</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"Invalid userId or password"</span>,
+  <span class="json-key">"path"</span>: <span class="json-string">"/api/auth/login"</span>
+}</pre>
+                </div>
+            </div>
+
+            <!-- POST /api/auth/logout -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-post">POST</span>
+                    <span class="endpoint-path">/api/auth/logout</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                </div>
+                <p class="endpoint-description">
+                    Invalidates the current JWT token and logs out the user. Replaces COBOL EXEC CICS RETURN with session termination.
+                </p>
+
+                <h4>Request Headers</h4>
+                <div class="code-block">
+                    <pre><span class="json-key">Authorization:</span> Bearer {jwt-token}</pre>
+                </div>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"message"</span>: <span class="json-string">"Successfully logged out"</span>,
+  <span class="json-key">"timestamp"</span>: <span class="json-string">"2025-01-15T10:35:00.000Z"</span>
+}</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- MENU CONTROLLER SECTION -->
+        <section id="menu-controller">
+            <h2>📋 MenuController</h2>
+            <p><strong>Base Path:</strong> <code>/api/menu</code></p>
+            <p><strong>COBOL Programs:</strong> COMEN01C.cbl (Main Menu), COADM01C.cbl (Admin Menu)</p>
+            <p><strong>Function:</strong> Provides navigation menu options for users and administrators.</p>
+
+            <!-- GET /api/menu/main -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-get">GET</span>
+                    <span class="endpoint-path">/api/menu/main</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_USER</span>
+                </div>
+                <p class="endpoint-description">
+                    Retrieves main menu options available to the authenticated user. Replaces COBOL COMEN01C main menu screen.
+                </p>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"menuItems"</span>: [
+    {
+      <span class="json-key">"id"</span>: <span class="json-string">"1"</span>,
+      <span class="json-key">"label"</span>: <span class="json-string">"Account Services"</span>,
+      <span class="json-key">"path"</span>: <span class="json-string">"/accounts"</span>
+    },
+    {
+      <span class="json-key">"id"</span>: <span class="json-string">"2"</span>,
+      <span class="json-key">"label"</span>: <span class="json-string">"Card Services"</span>,
+      <span class="json-key">"path"</span>: <span class="json-string">"/cards"</span>
+    },
+    {
+      <span class="json-key">"id"</span>: <span class="json-string">"3"</span>,
+      <span class="json-key">"label"</span>: <span class="json-string">"Transaction Services"</span>,
+      <span class="json-key">"path"</span>: <span class="json-string">"/transactions"</span>
+    },
+    {
+      <span class="json-key">"id"</span>: <span class="json-string">"4"</span>,
+      <span class="json-key">"label"</span>: <span class="json-string">"Billing Services"</span>,
+      <span class="json-key">"path"</span>: <span class="json-string">"/billing"</span>
+    }
+  ]
+}</pre>
+                </div>
+            </div>
+
+            <!-- GET /api/menu/admin -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-get">GET</span>
+                    <span class="endpoint-path">/api/menu/admin</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_ADMIN</span>
+                </div>
+                <p class="endpoint-description">
+                    Retrieves administrative menu options. Only accessible to administrators. Replaces COBOL COADM01C admin menu screen.
+                </p>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"menuItems"</span>: [
+    {
+      <span class="json-key">"id"</span>: <span class="json-string">"1"</span>,
+      <span class="json-key">"label"</span>: <span class="json-string">"User Administration"</span>,
+      <span class="json-key">"path"</span>: <span class="json-string">"/users"</span>
+    },
+    {
+      <span class="json-key">"id"</span>: <span class="json-string">"2"</span>,
+      <span class="json-key">"label"</span>: <span class="json-string">"System Reports"</span>,
+      <span class="json-key">"path"</span>: <span class="json-string">"/reports"</span>
+    },
+    {
+      <span class="json-key">"id"</span>: <span class="json-string">"3"</span>,
+      <span class="json-key">"label"</span>: <span class="json-string">"Account Administration"</span>,
+      <span class="json-key">"path"</span>: <span class="json-string">"/accounts/admin"</span>
+    }
+  ]
+}</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- ACCOUNT CONTROLLER SECTION -->
+        <section id="account-controller">
+            <h2>💳 AccountController</h2>
+            <p><strong>Base Path:</strong> <code>/api/accounts</code></p>
+            <p><strong>COBOL Programs:</strong> COACTUPC.cbl (Account Update), COACTVWC.cbl (Account View)</p>
+            <p><strong>Function:</strong> Manages credit card account operations including inquiry, creation, and updates. Replaces VSAM ACCTFILE operations.</p>
+
+            <!-- GET /api/accounts/{id} -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-get">GET</span>
+                    <span class="endpoint-path">/api/accounts/{id}</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_USER</span>
+                </div>
+                <p class="endpoint-description">
+                    Retrieves account details by account ID. Replaces COBOL EXEC CICS READ FILE('ACCTFILE') operation.
+                </p>
+
+                <h4>Path Parameters</h4>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                            <th>COBOL Field</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>id</code></td>
+                            <td>Long</td>
+                            <td>Account ID (11 digits)</td>
+                            <td>ACCT-ID (PIC 9(11))</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"acctId"</span>: <span class="json-number">12345678901</span>,
+  <span class="json-key">"acctActiveStatus"</span>: <span class="json-string">"Y"</span>,
+  <span class="json-key">"acctCurrBal"</span>: <span class="json-number">5432.10</span>,
+  <span class="json-key">"acctCreditLimit"</span>: <span class="json-number">10000.00</span>,
+  <span class="json-key">"acctCashCreditLimit"</span>: <span class="json-number">2000.00</span>,
+  <span class="json-key">"acctOpenDate"</span>: <span class="json-string">"2020-01-15"</span>,
+  <span class="json-key">"acctExpirationDate"</span>: <span class="json-string">"2025-01-31"</span>,
+  <span class="json-key">"acctReissueDate"</span>: <span class="json-string">"2024-12-01"</span>,
+  <span class="json-key">"acctCurrCycCredit"</span>: <span class="json-number">1250.00</span>,
+  <span class="json-key">"acctCurrCycDebit"</span>: <span class="json-number">450.75</span>,
+  <span class="json-key">"acctAddrZip"</span>: <span class="json-string">"90210"</span>,
+  <span class="json-key">"acctGroupId"</span>: <span class="json-string">"PREM001"</span>
+}</pre>
+                </div>
+
+                <h4>Error Response (404 Not Found)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"timestamp"</span>: <span class="json-string">"2025-01-15T10:30:00.000Z"</span>,
+  <span class="json-key">"status"</span>: <span class="json-number">404</span>,
+  <span class="json-key">"error"</span>: <span class="json-string">"Not Found"</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"Account not found with ID: 12345678901"</span>,
+  <span class="json-key">"path"</span>: <span class="json-string">"/api/accounts/12345678901"</span>
+}</pre>
+                </div>
+            </div>
+
+            <!-- PUT /api/accounts/{id} -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-put">PUT</span>
+                    <span class="endpoint-path">/api/accounts/{id}</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_USER</span>
+                </div>
+                <p class="endpoint-description">
+                    Updates account information. Replaces COBOL EXEC CICS REWRITE FILE('ACCTFILE') operation from COACTUPC program.
+                </p>
+
+                <h4>Path Parameters</h4>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>id</code></td>
+                            <td>Long</td>
+                            <td>Account ID to update</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Request Body</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"acctActiveStatus"</span>: <span class="json-string">"Y"</span>,
+  <span class="json-key">"acctCreditLimit"</span>: <span class="json-number">15000.00</span>,
+  <span class="json-key">"acctCashCreditLimit"</span>: <span class="json-number">3000.00</span>,
+  <span class="json-key">"acctExpirationDate"</span>: <span class="json-string">"2026-12-31"</span>,
+  <span class="json-key">"acctAddrZip"</span>: <span class="json-string">"90210"</span>,
+  <span class="json-key">"acctGroupId"</span>: <span class="json-string">"PREM001"</span>
+}</pre>
+                </div>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"acctId"</span>: <span class="json-number">12345678901</span>,
+  <span class="json-key">"acctActiveStatus"</span>: <span class="json-string">"Y"</span>,
+  <span class="json-key">"acctCurrBal"</span>: <span class="json-number">5432.10</span>,
+  <span class="json-key">"acctCreditLimit"</span>: <span class="json-number">15000.00</span>,
+  <span class="json-key">"acctCashCreditLimit"</span>: <span class="json-number">3000.00</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"Account updated successfully"</span>
+}</pre>
+                </div>
+            </div>
+
+            <!-- POST /api/accounts -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-post">POST</span>
+                    <span class="endpoint-path">/api/accounts</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_ADMIN</span>
+                </div>
+                <p class="endpoint-description">
+                    Creates a new account. Replaces COBOL EXEC CICS WRITE FILE('ACCTFILE') operation.
+                </p>
+
+                <h4>Request Body (CVACT01Y copybook structure)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"acctId"</span>: <span class="json-number">12345678902</span>,
+  <span class="json-key">"acctActiveStatus"</span>: <span class="json-string">"Y"</span>,
+  <span class="json-key">"acctCurrBal"</span>: <span class="json-number">0.00</span>,
+  <span class="json-key">"acctCreditLimit"</span>: <span class="json-number">5000.00</span>,
+  <span class="json-key">"acctCashCreditLimit"</span>: <span class="json-number">1000.00</span>,
+  <span class="json-key">"acctOpenDate"</span>: <span class="json-string">"2025-01-15"</span>,
+  <span class="json-key">"acctExpirationDate"</span>: <span class="json-string">"2028-01-31"</span>,
+  <span class="json-key">"acctAddrZip"</span>: <span class="json-string">"10001"</span>,
+  <span class="json-key">"acctGroupId"</span>: <span class="json-string">"STD001"</span>
+}</pre>
+                </div>
+
+                <h4>Success Response (201 Created)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"acctId"</span>: <span class="json-number">12345678902</span>,
+  <span class="json-key">"acctActiveStatus"</span>: <span class="json-string">"Y"</span>,
+  <span class="json-key">"acctCurrBal"</span>: <span class="json-number">0.00</span>,
+  <span class="json-key">"acctCreditLimit"</span>: <span class="json-number">5000.00</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"Account created successfully"</span>
+}</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- CARD CONTROLLER SECTION -->
+        <section id="card-controller">
+            <h2>💳 CardController</h2>
+            <p><strong>Base Path:</strong> <code>/api/cards</code></p>
+            <p><strong>COBOL Programs:</strong> COCRDLIC.cbl (Card List), COCRDSLC.cbl (Card Selection), COCRDUPC.cbl (Card Update)</p>
+            <p><strong>Function:</strong> Manages credit card operations including listing, viewing, updating, and issuing cards. Replaces VSAM CARDFILE operations.</p>
+
+            <!-- GET /api/cards -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-get">GET</span>
+                    <span class="endpoint-path">/api/cards</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_USER</span>
+                </div>
+                <p class="endpoint-description">
+                    Retrieves a list of cards with optional filtering by account ID or status. Replaces COBOL COCRDLIC browse operation.
+                </p>
+
+                <h4>Query Parameters</h4>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Type</th>
+                            <th>Required</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>accountId</code></td>
+                            <td>Long</td>
+                            <td>No</td>
+                            <td>Filter by account ID</td>
+                        </tr>
+                        <tr>
+                            <td><code>status</code></td>
+                            <td>String</td>
+                            <td>No</td>
+                            <td>Filter by status (Y=Active, N=Inactive)</td>
+                        </tr>
+                        <tr>
+                            <td><code>page</code></td>
+                            <td>Integer</td>
+                            <td>No</td>
+                            <td>Page number (default: 0)</td>
+                        </tr>
+                        <tr>
+                            <td><code>size</code></td>
+                            <td>Integer</td>
+                            <td>No</td>
+                            <td>Page size (default: 20)</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"content"</span>: [
+    {
+      <span class="json-key">"cardNum"</span>: <span class="json-string">"4111111111111111"</span>,
+      <span class="json-key">"cardAcctId"</span>: <span class="json-number">12345678901</span>,
+      <span class="json-key">"cardCardmemberId"</span>: <span class="json-number">98765432101</span>,
+      <span class="json-key">"cardStatus"</span>: <span class="json-string">"Y"</span>,
+      <span class="json-key">"cardEmbossedName"</span>: <span class="json-string">"JOHN DOE"</span>,
+      <span class="json-key">"cardExpirationDate"</span>: <span class="json-string">"2027-12-31"</span>,
+      <span class="json-key">"cardActiveDate"</span>: <span class="json-string">"2023-01-01"</span>
+    }
+  ],
+  <span class="json-key">"totalElements"</span>: <span class="json-number">1</span>,
+  <span class="json-key">"totalPages"</span>: <span class="json-number">1</span>,
+  <span class="json-key">"size"</span>: <span class="json-number">20</span>,
+  <span class="json-key">"number"</span>: <span class="json-number">0</span>
+}</pre>
+                </div>
+            </div>
+
+            <!-- GET /api/cards/{id} -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-get">GET</span>
+                    <span class="endpoint-path">/api/cards/{id}</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_USER</span>
+                </div>
+                <p class="endpoint-description">
+                    Retrieves card details by card number. Replaces COBOL EXEC CICS READ FILE('CARDFILE') operation.
+                </p>
+
+                <h4>Path Parameters</h4>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                            <th>COBOL Field</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>id</code></td>
+                            <td>String</td>
+                            <td>Card number (16 digits)</td>
+                            <td>CARD-NUM (PIC X(16))</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"cardNum"</span>: <span class="json-string">"4111111111111111"</span>,
+  <span class="json-key">"cardAcctId"</span>: <span class="json-number">12345678901</span>,
+  <span class="json-key">"cardCardmemberId"</span>: <span class="json-number">98765432101</span>,
+  <span class="json-key">"cardStatus"</span>: <span class="json-string">"Y"</span>,
+  <span class="json-key">"cardEmbossedName"</span>: <span class="json-string">"JOHN DOE"</span>,
+  <span class="json-key">"cardExpirationDate"</span>: <span class="json-string">"2027-12-31"</span>,
+  <span class="json-key">"cardActiveDate"</span>: <span class="json-string">"2023-01-01"</span>
+}</pre>
+                </div>
+            </div>
+
+            <!-- PUT /api/cards/{id} -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-put">PUT</span>
+                    <span class="endpoint-path">/api/cards/{id}</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_USER</span>
+                </div>
+                <p class="endpoint-description">
+                    Updates card information. Replaces COBOL EXEC CICS REWRITE FILE('CARDFILE') from COCRDUPC program.
+                </p>
+
+                <h4>Request Body (CVACT02Y copybook structure)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"cardStatus"</span>: <span class="json-string">"N"</span>,
+  <span class="json-key">"cardEmbossedName"</span>: <span class="json-string">"JOHN A DOE"</span>,
+  <span class="json-key">"cardExpirationDate"</span>: <span class="json-string">"2028-12-31"</span>
+}</pre>
+                </div>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"cardNum"</span>: <span class="json-string">"4111111111111111"</span>,
+  <span class="json-key">"cardStatus"</span>: <span class="json-string">"N"</span>,
+  <span class="json-key">"cardEmbossedName"</span>: <span class="json-string">"JOHN A DOE"</span>,
+  <span class="json-key">"cardExpirationDate"</span>: <span class="json-string">"2028-12-31"</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"Card updated successfully"</span>
+}</pre>
+                </div>
+            </div>
+
+            <!-- POST /api/cards -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-post">POST</span>
+                    <span class="endpoint-path">/api/cards</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_USER</span>
+                </div>
+                <p class="endpoint-description">
+                    Issues a new credit card. Replaces COBOL EXEC CICS WRITE FILE('CARDFILE') operation.
+                </p>
+
+                <h4>Request Body</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"cardNum"</span>: <span class="json-string">"4111111111111112"</span>,
+  <span class="json-key">"cardAcctId"</span>: <span class="json-number">12345678901</span>,
+  <span class="json-key">"cardCardmemberId"</span>: <span class="json-number">98765432101</span>,
+  <span class="json-key">"cardStatus"</span>: <span class="json-string">"Y"</span>,
+  <span class="json-key">"cardEmbossedName"</span>: <span class="json-string">"JANE DOE"</span>,
+  <span class="json-key">"cardExpirationDate"</span>: <span class="json-string">"2029-12-31"</span>,
+  <span class="json-key">"cardActiveDate"</span>: <span class="json-string">"2025-01-15"</span>
+}</pre>
+                </div>
+
+                <h4>Success Response (201 Created)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"cardNum"</span>: <span class="json-string">"4111111111111112"</span>,
+  <span class="json-key">"cardAcctId"</span>: <span class="json-number">12345678901</span>,
+  <span class="json-key">"cardStatus"</span>: <span class="json-string">"Y"</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"Card issued successfully"</span>
+}</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- TRANSACTION CONTROLLER SECTION -->
+        <section id="transaction-controller">
+            <h2>💸 TransactionController</h2>
+            <p><strong>Base Path:</strong> <code>/api/transactions</code></p>
+            <p><strong>COBOL Programs:</strong> COTRN00C.cbl (Transaction List), COTRN01C.cbl (Transaction Detail), COTRN02C.cbl (Transaction Entry)</p>
+            <p><strong>Function:</strong> Handles transaction processing, inquiry, and posting. Replaces VSAM TRANSACT file operations with COMP-3 precision maintained via BigDecimal.</p>
+
+            <!-- GET /api/transactions -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-get">GET</span>
+                    <span class="endpoint-path">/api/transactions</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_USER</span>
+                </div>
+                <p class="endpoint-description">
+                    Retrieves transactions with filtering by date range, account, and pagination. Replaces COBOL COTRN00C browse operation.
+                </p>
+
+                <h4>Query Parameters</h4>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Type</th>
+                            <th>Required</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>cardNum</code></td>
+                            <td>String</td>
+                            <td>No</td>
+                            <td>Filter by card number</td>
+                        </tr>
+                        <tr>
+                            <td><code>startDate</code></td>
+                            <td>String</td>
+                            <td>No</td>
+                            <td>Start date (YYYY-MM-DD format)</td>
+                        </tr>
+                        <tr>
+                            <td><code>endDate</code></td>
+                            <td>String</td>
+                            <td>No</td>
+                            <td>End date (YYYY-MM-DD format)</td>
+                        </tr>
+                        <tr>
+                            <td><code>page</code></td>
+                            <td>Integer</td>
+                            <td>No</td>
+                            <td>Page number (default: 0)</td>
+                        </tr>
+                        <tr>
+                            <td><code>size</code></td>
+                            <td>Integer</td>
+                            <td>No</td>
+                            <td>Page size (default: 50)</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"content"</span>: [
+    {
+      <span class="json-key">"transId"</span>: <span class="json-string">"TXN202501150001"</span>,
+      <span class="json-key">"transCardNum"</span>: <span class="json-string">"4111111111111111"</span>,
+      <span class="json-key">"transTypeCd"</span>: <span class="json-string">"01"</span>,
+      <span class="json-key">"transCatCd"</span>: <span class="json-number">5411</span>,
+      <span class="json-key">"transSource"</span>: <span class="json-string">"POS"</span>,
+      <span class="json-key">"transDesc"</span>: <span class="json-string">"GROCERY STORE PURCHASE"</span>,
+      <span class="json-key">"transAmt"</span>: <span class="json-number">125.50</span>,
+      <span class="json-key">"transMerchantId"</span>: <span class="json-string">"MERCH0001"</span>,
+      <span class="json-key">"transMerchantName"</span>: <span class="json-string">"ACME GROCERY"</span>,
+      <span class="json-key">"transMerchantCity"</span>: <span class="json-string">"New York"</span>,
+      <span class="json-key">"transMerchantZip"</span>: <span class="json-string">"10001"</span>,
+      <span class="json-key">"transOrigTs"</span>: <span class="json-string">"2025-01-15T14:30:00.000Z"</span>,
+      <span class="json-key">"transProcTs"</span>: <span class="json-string">"2025-01-15T14:30:05.000Z"</span>
+    }
+  ],
+  <span class="json-key">"totalElements"</span>: <span class="json-number">150</span>,
+  <span class="json-key">"totalPages"</span>: <span class="json-number">3</span>,
+  <span class="json-key">"size"</span>: <span class="json-number">50</span>,
+  <span class="json-key">"number"</span>: <span class="json-number">0</span>
+}</pre>
+                </div>
+            </div>
+
+            <!-- GET /api/transactions/{id} -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-get">GET</span>
+                    <span class="endpoint-path">/api/transactions/{id}</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_USER</span>
+                </div>
+                <p class="endpoint-description">
+                    Retrieves transaction detail by transaction ID. Replaces COBOL COTRN01C detail view operation.
+                </p>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"transId"</span>: <span class="json-string">"TXN202501150001"</span>,
+  <span class="json-key">"transCardNum"</span>: <span class="json-string">"4111111111111111"</span>,
+  <span class="json-key">"transTypeCd"</span>: <span class="json-string">"01"</span>,
+  <span class="json-key">"transCatCd"</span>: <span class="json-number">5411</span>,
+  <span class="json-key">"transSource"</span>: <span class="json-string">"POS"</span>,
+  <span class="json-key">"transDesc"</span>: <span class="json-string">"GROCERY STORE PURCHASE"</span>,
+  <span class="json-key">"transAmt"</span>: <span class="json-number">125.50</span>,
+  <span class="json-key">"transMerchantId"</span>: <span class="json-string">"MERCH0001"</span>,
+  <span class="json-key">"transMerchantName"</span>: <span class="json-string">"ACME GROCERY"</span>,
+  <span class="json-key">"transMerchantCity"</span>: <span class="json-string">"New York"</span>,
+  <span class="json-key">"transMerchantZip"</span>: <span class="json-string">"10001"</span>,
+  <span class="json-key">"transOrigTs"</span>: <span class="json-string">"2025-01-15T14:30:00.000Z"</span>,
+  <span class="json-key">"transProcTs"</span>: <span class="json-string">"2025-01-15T14:30:05.000Z"</span>
+}</pre>
+                </div>
+            </div>
+
+            <!-- POST /api/transactions -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-post">POST</span>
+                    <span class="endpoint-path">/api/transactions</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_USER</span>
+                </div>
+                <p class="endpoint-description">
+                    Posts a new transaction with amount, merchant, and category from CVTRA05Y structure. Replaces COBOL COTRN02C transaction posting with COMP-3 precision using BigDecimal.
+                </p>
+
+                <h4>Request Body (CVTRA05Y copybook structure)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"transCardNum"</span>: <span class="json-string">"4111111111111111"</span>,
+  <span class="json-key">"transTypeCd"</span>: <span class="json-string">"01"</span>,
+  <span class="json-key">"transCatCd"</span>: <span class="json-number">5411</span>,
+  <span class="json-key">"transSource"</span>: <span class="json-string">"POS"</span>,
+  <span class="json-key">"transDesc"</span>: <span class="json-string">"RESTAURANT PURCHASE"</span>,
+  <span class="json-key">"transAmt"</span>: <span class="json-number">85.75</span>,
+  <span class="json-key">"transMerchantId"</span>: <span class="json-string">"MERCH0002"</span>,
+  <span class="json-key">"transMerchantName"</span>: <span class="json-string">"FINE DINING"</span>,
+  <span class="json-key">"transMerchantCity"</span>: <span class="json-string">"Los Angeles"</span>,
+  <span class="json-key">"transMerchantZip"</span>: <span class="json-string">"90210"</span>
+}</pre>
+                </div>
+
+                <h4>Success Response (201 Created)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"transId"</span>: <span class="json-string">"TXN202501150002"</span>,
+  <span class="json-key">"transCardNum"</span>: <span class="json-string">"4111111111111111"</span>,
+  <span class="json-key">"transAmt"</span>: <span class="json-number">85.75</span>,
+  <span class="json-key">"transOrigTs"</span>: <span class="json-string">"2025-01-15T16:45:00.000Z"</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"Transaction posted successfully"</span>
+}</pre>
+                </div>
+
+                <h4>Error Response (400 Bad Request)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"timestamp"</span>: <span class="json-string">"2025-01-15T16:45:00.000Z"</span>,
+  <span class="json-key">"status"</span>: <span class="json-number">400</span>,
+  <span class="json-key">"error"</span>: <span class="json-string">"Bad Request"</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"Insufficient credit limit for transaction"</span>,
+  <span class="json-key">"path"</span>: <span class="json-string">"/api/transactions"</span>
+}</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- BILLING CONTROLLER SECTION -->
+        <section id="billing-controller">
+            <h2>📄 BillingController</h2>
+            <p><strong>Base Path:</strong> <code>/api/billing</code></p>
+            <p><strong>COBOL Program:</strong> COBIL00C.cbl (Billing and Statement Processing)</p>
+            <p><strong>Function:</strong> Handles billing statement generation and retrieval with financial calculations preserved from COBOL.</p>
+
+            <!-- GET /api/billing/{accountId} -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-get">GET</span>
+                    <span class="endpoint-path">/api/billing/{accountId}</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_USER</span>
+                </div>
+                <p class="endpoint-description">
+                    Retrieves billing statement for an account. Replaces COBOL COBIL00C statement display logic.
+                </p>
+
+                <h4>Path Parameters</h4>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>accountId</code></td>
+                            <td>Long</td>
+                            <td>Account ID for billing statement</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"accountId"</span>: <span class="json-number">12345678901</span>,
+  <span class="json-key">"statementDate"</span>: <span class="json-string">"2025-01-31"</span>,
+  <span class="json-key">"previousBalance"</span>: <span class="json-number">5000.00</span>,
+  <span class="json-key">"payments"</span>: <span class="json-number">-1000.00</span>,
+  <span class="json-key">"purchases"</span>: <span class="json-number">1432.10</span>,
+  <span class="json-key">"fees"</span>: <span class="json-number">25.00</span>,
+  <span class="json-key">"interest"</span>: <span class="json-number">75.50</span>,
+  <span class="json-key">"newBalance"</span>: <span class="json-number">5532.60</span>,
+  <span class="json-key">"minimumPaymentDue"</span>: <span class="json-number">110.65</span>,
+  <span class="json-key">"dueDate"</span>: <span class="json-string">"2025-02-25"</span>,
+  <span class="json-key">"transactions"</span>: [
+    {
+      <span class="json-key">"date"</span>: <span class="json-string">"2025-01-15"</span>,
+      <span class="json-key">"description"</span>: <span class="json-string">"ACME GROCERY"</span>,
+      <span class="json-key">"amount"</span>: <span class="json-number">125.50</span>
+    }
+  ]
+}</pre>
+                </div>
+            </div>
+
+            <!-- POST /api/billing/generate -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-post">POST</span>
+                    <span class="endpoint-path">/api/billing/generate</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_OPERATOR</span>
+                </div>
+                <p class="endpoint-description">
+                    Generates billing statements for all eligible accounts. Replaces COBOL batch billing process.
+                </p>
+
+                <h4>Request Body</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"statementDate"</span>: <span class="json-string">"2025-01-31"</span>,
+  <span class="json-key">"dryRun"</span>: <span class="json-boolean">false</span>
+}</pre>
+                </div>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"statementsGenerated"</span>: <span class="json-number">45000</span>,
+  <span class="json-key">"totalBillingAmount"</span>: <span class="json-number">125000000.00</span>,
+  <span class="json-key">"statementDate"</span>: <span class="json-string">"2025-01-31"</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"Billing statements generated successfully"</span>
+}</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- REPORT CONTROLLER SECTION -->
+        <section id="report-controller">
+            <h2>📊 ReportController</h2>
+            <p><strong>Base Path:</strong> <code>/api/reports</code></p>
+            <p><strong>COBOL Program:</strong> CORPT00C.cbl (Report Generation Menu)</p>
+            <p><strong>Function:</strong> Manages report generation and execution, replacing COBOL report menu functionality.</p>
+
+            <!-- GET /api/reports/menu -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-get">GET</span>
+                    <span class="endpoint-path">/api/reports/menu</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_OPERATOR</span>
+                </div>
+                <p class="endpoint-description">
+                    Retrieves available report options. Replaces COBOL CORPT00C report menu screen.
+                </p>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"reports"</span>: [
+    {
+      <span class="json-key">"id"</span>: <span class="json-string">"ACCT_SUMMARY"</span>,
+      <span class="json-key">"name"</span>: <span class="json-string">"Account Summary Report"</span>,
+      <span class="json-key">"description"</span>: <span class="json-string">"Summary of all account balances and statuses"</span>
+    },
+    {
+      <span class="json-key">"id"</span>: <span class="json-string">"TRANS_DETAIL"</span>,
+      <span class="json-key">"name"</span>: <span class="json-string">"Transaction Detail Report"</span>,
+      <span class="json-key">"description"</span>: <span class="json-string">"Detailed transaction listing by date range"</span>
+    },
+    {
+      <span class="json-key">"id"</span>: <span class="json-string">"DELINQUENCY"</span>,
+      <span class="json-key">"name"</span>: <span class="json-string">"Delinquency Report"</span>,
+      <span class="json-key">"description"</span>: <span class="json-string">"Accounts with past-due balances"</span>
+    }
+  ]
+}</pre>
+                </div>
+            </div>
+
+            <!-- POST /api/reports/generate -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-post">POST</span>
+                    <span class="endpoint-path">/api/reports/generate</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_OPERATOR</span>
+                </div>
+                <p class="endpoint-description">
+                    Executes report generation with specified parameters.
+                </p>
+
+                <h4>Request Body</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"reportId"</span>: <span class="json-string">"TRANS_DETAIL"</span>,
+  <span class="json-key">"parameters"</span>: {
+    <span class="json-key">"startDate"</span>: <span class="json-string">"2025-01-01"</span>,
+    <span class="json-key">"endDate"</span>: <span class="json-string">"2025-01-31"</span>,
+    <span class="json-key">"format"</span>: <span class="json-string">"PDF"</span>
+  }
+}</pre>
+                </div>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"reportId"</span>: <span class="json-string">"RPT_20250115_001"</span>,
+  <span class="json-key">"status"</span>: <span class="json-string">"COMPLETED"</span>,
+  <span class="json-key">"downloadUrl"</span>: <span class="json-string">"/api/reports/download/RPT_20250115_001"</span>,
+  <span class="json-key">"generatedAt"</span>: <span class="json-string">"2025-01-15T18:00:00.000Z"</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"Report generated successfully"</span>
+}</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- USER CONTROLLER SECTION -->
+        <section id="user-controller">
+            <h2>👥 UserController</h2>
+            <p><strong>Base Path:</strong> <code>/api/users</code></p>
+            <p><strong>COBOL Programs:</strong> COUSR00C.cbl (User List), COUSR01C.cbl (User Add), COUSR02C.cbl (User Update), COUSR03C.cbl (User Delete)</p>
+            <p><strong>Function:</strong> Manages user administration with full CRUD operations, replacing RACF user management with Spring Security.</p>
+
+            <!-- GET /api/users -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-get">GET</span>
+                    <span class="endpoint-path">/api/users</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_ADMIN</span>
+                </div>
+                <p class="endpoint-description">
+                    Retrieves list of users with pagination. Replaces COBOL COUSR00C user list display.
+                </p>
+
+                <h4>Query Parameters</h4>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Type</th>
+                            <th>Required</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>page</code></td>
+                            <td>Integer</td>
+                            <td>No</td>
+                            <td>Page number (default: 0)</td>
+                        </tr>
+                        <tr>
+                            <td><code>size</code></td>
+                            <td>Integer</td>
+                            <td>No</td>
+                            <td>Page size (default: 20)</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"content"</span>: [
+    {
+      <span class="json-key">"userId"</span>: <span class="json-string">"ADMIN001"</span>,
+      <span class="json-key">"userFirstName"</span>: <span class="json-string">"John"</span>,
+      <span class="json-key">"userLastName"</span>: <span class="json-string">"Administrator"</span>,
+      <span class="json-key">"userType"</span>: <span class="json-string">"A"</span>,
+      <span class="json-key">"lastLoginTs"</span>: <span class="json-string">"2025-01-15T10:30:00.000Z"</span>
+    }
+  ],
+  <span class="json-key">"totalElements"</span>: <span class="json-number">50</span>,
+  <span class="json-key">"totalPages"</span>: <span class="json-number">3</span>
+}</pre>
+                </div>
+            </div>
+
+            <!-- GET /api/users/{id} -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-get">GET</span>
+                    <span class="endpoint-path">/api/users/{id}</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_ADMIN</span>
+                </div>
+                <p class="endpoint-description">
+                    Retrieves user details by user ID.
+                </p>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"userId"</span>: <span class="json-string">"ADMIN001"</span>,
+  <span class="json-key">"userFirstName"</span>: <span class="json-string">"John"</span>,
+  <span class="json-key">"userLastName"</span>: <span class="json-string">"Administrator"</span>,
+  <span class="json-key">"userType"</span>: <span class="json-string">"A"</span>,
+  <span class="json-key">"createdAt"</span>: <span class="json-string">"2020-01-01T00:00:00.000Z"</span>,
+  <span class="json-key">"lastLoginTs"</span>: <span class="json-string">"2025-01-15T10:30:00.000Z"</span>
+}</pre>
+                </div>
+            </div>
+
+            <!-- POST /api/users -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-post">POST</span>
+                    <span class="endpoint-path">/api/users</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_ADMIN</span>
+                </div>
+                <p class="endpoint-description">
+                    Creates a new user account. Replaces COBOL COUSR01C user creation function.
+                </p>
+
+                <h4>Request Body (CSUSR01Y copybook structure)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"userId"</span>: <span class="json-string">"USER0001"</span>,
+  <span class="json-key">"password"</span>: <span class="json-string">"SecurePass123!"</span>,
+  <span class="json-key">"userFirstName"</span>: <span class="json-string">"Jane"</span>,
+  <span class="json-key">"userLastName"</span>: <span class="json-string">"Smith"</span>,
+  <span class="json-key">"userType"</span>: <span class="json-string">"U"</span>
+}</pre>
+                </div>
+
+                <h4>Success Response (201 Created)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"userId"</span>: <span class="json-string">"USER0001"</span>,
+  <span class="json-key">"userFirstName"</span>: <span class="json-string">"Jane"</span>,
+  <span class="json-key">"userLastName"</span>: <span class="json-string">"Smith"</span>,
+  <span class="json-key">"userType"</span>: <span class="json-string">"U"</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"User created successfully"</span>
+}</pre>
+                </div>
+            </div>
+
+            <!-- PUT /api/users/{id} -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-put">PUT</span>
+                    <span class="endpoint-path">/api/users/{id}</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_ADMIN</span>
+                </div>
+                <p class="endpoint-description">
+                    Updates user information. Replaces COBOL COUSR02C user update function.
+                </p>
+
+                <h4>Request Body</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"userFirstName"</span>: <span class="json-string">"Jane"</span>,
+  <span class="json-key">"userLastName"</span>: <span class="json-string">"Smith-Jones"</span>,
+  <span class="json-key">"userType"</span>: <span class="json-string">"U"</span>
+}</pre>
+                </div>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"userId"</span>: <span class="json-string">"USER0001"</span>,
+  <span class="json-key">"userFirstName"</span>: <span class="json-string">"Jane"</span>,
+  <span class="json-key">"userLastName"</span>: <span class="json-string">"Smith-Jones"</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"User updated successfully"</span>
+}</pre>
+                </div>
+            </div>
+
+            <!-- DELETE /api/users/{id} -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-delete">DELETE</span>
+                    <span class="endpoint-path">/api/users/{id}</span>
+                    <span class="badge badge-auth">JWT Required</span>
+                    <span class="badge badge-role">ROLE_ADMIN</span>
+                </div>
+                <p class="endpoint-description">
+                    Deletes a user account. Replaces COBOL COUSR03C user deletion function with confirmation.
+                </p>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"userId"</span>: <span class="json-string">"USER0001"</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"User deleted successfully"</span>
+}</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- HEALTH CHECK CONTROLLER SECTION -->
+        <section id="health-controller">
+            <h2>🏥 HealthCheckController</h2>
+            <p><strong>Base Path:</strong> <code>/api/health</code></p>
+            <p><strong>COBOL Program:</strong> N/A (New cloud-native capability)</p>
+            <p><strong>Function:</strong> Provides application health monitoring for Kubernetes liveness and readiness probes.</p>
+
+            <!-- GET /api/health -->
+            <div class="endpoint">
+                <div class="endpoint-header">
+                    <span class="http-method method-get">GET</span>
+                    <span class="endpoint-path">/api/health</span>
+                    <span class="badge badge-public">Public</span>
+                </div>
+                <p class="endpoint-description">
+                    Returns application health status including database connectivity and system metrics.
+                </p>
+
+                <h4>Success Response (200 OK)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"status"</span>: <span class="json-string">"UP"</span>,
+  <span class="json-key">"components"</span>: {
+    <span class="json-key">"db"</span>: {
+      <span class="json-key">"status"</span>: <span class="json-string">"UP"</span>,
+      <span class="json-key">"details"</span>: {
+        <span class="json-key">"database"</span>: <span class="json-string">"PostgreSQL"</span>,
+        <span class="json-key">"validationQuery"</span>: <span class="json-string">"isValid()"</span>
+      }
+    },
+    <span class="json-key">"diskSpace"</span>: {
+      <span class="json-key">"status"</span>: <span class="json-string">"UP"</span>,
+      <span class="json-key">"details"</span>: {
+        <span class="json-key">"total"</span>: <span class="json-number">500000000000</span>,
+        <span class="json-key">"free"</span>: <span class="json-number">250000000000</span>,
+        <span class="json-key">"threshold"</span>: <span class="json-number">10485760</span>
+      }
+    }
+  }
+}</pre>
+                </div>
+
+                <h4>Unhealthy Response (503 Service Unavailable)</h4>
+                <div class="code-block">
+                    <pre>{
+  <span class="json-key">"status"</span>: <span class="json-string">"DOWN"</span>,
+  <span class="json-key">"components"</span>: {
+    <span class="json-key">"db"</span>: {
+      <span class="json-key">"status"</span>: <span class="json-string">"DOWN"</span>,
+      <span class="json-key">"details"</span>: {
+        <span class="json-key">"error"</span>: <span class="json-string">"Connection refused"</span>
+      }
+    }
+  }
+}</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- RESPONSE CODES SECTION -->
+        <section id="response-codes">
+            <h2>📡 HTTP Response Codes</h2>
+            <p>The CardDemo API uses standard HTTP response codes to indicate the success or failure of API requests.</p>
+
+            <h3>Success Codes</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Code</th>
+                        <th>Status</th>
+                        <th>Description</th>
+                        <th>COBOL Equivalent</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>200</strong></td>
+                        <td>OK</td>
+                        <td>Request succeeded. The response body contains the requested data.</td>
+                        <td>RESP=DFHRESP(NORMAL)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>201</strong></td>
+                        <td>Created</td>
+                        <td>Resource created successfully. Returned for POST operations.</td>
+                        <td>EXEC CICS WRITE FILE(...) END-EXEC</td>
+                    </tr>
+                    <tr>
+                        <td><strong>204</strong></td>
+                        <td>No Content</td>
+                        <td>Request succeeded but there's no content to return.</td>
+                        <td>RESP=DFHRESP(NORMAL) with no data</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Client Error Codes</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Code</th>
+                        <th>Status</th>
+                        <th>Description</th>
+                        <th>COBOL Equivalent</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>400</strong></td>
+                        <td>Bad Request</td>
+                        <td>Request is malformed or contains invalid parameters. Check validation errors in response.</td>
+                        <td>APPL-RESULT validation errors</td>
+                    </tr>
+                    <tr>
+                        <td><strong>401</strong></td>
+                        <td>Unauthorized</td>
+                        <td>Authentication failed or JWT token is missing/invalid/expired.</td>
+                        <td>RACF authentication failure</td>
+                    </tr>
+                    <tr>
+                        <td><strong>403</strong></td>
+                        <td>Forbidden</td>
+                        <td>User is authenticated but lacks permission to access the resource. Check role requirements.</td>
+                        <td>RACF authorization failure</td>
+                    </tr>
+                    <tr>
+                        <td><strong>404</strong></td>
+                        <td>Not Found</td>
+                        <td>Requested resource does not exist. Verify IDs and paths.</td>
+                        <td>FILE-STATUS 23 (record not found)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>409</strong></td>
+                        <td>Conflict</td>
+                        <td>Request conflicts with current state (e.g., duplicate key violation).</td>
+                        <td>FILE-STATUS 22 (duplicate key)</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Server Error Codes</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Code</th>
+                        <th>Status</th>
+                        <th>Description</th>
+                        <th>COBOL Equivalent</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>500</strong></td>
+                        <td>Internal Server Error</td>
+                        <td>Unexpected server error occurred. Check logs for details.</td>
+                        <td>EXEC CICS ABEND</td>
+                    </tr>
+                    <tr>
+                        <td><strong>503</strong></td>
+                        <td>Service Unavailable</td>
+                        <td>Service is temporarily unavailable (database down, maintenance mode).</td>
+                        <td>CICS region unavailable</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Error Response Format</h3>
+            <p>All error responses follow a standard format:</p>
+            <div class="code-block">
+                <pre>{
+  <span class="json-key">"timestamp"</span>: <span class="json-string">"2025-01-15T10:30:00.000Z"</span>,
+  <span class="json-key">"status"</span>: <span class="json-number">400</span>,
+  <span class="json-key">"error"</span>: <span class="json-string">"Bad Request"</span>,
+  <span class="json-key">"message"</span>: <span class="json-string">"Validation failed for field 'acctCreditLimit': must be greater than 0"</span>,
+  <span class="json-key">"path"</span>: <span class="json-string">"/api/accounts/12345678901"</span>,
+  <span class="json-key">"validationErrors"</span>: [
+    {
+      <span class="json-key">"field"</span>: <span class="json-string">"acctCreditLimit"</span>,
+      <span class="json-key">"message"</span>: <span class="json-string">"must be greater than 0"</span>,
+      <span class="json-key">"rejectedValue"</span>: <span class="json-number">-1000</span>
+    }
+  ]
+}</pre>
+            </div>
+
+            <h3>COBOL Error Code Mapping</h3>
+            <p>The following table maps common COBOL error conditions to HTTP response codes:</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>COBOL Condition</th>
+                        <th>HTTP Code</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>RESP=DFHRESP(NORMAL)</td>
+                        <td>200 OK</td>
+                        <td>Successful operation</td>
+                    </tr>
+                    <tr>
+                        <td>FILE-STATUS 23 (record not found)</td>
+                        <td>404 Not Found</td>
+                        <td>Entity does not exist</td>
+                    </tr>
+                    <tr>
+                        <td>FILE-STATUS 22 (duplicate key)</td>
+                        <td>409 Conflict</td>
+                        <td>Primary key violation</td>
+                    </tr>
+                    <tr>
+                        <td>APPL-RESULT validation errors</td>
+                        <td>400 Bad Request</td>
+                        <td>Business rule violations</td>
+                    </tr>
+                    <tr>
+                        <td>RACF UACC(NONE)</td>
+                        <td>403 Forbidden</td>
+                        <td>Insufficient permissions</td>
+                    </tr>
+                    <tr>
+                        <td>EXEC CICS ABEND</td>
+                        <td>500 Internal Server Error</td>
+                        <td>System error requiring investigation</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- DATA TYPES AND FIELD MAPPINGS -->
+        <section id="data-types">
+            <h2>🔢 Data Types & Field Mappings</h2>
+            <p>Understanding the mapping between COBOL copybook data types and JSON/Java types.</p>
+
+            <h3>COBOL to JSON Type Mapping</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>COBOL Data Type</th>
+                        <th>Example</th>
+                        <th>JSON Type</th>
+                        <th>Java Type</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>PIC 9(11)</td>
+                        <td>Account ID</td>
+                        <td>number</td>
+                        <td>Long</td>
+                        <td>11-digit integer</td>
+                    </tr>
+                    <tr>
+                        <td>PIC S9(10)V99 COMP-3</td>
+                        <td>Currency amount</td>
+                        <td>number</td>
+                        <td>BigDecimal</td>
+                        <td>Precision preserved with scale 2</td>
+                    </tr>
+                    <tr>
+                        <td>PIC X(16)</td>
+                        <td>Card number</td>
+                        <td>string</td>
+                        <td>String</td>
+                        <td>Alphanumeric, trailing spaces trimmed</td>
+                    </tr>
+                    <tr>
+                        <td>PIC 9(8)</td>
+                        <td>Date (CCYYMMDD)</td>
+                        <td>string</td>
+                        <td>LocalDate</td>
+                        <td>Format: YYYY-MM-DD</td>
+                    </tr>
+                    <tr>
+                        <td>PIC X(01)</td>
+                        <td>Status flag</td>
+                        <td>string</td>
+                        <td>String</td>
+                        <td>Single character (Y/N)</td>
+                    </tr>
+                    <tr>
+                        <td>88-level condition</td>
+                        <td>ACCT-ACTIVE VALUE 'Y'</td>
+                        <td>boolean</td>
+                        <td>boolean</td>
+                        <td>Converted to true/false</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Copybook Structure Examples</h3>
+            <h4>Account Record (CVACT01Y.cpy)</h4>
+            <div class="code-block">
+                <pre><span class="json-key">COBOL:</span>
+01 ACCOUNT-RECORD.
+   05 ACCT-ID                  PIC 9(11).
+   05 ACCT-ACTIVE-STATUS       PIC X(01).
+   05 ACCT-CURR-BAL            PIC S9(10)V99 COMP-3.
+   05 ACCT-CREDIT-LIMIT        PIC S9(10)V99 COMP-3.
+
+<span class="json-key">JSON:</span>
+{
+  "acctId": 12345678901,
+  "acctActiveStatus": "Y",
+  "acctCurrBal": 5432.10,
+  "acctCreditLimit": 10000.00
+}</pre>
+            </div>
+
+            <h4>Card Record (CVACT02Y.cpy)</h4>
+            <div class="code-block">
+                <pre><span class="json-key">COBOL:</span>
+01 CARD-RECORD.
+   05 CARD-NUM                 PIC X(16).
+   05 CARD-ACCT-ID             PIC 9(11).
+   05 CARD-STATUS              PIC X(01).
+   05 CARD-EMBOSSED-NAME       PIC X(50).
+
+<span class="json-key">JSON:</span>
+{
+  "cardNum": "4111111111111111",
+  "cardAcctId": 12345678901,
+  "cardStatus": "Y",
+  "cardEmbossedName": "JOHN DOE"
+}</pre>
+            </div>
+
+            <h4>Transaction Record (CVTRA05Y.cpy)</h4>
+            <div class="code-block">
+                <pre><span class="json-key">COBOL:</span>
+01 TRANSACTION-RECORD.
+   05 TRANS-ID                 PIC X(16).
+   05 TRANS-CARD-NUM           PIC X(16).
+   05 TRANS-TYPE-CD            PIC X(02).
+   05 TRANS-CAT-CD             PIC 9(04).
+   05 TRANS-AMT                PIC S9(10)V99 COMP-3.
+
+<span class="json-key">JSON:</span>
+{
+  "transId": "TXN202501150001",
+  "transCardNum": "4111111111111111",
+  "transTypeCd": "01",
+  "transCatCd": 5411,
+  "transAmt": 125.50
+}</pre>
+            </div>
+        </section>
+
+        <!-- MIGRATION NOTES -->
+        <section id="migration-notes">
+            <h2>🔄 Migration Notes</h2>
+            
+            <h3>COBOL to REST API Transformation</h3>
+            <p>Key architectural changes in the migration from COBOL/CICS to Spring Boot REST:</p>
+
+            <div class="migration-note">
+                <strong>Screen I/O Replacement:</strong> All COBOL EXEC CICS SEND MAP and RECEIVE MAP commands have been replaced 
+                with REST API JSON request/response patterns. BMS map fields are now represented as JSON properties in request/response bodies.
+            </div>
+
+            <div class="migration-note">
+                <strong>File I/O Replacement:</strong> VSAM file operations (READ, WRITE, REWRITE, DELETE) are replaced by 
+                JPA repository methods accessing PostgreSQL. Primary keys and alternate indexes are preserved as database indexes.
+            </div>
+
+            <div class="migration-note">
+                <strong>Transaction Management:</strong> COBOL EXEC CICS SYNCPOINT commands are replaced by Spring 
+                @Transactional annotations, providing equivalent transaction boundaries and rollback capabilities.
+            </div>
+
+            <div class="migration-note">
+                <strong>Numeric Precision:</strong> COBOL COMP-3 packed decimal fields are converted to Java BigDecimal 
+                with appropriate scale and rounding modes to ensure bit-identical financial calculations.
+            </div>
+
+            <h3>Performance Characteristics</h3>
+            <ul>
+                <li><strong>Response Time Target:</strong> Sub-200ms for card authorization requests (95th percentile)</li>
+                <li><strong>Throughput Target:</strong> 10,000 transactions per second sustained</li>
+                <li><strong>Horizontal Scaling:</strong> 3-10 backend pod replicas based on CPU utilization (70% threshold)</li>
+                <li><strong>Database Query Performance:</strong> Sub-10ms for primary key lookups via PostgreSQL B-tree indexes</li>
+            </ul>
+
+            <h3>Security Model Changes</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>RACF Concept</th>
+                        <th>Spring Security Equivalent</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>User Profile</td>
+                        <td>UserDetails stored in user_security table</td>
+                    </tr>
+                    <tr>
+                        <td>Resource Profile</td>
+                        <td>@PreAuthorize annotations with role checks</td>
+                    </tr>
+                    <tr>
+                        <td>Access List</td>
+                        <td>GrantedAuthority collection (ROLE_ADMIN, ROLE_USER, ROLE_OPERATOR)</td>
+                    </tr>
+                    <tr>
+                        <td>Password Encryption</td>
+                        <td>BCrypt hashing with salt</td>
+                    </tr>
+                    <tr>
+                        <td>Session Token</td>
+                        <td>JWT with 1-hour expiration</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Testing and Validation</h3>
+            <p>All endpoints have been validated through:</p>
+            <ul>
+                <li>Parallel testing comparing COBOL and Java outputs with identical input datasets</li>
+                <li>Automated regression tests with 80%+ code coverage</li>
+                <li>Load testing at 10,000 TPS validating response times</li>
+                <li>Integration tests using Testcontainers with PostgreSQL</li>
+            </ul>
+        </section>
+
+    </main>
+
+    <!-- FOOTER -->
+    <footer>
+        <p><strong>CardDemo REST API Documentation</strong></p>
+        <p>Version 1.0.0 | Spring Boot 3.4.5 | Java 21 LTS</p>
+        <p>Migrated from IBM z/OS mainframe (COBOL/CICS/VSAM) to cloud-native architecture</p>
+        <p>
+            <a href="/swagger-ui.html" target="_blank">Interactive API Documentation (Swagger UI)</a> | 
+            <a href="/actuator" target="_blank">Actuator Endpoints</a> | 
+            <a href="https://github.com/aws-samples/aws-mainframe-modernization-carddemo" target="_blank">GitHub Repository</a>
+        </p>
+        <p style="margin-top: 1rem; font-size: 0.9rem;">
+            Licensed under the Apache License, Version 2.0<br>
+            Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+        </p>
+    </footer>
+
+</body>
+</html>
