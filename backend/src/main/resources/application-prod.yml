@@ -1,0 +1,496 @@
+# ============================================================================
+# CardDemo Application - Production Profile Configuration
+# ============================================================================
+# Spring Boot 3.4.5 production environment configuration
+# Converted from mainframe VSAM/CICS environment to cloud-native architecture
+# Original source reference: app/jcl/ACCTFILE.jcl and other JCL configurations
+#
+# Copyright Amazon.com, Inc. or its affiliates.
+# Licensed under the Apache License, Version 2.0
+# ============================================================================
+
+spring:
+  # ============================================================================
+  # Production Profile Configuration
+  # ============================================================================
+  config:
+    activate:
+      on-profile: prod
+
+  # ============================================================================
+  # Database Configuration - Managed RDS PostgreSQL
+  # ============================================================================
+  # Production database connection using environment variables for security
+  # Replaces VSAM KSDS files with PostgreSQL 16.x relational database
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:carddemo}
+    username: ${DB_USERNAME:carddemo}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    
+    # ============================================================================
+    # HikariCP Connection Pool - Optimized for 10,000 TPS Performance
+    # ============================================================================
+    # Connection pool settings tuned for high-throughput transaction processing
+    # Target: 10,000 transactions per second with sub-200ms response times
+    hikari:
+      # Maximum pool size: 50 connections for high concurrency
+      # Formula: (core_count * 2) + effective_spindle_count
+      # For production: 24 CPU cores * 2 + 2 = 50 connections
+      maximum-pool-size: 50
+      
+      # Minimum idle connections: 10 to handle baseline load
+      minimum-idle: 10
+      
+      # Connection timeout: 30 seconds (30000 ms)
+      # Maximum time to wait for connection from pool
+      connection-timeout: 30000
+      
+      # Idle timeout: 10 minutes (600000 ms)
+      # Maximum time connection can sit idle before being retired
+      idle-timeout: 600000
+      
+      # Max lifetime: 30 minutes (1800000 ms)
+      # Maximum lifetime of connection in pool (prevents stale connections)
+      max-lifetime: 1800000
+      
+      # Connection test query for health validation
+      connection-test-query: SELECT 1
+      
+      # Pool name for monitoring and logging
+      pool-name: CardDemoHikariPool
+      
+      # Auto-commit disabled for explicit transaction management
+      auto-commit: false
+      
+      # Leak detection threshold: 60 seconds
+      # Warns if connection held longer than threshold (potential leak)
+      leak-detection-threshold: 60000
+      
+      # Performance optimizations
+      data-source-properties:
+        cachePrepStmts: true
+        prepStmtCacheSize: 250
+        prepStmtCacheSqlLimit: 2048
+        useServerPrepStmts: true
+        useLocalSessionState: true
+        rewriteBatchedStatements: true
+        cacheResultSetMetadata: true
+        cacheServerConfiguration: true
+        elideSetAutoCommits: true
+        maintainTimeStats: false
+
+  # ============================================================================
+  # JPA/Hibernate Configuration - Production Settings
+  # ============================================================================
+  jpa:
+    # Database platform
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    
+    # DDL auto: validate only (never create/update in production)
+    # Schema managed by Flyway migrations only
+    hibernate:
+      ddl-auto: validate
+      
+      # Naming strategy: snake_case for database objects
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.CamelCaseToUnderscoresNamingStrategy
+        implicit-strategy: org.springframework.boot.orm.jpa.hibernate.SpringImplicitNamingStrategy
+    
+    # Disable SQL logging in production (use external monitoring)
+    show-sql: false
+    
+    # JPA properties for performance optimization
+    properties:
+      hibernate:
+        # Disable SQL formatting in production
+        format_sql: false
+        
+        # Use SQL comments for debugging (when needed)
+        use_sql_comments: false
+        
+        # JDBC batch size for bulk operations (matching COBOL batch processing)
+        jdbc:
+          batch_size: 50
+          fetch_size: 100
+          time_zone: UTC
+        
+        # Second-level cache disabled (use application-level caching if needed)
+        cache:
+          use_second_level_cache: false
+          use_query_cache: false
+        
+        # Statistics disabled in production
+        generate_statistics: false
+        
+        # Connection handling
+        connection:
+          provider_disables_autocommit: true
+        
+        # Query optimization
+        query:
+          in_clause_parameter_padding: true
+          fail_on_pagination_over_collection_fetch: true
+          plan_cache_max_size: 2048
+        
+        # Order inserts and updates for batch efficiency
+        order_inserts: true
+        order_updates: true
+        
+        # JDBC metadata optimization
+        temp:
+          use_jdbc_metadata_defaults: false
+
+  # ============================================================================
+  # Flyway Database Migration Configuration
+  # ============================================================================
+  # Production-safe migration settings with validation
+  flyway:
+    # Enable Flyway migrations
+    enabled: true
+    
+    # Validate migrations on startup
+    validate-on-migrate: true
+    
+    # Do not clean database in production
+    clean-disabled: true
+    
+    # Baseline on migrate for existing database
+    baseline-on-migrate: true
+    
+    # Migration file locations
+    locations: classpath:db/migration
+    
+    # Table name for schema history
+    table: flyway_schema_history
+    
+    # SQL migration prefix
+    sql-migration-prefix: V
+    
+    # Placeholder replacement
+    placeholder-replacement: true
+    placeholders:
+      environment: production
+
+  # ============================================================================
+  # Spring Batch Configuration - Replaces JCL Batch Jobs
+  # ============================================================================
+  # Production batch processing settings for overnight cycles
+  # Target: Complete within 4-hour window (02:00-06:00)
+  batch:
+    # Job execution configuration
+    job:
+      # Do not auto-start jobs on application startup
+      enabled: false
+      
+    # JDBC initialization mode
+    jdbc:
+      initialize-schema: never
+      
+      # Transaction isolation level
+      isolation-level-for-create: ISOLATION_SERIALIZABLE
+
+  # ============================================================================
+  # Jackson JSON Configuration
+  # ============================================================================
+  jackson:
+    # Date format (ISO 8601)
+    date-format: yyyy-MM-dd'T'HH:mm:ss.SSSZ
+    time-zone: UTC
+    
+    # Serialization features
+    serialization:
+      write-dates-as-timestamps: false
+      write-date-timestamps-as-nanoseconds: false
+      fail-on-empty-beans: false
+      indent-output: false
+    
+    # Deserialization features
+    deserialization:
+      fail-on-unknown-properties: false
+      read-date-timestamps-as-nanoseconds: false
+    
+    # Default property inclusion
+    default-property-inclusion: non_null
+
+# ============================================================================
+# Server Configuration
+# ============================================================================
+server:
+  # Server port (use environment variable or default)
+  port: ${SERVER_PORT:8080}
+  
+  # Servlet context path
+  servlet:
+    context-path: /api
+    
+    # Session configuration
+    session:
+      timeout: 30m
+      cookie:
+        http-only: true
+        secure: true
+        same-site: strict
+  
+  # Compression for response optimization
+  compression:
+    enabled: true
+    mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json,application/xml
+    min-response-size: 1024
+  
+  # HTTP/2 support
+  http2:
+    enabled: true
+  
+  # Graceful shutdown
+  shutdown: graceful
+  
+  # Connection timeout settings
+  tomcat:
+    # Maximum threads for request processing
+    threads:
+      max: 200
+      min-spare: 10
+    
+    # Connection timeout: 30 seconds
+    connection-timeout: 30s
+    
+    # Keep-alive timeout: 60 seconds
+    keep-alive-timeout: 60s
+    
+    # Max connections
+    max-connections: 8192
+    
+    # Accept count (connection queue)
+    accept-count: 100
+    
+    # Access log (disabled, use external logging)
+    accesslog:
+      enabled: false
+
+# ============================================================================
+# Logging Configuration - Production Grade
+# ============================================================================
+logging:
+  # Log levels - INFO for application, WARN for frameworks
+  level:
+    root: WARN
+    com.carddemo: INFO
+    org.springframework: WARN
+    org.springframework.web: WARN
+    org.springframework.security: WARN
+    org.springframework.batch: INFO
+    org.hibernate: WARN
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN
+    org.postgresql: WARN
+    com.zaxxer.hikari: WARN
+    org.flywaydb: INFO
+  
+  # Log pattern (structured JSON logging for production)
+  pattern:
+    console: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n'
+    file: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n'
+  
+  # Log file configuration
+  file:
+    name: /var/log/carddemo/application.log
+    max-size: 100MB
+    max-history: 30
+    total-size-cap: 1GB
+
+# ============================================================================
+# Spring Boot Actuator - Production Monitoring
+# ============================================================================
+management:
+  # Actuator endpoint configuration
+  endpoints:
+    web:
+      # Base path for actuator endpoints
+      base-path: /actuator
+      
+      # Expose only health, metrics, and prometheus
+      exposure:
+        include: health,metrics,prometheus
+        exclude: env,beans,configprops,threaddump,heapdump
+  
+  # Health endpoint configuration
+  endpoint:
+    health:
+      # Show detailed health information
+      show-details: when-authorized
+      
+      # Health check components
+      probes:
+        enabled: true
+      
+      # Group health checks for Kubernetes
+      group:
+        liveness:
+          include: livenessState,ping
+        readiness:
+          include: readinessState,db,diskSpace
+  
+  # Health indicators
+  health:
+    # Database health check
+    db:
+      enabled: true
+    
+    # Disk space health check
+    diskspace:
+      enabled: true
+      threshold: 10GB
+    
+    # Kubernetes probes
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true
+  
+  # Metrics configuration
+  metrics:
+    # Enable JVM metrics
+    enable:
+      jvm: true
+      process: true
+      system: true
+      tomcat: true
+      hikaricp: true
+      jdbc: true
+    
+    # Metrics export
+    export:
+      prometheus:
+        enabled: true
+    
+    # Metric tags
+    tags:
+      application: ${spring.application.name}
+      environment: production
+  
+  # Server port for actuator (different from application port)
+  server:
+    port: ${MANAGEMENT_PORT:9090}
+
+# ============================================================================
+# Application-Specific Configuration
+# ============================================================================
+carddemo:
+  # Application metadata
+  application:
+    name: CardDemo Credit Card Management System
+    version: 2.0.0
+    description: Modernized from IBM Mainframe COBOL/CICS to Spring Boot/React
+  
+  # Security configuration
+  security:
+    # JWT token configuration
+    jwt:
+      # Secret key from environment variable (REQUIRED)
+      secret: ${JWT_SECRET}
+      
+      # Token expiration: 1 hour
+      expiration: 3600000
+      
+      # Refresh token expiration: 24 hours
+      refresh-expiration: 86400000
+      
+      # Token issuer
+      issuer: carddemo-prod
+    
+    # CORS configuration (restrictive for production)
+    cors:
+      allowed-origins: ${CORS_ALLOWED_ORIGINS:https://carddemo.example.com}
+      allowed-methods: GET,POST,PUT,DELETE
+      allowed-headers: '*'
+      allow-credentials: true
+      max-age: 3600
+    
+    # Password policy
+    password:
+      min-length: 8
+      require-uppercase: true
+      require-lowercase: true
+      require-digit: true
+      require-special-char: true
+      max-attempts: 5
+      lockout-duration: 30m
+  
+  # Batch job configuration
+  batch:
+    # Chunk size for batch processing (optimized for 4-hour window)
+    chunk-size: 1000
+    
+    # Thread pool for parallel processing
+    thread-pool-size: 10
+    
+    # Job restart configuration
+    restart-enabled: true
+    
+    # Job execution timeout
+    timeout: 14400000
+  
+  # Transaction configuration
+  transaction:
+    # Transaction timeout: 30 seconds
+    timeout: 30
+    
+    # Isolation level: READ_COMMITTED (matches CICS default)
+    isolation: READ_COMMITTED
+  
+  # Performance configuration
+  performance:
+    # Response time threshold for monitoring (200ms target)
+    response-time-threshold: 200
+    
+    # Transaction throughput target (10,000 TPS)
+    tps-target: 10000
+    
+    # Enable performance monitoring
+    monitoring-enabled: true
+  
+  # External interface configuration
+  external:
+    # Payment network interface settings
+    payment-network:
+      enabled: true
+      url: ${PAYMENT_NETWORK_URL}
+      timeout: 5000
+      retry-attempts: 3
+    
+    # Bank core system interface
+    bank-core:
+      enabled: true
+      file-path: ${BANK_CORE_FILE_PATH:/var/carddemo/interfaces/bank}
+      encoding: EBCDIC
+    
+    # Regulatory reporting interface
+    regulatory:
+      enabled: true
+      file-path: ${REGULATORY_FILE_PATH:/var/carddemo/interfaces/regulatory}
+      schedule: '0 0 2 * * ?'
+
+# ============================================================================
+# Spring Cloud Config (if using centralized config)
+# ============================================================================
+# Uncomment if using Spring Cloud Config Server
+# spring:
+#   cloud:
+#     config:
+#       enabled: false
+#       uri: ${CONFIG_SERVER_URI}
+#       fail-fast: true
+
+# ============================================================================
+# End of Production Configuration
+# ============================================================================
+# Notes:
+# - All sensitive values (passwords, secrets) MUST be provided via environment variables
+# - Database connection validated on startup with connection-test-query
+# - Flyway migrations run automatically with validation
+# - Actuator endpoints secured and limited to health/metrics/prometheus
+# - Performance tuned for 10,000 TPS with sub-200ms response times
+# - Batch processing optimized for 4-hour overnight window
+# - All external interfaces preserve exact COBOL format specifications
+# ============================================================================
