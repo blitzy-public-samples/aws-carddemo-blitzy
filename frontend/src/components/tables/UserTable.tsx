@@ -41,7 +41,6 @@ import {
   GridColDef,
   GridRowSelectionModel,
   GridSortModel,
-  GridPaginationModel,
 } from '@mui/x-data-grid';
 import SearchIcon from '@mui/icons-material/Search';
 import NavigateBeforeIcon from '@mui/icons-material/NavigateBefore';
