@@ -1,0 +1,394 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        Maven Project Object Model for CardDemo Modernized Backend
+        
+        Converted from: COBOL/CICS mainframe application
+        Technology Stack: Spring Boot 3.4.5, Java 21, PostgreSQL 16.x
+        Migration Scope: 26 COBOL programs → Java services + Spring Batch jobs
+        
+        Purpose: Replace IBM mainframe CardDemo credit card management system
+                 with modern cloud-native Java microservices architecture
+        
+        Key Transformations:
+        - COBOL programs → Spring Boot REST controllers + services
+        - CICS transaction processing → Spring MVC + @Transactional
+        - VSAM datasets → PostgreSQL tables (JPA/Hibernate)
+        - JCL batch jobs → Spring Batch jobs
+        - RACF security → Spring Security + JWT
+        - BMS maps → React SPA (separate frontend module)
+    -->
+
+    <!-- Spring Boot Parent POM - provides dependency management -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.5</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+
+    <!-- Project Coordinates -->
+    <groupId>com.carddemo</groupId>
+    <artifactId>carddemo-backend</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Modernized Backend</name>
+    <description>Spring Boot backend replacing COBOL/CICS mainframe application for credit card management</description>
+
+    <!-- Properties - Version Management -->
+    <properties>
+        <!-- Java Version (Java 21 LTS) -->
+        <java.version>21</java.version>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- Spring Boot Version -->
+        <spring-boot.version>3.4.5</spring-boot.version>
+
+        <!-- Database Drivers and Migration -->
+        <postgresql.version>42.7.4</postgresql.version>
+        <flyway.version>10.20.1</flyway.version>
+        <h2.version>2.3.232</h2.version>
+
+        <!-- Security - JWT Authentication (replaces RACF) -->
+        <jjwt.version>0.12.6</jjwt.version>
+
+        <!-- API Documentation -->
+        <springdoc.version>2.6.0</springdoc.version>
+
+        <!-- Utility Libraries -->
+        <mapstruct.version>1.6.3</mapstruct.version>
+        <lombok.version>1.18.36</lombok.version>
+        <commons-lang3.version>3.17.0</commons-lang3.version>
+
+        <!-- Testing -->
+        <testcontainers.version>1.20.4</testcontainers.version>
+        <rest-assured.version>5.5.0</rest-assured.version>
+
+        <!-- Maven Plugins -->
+        <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
+    </properties>
+
+    <dependencies>
+        <!-- ========== Spring Boot Starters ========== -->
+        
+        <!-- Spring Boot Starter Web - REST API Framework -->
+        <!-- Replaces: CICS online transaction processing (15 COBOL programs) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Spring Boot Starter Data JPA - Database Access Layer -->
+        <!-- Replaces: VSAM I/O operations (READ/WRITE/REWRITE/DELETE) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- Spring Boot Starter Batch - Batch Processing Framework -->
+        <!-- Replaces: 28 JCL batch jobs (CBACTJ*, CBTRNJ*, CBCUSJ*) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <!-- Spring Boot Starter Security - Authentication and Authorization -->
+        <!-- Replaces: RACF security system -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Spring Boot Starter Actuator - Health Checks and Metrics -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Spring Boot Starter Validation - Bean Validation (JSR-380) -->
+        <!-- Replaces: COBOL field-level validations from BMS maps -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- ========== Database Dependencies ========== -->
+
+        <!-- PostgreSQL JDBC Driver -->
+        <!-- Replaces: VSAM KSDS datasets (11 datasets: ACCTFILE, CARDFILE, CUSTFILE, etc.) -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Flyway Core - Database Migration Tool -->
+        <!-- Replaces: JCL data initialization jobs (ACCTFILE.jcl, CARDFILE.jcl, etc.) -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+            <version>${flyway.version}</version>
+        </dependency>
+
+        <!-- Flyway PostgreSQL Support -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <version>${flyway.version}</version>
+        </dependency>
+
+        <!-- ========== Security Dependencies (JWT) ========== -->
+
+        <!-- JWT API - Token Generation and Validation -->
+        <!-- Replaces: RACF authentication -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>${jjwt.version}</version>
+        </dependency>
+
+        <!-- JWT Implementation -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- JWT Jackson JSON Processing -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- ========== API Documentation ========== -->
+
+        <!-- SpringDoc OpenAPI - Swagger UI -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>${springdoc.version}</version>
+        </dependency>
+
+        <!-- ========== Utility Libraries ========== -->
+
+        <!-- MapStruct - Entity to DTO Mapping -->
+        <dependency>
+            <groupId>org.mapstruct</groupId>
+            <artifactId>mapstruct</artifactId>
+            <version>${mapstruct.version}</version>
+        </dependency>
+
+        <!-- Lombok - Reduce Boilerplate Code -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Jackson Databind - JSON Serialization -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- Jackson Java 8 Date/Time Support -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+        </dependency>
+
+        <!-- Apache Commons Lang3 - String Utilities -->
+        <!-- Replaces: COBOL string manipulation (CSSTRPFY.cpy) -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+            <version>${commons-lang3.version}</version>
+        </dependency>
+
+        <!-- ========== Testing Dependencies ========== -->
+
+        <!-- Spring Boot Starter Test - JUnit 5, Mockito, AssertJ -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Security Test - Security Testing Utilities -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Batch Test - Batch Job Testing -->
+        <dependency>
+            <groupId>org.springframework.batch</groupId>
+            <artifactId>spring-batch-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers - Container-based Integration Testing -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers PostgreSQL - PostgreSQL Test Containers -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers JUnit Jupiter - JUnit 5 Integration -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- H2 Database - In-Memory Database for Unit Tests -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>${h2.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- REST Assured - REST API Testing -->
+        <dependency>
+            <groupId>io.rest-assured</groupId>
+            <artifactId>rest-assured</artifactId>
+            <version>${rest-assured.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>carddemo-backend</finalName>
+
+        <plugins>
+            <!-- Maven Compiler Plugin - Java 21 Compilation -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>${maven-compiler-plugin.version}</version>
+                <configuration>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                    <encoding>${project.build.sourceEncoding}</encoding>
+                    
+                    <!-- Annotation Processor Configuration -->
+                    <!-- CRITICAL: Lombok must be processed BEFORE MapStruct -->
+                    <annotationProcessorPaths>
+                        <!-- Lombok Processor (must be first) -->
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                        
+                        <!-- MapStruct Processor (after Lombok) -->
+                        <path>
+                            <groupId>org.mapstruct</groupId>
+                            <artifactId>mapstruct-processor</artifactId>
+                            <version>${mapstruct.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    
+                    <compilerArgs>
+                        <arg>-parameters</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <!-- Maven Surefire Plugin - Unit Test Execution -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven-surefire-plugin.version}</version>
+                <configuration>
+                    <!-- Parallel Test Execution for Performance -->
+                    <parallel>methods</parallel>
+                    <threadCount>4</threadCount>
+                    <useUnlimitedThreads>false</useUnlimitedThreads>
+                    
+                    <!-- Fail Fast on Test Failures -->
+                    <skipAfterFailureCount>1</skipAfterFailureCount>
+                    
+                    <!-- Test Reporting -->
+                    <printSummary>true</printSummary>
+                    <redirectTestOutputToFile>false</redirectTestOutputToFile>
+                </configuration>
+            </plugin>
+
+            <!-- Spring Boot Maven Plugin - Executable JAR Packaging -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>${spring-boot.version}</version>
+                <configuration>
+                    <!-- Exclude Lombok from Final JAR -->
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                    
+                    <!-- Enable Layered JARs for Docker Optimization -->
+                    <!-- Improves Docker image layer caching -->
+                    <layers>
+                        <enabled>true</enabled>
+                    </layers>
+                    
+                    <!-- Build Information for Actuator -->
+                    <buildInfo>
+                        <addBuildTime>true</addBuildTime>
+                    </buildInfo>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                            <goal>build-info</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <!-- Repository Configuration (optional - uses Maven Central by default) -->
+    <repositories>
+        <repository>
+            <id>central</id>
+            <name>Maven Central Repository</name>
+            <url>https://repo.maven.apache.org/maven2</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+</project>
