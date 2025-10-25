@@ -16,7 +16,6 @@
 
 import axios, {
   AxiosInstance,
-  AxiosRequestConfig,
   AxiosResponse,
   AxiosError,
   InternalAxiosRequestConfig
@@ -46,7 +45,7 @@ interface QueuedRequest {
  * Environment Configuration
  * Base URL is configurable via environment variables for different environments
  */
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080/api';
+const API_BASE_URL = import.meta.env['VITE_API_BASE_URL'] || 'http://localhost:8080/api';
 const REQUEST_TIMEOUT = 30000; // 30 seconds for normal operations
 const LONG_REQUEST_TIMEOUT = 60000; // 60 seconds for reports and file uploads
 const MAX_RETRY_ATTEMPTS = 3;
@@ -203,8 +202,14 @@ const refreshAuthToken = async (): Promise<string> => {
       throw new Error('No refresh token available');
     }
 
-    // Call token refresh endpoint
-    const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {
+    // Call token refresh endpoint using a separate axios instance to avoid interceptor loops
+    // This bypasses the api instance interceptors to prevent infinite loops
+    const refreshInstance = axios.create({
+      baseURL: API_BASE_URL,
+      timeout: REQUEST_TIMEOUT,
+    });
+
+    const response = await refreshInstance.post('/auth/refresh', {
       refreshToken,
     });
 
@@ -307,30 +312,33 @@ api.interceptors.response.use(
 
     // Handle 403 Forbidden - Access denied
     if (error.response?.status === 403) {
+      const responseData = error.response.data as any;
       const apiError: ApiError = {
         status: 403,
         message: 'Access denied. You do not have permission to perform this action.',
-        errors: [error.response.data?.message || 'Forbidden'],
+        errors: [responseData?.message || 'Forbidden'],
       };
       return Promise.reject(apiError);
     }
 
     // Handle 404 Not Found
     if (error.response?.status === 404) {
+      const responseData = error.response.data as any;
       const apiError: ApiError = {
         status: 404,
         message: 'Resource not found.',
-        errors: [error.response.data?.message || 'Not Found'],
+        errors: [responseData?.message || 'Not Found'],
       };
       return Promise.reject(apiError);
     }
 
     // Handle 500 Internal Server Error
     if (error.response?.status === 500) {
+      const responseData = error.response.data as any;
       const apiError: ApiError = {
         status: 500,
         message: 'An internal server error occurred. Please try again later.',
-        errors: [error.response.data?.message || 'Internal Server Error'],
+        errors: [responseData?.message || 'Internal Server Error'],
       };
       return Promise.reject(apiError);
     }
