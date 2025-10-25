@@ -1,0 +1,50 @@
+# Test configuration for CardDemo application
+# Uses H2 in-memory database for fast unit testing without external dependencies
+
+spring:
+  application:
+    name: carddemo-test
+  
+  # H2 in-memory database configuration
+  datasource:
+    url: jdbc:h2:mem:testdb;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: 
+  
+  # JPA configuration for H2
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+  
+  # Disable Flyway for tests (use Hibernate auto-DDL instead)
+  flyway:
+    enabled: false
+  
+  # Disable batch processing for unit tests
+  batch:
+    job:
+      enabled: false
+  
+  # Security configuration for tests
+  security:
+    user:
+      name: test
+      password: test
+
+# Server configuration
+server:
+  port: 0  # Random port for tests
+
+# Logging configuration
+logging:
+  level:
+    root: WARN
+    com.carddemo: INFO
+    org.springframework: WARN
+    org.hibernate: WARN
