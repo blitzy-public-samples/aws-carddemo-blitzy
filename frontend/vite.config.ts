@@ -26,12 +26,11 @@ export default defineConfig({
    * 
    * React Plugin: Enables Fast Refresh for instant hot-reload during development
    * and JSX transformation using React 18 automatic runtime.
+   * 
+   * Note: Fast Refresh is enabled by default in @vitejs/plugin-react v4.3.4+
    */
   plugins: [
     react({
-      // Fast Refresh for instant component updates without losing state
-      fastRefresh: true,
-      
       // Babel configuration for additional transformations if needed
       babel: {
         plugins: [],
