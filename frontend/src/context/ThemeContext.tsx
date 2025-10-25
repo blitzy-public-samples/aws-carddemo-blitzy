@@ -1,41 +1,10 @@
-/**
- * Theme Context Provider
- * 
- * Converted from: N/A (New feature for modern web UI)
- * Original function: No COBOL equivalent - 3270 terminals have fixed green-on-black appearance
- * 
- * Purpose:
- * - Manage application-wide theme state (light/dark mode)
- * - Provide Material-UI theme configuration to all components
- * - Persist user theme preference across sessions using localStorage
- * - Enable seamless theme switching without page reload
- * 
- * Features:
- * - Light and dark mode support
- * - Persistent user preference via localStorage
- * - Material-UI integration with custom color palette
- * - Typography configuration for consistent text styling
- * - Component-level theme customization
- * - useTheme hook for convenient context consumption
- * 
- * Usage:
- * 1. Wrap application with ThemeContextProvider in App.tsx
- * 2. Use useTheme hook in any component to access theme state and toggle function
- * 3. Access Material-UI theme object for theme-aware styling
- * 
- * No COBOL Equivalent:
- * - BMS screens have fixed appearance with no dynamic theming
- * - 3270 terminals display green-on-black with no customization
- * - This is a modern web UI feature enhancing user experience
- */
-
-import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode, FC } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import { ThemeProvider as MuiThemeProvider, createTheme, Theme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 
 /**
  * Theme mode type definition
- * Supports light and dark modes for user preference
+ * Supports light and dark modes
  */
 export type ThemeMode = 'light' | 'dark';
 
@@ -50,77 +19,40 @@ interface ThemeContextType {
   /** Function to toggle between light and dark modes */
   toggleTheme: () => void;
   
-  /** Material-UI theme object with color palette and typography */
+  /** Material-UI theme object */
   muiTheme: Theme;
 }
 
 /**
  * Theme context
- * Created with default values for type safety
- * Throws error if accessed outside ThemeContextProvider
+ * Created with undefined to detect usage outside provider
  */
-const ThemeContext = createContext<ThemeContextType>({
-  theme: 'light',
-  toggleTheme: () => {},
-  muiTheme: createTheme()
-});
+const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 /**
  * Theme Context Provider Component
- * Manages theme state and provides Material-UI theme to entire application
+ * Manages theme state and provides Material-UI theme to application
  * 
- * Features:
- * - Initializes theme from localStorage or defaults to light mode
- * - Persists theme changes to localStorage automatically
- * - Creates Material-UI theme with custom color palette
- * - Provides theme toggle functionality
- * - Wraps children with MUI ThemeProvider and CssBaseline
- * 
- * @param children - React child components to wrap with theme provider
- * 
- * @example
- * // In App.tsx
- * <ThemeContextProvider>
- *   <BrowserRouter>
- *     <Routes>
- *       {/* Application routes *\/}
- *     </Routes>
- *   </BrowserRouter>
- * </ThemeContextProvider>
+ * @param children - React child components
  */
-export const ThemeContextProvider: FC<{ children: ReactNode }> = ({ children }) => {
+export const ThemeContextProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   /**
    * Initialize theme from localStorage or default to light mode
-   * Validates stored value to ensure it's a valid ThemeMode
    */
   const [theme, setTheme] = useState<ThemeMode>(() => {
-    try {
-      const storedTheme = localStorage.getItem('theme');
-      if (storedTheme === 'light' || storedTheme === 'dark') {
-        return storedTheme;
-      }
-    } catch (error) {
-      // localStorage may not be available in some environments (e.g., SSR)
-      console.warn('Failed to read theme from localStorage:', error);
-    }
-    return 'light';
+    const storedTheme = localStorage.getItem('theme');
+    return (storedTheme === 'light' || storedTheme === 'dark') ? storedTheme : 'light';
   });
 
   /**
    * Persist theme changes to localStorage
-   * Effect runs whenever theme changes
    */
   useEffect(() => {
-    try {
-      localStorage.setItem('theme', theme);
-    } catch (error) {
-      console.warn('Failed to save theme to localStorage:', error);
-    }
+    localStorage.setItem('theme', theme);
   }, [theme]);
 
   /**
    * Toggle theme between light and dark modes
-   * Updates state which triggers localStorage persistence via useEffect
    */
   const toggleTheme = (): void => {
     setTheme((prevTheme) => (prevTheme === 'light' ? 'dark' : 'light'));
@@ -129,12 +61,6 @@ export const ThemeContextProvider: FC<{ children: ReactNode }> = ({ children }) 
   /**
    * Create Material-UI theme object based on current mode
    * Uses useMemo to avoid recreating theme on every render
-   * Only recreates when theme mode changes
-   * 
-   * Theme Configuration:
-   * - Custom color palette for light and dark modes
-   * - Typography settings with system font stack
-   * - Component-level customizations (buttons, text fields, cards)
    */
   const muiTheme = useMemo(() => {
     return createTheme({
@@ -221,7 +147,7 @@ export const ThemeContextProvider: FC<{ children: ReactNode }> = ({ children }) 
         MuiButton: {
           styleOverrides: {
             root: {
-              textTransform: 'none', // Disable uppercase transformation for better readability
+              textTransform: 'none', // Disable uppercase transformation
               borderRadius: 4,
             },
           },
@@ -242,21 +168,12 @@ export const ThemeContextProvider: FC<{ children: ReactNode }> = ({ children }) 
     });
   }, [theme]);
 
-  /**
-   * Context value object
-   * Contains current theme, toggle function, and Material-UI theme
-   */
   const value: ThemeContextType = {
     theme,
     toggleTheme,
     muiTheme,
   };
 
-  /**
-   * Render provider with Material-UI ThemeProvider and CssBaseline
-   * CssBaseline provides consistent CSS reset across browsers
-   * ThemeProvider makes theme available to all MUI components
-   */
   return (
     <ThemeContext.Provider value={value}>
       <MuiThemeProvider theme={muiTheme}>
@@ -271,11 +188,10 @@ export const ThemeContextProvider: FC<{ children: ReactNode }> = ({ children }) 
  * Custom hook for consuming theme context
  * Provides convenient access to theme state and toggle function
  * 
- * @returns ThemeContextType object containing theme, toggleTheme, and muiTheme
+ * @returns ThemeContextType object
  * @throws Error if used outside ThemeContextProvider
  * 
  * @example
- * // Basic usage in a component
  * const { theme, toggleTheme, muiTheme } = useTheme();
  * 
  * // Toggle theme on button click
@@ -283,42 +199,21 @@ export const ThemeContextProvider: FC<{ children: ReactNode }> = ({ children }) 
  *   {theme === 'light' ? 'Dark Mode' : 'Light Mode'}
  * </Button>
  * 
- * @example
- * // Access theme colors for custom styling
- * const { muiTheme } = useTheme();
+ * // Access theme colors
  * const backgroundColor = muiTheme.palette.background.default;
- * const textColor = muiTheme.palette.text.primary;
  * 
- * @example
- * // Theme-aware component styling
- * const { muiTheme } = useTheme();
- * <Box
- *   sx={{
- *     color: muiTheme.palette.text.primary,
- *     backgroundColor: muiTheme.palette.background.paper,
- *     padding: 2,
- *   }}
- * >
- *   Content adapts to theme
- * </Box>
- * 
- * @example
- * // Conditional rendering based on theme
- * const { theme } = useTheme();
- * return (
- *   <img 
- *     src={theme === 'light' ? '/logo-light.png' : '/logo-dark.png'}
- *     alt="Logo"
- *   />
- * );
+ * // Theme-aware styling
+ * const styles = {
+ *   color: muiTheme.palette.text.primary,
+ *   backgroundColor: muiTheme.palette.background.paper,
+ * };
  */
 export const useTheme = (): ThemeContextType => {
   const context = useContext(ThemeContext);
   
-  if (!context) {
+  if (context === undefined) {
     throw new Error('useTheme must be used within a ThemeContextProvider');
   }
   
   return context;
 };
-
