@@ -1,0 +1,30 @@
+<!-- 
+  Transaction Icon SVG
+  
+  Custom icon representing financial transaction features
+  Replaces character-based transaction representations from BMS 3270 terminal screens
+  Source BMS maps: COTRN00.bms (list), COTRN01.bms (view), COTRN02.bms (entry)
+  
+  Design elements:
+  - Receipt/document shape with torn bottom edge
+  - Dual arrows indicating money flow/exchange
+  - Simple, clean lines suitable for light and dark themes
+  
+  Supports sizes: 16px, 24px (default), 32px, 48px
+  Dynamic color via currentColor CSS property
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+  <!-- Receipt/document body -->
+  <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14z"/>
+  
+  <!-- Receipt lines/content representation -->
+  <path d="M7 7h10v2H7zm0 4h10v2H7zm0 4h6v2H7z"/>
+  
+  <!-- Circular arrow indicating exchange/flow -->
+  <g opacity="0.8">
+    <!-- Arrow going right (outgoing) -->
+    <path d="M14.5 9l-1.5-1.5 3-3 1.5 1.5-3 3z"/>
+    <!-- Arrow going left (incoming) -->
+    <path d="M9.5 15l1.5 1.5-3 3-1.5-1.5 3-3z"/>
+  </g>
+</svg>
