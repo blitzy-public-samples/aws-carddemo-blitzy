@@ -1,77 +1,427 @@
-# CardDemo Application Configuration
-# Main configuration file for Spring Boot backend application
+# ==============================================================================
+# CardDemo Application - Main Spring Boot Configuration
+# ==============================================================================
+# Converted from: COBOL/CICS mainframe application to Spring Boot 3.4.5
+# Original data source: VSAM KSDS files (ACCTFILE, CARDFILE, CUSTFILE, etc.)
+# Target database: PostgreSQL 16.x
+# 
+# This configuration replaces:
+# - JCL job definitions (ACCTFILE.jcl, CARDFILE.jcl, etc.)
+# - CICS region configuration
+# - VSAM file definitions
+# ==============================================================================
 
+# Spring Framework Configuration
 spring:
+  # Application Identity
   application:
     name: carddemo
   
-  # Database configuration (PostgreSQL)
+  # ==============================================================================
+  # Database Configuration (PostgreSQL - replacing VSAM)
+  # ==============================================================================
+  # Replaces VSAM KSDS datasets:
+  # - AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS (11-byte key, 300-byte records)
+  # - AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS
+  # - AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS
+  # - Additional VSAM files for transactions, cross-references, etc.
+  # ==============================================================================
   datasource:
+    # JDBC URL - uses environment variable or defaults to localhost
     url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/carddemo}
     username: ${DATABASE_USERNAME:carddemo}
     password: ${DATABASE_PASSWORD:carddemo}
     driver-class-name: org.postgresql.Driver
+    
+    # HikariCP Connection Pool Configuration
+    # Optimized for high transaction throughput (10,000 TPS requirement)
     hikari:
-      maximum-pool-size: 10
-      minimum-idle: 5
+      # Maximum pool size - supports peak transaction volumes
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:20}
+      # Minimum idle connections - reduces connection acquisition latency
+      minimum-idle: ${DB_POOL_MIN_IDLE:5}
+      # Connection timeout (30 seconds)
       connection-timeout: 30000
+      # Idle timeout (10 minutes)
       idle-timeout: 600000
+      # Maximum connection lifetime (30 minutes)
       max-lifetime: 1800000
+      # Connection test query to validate connections
+      connection-test-query: SELECT 1
+      # Pool name for monitoring
+      pool-name: CardDemoHikariPool
+      # Auto-commit disabled for explicit transaction management
+      auto-commit: false
+      # Leak detection threshold (15 minutes) - helps identify connection leaks
+      leak-detection-threshold: 900000
   
-  # JPA/Hibernate configuration
+  # ==============================================================================
+  # JPA/Hibernate Configuration
+  # ==============================================================================
   jpa:
+    # PostgreSQL dialect for optimal query generation
     database-platform: org.hibernate.dialect.PostgreSQLDialect
+    
     hibernate:
+      # Validate schema against entity mappings (Flyway manages migrations)
       ddl-auto: validate
+      # Naming strategy for database objects
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.CamelCaseToUnderscoresNamingStrategy
+        implicit-strategy: org.springframework.boot.orm.jpa.hibernate.SpringImplicitNamingStrategy
+    
+    # SQL logging disabled in production (enabled in dev profile)
     show-sql: false
+    
+    # Hibernate-specific properties
     properties:
       hibernate:
+        # Format SQL for readability when logging is enabled
         format_sql: true
+        # Use JDBC batch inserts for better performance
         jdbc:
+          batch_size: 50
+          # Use UTC timezone for timestamp handling
           time_zone: UTC
+        # Second-level cache disabled (stateless REST API design)
+        cache:
+          use_second_level_cache: false
+          use_query_cache: false
+        # Generate statistics for monitoring (disable in production if not needed)
+        generate_statistics: false
+        # Order inserts and updates for better performance
+        order_inserts: true
+        order_updates: true
+        # Use new ID generator mappings
+        id:
+          new_generator_mappings: true
   
-  # Flyway database migration
+  # ==============================================================================
+  # Flyway Database Migration Configuration
+  # ==============================================================================
+  # Replaces JCL-based data initialization jobs:
+  # - ACCTFILE.jcl, CARDFILE.jcl, CUSTFILE.jcl, etc.
+  # ==============================================================================
   flyway:
+    # Enable Flyway migrations
     enabled: true
+    # Create baseline for existing database
     baseline-on-migrate: true
+    # Baseline version
+    baseline-version: 0
+    # Validate migrations before applying
     validate-on-migrate: true
+    # Migration script locations
     locations: classpath:db/migration
+    # Encoding for migration scripts
+    encoding: UTF-8
+    # Placeholder replacement enabled
+    placeholder-replacement: true
+    # SQL migration prefix
+    sql-migration-prefix: V
+    # SQL migration separator
+    sql-migration-separator: __
+    # SQL migration suffixes
+    sql-migration-suffixes: .sql
+    # Out of order migrations allowed during development
+    out-of-order: false
+    # Clean database disabled in production
+    clean-disabled: true
   
-  # Spring Batch configuration
+  # ==============================================================================
+  # Spring Batch Configuration
+  # ==============================================================================
+  # Replaces JCL batch jobs:
+  # - CBACTJ01-04.jcl (account processing)
+  # - CBTRNJ01-03.jcl (transaction processing)
+  # - CBCUSJ01.jcl (customer validation)
+  # ==============================================================================
   batch:
     job:
+      # Jobs are not started automatically (scheduled or triggered via REST API)
       enabled: false
     jdbc:
+      # Initialize Spring Batch schema automatically
       initialize-schema: always
+      # Isolation level for batch job execution
+      isolation-level-for-create: SERIALIZABLE
+      # Table prefix for Spring Batch metadata tables
+      table-prefix: BATCH_
+    # Async task executor configuration for parallel processing
+    task-executor:
+      pool-size: 5
+      queue-capacity: 100
+  
+  # ==============================================================================
+  # Security Configuration References
+  # ==============================================================================
+  # Security is configured via SecurityConfig.java class
+  # Replaces RACF (Resource Access Control Facility) security:
+  # - User authentication and authorization
+  # - Role-based access control (ADMIN, USER, OPERATOR)
+  # - JWT token-based authentication
+  
+  # ==============================================================================
+  # Jackson JSON Configuration
+  # ==============================================================================
+  jackson:
+    # Serialize dates as ISO-8601 strings
+    serialization:
+      write-dates-as-timestamps: false
+    # Ignore unknown properties during deserialization
+    deserialization:
+      fail-on-unknown-properties: false
+    # Default property inclusion
+    default-property-inclusion: non_null
+    # Time zone for date serialization
+    time-zone: UTC
+  
+  # ==============================================================================
+  # Message Source Configuration
+  # ==============================================================================
+  # Replaces COBOL message copybook CSMSG01Y.cpy
+  messages:
+    # Message properties file location
+    basename: messages/messages
+    # Encoding for message files
+    encoding: UTF-8
+    # Cache duration (1 hour)
+    cache-duration: 3600
+    # Fallback to system locale
+    fallback-to-system-locale: true
 
-# Server configuration
+# ==============================================================================
+# Server Configuration
+# ==============================================================================
+# Replaces CICS transaction server configuration
 server:
+  # Server port - defaults to 8080
   port: ${SERVER_PORT:8080}
+  
+  # Servlet context path (API base path)
+  servlet:
+    context-path: ${CONTEXT_PATH:/api}
+    # Session timeout (30 minutes)
+    session:
+      timeout: 30m
+  
+  # HTTP/2 support
+  http2:
+    enabled: true
+  
+  # Compression configuration for response optimization
   compression:
     enabled: true
+    mime-types: application/json,application/xml,text/html,text/xml,text/plain,application/javascript,text/css
+    min-response-size: 1024
+  
+  # Error handling configuration
   error:
+    # Include error message in response
     include-message: always
+    # Never include stack trace in production
     include-stacktrace: never
+    # Include exception type
+    include-exception: false
+    # Error path
+    path: /error
+  
+  # Connection timeout
+  connection-timeout: 20s
+  
+  # Shutdown configuration
+  shutdown: graceful
+  
+  # Tomcat-specific configuration
+  tomcat:
+    # Maximum number of threads (handles concurrent requests)
+    threads:
+      max: 200
+      min-spare: 10
+    # Maximum number of connections
+    max-connections: 10000
+    # Accept count (backlog queue size)
+    accept-count: 100
+    # Connection timeout
+    connection-timeout: 20000
+    # Maximum HTTP POST size (10 MB)
+    max-http-form-post-size: 10MB
+    # URI encoding
+    uri-encoding: UTF-8
 
-# Actuator endpoints
+# ==============================================================================
+# Spring Boot Actuator Configuration
+# ==============================================================================
+# Provides health checks, metrics, and monitoring endpoints
 management:
+  # Endpoint configuration
   endpoints:
     web:
+      # Base path for actuator endpoints
+      base-path: /actuator
+      # Exposed endpoints (health, info, metrics, prometheus)
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
+  
+  # Health endpoint configuration
   endpoint:
     health:
+      # Show detailed health information when authorized
       show-details: when-authorized
+      # Show components in health check
+      show-components: when-authorized
+      # Probes enabled for Kubernetes liveness and readiness
+      probes:
+        enabled: true
+  
+  # Health indicators configuration
   health:
+    # Enable default health indicators
     defaults:
       enabled: true
+    # Database health check
+    db:
+      enabled: true
+    # Disk space health check
+    diskspace:
+      enabled: true
+      threshold: 100MB
+    # Liveness state health indicator
+    livenessstate:
+      enabled: true
+    # Readiness state health indicator
+    readinessstate:
+      enabled: true
+  
+  # Metrics configuration
+  metrics:
+    # Enable JVM metrics
+    enable:
+      jvm: true
+      process: true
+      system: true
+      tomcat: true
+      logback: true
+    # Export metrics to Prometheus
+    export:
+      prometheus:
+        enabled: true
+    # Metric tags for identification
+    tags:
+      application: ${spring.application.name}
+      environment: ${SPRING_PROFILES_ACTIVE:default}
+  
+  # Info endpoint configuration
+  info:
+    # Include build information
+    build:
+      enabled: true
+    # Include git information
+    git:
+      enabled: true
+      mode: full
+    # Include environment information
+    env:
+      enabled: true
+    # Include Java information
+    java:
+      enabled: true
 
-# Logging configuration
+# ==============================================================================
+# Logging Configuration
+# ==============================================================================
+# Replaces mainframe SYSOUT logging
 logging:
+  # Log levels
   level:
+    # Root level
     root: INFO
+    # Application-specific logging
     com.carddemo: INFO
+    # Spring Framework logging
     org.springframework: INFO
+    org.springframework.web: INFO
+    org.springframework.security: INFO
+    org.springframework.batch: INFO
+    # Hibernate logging (WARN to reduce verbosity)
     org.hibernate: WARN
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN
+    # HikariCP connection pool logging
+    com.zaxxer.hikari: INFO
+    # Flyway logging
+    org.flywaydb: INFO
+  
+  # Log file configuration
+  file:
+    # Log file name (only used when file logging is enabled)
+    name: ${LOG_FILE:logs/carddemo.log}
+    # Maximum file size before rotation
+    max-size: 10MB
+    # Maximum number of archived log files
+    max-history: 30
+    # Total size cap for all log files
+    total-size-cap: 1GB
+  
+  # Log pattern configuration
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} - %logger{36} - %msg%n"
+    # Console log pattern with timestamp, logger, and message
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    # File log pattern (if file logging is enabled)
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    # Include correlation ID for distributed tracing
+    level: "%5p [${spring.application.name:},%X{traceId:-},%X{spanId:-}]"
+
+# ==============================================================================
+# Application-Specific Configuration
+# ==============================================================================
+# Custom properties for CardDemo application
+
+carddemo:
+  # Security configuration
+  security:
+    # JWT token expiration (1 hour)
+    jwt:
+      expiration: 3600000
+      # JWT secret key (should be overridden via environment variable)
+      secret: ${JWT_SECRET:OVERRIDE_THIS_IN_PRODUCTION}
+  
+  # Batch processing configuration
+  batch:
+    # Chunk size for batch processing (optimized for performance)
+    chunk-size: 1000
+    # Thread pool size for parallel batch processing
+    thread-pool-size: 5
+    # Maximum allowed failures before job termination
+    max-failures: 100
+  
+  # Transaction processing configuration
+  transaction:
+    # Maximum transaction amount (in cents)
+    max-amount: 1000000
+    # Authorization timeout (milliseconds) - must be under 200ms per requirement
+    authorization-timeout: 180
+  
+  # API configuration
+  api:
+    # API version
+    version: v1
+    # CORS allowed origins (should be configured per environment)
+    cors:
+      allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
+      allowed-methods: GET,POST,PUT,DELETE,OPTIONS
+      allowed-headers: "*"
+      allow-credentials: true
+      max-age: 3600
+
+# ==============================================================================
+# Profile-Specific Configuration Files
+# ==============================================================================
+# Include additional configuration based on active Spring profile:
+# - application-dev.yml (development environment)
+# - application-test.yml (test environment)
+# - application-prod.yml (production environment)
+#
+# Activate profile using: --spring.profiles.active=dev|test|prod
+# Or via environment variable: SPRING_PROFILES_ACTIVE=dev|test|prod
+# ==============================================================================
