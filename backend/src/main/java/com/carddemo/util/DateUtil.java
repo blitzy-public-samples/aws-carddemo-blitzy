@@ -22,6 +22,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.time.temporal.ChronoUnit;
 
 /**
@@ -55,23 +56,26 @@ public class DateUtil {
      * Standard COBOL date format: YYYY-MM-DD (PIC X(10) from COBOL programs).
      * This is the primary date format used in CardDemo COBOL programs for
      * account dates, card expiration dates, and transaction dates.
+     * Uses 'uuuu' (proleptic year) for proper STRICT parsing support.
      */
     private static final DateTimeFormatter COBOL_DATE_FORMATTER = 
-        DateTimeFormatter.ofPattern("yyyy-MM-dd");
+        DateTimeFormatter.ofPattern("uuuu-MM-dd");
 
     /**
      * Numeric COBOL date format: YYYYMMDD (PIC 9(08) from WS-CURDATE-N).
      * Used in COBOL copybook CSDAT01Y.cpy for compact numeric date representation.
+     * Uses 'uuuu' (proleptic year) for proper STRICT parsing support.
      */
     private static final DateTimeFormatter COBOL_DATE_NUMERIC_FORMATTER = 
-        DateTimeFormatter.ofPattern("yyyyMMdd");
+        DateTimeFormatter.ofPattern("uuuuMMdd");
 
     /**
      * COBOL timestamp format: YYYY-MM-DD HH:MM:SS.SSSSSS (WS-TIMESTAMP structure).
      * Includes microsecond precision (6 digits) as defined in CSDAT01Y.cpy lines 42-55.
+     * Uses 'uuuu' (proleptic year) for proper STRICT parsing support.
      */
     private static final DateTimeFormatter COBOL_DATETIME_FORMATTER = 
-        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
+        DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss.SSSSSS");
 
     /**
      * Display format used in COBOL for formatted dates: MM/DD/YY (WS-CURDATE-MM-DD-YY).
@@ -116,7 +120,12 @@ public class DateUtil {
         }
         
         try {
-            DateTimeFormatter formatter = DateTimeFormatter.ofPattern(format);
+            // Convert yyyy to uuuu for STRICT mode compatibility (year-of-era to proleptic year)
+            String strictFormat = format.replace("yyyy", "uuuu").replace("YYYY", "uuuu");
+            
+            // Use STRICT resolver style to detect invalid dates like Feb 30
+            DateTimeFormatter formatter = DateTimeFormatter.ofPattern(strictFormat)
+                .withResolverStyle(ResolverStyle.STRICT);
             LocalDate.parse(dateStr, formatter);
             return "Date is valid";
         } catch (DateTimeParseException e) {
