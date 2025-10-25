@@ -1,30 +1,27 @@
 /**
- * Asset Constants Configuration
+ * Asset Constants and Configuration
  * 
  * This file defines standard asset configurations including icon sizes, image dimensions,
  * supported formats, and asset path mappings used across the CardDemo application.
  * 
- * Naming Convention: All asset filenames follow kebab-case naming convention
- * Example: user-placeholder.png, credit-card-icon.svg
+ * Converted from mainframe BMS screen resource definitions to modern web asset management.
+ * Maintains consistent asset sizing and naming conventions across the React SPA.
  * 
- * Resolution Support: Assets support 1x, 2x, and 3x resolutions for high-DPI displays
- * Example: logo.png (1x), logo@2x.png (2x), logo@3x.png (3x)
+ * Asset Naming Convention:
+ * - All asset files MUST follow kebab-case naming convention
+ * - Examples: logo-large.png, user-placeholder.svg, card-icon-small.png
+ * - Resolution variants: asset-name@2x.png, asset-name@3x.png
  * 
- * Converted from: Mainframe BMS screen assets and COBOL display field definitions
+ * High-DPI Display Support:
+ * - Standard (1x) resolution for baseline displays
+ * - 2x resolution for Retina and high-DPI displays
+ * - 3x resolution for ultra-high-DPI mobile displays
  */
 
 /**
- * Interface defining dimensions for assets (width and height in pixels)
+ * Type definition for icon size values in pixels
  */
-export interface AssetDimension {
-  width: number;
-  height: number;
-}
-
-/**
- * Type definition for icon size values
- */
-export type IconSize = 16 | 24 | 32 | 48;
+export type IconSize = number;
 
 /**
  * Type definition for icon size names
@@ -32,182 +29,234 @@ export type IconSize = 16 | 24 | 32 | 48;
 export type IconSizeName = 'SMALL' | 'MEDIUM' | 'LARGE' | 'XLARGE';
 
 /**
+ * Interface for asset dimensions
+ */
+export interface AssetDimension {
+  /**
+   * Width of the asset in pixels
+   */
+  width: number;
+  
+  /**
+   * Height of the asset in pixels
+   */
+  height: number;
+}
+
+/**
  * Standard icon sizes matching Material-UI conventions
- * Used for consistent icon rendering across the application
+ * These sizes ensure visual consistency across all UI components
  * 
- * SMALL: 16px - Used for inline icons, table row icons
- * MEDIUM: 24px - Default icon size, used in buttons and toolbars
- * LARGE: 32px - Used in cards and prominent UI elements
- * XLARGE: 48px - Used for hero sections and large feature displays
+ * Usage:
+ * - SMALL (16px): Inline icons, compact buttons, table cell icons
+ * - MEDIUM (24px): Standard button icons, form field icons, navigation icons
+ * - LARGE (32px): Header icons, prominent action buttons, feature highlights
+ * - XLARGE (48px): Hero section icons, empty state illustrations, dialog headers
  */
 export const ICON_SIZES = {
-  SMALL: 16 as const,
-  MEDIUM: 24 as const,
-  LARGE: 32 as const,
-  XLARGE: 48 as const,
+  /**
+   * Small icon size - 16x16 pixels
+   * Use for inline text icons, compact buttons, and table cell indicators
+   */
+  SMALL: 16 as IconSize,
+  
+  /**
+   * Medium icon size - 24x24 pixels (Material-UI default)
+   * Use for standard buttons, form fields, navigation items, and toolbar actions
+   */
+  MEDIUM: 24 as IconSize,
+  
+  /**
+   * Large icon size - 32x32 pixels
+   * Use for prominent actions, section headers, and featured content
+   */
+  LARGE: 32 as IconSize,
+  
+  /**
+   * Extra large icon size - 48x48 pixels
+   * Use for hero sections, empty states, large dialogs, and key visual elements
+   */
+  XLARGE: 48 as IconSize,
 } as const;
 
 /**
  * Standard image dimensions for common use cases
- * Defines width and height in pixels for consistent sizing
+ * These dimensions maintain visual consistency and optimize layout rendering
  */
 export const IMAGE_DIMENSIONS = {
   /**
    * Main application logo dimensions
+   * Used in header, login screen, and branding elements
    */
   LOGO: {
     width: 200,
     height: 60,
   } as AssetDimension,
-
+  
   /**
-   * Thumbnail images for lists and grids
+   * Thumbnail size for list views and preview cards
+   * Used in account lists, card lists, and search results
    */
   THUMBNAIL: {
-    width: 120,
-    height: 120,
+    width: 80,
+    height: 80,
   } as AssetDimension,
-
+  
   /**
-   * Credit card image representation
+   * Credit card image dimensions
+   * Maintains realistic card aspect ratio (1.586:1 - ISO/IEC 7810 standard)
    */
   CARD_IMAGE: {
     width: 320,
-    height: 200,
+    height: 202,
   } as AssetDimension,
-
+  
   /**
-   * Banner images for hero sections
+   * Banner image dimensions for promotional content
+   * Used in dashboard banners and marketing sections
    */
   BANNER: {
     width: 1200,
-    height: 400,
+    height: 300,
   } as AssetDimension,
-
+  
   /**
-   * Small icon dimensions (16x16)
+   * Small icon image dimensions
+   * Used for status indicators and small visual markers
    */
   ICON_SMALL: {
-    width: ICON_SIZES.SMALL,
-    height: ICON_SIZES.SMALL,
+    width: 16,
+    height: 16,
   } as AssetDimension,
-
+  
   /**
-   * Medium icon dimensions (24x24)
+   * Medium icon image dimensions
+   * Used for standard UI icons and action buttons
    */
   ICON_MEDIUM: {
-    width: ICON_SIZES.MEDIUM,
-    height: ICON_SIZES.MEDIUM,
+    width: 24,
+    height: 24,
   } as AssetDimension,
-
+  
   /**
-   * Large icon dimensions (32x32)
+   * Large icon image dimensions
+   * Used for prominent features and hero sections
    */
   ICON_LARGE: {
-    width: ICON_SIZES.LARGE,
-    height: ICON_SIZES.LARGE,
+    width: 48,
+    height: 48,
   } as AssetDimension,
 } as const;
 
 /**
  * Asset path constants for commonly used images
- * Paths are relative to the public/assets directory
+ * Centralized asset paths prevent hardcoded strings throughout the codebase
+ * 
+ * Note: Paths are relative to the public/ directory
  */
 export const ASSET_PATHS = {
   /**
    * Main application logo (full size)
+   * Used in header and main navigation
    */
-  LOGO: '/assets/images/carddemo-logo.png' as const,
-
+  LOGO: '/assets/images/logo.png',
+  
   /**
-   * Small version of application logo for compact displays
+   * Small application logo
+   * Used in compact headers and mobile navigation
    */
-  LOGO_SMALL: '/assets/images/carddemo-logo-small.png' as const,
-
+  LOGO_SMALL: '/assets/images/logo-small.png',
+  
   /**
-   * Placeholder image for user avatars
+   * Placeholder image for user profiles
+   * Used when user profile image is not available
    */
-  PLACEHOLDER_USER: '/assets/images/placeholder-user.png' as const,
-
+  PLACEHOLDER_USER: '/assets/images/placeholder-user.svg',
+  
   /**
-   * Placeholder image for credit card representations
+   * Placeholder image for credit cards
+   * Used when card image is not available or during loading
    */
-  PLACEHOLDER_CARD: '/assets/images/placeholder-card.png' as const,
-
+  PLACEHOLDER_CARD: '/assets/images/placeholder-card.svg',
+  
   /**
-   * Generic placeholder image for missing assets
+   * Generic placeholder image
+   * Used for any missing image content
    */
-  PLACEHOLDER_IMAGE: '/assets/images/placeholder-image.png' as const,
+  PLACEHOLDER_IMAGE: '/assets/images/placeholder-image.svg',
 } as const;
 
 /**
- * Supported image formats for the application
- * Used for validation and asset processing
+ * Supported image file formats
+ * Defines acceptable image formats for upload and display validation
  */
 export const SUPPORTED_IMAGE_FORMATS = [
-  'png',
-  'jpg',
-  'jpeg',
-  'svg',
-  'webp',
-  'gif',
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/svg+xml',
+  'image/webp',
 ] as const;
 
 /**
  * Resolution multipliers for high-DPI displays
- * Used to generate asset URLs for different pixel densities
+ * Used to serve appropriate image resolution based on device pixel ratio
  * 
- * 1x: Standard resolution (96 DPI)
- * 2x: Retina/High-DPI displays (192 DPI)
- * 3x: Ultra-high-DPI displays (288 DPI)
+ * - 1x: Standard resolution (device pixel ratio 1.0)
+ * - 2x: Retina displays (device pixel ratio 2.0)
+ * - 3x: Ultra-high DPI mobile displays (device pixel ratio 3.0)
  */
 export const RESOLUTION_MULTIPLIERS = [1, 2, 3] as const;
 
 /**
  * Asset naming convention documentation
- * Guidelines for asset file naming across the application
+ * Provides guidelines for creating and naming asset files
  */
 export const ASSET_NAMING_CONVENTION = {
   /**
-   * Base naming pattern: kebab-case
-   * Example: user-avatar.png, credit-card-icon.svg
+   * Base naming convention
    */
-  pattern: 'kebab-case' as const,
-
+  convention: 'kebab-case',
+  
   /**
-   * High-DPI suffix pattern
-   * Example: logo@2x.png, icon@3x.svg
+   * Description of the naming standard
    */
-  highDpiSuffix: '@{multiplier}x' as const,
-
+  description: 'All asset files must use lowercase letters with hyphens separating words',
+  
   /**
-   * Description of naming rules
-   */
-  rules: [
-    'Use lowercase letters only',
-    'Separate words with hyphens (-)',
-    'No spaces or special characters except hyphens',
-    'Include resolution suffix for high-DPI assets (@2x, @3x)',
-    'Use descriptive names that indicate asset purpose',
-  ] as const,
-
-  /**
-   * Example asset names following the convention
+   * Examples of correct naming
    */
   examples: [
-    'carddemo-logo.png',
-    'carddemo-logo@2x.png',
+    'logo-large.png',
     'user-placeholder.svg',
-    'credit-card-icon.png',
-    'transaction-list-icon@3x.png',
-  ] as const,
+    'card-icon-small.png',
+    'banner-image.jpg',
+  ],
+  
+  /**
+   * High-DPI resolution suffix pattern
+   */
+  resolutionSuffix: {
+    '1x': '',
+    '2x': '@2x',
+    '3x': '@3x',
+  },
+  
+  /**
+   * Example with resolution variants
+   */
+  resolutionExamples: [
+    'logo.png',      // 1x resolution
+    'logo@2x.png',   // 2x resolution
+    'logo@3x.png',   // 3x resolution
+  ],
 } as const;
 
 /**
  * Utility function to get icon size by name
  * 
- * @param sizeName - Name of the icon size (SMALL, MEDIUM, LARGE, XLARGE)
- * @returns Pixel size of the icon
+ * @param sizeName - The name of the icon size (SMALL, MEDIUM, LARGE, XLARGE)
+ * @returns The icon size in pixels
  * 
  * @example
  * const iconSize = getIconSize('MEDIUM'); // Returns 24
@@ -219,114 +268,53 @@ export const getIconSize = (sizeName: IconSizeName): IconSize => {
 /**
  * Utility function to get asset path with resolution multiplier
  * 
- * @param basePath - Base path to the asset (e.g., '/assets/images/logo.png')
- * @param multiplier - Resolution multiplier (1, 2, or 3)
- * @returns Asset path with appropriate resolution suffix
+ * Generates the appropriate asset path based on device pixel ratio
+ * Automatically selects the highest available resolution that doesn't exceed device capabilities
+ * 
+ * @param basePath - The base path of the asset (without resolution suffix)
+ * @param devicePixelRatio - The device pixel ratio (defaults to window.devicePixelRatio)
+ * @returns The asset path with appropriate resolution suffix
  * 
  * @example
- * const retinaLogo = getAssetPath('/assets/images/logo.png', 2);
- * // Returns: '/assets/images/logo@2x.png'
+ * // On a 2x Retina display
+ * const logoPath = getAssetPath('/assets/images/logo.png'); 
+ * // Returns '/assets/images/logo@2x.png'
  * 
  * @example
- * const standardLogo = getAssetPath('/assets/images/logo.png', 1);
- * // Returns: '/assets/images/logo.png' (no suffix for 1x)
+ * // On a standard display
+ * const logoPath = getAssetPath('/assets/images/logo.png'); 
+ * // Returns '/assets/images/logo.png'
  */
 export const getAssetPath = (
   basePath: string,
-  multiplier: 1 | 2 | 3 = 1
+  devicePixelRatio: number = typeof window !== 'undefined' ? window.devicePixelRatio : 1
 ): string => {
-  // For 1x resolution, return the base path as-is
-  if (multiplier === 1) {
-    return basePath;
-  }
-
-  // Extract file extension and path components
-  const lastDotIndex = basePath.lastIndexOf('.');
+  // Determine the appropriate resolution multiplier
+  // Use the highest multiplier that doesn't exceed the device pixel ratio
+  let multiplier = 1;
   
-  // If no extension found, append multiplier before any query params
-  if (lastDotIndex === -1) {
-    const queryIndex = basePath.indexOf('?');
-    if (queryIndex !== -1) {
-      return `${basePath.substring(0, queryIndex)}@${multiplier}x${basePath.substring(queryIndex)}`;
-    }
-    return `${basePath}@${multiplier}x`;
-  }
-
-  // Insert multiplier suffix before the file extension
-  const pathWithoutExtension = basePath.substring(0, lastDotIndex);
-  const extension = basePath.substring(lastDotIndex);
-  
-  return `${pathWithoutExtension}@${multiplier}x${extension}`;
-};
-
-/**
- * Utility function to get responsive asset path based on device pixel ratio
- * Automatically selects the appropriate resolution based on window.devicePixelRatio
- * 
- * @param basePath - Base path to the asset
- * @returns Asset path optimized for current device pixel ratio
- * 
- * @example
- * const logoPath = getResponsiveAssetPath('/assets/images/logo.png');
- * // On Retina display: Returns '/assets/images/logo@2x.png'
- * // On standard display: Returns '/assets/images/logo.png'
- */
-export const getResponsiveAssetPath = (basePath: string): string => {
-  // Determine device pixel ratio (default to 1 if not available)
-  const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-  
-  // Select appropriate multiplier based on device pixel ratio
-  let multiplier: 1 | 2 | 3 = 1;
-  
-  if (dpr >= 3) {
+  if (devicePixelRatio >= 3) {
     multiplier = 3;
-  } else if (dpr >= 2) {
+  } else if (devicePixelRatio >= 2) {
     multiplier = 2;
   }
   
-  return getAssetPath(basePath, multiplier);
-};
-
-/**
- * Utility function to validate if a file format is supported
- * 
- * @param format - File format/extension to validate (e.g., 'png', 'jpg')
- * @returns True if the format is supported, false otherwise
- * 
- * @example
- * const isValid = isSupportedFormat('png'); // Returns true
- * const isInvalid = isSupportedFormat('bmp'); // Returns false
- */
-export const isSupportedFormat = (format: string): boolean => {
-  return SUPPORTED_IMAGE_FORMATS.includes(
-    format.toLowerCase() as typeof SUPPORTED_IMAGE_FORMATS[number]
-  );
-};
-
-/**
- * Utility function to extract file format from asset path
- * 
- * @param assetPath - Full path to the asset
- * @returns File format/extension (lowercase) or null if not found
- * 
- * @example
- * const format = getAssetFormat('/assets/images/logo.png'); // Returns 'png'
- * const format2 = getAssetFormat('/assets/logo.PNG'); // Returns 'png'
- */
-export const getAssetFormat = (assetPath: string): string | null => {
-  const lastDotIndex = assetPath.lastIndexOf('.');
+  // If multiplier is 1, return the base path unchanged
+  if (multiplier === 1) {
+    return basePath;
+  }
+  
+  // Extract file extension and base name
+  const lastDotIndex = basePath.lastIndexOf('.');
   
   if (lastDotIndex === -1) {
-    return null;
+    // No extension found, append multiplier suffix
+    return `${basePath}@${multiplier}x`;
   }
   
-  // Extract extension and remove any query parameters
-  let extension = assetPath.substring(lastDotIndex + 1);
-  const queryIndex = extension.indexOf('?');
+  // Insert resolution suffix before file extension
+  const baseWithoutExtension = basePath.substring(0, lastDotIndex);
+  const extension = basePath.substring(lastDotIndex);
   
-  if (queryIndex !== -1) {
-    extension = extension.substring(0, queryIndex);
-  }
-  
-  return extension.toLowerCase();
+  return `${baseWithoutExtension}@${multiplier}x${extension}`;
 };
