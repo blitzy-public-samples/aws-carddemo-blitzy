@@ -1,0 +1,1334 @@
+/**
+ * CardDemo - Global Stylesheet
+ * 
+ * Application-wide base styles for the CardDemo React application.
+ * Converted from mainframe 3270 terminal BMS maps to modern responsive web design.
+ * 
+ * This stylesheet provides:
+ * - Modern CSS reset for cross-browser consistency
+ * - Box-sizing model for predictable layouts
+ * - Typography baseline and fluid scaling
+ * - Accessible focus indicators (WCAG 2.1 AA compliant)
+ * - Responsive breakpoints for mobile/tablet/desktop
+ * - Form element defaults
+ * - Utility classes following BEM naming convention
+ * 
+ * Original BMS maps referenced: COSGN00.bms, COMEN01.bms, COACTUP.bms
+ * Maintains visual information density while modernizing interface from 24x80 character screens.
+ */
+
+/* ============================================
+   Import Design Tokens
+   ============================================ */
+@import './variables.css';
+
+/* ============================================
+   Modern CSS Reset
+   ============================================ */
+
+/**
+ * CSS Reset for cross-browser consistency
+ * Based on modern-normalize and custom resets
+ */
+
+/* Box sizing rules */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Remove default margin and padding */
+* {
+  margin: 0;
+  padding: 0;
+}
+
+/* Set core root defaults */
+html {
+  /* Enable smooth scrolling for keyboard navigation */
+  scroll-behavior: smooth;
+  /* Prevent font size inflation on mobile browsers */
+  -webkit-text-size-adjust: 100%;
+  -moz-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Remove focus outline for mouse users, but keep for keyboard navigation */
+html:focus-within {
+  scroll-behavior: smooth;
+}
+
+/* Set core body defaults */
+body {
+  min-height: 100vh;
+  /* Fluid typography using clamp() for responsive scaling */
+  font-size: clamp(0.875rem, 0.8rem + 0.4vw, 1rem);
+  font-family: var(--font-family-base, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif);
+  line-height: 1.6;
+  font-weight: 400;
+  color: var(--color-text-primary, #212529);
+  background-color: var(--color-background, #ffffff);
+  /* Enable font smoothing for better text rendering */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Improve text rendering */
+  text-rendering: optimizeLegibility;
+  /* Prevent horizontal overflow */
+  overflow-x: hidden;
+}
+
+/* Set default font for code elements */
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--font-family-mono, 'Monaco', 'Courier New', 'Courier', monospace);
+  font-size: 0.9em;
+}
+
+/* Remove default list styles */
+ul,
+ol {
+  list-style: none;
+}
+
+/* Remove default blockquote and figure margins */
+blockquote,
+figure {
+  margin: 0;
+}
+
+/* ============================================
+   Typography
+   ============================================ */
+
+/* Headings */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--color-heading, #1a1a1a);
+}
+
+h1 {
+  font-size: clamp(1.75rem, 1.5rem + 1vw, 2.5rem);
+}
+
+h2 {
+  font-size: clamp(1.5rem, 1.3rem + 0.8vw, 2rem);
+}
+
+h3 {
+  font-size: clamp(1.25rem, 1.1rem + 0.6vw, 1.75rem);
+}
+
+h4 {
+  font-size: clamp(1.125rem, 1rem + 0.5vw, 1.5rem);
+}
+
+h5 {
+  font-size: clamp(1rem, 0.95rem + 0.25vw, 1.25rem);
+}
+
+h6 {
+  font-size: clamp(0.875rem, 0.85rem + 0.125vw, 1rem);
+}
+
+/* Paragraphs */
+p {
+  margin: 0 0 1rem 0;
+}
+
+/* Strong and bold text */
+strong,
+b {
+  font-weight: 700;
+}
+
+/* Emphasis and italic text */
+em,
+i {
+  font-style: italic;
+}
+
+/* Small text */
+small {
+  font-size: 0.875em;
+}
+
+/* Subscript and superscript */
+sub,
+sup {
+  font-size: 0.75em;
+  line-height: 0;
+  position: relative;
+  vertical-align: baseline;
+}
+
+sub {
+  bottom: -0.25em;
+}
+
+sup {
+  top: -0.5em;
+}
+
+/* ============================================
+   Links
+   ============================================ */
+
+a {
+  color: var(--color-link, #0066cc);
+  text-decoration: none;
+  transition: color 0.2s ease-in-out, text-decoration 0.2s ease-in-out;
+  cursor: pointer;
+}
+
+a:hover {
+  color: var(--color-link-hover, #004999);
+  text-decoration: underline;
+}
+
+a:active {
+  color: var(--color-link-active, #003366);
+}
+
+a:visited {
+  color: var(--color-link-visited, #551a8b);
+}
+
+/* Remove default link styles for buttons styled as links */
+a.link-unstyled {
+  color: inherit;
+  text-decoration: none;
+}
+
+a.link-unstyled:hover {
+  text-decoration: none;
+}
+
+/* ============================================
+   Focus Styles (WCAG 2.1 AA Accessibility)
+   ============================================ */
+
+/**
+ * Visible focus indicators for keyboard navigation
+ * Meets WCAG 2.1 Level AA requirements (2.4.7 Focus Visible)
+ * 3:1 contrast ratio against background
+ */
+
+/* Default focus outline for all interactive elements */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-focus-outline, #0066cc);
+  outline-offset: 2px;
+  /* High contrast outline for accessibility */
+  box-shadow: 0 0 0 3px var(--color-focus-ring, rgba(0, 102, 204, 0.25));
+}
+
+/* Remove focus outline for mouse users (while keeping for keyboard) */
+:focus:not(:focus-visible) {
+  outline: none;
+  box-shadow: none;
+}
+
+/* Skip to main content link (accessibility) */
+.skip-to-main {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--color-primary, #0066cc);
+  color: #ffffff;
+  padding: 0.5rem 1rem;
+  text-decoration: none;
+  z-index: 10000;
+}
+
+.skip-to-main:focus {
+  top: 0;
+}
+
+/* ============================================
+   Images and Media
+   ============================================ */
+
+img,
+picture,
+video,
+canvas,
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+/* Maintain aspect ratio for images */
+img {
+  border-style: none;
+}
+
+/* Remove border on images inside links */
+a img {
+  border: none;
+}
+
+/* ============================================
+   Form Elements
+   ============================================ */
+
+/**
+ * Base form element styles for consistent appearance
+ * Maintains visual hierarchy from BMS maps while modernizing UI
+ */
+
+input,
+button,
+textarea,
+select {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+}
+
+/* Text inputs */
+input[type='text'],
+input[type='email'],
+input[type='password'],
+input[type='number'],
+input[type='tel'],
+input[type='url'],
+input[type='search'],
+input[type='date'],
+input[type='time'],
+input[type='datetime-local'],
+textarea,
+select {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-input-border, #ced4da);
+  border-radius: var(--border-radius-base, 0.25rem);
+  background-color: var(--color-input-background, #ffffff);
+  transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+}
+
+input[type='text']:hover,
+input[type='email']:hover,
+input[type='password']:hover,
+input[type='number']:hover,
+input[type='tel']:hover,
+input[type='url']:hover,
+input[type='search']:hover,
+input[type='date']:hover,
+input[type='time']:hover,
+input[type='datetime-local']:hover,
+textarea:hover,
+select:hover {
+  border-color: var(--color-input-border-hover, #adb5bd);
+}
+
+input[type='text']:focus,
+input[type='email']:focus,
+input[type='password']:focus,
+input[type='number']:focus,
+input[type='tel']:focus,
+input[type='url']:focus,
+input[type='search']:focus,
+input[type='date']:focus,
+input[type='time']:focus,
+input[type='datetime-local']:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--color-input-border-focus, #0066cc);
+  outline: none;
+  box-shadow: 0 0 0 0.2rem var(--color-input-focus-shadow, rgba(0, 102, 204, 0.25));
+}
+
+/* Disabled inputs */
+input:disabled,
+textarea:disabled,
+select:disabled {
+  background-color: var(--color-input-disabled-background, #e9ecef);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Readonly inputs */
+input[readonly],
+textarea[readonly] {
+  background-color: var(--color-input-readonly-background, #f8f9fa);
+  cursor: default;
+}
+
+/* Textarea specific styles */
+textarea {
+  resize: vertical;
+  min-height: 4rem;
+}
+
+/* Select dropdowns */
+select {
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23333' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 12px;
+  padding-right: 2.5rem;
+}
+
+/* Checkboxes and radio buttons */
+input[type='checkbox'],
+input[type='radio'] {
+  width: auto;
+  margin-right: 0.5rem;
+  cursor: pointer;
+}
+
+/* File inputs */
+input[type='file'] {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--color-input-border, #ced4da);
+  border-radius: var(--border-radius-base, 0.25rem);
+  cursor: pointer;
+}
+
+/* Labels */
+label {
+  display: inline-block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+  color: var(--color-label, #495057);
+}
+
+/* Fieldsets and legends */
+fieldset {
+  border: 1px solid var(--color-border, #dee2e6);
+  border-radius: var(--border-radius-base, 0.25rem);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+legend {
+  padding: 0 0.5rem;
+  font-weight: 600;
+  color: var(--color-heading, #1a1a1a);
+}
+
+/* ============================================
+   Button Reset
+   ============================================ */
+
+/**
+ * Remove default browser button styling
+ * Components will apply their own button styles
+ */
+
+button {
+  /* Remove default styles */
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  /* Remove default outline, rely on focus-visible */
+  outline: inherit;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* ============================================
+   Tables
+   ============================================ */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+th,
+td {
+  padding: 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border, #dee2e6);
+}
+
+th {
+  font-weight: 600;
+  color: var(--color-heading, #1a1a1a);
+  background-color: var(--color-table-header-background, #f8f9fa);
+}
+
+/* ============================================
+   Horizontal Rules
+   ============================================ */
+
+hr {
+  margin: 1.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--color-border, #dee2e6);
+}
+
+/* ============================================
+   Scrollbar Styling
+   ============================================ */
+
+/**
+ * Custom scrollbar styles for consistent appearance
+ * Works in webkit browsers (Chrome, Safari, Edge)
+ */
+
+/* Webkit browsers */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-scrollbar-track, #f1f1f1);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar-thumb, #888);
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-thumb-hover, #555);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-scrollbar-thumb, #888) var(--color-scrollbar-track, #f1f1f1);
+}
+
+/* ============================================
+   Utility Classes (BEM Naming Convention)
+   ============================================ */
+
+/**
+ * Common utility classes following BEM methodology
+ * Prefix: u- (utility)
+ */
+
+/* Flexbox utilities */
+.u-flex {
+  display: flex;
+}
+
+.u-flex--row {
+  flex-direction: row;
+}
+
+.u-flex--column {
+  flex-direction: column;
+}
+
+.u-flex--wrap {
+  flex-wrap: wrap;
+}
+
+.u-flex--nowrap {
+  flex-wrap: nowrap;
+}
+
+.u-flex--justify-start {
+  justify-content: flex-start;
+}
+
+.u-flex--justify-center {
+  justify-content: center;
+}
+
+.u-flex--justify-end {
+  justify-content: flex-end;
+}
+
+.u-flex--justify-between {
+  justify-content: space-between;
+}
+
+.u-flex--justify-around {
+  justify-content: space-around;
+}
+
+.u-flex--align-start {
+  align-items: flex-start;
+}
+
+.u-flex--align-center {
+  align-items: center;
+}
+
+.u-flex--align-end {
+  align-items: flex-end;
+}
+
+.u-flex--align-stretch {
+  align-items: stretch;
+}
+
+.u-flex--gap-sm {
+  gap: 0.5rem;
+}
+
+.u-flex--gap-md {
+  gap: 1rem;
+}
+
+.u-flex--gap-lg {
+  gap: 1.5rem;
+}
+
+.u-flex--gap-xl {
+  gap: 2rem;
+}
+
+/* Grid utilities */
+.u-grid {
+  display: grid;
+}
+
+.u-grid--cols-2 {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.u-grid--cols-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.u-grid--cols-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.u-grid--gap-sm {
+  gap: 0.5rem;
+}
+
+.u-grid--gap-md {
+  gap: 1rem;
+}
+
+.u-grid--gap-lg {
+  gap: 1.5rem;
+}
+
+/* Text alignment */
+.u-text--left {
+  text-align: left;
+}
+
+.u-text--center {
+  text-align: center;
+}
+
+.u-text--right {
+  text-align: right;
+}
+
+.u-text--justify {
+  text-align: justify;
+}
+
+/* Text transformation */
+.u-text--uppercase {
+  text-transform: uppercase;
+}
+
+.u-text--lowercase {
+  text-transform: lowercase;
+}
+
+.u-text--capitalize {
+  text-transform: capitalize;
+}
+
+/* Font weights */
+.u-text--light {
+  font-weight: 300;
+}
+
+.u-text--normal {
+  font-weight: 400;
+}
+
+.u-text--medium {
+  font-weight: 500;
+}
+
+.u-text--semibold {
+  font-weight: 600;
+}
+
+.u-text--bold {
+  font-weight: 700;
+}
+
+/* Text colors */
+.u-text--primary {
+  color: var(--color-text-primary, #212529);
+}
+
+.u-text--secondary {
+  color: var(--color-text-secondary, #6c757d);
+}
+
+.u-text--muted {
+  color: var(--color-text-muted, #adb5bd);
+}
+
+.u-text--success {
+  color: var(--color-success, #28a745);
+}
+
+.u-text--warning {
+  color: var(--color-warning, #ffc107);
+}
+
+.u-text--error {
+  color: var(--color-error, #dc3545);
+}
+
+.u-text--info {
+  color: var(--color-info, #17a2b8);
+}
+
+/* Spacing utilities */
+.u-spacing--m-0 {
+  margin: 0;
+}
+
+.u-spacing--mt-0 {
+  margin-top: 0;
+}
+
+.u-spacing--mr-0 {
+  margin-right: 0;
+}
+
+.u-spacing--mb-0 {
+  margin-bottom: 0;
+}
+
+.u-spacing--ml-0 {
+  margin-left: 0;
+}
+
+.u-spacing--m-sm {
+  margin: 0.5rem;
+}
+
+.u-spacing--m-md {
+  margin: 1rem;
+}
+
+.u-spacing--m-lg {
+  margin: 1.5rem;
+}
+
+.u-spacing--m-xl {
+  margin: 2rem;
+}
+
+.u-spacing--mt-sm {
+  margin-top: 0.5rem;
+}
+
+.u-spacing--mt-md {
+  margin-top: 1rem;
+}
+
+.u-spacing--mt-lg {
+  margin-top: 1.5rem;
+}
+
+.u-spacing--mt-xl {
+  margin-top: 2rem;
+}
+
+.u-spacing--mb-sm {
+  margin-bottom: 0.5rem;
+}
+
+.u-spacing--mb-md {
+  margin-bottom: 1rem;
+}
+
+.u-spacing--mb-lg {
+  margin-bottom: 1.5rem;
+}
+
+.u-spacing--mb-xl {
+  margin-bottom: 2rem;
+}
+
+.u-spacing--p-0 {
+  padding: 0;
+}
+
+.u-spacing--p-sm {
+  padding: 0.5rem;
+}
+
+.u-spacing--p-md {
+  padding: 1rem;
+}
+
+.u-spacing--p-lg {
+  padding: 1.5rem;
+}
+
+.u-spacing--p-xl {
+  padding: 2rem;
+}
+
+/* Display utilities */
+.u-display--block {
+  display: block;
+}
+
+.u-display--inline {
+  display: inline;
+}
+
+.u-display--inline-block {
+  display: inline-block;
+}
+
+.u-display--none {
+  display: none;
+}
+
+/* Visibility utilities */
+.u-visible {
+  visibility: visible;
+}
+
+.u-hidden {
+  visibility: hidden;
+}
+
+.u-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Position utilities */
+.u-position--relative {
+  position: relative;
+}
+
+.u-position--absolute {
+  position: absolute;
+}
+
+.u-position--fixed {
+  position: fixed;
+}
+
+.u-position--sticky {
+  position: sticky;
+}
+
+/* Width utilities */
+.u-width--full {
+  width: 100%;
+}
+
+.u-width--auto {
+  width: auto;
+}
+
+.u-width--50 {
+  width: 50%;
+}
+
+.u-width--33 {
+  width: 33.333%;
+}
+
+.u-width--25 {
+  width: 25%;
+}
+
+/* Height utilities */
+.u-height--full {
+  height: 100%;
+}
+
+.u-height--screen {
+  height: 100vh;
+}
+
+.u-height--auto {
+  height: auto;
+}
+
+/* Overflow utilities */
+.u-overflow--auto {
+  overflow: auto;
+}
+
+.u-overflow--hidden {
+  overflow: hidden;
+}
+
+.u-overflow--scroll {
+  overflow: scroll;
+}
+
+.u-overflow-x--auto {
+  overflow-x: auto;
+}
+
+.u-overflow-y--auto {
+  overflow-y: auto;
+}
+
+/* Border utilities */
+.u-border {
+  border: 1px solid var(--color-border, #dee2e6);
+}
+
+.u-border--none {
+  border: none;
+}
+
+.u-border-radius--sm {
+  border-radius: 0.25rem;
+}
+
+.u-border-radius--md {
+  border-radius: 0.5rem;
+}
+
+.u-border-radius--lg {
+  border-radius: 0.75rem;
+}
+
+.u-border-radius--full {
+  border-radius: 9999px;
+}
+
+/* Shadow utilities */
+.u-shadow--sm {
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+}
+
+.u-shadow--md {
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.u-shadow--lg {
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+
+.u-shadow--none {
+  box-shadow: none;
+}
+
+/* Cursor utilities */
+.u-cursor--pointer {
+  cursor: pointer;
+}
+
+.u-cursor--default {
+  cursor: default;
+}
+
+.u-cursor--not-allowed {
+  cursor: not-allowed;
+}
+
+/* ============================================
+   Responsive Breakpoints
+   ============================================ */
+
+/**
+ * Mobile-first responsive breakpoints
+ * Based on common device sizes
+ */
+
+/* Small devices (landscape phones, 576px and up) */
+@media (min-width: 576px) {
+  .u-display--sm-block {
+    display: block;
+  }
+
+  .u-display--sm-none {
+    display: none;
+  }
+
+  .u-text--sm-left {
+    text-align: left;
+  }
+
+  .u-text--sm-center {
+    text-align: center;
+  }
+
+  .u-text--sm-right {
+    text-align: right;
+  }
+}
+
+/* Medium devices (tablets, 768px and up) */
+@media (min-width: 768px) {
+  body {
+    font-size: 1rem;
+  }
+
+  .u-display--md-block {
+    display: block;
+  }
+
+  .u-display--md-none {
+    display: none;
+  }
+
+  .u-flex--md-row {
+    flex-direction: row;
+  }
+
+  .u-flex--md-column {
+    flex-direction: column;
+  }
+
+  .u-text--md-left {
+    text-align: left;
+  }
+
+  .u-text--md-center {
+    text-align: center;
+  }
+
+  .u-text--md-right {
+    text-align: right;
+  }
+}
+
+/* Large devices (desktops, 992px and up) */
+@media (min-width: 992px) {
+  .u-display--lg-block {
+    display: block;
+  }
+
+  .u-display--lg-none {
+    display: none;
+  }
+
+  .u-flex--lg-row {
+    flex-direction: row;
+  }
+
+  .u-flex--lg-column {
+    flex-direction: column;
+  }
+
+  .u-text--lg-left {
+    text-align: left;
+  }
+
+  .u-text--lg-center {
+    text-align: center;
+  }
+
+  .u-text--lg-right {
+    text-align: right;
+  }
+}
+
+/* Extra large devices (large desktops, 1200px and up) */
+@media (min-width: 1200px) {
+  .u-display--xl-block {
+    display: block;
+  }
+
+  .u-display--xl-none {
+    display: none;
+  }
+
+  .u-text--xl-left {
+    text-align: left;
+  }
+
+  .u-text--xl-center {
+    text-align: center;
+  }
+
+  .u-text--xl-right {
+    text-align: right;
+  }
+}
+
+/* ============================================
+   Print Styles
+   ============================================ */
+
+/**
+ * Optimized styles for printing
+ */
+
+@media print {
+  *,
+  *::before,
+  *::after {
+    /* Remove shadows and text shadows for print */
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  /* Ensure text is black for readability */
+  body {
+    color: #000;
+    background: #fff;
+  }
+
+  /* Show link URLs in print */
+  a[href]::after {
+    content: ' (' attr(href) ')';
+  }
+
+  /* Don't show URLs for internal links and JavaScript */
+  a[href^='#']::after,
+  a[href^='javascript:']::after {
+    content: '';
+  }
+
+  /* Page break helpers */
+  .u-print--page-break-before {
+    page-break-before: always;
+  }
+
+  .u-print--page-break-after {
+    page-break-after: always;
+  }
+
+  .u-print--page-break-inside-avoid {
+    page-break-inside: avoid;
+  }
+
+  /* Hide elements that shouldn't print */
+  .u-print--hide,
+  .no-print,
+  nav,
+  footer,
+  [role='navigation'],
+  .skip-to-main {
+    display: none !important;
+  }
+
+  /* Ensure tables don't break across pages */
+  table,
+  thead,
+  tbody,
+  tfoot,
+  tr,
+  th,
+  td {
+    page-break-inside: avoid;
+  }
+
+  /* Optimize image rendering */
+  img {
+    max-width: 100% !important;
+    page-break-inside: avoid;
+  }
+
+  /* Add page breaks for headings */
+  h1,
+  h2,
+  h3 {
+    page-break-after: avoid;
+  }
+
+  /* Improve contrast for print */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    color: #000;
+  }
+
+  /* Show borders on tables for print */
+  table {
+    border-collapse: collapse;
+  }
+
+  th,
+  td {
+    border: 1px solid #000;
+  }
+}
+
+/* ============================================
+   Accessibility Helpers
+   ============================================ */
+
+/**
+ * WCAG 2.1 AA compliance helpers
+ * Ensure sufficient color contrast ratios (4.5:1 for normal text, 3:1 for large text)
+ */
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  :root {
+    --color-text-primary: #000000;
+    --color-background: #ffffff;
+    --color-link: #0000ee;
+    --color-link-hover: #0000aa;
+    --color-border: #000000;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    border-width: 2px;
+  }
+}
+
+/* Reduced motion support (accessibility) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  /* Dark mode variables can be defined in variables.css */
+  /* This section ensures proper contrast in dark mode */
+}
+
+/* ============================================
+   Container Utilities
+   ============================================ */
+
+/**
+ * Container classes for consistent page layout
+ * Maintains information density from BMS maps while being responsive
+ */
+
+.u-container {
+  width: 100%;
+  padding-right: 1rem;
+  padding-left: 1rem;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+@media (min-width: 576px) {
+  .u-container {
+    max-width: 540px;
+  }
+}
+
+@media (min-width: 768px) {
+  .u-container {
+    max-width: 720px;
+  }
+}
+
+@media (min-width: 992px) {
+  .u-container {
+    max-width: 960px;
+  }
+}
+
+@media (min-width: 1200px) {
+  .u-container {
+    max-width: 1140px;
+  }
+}
+
+.u-container--fluid {
+  width: 100%;
+  padding-right: 1rem;
+  padding-left: 1rem;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+/* ============================================
+   Animation Utilities
+   ============================================ */
+
+/**
+ * Utility classes for common animations
+ * Respects prefers-reduced-motion
+ */
+
+.u-transition {
+  transition: all 0.2s ease-in-out;
+}
+
+.u-transition--fast {
+  transition: all 0.1s ease-in-out;
+}
+
+.u-transition--slow {
+  transition: all 0.3s ease-in-out;
+}
+
+/* Fade animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.u-fade-in {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+.u-fade-out {
+  animation: fadeOut 0.3s ease-in-out;
+}
+
+/* ============================================
+   End of Global Styles
+   ============================================ */
