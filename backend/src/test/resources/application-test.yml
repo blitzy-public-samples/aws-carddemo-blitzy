@@ -41,6 +41,13 @@ spring:
 server:
   port: 0  # Random port for tests
 
+# JWT configuration for tests
+jwt:
+  # Base64-encoded test secret key (minimum 256 bits for HMAC-SHA256)
+  # This is a test-only key - production keys should be managed via Kubernetes secrets
+  secret: dGVzdC1zZWNyZXQta2V5LWZvci1qd3QtYXV0aGVudGljYXRpb24tdGVzdGluZy0yNTYtYml0cw==
+  expiration: 3600000  # 1 hour in milliseconds
+
 # Logging configuration
 logging:
   level:

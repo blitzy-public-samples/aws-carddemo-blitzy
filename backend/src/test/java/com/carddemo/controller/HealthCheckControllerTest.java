@@ -1,9 +1,11 @@
 package com.carddemo.controller;
 
+import com.carddemo.security.JwtTokenProvider;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -79,6 +81,21 @@ public class HealthCheckControllerTest {
      */
     @Autowired
     private MockMvc mockMvc;
+
+    /**
+     * Mock bean for JwtTokenProvider to satisfy Spring Security filter chain dependencies.
+     * 
+     * <p>Even though @AutoConfigureMockMvc(addFilters = false) disables filter execution,
+     * Spring Security autoconfiguration still attempts to create JwtAuthenticationFilter bean
+     * during context initialization, which requires JwtTokenProvider as a dependency. This
+     * @MockBean annotation provides a mock implementation to satisfy the dependency injection
+     * requirement without loading the actual JWT security infrastructure.</p>
+     * 
+     * <p>This mock is not used in health check tests since the endpoint is public and
+     * filters are disabled, but it prevents context initialization failures.</p>
+     */
+    @MockBean
+    private JwtTokenProvider jwtTokenProvider;
 
     /**
      * Test: Health endpoint returns HTTP 200 OK status.
