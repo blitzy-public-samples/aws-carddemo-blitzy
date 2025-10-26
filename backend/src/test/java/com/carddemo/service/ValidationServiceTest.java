@@ -700,9 +700,15 @@ class ValidationServiceTest {
      */
     @Test
     void testValidateUserId() {
-        // Valid 8-character user ID
+        // Valid - 8-character user ID (COBOL PIC X(08) maximum length)
         assertDoesNotThrow(() -> validationService.validateUserId("USER1234"));
         assertDoesNotThrow(() -> validationService.validateUserId("ABCD5678"));
+        
+        // Valid - shorter user IDs (COBOL PIC X(08) allows up to 8 characters)
+        // In COBOL, shorter values are right-padded with spaces, e.g. "USER1" becomes "USER1   "
+        assertDoesNotThrow(() -> validationService.validateUserId("USER1"));
+        assertDoesNotThrow(() -> validationService.validateUserId("USER001")); // 7 chars - matches test data
+        assertDoesNotThrow(() -> validationService.validateUserId("A")); // 1 char - minimum valid length
         
         // Invalid - null
         ValidationException exception = assertThrows(ValidationException.class,
@@ -710,9 +716,9 @@ class ValidationServiceTest {
         assertEquals("VAL003", exception.getErrorCode());
         assertTrue(exception.getMessage().contains("Please enter User ID"));
         
-        // Invalid - wrong length
+        // Invalid - exceeds maximum length (more than 8 characters)
         assertThrows(ValidationException.class,
-            () -> validationService.validateUserId("USER1"));
+            () -> validationService.validateUserId("USER12345")); // 9 chars - too long
         
         // Invalid - special characters
         assertThrows(ValidationException.class,
