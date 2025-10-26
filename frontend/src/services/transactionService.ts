@@ -23,7 +23,7 @@
  */
 
 import api from './api';
-import { Transaction, TransactionType } from '../types/transaction';
+import { Transaction } from '../types/transaction';
 import { PaginationParams } from '../types/common';
 
 /**
