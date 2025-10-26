@@ -2,6 +2,7 @@ package com.carddemo.controller;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -22,6 +23,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *   <li>Uses Spring Boot @WebMvcTest for focused controller layer testing</li>
  *   <li>Loads only HealthCheckController and related web components (not full application context)</li>
  *   <li>Uses MockMvc to perform HTTP requests without starting full HTTP server</li>
+ *   <li>Disables Spring Security filters with @AutoConfigureMockMvc(addFilters = false) 
+ *       to test controller logic in isolation, as health endpoints should be publicly 
+ *       accessible without authentication for Kubernetes probes</li>
  *   <li>Validates HTTP status codes and JSON response structure</li>
  * </ul>
  * 
@@ -38,6 +42,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * mainframe CICS system used different health monitoring mechanisms. This endpoint 
  * is essential for Kubernetes orchestration to determine pod health and readiness.</p>
  * 
+ * <p><b>Security Note:</b> The health endpoint MUST be publicly accessible without 
+ * authentication to allow Kubernetes probes, load balancers, and monitoring systems 
+ * to check application health. The @AutoConfigureMockMvc(addFilters = false) annotation 
+ * simulates this public access by disabling security filters during testing.</p>
+ * 
  * <p><b>Framework Versions:</b></p>
  * <ul>
  *   <li>JUnit Jupiter (JUnit 5) - 5.10.x</li>
@@ -50,6 +59,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * @since 2024-01-01
  */
 @WebMvcTest(HealthCheckController.class)
+@AutoConfigureMockMvc(addFilters = false)
 public class HealthCheckControllerTest {
 
     /**
