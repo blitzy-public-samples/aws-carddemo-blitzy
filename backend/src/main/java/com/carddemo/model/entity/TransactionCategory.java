@@ -8,7 +8,6 @@ import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
 import java.sql.Timestamp;
-import java.util.Objects;
 
 /**
  * JPA Entity representing transaction category reference data.
@@ -116,63 +115,5 @@ public class TransactionCategory implements Serializable {
     @PreUpdate
     protected void onUpdate() {
         this.updatedAt = new Timestamp(System.currentTimeMillis());
-    }
-}
-
-/**
- * Composite primary key class for TransactionCategory entity.
- * 
- * Required by JPA specification for @IdClass pattern with multi-column keys.
- * Must implement Serializable and provide equals() and hashCode() methods
- * based on all key fields.
- * 
- * Represents the composite key structure from COBOL TRAN-CAT-KEY:
- * - TRAN-TYPE-CD PIC X(02)
- * - TRAN-CAT-CD PIC 9(04)
- */
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-class TransactionCategoryId implements Serializable {
-
-    private static final long serialVersionUID = 1L;
-
-    /**
-     * Transaction type code (part 1 of composite key).
-     * Must match the field name and type in TransactionCategory entity.
-     */
-    private String transTypeCd;
-
-    /**
-     * Transaction category code (part 2 of composite key).
-     * Must match the field name and type in TransactionCategory entity.
-     */
-    private Integer tranCatCd;
-
-    /**
-     * Equals method for composite key comparison.
-     * Required by JPA specification for proper entity identity management.
-     * 
-     * @param o Object to compare with
-     * @return true if both transTypeCd and tranCatCd match
-     */
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        TransactionCategoryId that = (TransactionCategoryId) o;
-        return Objects.equals(transTypeCd, that.transTypeCd) &&
-               Objects.equals(tranCatCd, that.tranCatCd);
-    }
-
-    /**
-     * Hash code method for composite key.
-     * Required by JPA specification for proper hash-based collection usage.
-     * 
-     * @return Hash code based on both key fields
-     */
-    @Override
-    public int hashCode() {
-        return Objects.hash(transTypeCd, tranCatCd);
     }
 }

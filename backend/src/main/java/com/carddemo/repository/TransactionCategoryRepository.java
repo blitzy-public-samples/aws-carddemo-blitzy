@@ -161,7 +161,7 @@ public interface TransactionCategoryRepository extends JpaRepository<Transaction
      * @see TransactionCategory#getTranCatCd() Category code field
      * @see TransactionCategory#getTranCatTypeDesc() Category description field
      */
-    List<TransactionCategory> findByTransTypeCd(String transTypeCd);
+    List<TransactionCategory> findByTransTypeCdOrderByTransTypeCdAscTranCatCdAsc(String transTypeCd);
 
     // Note: All standard CRUD operations are inherited from JpaRepository:
     // - save(TransactionCategory entity) - Insert or update
