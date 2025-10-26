@@ -1,0 +1,444 @@
+# GitHub Actions CI/CD Workflow for CardDemo Backend
+# Purpose: Automated build, test, quality checks, Docker image creation, and deployment
+# Converted from: JCL batch job concepts to cloud-native CI/CD
+# Maintains: Agent Action Plan Section 0.4.22 requirements with quality gates
+
+name: Backend CI/CD
+
+on:
+  # Trigger on push to main or develop branches
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+  
+  # Trigger on pull requests to main or develop
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+  
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+
+env:
+  JAVA_VERSION: '21'
+  MAVEN_VERSION: '3.9.9'
+  REGISTRY: docker.io
+  IMAGE_NAME: carddemo-backend
+  SONAR_PROJECT_KEY: carddemo-backend
+
+jobs:
+  ###############################################################################
+  # Job 1: Build and Test
+  # Purpose: Compile code, run unit/integration tests, check coverage, quality
+  ###############################################################################
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+    
+    steps:
+      # Step 1: Checkout source code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for SonarQube analysis
+      
+      # Step 2: Set up Java 21 with Maven caching
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'  # Eclipse Temurin OpenJDK
+          cache: 'maven'
+      
+      # Step 3: Cache Maven dependencies for faster builds
+      - name: Cache Maven Dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+      
+      # Step 4: Build with Maven (skip tests for now)
+      - name: Build with Maven
+        run: mvn clean install -DskipTests
+      
+      # Step 5: Run unit tests
+      - name: Run Unit Tests
+        run: mvn test
+      
+      # Step 6: Run integration tests with Testcontainers
+      - name: Run Integration Tests
+        run: mvn verify
+        env:
+          # Testcontainers uses Docker to spin up PostgreSQL for integration tests
+          TESTCONTAINERS_REUSE_ENABLE: true
+      
+      # Step 7: Generate test coverage report with JaCoCo
+      - name: Generate Test Coverage Report
+        run: mvn jacoco:report
+      
+      # Step 8: Check coverage threshold (80% requirement per Agent Action Plan)
+      - name: Check Coverage Threshold
+        run: mvn jacoco:check -Djacoco.haltOnFailure=true
+        continue-on-error: false
+      
+      # Step 9: Upload coverage to Codecov (optional)
+      - name: Upload Coverage to Codecov
+        if: github.event_name == 'push'
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./backend/target/site/jacoco/jacoco.xml
+          flags: backend
+          name: backend-coverage
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      
+      # Step 10: SonarQube code quality analysis (optional)
+      - name: SonarQube Analysis
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: sonarsource/sonarqube-scan-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          projectBaseDir: ./backend
+          args: >
+            -Dsonar.projectKey=${{ env.SONAR_PROJECT_KEY }}
+            -Dsonar.java.binaries=target/classes
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+      
+      # Step 11: Quality Gate check
+      - name: SonarQube Quality Gate
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: sonarsource/sonarqube-quality-gate-action@v1.1.0
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        continue-on-error: true
+      
+      # Step 12: Upload test reports as artifacts
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: backend/target/surefire-reports/
+          retention-days: 30
+      
+      # Step 13: Upload build artifact (JAR file)
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-jar
+          path: backend/target/*.jar
+          retention-days: 7
+
+  ###############################################################################
+  # Job 2: Build Docker Image
+  # Purpose: Build and push Docker container image to registry
+  # Runs only: After tests pass and on push to main branch
+  ###############################################################################
+  build-docker-image:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+    
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      # Step 2: Set up Docker Buildx for advanced builds
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          install: true
+          driver-opts: image=moby/buildkit:latest
+      
+      # Step 3: Log in to Docker Hub
+      - name: Log in to Docker Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      
+      # Step 3b: Alternative - Log in to AWS ECR (uncomment if using ECR)
+      # - name: Configure AWS Credentials
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      #     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      #     aws-region: ${{ secrets.AWS_REGION }}
+      #
+      # - name: Log in to Amazon ECR
+      #   uses: aws-actions/amazon-ecr-login@v2
+      
+      # Step 4: Extract metadata for Docker tags and labels
+      - name: Extract Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value={{date 'YYYYMMDD-HHmmss'}}
+      
+      # Step 5: Build and push Docker image
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            JAVA_VERSION=${{ env.JAVA_VERSION }}
+      
+      # Step 6: Scan Docker image for vulnerabilities with Trivy
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'  # Don't fail build on vulnerabilities, just report
+      
+      # Step 7: Upload Trivy scan results to GitHub Security tab
+      - name: Upload Trivy Results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+      
+      # Step 8: Generate image digest for deployment tracking
+      - name: Generate Image Digest
+        run: |
+          echo "Image pushed successfully"
+          echo "Tags: ${{ steps.meta.outputs.tags }}"
+          echo "Digest: ${{ steps.build.outputs.digest }}"
+
+  ###############################################################################
+  # Job 3: Deploy to Kubernetes
+  # Purpose: Deploy the new Docker image to Kubernetes cluster
+  # Runs only: After Docker image is built and pushed, on main branch
+  ###############################################################################
+  deploy-to-kubernetes:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: build-docker-image
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://carddemo.example.com
+    
+    steps:
+      # Step 1: Checkout code for Kubernetes manifests
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      # Step 2: Configure AWS credentials (if using EKS)
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      
+      # Step 3: Update kubeconfig for EKS cluster
+      - name: Update Kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig --name carddemo-cluster --region ${{ secrets.AWS_REGION }}
+          kubectl config current-context
+      
+      # Alternative Step 3: Configure kubeconfig for non-EKS clusters
+      # - name: Set up kubectl
+      #   uses: azure/setup-kubectl@v3
+      #   with:
+      #     version: 'v1.31.0'
+      #
+      # - name: Configure Kubeconfig
+      #   run: |
+      #     echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
+      #     chmod 600 $HOME/.kube/config
+      
+      # Step 4: Verify cluster connectivity
+      - name: Verify Kubernetes Cluster Access
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+      
+      # Step 5: Update deployment with new image
+      - name: Deploy to Kubernetes
+        run: |
+          # Update the deployment with the new image
+          kubectl set image deployment/carddemo-backend \
+            carddemo-backend=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            -n carddemo
+          
+          # Wait for rollout to complete (timeout 5 minutes)
+          kubectl rollout status deployment/carddemo-backend \
+            -n carddemo \
+            --timeout=5m
+        env:
+          KUBECONFIG: $HOME/.kube/config
+      
+      # Step 6: Verify deployment health
+      - name: Verify Deployment
+        run: |
+          echo "Checking pod status..."
+          kubectl get pods -n carddemo -l app=carddemo-backend
+          
+          echo "Checking service status..."
+          kubectl get svc -n carddemo -l app=carddemo-backend
+          
+          echo "Checking deployment rollout history..."
+          kubectl rollout history deployment/carddemo-backend -n carddemo
+      
+      # Step 7: Run smoke tests against deployed service
+      - name: Run Smoke Tests
+        run: |
+          # Wait for service to be ready
+          sleep 30
+          
+          # Get the service endpoint
+          SERVICE_URL=$(kubectl get svc carddemo-backend -n carddemo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          
+          # Health check
+          echo "Testing health endpoint..."
+          curl -f http://${SERVICE_URL}:8080/api/health || exit 1
+          
+          echo "Smoke tests passed!"
+        continue-on-error: true
+      
+      # Step 8: Rollback on failure
+      - name: Rollback on Failure
+        if: failure()
+        run: |
+          echo "Deployment failed, initiating rollback..."
+          kubectl rollout undo deployment/carddemo-backend -n carddemo
+          kubectl rollout status deployment/carddemo-backend -n carddemo --timeout=3m
+          echo "Rollback completed"
+
+  ###############################################################################
+  # Job 4: Notify on Completion
+  # Purpose: Send notifications about workflow status
+  ###############################################################################
+  notify:
+    name: Send Notifications
+    runs-on: ubuntu-latest
+    needs: [build-and-test, build-docker-image, deploy-to-kubernetes]
+    if: always()
+    
+    steps:
+      # Step 1: Determine workflow status
+      - name: Determine Workflow Status
+        id: status
+        run: |
+          if [ "${{ needs.build-and-test.result }}" == "failure" ] || \
+             [ "${{ needs.build-docker-image.result }}" == "failure" ] || \
+             [ "${{ needs.deploy-to-kubernetes.result }}" == "failure" ]; then
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "color=danger" >> $GITHUB_OUTPUT
+          elif [ "${{ needs.build-and-test.result }}" == "success" ] && \
+               [ "${{ needs.build-docker-image.result }}" == "success" ] && \
+               ([ "${{ needs.deploy-to-kubernetes.result }}" == "success" ] || \
+                [ "${{ needs.deploy-to-kubernetes.result }}" == "skipped" ]); then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "color=good" >> $GITHUB_OUTPUT
+          else
+            echo "status=cancelled" >> $GITHUB_OUTPUT
+            echo "color=warning" >> $GITHUB_OUTPUT
+          fi
+      
+      # Step 2: Send Slack notification
+      - name: Send Slack Notification
+        if: github.event_name == 'push'
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "Backend CI/CD Workflow Completed",
+              "attachments": [
+                {
+                  "color": "${{ steps.status.outputs.color }}",
+                  "fields": [
+                    {
+                      "title": "Status",
+                      "value": "${{ steps.status.outputs.status }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Branch",
+                      "value": "${{ github.ref_name }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Commit",
+                      "value": "<https://github.com/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}>",
+                      "short": true
+                    },
+                    {
+                      "title": "Author",
+                      "value": "${{ github.actor }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Workflow",
+                      "value": "<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow Run>",
+                      "short": false
+                    }
+                  ]
+                }
+              ]
+            }
+      
+      # Step 3: Send email notification on failure
+      - name: Send Email on Failure
+        if: steps.status.outputs.status == 'failure'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          server_port: ${{ secrets.MAIL_PORT }}
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "❌ Backend CI/CD Failed - ${{ github.ref_name }}"
+          to: ${{ secrets.NOTIFICATION_EMAIL }}
+          from: GitHub Actions
+          body: |
+            Backend CI/CD workflow failed for branch ${{ github.ref_name }}.
+            
+            Commit: ${{ github.sha }}
+            Author: ${{ github.actor }}
+            Workflow: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            
+            Please check the logs for more details.
+        continue-on-error: true
+
