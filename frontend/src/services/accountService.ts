@@ -449,7 +449,7 @@ const formatValidationErrors = (errors: ValidationError[]): string => {
   }
 
   if (errors.length === 1) {
-    return errors[0].message;
+    return errors[0]!.message;
   }
 
   return 'Validation errors:\n' + errors.map(err => `- ${err.field}: ${err.message}`).join('\n');
