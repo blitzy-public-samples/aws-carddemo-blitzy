@@ -454,11 +454,13 @@ public class ValidationService {
         
         String trimmedUserId = userId.trim();
         
-        if (trimmedUserId.length() != USER_ID_LENGTH) {
-            log.warn("User ID must be {} characters: {}", USER_ID_LENGTH, userId);
+        // COBOL PIC X(08) allows up to 8 characters (shorter values are right-padded with spaces)
+        // In Java REST API, we accept 1-8 characters without requiring explicit padding
+        if (trimmedUserId.length() > USER_ID_LENGTH) {
+            log.warn("User ID exceeds maximum length of {} characters: {}", USER_ID_LENGTH, userId);
             throw new ValidationException(
                 "VAL003",
-                String.format("User ID must be exactly %d characters", USER_ID_LENGTH),
+                String.format("User ID must not exceed %d characters", USER_ID_LENGTH),
                 "userId"
             );
         }
