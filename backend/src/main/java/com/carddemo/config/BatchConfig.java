@@ -7,7 +7,7 @@ import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.explore.support.JobExplorerFactoryBean;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.launch.JobOperator;
-import org.springframework.batch.core.launch.support.SimpleJobLauncher;
+import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
 import org.springframework.batch.core.launch.support.SimpleJobOperator;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.repository.support.JobRepositoryFactoryBean;
@@ -18,7 +18,6 @@ import org.springframework.core.task.TaskExecutor;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.annotation.Isolation;
 
 import javax.sql.DataSource;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -198,7 +197,7 @@ public class BatchConfig {
         
         // Set SERIALIZABLE isolation for job repository operations
         // This prevents concurrent job execution conflicts and matches CICS transaction boundaries
-        factory.setIsolationLevelForCreate(Isolation.SERIALIZABLE.value());
+        factory.setIsolationLevelForCreate("ISOLATION_SERIALIZABLE");
         
         // Set table prefix for all Spring Batch metadata tables
         factory.setTablePrefix("BATCH_");
@@ -219,11 +218,16 @@ public class BatchConfig {
     }
 
     /**
-     * Creates and configures the asynchronous JobLauncher for background job execution.
+     * Creates and configures the TaskExecutorJobLauncher for background job execution.
      * 
      * <p>This launcher enables non-blocking batch job execution when triggered via REST API
      * or scheduled tasks. Jobs execute in background threads from the batchTaskExecutor pool,
      * allowing the calling thread to return immediately without waiting for job completion.</p>
+     * 
+     * <p><strong>Spring Batch 5.2.x Migration Note:</strong> Replaces the deprecated 
+     * SimpleJobLauncher which was removed in Spring Batch 5.2.0. TaskExecutorJobLauncher
+     * provides identical functionality with clearer naming that emphasizes the use of 
+     * TaskExecutor for job launching.</p>
      * 
      * <h3>Asynchronous Execution</h3>
      * <p>Async execution is critical for:</p>
@@ -245,12 +249,12 @@ public class BatchConfig {
      * 
      * @param jobRepository JobRepository for job metadata tracking
      * @param taskExecutor TaskExecutor for background job execution
-     * @return Configured JobLauncher for asynchronous job launching
+     * @return Configured TaskExecutorJobLauncher for asynchronous job launching
      * @throws Exception if JobLauncher cannot be created
      */
     @Bean
     public JobLauncher jobLauncher(JobRepository jobRepository, TaskExecutor taskExecutor) throws Exception {
-        SimpleJobLauncher jobLauncher = new SimpleJobLauncher();
+        TaskExecutorJobLauncher jobLauncher = new TaskExecutorJobLauncher();
         
         // Set job repository for job metadata tracking
         jobLauncher.setJobRepository(jobRepository);
