@@ -196,7 +196,7 @@ const CardTable: React.FC<CardTableProps> = ({
    * Maps to CRDSEL1-7 selection checkbox interaction in BMS map
    */
   const handleSelectionChange = useCallback(
-    (newSelection: GridRowSelectionModel, details: GridCallbackDetails) => {
+    (newSelection: GridRowSelectionModel, _details: GridCallbackDetails) => {
       setRowSelectionModel(newSelection);
       
       if (onSelectionChange) {
@@ -211,7 +211,7 @@ const CardTable: React.FC<CardTableProps> = ({
    * Maps to F7=Backward and F8=Forward navigation in BMS map
    */
   const handlePaginationChange = useCallback(
-    (model: GridPaginationModel, details: GridCallbackDetails) => {
+    (model: GridPaginationModel, _details: GridCallbackDetails) => {
       setPaginationModel(model);
     },
     []
@@ -366,7 +366,7 @@ const CardTable: React.FC<CardTableProps> = ({
           paginationModel={paginationModel}
           onPaginationModelChange={handlePaginationChange}
           pageSizeOptions={[7, 14, 21, 50, 100]}
-          pagination={!disablePagination}
+          pagination={disablePagination ? undefined : true}
           autoHeight={height === 'auto'}
           sx={{
             height: height === 'auto' ? undefined : calculateHeight(),
@@ -408,13 +408,6 @@ const CardTable: React.FC<CardTableProps> = ({
           // Accessibility attributes
           aria-label="Credit card list table"
           getRowId={(row) => row.id}
-          // Localization for pagination (matching F7/F8 navigation)
-          localeText={{
-            MuiTablePagination: {
-              labelDisplayedRows: ({ from, to, count }) =>
-                `Page ${Math.ceil(from / paginationModel.pageSize) + 1} - Showing ${from}–${to} of ${count}`,
-            },
-          }}
         />
       </Paper>
       
