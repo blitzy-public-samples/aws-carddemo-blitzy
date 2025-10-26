@@ -19,6 +19,9 @@ package com.carddemo.model.dto;
 
 import com.carddemo.model.entity.UserSecurity;
 import com.fasterxml.jackson.annotation.JsonFormat;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -71,7 +74,13 @@ public class UserDto {
      * User ID - Unique identifier for user authentication.
      * Mapped from COBOL: SEC-USR-ID (PIC X(08))
      * Max length: 8 characters
+     * 
+     * Validation: Max 8 characters (COBOL field length)
+     * Note: @NotBlank removed to support both POST (userId in body) and PUT (userId in path) requests
+     * For POST, userId is validated manually in UserService.createUser()
+     * For PUT, userId comes from @PathVariable and is not in request body
      */
+    @Size(max = 8, message = "User ID must not exceed 8 characters")
     private String userId;
 
     /**
@@ -79,6 +88,7 @@ public class UserDto {
      * Mapped from COBOL: SEC-USR-FNAME (PIC X(20))
      * Max length: 25 characters (database schema)
      */
+    @Size(max = 25, message = "User first name must not exceed 25 characters")
     private String userFirstName;
 
     /**
@@ -86,6 +96,7 @@ public class UserDto {
      * Mapped from COBOL: SEC-USR-LNAME (PIC X(20))
      * Max length: 25 characters (database schema)
      */
+    @Size(max = 25, message = "User last name must not exceed 25 characters")
     private String userLastName;
 
     /**
@@ -98,8 +109,30 @@ public class UserDto {
      * - 'O' = ROLE_OPERATOR (operator privileges)
      * 
      * Used by Spring Security for authorization decisions.
+     * 
+     * Validation: Must be exactly one character matching 'A', 'U', or 'O' if present
+     * (COBOL validation from COUSR01C.cbl VALIDATE-USER-TYPE paragraph)
+     * Note: @NotBlank removed to support partial updates (PUT requests)
+     * For POST, userType is validated manually in UserService.createUser()
      */
+    @Pattern(regexp = "[AUO]", message = "User type must be A (Admin), U (User), or O (Operator)")
     private String userType;
+
+    /**
+     * Plain-text password for user creation/update (INPUT ONLY).
+     * 
+     * SECURITY: This field is only used for INPUT (POST/PUT requests).
+     * It is NEVER included in output DTOs (fromEntity() method does not set this field).
+     * 
+     * The password is hashed using BCrypt before storage in database.
+     * Per Section 0.7.9: COBOL plain-text passwords → BCrypt hashed passwords
+     * 
+     * Password strength requirements: Minimum 8 characters, complexity rules
+     * 
+     * Validation: Minimum 8 characters (per Section 0.7.9 Security Migration)
+     */
+    @Size(min = 8, message = "Password must be at least 8 characters long")
+    private String password;
 
     /**
      * Timestamp when user account was created.

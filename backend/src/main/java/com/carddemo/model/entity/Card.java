@@ -155,8 +155,11 @@ public class Card {
      * 
      * Note: Database schema uses "card_status" not "card_active_status" as
      * the actual column name per Section 0.3.4.
+     * 
+     * Column Definition: CHAR(1) to preserve COBOL fixed-length character semantics.
+     * Per Section 0.7.2: Must maintain exact COBOL PIC X(01) behavior.
      */
-    @Column(name = "card_status", nullable = false, length = 1)
+    @Column(name = "card_status", nullable = false, columnDefinition = "CHAR(1)")
     private String cardStatus;
 
     /**

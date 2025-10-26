@@ -108,8 +108,11 @@ public class UserSecurity {
      * - 'U' = ROLE_USER (standard user privileges)
      * - 'O' = ROLE_OPERATOR (operator privileges)
      * Max length: 1 character
+     * 
+     * Column Definition: CHAR(1) to preserve COBOL fixed-length character semantics.
+     * Per Section 0.7.2: Must maintain exact COBOL PIC X(01) behavior.
      */
-    @Column(name = "user_type", length = 1, nullable = false)
+    @Column(name = "user_type", nullable = false, columnDefinition = "CHAR(1)")
     private String userType;
 
     /**

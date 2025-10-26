@@ -554,7 +554,7 @@ public class GlobalExceptionHandler {
         ErrorResponse errorResponse = new ErrorResponse(
                 LocalDateTime.now(),
                 HttpStatus.BAD_REQUEST.value(),
-                "Validation Failed",
+                "Bad Request",
                 message,
                 details,
                 extractPath(request)
