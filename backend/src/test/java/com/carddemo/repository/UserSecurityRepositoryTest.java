@@ -20,8 +20,11 @@ package com.carddemo.repository;
 import com.carddemo.model.entity.UserSecurity;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration;
+import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
+import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -64,8 +67,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * Uses Testcontainers for isolated PostgreSQL 16.6-alpine database instance
  * ensuring test isolation and accurate integration testing.
  */
-@DataJpaTest
+@DataJpaTest(excludeAutoConfiguration = FlywayAutoConfiguration.class)
 @Testcontainers
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 class UserSecurityRepositoryTest {
 
     /**
@@ -83,12 +87,14 @@ class UserSecurityRepositoryTest {
     /**
      * Configure Spring datasource properties from Testcontainers PostgreSQL.
      * Dynamically registers database connection details at runtime.
+     * Sets Hibernate DDL auto to create-drop for automatic schema creation in tests.
      */
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", postgresContainer::getJdbcUrl);
         registry.add("spring.datasource.username", postgresContainer::getUsername);
         registry.add("spring.datasource.password", postgresContainer::getPassword);
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
     }
 
     @Autowired
@@ -400,10 +406,14 @@ class UserSecurityRepositoryTest {
      * Test primary key uniqueness constraint on user_id.
      * 
      * Validates:
-     * - Duplicate user_id (SEC-USR-ID) throws DataIntegrityViolationException
+     * - Duplicate user_id (SEC-USR-ID) throws ConstraintViolationException
      * - Primary key constraint enforced by PostgreSQL
      * 
      * VSAM equivalent: DUPREC condition on WRITE operation
+     * 
+     * Note: In test context with TestEntityManager, Hibernate's ConstraintViolationException
+     * is thrown directly rather than being wrapped in Spring's DataIntegrityViolationException.
+     * Both exceptions indicate the same constraint violation behavior.
      */
     @Test
     void testUserIdUniqueness() {
@@ -420,7 +430,8 @@ class UserSecurityRepositoryTest {
                 .updatedAt(now)
                 .build();
         
-        entityManager.persistAndFlush(user1);
+        userSecurityRepository.save(user1);
+        entityManager.flush();
         entityManager.clear();
         
         // Act & Assert: Attempt to save duplicate user_id should throw exception
@@ -434,9 +445,11 @@ class UserSecurityRepositoryTest {
                 .updatedAt(now)
                 .build();
         
-        assertThrows(DataIntegrityViolationException.class, () -> {
-            entityManager.persistAndFlush(user2);
-        }, "Duplicate user_id should throw DataIntegrityViolationException");
+        // Expect ConstraintViolationException in test context with TestEntityManager
+        assertThrows(ConstraintViolationException.class, () -> {
+            userSecurityRepository.save(user2);
+            entityManager.flush();
+        }, "Duplicate user_id should throw ConstraintViolationException");
     }
 
     // ========== Authentication-Specific Test Methods ==========
@@ -533,8 +546,12 @@ class UserSecurityRepositoryTest {
         
         // Assert: Verify all passwords are BCrypt hashed
         for (int i = 0; i < users.size(); i++) {
+            final int index = i;  // Make effectively final for lambda expression
+            final String expectedUserId = userIds[i];
+            final String originalPassword = plainPasswords[i];
+            
             UserSecurity user = users.stream()
-                    .filter(u -> u.getUserId().equals(userIds[i]))
+                    .filter(u -> u.getUserId().equals(expectedUserId))
                     .findFirst()
                     .orElseThrow();
             
@@ -549,11 +566,11 @@ class UserSecurityRepositoryTest {
                        "BCrypt hash should be approximately 60 characters");
             
             // Verify password cannot be stored as plain text
-            assertNotEquals(plainPasswords[i], user.getUserPwdHash(),
+            assertNotEquals(originalPassword, user.getUserPwdHash(),
                             "Plain-text password must never be stored");
             
             // Verify password can be validated
-            assertTrue(passwordEncoder.matches(plainPasswords[i], user.getUserPwdHash()),
+            assertTrue(passwordEncoder.matches(originalPassword, user.getUserPwdHash()),
                        "Hashed password must validate against original password");
         }
     }
