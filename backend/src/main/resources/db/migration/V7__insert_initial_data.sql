@@ -99,9 +99,9 @@ INSERT INTO transaction_category (trans_type_cd, trans_cat_cd, trans_cat_desc) V
 --
 -- Target table: disclosure_group (
 --   disc_acct_group_id VARCHAR(10),
---   disc_trans_type_cd VARCHAR(2),
---   disc_trans_cat_cd INTEGER,
---   disc_int_rate NUMERIC(5,2)
+--   disc_tran_type_cd VARCHAR(2),
+--   disc_tran_cat_cd INTEGER,
+--   disc_int_rate NUMERIC(6,2)
 -- )
 --
 -- COBOL Copybook Reference: CVTRA02Y.cpy
@@ -123,7 +123,7 @@ INSERT INTO transaction_category (trans_type_cd, trans_cat_cd, trans_cat_desc) V
 -- ===================================================================================
 
 -- Account Group "A" - Standard rate structure (17 records)
-INSERT INTO disclosure_group (disc_acct_group_id, disc_trans_type_cd, disc_trans_cat_cd, disc_int_rate) VALUES
+INSERT INTO disclosure_group (disc_acct_group_id, disc_tran_type_cd, disc_tran_cat_cd, disc_int_rate) VALUES
 -- Type 01: Purchase transactions
 ('A', '01', 1, 1.50),   -- Regular Sales Draft: 1.50% APR
 ('A', '01', 2, 2.50),   -- Regular Cash Advance: 2.50% APR (higher rate)
@@ -150,7 +150,7 @@ INSERT INTO disclosure_group (disc_acct_group_id, disc_trans_type_cd, disc_trans
 ('A', '07', 1, 1.50);   -- Sales draft credit adjustment: 1.50%
 
 -- Account Group "DEFAULT" - Default rate structure for unassigned accounts (17 records)
-INSERT INTO disclosure_group (disc_acct_group_id, disc_trans_type_cd, disc_trans_cat_cd, disc_int_rate) VALUES
+INSERT INTO disclosure_group (disc_acct_group_id, disc_tran_type_cd, disc_tran_cat_cd, disc_int_rate) VALUES
 -- Type 01: Purchase transactions
 ('DEFAULT', '01', 1, 1.50),   -- Regular Sales Draft: 1.50% APR
 ('DEFAULT', '01', 2, 2.50),   -- Regular Cash Advance: 2.50% APR (higher rate)
@@ -177,7 +177,7 @@ INSERT INTO disclosure_group (disc_acct_group_id, disc_trans_type_cd, disc_trans
 ('DEFAULT', '07', 1, 0.00);   -- Sales draft credit adjustment: 0% (different from group A)
 
 -- Account Group "ZEROAPR" - Promotional 0% APR accounts (17 records)
-INSERT INTO disclosure_group (disc_acct_group_id, disc_trans_type_cd, disc_trans_cat_cd, disc_int_rate) VALUES
+INSERT INTO disclosure_group (disc_acct_group_id, disc_tran_type_cd, disc_tran_cat_cd, disc_int_rate) VALUES
 -- Type 01: Purchase transactions
 ('ZEROAPR', '01', 1, 0.00),   -- Regular Sales Draft: 0% APR (promotional rate)
 ('ZEROAPR', '01', 2, 0.00),   -- Regular Cash Advance: 0% APR (promotional rate)
@@ -244,17 +244,17 @@ INSERT INTO disclosure_group (disc_acct_group_id, disc_trans_type_cd, disc_trans
 --   ORDER BY disc_acct_group_id;
 --
 -- Verify no orphaned references (referential integrity):
---   SELECT DISTINCT dg.disc_trans_type_cd
+--   SELECT DISTINCT dg.disc_tran_type_cd
 --   FROM disclosure_group dg
---   LEFT JOIN transaction_type tt ON dg.disc_trans_type_cd = tt.trans_type_cd
+--   LEFT JOIN transaction_type tt ON dg.disc_tran_type_cd = tt.trans_type_cd
 --   WHERE tt.trans_type_cd IS NULL;
 --   -- Expected: 0 rows (all type codes should exist in transaction_type)
 --
---   SELECT DISTINCT dg.disc_trans_type_cd, dg.disc_trans_cat_cd
+--   SELECT DISTINCT dg.disc_tran_type_cd, dg.disc_tran_cat_cd
 --   FROM disclosure_group dg
 --   LEFT JOIN transaction_category tc 
---     ON dg.disc_trans_type_cd = tc.trans_type_cd 
---     AND dg.disc_trans_cat_cd = tc.trans_cat_cd
+--     ON dg.disc_tran_type_cd = tc.trans_type_cd 
+--     AND dg.disc_tran_cat_cd = tc.trans_cat_cd
 --   WHERE tc.trans_type_cd IS NULL;
 --   -- Expected: 0 rows (all type/category combinations should exist)
 -- ===================================================================================

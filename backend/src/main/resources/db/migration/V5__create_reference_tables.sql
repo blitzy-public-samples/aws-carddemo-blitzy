@@ -40,13 +40,14 @@ CREATE TABLE transaction_category (
 -- DIS-INT-RATE PIC S9(04)V99 → NUMERIC(6,2)
 CREATE TABLE disclosure_group (
     disc_acct_group_id VARCHAR(10) NOT NULL,
-    disc_trans_type_cd VARCHAR(2) NOT NULL,
-    disc_trans_cat_cd INTEGER NOT NULL,
+    disc_tran_type_cd VARCHAR(2) NOT NULL,
+    disc_tran_cat_cd INTEGER NOT NULL,
     disc_int_rate NUMERIC(6,2) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    version INTEGER DEFAULT 0 NOT NULL,
     
-    PRIMARY KEY (disc_acct_group_id, disc_trans_type_cd, disc_trans_cat_cd)
+    PRIMARY KEY (disc_acct_group_id, disc_tran_type_cd, disc_tran_cat_cd)
 );
 
 -- Transaction Category Balance Table (CVTRA01Y.cpy, RECLN 50)
