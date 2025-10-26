@@ -120,7 +120,14 @@ log() {
     shift
     local message="$@"
     local timestamp=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-    echo "[${timestamp}] [${level}] ${message}" | tee -a "${LOG_FILE}"
+    
+    # Ensure log directory exists before writing
+    if [ -n "${LOG_FILE}" ] && [ -d "$(dirname "${LOG_FILE}")" ]; then
+        echo "[${timestamp}] [${level}] ${message}" | tee -a "${LOG_FILE}"
+    else
+        # Fallback to stdout only if log file directory doesn't exist
+        echo "[${timestamp}] [${level}] ${message}"
+    fi
 }
 
 log_info() {
