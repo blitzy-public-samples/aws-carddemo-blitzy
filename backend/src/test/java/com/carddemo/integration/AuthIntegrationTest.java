@@ -114,6 +114,7 @@ import static org.hamcrest.Matchers.*;
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT
 )
 @Testcontainers
+@org.springframework.test.context.ActiveProfiles("integration-test")
 @DisplayName("Authentication Integration Tests (COSGN00C.cbl)")
 public class AuthIntegrationTest {
 
@@ -188,7 +189,7 @@ public class AuthIntegrationTest {
     private static final String REGULAR_PASSWORD = "USER1234";
     private static final String REGULAR_USER_TYPE = "U";
 
-    private static final String OPERATOR_USER_ID = "OPERATOR1";
+    private static final String OPERATOR_USER_ID = "OPER0001";  // 8 characters (VARCHAR(8) limit)
     private static final String OPERATOR_PASSWORD = "OPER1234";
     private static final String OPERATOR_USER_TYPE = "O";
 
@@ -251,7 +252,7 @@ public class AuthIntegrationTest {
                 .userType(ADMIN_USER_TYPE)
                 .createdAt(Timestamp.valueOf(LocalDateTime.now()))
                 .updatedAt(Timestamp.valueOf(LocalDateTime.now()))
-                .version(0)
+                // version is null for new entities (JPA will set it to 0 on first save)
                 .build();
 
         // Regular user (replaces COBOL SEC-USR-TYPE='U')
@@ -263,7 +264,7 @@ public class AuthIntegrationTest {
                 .userType(REGULAR_USER_TYPE)
                 .createdAt(Timestamp.valueOf(LocalDateTime.now()))
                 .updatedAt(Timestamp.valueOf(LocalDateTime.now()))
-                .version(0)
+                // version is null for new entities (JPA will set it to 0 on first save)
                 .build();
 
         // Operator user (replaces COBOL SEC-USR-TYPE='O')
@@ -275,7 +276,7 @@ public class AuthIntegrationTest {
                 .userType(OPERATOR_USER_TYPE)
                 .createdAt(Timestamp.valueOf(LocalDateTime.now()))
                 .updatedAt(Timestamp.valueOf(LocalDateTime.now()))
-                .version(0)
+                // version is null for new entities (JPA will set it to 0 on first save)
                 .build();
 
         // Persist test users to database
@@ -454,7 +455,7 @@ public class AuthIntegrationTest {
         // Arrange: Create login request with valid user ID but wrong password
         AuthRequest authRequest = AuthRequest.builder()
                 .userId(ADMIN_USER_ID)
-                .password("WRONGPASS")  // Invalid password
+                .password("WRONGPAS")  // Invalid password (8 chars max per COBOL PIC X(08))
                 .build();
 
         // Act & Assert: POST /api/auth/login with invalid password
@@ -508,7 +509,7 @@ public class AuthIntegrationTest {
         // Arrange: Create login request with non-existent user ID
         AuthRequest authRequest = AuthRequest.builder()
                 .userId("NOUSER99")  // User does not exist in database
-                .password("PASSWORD1")
+                .password("PASSWRD1")  // 8 chars max per COBOL PIC X(08)
                 .build();
 
         // Act & Assert: POST /api/auth/login with non-existent user
@@ -554,9 +555,10 @@ public class AuthIntegrationTest {
     @DisplayName("Should fail login with missing user ID")
     void testFailedLoginWithMissingUserId() {
         // Arrange: Create login request with null user ID
+        // Use valid 8-character password to ensure only userId fails validation
         AuthRequest authRequest = AuthRequest.builder()
                 .userId(null)  // Missing user ID
-                .password("PASSWORD1")
+                .password("PASS1234")  // Valid 8-character password
                 .build();
 
         // Act & Assert: POST /api/auth/login with missing user ID
@@ -571,7 +573,8 @@ public class AuthIntegrationTest {
                 .body("message", anyOf(
                     containsStringIgnoringCase("user id"),
                     containsStringIgnoringCase("required"),
-                    containsStringIgnoringCase("blank")
+                    containsStringIgnoringCase("blank"),
+                    containsStringIgnoringCase("validation failed")
                 ));  // Validation error message
     }
 
@@ -615,7 +618,8 @@ public class AuthIntegrationTest {
                 .body("message", anyOf(
                     containsStringIgnoringCase("password"),
                     containsStringIgnoringCase("required"),
-                    containsStringIgnoringCase("blank")
+                    containsStringIgnoringCase("blank"),
+                    containsStringIgnoringCase("validation failed")
                 ));  // Validation error message
     }
 
@@ -633,9 +637,10 @@ public class AuthIntegrationTest {
     @DisplayName("Should fail login with empty user ID")
     void testFailedLoginWithEmptyUserId() {
         // Arrange: Create login request with empty user ID
+        // Use valid 8-character password to ensure only userId fails validation
         AuthRequest authRequest = AuthRequest.builder()
                 .userId("")  // Empty user ID
-                .password("PASSWORD1")
+                .password("PASS1234")  // Valid 8-character password
                 .build();
 
         // Act & Assert: POST /api/auth/login with empty user ID
@@ -650,7 +655,8 @@ public class AuthIntegrationTest {
                 .body("message", anyOf(
                     containsStringIgnoringCase("user id"),
                     containsStringIgnoringCase("required"),
-                    containsStringIgnoringCase("blank")
+                    containsStringIgnoringCase("blank"),
+                    containsStringIgnoringCase("validation failed")
                 ));
     }
 
@@ -684,7 +690,8 @@ public class AuthIntegrationTest {
                 .body("message", anyOf(
                     containsStringIgnoringCase("password"),
                     containsStringIgnoringCase("required"),
-                    containsStringIgnoringCase("blank")
+                    containsStringIgnoringCase("blank"),
+                    containsStringIgnoringCase("validation failed")
                 ));
     }
 

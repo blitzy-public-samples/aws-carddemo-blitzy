@@ -205,48 +205,31 @@ CREATE INDEX idx_daily_transaction_type ON daily_transaction(trans_type_cd);
 -- =====================================================================
 
 COMMENT ON TABLE transaction IS 
-'Transaction table converted from VSAM TRANSACT dataset (CVTRA05Y.cpy). ' ||
-'Stores all card transactions with foreign key relationship to card table. ' ||
-'Expected volume: 1M+ records with high INSERT/SELECT frequency. ' ||
-'Performance target: sub-200ms query response for card statement generation.';
+'Transaction table converted from VSAM TRANSACT dataset (CVTRA05Y.cpy). Stores all card transactions with foreign key relationship to card table. Expected volume: 1M+ records with high INSERT/SELECT frequency. Performance target: sub-200ms query response for card statement generation.';
 
 COMMENT ON TABLE daily_transaction IS 
-'Daily transaction staging table for batch processing (CVTRA06Y.cpy). ' ||
-'Used by Spring Batch jobs CBTRN01C (validation), CBTRN02C (posting), CBTRN03C (summarization). ' ||
-'Expected volume: 10K records per day, purged after successful batch processing. ' ||
-'Processing window: 01:00-04:00 daily (3-hour batch cycle).';
+'Daily transaction staging table for batch processing (CVTRA06Y.cpy). Used by Spring Batch jobs CBTRN01C (validation), CBTRN02C (posting), CBTRN03C (summarization). Expected volume: 10K records per day, purged after successful batch processing. Processing window: 01:00-04:00 daily (3-hour batch cycle).';
 
 COMMENT ON COLUMN transaction.trans_id IS 
-'Unique transaction identifier (COBOL PIC X(16)). ' ||
-'Primary key replicated from VSAM KSDS primary key.';
+'Unique transaction identifier (COBOL PIC X(16)). Primary key replicated from VSAM KSDS primary key.';
 
 COMMENT ON COLUMN transaction.trans_card_num IS 
-'Card number foreign key (COBOL PIC X(16)). ' ||
-'References card.card_num with ON DELETE RESTRICT to prevent orphaned transactions.';
+'Card number foreign key (COBOL PIC X(16)). References card.card_num with ON DELETE RESTRICT to prevent orphaned transactions.';
 
 COMMENT ON COLUMN transaction.trans_amt IS 
-'Transaction amount (COBOL PIC S9(09)V99 COMP-3). ' ||
-'NUMERIC(11,2) maintains exact 2 decimal precision for financial calculations. ' ||
-'Supports signed amounts: negative for credits/refunds, positive for debits/purchases.';
+'Transaction amount (COBOL PIC S9(09)V99 COMP-3). NUMERIC(11,2) maintains exact 2 decimal precision for financial calculations. Supports signed amounts: negative for credits/refunds, positive for debits/purchases.';
 
 COMMENT ON COLUMN transaction.trans_orig_ts IS 
-'Original transaction timestamp (COBOL PIC X(26)). ' ||
-'Captured at point of sale or authorization request. ' ||
-'Used for billing cycle determination and dispute resolution.';
+'Original transaction timestamp (COBOL PIC X(26)). Captured at point of sale or authorization request. Used for billing cycle determination and dispute resolution.';
 
 COMMENT ON COLUMN transaction.trans_proc_ts IS 
-'Processing timestamp (COBOL PIC X(26)). ' ||
-'Captured when transaction is posted to account. ' ||
-'Defaults to CURRENT_TIMESTAMP if not explicitly set.';
+'Processing timestamp (COBOL PIC X(26)). Captured when transaction is posted to account. Defaults to CURRENT_TIMESTAMP if not explicitly set.';
 
 COMMENT ON COLUMN transaction.version IS 
-'Optimistic locking version for JPA (Spring Data). ' ||
-'Incremented on each update to prevent lost update anomalies. ' ||
-'Replaces VSAM RBA-based optimistic locking from mainframe.';
+'Optimistic locking version for JPA (Spring Data). Incremented on each update to prevent lost update anomalies. Replaces VSAM RBA-based optimistic locking from mainframe.';
 
 COMMENT ON COLUMN daily_transaction.trans_id IS 
-'Unique transaction identifier for staging (COBOL PIC X(16)). ' ||
-'Primary key for batch processing, moved to transaction table after validation.';
+'Unique transaction identifier for staging (COBOL PIC X(16)). Primary key for batch processing, moved to transaction table after validation.';
 
 -- =====================================================================
 -- End of Migration V4

@@ -89,20 +89,14 @@ CREATE INDEX idx_account_status_group ON account(acct_active_status, acct_group_
 -- -----------------------------------------------------------------------------
 -- Card Table Additional Indexes
 -- -----------------------------------------------------------------------------
--- Composite index for card queries by account and status
--- Supports common query patterns in COCRDLIC and COCRDUPC programs
--- Use case: Display all active cards for a specific account
--- Column reference fix: card_status (not card_active_status)
-CREATE INDEX idx_card_acct_status ON card(card_acct_id, card_status);
+-- NOTE: idx_card_acct_status already created in V2__create_card_table.sql (line 159)
+-- No additional card table indexes needed in this migration
 
 -- -----------------------------------------------------------------------------
 -- Transaction Table Critical Performance Indexes
 -- -----------------------------------------------------------------------------
--- Critical index for transaction queries by card and date range
--- Primary use case: Statement generation (COBIL00C), transaction history (COTRN00C)
--- Performance requirement: MUST maintain sub-10ms response time for statement queries
--- Supports date range filtering for billing cycles
-CREATE INDEX idx_transaction_card_date ON transaction(trans_card_num, trans_orig_ts);
+-- NOTE: idx_transaction_card_date already created in V4__create_transaction_tables.sql (line 186)
+-- This index is critical for statement generation (COBIL00C) and transaction history (COTRN00C)
 
 -- Composite index for date range queries in batch processing
 -- Use case: Daily batch jobs (CBTRN01C-CBTRN03C) processing transactions by date
@@ -117,10 +111,8 @@ CREATE INDEX idx_transaction_type_cat ON transaction(trans_type_cd, trans_cat_cd
 -- -----------------------------------------------------------------------------
 -- Daily Transaction Table Indexes (Batch Processing Support)
 -- -----------------------------------------------------------------------------
--- Index for daily transaction batch processing
--- Use case: Daily transaction validation and posting (CBTRN01C, CBTRN02C)
--- Supports sequential processing of daily transaction files by timestamp
-CREATE INDEX idx_daily_transaction_date_range ON daily_transaction(trans_orig_ts);
+-- NOTE: idx_daily_transaction_date already created in V4__create_transaction_tables.sql (line 194)
+-- This index supports daily transaction validation and posting (CBTRN01C, CBTRN02C)
 
 -- -----------------------------------------------------------------------------
 -- Customer Table Search Indexes
@@ -158,11 +150,8 @@ COMMENT ON COLUMN card_account_xref.updated_at IS 'Record last update timestamp.
 COMMENT ON INDEX idx_xref_account IS 'VSAM alternate index equivalent: Account-to-card lookup. Target: < 50ms response time.';
 COMMENT ON INDEX idx_xref_customer IS 'VSAM alternate index equivalent: Customer-to-card lookup. Target: < 50ms response time.';
 COMMENT ON INDEX idx_account_status_group IS 'Replicates VSAM alternate index for account status and group queries. Supports COACTUPC/COACTVWC programs.';
-COMMENT ON INDEX idx_card_acct_status IS 'Composite index for card queries by account and status. Supports COCRDLIC/COCRDUPC programs.';
-COMMENT ON INDEX idx_transaction_card_date IS 'CRITICAL: Statement generation performance index. MUST maintain sub-10ms response time for billing cycle queries (COBIL00C).';
 COMMENT ON INDEX idx_transaction_date_range IS 'Batch processing date range index. Supports CBTRN01C-CBTRN03C daily transaction jobs.';
 COMMENT ON INDEX idx_transaction_type_cat IS 'Transaction reporting and categorization index. Supports CBTRN03C summarization and CORPT00C reporting.';
-COMMENT ON INDEX idx_daily_transaction_date_range IS 'Daily transaction batch processing index. Supports sequential processing by timestamp.';
 COMMENT ON INDEX idx_customer_lastname_firstname IS 'Customer name search index. Optimized for "starts with" searches in COUSR00C-COUSR03C programs.';
 COMMENT ON INDEX idx_tcat_bal_acct_type IS 'Transaction category balance lookup index. Supports account-level category balance queries in CBACT02C.';
 
