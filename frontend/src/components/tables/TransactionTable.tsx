@@ -29,9 +29,8 @@ import {
   GridColDef,
   GridRowSelectionModel,
   GridSortModel,
-  GridFilterModel,
   GridPaginationModel,
-  GridValueFormatterParams,
+  GridValueFormatter,
 } from '@mui/x-data-grid';
 import {
   Box,
@@ -210,9 +209,9 @@ const TransactionTable: React.FC<TransactionTableProps> = ({
       headerAlign: 'center',
       align: 'center',
       description: 'Transaction date (8 characters YYYYMMDD)',
-      valueFormatter: (params: GridValueFormatterParams<string>) => {
-        return formatDate(params.value);
-      },
+      valueFormatter: ((value: string) => {
+        return formatDate(value);
+      }) as GridValueFormatter,
     },
     {
       field: 'description',
@@ -235,9 +234,9 @@ const TransactionTable: React.FC<TransactionTableProps> = ({
       align: 'right',
       type: 'number',
       description: 'Transaction amount (12 characters with decimal)',
-      valueFormatter: (params: GridValueFormatterParams<number>) => {
-        return formatCurrency(params.value);
-      },
+      valueFormatter: ((value: number) => {
+        return formatCurrency(value);
+      }) as GridValueFormatter,
     },
   ], [sortable, filterable, formatCurrency, formatDate]);
 
@@ -512,28 +511,6 @@ const TransactionTable: React.FC<TransactionTableProps> = ({
           localeText={{
             noRowsLabel: 'No transactions found',
             noResultsOverlayLabel: 'No transactions match the filter criteria',
-            toolbarFilters: 'Filters',
-            toolbarFiltersLabel: 'Show filters',
-            toolbarFiltersTooltipHide: 'Hide filters',
-            toolbarFiltersTooltipShow: 'Show filters',
-            columnsPanelTextFieldLabel: 'Find column',
-            columnsPanelTextFieldPlaceholder: 'Column title',
-            columnsPanelDragIconLabel: 'Reorder column',
-            columnsPanelShowAllButton: 'Show all',
-            columnsPanelHideAllButton: 'Hide all',
-            filterPanelAddFilter: 'Add filter',
-            filterPanelDeleteIconLabel: 'Delete',
-            filterPanelOperators: 'Operators',
-            filterPanelOperatorAnd: 'And',
-            filterPanelOperatorOr: 'Or',
-            filterPanelColumns: 'Columns',
-            filterPanelInputLabel: 'Value',
-            filterPanelInputPlaceholder: 'Filter value',
-            MuiTablePagination: {
-              labelRowsPerPage: 'Rows per page:',
-              labelDisplayedRows: ({ from, to, count }) =>
-                `${from}-${to} of ${count !== -1 ? count : `more than ${to}`}`,
-            },
           }}
           aria-label="Transaction list table"
           getRowId={(row) => row.id}
