@@ -1,0 +1,463 @@
+package com.carddemo.model.entity;
+
+import com.carddemo.model.entity.Card;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.Table;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
+import java.sql.Timestamp;
+
+/**
+ * JPA entity representing daily transaction data for batch processing.
+ * 
+ * Converted from COBOL copybook: CVTRA06Y.cpy (DALYTRAN-RECORD)
+ * Original record length: 350 bytes
+ * 
+ * This entity serves as a temporary staging table for daily batch transaction processing
+ * workflow. Structurally identical to Transaction entity with same fields and relationships,
+ * but used specifically for batch operations that process transaction data before final
+ * posting to the permanent transaction table.
+ * 
+ * The daily transaction table is populated during overnight batch processing (02:00-06:00)
+ * by batch job CBTRNJ01.jcl (transaction validation) and CBTRNJ02.jcl (transaction posting).
+ * Records flow from DALYTRAN file → daily_transaction table → transaction table after
+ * validation and processing. This staging approach enables checkpoint/restart capabilities
+ * and maintains transaction isolation during batch processing windows.
+ * 
+ * Conversion notes:
+ * - COBOL PIC X(16) DALYTRAN-ID converted to String dalytranId primary key with length 16
+ * - COBOL PIC X(16) DALYTRAN-CARD-NUM converted to String with @ManyToOne relationship to Card entity
+ * - COBOL PIC X(02) DALYTRAN-TYPE-CD converted to String dalytranTypeCd with length 2
+ * - COBOL PIC 9(04) DALYTRAN-CAT-CD converted to Integer dalytranCatCd
+ * - COBOL PIC X(10) DALYTRAN-SOURCE converted to String dalytranSource with length 10
+ * - COBOL PIC X(100) DALYTRAN-DESC converted to String dalytranDesc with length 100
+ * - COBOL PIC S9(09)V99 COMP-3 DALYTRAN-AMT converted to BigDecimal with precision 11, scale 2
+ *   (COMP-3 packed decimal format requires exact precision preservation per Section 0.7.2)
+ * - COBOL PIC 9(09) DALYTRAN-MERCHANT-ID converted to String (length 9) to preserve leading zeros
+ * - COBOL PIC X(50) DALYTRAN-MERCHANT-NAME converted to String with length 50
+ * - COBOL PIC X(50) DALYTRAN-MERCHANT-CITY converted to String with length 50
+ * - COBOL PIC X(10) DALYTRAN-MERCHANT-ZIP converted to String with length 10
+ * - COBOL PIC X(26) DALYTRAN-ORIG-TS converted to Timestamp dalytranOrigTs
+ * - COBOL PIC X(26) DALYTRAN-PROC-TS converted to Timestamp dalytranProcTs
+ * - COBOL FILLER (20 bytes) removed as not used in Java implementation
+ * - Database table name: daily_transaction (per Section 0.3.4 schema)
+ * - Column names use underscore_case naming convention per PostgreSQL standards
+ * 
+ * Database table structure matches Section 0.3.4 schema:
+ * CREATE TABLE daily_transaction (
+ *     dalytran_id VARCHAR(16) PRIMARY KEY,
+ *     dalytran_card_num VARCHAR(16) NOT NULL REFERENCES card(card_num),
+ *     dalytran_type_cd VARCHAR(2) NOT NULL,
+ *     dalytran_cat_cd INTEGER NOT NULL,
+ *     dalytran_source VARCHAR(10),
+ *     dalytran_desc VARCHAR(100),
+ *     dalytran_amt NUMERIC(11,2) NOT NULL,
+ *     dalytran_merchant_id VARCHAR(9),
+ *     dalytran_merchant_name VARCHAR(50),
+ *     dalytran_merchant_city VARCHAR(50),
+ *     dalytran_merchant_zip VARCHAR(10),
+ *     dalytran_orig_ts TIMESTAMP NOT NULL,
+ *     dalytran_proc_ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+ * );
+ * 
+ * Batch Processing Flow:
+ * 1. CBTRNJ01.jcl validates incoming transaction files and loads to daily_transaction table
+ * 2. CBTRNJ02.jcl processes daily_transaction records, posts to transaction table,
+ *    updates account balances, and clears daily_transaction staging table
+ * 3. CBTRNJ03.jcl performs category summarization using posted transactions
+ * 
+ * Referenced by:
+ * - Spring Batch job TransactionProcessingJobConfig (batch/config/)
+ * - TransactionProcessor (batch/processor/)
+ * - DailyTransactionReader (batch/reader/)
+ * - TransactionWriter (batch/writer/)
+ * 
+ * @see Card
+ * @see Transaction
+ * @see com.carddemo.batch.config.TransactionProcessingJobConfig
+ */
+@Entity
+@Table(name = "daily_transaction")
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class DailyTransaction {
+
+    /**
+     * Daily transaction identifier (primary key).
+     * 
+     * Converted from: COBOL PIC X(16) DALYTRAN-ID
+     * Maximum length: 16 characters
+     * Format: Typically YYYYMMDDHHMMSSNN where NN is sequence number within same second
+     * 
+     * This is the primary key for daily transaction staging records. Unlike the main
+     * transaction table which uses business transaction IDs, daily transaction IDs
+     * are system-generated during batch file processing to ensure uniqueness during
+     * the staging phase before final transaction posting.
+     * 
+     * Transaction IDs are generated by batch job CBTRNJ01C.cbl during validation phase
+     * and must be unique within each daily processing cycle.
+     */
+    @Id
+    @Column(name = "dalytran_id", nullable = false, length = 16)
+    private String dalytranId;
+
+
+    /**
+     * Card number (foreign key to Card entity).
+     * 
+     * Converted from: COBOL PIC X(16) DALYTRAN-CARD-NUM
+     * Maximum length: 16 characters
+     * Format: 16-digit card number
+     * 
+     * Links this daily transaction to the specific credit card used for the transaction.
+     * This foreign key relationship enables:
+     * - Card validation during batch processing
+     * - Account balance updates through card-to-account relationship
+     * - Transaction categorization and reporting by card
+     * 
+     * During batch processing, CBTRNJ01C.cbl validates that the card number exists
+     * in CARDFILE (card table) and is in active status before accepting the transaction.
+     * Invalid card numbers cause the transaction to be rejected and written to the
+     * reject file (TRANFILE reject records).
+     * 
+     * SECURITY NOTE: This field contains sensitive PII (Payment Card Number).
+     * - Must be masked in logs and batch reports (show only last 4 digits)
+     * - Access must be restricted during batch processing
+     * - Must be encrypted at rest per PCI-DSS requirements
+     */
+    @Column(name = "dalytran_card_num", nullable = false, length = 16)
+    private String dalytranCardNum;
+
+    /**
+     * Card entity relationship.
+     * 
+     * Many-to-One relationship: Multiple daily transactions can reference one card.
+     * 
+     * Enables JPA to automatically fetch Card details during batch processing when
+     * validating transactions and posting to permanent transaction table. This
+     * relationship maintains referential integrity and ensures only valid card
+     * numbers are accepted in daily transaction staging.
+     * 
+     * Join column dalytran_card_num references card.card_num primary key per
+     * database schema defined in Section 0.3.4.
+     * 
+     * The insertable=false and updatable=false attributes indicate this is a
+     * read-only relationship field, with dalytranCardNum being the actual
+     * foreign key column that gets persisted.
+     */
+    @ManyToOne
+    @JoinColumn(name = "dalytran_card_num", referencedColumnName = "card_num", insertable = false, updatable = false)
+    private Card card;
+
+    /**
+     * Transaction type code.
+     * 
+     * Converted from: COBOL PIC X(02) DALYTRAN-TYPE-CD
+     * Maximum length: 2 characters
+     * 
+     * Identifies the type of transaction being processed. Valid values reference
+     * the TRANTYPE file (transaction_type table) which contains:
+     * - '01' = Purchase
+     * - '02' = Cash Advance
+     * - '03' = Payment
+     * - '04' = Refund
+     * - '05' = Fee
+     * - '06' = Interest
+     * 
+     * Used during batch processing to:
+     * - Determine whether transaction is debit or credit to account balance
+     * - Apply appropriate transaction processing rules
+     * - Route transaction to correct posting logic in CBTRNJ02C.cbl
+     * - Generate transaction category summaries in CBTRNJ03C.cbl
+     * 
+     * Foreign key relationship to transaction_type table ensures only valid
+     * type codes are accepted during batch validation.
+     */
+    @Column(name = "dalytran_type_cd", nullable = false, length = 2)
+    private String dalytranTypeCd;
+
+    /**
+     * Transaction category code.
+     * 
+     * Converted from: COBOL PIC 9(04) DALYTRAN-CAT-CD
+     * Maximum value: 9999 (4 digits)
+     * 
+     * Identifies the merchant category code (MCC) for transaction categorization.
+     * References TRANCATG file (transaction_category table) containing standard
+     * merchant categories such as:
+     * - 5411 = Grocery Stores/Supermarkets
+     * - 5812 = Eating Places/Restaurants
+     * - 5541 = Service Stations/Gas
+     * - 5311 = Department Stores
+     * 
+     * Used for:
+     * - Transaction categorization in customer statements
+     * - Rewards calculation based on spending categories
+     * - Spending analysis and reporting
+     * - Category balance tracking in TCATBAL (transaction_category_balance table)
+     * 
+     * Batch job CBTRNJ03C.cbl uses this field to update category balances for
+     * each account, providing aggregated spending by category for reporting.
+     */
+    @Column(name = "dalytran_cat_cd", nullable = false)
+    private Integer dalytranCatCd;
+
+    /**
+     * Transaction source identifier.
+     * 
+     * Converted from: COBOL PIC X(10) DALYTRAN-SOURCE
+     * Maximum length: 10 characters
+     * 
+     * Identifies the source system or channel that originated the transaction:
+     * - 'POS' = Point of Sale terminal
+     * - 'ATM' = Automated Teller Machine
+     * - 'ONLINE' = Online/E-commerce transaction
+     * - 'MOBILE' = Mobile app transaction
+     * - 'IVR' = Interactive Voice Response system
+     * - 'BATCH' = Batch file processing
+     * - 'MANUAL' = Manual entry by operations
+     * 
+     * Used for:
+     * - Audit tracking of transaction origin
+     * - Channel-specific processing rules
+     * - Fraud detection patterns
+     * - Reporting and analytics by channel
+     * 
+     * Nullable field as some legacy transaction files may not populate source identifier.
+     */
+    @Column(name = "dalytran_source", length = 10)
+    private String dalytranSource;
+
+    /**
+     * Transaction description.
+     * 
+     * Converted from: COBOL PIC X(100) DALYTRAN-DESC
+     * Maximum length: 100 characters
+     * 
+     * Free-form text description of the transaction, typically containing:
+     * - Merchant name and location for purchase transactions
+     * - ATM location for cash advances
+     * - "Payment - Thank You" for payment transactions
+     * - Fee description for fee transactions
+     * 
+     * This field appears on customer statements and transaction history displays.
+     * Content varies by transaction type and source system.
+     * 
+     * During batch processing, description may be enhanced or standardized by
+     * CBTRNJ02C.cbl based on merchant ID lookup or transaction type rules.
+     * 
+     * Nullable field as some transaction types (fees, interest) may have
+     * system-generated descriptions added during posting rather than in source file.
+     */
+    @Column(name = "dalytran_desc", length = 100)
+    private String dalytranDesc;
+
+    /**
+     * Transaction amount.
+     * 
+     * Converted from: COBOL PIC S9(09)V99 COMP-3 DALYTRAN-AMT
+     * Precision: 11 digits total, 2 decimal places (matches COMP-3 packed decimal)
+     * Scale: 2 (two decimal places for cents)
+     * Range: -999,999,999.99 to +999,999,999.99
+     * 
+     * Monetary amount of the transaction in account currency (typically USD).
+     * Signed value where:
+     * - Positive amounts = Debits (purchases, cash advances, fees)
+     * - Negative amounts = Credits (payments, refunds)
+     * 
+     * CRITICAL PRECISION REQUIREMENT per Section 0.7.2:
+     * BigDecimal with precision 11, scale 2 is used to maintain exact bit-identical
+     * arithmetic results compared to COBOL COMP-3 (packed decimal) format. This
+     * ensures financial calculations in Java batch jobs produce identical results
+     * to original COBOL batch programs CBTRNJ01C.cbl, CBTRNJ02C.cbl, CBTRNJ03C.cbl.
+     * 
+     * All arithmetic operations (balance updates, interest calculations, fee
+     * assessments) must use BigDecimal.setScale(2, RoundingMode.HALF_UP) to
+     * replicate COBOL ROUNDED clause behavior.
+     * 
+     * Used for:
+     * - Account balance posting (add to current balance)
+     * - Credit limit checking (available credit calculation)
+     * - Category balance updates (spending by category tracking)
+     * - Statement amount calculations
+     * - Payment allocation processing
+     * 
+     * Validation: Amount must not be zero and must be reasonable (typically under $10,000
+     * for retail transactions, may be higher for payment transactions). Batch job
+     * CBTRNJ01C.cbl validates amount reasonableness based on transaction type.
+     */
+    @Column(name = "dalytran_amt", nullable = false, precision = 11, scale = 2)
+    private BigDecimal dalytranAmt;
+
+    /**
+     * Merchant identifier.
+     * 
+     * Converted from: COBOL PIC 9(09) DALYTRAN-MERCHANT-ID
+     * Maximum length: 9 characters (stored as String to preserve leading zeros)
+     * Format: 9-digit numeric merchant identifier
+     * 
+     * Unique identifier for the merchant/retailer where transaction occurred.
+     * References merchant master file (not included in CardDemo scope) used for:
+     * - Merchant name lookup and standardization
+     * - Merchant category code (MCC) assignment
+     * - Fraud detection based on merchant patterns
+     * - Chargeback and dispute processing
+     * 
+     * Stored as String rather than Integer to preserve leading zeros in merchant IDs
+     * (e.g., "000123456" must not become "123456").
+     * 
+     * Nullable field as not all transaction types have merchant IDs:
+     * - Purchase and cash advance transactions have merchant IDs
+     * - Payment, fee, and interest transactions typically null
+     * 
+     * During batch processing, merchant ID may be validated against merchant file
+     * or used to enhance transaction description with standardized merchant name.
+     */
+    @Column(name = "dalytran_merchant_id", length = 9)
+    private String dalytranMerchantId;
+
+    /**
+     * Merchant name.
+     * 
+     * Converted from: COBOL PIC X(50) DALYTRAN-MERCHANT-NAME
+     * Maximum length: 50 characters
+     * 
+     * Name of merchant/retailer where transaction occurred. May be:
+     * - Provided in source transaction file from payment network
+     * - Looked up from merchant master file based on merchant ID
+     * - Standardized during batch processing for consistent reporting
+     * 
+     * Appears on customer statements and transaction displays. Name may be
+     * abbreviated to fit 50-character limit using standard abbreviations
+     * (e.g., "RESTAURANT" → "REST", "INCORPORATED" → "INC").
+     * 
+     * Nullable field as some transaction types (fees, interest, payments) do not
+     * have merchant names. System-generated transactions have standard descriptions
+     * in dalytranDesc field instead.
+     */
+    @Column(name = "dalytran_merchant_name", length = 50)
+    private String dalytranMerchantName;
+
+    /**
+     * Merchant city.
+     * 
+     * Converted from: COBOL PIC X(50) DALYTRAN-MERCHANT-CITY
+     * Maximum length: 50 characters
+     * 
+     * City where merchant/transaction occurred. Used for:
+     * - Customer transaction recognition ("Was this you?")
+     * - Fraud detection (unusual geographic patterns)
+     * - Statement detail display
+     * - Travel-related card authorization
+     * 
+     * May include state/country for transactions outside customer's home region
+     * (e.g., "LAS VEGAS NV", "LONDON UK"). Format varies by payment network and
+     * source system.
+     * 
+     * Nullable field as some transactions (online purchases, fee/interest transactions)
+     * may not have meaningful city information.
+     */
+    @Column(name = "dalytran_merchant_city", length = 50)
+    private String dalytranMerchantCity;
+
+    /**
+     * Merchant ZIP/postal code.
+     * 
+     * Converted from: COBOL PIC X(10) DALYTRAN-MERCHANT-ZIP
+     * Maximum length: 10 characters
+     * Format: US ZIP (5 or 9 digits) or international postal codes
+     * 
+     * Postal code of merchant location. Used for:
+     * - Geographic transaction analysis
+     * - Fraud detection based on location patterns
+     * - Tax reporting and calculation (future enhancement)
+     * - Customer travel notification validation
+     * 
+     * Stored as String to accommodate various postal code formats:
+     * - US ZIP: "12345" or "12345-6789"
+     * - Canadian: "A1A 1A1"
+     * - UK: "SW1A 1AA"
+     * 
+     * Nullable field as some transaction types do not have merchant location data.
+     */
+    @Column(name = "dalytran_merchant_zip", length = 10)
+    private String dalytranMerchantZip;
+
+    /**
+     * Transaction origination timestamp.
+     * 
+     * Converted from: COBOL PIC X(26) DALYTRAN-ORIG-TS
+     * Format: YYYY-MM-DD-HH.MM.SS.nnnnnn (ISO timestamp with microseconds)
+     * 
+     * Date and time when transaction was originated at the point of sale, ATM,
+     * or online system. This is the actual transaction date/time from customer
+     * and merchant perspective, NOT the date/time when transaction was received
+     * by CardDemo system for processing.
+     * 
+     * Used for:
+     * - Transaction posting date determination (business date vs system date)
+     * - Transaction history chronological ordering
+     * - Fraud detection based on transaction timing patterns
+     * - Dispute resolution (merchant receipt timestamp validation)
+     * - Statement cycle assignment (determines which billing cycle includes transaction)
+     * 
+     * Critical for batch processing: CBTRNJ02C.cbl compares origination timestamp
+     * to current business date to determine:
+     * - Whether transaction posts to current cycle or previous cycle
+     * - Appropriate interest calculation period
+     * - Grace period eligibility
+     * 
+     * This field must always be populated and must be validated during batch
+     * processing to be within reasonable range (not future date, not older than
+     * 90 days which is typical chargeback period).
+     */
+    @Column(name = "dalytran_orig_ts", nullable = false)
+    private Timestamp dalytranOrigTs;
+
+    /**
+     * Transaction processing timestamp.
+     * 
+     * Converted from: COBOL PIC X(26) DALYTRAN-PROC-TS
+     * Format: YYYY-MM-DD-HH.MM.SS.nnnnnn (ISO timestamp with microseconds)
+     * 
+     * Date and time when transaction was received and processed by CardDemo system.
+     * This is the system timestamp when the transaction entered daily batch processing,
+     * NOT the original transaction time at merchant.
+     * 
+     * Automatically set during batch processing:
+     * - CBTRNJ01C.cbl sets this timestamp when validating and loading transaction to
+     *   daily_transaction staging table
+     * - Default value: CURRENT_TIMESTAMP at time of INSERT
+     * 
+     * Used for:
+     * - Audit tracking (transaction processing timeline)
+     * - Batch job performance monitoring
+     * - Transaction aging analysis (time from origination to processing)
+     * - Reconciliation with source files
+     * 
+     * Processing timestamp is used to determine batch processing cycle:
+     * - Transactions processed in same overnight batch have same processing date
+     * - Used for checkpoint/restart to identify which transactions were processed
+     *   before batch job failure
+     * 
+     * May differ significantly from origination timestamp for:
+     * - Offline transactions (processed when merchant batch settles)
+     * - Mail/phone order transactions (processed when received by merchant)
+     * - Disputed transactions (processed when dispute resolved)
+     * 
+     * Default value ensures field is populated even if source file does not
+     * contain processing timestamp.
+     */
+    @Column(name = "dalytran_proc_ts")
+    private Timestamp dalytranProcTs;
+}
