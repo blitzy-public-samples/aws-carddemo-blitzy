@@ -139,7 +139,7 @@ const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
    * @param event - Close event
    * @param reason - Reason for closing ('backdropClick' or 'escapeKeyDown')
    */
-  const handleClose = (event: {}, reason: 'backdropClick' | 'escapeKeyDown') => {
+  const handleClose = (_event: {}, reason: 'backdropClick' | 'escapeKeyDown') => {
     // Prevent closing on backdrop click if disabled
     if (disableBackdropClick && reason === 'backdropClick') {
       return;
