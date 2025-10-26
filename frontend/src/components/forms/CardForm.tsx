@@ -201,7 +201,10 @@ const validateLuhnAlgorithm = (cardNumber: string): boolean => {
 
   // Iterate from right to left
   for (let i = digits.length - 1; i >= 0; i--) {
-    let digit = parseInt(digits[i], 10);
+    const char = digits[i];
+    if (!char) continue; // Skip if undefined
+    
+    let digit = parseInt(char, 10);
 
     if (isEven) {
       digit *= 2;
@@ -216,26 +219,6 @@ const validateLuhnAlgorithm = (cardNumber: string): boolean => {
 
   // Valid if sum is divisible by 10
   return sum % 10 === 0;
-};
-
-/**
- * Formats card number with spaces for readability
- * 
- * Converts: 1234567890123456
- * To: 1234 5678 9012 3456
- * 
- * Improves user experience by making card numbers easier to read.
- * Standard credit card display format.
- * 
- * @param value Raw card number string
- * @returns Formatted card number with spaces
- */
-const formatCardNumber = (value: string): string => {
-  // Remove existing spaces
-  const cleaned = value.replace(/\s/g, '');
-  
-  // Add space every 4 digits
-  return cleaned.replace(/(.{4})/g, '$1 ').trim();
 };
 
 /**
@@ -334,7 +317,14 @@ const validationSchema = yup.object({
       (value) => {
         if (!value) return false;
 
-        const [year, month] = value.split('-').map(Number);
+        const parts = value.split('-').map(Number);
+        const year = parts[0];
+        const month = parts[1];
+        
+        // Validate year and month are present
+        if (!year || !month || isNaN(year) || isNaN(month)) {
+          return false;
+        }
         
         // Create date for last day of expiration month
         // Cards are valid through the end of the expiration month
@@ -524,11 +514,18 @@ const CardForm: React.FC<CardFormProps> = ({
                     
                     // Format as YYYY-MM
                     if (value.length >= 4) {
-                      // If user types MMYYYY, convert to YYYYMM
+                      // If user types 6 digits, detect format
                       if (value.length === 6) {
-                        const mm = value.slice(0, 2);
-                        const yyyy = value.slice(2, 6);
-                        value = `${yyyy}${mm}`;
+                        const firstTwo = parseInt(value.slice(0, 2), 10);
+                        // If first two digits are > 12, it's YYYYMM format
+                        // If first two digits are <= 12, it could be MMYYYY format
+                        if (firstTwo <= 12) {
+                          // Likely MMYYYY format, convert to YYYYMM
+                          const mm = value.slice(0, 2);
+                          const yyyy = value.slice(2, 6);
+                          value = `${yyyy}${mm}`;
+                        }
+                        // else it's already YYYYMM format
                       }
                       
                       const year = value.slice(0, 4);
