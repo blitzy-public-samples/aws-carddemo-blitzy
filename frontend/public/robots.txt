@@ -1,0 +1,10 @@
+# CardDemo Frontend - React SPA
+# Web Crawler Instructions
+# Converted from IBM mainframe CICS application to modern React web application
+
+# Allow all bots to crawl all content
+User-agent: *
+Allow: /
+
+# Sitemap location for search engine discovery
+Sitemap: https://yourdomain.com/sitemap.xml
