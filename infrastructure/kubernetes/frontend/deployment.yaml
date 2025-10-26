@@ -1,0 +1,221 @@
+# Kubernetes Deployment for CardDemo Frontend Application
+# Converted from mainframe BMS 3270 terminal screens to modern React 18.x SPA
+# Replaces 17 BMS maps with responsive web interface served by Nginx
+#
+# Original Architecture: CICS BMS screens (COSGN00.bms through COUSR03.bms)
+# Target Architecture: React SPA served via Nginx reverse proxy
+#
+# Deployment Strategy:
+# - Rolling updates with zero downtime (maxUnavailable: 0)
+# - 3 replicas for high availability
+# - Resource limits to ensure predictable performance
+# - Health checks for automatic recovery
+#
+# Related Components:
+# - Service: infrastructure/kubernetes/frontend/service.yaml
+# - Ingress: infrastructure/kubernetes/frontend/ingress.yaml
+# - Frontend Source: frontend/src/**/*.tsx
+# - Docker Image: Built from frontend/Dockerfile (multi-stage Node + Nginx)
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: carddemo-frontend
+  namespace: carddemo
+  labels:
+    app: carddemo-frontend
+    tier: frontend
+    component: web
+    version: v1
+  annotations:
+    description: "Frontend web server serving React SPA built from BMS screen migration"
+    migration.source: "BMS 3270 terminal screens (17 maps)"
+    migration.target: "React 18.x Single Page Application"
+spec:
+  # High availability configuration with 3 replicas
+  replicas: 3
+  
+  # Selector to match pods managed by this deployment
+  selector:
+    matchLabels:
+      app: carddemo-frontend
+      tier: frontend
+  
+  # Rolling update strategy for zero-downtime deployments
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1          # Allow 1 extra pod during updates (total 4 pods temporarily)
+      maxUnavailable: 0    # Ensure no pods are unavailable during updates (zero downtime)
+  
+  # Minimum time for pod to be ready before considering it available
+  minReadySeconds: 10
+  
+  # Number of old ReplicaSets to retain for rollback capability
+  revisionHistoryLimit: 3
+  
+  # Pod template specification
+  template:
+    metadata:
+      labels:
+        app: carddemo-frontend
+        tier: frontend
+        component: web
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+        prometheus.io/path: "/metrics"
+    
+    spec:
+      # Security context for pod-level security settings
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101      # Nginx user in alpine image
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      
+      # Container specification
+      containers:
+      - name: nginx
+        # Nginx 1.27 Alpine - lightweight production web server
+        image: nginx:1.27-alpine
+        imagePullPolicy: IfNotPresent
+        
+        # Container port configuration
+        ports:
+        - name: http
+          containerPort: 80
+          protocol: TCP
+        
+        # Resource management (as specified in requirements)
+        resources:
+          requests:
+            cpu: 100m        # 0.1 CPU cores - minimum guaranteed
+            memory: 128Mi    # 128 MiB - minimum guaranteed
+          limits:
+            cpu: 200m        # 0.2 CPU cores - maximum allowed
+            memory: 256Mi    # 256 MiB - maximum allowed
+        
+        # Liveness probe - determines if container needs to be restarted
+        # Checks if Nginx is responding to HTTP requests
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 30    # Wait 30s after container start
+          periodSeconds: 10           # Check every 10 seconds
+          timeoutSeconds: 5           # Request timeout
+          successThreshold: 1         # Must succeed once to be considered alive
+          failureThreshold: 3         # Restart after 3 consecutive failures
+        
+        # Readiness probe - determines if container can receive traffic
+        # Checks if Nginx is ready to serve requests
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 5      # Wait 5s after container start
+          periodSeconds: 5            # Check every 5 seconds
+          timeoutSeconds: 3           # Request timeout
+          successThreshold: 1         # Must succeed once to be considered ready
+          failureThreshold: 3         # Remove from service after 3 consecutive failures
+        
+        # Startup probe - for slow-starting containers
+        # Protects slow-starting containers from being killed by liveness probe
+        startupProbe:
+          httpGet:
+            path: /
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 10        # Allow up to 50 seconds for startup (10 * 5s)
+        
+        # Environment variables for container configuration
+        env:
+        - name: NGINX_PORT
+          value: "80"
+        - name: NGINX_HOST
+          value: "0.0.0.0"
+        
+        # Volume mounts for Nginx configuration and static files
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: static-content
+          mountPath: /usr/share/nginx/html
+          readOnly: true
+        
+        # Security context for container-level security settings
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 101
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE  # Allow binding to port 80
+        
+        # Lifecycle hooks for graceful shutdown
+        lifecycle:
+          preStop:
+            exec:
+              # Send SIGQUIT to Nginx for graceful shutdown
+              command: ["/bin/sh", "-c", "sleep 5 && /usr/sbin/nginx -s quit"]
+      
+      # Volumes referenced by container volumeMounts
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: nginx-config
+          items:
+          - key: nginx.conf
+            path: nginx.conf
+      - name: static-content
+        emptyDir: {}  # Populated by init container or during image build
+      
+      # DNS policy for pod
+      dnsPolicy: ClusterFirst
+      
+      # Restart policy
+      restartPolicy: Always
+      
+      # Termination grace period for graceful shutdown
+      terminationGracePeriodSeconds: 30
+      
+      # Pod affinity rules for high availability
+      affinity:
+        # Prefer to spread pods across different nodes
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - carddemo-frontend
+              topologyKey: kubernetes.io/hostname
+        
+        # Prefer to schedule on nodes with specific labels (optional)
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 50
+            preference:
+              matchExpressions:
+              - key: node-role.kubernetes.io/worker
+                operator: In
+                values:
+                - "true"
