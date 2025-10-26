@@ -1,0 +1,103 @@
+# Kubernetes Ingress Resource for CardDemo Frontend Application
+# Purpose: Define HTTP/HTTPS routing rules for external web traffic to the React SPA frontend
+# 
+# This replaces mainframe 3270 terminal access with modern HTTPS web access for all 17 
+# modernized BMS screens (COSGN00, COMEN01, COADM01, COACTUP, COACTVW, COCRDLI, COCRDSL, 
+# COCRDUP, COBIL00, COTRN00, COTRN01, COTRN02, CORPT00, COUSR00, COUSR01, COUSR02, COUSR03)
+#
+# Migration Context:
+# - Source: Mainframe 3270 terminal screens accessed via CICS regions
+# - Target: Modern web browser access via HTTPS to React 18.x Single Page Application
+# - Security: TLS/SSL termination at ingress with automatic HTTP to HTTPS redirect
+#
+# Configuration Notes:
+# - Host 'carddemo.example.com' is configurable per environment (dev/test/prod)
+# - TLS certificate must be created as Kubernetes secret 'carddemo-tls-cert' before deployment
+# - Nginx Ingress Controller must be installed in the cluster with ingressClass 'nginx'
+#
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-ingress
+  namespace: carddemo
+  labels:
+    app: carddemo-frontend
+    tier: frontend
+    component: ingress
+    managed-by: blitzy
+  annotations:
+    # Rewrite target to ensure root path routing works correctly
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    
+    # Force SSL redirect - all HTTP requests automatically redirected to HTTPS
+    # This ensures secure communication for all 17 modernized BMS screens
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    
+    # Enable regex path matching for flexible routing patterns
+    nginx.ingress.kubernetes.io/use-regex: 'true'
+    
+    # Optional: Backend protocol (uncomment if needed)
+    # nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    
+    # Optional: CORS configuration (uncomment and adjust if cross-origin access needed)
+    # nginx.ingress.kubernetes.io/enable-cors: "true"
+    # nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    # nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    # nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization"
+    
+    # Optional: Rate limiting (uncomment to enable protection against abuse)
+    # nginx.ingress.kubernetes.io/limit-rps: "100"
+    
+    # Optional: Request size limits (uncomment to set max body size)
+    # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    
+    # Optional: Timeouts (uncomment to adjust default timeouts)
+    # nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+
+spec:
+  # Specifies the Ingress controller to use - requires Nginx Ingress Controller
+  ingressClassName: nginx
+  
+  # TLS/SSL configuration for HTTPS termination
+  tls:
+    - hosts:
+        # IMPORTANT: Update this hostname per environment
+        # Dev: carddemo-dev.example.com
+        # Test: carddemo-test.example.com
+        # Prod: carddemo.example.com
+        - carddemo.example.com
+      # TLS certificate secret - must be created before deploying this Ingress
+      # Create using: kubectl create secret tls carddemo-tls-cert --cert=path/to/cert.pem --key=path/to/key.pem -n carddemo
+      secretName: carddemo-tls-cert
+  
+  # HTTP routing rules
+  rules:
+    # Host-based routing configuration
+    - host: carddemo.example.com
+      http:
+        paths:
+          # Root path routing - matches all frontend paths (/, /login, /accounts, /cards, etc.)
+          # This serves the React SPA for all 17 modernized BMS screens:
+          # - /login (COSGN00.bms → SignonPage.tsx)
+          # - /menu (COMEN01.bms → MainMenuPage.tsx)
+          # - /admin (COADM01.bms → AdminMenuPage.tsx)
+          # - /accounts/* (COACTUP.bms, COACTVW.bms → Account pages)
+          # - /cards/* (COCRDLI.bms, COCRDSL.bms, COCRDUP.bms → Card pages)
+          # - /transactions/* (COTRN00.bms, COTRN01.bms, COTRN02.bms → Transaction pages)
+          # - /billing/* (COBIL00.bms → BillingPage.tsx)
+          # - /reports/* (CORPT00.bms → ReportMenuPage.tsx)
+          # - /users/* (COUSR00.bms-COUSR03.bms → User management pages)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                # Routes to the frontend Kubernetes Service (ClusterIP)
+                # The service load balances across 3 Nginx pod replicas serving React static files
+                name: frontend-service
+                port:
+                  number: 80
+          
+          # Note: API traffic is handled by separate backend ingress (backend/ingress.yaml)
+          # API paths like /api/* are NOT routed through this frontend ingress
