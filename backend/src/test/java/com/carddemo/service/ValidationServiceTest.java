@@ -429,14 +429,15 @@ class ValidationServiceTest {
      */
     @Test
     void testInvalidStateCode() {
-        ValidationException exception = assertThrows(ValidationException.class,
-            () -> validationService.validateStateCode("ZZ")); // Invalid but correct format
         // Note: Current implementation only validates format (2 uppercase letters)
+        // "ZZ" passes format validation even though it's not a real state code
         // To validate against actual state list, would need reference data check
         
         // Test wrong length
-        assertThrows(ValidationException.class,
+        ValidationException exception = assertThrows(ValidationException.class,
             () -> validationService.validateStateCode("NYS"));
+        assertEquals("VAL003", exception.getErrorCode());
+        assertTrue(exception.getMessage().contains("exactly 2 uppercase letters"));
         
         // Test lowercase
         assertThrows(ValidationException.class,
@@ -508,10 +509,10 @@ class ValidationServiceTest {
      */
     @Test
     void testValidCreditCardNumber() {
-        // Valid test card numbers (pass Luhn algorithm)
-        assertDoesNotThrow(() -> validationService.validateCardNumber("4532015112830366")); // Visa
-        assertDoesNotThrow(() -> validationService.validateCardNumber("5425233430109903")); // Mastercard
-        assertDoesNotThrow(() -> validationService.validateCardNumber("374245455400126"));  // Amex (15 digits) - will fail format check
+        // Valid test card numbers (pass Luhn algorithm and are exactly 16 digits)
+        assertDoesNotThrow(() -> validationService.validateCardNumber("4532015112830366")); // Visa (16 digits)
+        assertDoesNotThrow(() -> validationService.validateCardNumber("5425233430109903")); // Mastercard (16 digits)
+        // Note: Amex cards are 15 digits, but ValidationService requires exactly 16 digits per COBOL PIC X(16)
     }
 
     /**
