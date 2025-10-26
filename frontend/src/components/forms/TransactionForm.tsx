@@ -21,7 +21,7 @@
  */
 
 import React from 'react';
-import { Formik, Form, Field } from 'formik';
+import { Formik, Form } from 'formik';
 import * as yup from 'yup';
 import {
   TextField,
@@ -210,22 +210,54 @@ export interface TransactionFormProps {
  */
 const validationSchema = yup.object({
   acctId: yup.string()
-    .when('cardNum', {
-      is: (val: string | undefined) => !val || val.length === 0,
-      then: (schema) => schema
-        .required('Either Account ID or Card Number is required')
-        .matches(/^\d{11}$/, 'Account ID must be exactly 11 digits'),
-      otherwise: (schema) => schema.notRequired()
-    }),
+    .test(
+      'account-or-card',
+      'Either Account ID or Card Number is required',
+      function(value) {
+        const { cardNum } = this.parent;
+        // At least one must be filled
+        if ((!value || value.length === 0) && (!cardNum || cardNum.length === 0)) {
+          return false;
+        }
+        return true;
+      }
+    )
+    .test(
+      'acctId-format',
+      'Account ID must be exactly 11 digits',
+      function(value) {
+        const { cardNum } = this.parent;
+        // Only validate format if acctId is provided and cardNum is not
+        if (!value || value.length === 0) return true;
+        if (cardNum && cardNum.length > 0) return true; // Skip if cardNum is provided
+        return /^\d{11}$/.test(value);
+      }
+    ),
   
   cardNum: yup.string()
-    .when('acctId', {
-      is: (val: string | undefined) => !val || val.length === 0,
-      then: (schema) => schema
-        .required('Either Account ID or Card Number is required')
-        .matches(/^\d{16}$/, 'Card Number must be exactly 16 digits'),
-      otherwise: (schema) => schema.notRequired()
-    }),
+    .test(
+      'card-or-account',
+      'Either Account ID or Card Number is required',
+      function(value) {
+        const { acctId } = this.parent;
+        // At least one must be filled
+        if ((!value || value.length === 0) && (!acctId || acctId.length === 0)) {
+          return false;
+        }
+        return true;
+      }
+    )
+    .test(
+      'cardNum-format',
+      'Card Number must be exactly 16 digits',
+      function(value) {
+        const { acctId } = this.parent;
+        // Only validate format if cardNum is provided and acctId is not
+        if (!value || value.length === 0) return true;
+        if (acctId && acctId.length > 0) return true; // Skip if acctId is provided
+        return /^\d{16}$/.test(value);
+      }
+    ),
   
   transTypeCd: yup.string()
     .required('Transaction Type is required')
@@ -317,7 +349,7 @@ const validationSchema = yup.object({
       'You must confirm to submit the transaction',
       value => value === 'Y'
     )
-}, [['acctId', 'cardNum']]); // Cyclic dependency resolution for mutually exclusive fields
+});
 
 /**
  * TransactionForm Component
@@ -354,8 +386,8 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
     transMerchantName: '',
     transMerchantCity: '',
     transMerchantZip: '',
-    transOrigTs: new Date().toISOString().split('T')[0], // Default to today
-    transProcTs: new Date().toISOString().split('T')[0], // Default to today
+    transOrigTs: new Date().toISOString().split('T')[0] || '', // Default to today
+    transProcTs: new Date().toISOString().split('T')[0] || '', // Default to today
     confirm: 'N'
   };
 
