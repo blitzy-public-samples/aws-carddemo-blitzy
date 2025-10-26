@@ -376,7 +376,22 @@ const validateDateFormat = (dateString: string, fieldName: string): void => {
   }
   
   // Parse date components
-  const [year, month, day] = dateString.split('-').map(Number);
+  const dateParts = dateString.split('-');
+  
+  // Validate we have exactly 3 parts (year, month, day)
+  if (dateParts.length !== 3) {
+    throw new Error(`${fieldName} must be in YYYY-MM-DD format`);
+  }
+  
+  // Convert to numbers and validate they are valid numbers
+  const year = Number(dateParts[0]);
+  const month = Number(dateParts[1]);
+  const day = Number(dateParts[2]);
+  
+  // Validate all parts are valid numbers
+  if (isNaN(year) || isNaN(month) || isNaN(day)) {
+    throw new Error(`${fieldName} must contain valid numeric date components`);
+  }
   
   // Validate month range 1-12 (COBOL lines 329-336, 355-362)
   if (month < 1 || month > 12) {
