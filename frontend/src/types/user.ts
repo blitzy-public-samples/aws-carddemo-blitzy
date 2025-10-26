@@ -377,4 +377,29 @@ export interface AuthResponse {
    * @see UserType
    */
   userType: string;
+
+  /**
+   * Optional refresh token (future enhancement)
+   * 
+   * Long-lived token used to obtain new JWT access tokens without re-authentication.
+   * Enables seamless session extension without interrupting user workflow.
+   * 
+   * Format: Random string or JWT (implementation-dependent)
+   * Storage: localStorage.setItem('refreshToken', refreshToken)
+   * 
+   * Security Notes:
+   * - More sensitive than access token (longer lifetime)
+   * - Should be stored securely (httpOnly cookie preferred in production)
+   * - Invalidated on logout
+   * - Single-use or limited-use to prevent replay attacks
+   * 
+   * Usage Flow:
+   * - Backend includes refreshToken in AuthResponse (optional)
+   * - Frontend stores refreshToken alongside access token
+   * - When access token expires, use refreshToken to get new access token
+   * - POST /api/auth/refresh with refreshToken to get new tokens
+   * 
+   * Example: "rt_abc123xyz789..." (refresh token string)
+   */
+  refreshToken?: string;
 }
