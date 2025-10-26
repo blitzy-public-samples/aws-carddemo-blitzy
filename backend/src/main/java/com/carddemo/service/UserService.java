@@ -141,6 +141,66 @@ public class UserService {
     }
 
     /**
+     * Retrieve users filtered by user type.
+     * 
+     * Converted from COBOL program: COUSR00C.cbl (lines 282-331) with filtering logic
+     * Original COBOL operation:
+     * <pre>
+     * EXEC CICS STARTBR
+     *      DATASET   (WS-USRSEC-FILE)
+     *      RIDFLD    (SEC-USR-ID)
+     * END-EXEC.
+     * 
+     * PERFORM UNTIL WS-IDX >= 11 OR USER-SEC-EOF OR ERR-FLG-ON
+     *     EXEC CICS READNEXT
+     *          DATASET   (WS-USRSEC-FILE)
+     *          INTO      (SEC-USER-DATA)
+     *     END-EXEC
+     *     
+     *     IF SEC-USR-TYPE = WS-FILTER-TYPE
+     *         PERFORM POPULATE-USER-DATA
+     *     END-IF
+     * END-PERFORM
+     * </pre>
+     * 
+     * COBOL browse-and-filter pattern replaced with direct SQL WHERE clause query.
+     * COBOL STARTBR/READNEXT with conditional filtering → SQL SELECT * FROM user_security WHERE user_type = ?
+     * 
+     * This method provides role-based filtering for user management screens.
+     * UserController calls this when userType query parameter is provided.
+     * 
+     * Valid user type values (from COBOL CSUSR01Y copybook):
+     * - 'A' = Administrator users (CDEMO-USRTYP-ADMIN)
+     * - 'U' = Regular users (CDEMO-USRTYP-USER)
+     * - 'O' = Operator users (system operators)
+     * 
+     * Performance: Leverages PostgreSQL B-tree index on user_type column (idx_user_type).
+     * Direct WHERE clause filtering is more efficient than COBOL browse-and-filter pattern.
+     * 
+     * @param userType User type code to filter by ('A', 'U', or 'O')
+     * @return List of users matching the specified type as UserDto (password hashes excluded)
+     * @throws BusinessException if userType is invalid
+     */
+    @Transactional(readOnly = true)
+    public List<UserDto> getUsersByType(String userType) {
+        log.debug("Retrieving users by type: {}", userType);
+        
+        // Validate user type before querying
+        if (!isValidUserType(userType)) {
+            log.warn("Invalid user type requested for filtering: {}", userType);
+            throw new BusinessException("BUS001", "Invalid user type. Must be A (Admin), U (User), or O (Operator)");
+        }
+        
+        List<UserSecurity> users = userSecurityRepository.findByUserType(userType);
+        
+        log.info("Retrieved {} users with type: {}", users.size(), userType);
+        
+        return users.stream()
+                .map(this::mapToDto)
+                .collect(Collectors.toList());
+    }
+
+    /**
      * Retrieve single user by ID.
      * 
      * Converted from COBOL program: COUSR02C.cbl (lines 143-172)
