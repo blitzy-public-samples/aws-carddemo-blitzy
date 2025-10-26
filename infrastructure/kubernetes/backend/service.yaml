@@ -1,0 +1,118 @@
+# Kubernetes Service for CardDemo Backend Spring Boot Application
+# 
+# Purpose: Defines a ClusterIP Service providing stable internal network endpoint
+# for backend Spring Boot REST API pods that replaced 15 CICS online transaction programs
+#
+# Migration Context:
+# - Replaces mainframe CICS transaction routing with Kubernetes service discovery
+# - Provides load balancing across multiple backend pod replicas (3-10 replicas via HPA)
+# - Enables internal cluster communication for REST API endpoints on port 8080
+# - Original CICS programs: COSGN00C (auth), COMEN01C (menu), COACTUPC (account update),
+#   COACTVWC (account view), COCRDLIC/COCRDSLC/COCRDUPC (card management),
+#   COBIL00C (billing), COTRN00C/COTRN01C/COTRN02C (transactions),
+#   CORPT00C (reports), COUSR00C-COUSR03C (user management)
+#
+# Technical Specifications:
+# - Service Type: ClusterIP (internal only, not exposed outside cluster)
+# - Service Port: 8080 (Spring Boot default HTTP port)
+# - Target Port: 8080 (matches container port in Deployment)
+# - Protocol: TCP
+# - Session Affinity: None (enables proper load balancing across replicas)
+# - Namespace: carddemo
+#
+# Related Resources:
+# - Deployment: infrastructure/kubernetes/backend/deployment.yaml
+# - Ingress: infrastructure/kubernetes/backend/ingress.yaml (external access via /api/*)
+# - HPA: infrastructure/kubernetes/backend/hpa.yaml (auto-scaling 3-10 replicas)
+#
+# Performance Requirements:
+# - Must support 10,000 TPS (transactions per second) peak load
+# - Sub-200ms response time requirement for transaction endpoints
+# - Load balancing across multiple backend replicas for high availability
+#
+# Converted from: Mainframe CICS transaction routing infrastructure
+# Conversion date: 2025 (mainframe-to-cloud migration)
+# Framework: Kubernetes v1.31, Spring Boot 3.4.5, Java 21
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: carddemo
+  labels:
+    app: carddemo-backend
+    tier: backend
+    component: api
+    version: v1
+    environment: production
+    # Migration tracking labels
+    migration-source: cics-transaction-routing
+    original-system: mainframe-cobol
+    replaced-programs: "15-cics-online-programs"
+  annotations:
+    description: "ClusterIP Service for backend Spring Boot REST API pods"
+    purpose: "Internal cluster communication and load balancing for backend pods"
+    migration.carddemo/source: "CICS transaction routing infrastructure"
+    migration.carddemo/target: "Kubernetes Service with ClusterIP"
+    performance.carddemo/throughput: "10000-tps"
+    performance.carddemo/response-time: "sub-200ms"
+    service.carddemo/port: "8080"
+    service.carddemo/protocol: "HTTP"
+    # Service discovery annotation for monitoring
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/actuator/prometheus"
+
+spec:
+  # Service Type: ClusterIP provides internal-only access within the cluster
+  # External access is provided via Ingress resource (ingress.yaml)
+  type: ClusterIP
+  
+  # Selector: Must match the labels defined in backend Deployment pods
+  # These labels are used by Kubernetes to identify which pods belong to this Service
+  selector:
+    app: carddemo-backend
+    tier: backend
+  
+  # Session Affinity: None enables proper round-robin load balancing
+  # All requests are distributed evenly across available backend pods
+  # No sticky sessions - maintains stateless REST API design
+  sessionAffinity: None
+  
+  # Port Configuration
+  ports:
+    - name: http
+      # Service port: The port exposed by this Service within the cluster
+      port: 8080
+      # Target port: The port on the backend pod/container where traffic is forwarded
+      # Must match containerPort in Deployment spec
+      targetPort: 8080
+      # Protocol: TCP for HTTP REST API traffic
+      protocol: TCP
+      # appProtocol provides additional context for service mesh and monitoring tools
+      appProtocol: http
+  
+  # IP Families Configuration (for dual-stack support if needed in future)
+  ipFamilies:
+    - IPv4
+  ipFamilyPolicy: SingleStack
+  
+  # Internal Traffic Policy: Cluster routes traffic to any healthy backend pod
+  # Could be changed to "Local" for node-local routing if needed for performance
+  internalTrafficPolicy: Cluster
+
+---
+# Service Account for Backend Pods (if RBAC is required)
+# This is optional but recommended for security best practices
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend-service-account
+  namespace: carddemo
+  labels:
+    app: carddemo-backend
+    tier: backend
+    component: serviceaccount
+  annotations:
+    description: "Service account for backend Spring Boot application pods"
+    purpose: "Provides identity and RBAC permissions for backend pods"
