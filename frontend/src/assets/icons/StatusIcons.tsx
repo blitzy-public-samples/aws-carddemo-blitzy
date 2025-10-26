@@ -118,6 +118,7 @@ export const SuccessIcon: React.FC<StatusIconProps> = ({
       className={className}
       role="img"
       aria-label={ariaLabel}
+      aria-hidden={false}
     />
   );
 };
@@ -165,6 +166,7 @@ export const ErrorIcon: React.FC<StatusIconProps> = ({
       className={className}
       role="img"
       aria-label={ariaLabel}
+      aria-hidden={false}
     />
   );
 };
@@ -211,6 +213,7 @@ export const WarningIcon: React.FC<StatusIconProps> = ({
       className={className}
       role="img"
       aria-label={ariaLabel}
+      aria-hidden={false}
     />
   );
 };
@@ -257,6 +260,7 @@ export const InfoIcon: React.FC<StatusIconProps> = ({
       className={className}
       role="img"
       aria-label={ariaLabel}
+      aria-hidden={false}
     />
   );
 };
