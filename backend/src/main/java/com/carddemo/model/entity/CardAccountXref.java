@@ -129,8 +129,13 @@ public class CardAccountXref {
      * - Who is authorized to use this card
      * - Customer contact information for card-specific communications
      * - Liability assignment for card transactions
+     * 
+     * Note: Uses insertable=false, updatable=false because this column is
+     * also mapped by the customer @ManyToOne relationship. The relationship
+     * is the primary way to manage this foreign key, and this field provides
+     * read-only access to the raw ID value.
      */
-    @Column(name = "xref_cust_id", nullable = false)
+    @Column(name = "xref_cust_id", nullable = false, insertable = false, updatable = false)
     private Long xrefCustId;
 
     /**
