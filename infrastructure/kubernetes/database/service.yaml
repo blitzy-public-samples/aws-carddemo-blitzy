@@ -1,0 +1,118 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+################################################################################
+# Kubernetes Headless Service for PostgreSQL StatefulSet
+################################################################################
+# Converted from: VSAM file access operations (OPENFIL.jcl, CLOSEFIL.jcl)
+# Original function: CICS VSAM file management for account data access
+# 
+# Transformation notes:
+# - Replaces VSAM dataset definitions (ACCTFILE.jcl) with PostgreSQL service
+# - Replaces CEMT SET FIL OPEN/CLOSE commands with persistent database connections
+# - Provides stable network identities for PostgreSQL StatefulSet pods
+# - Enables backend Spring Boot application to connect via stable DNS hostname
+# - Headless service (ClusterIP: None) provides direct pod-to-pod connectivity
+# - StatefulSet pods get predictable DNS names: carddemo-postgres-{0..N}.carddemo-postgres.carddemo.svc.cluster.local
+#
+# Migration rationale:
+# - VSAM KSDS files → PostgreSQL tables with B-tree indexes
+# - File OPEN/CLOSE operations → Connection pool management in Spring Boot
+# - CICS file definitions → Kubernetes Service networking
+# - Record-level locking → PostgreSQL MVCC and row-level locking
+################################################################################
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: carddemo-postgres
+  namespace: carddemo
+  labels:
+    app: carddemo
+    component: database
+    tier: data
+    version: "16.6"
+  annotations:
+    description: "Headless service for PostgreSQL StatefulSet providing stable network identities"
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+    # Replaced VSAM file operations:
+    # - ACCTFILE.jcl: Account data VSAM KSDS definition
+    # - OPENFIL.jcl: CEMT SET FIL(ACCTDAT) OPE
+    # - CLOSEFIL.jcl: CEMT SET FIL(ACCTDAT) CLO
+spec:
+  # Headless service: ClusterIP set to None
+  # Provides stable network identities for StatefulSet pods
+  # Each pod gets DNS entry: <pod-name>.<service-name>.<namespace>.svc.cluster.local
+  clusterIP: None
+  
+  # Selector matches labels on PostgreSQL StatefulSet pods
+  # This associates the service with the correct pods
+  selector:
+    app: carddemo
+    component: database
+    tier: data
+  
+  # PostgreSQL port configuration
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+  
+  # Session affinity not needed for database connections
+  # Connection pooling handled by Spring Boot HikariCP
+  sessionAffinity: None
+  
+  # Publish not-ready addresses for StatefulSet pod startup
+  # Allows pods to be discovered before fully ready
+  publishNotReadyAddresses: true
+  
+  # Service type is ClusterIP (default, but explicit for clarity)
+  # Database is internal to cluster only, not exposed externally
+  type: ClusterIP
+
+---
+################################################################################
+# Service Connection Details for Backend Application Configuration
+################################################################################
+# Backend Spring Boot application connects using:
+#
+# Connection String Format:
+#   jdbc:postgresql://carddemo-postgres.carddemo.svc.cluster.local:5432/carddemo
+#
+# Individual Pod Connection (if needed for admin operations):
+#   jdbc:postgresql://carddemo-postgres-0.carddemo-postgres.carddemo.svc.cluster.local:5432/carddemo
+#
+# Environment Variables (referenced in backend deployment):
+#   DB_HOST: carddemo-postgres.carddemo.svc.cluster.local
+#   DB_PORT: 5432
+#   DB_NAME: carddemo
+#   DB_USERNAME: <from secret>
+#   DB_PASSWORD: <from secret>
+#
+# Spring Boot application.yml configuration:
+#   spring:
+#     datasource:
+#       url: jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}
+#       username: ${DB_USERNAME}
+#       password: ${DB_PASSWORD}
+#       driver-class-name: org.postgresql.Driver
+#       hikari:
+#         maximum-pool-size: 20
+#         minimum-idle: 5
+#         connection-timeout: 30000
+#         idle-timeout: 600000
+#         max-lifetime: 1800000
+#
+# Connection Pool (HikariCP) replaces VSAM file access patterns:
+# - VSAM READ  → JPA repository.findById()
+# - VSAM WRITE → JPA repository.save() [insert]
+# - VSAM REWRITE → JPA repository.save() [update]
+# - VSAM DELETE → JPA repository.deleteById()
+#
+# Performance equivalence to VSAM:
+# - VSAM primary key access: <10ms
+# - PostgreSQL indexed lookup: <10ms (B-tree indexes on primary keys)
+# - Connection pool eliminates OPEN/CLOSE overhead
+# - Persistent connections vs. CICS file control blocks
+################################################################################
