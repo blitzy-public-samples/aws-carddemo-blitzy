@@ -1,0 +1,43 @@
+# Kubernetes Namespace Definition for CardDemo Application
+# 
+# Purpose: Creates isolated 'carddemo' namespace for all CardDemo application resources
+# Migration Context: Replaces mainframe CICS region isolation with cloud-native Kubernetes namespace isolation
+# 
+# This namespace provides:
+# - Logical separation of CardDemo resources from other applications
+# - Resource quota management and limit enforcement
+# - Network policy boundaries for security
+# - RBAC scope for access control
+# - Environment-level isolation
+#
+# Original System: IBM CICS Transaction Server region for CardDemo application
+# Target System: Kubernetes namespace with equivalent resource isolation
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: carddemo
+  labels:
+    # Kubernetes recommended labels for application identification
+    app.kubernetes.io/name: carddemo
+    app.kubernetes.io/instance: carddemo-prod
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: namespace
+    app.kubernetes.io/part-of: carddemo-platform
+    app.kubernetes.io/managed-by: kubernetes
+    
+    # Custom labels for organization and filtering
+    application: carddemo
+    domain: credit-card-management
+    tier: platform
+    migrated-from: mainframe-cics
+    
+    # Environment segregation label
+    environment: production
+    
+  annotations:
+    description: "CardDemo credit card management system - Mainframe to Cloud migration"
+    owner: "platform-engineering-team"
+    migration-date: "2025"
+    legacy-system: "IBM CICS Transaction Server"
+    contact: "carddemo-support@example.com"
