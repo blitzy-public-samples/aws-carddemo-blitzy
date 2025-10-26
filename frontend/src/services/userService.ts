@@ -86,7 +86,6 @@
 
 import api from './api';
 import { User } from '../types/user';
-import { SortParams } from '../types/common';
 
 /**
  * Pagination parameters interface
@@ -264,8 +263,8 @@ export async function getAllUsers(
 
     // Add sorting parameters if provided
     if (params?.sortBy) {
-      queryParams.sortBy = params.sortBy;
-      queryParams.sortDirection = params.sortDirection || 'asc';
+      queryParams['sortBy'] = params.sortBy;
+      queryParams['sortDirection'] = params.sortDirection || 'asc';
     }
 
     // Make GET request to backend
