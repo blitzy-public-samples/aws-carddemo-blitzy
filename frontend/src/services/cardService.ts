@@ -133,18 +133,18 @@ export const getAllCards = async (params?: GetCardsParams): Promise<GetCardsResp
     // Add optional sorting parameters if provided
     // Maps to COBOL indexed file access (primary key CARD-NUM, alternate index CARD-ACCT-ID)
     if (params?.sortBy) {
-      queryParams.sort = `${params.sortBy},${params.sortDirection || 'asc'}`;
+      queryParams['sort'] = `${params.sortBy},${params.sortDirection || 'asc'}`;
     }
 
     // Add optional filter parameters
     // Card number filter - Maps to COBOL WS-CARD-RID-CARDNUM browse key
     if (params?.cardNum) {
-      queryParams.cardNum = params.cardNum;
+      queryParams['cardNum'] = params.cardNum;
     }
 
     // Account ID filter - Maps to COBOL account-specific filtering (WS-EXCLUDE-THIS-RECORD logic)
     if (params?.acctId) {
-      queryParams.acctId = params.acctId;
+      queryParams['acctId'] = params.acctId;
     }
 
     // Make GET request to Spring Boot CardController.getAllCards()
