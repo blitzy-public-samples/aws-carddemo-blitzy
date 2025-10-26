@@ -1,0 +1,317 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+###############################################################################
+# Kubernetes CronJob for Automated PostgreSQL Database Backups
+#
+# Converted from mainframe JCL:
+#   - Source: app/jcl/TRANBKP.jcl (VSAM REPRO backup operations)
+#   - Source: app/jcl/DEFGDGB.jcl (Generation Data Group definitions)
+#
+# Original Mainframe Backup Strategy:
+#   - VSAM REPRO command copied transaction file to backup dataset
+#   - GDG (Generation Data Group) with LIMIT(5) kept 5 backup generations
+#   - SCRATCH option automatically deleted oldest generation
+#   - Backup dataset: AWS.M2.CARDDEMO.TRANSACT.BKUP(+1)
+#
+# Cloud-Native Backup Strategy:
+#   - PostgreSQL pg_dump creates compressed custom-format backup
+#   - Date-stamped backup files (carddemo-YYYYMMDD-HHMMSS.dump)
+#   - Persistent volume or cloud storage (S3/Azure Blob/GCS) for backup archive
+#   - Retention policy enforced via separate cleanup job or cloud lifecycle rules
+#   - Scheduled at 02:00 AM daily matching overnight batch processing window
+#
+# Migration Notes:
+#   - VSAM KSDS key-based access → PostgreSQL B-tree indexed tables
+#   - VSAM record length 350 bytes → PostgreSQL variable-length rows
+#   - Mainframe GDG LIMIT(5) → Keep last 5 daily backups (7200 minutes = 5 days)
+#   - REPRO FILEIN/FILEOUT → pg_dump with custom format (-F c)
+#
+###############################################################################
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: carddemo-db-backup
+  namespace: carddemo
+  labels:
+    app: carddemo
+    component: database
+    tier: backup
+  annotations:
+    description: "Automated daily PostgreSQL database backup for CardDemo application"
+    converted-from: "TRANBKP.jcl, DEFGDGB.jcl"
+    backup-retention: "5 generations (5 days) matching mainframe GDG LIMIT(5)"
+    schedule: "Daily at 02:00 AM (matching overnight batch window)"
+spec:
+  # Schedule: Daily at 02:00 AM (cron format: minute hour day month weekday)
+  # Matches mainframe overnight batch processing window from section 0.2.6
+  schedule: "0 2 * * *"
+  
+  # Timezone for schedule (optional, defaults to controller timezone)
+  # timeZone: "America/New_York"
+  
+  # Concurrency policy: Do not run multiple backup jobs concurrently
+  concurrencyPolicy: Forbid
+  
+  # Start deadline: If backup doesn't start within 30 minutes, skip this run
+  startingDeadlineSeconds: 1800
+  
+  # Job history limits (matching mainframe GDG concept)
+  # Keep last 3 successful backups in history (not the backup files themselves)
+  successfulJobsHistoryLimit: 3
+  # Keep last 1 failed backup in history for troubleshooting
+  failedJobsHistoryLimit: 1
+  
+  # Suspend: Set to true to temporarily disable backups
+  suspend: false
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: database-backup
+        tier: backup
+    spec:
+      # Backup job timeout: 1 hour maximum
+      activeDeadlineSeconds: 3600
+      
+      # Do not restart backup job on failure
+      backoffLimit: 2
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: database-backup
+            tier: backup
+        spec:
+          restartPolicy: Never
+          
+          # Service account with permissions to access secrets and persistent volumes
+          serviceAccountName: carddemo-backup-sa
+          
+          containers:
+          - name: postgres-backup
+            # PostgreSQL 16-alpine image for pg_dump utility
+            # Matches PostgreSQL 16.x version requirement from section 0.5.1
+            image: postgres:16-alpine
+            imagePullPolicy: IfNotPresent
+            
+            # Backup command using pg_dump with custom format
+            # Custom format (-F c) provides:
+            #   - Compression by default
+            #   - Flexibility for selective restore
+            #   - Better performance than plain SQL
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Starting CardDemo database backup at $(date)"
+              
+              # Generate backup filename with timestamp
+              BACKUP_DATE=$(date +%Y%m%d-%H%M%S)
+              BACKUP_FILE="/backup/carddemo-${BACKUP_DATE}.dump"
+              
+              echo "Backup file: ${BACKUP_FILE}"
+              
+              # Execute pg_dump with custom format
+              # Options:
+              #   -h: Database host
+              #   -p: Database port
+              #   -U: Database user
+              #   -d: Database name
+              #   -F c: Custom format (compressed)
+              #   -f: Output file path
+              #   -v: Verbose output
+              #   --no-password: Use PGPASSWORD environment variable
+              pg_dump \
+                -h "${POSTGRES_HOST}" \
+                -p "${POSTGRES_PORT}" \
+                -U "${POSTGRES_USER}" \
+                -d "${POSTGRES_DB}" \
+                -F c \
+                -f "${BACKUP_FILE}" \
+                -v \
+                --no-password
+              
+              # Verify backup file was created
+              if [ -f "${BACKUP_FILE}" ]; then
+                BACKUP_SIZE=$(du -h "${BACKUP_FILE}" | cut -f1)
+                echo "Backup completed successfully"
+                echo "Backup file: ${BACKUP_FILE}"
+                echo "Backup size: ${BACKUP_SIZE}"
+              else
+                echo "ERROR: Backup file not created"
+                exit 1
+              fi
+              
+              # Implement GDG-style retention: Keep last 5 backups (LIMIT(5) from DEFGDGB.jcl)
+              # Delete backups older than 5 days
+              echo "Cleaning up old backups (keeping last 5 days)..."
+              find /backup -name "carddemo-*.dump" -type f -mtime +5 -delete
+              
+              # List remaining backups
+              echo "Current backups:"
+              ls -lh /backup/carddemo-*.dump 2>/dev/null || echo "No previous backups found"
+              
+              echo "Backup process completed at $(date)"
+            
+            # Environment variables for database connection
+            env:
+            # Database host (from ConfigMap or hardcoded service name)
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: postgres-host
+                  optional: false
+            
+            # Database port
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: postgres-port
+                  optional: false
+            
+            # Database name
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: postgres-database
+                  optional: false
+            
+            # Database user (from Secret)
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-db-secret
+                  key: postgres-user
+                  optional: false
+            
+            # Database password (from Secret)
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-db-secret
+                  key: postgres-password
+                  optional: false
+            
+            # Volume mounts for backup storage
+            volumeMounts:
+            # Mount persistent volume for backup storage
+            - name: backup-storage
+              mountPath: /backup
+              readOnly: false
+            
+            # Resource requests and limits for backup container
+            # Backup jobs can be resource-intensive during pg_dump execution
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "512Mi"
+              limits:
+                cpu: "1000m"
+                memory: "1Gi"
+            
+            # Security context for container
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              runAsUser: 999  # postgres user in PostgreSQL container
+              capabilities:
+                drop:
+                - ALL
+              readOnlyRootFilesystem: false  # Need write access for pg_dump temp files
+          
+          # Volumes definition
+          volumes:
+          # Persistent volume for backup storage
+          # In production, this should be:
+          #   - A PersistentVolumeClaim backed by network storage (NFS, EBS, etc.)
+          #   - OR a cloud storage mount (S3, Azure Blob, GCS via CSI drivers)
+          - name: backup-storage
+            persistentVolumeClaim:
+              claimName: carddemo-backup-pvc
+          
+          # Alternative: Use cloud storage (uncomment for S3/GCS/Azure Blob)
+          # - name: backup-storage
+          #   csi:
+          #     driver: s3.csi.aws.com
+          #     volumeAttributes:
+          #       bucketName: carddemo-backups
+          #       prefix: database/
+
+---
+# Optional: ServiceAccount for backup job
+# Provides necessary permissions for accessing secrets and volumes
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: carddemo-backup-sa
+  namespace: carddemo
+  labels:
+    app: carddemo
+    component: database-backup
+
+---
+# Optional: PersistentVolumeClaim for backup storage
+# Adjust size and storageClass based on backup volume requirements
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: carddemo-backup-pvc
+  namespace: carddemo
+  labels:
+    app: carddemo
+    component: database-backup
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      # Adjust storage size based on database size and retention policy
+      # For 5 days of backups with estimated 2GB per backup = 10GB minimum
+      # Add 50% buffer = 15GB recommended
+      storage: 15Gi
+  # Specify storageClass for your cluster (gp3, standard, etc.)
+  storageClassName: gp3
+  volumeMode: Filesystem
+
+---
+# Optional: ConfigMap for database connection parameters
+# Reference this from the backup job environment variables
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carddemo-config
+  namespace: carddemo
+  labels:
+    app: carddemo
+    component: configuration
+data:
+  postgres-host: "carddemo-postgres-service"
+  postgres-port: "5432"
+  postgres-database: "carddemo"
+
+---
+# Note: Create the following Secret separately with actual credentials
+# kubectl create secret generic carddemo-db-secret \
+#   --from-literal=postgres-user=postgres \
+#   --from-literal=postgres-password=<your-secure-password> \
+#   -n carddemo
+#
+# Example Secret structure (DO NOT commit actual passwords to git):
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: carddemo-db-secret
+#   namespace: carddemo
+# type: Opaque
+# data:
+#   postgres-user: <base64-encoded-username>
+#   postgres-password: <base64-encoded-password>
