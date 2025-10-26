@@ -17,6 +17,8 @@
 
 package com.carddemo.controller;
 
+import com.carddemo.exception.BusinessException;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.model.dto.AuthRequest;
 import com.carddemo.model.dto.AuthResponse;
 import com.carddemo.model.dto.ErrorResponse;
@@ -224,7 +226,11 @@ public class AuthController {
             logger.debug("Login request received for user: {}", authRequest.getUserId());
 
             // Call AuthService to authenticate user and generate JWT token
-            AuthResponse authResponse = authService.authenticate(authRequest);
+            // AuthService.authenticate() expects (String userId, String password)
+            AuthResponse authResponse = authService.authenticate(
+                authRequest.getUserId(), 
+                authRequest.getPassword()
+            );
 
             logger.info("User login successful: {}", authRequest.getUserId());
 
@@ -251,6 +257,33 @@ public class AuthController {
             ErrorResponse errorResponse = ErrorResponse.unauthorized(
                     "Invalid credentials",
                     "User ID or password is incorrect",
+                    "/api/auth/login"
+            );
+
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(errorResponse);
+
+        } catch (ValidationException e) {
+            // Validation error from ValidationService (empty userId, empty password, invalid format)
+            logger.warn("Login failed - validation error: {}", e.getMessage());
+            
+            // Map ValidationException to 400 BAD_REQUEST for input validation errors
+            ErrorResponse errorResponse = ErrorResponse.badRequest(
+                    e.getMessage(),
+                    "Request validation failed",
+                    "/api/auth/login"
+            );
+
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse);
+
+        } catch (BusinessException e) {
+            // Business logic error from AuthService (user not found, wrong password)
+            // COBOL COSGN00C.cbl throws: "User not found. Try again ..." or "Wrong Password. Try again ..."
+            logger.warn("Login failed - business exception: {}", e.getMessage());
+            
+            // Map BusinessException to 401 UNAUTHORIZED for authentication failures
+            ErrorResponse errorResponse = ErrorResponse.unauthorized(
+                    "Invalid credentials",
+                    e.getMessage(), // Use exact COBOL error message
                     "/api/auth/login"
             );
 
@@ -334,10 +367,12 @@ public class AuthController {
             logger.debug("Logout request received");
 
             // Call AuthService to handle logout (optional token blacklisting)
-            String message = authService.logout(token);
+            authService.logout(token);
 
             logger.info("User logout successful");
 
+            // Create success message matching COBOL "Thank you for using Credit Card Demo application ..." message
+            String message = "Logout successful. Thank you for using Credit Card Demo application.";
             return ResponseEntity.ok(new LogoutResponse(message));
 
         } catch (Exception e) {
