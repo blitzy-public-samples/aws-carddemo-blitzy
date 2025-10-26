@@ -167,11 +167,19 @@ export const VALIDATION_RULES = {
  * TIMESTAMP: Used for full datetime values
  * 
  * Per Section 0.7.5: Preserve COBOL date format (YYYY-MM-DD as PIC X(10))
+ * 
+ * Note: Uses date-fns format tokens (lowercase: yyyy, dd, MM)
+ * - yyyy: 4-digit year (not YYYY which is ISO week-numbering year)
+ * - MM: 2-digit month
+ * - dd: 2-digit day (not DD which is day of year)
+ * - HH: 2-digit hour (24-hour format)
+ * - mm: 2-digit minute
+ * - ss: 2-digit second
  */
 export const DATE_FORMATS = {
-  DISPLAY: 'MM/DD/YYYY',           // User-facing display format
-  API: 'YYYY-MM-DD',               // API communication format (ISO 8601)
-  TIMESTAMP: 'YYYY-MM-DD HH:mm:ss', // Full timestamp format
+  DISPLAY: 'MM/dd/yyyy',           // User-facing display format
+  API: 'yyyy-MM-dd',               // API communication format (ISO 8601)
+  TIMESTAMP: 'yyyy-MM-dd HH:mm:ss', // Full timestamp format
 } as const;
 
 /**
