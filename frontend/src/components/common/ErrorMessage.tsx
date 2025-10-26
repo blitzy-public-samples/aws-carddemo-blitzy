@@ -138,17 +138,20 @@ const ErrorMessage: React.FC<ErrorMessageProps> = ({
   // Auto-hide timer effect
   // Automatically dismisses alert after autoHideDuration milliseconds
   React.useEffect(() => {
-    if (autoHideDuration && message) {
-      const timer = setTimeout(() => {
-        setVisible(false);
-        // Call onClose callback after hide animation completes
-        // Allows parent to clear message state
-        onClose?.();
-      }, autoHideDuration);
-
-      // Cleanup timer on unmount or when dependencies change
-      return () => clearTimeout(timer);
+    // Early return if auto-hide not configured or no message
+    if (!autoHideDuration || !message) {
+      return undefined;
     }
+
+    const timer = setTimeout(() => {
+      setVisible(false);
+      // Call onClose callback after hide animation completes
+      // Allows parent to clear message state
+      onClose?.();
+    }, autoHideDuration);
+
+    // Cleanup timer on unmount or when dependencies change
+    return () => clearTimeout(timer);
   }, [autoHideDuration, message, onClose]);
 
   // Reset visibility when message changes
