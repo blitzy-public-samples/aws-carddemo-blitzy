@@ -248,19 +248,20 @@ public class BatchConfig {
      * </ul>
      * 
      * @param jobRepository JobRepository for job metadata tracking
-     * @param taskExecutor TaskExecutor for background job execution
+     * @param batchTaskExecutor TaskExecutor for background job execution (explicitly qualified)
      * @return Configured TaskExecutorJobLauncher for asynchronous job launching
      * @throws Exception if JobLauncher cannot be created
      */
     @Bean
-    public JobLauncher jobLauncher(JobRepository jobRepository, TaskExecutor taskExecutor) throws Exception {
+    public JobLauncher jobLauncher(JobRepository jobRepository, 
+                                   @org.springframework.beans.factory.annotation.Qualifier("batchTaskExecutor") TaskExecutor batchTaskExecutor) throws Exception {
         TaskExecutorJobLauncher jobLauncher = new TaskExecutorJobLauncher();
         
         // Set job repository for job metadata tracking
         jobLauncher.setJobRepository(jobRepository);
         
         // Set async task executor for background job execution
-        jobLauncher.setTaskExecutor(taskExecutor);
+        jobLauncher.setTaskExecutor(batchTaskExecutor);
         
         // Initialize job launcher
         jobLauncher.afterPropertiesSet();
@@ -372,15 +373,19 @@ public class BatchConfig {
      * </ul>
      * 
      * @param dataSource PostgreSQL DataSource for metadata queries
+     * @param transactionManager PlatformTransactionManager for read-only transactions
      * @return Configured JobExplorer for job metadata queries
      * @throws Exception if JobExplorer cannot be created
      */
     @Bean
-    public JobExplorer jobExplorer(DataSource dataSource) throws Exception {
+    public JobExplorer jobExplorer(DataSource dataSource, PlatformTransactionManager transactionManager) throws Exception {
         JobExplorerFactoryBean factory = new JobExplorerFactoryBean();
         
         // Set PostgreSQL DataSource for metadata queries
         factory.setDataSource(dataSource);
+        
+        // Set transaction manager for read-only operations
+        factory.setTransactionManager(transactionManager);
         
         // Set table prefix matching JobRepository configuration
         factory.setTablePrefix("BATCH_");

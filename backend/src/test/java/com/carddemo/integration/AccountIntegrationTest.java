@@ -14,7 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -61,9 +61,9 @@ import static org.hamcrest.Matchers.*;
  * @see com.carddemo.repository.AccountRepository
  */
 @SpringBootTest(
-    classes = CardDemoApplication.class,
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT
 )
+@ActiveProfiles("integration-test")
 @Testcontainers
 public class AccountIntegrationTest {
 
@@ -86,15 +86,18 @@ public class AccountIntegrationTest {
 
     /**
      * Configure Spring Boot to use the Testcontainers PostgreSQL instance.
-     * This dynamically sets the datasource properties to point to the test database.
+     * Dynamically sets the datasource connection properties from the test container.
+     * 
+     * CRITICAL: Must explicitly override ddl-auto here as @DynamicPropertySource has highest
+     * precedence and ensures Hibernate creates schema even if main application.yml sets validate.
      */
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", postgresContainer::getJdbcUrl);
         registry.add("spring.datasource.username", postgresContainer::getUsername);
         registry.add("spring.datasource.password", postgresContainer::getPassword);
+        // Force Hibernate to create schema - this overrides application.yml's "validate" setting
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
-        registry.add("spring.flyway.enabled", () -> "false");
     }
 
     /**
@@ -105,6 +108,10 @@ public class AccountIntegrationTest {
     void setUp() {
         RestAssured.baseURI = "http://localhost";
         RestAssured.port = port;
+        
+        // Configure REST Assured to include authentication header for all requests
+        // This bypasses JWT authentication for integration tests
+        RestAssured.authentication = RestAssured.preemptive().basic("test", "test");
         
         // Clean database before each test to ensure isolation
         accountRepository.deleteAll();

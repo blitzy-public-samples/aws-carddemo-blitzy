@@ -169,18 +169,18 @@ public class JwtTokenProvider {
 
     /**
      * Base64-encoded secret key for HMAC-SHA256 signature algorithm.
-     * Injected from application.yml property: jwt.secret
+     * Injected from application.yml property: carddemo.security.jwt.secret
      * Must be minimum 256 bits (32 bytes) when decoded from Base64.
      */
-    @Value("${jwt.secret}")
+    @Value("${carddemo.security.jwt.secret}")
     private String jwtSecret;
 
     /**
      * Token expiration time in milliseconds.
-     * Injected from application.yml property: jwt.expiration
+     * Injected from application.yml property: carddemo.security.jwt.expiration
      * Default value: 3600000ms (1 hour) matching CICS session timeout.
      */
-    @Value("${jwt.expiration:3600000}")
+    @Value("${carddemo.security.jwt.expiration:3600000}")
     private long jwtExpiration;
 
     /**

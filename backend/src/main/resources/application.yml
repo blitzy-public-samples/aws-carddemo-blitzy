@@ -383,8 +383,10 @@ carddemo:
     # JWT token expiration (1 hour)
     jwt:
       expiration: 3600000
-      # JWT secret key (should be overridden via environment variable)
-      secret: ${JWT_SECRET:OVERRIDE_THIS_IN_PRODUCTION}
+      # JWT secret key (Base64-encoded, minimum 256 bits for HMAC-SHA256)
+      # Default for development/testing - MUST be overridden in production via JWT_SECRET environment variable
+      # Generate production key with: openssl rand -base64 32
+      secret: ${JWT_SECRET:RLfprY7uPgPcQIVmYOlO7Injmb4E+UfGv0bJm5udWy4=}
   
   # Batch processing configuration
   batch:

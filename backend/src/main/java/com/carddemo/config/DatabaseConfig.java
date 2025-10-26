@@ -126,6 +126,14 @@ public class DatabaseConfig {
     private boolean showSql;
 
     /**
+     * Hibernate DDL auto mode for schema management.
+     * Default: validate (Flyway manages DDL, Hibernate validates only)
+     * Test profiles may override to create-drop for integration tests with Testcontainers.
+     */
+    @Value("${spring.jpa.hibernate.ddl-auto:validate}")
+    private String ddlAuto;
+
+    /**
      * Creates and configures the HikariCP DataSource connection pool for PostgreSQL.
      * 
      * <p>This bean replaces VSAM file handles with PostgreSQL database connections.
@@ -236,8 +244,9 @@ public class DatabaseConfig {
         // Configure Hibernate-specific properties
         Properties jpaProperties = new Properties();
         
-        // Schema management: Flyway handles DDL, Hibernate validates only
-        jpaProperties.setProperty("hibernate.ddl-auto", "validate");
+        // Schema management: Read from configuration (validate in prod, create-drop in tests)
+        // Use canonical Hibernate property name for direct properties configuration
+        jpaProperties.setProperty("hibernate.hbm2ddl.auto", ddlAuto);
         
         // SQL logging (enabled in dev profile only via showSql property)
         jpaProperties.setProperty("hibernate.show-sql", String.valueOf(showSql));
