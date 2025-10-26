@@ -4,6 +4,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import lombok.AllArgsConstructor;
@@ -249,4 +251,37 @@ public class Account {
     @Version
     @Column(name = "version", nullable = false, columnDefinition = "INTEGER DEFAULT 0")
     private Integer version;
+
+    /**
+     * JPA lifecycle callback: Automatically set timestamps before persisting new entity.
+     * 
+     * This method is invoked automatically by JPA before INSERT operations.
+     * Sets both createdAt and updatedAt to current timestamp for new records.
+     * 
+     * Replaces manual timestamp setting that would be required in COBOL programs
+     * where developers explicitly set CURRENT-DATE fields.
+     */
+    @PrePersist
+    protected void onCreate() {
+        Timestamp now = new Timestamp(System.currentTimeMillis());
+        this.createdAt = now;
+        this.updatedAt = now;
+        if (this.version == null) {
+            this.version = 0;
+        }
+    }
+
+    /**
+     * JPA lifecycle callback: Automatically update timestamp before updating entity.
+     * 
+     * This method is invoked automatically by JPA before UPDATE operations.
+     * Updates the updatedAt timestamp to current time, leaving createdAt unchanged.
+     * 
+     * Replaces manual timestamp updating that would be required in COBOL programs
+     * during REWRITE operations.
+     */
+    @PreUpdate
+    protected void onUpdate() {
+        this.updatedAt = new Timestamp(System.currentTimeMillis());
+    }
 }
