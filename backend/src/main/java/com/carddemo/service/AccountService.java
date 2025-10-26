@@ -401,32 +401,6 @@ public class AccountService {
     }
 
     /**
-     * Find all accounts by customer ID.
-     * 
-     * <p>Note: This method requires a join with the CardAccountXref table to find
-     * accounts associated with a customer. The current implementation is a placeholder
-     * that should be enhanced with proper cross-reference table joining.</p>
-     * 
-     * @param customerId The customer ID to search for
-     * @return List of AccountDto objects for the customer
-     */
-    @Transactional(readOnly = true)
-    public List<AccountDto> findAccountsByCustomerId(Long customerId) {
-        log.info("Finding accounts for customer: {}", customerId);
-        
-        // Note: This requires joining with CardAccountXref table
-        // For now, returning all active accounts as a simplified implementation
-        // Full implementation would use: accountRepository.findByCustomerId(customerId)
-        
-        List<Account> accounts = accountRepository.findByAcctActiveStatus("Y");
-        
-        log.debug("Found {} active accounts", accounts.size());
-        return accounts.stream()
-                .map(this::mapToDto)
-                .collect(Collectors.toList());
-    }
-
-    /**
      * Find all accounts by group ID.
      * 
      * <p>Retrieves all accounts belonging to a specific group. Used for:</p>
