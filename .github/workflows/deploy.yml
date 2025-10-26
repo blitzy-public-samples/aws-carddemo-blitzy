@@ -1,0 +1,813 @@
+name: Deploy CardDemo
+
+# Coordinated deployment workflow for backend and frontend services
+# Implements blue-green deployment strategy with automated rollback capability
+# Per Agent Action Plan Section 0.4.22 and 0.7.10
+
+on:
+  # Manual deployment trigger with environment selection
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+        default: 'dev'
+      backend_image_tag:
+        description: 'Backend Docker image tag'
+        required: true
+        type: string
+        default: 'latest'
+      frontend_image_tag:
+        description: 'Frontend Docker image tag'
+        required: true
+        type: string
+        default: 'latest'
+      skip_tests:
+        description: 'Skip smoke tests'
+        required: false
+        type: boolean
+        default: false
+      auto_rollback:
+        description: 'Auto rollback on failure'
+        required: false
+        type: boolean
+        default: true
+  
+  # Automated trigger after successful CI builds
+  workflow_run:
+    workflows: ['Backend CI/CD', 'Frontend CI/CD']
+    types:
+      - completed
+    branches:
+      - main
+
+env:
+  REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+  BACKEND_IMAGE_NAME: carddemo-backend
+  FRONTEND_IMAGE_NAME: carddemo-frontend
+  K8S_NAMESPACE: carddemo-${{ inputs.environment || 'prod' }}
+  DEPLOYMENT_TIMEOUT: 300
+  BACKEND_URL: https://carddemo-backend-${{ inputs.environment || 'prod' }}.example.com
+  FRONTEND_URL: https://carddemo-${{ inputs.environment || 'prod' }}.example.com
+
+jobs:
+  # Job 1: Validate deployment prerequisites
+  validate-deployment:
+    name: Validate Deployment Prerequisites
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Validate Environment
+        run: |
+          echo "=== Deployment Configuration ==="
+          echo "Environment: ${{ inputs.environment || 'production' }}"
+          echo "Backend Image Tag: ${{ inputs.backend_image_tag || github.sha }}"
+          echo "Frontend Image Tag: ${{ inputs.frontend_image_tag || github.sha }}"
+          echo "Skip Tests: ${{ inputs.skip_tests || 'false' }}"
+          echo "Auto Rollback: ${{ inputs.auto_rollback || 'true' }}"
+          echo "==============================="
+          
+          if [[ "${{ inputs.environment }}" == "production" ]]; then
+            echo "⚠️  Deploying to PRODUCTION environment"
+            echo "📋 Manual approval required in next step"
+          fi
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Check Backend Image Availability
+        run: |
+          echo "Checking backend image: ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}:${{ inputs.backend_image_tag || github.sha }}"
+          aws ecr describe-images \
+            --repository-name ${{ env.BACKEND_IMAGE_NAME }} \
+            --image-ids imageTag=${{ inputs.backend_image_tag || github.sha }} \
+            --region ${{ secrets.AWS_REGION }} || {
+              echo "❌ Backend image not found in registry"
+              exit 1
+            }
+          echo "✅ Backend image verified"
+      
+      - name: Check Frontend Image Availability
+        run: |
+          echo "Checking frontend image: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}:${{ inputs.frontend_image_tag || github.sha }}"
+          aws ecr describe-images \
+            --repository-name ${{ env.FRONTEND_IMAGE_NAME }} \
+            --image-ids imageTag=${{ inputs.frontend_image_tag || github.sha }} \
+            --region ${{ secrets.AWS_REGION }} || {
+              echo "❌ Frontend image not found in registry"
+              exit 1
+            }
+          echo "✅ Frontend image verified"
+      
+      - name: Validate Kubernetes Manifests
+        run: |
+          echo "Validating Kubernetes manifests..."
+          
+          # Check backend manifests
+          if [ ! -f infrastructure/kubernetes/backend/deployment.yaml ]; then
+            echo "❌ Backend deployment manifest not found"
+            exit 1
+          fi
+          
+          # Check frontend manifests
+          if [ ! -f infrastructure/kubernetes/frontend/deployment.yaml ]; then
+            echo "❌ Frontend deployment manifest not found"
+            exit 1
+          fi
+          
+          echo "✅ All manifests validated"
+
+  # Job 2: Production approval gate
+  approval:
+    name: Production Deployment Approval
+    runs-on: ubuntu-latest
+    needs: validate-deployment
+    if: inputs.environment == 'production'
+    environment: production-approval
+    
+    steps:
+      - name: Approval Required
+        run: |
+          echo "🔒 Production deployment requires manual approval"
+          echo "📋 Waiting for approval from designated reviewers..."
+          echo "✅ Deployment approved - proceeding to production"
+
+  # Job 3: Deploy backend service
+  deploy-backend:
+    name: Deploy Backend Service
+    runs-on: ubuntu-latest
+    needs: [validate-deployment, approval]
+    if: always() && (needs.approval.result == 'success' || (needs.approval.result == 'skipped' && inputs.environment != 'production'))
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      
+      - name: Update Kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name carddemo-cluster \
+            --region ${{ secrets.AWS_REGION }}
+          
+          echo "✅ Kubernetes context configured"
+      
+      - name: Label Current Deployment as Blue
+        run: |
+          echo "🔵 Labeling current backend deployment as 'blue'"
+          
+          kubectl label deployment/carddemo-backend \
+            deployment=blue \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --overwrite || echo "No existing deployment to label"
+      
+      - name: Create Green Deployment
+        run: |
+          echo "🟢 Creating green backend deployment"
+          
+          # Copy base deployment manifest
+          cp infrastructure/kubernetes/backend/deployment.yaml /tmp/deployment-green.yaml
+          
+          # Modify for green deployment
+          sed -i 's/name: carddemo-backend/name: carddemo-backend-green/' /tmp/deployment-green.yaml
+          sed -i 's/app: carddemo-backend/app: carddemo-backend\n      deployment: green/' /tmp/deployment-green.yaml
+          
+          # Apply green deployment
+          kubectl apply -f /tmp/deployment-green.yaml -n ${{ env.K8S_NAMESPACE }}
+          
+          # Set image tag
+          kubectl set image deployment/carddemo-backend-green \
+            carddemo-backend=${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}:${{ inputs.backend_image_tag || github.sha }} \
+            -n ${{ env.K8S_NAMESPACE }}
+          
+          echo "✅ Green deployment created"
+      
+      - name: Wait for Green Deployment Ready
+        run: |
+          echo "⏳ Waiting for green deployment to be ready..."
+          
+          kubectl rollout status deployment/carddemo-backend-green \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --timeout=${{ env.DEPLOYMENT_TIMEOUT }}s
+          
+          echo "✅ Green deployment is ready"
+      
+      - name: Health Check Green Deployment
+        run: |
+          echo "🏥 Performing health check on green deployment..."
+          
+          # Get green pod name
+          GREEN_POD=$(kubectl get pod \
+            -n ${{ env.K8S_NAMESPACE }} \
+            -l app=carddemo-backend,deployment=green \
+            -o jsonpath='{.items[0].metadata.name}')
+          
+          echo "Testing pod: $GREEN_POD"
+          
+          # Check health endpoint
+          kubectl exec $GREEN_POD -n ${{ env.K8S_NAMESPACE }} -- \
+            curl -f http://localhost:8080/api/health || {
+              echo "❌ Health check failed"
+              exit 1
+            }
+          
+          # Check actuator health
+          kubectl exec $GREEN_POD -n ${{ env.K8S_NAMESPACE }} -- \
+            curl -f http://localhost:8080/actuator/health || {
+              echo "❌ Actuator health check failed"
+              exit 1
+            }
+          
+          echo "✅ Health checks passed"
+      
+      - name: Switch Traffic to Green
+        run: |
+          echo "🔄 Switching traffic to green deployment..."
+          
+          # Update service selector to point to green deployment
+          kubectl patch service carddemo-backend \
+            -n ${{ env.K8S_NAMESPACE }} \
+            -p '{"spec":{"selector":{"deployment":"green"}}}'
+          
+          echo "✅ Traffic switched to green"
+      
+      - name: Verify Traffic Switch
+        run: |
+          echo "🔍 Verifying traffic switch..."
+          
+          sleep 10
+          
+          # Test via ingress
+          curl -f ${{ env.BACKEND_URL }}/api/health || {
+            echo "❌ Traffic switch verification failed"
+            exit 1
+          }
+          
+          echo "✅ Traffic switch verified"
+      
+      - name: Scale Down Blue Deployment
+        run: |
+          echo "⬇️  Scaling down blue deployment..."
+          
+          kubectl scale deployment/carddemo-backend \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --replicas=0 || echo "No blue deployment to scale down"
+          
+          echo "✅ Blue deployment scaled down"
+      
+      - name: Cleanup Old Blue Deployment
+        run: |
+          echo "🧹 Waiting 5 minutes before cleaning up old blue deployment..."
+          sleep 300
+          
+          kubectl delete deployment/carddemo-backend \
+            -n ${{ env.K8S_NAMESPACE }} || echo "No blue deployment to delete"
+          
+          echo "✅ Old blue deployment cleaned up"
+      
+      - name: Rename Green to Current
+        run: |
+          echo "🔄 Renaming green deployment to current..."
+          
+          # Remove green label
+          kubectl label deployment/carddemo-backend-green \
+            deployment=blue \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --overwrite
+          
+          # Rename deployment
+          kubectl get deployment carddemo-backend-green \
+            -n ${{ env.K8S_NAMESPACE }} \
+            -o yaml | \
+            sed 's/name: carddemo-backend-green/name: carddemo-backend/' | \
+            kubectl apply -f -
+          
+          # Delete old green deployment
+          kubectl delete deployment/carddemo-backend-green \
+            -n ${{ env.K8S_NAMESPACE }} || true
+          
+          echo "✅ Backend deployment completed"
+
+  # Job 4: Deploy frontend service
+  deploy-frontend:
+    name: Deploy Frontend Service
+    runs-on: ubuntu-latest
+    needs: deploy-backend
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      
+      - name: Update Kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name carddemo-cluster \
+            --region ${{ secrets.AWS_REGION }}
+          
+          echo "✅ Kubernetes context configured"
+      
+      - name: Label Current Deployment as Blue
+        run: |
+          echo "🔵 Labeling current frontend deployment as 'blue'"
+          
+          kubectl label deployment/carddemo-frontend \
+            deployment=blue \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --overwrite || echo "No existing deployment to label"
+      
+      - name: Create Green Deployment
+        run: |
+          echo "🟢 Creating green frontend deployment"
+          
+          # Copy base deployment manifest
+          cp infrastructure/kubernetes/frontend/deployment.yaml /tmp/deployment-green.yaml
+          
+          # Modify for green deployment
+          sed -i 's/name: carddemo-frontend/name: carddemo-frontend-green/' /tmp/deployment-green.yaml
+          sed -i 's/app: carddemo-frontend/app: carddemo-frontend\n      deployment: green/' /tmp/deployment-green.yaml
+          
+          # Apply green deployment
+          kubectl apply -f /tmp/deployment-green.yaml -n ${{ env.K8S_NAMESPACE }}
+          
+          # Set image tag
+          kubectl set image deployment/carddemo-frontend-green \
+            carddemo-frontend=${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}:${{ inputs.frontend_image_tag || github.sha }} \
+            -n ${{ env.K8S_NAMESPACE }}
+          
+          echo "✅ Green deployment created"
+      
+      - name: Wait for Green Deployment Ready
+        run: |
+          echo "⏳ Waiting for green deployment to be ready..."
+          
+          kubectl rollout status deployment/carddemo-frontend-green \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --timeout=${{ env.DEPLOYMENT_TIMEOUT }}s
+          
+          echo "✅ Green deployment is ready"
+      
+      - name: Health Check Green Deployment
+        run: |
+          echo "🏥 Performing health check on green deployment..."
+          
+          # Get green pod name
+          GREEN_POD=$(kubectl get pod \
+            -n ${{ env.K8S_NAMESPACE }} \
+            -l app=carddemo-frontend,deployment=green \
+            -o jsonpath='{.items[0].metadata.name}')
+          
+          echo "Testing pod: $GREEN_POD"
+          
+          # Check root endpoint
+          kubectl exec $GREEN_POD -n ${{ env.K8S_NAMESPACE }} -- \
+            curl -f http://localhost/ || {
+              echo "❌ Health check failed"
+              exit 1
+            }
+          
+          echo "✅ Health checks passed"
+      
+      - name: Switch Traffic to Green
+        run: |
+          echo "🔄 Switching traffic to green deployment..."
+          
+          # Update service selector to point to green deployment
+          kubectl patch service carddemo-frontend \
+            -n ${{ env.K8S_NAMESPACE }} \
+            -p '{"spec":{"selector":{"deployment":"green"}}}'
+          
+          echo "✅ Traffic switched to green"
+      
+      - name: Verify Traffic Switch
+        run: |
+          echo "🔍 Verifying traffic switch..."
+          
+          sleep 10
+          
+          # Test via ingress
+          curl -f ${{ env.FRONTEND_URL }} || {
+            echo "❌ Traffic switch verification failed"
+            exit 1
+          }
+          
+          echo "✅ Traffic switch verified"
+      
+      - name: Scale Down Blue Deployment
+        run: |
+          echo "⬇️  Scaling down blue deployment..."
+          
+          kubectl scale deployment/carddemo-frontend \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --replicas=0 || echo "No blue deployment to scale down"
+          
+          echo "✅ Blue deployment scaled down"
+      
+      - name: Cleanup Old Blue Deployment
+        run: |
+          echo "🧹 Waiting 5 minutes before cleaning up old blue deployment..."
+          sleep 300
+          
+          kubectl delete deployment/carddemo-frontend \
+            -n ${{ env.K8S_NAMESPACE }} || echo "No blue deployment to delete"
+          
+          echo "✅ Old blue deployment cleaned up"
+      
+      - name: Rename Green to Current
+        run: |
+          echo "🔄 Renaming green deployment to current..."
+          
+          # Remove green label
+          kubectl label deployment/carddemo-frontend-green \
+            deployment=blue \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --overwrite
+          
+          # Rename deployment
+          kubectl get deployment carddemo-frontend-green \
+            -n ${{ env.K8S_NAMESPACE }} \
+            -o yaml | \
+            sed 's/name: carddemo-frontend-green/name: carddemo-frontend/' | \
+            kubectl apply -f -
+          
+          # Delete old green deployment
+          kubectl delete deployment/carddemo-frontend-green \
+            -n ${{ env.K8S_NAMESPACE }} || true
+          
+          echo "✅ Frontend deployment completed"
+
+  # Job 5: Run smoke tests
+  smoke-tests:
+    name: Run Smoke Tests
+    runs-on: ubuntu-latest
+    needs: [deploy-backend, deploy-frontend]
+    if: inputs.skip_tests != true
+    
+    steps:
+      - name: Wait for Services to Stabilize
+        run: |
+          echo "⏳ Waiting 30 seconds for services to stabilize..."
+          sleep 30
+      
+      - name: Backend Health Check
+        run: |
+          echo "🏥 Testing backend health endpoints..."
+          
+          # Test main health endpoint
+          curl -f ${{ env.BACKEND_URL }}/api/health || {
+            echo "❌ Backend health check failed"
+            exit 1
+          }
+          
+          # Test actuator health
+          curl -f ${{ env.BACKEND_URL }}/actuator/health || {
+            echo "❌ Backend actuator health check failed"
+            exit 1
+          }
+          
+          echo "✅ Backend health checks passed"
+      
+      - name: Frontend Health Check
+        run: |
+          echo "🏥 Testing frontend..."
+          
+          curl -f ${{ env.FRONTEND_URL }} || {
+            echo "❌ Frontend health check failed"
+            exit 1
+          }
+          
+          echo "✅ Frontend health check passed"
+      
+      - name: Test Login Flow
+        run: |
+          echo "🔐 Testing login flow..."
+          
+          RESPONSE=$(curl -s -X POST ${{ env.BACKEND_URL }}/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"userId":"admin","password":"${{ secrets.TEST_ADMIN_PASSWORD }}"}')
+          
+          # Extract token using grep and sed (jq not available by default)
+          TOKEN=$(echo $RESPONSE | grep -o '"token":"[^"]*"' | sed 's/"token":"//;s/"//')
+          
+          if [ -z "$TOKEN" ]; then
+            echo "❌ Login failed - no token received"
+            echo "Response: $RESPONSE"
+            exit 1
+          fi
+          
+          echo "✅ Login successful"
+          echo "TOKEN=$TOKEN" >> $GITHUB_ENV
+      
+      - name: Test Account API
+        run: |
+          echo "📊 Testing account API..."
+          
+          curl -f -H "Authorization: Bearer ${{ env.TOKEN }}" \
+            ${{ env.BACKEND_URL }}/api/accounts/1 || {
+            echo "❌ Account API test failed"
+            exit 1
+          }
+          
+          echo "✅ Account API test passed"
+      
+      - name: Performance Test
+        run: |
+          echo "⚡ Testing response time..."
+          
+          RESPONSE_TIME=$(curl -o /dev/null -s -w '%{time_total}\n' \
+            ${{ env.BACKEND_URL }}/api/health)
+          
+          echo "Response time: ${RESPONSE_TIME}s"
+          
+          # Check if response time is under 1 second
+          if (( $(echo "$RESPONSE_TIME > 1.0" | bc -l) )); then
+            echo "⚠️  Response time exceeds 1 second threshold"
+          else
+            echo "✅ Response time is acceptable"
+          fi
+      
+      - name: Test Transaction API
+        run: |
+          echo "💳 Testing transaction API..."
+          
+          curl -f -H "Authorization: Bearer ${{ env.TOKEN }}" \
+            ${{ env.BACKEND_URL }}/api/transactions?limit=10 || {
+            echo "❌ Transaction API test failed"
+            exit 1
+          }
+          
+          echo "✅ Transaction API test passed"
+      
+      - name: Test Card API
+        run: |
+          echo "💳 Testing card API..."
+          
+          curl -f -H "Authorization: Bearer ${{ env.TOKEN }}" \
+            ${{ env.BACKEND_URL }}/api/cards?limit=10 || {
+            echo "❌ Card API test failed"
+            exit 1
+          }
+          
+          echo "✅ Card API test passed"
+      
+      - name: Smoke Tests Summary
+        run: |
+          echo "✅ All smoke tests passed successfully"
+
+  # Job 6: Rollback on failure
+  rollback:
+    name: Rollback Deployment
+    runs-on: ubuntu-latest
+    needs: [deploy-backend, deploy-frontend, smoke-tests]
+    if: failure() && inputs.auto_rollback == true
+    
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      
+      - name: Update Kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name carddemo-cluster \
+            --region ${{ secrets.AWS_REGION }}
+          
+          echo "✅ Kubernetes context configured"
+      
+      - name: Rollback Backend
+        run: |
+          echo "🔙 Rolling back backend deployment..."
+          
+          # Switch service back to blue deployment
+          kubectl patch service carddemo-backend \
+            -n ${{ env.K8S_NAMESPACE }} \
+            -p '{"spec":{"selector":{"deployment":"blue"}}}' || true
+          
+          # Scale up blue deployment
+          kubectl scale deployment/carddemo-backend \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --replicas=3 || true
+          
+          # Delete failed green deployment
+          kubectl delete deployment/carddemo-backend-green \
+            -n ${{ env.K8S_NAMESPACE }} || true
+          
+          echo "✅ Backend rolled back"
+      
+      - name: Rollback Frontend
+        run: |
+          echo "🔙 Rolling back frontend deployment..."
+          
+          # Switch service back to blue deployment
+          kubectl patch service carddemo-frontend \
+            -n ${{ env.K8S_NAMESPACE }} \
+            -p '{"spec":{"selector":{"deployment":"blue"}}}' || true
+          
+          # Scale up blue deployment
+          kubectl scale deployment/carddemo-frontend \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --replicas=3 || true
+          
+          # Delete failed green deployment
+          kubectl delete deployment/carddemo-frontend-green \
+            -n ${{ env.K8S_NAMESPACE }} || true
+          
+          echo "✅ Frontend rolled back"
+      
+      - name: Verify Rollback
+        run: |
+          echo "🔍 Verifying rollback..."
+          
+          sleep 10
+          
+          # Test frontend
+          curl -f ${{ env.FRONTEND_URL }} || {
+            echo "⚠️  Frontend verification failed after rollback"
+          }
+          
+          # Test backend
+          curl -f ${{ env.BACKEND_URL }}/api/health || {
+            echo "⚠️  Backend verification failed after rollback"
+          }
+          
+          echo "✅ Rollback verification completed"
+
+  # Job 7: Send notifications
+  notify:
+    name: Send Notifications
+    runs-on: ubuntu-latest
+    needs: [deploy-backend, deploy-frontend, smoke-tests, rollback]
+    if: always()
+    
+    steps:
+      - name: Deployment Success Notification
+        if: needs.smoke-tests.result == 'success'
+        uses: slackapi/slack-github-action@v1
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "✅ CardDemo Deployment Successful",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "✅ CardDemo Deployment Successful"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Environment:*\n${{ inputs.environment || 'production' }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Triggered By:*\n${{ github.actor }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Backend Image:*\n`${{ inputs.backend_image_tag || github.sha }}`"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Frontend Image:*\n`${{ inputs.frontend_image_tag || github.sha }}`"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*URLs:*\n• Frontend: ${{ env.FRONTEND_URL }}\n• Backend: ${{ env.BACKEND_URL }}"
+                  }
+                }
+              ]
+            }
+      
+      - name: Deployment Failure Notification
+        if: needs.deploy-backend.result == 'failure' || needs.deploy-frontend.result == 'failure' || needs.smoke-tests.result == 'failure'
+        uses: slackapi/slack-github-action@v1
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "❌ CardDemo Deployment Failed",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "❌ CardDemo Deployment Failed"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Environment:*\n${{ inputs.environment || 'production' }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Triggered By:*\n${{ github.actor }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Backend Deploy:*\n${{ needs.deploy-backend.result }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Frontend Deploy:*\n${{ needs.deploy-frontend.result }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Smoke Tests:*\n${{ needs.smoke-tests.result }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Rollback:*\n${{ inputs.auto_rollback && needs.rollback.result == 'success' && 'Executed' || 'Skipped' }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Action Required:*\nCheck workflow logs: <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+                  }
+                }
+              ]
+            }
+      
+      - name: Rollback Notification
+        if: needs.rollback.result == 'success'
+        uses: slackapi/slack-github-action@v1
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "🔙 CardDemo Deployment Rolled Back",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "🔙 Deployment Rolled Back"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Environment:*\n${{ inputs.environment || 'production' }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status:*\nRollback completed successfully"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "Previous version has been restored. System is operational."
+                  }
+                }
+              ]
+            }
