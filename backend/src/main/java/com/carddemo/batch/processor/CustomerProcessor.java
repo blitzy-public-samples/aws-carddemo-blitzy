@@ -217,16 +217,24 @@ public class CustomerProcessor implements ItemProcessor<Customer, Customer> {
      * 
      * COBOL equivalent: CUST-SSN PIC 9(09) with numeric validation
      * In COBOL, PIC 9(09) enforces numeric content at compile time
-     * In Java, we validate using regex pattern matching
+     * In Java, we validate using regex pattern matching plus business rules
      * 
      * Validation Rules:
      * 1. SSN must not be null
      * 2. SSN must be exactly 9 characters long
      * 3. SSN must contain only digits (0-9)
      * 4. No spaces, dashes, or other formatting characters allowed
+     * 5. SSN cannot be all zeros (000000000) - invalid pattern
+     * 6. SSN cannot have 666 prefix (666XXXXXX) - reserved, never issued
+     * 7. SSN cannot be all nines (999999999) - invalid test pattern
      * 
-     * Valid format: "123456789" (9 consecutive digits)
-     * Invalid formats: "123-45-6789", "12345678", "1234567890", "12345678A"
+     * Valid format: "123456789" (9 consecutive digits, not matching invalid patterns)
+     * Invalid formats: "123-45-6789", "12345678", "1234567890", "12345678A", "000000000", "666123456", "999999999"
+     * 
+     * Business Rule: Per SSA requirements, certain SSN patterns are invalid:
+     * - 000000000: All zeros is not a valid SSN
+     * - 666XXXXXX: Area number 666 is reserved and never issued
+     * - 999999999: All nines is a test pattern, not valid for real customers
      * 
      * @param customer the Customer entity to validate
      * @return true if SSN format is valid, false otherwise
@@ -246,7 +254,25 @@ public class CustomerProcessor implements ItemProcessor<Customer, Customer> {
             return false;
         }
         
-        // SSN format is valid
+        // Reject all zeros (000000000) - invalid SSN pattern
+        if ("000000000".equals(ssn)) {
+            log.debug("Customer ID {} has invalid SSN (all zeros)", customer.getCustId());
+            return false;
+        }
+        
+        // Reject 666 prefix (666XXXXXX) - reserved SSN area, never issued
+        if (ssn.startsWith("666")) {
+            log.debug("Customer ID {} has invalid SSN (666 prefix reserved)", customer.getCustId());
+            return false;
+        }
+        
+        // Reject all nines (999999999) - invalid test pattern
+        if ("999999999".equals(ssn)) {
+            log.debug("Customer ID {} has invalid SSN (all nines test pattern)", customer.getCustId());
+            return false;
+        }
+        
+        // SSN format is valid and doesn't match invalid patterns
         return true;
     }
 
