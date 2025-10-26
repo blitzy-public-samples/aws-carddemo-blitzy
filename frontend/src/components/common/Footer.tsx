@@ -80,7 +80,7 @@ interface FooterProps {
 const Footer: React.FC<FooterProps> = ({ 
   sticky = false, 
   showLinks = true,
-  version = import.meta.env.VITE_APP_VERSION || '1.0.0'
+  version = import.meta.env['VITE_APP_VERSION'] || '1.0.0'
 }) => {
   // Get current year for copyright notice - updates automatically
   const currentYear = new Date().getFullYear();
