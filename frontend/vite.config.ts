@@ -17,6 +17,7 @@
 
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import svgr from 'vite-plugin-svgr';
 import path from 'path';
 
 // https://vitejs.dev/config/
@@ -27,6 +28,9 @@ export default defineConfig({
    * React Plugin: Enables Fast Refresh for instant hot-reload during development
    * and JSX transformation using React 18 automatic runtime.
    * 
+   * SVGR Plugin: Enables importing SVG files as React components using the ?react suffix.
+   * Example: import Icon from './icon.svg?react' - imports SVG as React component
+   * 
    * Note: Fast Refresh is enabled by default in @vitejs/plugin-react v4.3.4+
    */
   plugins: [
@@ -35,6 +39,19 @@ export default defineConfig({
       babel: {
         plugins: [],
         // Future: Add emotion/babel-plugin for MUI SSR if needed
+      },
+    }),
+    svgr({
+      // SVGR options for SVG to React component transformation
+      svgrOptions: {
+        // Export as React component
+        exportType: 'default',
+        // Add ref support for SVG components
+        ref: true,
+        // Add SVGO optimization
+        svgo: true,
+        // Preserve title elements for accessibility
+        titleProp: true,
       },
     }),
   ],

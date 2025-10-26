@@ -45,11 +45,18 @@ declare module '*.gif' {
 }
 
 // SVG Images
-// Note: SVG files can be imported as URL strings
-// For React component imports, use vite-plugin-svgr instead
+// Default import: URL string
 declare module '*.svg' {
   const value: string;
   export default value;
+}
+
+// SVG as React Components (using vite-plugin-svgr with ?react suffix)
+// Usage: import Icon from './icon.svg?react'
+declare module '*.svg?react' {
+  import React from 'react';
+  const SVGComponent: React.FC<React.SVGProps<SVGSVGElement>>;
+  export default SVGComponent;
 }
 
 // WebP Images (modern format with better compression)

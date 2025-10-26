@@ -30,7 +30,7 @@
  * @module CustomIcons
  */
 
-import React, { CSSProperties, FC } from 'react';
+import { CSSProperties, FC } from 'react';
 import { IconSizeName } from '../constants';
 
 // Import custom SVG files
