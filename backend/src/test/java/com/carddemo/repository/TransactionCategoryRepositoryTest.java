@@ -8,6 +8,7 @@ import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabas
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -285,8 +286,11 @@ class TransactionCategoryRepositoryTest {
      * 
      * Validates:
      * - Duplicate composite key (same transTypeCd + tranCatCd) is rejected
-     * - DataIntegrityViolationException is thrown on duplicate key save
+     * - Constraint violation exception is thrown on duplicate key save
      * - Database PRIMARY KEY constraint is enforced
+     * 
+     * Note: In @DataJpaTest context, Hibernate may throw ConstraintViolationException
+     * directly before Spring translates it to DataIntegrityViolationException.
      * 
      * COBOL equivalent: DUPREC condition on WRITE FILE('TRANCATG')
      */
@@ -298,19 +302,32 @@ class TransactionCategoryRepositoryTest {
                 .tranCatCd(1001)
                 .tranCatTypeDesc("Retail Purchase")
                 .build();
-        entityManager.persistAndFlush(category1);
+        repository.save(category1);
+        entityManager.flush();
         entityManager.clear();
 
         // When & Then: Attempt to save duplicate composite key
+        // Should throw either DataIntegrityViolationException (Spring) or 
+        // ConstraintViolationException (Hibernate) depending on context
         TransactionCategory category2 = TransactionCategory.builder()
                 .transTypeCd("01")
                 .tranCatCd(1001)
                 .tranCatTypeDesc("Different Description")
                 .build();
 
-        assertThrows(DataIntegrityViolationException.class, () -> {
-            entityManager.persistAndFlush(category2);
+        Exception exception = assertThrows(Exception.class, () -> {
+            repository.save(category2);
+            entityManager.flush();
         });
+        
+        // Verify it's a constraint violation (either Spring or Hibernate exception)
+        boolean isConstraintViolation = exception instanceof DataIntegrityViolationException ||
+                                       exception instanceof ConstraintViolationException ||
+                                       (exception.getCause() != null && 
+                                        exception.getCause() instanceof ConstraintViolationException);
+        
+        assertTrue(isConstraintViolation, 
+                "Expected constraint violation exception but got: " + exception.getClass().getName());
     }
 
     /**
@@ -493,26 +510,32 @@ class TransactionCategoryRepositoryTest {
                 .tranCatCd(1001)
                 .tranCatTypeDesc("Retail Purchase")
                 .build();
-        TransactionCategory savedCategory = entityManager.persistAndFlush(category);
-        entityManager.clear();
-
-        // When: Load same entity twice (simulating two concurrent sessions)
-        TransactionCategoryId compositeKey = new TransactionCategoryId("01", 1001);
-        Optional<TransactionCategory> session1Entity = repository.findById(compositeKey);
-        Optional<TransactionCategory> session2Entity = repository.findById(compositeKey);
-
-        assertTrue(session1Entity.isPresent());
-        assertTrue(session2Entity.isPresent());
-
-        // First update succeeds
-        TransactionCategory entity1 = session1Entity.get();
-        entity1.setTranCatTypeDesc("Updated by Session 1");
-        repository.save(entity1);
+        repository.save(category);
         entityManager.flush();
         entityManager.clear();
 
-        // Then: Second update with stale version should fail
+        // When: Load same entity twice in separate transactions (simulating two concurrent sessions)
+        TransactionCategoryId compositeKey = new TransactionCategoryId("01", 1001);
+        
+        // Session 1: Load entity
+        Optional<TransactionCategory> session1Entity = repository.findById(compositeKey);
+        assertTrue(session1Entity.isPresent());
+        TransactionCategory entity1 = session1Entity.get();
+        
+        // Session 2: Load same entity (before Session 1 commits)
+        Optional<TransactionCategory> session2Entity = repository.findById(compositeKey);
+        assertTrue(session2Entity.isPresent());
         TransactionCategory entity2 = session2Entity.get();
+        
+        // Detach entity2 to simulate holding stale data from a different session
+        entityManager.detach(entity2);
+
+        // First update succeeds
+        entity1.setTranCatTypeDesc("Updated by Session 1");
+        repository.save(entity1);
+        entityManager.flush();
+
+        // Then: Second update with stale version should fail
         entity2.setTranCatTypeDesc("Updated by Session 2");
         
         assertThrows(Exception.class, () -> {
