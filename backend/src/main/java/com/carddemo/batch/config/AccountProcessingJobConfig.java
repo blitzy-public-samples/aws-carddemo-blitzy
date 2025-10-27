@@ -9,6 +9,7 @@ import com.carddemo.repository.CardAccountXrefRepository;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.DisclosureGroupRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
+import java.time.temporal.ChronoUnit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.Job;
@@ -640,8 +641,9 @@ public class AccountProcessingJobConfig {
                 log.info("Rollback count: {}", stepExecution.getRollbackCount());
                 
                 if (stepExecution.getStartTime() != null && stepExecution.getEndTime() != null) {
-                    long duration = stepExecution.getEndTime().getTime() - 
-                                    stepExecution.getStartTime().getTime();
+                    long duration = ChronoUnit.MILLIS.between(
+                        stepExecution.getStartTime(), 
+                        stepExecution.getEndTime());
                     log.info("Processing duration: {} ms ({} seconds)", 
                              duration, duration / 1000);
                 }
