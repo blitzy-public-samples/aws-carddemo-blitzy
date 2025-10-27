@@ -317,9 +317,9 @@ public class TransactionProcessingJobConfig {
         log.info("Configuring transactionProcessingJob with sequential steps: validation -> posting -> categorization");
         
         return new JobBuilder("transactionProcessingJob", jobRepository)
-                .start(validationStep())
-                .next(postingStep())
-                .next(categorizationStep())
+                .start(transactionValidationStep())
+                .next(transactionPostingStep())
+                .next(transactionCategorizationStep())
                 .incrementer(new RunIdIncrementer())
                 .build();
     }
@@ -393,15 +393,15 @@ public class TransactionProcessingJobConfig {
      * @return Configured Step for transaction validation
      */
     @Bean
-    public Step validationStep() {
-        log.info("Configuring validationStep with chunk size {} and TransactionReader/Processor/Writer", CHUNK_SIZE);
+    public Step transactionValidationStep() {
+        log.info("Configuring transactionValidationStep with chunk size {} and TransactionReader/Processor/Writer", CHUNK_SIZE);
         
-        return new StepBuilder("validationStep", jobRepository)
+        return new StepBuilder("transactionValidationStep", jobRepository)
                 .<Transaction, Transaction>chunk(CHUNK_SIZE, transactionManager)
                 .reader(transactionReader)
                 .processor(transactionProcessor)
                 .writer(transactionWriter)
-                .listener(validationStepListener())
+                .listener(transactionValidationStepListener())
                 .build();
     }
 
@@ -509,15 +509,15 @@ public class TransactionProcessingJobConfig {
      * @return Configured Step for transaction posting
      */
     @Bean
-    public Step postingStep() {
-        log.info("Configuring postingStep with chunk size {} for account balance updates", CHUNK_SIZE);
+    public Step transactionPostingStep() {
+        log.info("Configuring transactionPostingStep with chunk size {} for account balance updates", CHUNK_SIZE);
         
-        return new StepBuilder("postingStep", jobRepository)
+        return new StepBuilder("transactionPostingStep", jobRepository)
                 .<Transaction, Transaction>chunk(CHUNK_SIZE, transactionManager)
                 .reader(transactionReader)
                 .processor(transactionProcessor)
                 .writer(transactionWriter)
-                .listener(postingStepListener())
+                .listener(transactionPostingStepListener())
                 .build();
     }
 
@@ -631,15 +631,15 @@ public class TransactionProcessingJobConfig {
      * @return Configured Step for transaction categorization
      */
     @Bean
-    public Step categorizationStep() {
-        log.info("Configuring categorizationStep with chunk size {} for category balance aggregation", CHUNK_SIZE);
+    public Step transactionCategorizationStep() {
+        log.info("Configuring transactionCategorizationStep with chunk size {} for category balance aggregation", CHUNK_SIZE);
         
-        return new StepBuilder("categorizationStep", jobRepository)
+        return new StepBuilder("transactionCategorizationStep", jobRepository)
                 .<Transaction, Transaction>chunk(CHUNK_SIZE, transactionManager)
                 .reader(transactionReader)
                 .processor(transactionProcessor)
                 .writer(transactionWriter)
-                .listener(categorizationStepListener())
+                .listener(transactionCategorizationStepListener())
                 .build();
     }
 
@@ -681,18 +681,18 @@ public class TransactionProcessingJobConfig {
      * @return StepExecutionListener for validation step
      */
     @Bean
-    public StepExecutionListener validationStepListener() {
+    public StepExecutionListener transactionValidationStepListener() {
         return new StepExecutionListener() {
             @Override
             public void beforeStep(StepExecution stepExecution) {
-                log.info("Starting validation step: {}", stepExecution.getStepName());
+                log.info("Starting transaction validation step: {}", stepExecution.getStepName());
                 log.info("Job parameters: {}", stepExecution.getJobParameters());
             }
 
             @Override
-            public void afterStep(StepExecution stepExecution) {
-                log.info("Completed validation step: {}", stepExecution.getStepName());
-                log.info("Validation step metrics:");
+            public org.springframework.batch.core.ExitStatus afterStep(StepExecution stepExecution) {
+                log.info("Completed transaction validation step: {}", stepExecution.getStepName());
+                log.info("Transaction validation step metrics:");
                 log.info("  - Transactions read: {}", stepExecution.getReadCount());
                 log.info("  - Transactions validated: {}", stepExecution.getWriteCount());
                 log.info("  - Transactions rejected: {}", stepExecution.getFilterCount());
@@ -703,6 +703,7 @@ public class TransactionProcessingJobConfig {
                 log.info("  - Chunks rolled back: {}", stepExecution.getRollbackCount());
                 log.info("  - Execution status: {}", stepExecution.getStatus());
                 log.info("  - Exit status: {}", stepExecution.getExitStatus());
+                return stepExecution.getExitStatus();
             }
         };
     }
@@ -746,18 +747,18 @@ public class TransactionProcessingJobConfig {
      * @return StepExecutionListener for posting step
      */
     @Bean
-    public StepExecutionListener postingStepListener() {
+    public StepExecutionListener transactionPostingStepListener() {
         return new StepExecutionListener() {
             @Override
             public void beforeStep(StepExecution stepExecution) {
-                log.info("Starting posting step: {}", stepExecution.getStepName());
+                log.info("Starting transaction posting step: {}", stepExecution.getStepName());
                 log.info("Job parameters: {}", stepExecution.getJobParameters());
             }
 
             @Override
-            public void afterStep(StepExecution stepExecution) {
-                log.info("Completed posting step: {}", stepExecution.getStepName());
-                log.info("Posting step metrics:");
+            public org.springframework.batch.core.ExitStatus afterStep(StepExecution stepExecution) {
+                log.info("Completed transaction posting step: {}", stepExecution.getStepName());
+                log.info("Transaction posting step metrics:");
                 log.info("  - Transactions read: {}", stepExecution.getReadCount());
                 log.info("  - Transactions posted: {}", stepExecution.getWriteCount());
                 log.info("  - Transactions rejected: {}", stepExecution.getFilterCount());
@@ -768,6 +769,7 @@ public class TransactionProcessingJobConfig {
                 log.info("  - Chunks rolled back: {}", stepExecution.getRollbackCount());
                 log.info("  - Execution status: {}", stepExecution.getStatus());
                 log.info("  - Exit status: {}", stepExecution.getExitStatus());
+                return stepExecution.getExitStatus();
             }
         };
     }
@@ -807,18 +809,18 @@ public class TransactionProcessingJobConfig {
      * @return StepExecutionListener for categorization step
      */
     @Bean
-    public StepExecutionListener categorizationStepListener() {
+    public StepExecutionListener transactionCategorizationStepListener() {
         return new StepExecutionListener() {
             @Override
             public void beforeStep(StepExecution stepExecution) {
-                log.info("Starting categorization step: {}", stepExecution.getStepName());
+                log.info("Starting transaction categorization step: {}", stepExecution.getStepName());
                 log.info("Job parameters: {}", stepExecution.getJobParameters());
             }
 
             @Override
-            public void afterStep(StepExecution stepExecution) {
-                log.info("Completed categorization step: {}", stepExecution.getStepName());
-                log.info("Categorization step metrics:");
+            public org.springframework.batch.core.ExitStatus afterStep(StepExecution stepExecution) {
+                log.info("Completed transaction categorization step: {}", stepExecution.getStepName());
+                log.info("Transaction categorization step metrics:");
                 log.info("  - Transactions read: {}", stepExecution.getReadCount());
                 log.info("  - Transactions categorized: {}", stepExecution.getWriteCount());
                 log.info("  - Read errors: {}", stepExecution.getReadSkipCount());
@@ -828,6 +830,7 @@ public class TransactionProcessingJobConfig {
                 log.info("  - Chunks rolled back: {}", stepExecution.getRollbackCount());
                 log.info("  - Execution status: {}", stepExecution.getStatus());
                 log.info("  - Exit status: {}", stepExecution.getExitStatus());
+                return stepExecution.getExitStatus();
             }
         };
     }
