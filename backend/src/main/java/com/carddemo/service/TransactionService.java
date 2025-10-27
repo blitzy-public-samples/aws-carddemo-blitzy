@@ -85,6 +85,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Optional;
@@ -379,8 +380,8 @@ public class TransactionService {
             .transTypeCd(transactionDto.getTransTypeCd())
             .transCatCd(transactionDto.getTransCatCd())
             .transAmt(transactionDto.getTransAmt().setScale(2, RoundingMode.HALF_UP))
-            .transOrigTs(LocalDateTime.now())
-            .transProcTs(LocalDateTime.now())
+            .transOrigTs(Timestamp.valueOf(LocalDateTime.now()))
+            .transProcTs(Timestamp.valueOf(LocalDateTime.now()))
             .transMerchantId(transactionDto.getTransMerchantId())
             .transMerchantName(transactionDto.getTransMerchantName())
             .transDesc(transactionDto.getTransDesc())

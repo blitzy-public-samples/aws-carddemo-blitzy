@@ -1,6 +1,8 @@
 package com.carddemo.repository;
 
 import com.carddemo.model.entity.Transaction;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -259,6 +261,35 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
             String cardNum, 
             LocalDateTime startDate, 
             LocalDateTime endDate);
+
+    /**
+     * Find all transactions for a specific card within a date range with pagination.
+     * 
+     * Paginated version of findByTransCardNumAndTransOrigTsBetween for efficient handling
+     * of large transaction result sets in COTRN00C.cbl transaction list display.
+     * 
+     * This method adds Spring Data pagination support through the Pageable parameter,
+     * allowing the service layer to specify page number, page size, and sort order.
+     * Essential for maintaining sub-200ms response times per Section 0.7.7 when dealing
+     * with cards having thousands of transactions in the specified date range.
+     * 
+     * Used by:
+     * - TransactionService.listTransactions() for paginated transaction browsing
+     * - REST API endpoints requiring paginated responses
+     * 
+     * @param cardNum Card number to filter transactions (16-character card number)
+     * @param startDate Start of date range (inclusive)
+     * @param endDate End of date range (inclusive)
+     * @param pageable Pagination parameters (page number, page size, sort order)
+     * @return Page of Transaction entities with pagination metadata (total elements,
+     *         total pages, current page number, etc.). Returns empty page if no
+     *         matching transactions found.
+     */
+    Page<Transaction> findByTransCardNumAndTransOrigTsBetween(
+            String cardNum, 
+            LocalDateTime startDate, 
+            LocalDateTime endDate,
+            Pageable pageable);
 
     /**
      * Find all transactions by transaction type code.
