@@ -187,13 +187,14 @@ public class TransactionDto {
      * Merchant identifier.
      * 
      * Source: Transaction.transMerchantId (COBOL TRAN-MERCHANT-ID PIC 9(09))
-     * Maximum length: 9 characters
-     * Format: 9-digit numeric string (preserves leading zeros)
+     * Maximum value: 999999999 (9 digits)
+     * Format: 9-digit numeric value
      * 
      * Payment network-assigned merchant identifier.
-     * Example: "000123456" (leading zeros preserved)
+     * COBOL PIC 9(09) converted to Java Long per Section 0.7.5.
+     * Example: 123456789L
      */
-    private String transMerchantId;
+    private Long transMerchantId;
 
     /**
      * Merchant name.

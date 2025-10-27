@@ -99,10 +99,9 @@ class CardRepositoryTest {
     private static final String TEST_CARD_NUM_3 = "4333333333333333";
     private static final Long TEST_ACCT_ID = 11223344556L;  // PIC 9(11) - Account ID
     private static final Long TEST_ACCT_ID_2 = 22334455667L;
-    private static final Long TEST_CARDMEMBER_ID = 99887766554L;  // PIC 9(11) - Cardholder ID
     private static final String TEST_EMBOSSED_NAME = "JOHN M DOE";  // PIC X(50)
-    private static final String TEST_CARD_STATUS_ACTIVE = "Y";  // PIC X(01) - Active status
-    private static final String TEST_CARD_STATUS_INACTIVE = "N";  // PIC X(01) - Inactive status
+    private static final String TEST_CARD_STATUS_ACTIVE = "A";  // PIC X(01) - Active status (per V2 migration check constraint)
+    private static final String TEST_CARD_STATUS_INACTIVE = "I";  // PIC X(01) - Inactive status
     private static final String TEST_CARD_STATUS_LOST = "L";  // PIC X(01) - Lost status
     private static final LocalDate TEST_EXPIRATION_DATE = LocalDate.of(2025, 12, 31);  // PIC X(10)
 
@@ -154,11 +153,9 @@ class CardRepositoryTest {
         return Card.builder()
                 .cardNum(cardNum)
                 .cardAcctId(accountId)
-                .cardCardmemberId(TEST_CARDMEMBER_ID)
                 .cardStatus(status)
                 .cardEmbossedName(TEST_EMBOSSED_NAME)
                 .cardExpirationDate(TEST_EXPIRATION_DATE)
-                .cardActiveDate(LocalDate.now())
                 .build();
     }
 
@@ -199,11 +196,9 @@ class CardRepositoryTest {
         assertNotNull(savedCard);
         assertEquals(TEST_CARD_NUM, savedCard.getCardNum());
         assertEquals(TEST_ACCT_ID, savedCard.getCardAcctId());
-        assertEquals(TEST_CARDMEMBER_ID, savedCard.getCardCardmemberId());
         assertEquals(TEST_CARD_STATUS_ACTIVE, savedCard.getCardStatus());
         assertEquals(TEST_EMBOSSED_NAME, savedCard.getCardEmbossedName());
         assertEquals(TEST_EXPIRATION_DATE, savedCard.getCardExpirationDate());
-        assertNotNull(savedCard.getCardActiveDate());
         
         // Verify audit fields are automatically populated
         assertNotNull(savedCard.getCreatedAt());
@@ -245,7 +240,6 @@ class CardRepositoryTest {
         Card card = foundCard.get();
         assertEquals(TEST_CARD_NUM, card.getCardNum());
         assertEquals(TEST_ACCT_ID, card.getCardAcctId());
-        assertEquals(TEST_CARDMEMBER_ID, card.getCardCardmemberId());
         assertEquals(TEST_CARD_STATUS_ACTIVE, card.getCardStatus());
         assertEquals(TEST_EMBOSSED_NAME, card.getCardEmbossedName());
         assertEquals(TEST_EXPIRATION_DATE, card.getCardExpirationDate());

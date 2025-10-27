@@ -36,9 +36,7 @@ import java.time.LocalDate;
  *   transaction authorization processing per Section 0.7.9 security requirements.
  * - COBOL PIC X(50) CARD-EMBOSSED-NAME converted to String with length 50
  * - COBOL PIC X(10) CARD-EXPIRAION-DATE (correcting COBOL typo) converted to LocalDate cardExpirationDate
- * - COBOL PIC X(01) CARD-ACTIVE-STATUS mapped to database column card_status (per Section 0.3.4 schema)
- * - Additional field card_cardmember_id added per database schema (not in original COBOL copybook)
- * - Additional field card_active_date added per database schema (not in original COBOL copybook)
+ * - COBOL PIC X(01) CARD-ACTIVE-STATUS converted to String cardStatus mapped to column card_active_status
  * - COBOL FILLER field (59 bytes) removed as not used
  * - Added audit fields createdAt and updatedAt for tracking record lifecycle
  * - Added version field for JPA optimistic locking (replicates VSAM RBA locking semantics)
@@ -61,7 +59,7 @@ import java.time.LocalDate;
 @Entity
 @Table(name = "card", indexes = {
     @Index(name = "idx_card_acct", columnList = "card_acct_id"),
-    @Index(name = "idx_card_status", columnList = "card_status")
+    @Index(name = "idx_card_status", columnList = "card_active_status")
 })
 @Data
 @Builder
@@ -120,31 +118,15 @@ public class Card {
     private Account account;
 
     /**
-     * Cardholder member identifier.
-     * 
-     * Added field (not in original COBOL copybook CVACT02Y.cpy).
-     * Database schema field: card_cardmember_id BIGINT NOT NULL
-     * 
-     * Identifies the individual cardholder associated with this card.
-     * Typically links to customer master record (CVCUS01Y.cpy / customer table)
-     * to distinguish primary cardholder from authorized users.
-     * 
-     * Note: Original COBOL copybook did not include this field, but database schema
-     * in Section 0.3.4 requires it for proper card-to-customer association tracking.
-     */
-    @Column(name = "card_cardmember_id", nullable = false)
-    private Long cardCardmemberId;
-
-    /**
      * Card status indicator.
      * 
      * Converted from: COBOL PIC X(01) CARD-ACTIVE-STATUS
-     * Database column: card_status (per Section 0.3.4 schema)
+     * Database column: card_active_status
      * Length: 1 character
      * 
-     * Valid values:
-     * - 'Y' = Active (card can be used for transactions)
-     * - 'N' = Inactive (card cannot be used)
+     * Valid values per Flyway migration V2__create_card_table.sql:
+     * - 'A' = Active (card can be used for transactions)
+     * - 'I' = Inactive (card cannot be used)
      * - 'S' = Stolen (card reported stolen, block all transactions)
      * - 'L' = Lost (card reported lost, block all transactions)
      * - 'E' = Expired (card past expiration date)
@@ -153,13 +135,10 @@ public class Card {
      * Used in transaction authorization logic to validate card eligibility
      * before processing purchases or cash advances.
      * 
-     * Note: Database schema uses "card_status" not "card_active_status" as
-     * the actual column name per Section 0.3.4.
-     * 
      * Column Definition: CHAR(1) to preserve COBOL fixed-length character semantics.
      * Per Section 0.7.2: Must maintain exact COBOL PIC X(01) behavior.
      */
-    @Column(name = "card_status", nullable = false, columnDefinition = "CHAR(1)")
+    @Column(name = "card_active_status", nullable = false, columnDefinition = "CHAR(1)")
     private String cardStatus;
 
     /**
@@ -197,24 +176,6 @@ public class Card {
      */
     @Column(name = "card_expiration_date", nullable = false)
     private LocalDate cardExpirationDate;
-
-    /**
-     * Card activation date.
-     * 
-     * Added field (not in original COBOL copybook CVACT02Y.cpy).
-     * Database schema field: card_active_date DATE
-     * 
-     * Date when card was activated by cardholder (e.g., via phone, web, or mobile app).
-     * Nullable because newly issued cards are not activated immediately.
-     * 
-     * Cards must be activated before use. Transaction authorization checks this field
-     * to ensure card has been activated before approving transactions.
-     * 
-     * If null, card is in "issued but not activated" state and transactions will be declined
-     * with "Card not activated" response code.
-     */
-    @Column(name = "card_active_date")
-    private LocalDate cardActiveDate;
 
     /**
      * Record creation timestamp.

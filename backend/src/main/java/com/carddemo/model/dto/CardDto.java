@@ -38,7 +38,6 @@ import java.time.LocalDateTime;
  * - COBOL PIC X(10) CARD-EXPIRAION-DATE → LocalDate cardExpirationDate
  * - COBOL PIC X(01) CARD-ACTIVE-STATUS → String cardStatus
  * - COBOL PIC 9(03) CARD-CVV-CD → EXPLICITLY EXCLUDED per PCI-DSS Section 3.2
- * - Added cardActiveDate from database schema (not in original COBOL)
  * - Added audit timestamps createdAt and updatedAt for API transparency
  * 
  * Field Mapping from Card Entity:
@@ -47,7 +46,6 @@ import java.time.LocalDateTime;
  * - cardEmbossedName: Direct mapping from Card.cardEmbossedName
  * - cardExpirationDate: Direct mapping from Card.cardExpirationDate
  * - cardStatus: Direct mapping from Card.cardStatus
- * - cardActiveDate: Direct mapping from Card.cardActiveDate
  * - createdAt: Converted from Card.createdAt (Timestamp → LocalDateTime)
  * - updatedAt: Converted from Card.updatedAt (Timestamp → LocalDateTime)
  * 
@@ -159,29 +157,6 @@ public class CardDto {
     private String cardStatus;
 
     /**
-     * Card activation date.
-     * 
-     * Added field (not in original COBOL copybook CVACT02Y.cpy).
-     * Database schema field: card_active_date DATE
-     * Format: YYYY-MM-DD (ISO-8601 date format in JSON)
-     * 
-     * Date when card was activated by cardholder. Null if card has not been
-     * activated yet (newly issued cards awaiting activation).
-     * 
-     * Used by frontend to:
-     * - Display activation status
-     * - Show activation date in card details
-     * - Distinguish between "issued" and "active" cards
-     * 
-     * Cards must be activated before first use. If null, frontend shows
-     * "Activation Required" message and provides activation workflow.
-     * 
-     * JSON serialization format specified by @JsonFormat annotation.
-     */
-    @JsonFormat(pattern = "yyyy-MM-dd")
-    private LocalDate cardActiveDate;
-
-    /**
      * Record creation timestamp.
      * 
      * Added field (not in original COBOL copybook).
@@ -247,7 +222,6 @@ public class CardDto {
      * 
      * Field Exclusions:
      * - Card CVV code is NEVER copied (not present in entity, per PCI-DSS 3.2)
-     * - Card.cardCardmemberId is excluded (internal ID not needed in basic DTO)
      * - Card.account relationship is excluded (prevents circular serialization)
      * - Card.version is excluded (internal optimistic locking field)
      * 
@@ -306,7 +280,6 @@ public class CardDto {
                 .cardEmbossedName(card.getCardEmbossedName())
                 .cardExpirationDate(card.getCardExpirationDate())
                 .cardStatus(card.getCardStatus())
-                .cardActiveDate(card.getCardActiveDate())
                 .createdAt(createdAtLocal)
                 .updatedAt(updatedAtLocal)
                 .build();

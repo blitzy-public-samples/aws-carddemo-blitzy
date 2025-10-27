@@ -359,12 +359,12 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * if merchant-based queries become frequent operational requirement. Current
      * implementation performs table scan.
      * 
-     * @param merchantId 9-digit merchant identifier (stored as String with leading zeros)
+     * @param merchantId 9-digit merchant identifier (COBOL PIC 9(09) → Java Long)
      * @return List of Transaction entities for the specified merchant,
      *         ordered by trans_orig_ts descending. Returns empty list if no transactions
      *         found for the merchant.
      */
-    List<Transaction> findByTransMerchantId(String merchantId);
+    List<Transaction> findByTransMerchantId(Long merchantId);
 
     /**
      * Find all transactions by transaction source.

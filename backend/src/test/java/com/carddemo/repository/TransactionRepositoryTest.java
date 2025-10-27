@@ -75,12 +75,22 @@ class TransactionRepositoryTest {
 
     /**
      * Configure Spring Boot DataSource properties from Testcontainers PostgreSQL instance.
+     * 
+     * Critical Configuration Notes:
+     * - Enables Flyway migrations to create schema (disabled by default in test profile)
+     * - Sets Hibernate ddl-auto to "none" to use Flyway DDL instead of Hibernate auto-DDL
+     * - This ensures CHAR(1) columns are created correctly per Flyway migrations
+     * - Without this, Hibernate creates VARCHAR columns which fail validation
      */
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
+        // Enable Flyway migrations for Testcontainers (disabled in application-test.yml)
+        registry.add("spring.flyway.enabled", () -> "true");
+        // Disable Hibernate DDL to use Flyway migrations instead
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "none");
     }
 
     @Autowired
@@ -126,8 +136,7 @@ class TransactionRepositoryTest {
         testCard = Card.builder()
                 .cardNum("4111111111111111")
                 .cardAcctId(testAccount.getAcctId())
-                .cardCardmemberId(9876543210L)
-                .cardStatus("Y")
+                .cardStatus("A")  // 'A' = Active per Flyway migration check constraint
                 .cardExpirationDate(LocalDate.of(2025, 12, 31))
                 .cardEmbossedName("JOHN DOE")
                 .build();
@@ -156,7 +165,7 @@ class TransactionRepositoryTest {
                 .transSource("POS")
                 .transDesc("STARBUCKS COFFEE #5678")
                 .transAmt(new BigDecimal("25.50"))
-                .transMerchantId("123456789")
+                .transMerchantId(123456789L)  // COBOL PIC 9(09) → Java Long per Section 0.7.5
                 .transMerchantName("STARBUCKS COFFEE")
                 .transMerchantCity("NEW YORK")
                 .transMerchantZip("10001")
@@ -178,7 +187,7 @@ class TransactionRepositoryTest {
         assertEquals("POS", savedTransaction.getTransSource());
         assertEquals("STARBUCKS COFFEE #5678", savedTransaction.getTransDesc());
         assertEquals(0, new BigDecimal("25.50").compareTo(savedTransaction.getTransAmt()));
-        assertEquals("123456789", savedTransaction.getTransMerchantId());
+        assertEquals(123456789L, savedTransaction.getTransMerchantId());  // COBOL PIC 9(09) → Java Long
         assertEquals("STARBUCKS COFFEE", savedTransaction.getTransMerchantName());
         assertEquals("NEW YORK", savedTransaction.getTransMerchantCity());
         assertEquals("10001", savedTransaction.getTransMerchantZip());
@@ -309,11 +318,10 @@ class TransactionRepositoryTest {
         entityManager.flush();
         entityManager.clear();
 
-        // Act & Assert: Attempt to save duplicate trans_id
+        // Act & Assert: Attempt to save duplicate trans_id (primary key violation)
         Transaction txn2 = createTestTransaction("TXN001", new BigDecimal("200.00"));
         assertThrows(DataIntegrityViolationException.class, () -> {
-            transactionRepository.save(txn2);
-            entityManager.flush();
+            transactionRepository.saveAndFlush(txn2);
         });
     }
 
@@ -442,10 +450,9 @@ class TransactionRepositoryTest {
         Transaction transaction = createTestTransaction("TXN001", new BigDecimal("100.00"));
         transaction.setTransCardNum("9999999999999999"); // Non-existent card
 
-        // Act & Assert: Expect DataIntegrityViolationException
+        // Act & Assert: Expect DataIntegrityViolationException (foreign key violation)
         assertThrows(DataIntegrityViolationException.class, () -> {
-            transactionRepository.save(transaction);
-            entityManager.flush();
+            transactionRepository.saveAndFlush(transaction);
         });
     }
 
@@ -724,13 +731,13 @@ class TransactionRepositoryTest {
     void testFindByMerchantId() {
         // Arrange: Create transactions with different merchants
         Transaction txn1 = createTestTransaction("TXN001", new BigDecimal("100.00"));
-        txn1.setTransMerchantId("123456789");
+        txn1.setTransMerchantId(123456789L);  // COBOL PIC 9(09) → Java Long
 
         Transaction txn2 = createTestTransaction("TXN002", new BigDecimal("200.00"));
-        txn2.setTransMerchantId("987654321");
+        txn2.setTransMerchantId(987654321L);  // COBOL PIC 9(09) → Java Long
 
         Transaction txn3 = createTestTransaction("TXN003", new BigDecimal("300.00"));
-        txn3.setTransMerchantId("123456789");
+        txn3.setTransMerchantId(123456789L);  // COBOL PIC 9(09) → Java Long
 
         transactionRepository.save(txn1);
         transactionRepository.save(txn2);
@@ -738,12 +745,12 @@ class TransactionRepositoryTest {
         entityManager.flush();
 
         // Act: Query by merchant ID
-        List<Transaction> merchantTransactions = transactionRepository.findByTransMerchantId("123456789");
+        List<Transaction> merchantTransactions = transactionRepository.findByTransMerchantId(123456789L);
 
         // Assert: Verify only transactions for merchant returned
         assertNotNull(merchantTransactions);
         assertEquals(2, merchantTransactions.size());
-        assertTrue(merchantTransactions.stream().allMatch(t -> t.getTransMerchantId().equals("123456789")));
+        assertTrue(merchantTransactions.stream().allMatch(t -> t.getTransMerchantId().equals(123456789L)));
     }
 
     /**
@@ -846,7 +853,7 @@ class TransactionRepositoryTest {
     void testMerchantFields() {
         // Arrange: Create transaction with complete merchant information
         Transaction transaction = createTestTransaction("TXN001", new BigDecimal("75.50"));
-        transaction.setTransMerchantId("987654321"); // PIC 9(09)
+        transaction.setTransMerchantId(987654321L); // COBOL PIC 9(09) → Java Long
         transaction.setTransMerchantName("TARGET STORE"); // PIC X(50)
         transaction.setTransMerchantCity("LOS ANGELES"); // PIC X(50)
         transaction.setTransMerchantZip("90001"); // PIC X(10)
@@ -858,7 +865,7 @@ class TransactionRepositoryTest {
         Transaction retrieved = transactionRepository.findById("TXN001").orElseThrow();
 
         // Assert: Verify all merchant fields stored correctly
-        assertEquals("987654321", retrieved.getTransMerchantId());
+        assertEquals(987654321L, retrieved.getTransMerchantId());
         assertEquals("TARGET STORE", retrieved.getTransMerchantName());
         assertEquals("LOS ANGELES", retrieved.getTransMerchantCity());
         assertEquals("90001", retrieved.getTransMerchantZip());
@@ -979,7 +986,7 @@ class TransactionRepositoryTest {
                 .transSource("POS")
                 .transDesc("TEST MERCHANT TRANSACTION")
                 .transAmt(amount)
-                .transMerchantId("123456789")
+                .transMerchantId(123456789L)  // COBOL PIC 9(09) → Java Long per Section 0.7.5
                 .transMerchantName("TEST MERCHANT")
                 .transMerchantCity("NEW YORK")
                 .transMerchantZip("10001")

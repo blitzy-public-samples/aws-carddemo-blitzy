@@ -239,23 +239,23 @@ public class Transaction {
      * Merchant identifier.
      * 
      * Converted from: COBOL PIC 9(09) TRAN-MERCHANT-ID
-     * Maximum length: 9 characters (stored as String to preserve leading zeros)
+     * Maximum value: 999999999 (9 digits)
      * Format: 9-digit numeric merchant ID assigned by payment network
      * 
      * Uniquely identifies the merchant accepting the transaction. Assigned by
      * acquiring bank or payment network (e.g., Visa, Mastercard).
      * 
-     * Stored as String rather than Integer to preserve leading zeros which are
-     * significant in merchant identification and routing logic.
+     * COBOL PIC 9(09) converted to Java Long per Section 0.7.5 translation rules.
+     * Database column type BIGINT per V4 Flyway migration.
      * 
      * Examples:
-     * - "000123456" (leading zeros preserved)
-     * - "999888777"
+     * - 123456789L
+     * - 999888777L
      * 
      * Used for merchant-specific reporting, chargeback processing, and fraud detection.
      */
-    @Column(name = "trans_merchant_id", length = 9)
-    private String transMerchantId;
+    @Column(name = "trans_merchant_id")
+    private Long transMerchantId;
 
     /**
      * Merchant name.
