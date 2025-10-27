@@ -680,9 +680,10 @@ public class StatementGenerationJobConfig {
         }
 
         @Override
-        public void afterStep(StepExecution stepExecution) {
+        public org.springframework.batch.core.ExitStatus afterStep(StepExecution stepExecution) {
             log.info("Completed reject identification step: {} rejects identified",
                     stepExecution.getWriteCount());
+            return stepExecution.getExitStatus();
         }
     }
 
@@ -697,9 +698,10 @@ public class StatementGenerationJobConfig {
         }
 
         @Override
-        public void afterStep(StepExecution stepExecution) {
+        public org.springframework.batch.core.ExitStatus afterStep(StepExecution stepExecution) {
             log.info("Completed account aggregation step: {} accounts processed",
                     stepExecution.getReadCount());
+            return stepExecution.getExitStatus();
         }
     }
 
@@ -714,9 +716,10 @@ public class StatementGenerationJobConfig {
         }
 
         @Override
-        public void afterStep(StepExecution stepExecution) {
+        public org.springframework.batch.core.ExitStatus afterStep(StepExecution stepExecution) {
             log.info("Completed balance calculation step: {} accounts updated",
                     stepExecution.getWriteCount());
+            return stepExecution.getExitStatus();
         }
     }
 
@@ -731,9 +734,10 @@ public class StatementGenerationJobConfig {
         }
 
         @Override
-        public void afterStep(StepExecution stepExecution) {
+        public org.springframework.batch.core.ExitStatus afterStep(StepExecution stepExecution) {
             log.info("Completed statement generation step: {} statements generated",
                     stepExecution.getWriteCount());
+            return stepExecution.getExitStatus();
         }
     }
 
@@ -759,7 +763,7 @@ public class StatementGenerationJobConfig {
         public void setCurrentBalance(BigDecimal currentBalance) { this.currentBalance = currentBalance; }
         
         public BigDecimal getCreditLimit() { return creditLimit; }
-        public void setreditLimit(BigDecimal creditLimit) { this.creditLimit = creditLimit; }
+        public void setCreditLimit(BigDecimal creditLimit) { this.creditLimit = creditLimit; }
         
         public String getAccountStatus() { return accountStatus; }
         public void setAccountStatus(String accountStatus) { this.accountStatus = accountStatus; }
