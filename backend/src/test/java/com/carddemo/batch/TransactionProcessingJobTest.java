@@ -1,5 +1,6 @@
 package com.carddemo.batch;
 
+import com.carddemo.batch.config.TestBatchConfig;
 import com.carddemo.batch.config.TransactionProcessingJobConfig;
 import com.carddemo.batch.processor.TransactionProcessor;
 import com.carddemo.batch.reader.TransactionReader;
@@ -37,8 +38,11 @@ import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.jdbc.Sql;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -85,10 +89,33 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest
 @SpringBatchTest
-@ActiveProfiles("test")
+@Testcontainers
 @Import(TestBatchConfig.class)
-@Sql(scripts = "/batch/schema-h2.sql")
 public class TransactionProcessingJobTest {
+
+    /**
+     * PostgreSQL Testcontainer for integration testing with real database.
+     * Ensures transaction processing maintains ACID properties equivalent to VSAM file operations.
+     * 
+     * Uses .withReuse(true) to reuse the same container across test runs for better performance.
+     */
+    @Container
+    private static final PostgreSQLContainer<?> postgresContainer = new PostgreSQLContainer<>("postgres:16-alpine")
+            .withDatabaseName("carddemo_test")
+            .withUsername("test")
+            .withPassword("test")
+            .withReuse(false)  // Don't reuse across Maven runs
+            .withStartupTimeout(java.time.Duration.ofSeconds(60));
+
+    /**
+     * Configure Spring Boot to use Testcontainers PostgreSQL instance.
+     */
+    @DynamicPropertySource
+    static void postgresProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", postgresContainer::getJdbcUrl);
+        registry.add("spring.datasource.username", postgresContainer::getUsername);
+        registry.add("spring.datasource.password", postgresContainer::getPassword);
+    }
 
     @Autowired
     private JobLauncherTestUtils jobLauncherTestUtils;

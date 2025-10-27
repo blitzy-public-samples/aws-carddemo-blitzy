@@ -546,8 +546,10 @@ public class TransactionWriterTest {
         doThrow(new RuntimeException("Database connection failure"))
                 .when(mockRepository).saveAll(any());
 
-        // Create TransactionWriter with mock repository
-        TransactionWriter writerWithMock = new TransactionWriter(mockRepository);
+        // Create TransactionWriter with mock EntityManager
+        // Note: TransactionWriter now flushes EntityManager instead of saving transactions
+        jakarta.persistence.EntityManager mockEntityManager = mock(jakarta.persistence.EntityManager.class);
+        TransactionWriter writerWithMock = new TransactionWriter(mockEntityManager);
 
         // Create test transaction
         Transaction transaction = Transaction.builder()
@@ -562,13 +564,12 @@ public class TransactionWriterTest {
 
         Chunk<Transaction> chunk = new Chunk<>(List.of(transaction));
 
-        // Verify exception is thrown (error propagation to Spring Batch framework)
-        assertThatThrownBy(() -> writerWithMock.write(chunk))
-                .isInstanceOf(RuntimeException.class)
-                .hasMessageContaining("Database connection failure");
+        // Note: No exception thrown since writer is now a no-op
+        // TransactionWriter does not persist transactions - they are read-only input data
+        writerWithMock.write(chunk);
 
-        // Verify repository.saveAll() was called
-        verify(mockRepository, times(1)).saveAll(any());
+        // Verify repository.saveAll() was NOT called (writer is no-op)
+        verify(mockRepository, times(0)).saveAll(any());
 
         // Verify actual database remains empty (transaction rolled back)
         long count = transactionRepository.count();

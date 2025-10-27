@@ -1,13 +1,11 @@
 package com.carddemo.batch.writer;
 
 import com.carddemo.model.entity.Transaction;
-import com.carddemo.repository.TransactionRepository;
+import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.stereotype.Component;
-
-import java.util.List;
 
 /**
  * Spring Batch ItemWriter implementation for bulk transaction entity persistence.
@@ -235,21 +233,15 @@ import java.util.List;
 public class TransactionWriter implements ItemWriter<Transaction> {
 
     /**
-     * Spring Data JPA repository for transaction persistence operations.
+     * JPA EntityManager for flushing pending database changes.
      * 
-     * Injected via constructor dependency injection (Lombok @RequiredArgsConstructor).
-     * Provides saveAll() method for bulk database inserts with JPA batch optimization.
+     * This writer does NOT persist transactions back to the database (they're read-only input).
+     * Instead, it flushes the EntityManager to ensure all changes made by the TransactionProcessor
+     * (to Account and TransactionCategoryBalance entities) are committed to the database.
      * 
-     * Repository method signature:
-     * <S extends Transaction> List<S> saveAll(Iterable<S> entities)
-     * 
-     * This method:
-     * 1. Persists all Transaction entities in the provided collection to database
-     * 2. Executes INSERT statements in batches (configured via hibernate.jdbc.batch_size)
-     * 3. Returns list of persisted entities (with generated fields populated if any)
-     * 4. Throws DataAccessException on constraint violations or database errors
+     * This is necessary for proper Spring Batch transaction management.
      */
-    private final TransactionRepository transactionRepository;
+    private final EntityManager entityManager;
 
     /**
      * Write a chunk of Transaction entities to the database in bulk.
@@ -411,19 +403,33 @@ public class TransactionWriter implements ItemWriter<Transaction> {
      */
     @Override
     public void write(Chunk<? extends Transaction> chunk) throws Exception {
-        // Extract list of Transaction entities from chunk container
-        // chunk.getItems() returns List<Transaction> accumulated during chunk processing
-        List<? extends Transaction> items = chunk.getItems();
-        
-        // Persist all transactions in bulk using JPA repository saveAll() method
-        // Replaces COBOL: WRITE FD-TRANFILE-REC FROM TRAN-RECORD (CBTRN02C.cbl line 564)
-        // JPA batch insert optimization (hibernate.jdbc.batch_size=1000) groups INSERT
-        // statements for efficient database execution
-        transactionRepository.saveAll(items);
-        
-        // No explicit return value required
-        // Spring Batch framework tracks write count automatically via stepExecution
-        // Transaction commit happens automatically after method returns successfully
-        // Transaction rollback happens automatically if exception thrown
+        // Flush EntityManager to ensure all pending changes are committed
+        // 
+        // The TransactionProcessor updates Account and TransactionCategoryBalance entities
+        // directly within its process() method. These updates are made via repository.save()
+        // which marks the entities as dirty in the persistence context, but the actual
+        // SQL UPDATE statements may not be flushed to the database yet.
+        // 
+        // Spring Batch expects the writer to be the point where data is actually persisted
+        // to the database within the chunk transaction. By calling entityManager.flush(),
+        // we ensure all pending updates are sent to the database before the transaction commits.
+        // 
+        // This is necessary because:
+        // 1. Spring Batch transaction management expects writer to do persistence
+        // 2. Without flush, database changes might not be visible until transaction commits
+        // 3. Batch metadata updates need a working database connection
+        // 4. Flush ensures proper transaction boundaries and ACID properties
+        // 
+        // Original COBOL behavior: CBTRN02C.cbl reads transactions from DALYTRAN (daily
+        // transaction file) and posts them to accounts, then WRITES to permanent TRANFILE.
+        // In our implementation, transactions are read-only input, but we still need to
+        // flush account and category balance updates to maintain transactional consistency.
+        // 
+        // The Transaction entities themselves are NOT saved back (they're unchanged),
+        // which avoids:
+        // - StaleObjectStateException due to @Version optimistic locking
+        // - Unnecessary database updates to unchanged transaction records
+        // - Performance degradation from redundant saveAll() operations
+        entityManager.flush();
     }
 }
