@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
+import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -243,7 +244,6 @@ class CardAccountXrefRepositoryTest {
                 .cardStatus("A") // Active
                 .cardEmbossedName(cardholderName)
                 .cardExpirationDate(expirationDate)
-                .cardActiveDate(LocalDate.now())
                 .build();
         return cardRepository.save(card);
     }
@@ -285,7 +285,9 @@ class CardAccountXrefRepositoryTest {
         assertNotNull(savedXref);
         assertEquals("4111111111111111", savedXref.getXrefCardNum());
         assertEquals(1000000001L, savedXref.getXrefAcctId());
-        assertEquals(100000001L, savedXref.getXrefCustId());
+        // Note: xrefCustId field is insertable=false, updatable=false, so access customer ID via relationship
+        assertNotNull(savedXref.getCustomer());
+        assertEquals(100000001L, savedXref.getCustomer().getCustId());
 
         // Verify entity can be retrieved using composite key
         CardAccountXrefId compositeKey = new CardAccountXrefId("4111111111111111", 1000000001L);
@@ -293,7 +295,9 @@ class CardAccountXrefRepositoryTest {
         assertTrue(retrievedXref.isPresent());
         assertEquals("4111111111111111", retrievedXref.get().getXrefCardNum());
         assertEquals(1000000001L, retrievedXref.get().getXrefAcctId());
-        assertEquals(100000001L, retrievedXref.get().getXrefCustId());
+        // Access customer ID via relationship (xrefCustId field is non-insertable/non-updatable)
+        assertNotNull(retrievedXref.get().getCustomer());
+        assertEquals(100000001L, retrievedXref.get().getCustomer().getCustId());
     }
 
     /**
@@ -522,9 +526,11 @@ class CardAccountXrefRepositoryTest {
                 .customer(customer2)               // Different customer
                 .build();
 
-        // Then: DataIntegrityViolationException is thrown for duplicate composite primary key
-        assertThrows(DataIntegrityViolationException.class, () -> {
-            cardAccountXrefRepository.save(xref2);
+        // Then: ConstraintViolationException is thrown for duplicate composite primary key
+        // Note: Must use persist() to force INSERT operation (save() would detect existing entity and UPDATE instead)
+        // Using entityManager.persist() bypasses Spring's exception translation, so we catch the raw Hibernate exception
+        assertThrows(org.hibernate.exception.ConstraintViolationException.class, () -> {
+            entityManager.persist(xref2);
             entityManager.flush();
         });
     }
@@ -625,8 +631,9 @@ class CardAccountXrefRepositoryTest {
         CardAccountXref xrefWithAccount = foundXref.get();
         assertNotNull(xrefWithAccount.getAccount());
         assertEquals(1000000009L, xrefWithAccount.getAccount().getAcctId());
-        assertEquals(BigDecimal.valueOf(10000.50), xrefWithAccount.getAccount().getAcctCurrBal());
-        assertEquals(BigDecimal.valueOf(30000.00), xrefWithAccount.getAccount().getAcctCreditLimit());
+        // Use compareTo() for BigDecimal comparison per Section 0.7.2 (scale-independent comparison)
+        assertEquals(0, BigDecimal.valueOf(10000.50).compareTo(xrefWithAccount.getAccount().getAcctCurrBal()));
+        assertEquals(0, BigDecimal.valueOf(30000.00).compareTo(xrefWithAccount.getAccount().getAcctCreditLimit()));
         assertEquals("Y", xrefWithAccount.getAccount().getAcctActiveStatus());
     }
 
@@ -691,9 +698,9 @@ class CardAccountXrefRepositoryTest {
                 .build();
 
         // Then: DataIntegrityViolationException is thrown for foreign key constraint violation
+        // Note: Using saveAndFlush() to ensure Spring's DAO exception translation wraps Hibernate's ConstraintViolationException
         assertThrows(DataIntegrityViolationException.class, () -> {
-            cardAccountXrefRepository.save(xref);
-            entityManager.flush();
+            cardAccountXrefRepository.saveAndFlush(xref);
         });
     }
 
@@ -720,9 +727,9 @@ class CardAccountXrefRepositoryTest {
                 .build();
 
         // Then: DataIntegrityViolationException is thrown for foreign key constraint violation
+        // Note: Using saveAndFlush() to ensure Spring's DAO exception translation wraps Hibernate's ConstraintViolationException
         assertThrows(DataIntegrityViolationException.class, () -> {
-            cardAccountXrefRepository.save(xref);
-            entityManager.flush();
+            cardAccountXrefRepository.saveAndFlush(xref);
         });
     }
 
@@ -736,28 +743,21 @@ class CardAccountXrefRepositoryTest {
      */
     @Test
     void testCustomerForeignKeyConstraint() {
-        // Given: Card and account exist, but customer does not
+        // Given: Card and account exist, but we'll attempt to insert xref with non-existent customer
         Account account = createAccount(1000000013L, BigDecimal.valueOf(7000.00), BigDecimal.valueOf(14000.00));
         Card card = createCard("5222222222222222", account.getAcctId(), "MARY WHITE", LocalDate.of(2026, 8, 31));
 
-        // Create customer instance without persisting (non-existent in database)
-        Customer nonExistentCustomer = Customer.builder()
-                .custId(999999999L) // Non-existent customer ID
-                .custFirstName("Mary")
-                .custLastName("White")
-                .custSsn("777888999")
-                .build();
-
-        // When: Attempting to create cross-reference with non-existent customer
-        CardAccountXref xref = CardAccountXref.builder()
-                .xrefCardNum(card.getCardNum())
-                .xrefAcctId(account.getAcctId())
-                .customer(nonExistentCustomer)
-                .build();
-
-        // Then: DataIntegrityViolationException is thrown for foreign key constraint violation
-        assertThrows(DataIntegrityViolationException.class, () -> {
-            cardAccountXrefRepository.save(xref);
+        // When/Then: Use native SQL to bypass JPA entity validation and test database FK constraint directly
+        // Note: xrefCustId field is marked insertable=false in entity, so we must use native SQL
+        // to properly test the database foreign key constraint on xref_cust_id column.
+        // Native SQL bypasses Spring's exception translation, so we catch Hibernate's ConstraintViolationException
+        assertThrows(org.hibernate.exception.ConstraintViolationException.class, () -> {
+            entityManager.getEntityManager().createNativeQuery(
+                "INSERT INTO card_account_xref (xref_card_num, xref_acct_id, xref_cust_id) VALUES (?, ?, ?)")
+                .setParameter(1, card.getCardNum())
+                .setParameter(2, account.getAcctId())
+                .setParameter(3, 999999999L) // Non-existent customer ID - tests FK constraint
+                .executeUpdate();
             entityManager.flush();
         });
     }
