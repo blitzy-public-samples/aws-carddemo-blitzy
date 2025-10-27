@@ -1,42 +1,40 @@
 /**
- * Icon Assets Barrel Export Module
+ * Icons Barrel Export Module
  * 
- * This module provides a centralized import path for all icon components used throughout
- * the CardDemo React application. It consolidates status icons, menu navigation icons,
- * and custom SVG icon components into a single export point.
+ * This module provides a centralized export point for all icon assets and components
+ * used throughout the CardDemo application. It re-exports icon components from three
+ * source modules with proper naming conflict resolution.
  * 
  * Purpose:
- * - Simplify icon imports across the application
- * - Provide consistent icon usage patterns
+ * - Provide centralized import path: import { CardIcon, SuccessIcon } from '@/assets/icons'
  * - Resolve naming conflicts between Material-UI and custom SVG icons
- * - Support tree-shaking for optimal bundle size
+ * - Support tree-shaking with named exports
+ * - Maintain consistent icon usage patterns across the application
  * 
- * Icon Categories:
+ * Module Organization:
  * 
- * 1. Status Icons (from StatusIcons.tsx):
+ * 1. STATUS ICONS (StatusIcons.tsx):
  *    - SuccessIcon: Green checkmark for successful operations
- *    - ErrorIcon: Red error circle for failed operations
- *    - WarningIcon: Amber warning triangle for cautions
- *    - InfoIcon: Blue info circle for informational messages
+ *    - ErrorIcon: Red error indicator for failed operations
+ *    - WarningIcon: Amber warning for cautionary conditions
+ *    - InfoIcon: Blue information indicator for helpful messages
  * 
- * 2. Menu Navigation Icons (from MenuIcons.tsx):
- *    - HomeIcon: Main menu navigation
- *    - DashboardIcon: Dashboard/overview screens
- *    - SettingsIcon: Admin and settings screens
- *    - LogoutIcon: User logout and exit functions
+ * 2. MENU/NAVIGATION ICONS (MenuIcons.tsx):
+ *    - HomeIcon: Main menu home navigation
+ *    - DashboardIcon: Dashboard and overview screens
+ *    - SettingsIcon: Admin and settings functions
+ *    - LogoutIcon: User logout and session termination
  *    - MenuIcon: Mobile navigation drawer toggle (hamburger menu)
  *    - MenuOpenIcon: Navigation drawer close button
  * 
- * 3. Custom SVG Icons (from CustomIcons.tsx):
- *    These are application-specific icons that replace BMS 3270 character-based UI elements:
- *    - CardIcon: Credit card features (COCRDLI, COCRDSL, COCRDUP screens)
- *    - TransactionIcon: Financial transactions (COTRN00, COTRN01, COTRN02 screens)
- *    - AccountIcon: Customer accounts (COACTUP, COACTVW screens)
- *    - UserIcon: User management (COUSR00-03 screens)
- *    - ReportIcon: Report generation (CORPT00 screen)
+ * 3. CUSTOM SVG ICONS (CustomIcons.tsx):
+ *    - CardIcon: Credit card management features (default export)
+ *    - TransactionIcon: Transaction operations (default export)
+ *    - AccountIcon: Account management features (default export)
+ *    - UserIcon: User administration features (default export)
+ *    - ReportIcon: Report generation features (default export)
  * 
- * 4. Material-UI Based Icons (from MenuIcons.tsx, prefixed with "Mui"):
- *    These supplement the custom SVG icons with Material-UI variants:
+ * 4. MATERIAL-UI ICON VARIANTS (MenuIcons.tsx with Mui prefix):
  *    - MuiCardIcon: Material-UI CreditCard icon
  *    - MuiTransactionIcon: Material-UI Receipt icon
  *    - MuiAccountIcon: Material-UI AccountBalance icon
@@ -45,65 +43,77 @@
  * 
  * Naming Conflict Resolution:
  * 
- * Both MenuIcons.tsx and CustomIcons.tsx export icons with the same names
- * (CardIcon, TransactionIcon, AccountIcon, UserIcon, ReportIcon). To resolve this:
+ * Five icon names (CardIcon, TransactionIcon, AccountIcon, UserIcon, ReportIcon) exist
+ * in both MenuIcons.tsx (Material-UI wrappers) and CustomIcons.tsx (custom SVG icons).
  * 
- * - Default exports (without prefix): Custom SVG icons from CustomIcons.tsx
- *   These are the primary icons for the application, providing custom-designed graphics
- *   that specifically replace BMS 3270 character-based representations.
+ * Resolution Strategy:
+ * - Custom SVG icons from CustomIcons.tsx are the DEFAULT exports (without prefix)
+ * - Material-UI icon variants from MenuIcons.tsx are exported with "Mui" prefix
+ * - This prioritizes application-specific custom icons while maintaining access to Material-UI versions
  * 
- * - Prefixed exports (Mui*): Material-UI icons from MenuIcons.tsx
- *   These provide alternative Material-UI-based icons for situations where
- *   standard Material Design icons are preferred or needed for consistency.
+ * Migration from BMS 3270 Screens:
  * 
- * Usage Examples:
+ * These icons replace character-based UI elements from mainframe BMS maps:
+ * - Status icons replace ERRMSG field indicators (COSGN00.bms, COMEN01.bms, COACTUP.bms)
+ * - Menu icons replace BMS menu OPTN### list items (COMEN01.bms, COADM01.bms)
+ * - Custom icons replace terminal character representations (COCRDLI.bms, COTRN00.bms, etc.)
  * 
- * ```tsx
- * // Import status icons
- * import { SuccessIcon, ErrorIcon } from '@/assets/icons';
+ * Example usage:
  * 
- * // Import custom SVG icons (default for business features)
- * import { CardIcon, TransactionIcon } from '@/assets/icons';
+ * Import custom SVG icons (default - application-specific):
+ *   import { CardIcon, TransactionIcon, AccountIcon } from '@/assets/icons';
  * 
- * // Import Material-UI variants when needed
- * import { MuiCardIcon, MuiAccountIcon } from '@/assets/icons';
+ * Import Material-UI icon variants (with Mui prefix):
+ *   import { MuiCardIcon, MuiTransactionIcon, MuiAccountIcon } from '@/assets/icons';
  * 
- * // Import navigation icons
- * import { HomeIcon, DashboardIcon, MenuIcon } from '@/assets/icons';
+ * Import status icons:
+ *   import { SuccessIcon, ErrorIcon, WarningIcon, InfoIcon } from '@/assets/icons';
  * 
- * // Use in components
- * <SuccessIcon size="medium" aria-label="Operation successful" />
- * <CardIcon size="LARGE" color="#1976d2" />
- * <MuiCardIcon size="MEDIUM" color="primary" />
- * ```
+ * Import navigation icons:
+ *   import { HomeIcon, DashboardIcon, MenuIcon, LogoutIcon } from '@/assets/icons';
  * 
- * Migration Notes:
+ * Type Exports:
  * 
- * This module is part of the COBOL-to-React migration from mainframe BMS 3270 terminal
- * screens to modern web interfaces. All icons replace character-based UI elements with
- * scalable SVG graphics optimized for modern browsers and responsive designs.
+ * This module also re-exports TypeScript type definitions for icon component props:
+ * - StatusIconProps: Props for status icon components (SuccessIcon, ErrorIcon, etc.)
+ * - IconComponentProps: Props for menu/navigation icon components
+ * - IconProps: Props for custom SVG icon components
+ * - IconSizeType: Type definition for status icon sizes ('small' | 'medium' | 'large')
  * 
- * Converted from: BMS map character representations (COSGN00.bms through COUSR03.bms)
- * Target: React SPA with Material-UI component library and custom SVG assets
- * 
- * @module assets/icons
+ * @module icons
  */
 
 // ============================================================================
-// Status Icons (Material-UI wrapped, semantic colors)
+// STATUS ICONS - StatusIcons.tsx
 // ============================================================================
 
+/**
+ * Status indicator icon components from StatusIcons.tsx
+ * 
+ * These icons provide visual feedback for form validation, system messages,
+ * and operation results throughout the application.
+ */
 export {
   SuccessIcon,
   ErrorIcon,
   WarningIcon,
   InfoIcon,
+  // Type exports
+  type StatusIconProps,
+  type IconSizeType,
 } from './StatusIcons';
 
 // ============================================================================
-// Menu Navigation Icons (Material-UI wrapped, no naming conflicts)
+// MENU/NAVIGATION ICONS - MenuIcons.tsx
 // ============================================================================
 
+/**
+ * Menu and navigation icon components from MenuIcons.tsx
+ * 
+ * Note: CardIcon, TransactionIcon, AccountIcon, UserIcon, and ReportIcon from
+ * MenuIcons.tsx are exported with "Mui" prefix to avoid naming conflicts with
+ * custom SVG icons from CustomIcons.tsx.
+ */
 export {
   HomeIcon,
   DashboardIcon,
@@ -111,41 +121,17 @@ export {
   LogoutIcon,
   MenuIcon,
   MenuOpenIcon,
+  // Type export
+  type IconComponentProps,
 } from './MenuIcons';
 
-// ============================================================================
-// Custom SVG Icons (Default exports for business features)
-// ============================================================================
-// 
-// These are the primary icons for credit card, transaction, account, user,
-// and report features. They use custom SVG designs that specifically replace
-// BMS 3270 character-based representations from mainframe terminal screens.
-// ============================================================================
-
-export {
-  CardIcon,
-  TransactionIcon,
-  AccountIcon,
-  UserIcon,
-  ReportIcon,
-} from './CustomIcons';
-
-// ============================================================================
-// Material-UI Icon Variants (Prefixed with "Mui" to avoid conflicts)
-// ============================================================================
-// 
-// These exports provide Material-UI-based alternatives to the custom SVG icons.
-// Use these when you need standard Material Design icons or want consistency
-// with other Material-UI components in your interface.
-// 
-// Import with aliases to resolve naming conflicts:
-// - MenuIcons exports CardIcon → Re-exported as MuiCardIcon
-// - MenuIcons exports TransactionIcon → Re-exported as MuiTransactionIcon
-// - MenuIcons exports AccountIcon → Re-exported as MuiAccountIcon
-// - MenuIcons exports UserIcon → Re-exported as MuiUserIcon
-// - MenuIcons exports ReportIcon → Re-exported as MuiReportIcon
-// ============================================================================
-
+/**
+ * Material-UI icon variants with Mui prefix to resolve naming conflicts
+ * 
+ * These are the Material-UI wrapped versions of icons that also have custom
+ * SVG implementations in CustomIcons.tsx. Use these when you specifically need
+ * the Material-UI icon style instead of the custom application-specific icons.
+ */
 export {
   CardIcon as MuiCardIcon,
   TransactionIcon as MuiTransactionIcon,
@@ -155,40 +141,103 @@ export {
 } from './MenuIcons';
 
 // ============================================================================
-// Type Re-exports (for convenience)
+// CUSTOM SVG ICONS - CustomIcons.tsx (DEFAULT EXPORTS)
 // ============================================================================
 
-export type { StatusIconProps } from './StatusIcons';
-export type { IconComponentProps } from './MenuIcons';
-export type { IconProps } from './CustomIcons';
+/**
+ * Custom SVG icon components from CustomIcons.tsx
+ * 
+ * These are the DEFAULT exports (without prefix) for CardIcon, TransactionIcon,
+ * AccountIcon, UserIcon, and ReportIcon. They represent application-specific
+ * custom SVG implementations that replace character-based representations from
+ * BMS 3270 terminal screens.
+ * 
+ * Prioritization Rationale:
+ * - Custom icons are application-specific and designed for CardDemo branding
+ * - Material-UI variants remain available with Mui prefix for flexibility
+ * - This approach encourages consistent use of custom icons throughout the app
+ */
+export {
+  CardIcon,
+  TransactionIcon,
+  AccountIcon,
+  UserIcon,
+  ReportIcon,
+  // Type export
+  type IconProps,
+} from './CustomIcons';
 
 // ============================================================================
-// Default Export (for convenience when importing all icons)
+// DOCUMENTATION NOTES
 // ============================================================================
 
-import * as StatusIcons from './StatusIcons';
-import * as MenuIcons from './MenuIcons';
-import * as CustomIcons from './CustomIcons';
+/**
+ * SVG File Paths (for direct SVG imports if needed)
+ * 
+ * If you need to import the raw SVG files directly (e.g., for use with img tags
+ * or in contexts where the React component wrappers are not suitable), you can
+ * import them directly:
+ * 
+ * Example:
+ *   import cardIconUrl from '@/assets/icons/card-icon.svg';
+ *   import transactionIconUrl from '@/assets/icons/transaction-icon.svg';
+ * 
+ * However, it is recommended to use the React component wrappers exported from
+ * this module for consistent sizing, coloring, and accessibility support.
+ */
 
-export default {
-  // Status Icons
-  ...StatusIcons,
-  
-  // Menu Navigation Icons (excluding conflicting names)
-  HomeIcon: MenuIcons.HomeIcon,
-  DashboardIcon: MenuIcons.DashboardIcon,
-  SettingsIcon: MenuIcons.SettingsIcon,
-  LogoutIcon: MenuIcons.LogoutIcon,
-  MenuIcon: MenuIcons.MenuIcon,
-  MenuOpenIcon: MenuIcons.MenuOpenIcon,
-  
-  // Custom SVG Icons (default business feature icons)
-  ...CustomIcons,
-  
-  // Material-UI Icon Variants (with Mui prefix)
-  MuiCardIcon: MenuIcons.CardIcon,
-  MuiTransactionIcon: MenuIcons.TransactionIcon,
-  MuiAccountIcon: MenuIcons.AccountIcon,
-  MuiUserIcon: MenuIcons.UserIcon,
-  MuiReportIcon: MenuIcons.ReportIcon,
-};
+/**
+ * Icon Sizing Guidelines
+ * 
+ * All icon components support standardized sizing:
+ * 
+ * Status Icons (StatusIcons.tsx):
+ * - small: 16px (compact displays, inline text, table cells)
+ * - medium: 24px (standard buttons, form fields) - DEFAULT
+ * - large: 32px (prominent actions, headers)
+ * 
+ * Navigation Icons (MenuIcons.tsx):
+ * - SMALL: 16px (inline icons, compact UI)
+ * - MEDIUM: 24px (standard navigation) - DEFAULT
+ * - LARGE: 32px (header icons)
+ * - XLARGE: 48px (hero sections)
+ * 
+ * Custom SVG Icons (CustomIcons.tsx):
+ * - SMALL: 16px (inline icons, compact UI)
+ * - MEDIUM: 24px (standard usage) - DEFAULT
+ * - LARGE: 32px (prominent features)
+ * - XLARGE: 48px (large displays)
+ * 
+ * Example:
+ *   SuccessIcon size="small"  - 16px (status icons use lowercase)
+ *   HomeIcon size="MEDIUM"    - 24px (navigation icons use UPPERCASE)
+ *   CardIcon size="LARGE"     - 32px (custom icons use UPPERCASE)
+ */
+
+/**
+ * Accessibility Guidelines
+ * 
+ * All icon components support accessibility attributes:
+ * 
+ * 1. Provide aria-label for standalone icons:
+ *    CardIcon ariaLabel="View card details"
+ * 
+ * 2. Mark decorative icons (next to text):
+ *    CardIcon decorative - followed by text label
+ * 
+ * 3. Status icons automatically include role="img" and aria-label
+ * 
+ * 4. Use aria-hidden for purely decorative icons:
+ *    Icons marked as decorative will automatically set aria-hidden to true
+ */
+
+/**
+ * Tree-Shaking Support
+ * 
+ * This module uses named exports to support tree-shaking in build tools.
+ * Only the icons you import will be included in your production bundle.
+ * 
+ * Example:
+ *   import { CardIcon, SuccessIcon } from '@/assets/icons';
+ *   Only CardIcon and SuccessIcon will be bundled
+ */
