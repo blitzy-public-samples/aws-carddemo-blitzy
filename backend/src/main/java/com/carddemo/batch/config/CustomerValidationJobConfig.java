@@ -24,6 +24,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import java.time.Duration;
+
 /**
  * CustomerValidationJobConfig - Spring Batch Job Configuration
  * 
@@ -643,8 +645,9 @@ public class CustomerValidationJobConfig {
                 
                 // Calculate processing duration and rate
                 if (stepExecution.getStartTime() != null && stepExecution.getEndTime() != null) {
-                    long durationMs = stepExecution.getEndTime().getTime() 
-                                    - stepExecution.getStartTime().getTime();
+                    long durationMs = Duration.between(
+                                    stepExecution.getStartTime(), 
+                                    stepExecution.getEndTime()).toMillis();
                     double durationSeconds = durationMs / 1000.0;
                     
                     log.info("Processing Duration: {:.2f} seconds", durationSeconds);
@@ -814,8 +817,9 @@ public class CustomerValidationJobConfig {
             
             // Calculate and log job duration
             if (jobExecution.getStartTime() != null && jobExecution.getEndTime() != null) {
-                long durationMs = jobExecution.getEndTime().getTime() 
-                                - jobExecution.getStartTime().getTime();
+                long durationMs = Duration.between(
+                                jobExecution.getStartTime(), 
+                                jobExecution.getEndTime()).toMillis();
                 double durationSeconds = durationMs / 1000.0;
                 log.info("Job Duration: {:.2f} seconds", durationSeconds);
             }
