@@ -106,7 +106,7 @@ const AccountUpdatePage: React.FC = () => {
   // ===== Authentication Hook =====
   // Check user authentication status
   // Replaces COBOL EXEC CICS ASSIGN USERID and RACF security check
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated } = useAuth();
 
   // ===== Component State =====
   // Loading state for async operations (data fetch, save)
