@@ -7,7 +7,12 @@ import com.carddemo.model.entity.Transaction;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.TransactionRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.OptimisticLockException;
+import jakarta.persistence.PersistenceContext;
 import org.assertj.core.api.Assertions;
+import org.hibernate.StaleObjectStateException;
+import org.hibernate.exception.ConstraintViolationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -15,6 +20,7 @@ import org.springframework.batch.item.Chunk;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.orm.jpa.JpaOptimisticLockingFailureException;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -26,6 +32,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Timestamp;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -207,6 +214,17 @@ public class TransactionWriterTest {
     private AccountRepository accountRepository;
 
     /**
+     * EntityManager for forcing immediate database flush in constraint violation tests.
+     * 
+     * Required to trigger immediate constraint checking in tests that verify foreign key
+     * violations and optimistic locking. Without explicit flush, @Transactional tests defer
+     * database operations until transaction commit, causing expected exceptions to be thrown
+     * later than expected by test assertions.
+     */
+    @PersistenceContext
+    private EntityManager entityManager;
+
+    /**
      * Test account entity reused across test methods.
      * 
      * Created in @BeforeEach setup method and used as the base of the foreign key chain:
@@ -256,8 +274,8 @@ public class TransactionWriterTest {
                 .acctCurrBal(new BigDecimal("5000.00"))
                 .acctCreditLimit(new BigDecimal("10000.00"))
                 .acctCashCreditLimit(new BigDecimal("2000.00"))
-                .acctOpenDate(java.sql.Date.valueOf("2020-01-01"))
-                .acctExpirationDate(java.sql.Date.valueOf("2025-12-31"))
+                .acctOpenDate(LocalDate.of(2020, 1, 1))
+                .acctExpirationDate(LocalDate.of(2025, 12, 31))
                 .build();
         testAccount = accountRepository.save(testAccount);
 
@@ -268,7 +286,7 @@ public class TransactionWriterTest {
                 .cardAcctId(testAccount.getAcctId())
                 .cardStatus("Y")
                 .cardEmbossedName("TEST CARDHOLDER")
-                .cardExpirationDate(java.sql.Date.valueOf("2025-12-31"))
+                .cardExpirationDate(LocalDate.of(2025, 12, 31))
                 .build();
         testCard = cardRepository.save(testCard);
     }
@@ -308,7 +326,7 @@ public class TransactionWriterTest {
         // Create 5 transactions with different amounts to test batch processing
         for (int i = 1; i <= 5; i++) {
             Transaction transaction = Transaction.builder()
-                    .transId("TX00000000000000" + i)
+                    .transId(String.format("TX%014d", i))
                     .transCardNum(testCard.getCardNum())
                     .transTypeCd("01") // Purchase type
                     .transCatCd(1001)   // Category code
@@ -331,7 +349,7 @@ public class TransactionWriterTest {
 
         // Verify each transaction exists with correct data
         for (int i = 1; i <= 5; i++) {
-            Optional<Transaction> saved = transactionRepository.findById("TX00000000000000" + i);
+            Optional<Transaction> saved = transactionRepository.findById(String.format("TX%014d", i));
             assertThat(saved).isPresent();
             assertThat(saved.get().getTransCardNum()).isEqualTo(testCard.getCardNum());
             
@@ -386,7 +404,7 @@ public class TransactionWriterTest {
         BigDecimal preciseAmount = new BigDecimal("123.45").setScale(2, RoundingMode.HALF_UP);
         
         Transaction transaction = Transaction.builder()
-                .transId("TX000000000000001")
+                .transId("TX0000000000001")
                 .transCardNum(testCard.getCardNum())
                 .transTypeCd("01")
                 .transCatCd(1001)
@@ -400,7 +418,7 @@ public class TransactionWriterTest {
         transactionWriter.write(chunk);
 
         // Retrieve transaction from database and verify precision maintained
-        Optional<Transaction> saved = transactionRepository.findById("TX000000000000001");
+        Optional<Transaction> saved = transactionRepository.findById("TX0000000000001");
         assertThat(saved).isPresent();
         
         // Verify amount value equals expected (using compareTo for BigDecimal comparison)
@@ -450,7 +468,7 @@ public class TransactionWriterTest {
     public void testWriteTransactionsWithUpdates() throws Exception {
         // Create and persist initial transaction
         Transaction initialTransaction = Transaction.builder()
-                .transId("TX000000000000001")
+                .transId("TX0000000000001")
                 .transCardNum(testCard.getCardNum())
                 .transTypeCd("01")
                 .transCatCd(1001)
@@ -461,7 +479,7 @@ public class TransactionWriterTest {
         transactionRepository.save(initialTransaction);
 
         // Retrieve transaction to get version field populated by JPA
-        Transaction existingTransaction = transactionRepository.findById("TX000000000000001").orElseThrow();
+        Transaction existingTransaction = transactionRepository.findById("TX0000000000001").orElseThrow();
         Integer originalVersion = existingTransaction.getVersion();
 
         // Modify transaction amount (simulate adjustment or correction)
@@ -476,7 +494,7 @@ public class TransactionWriterTest {
         assertThat(count).isEqualTo(1);
 
         // Verify updated amount persisted correctly
-        Transaction updated = transactionRepository.findById("TX000000000000001").orElseThrow();
+        Transaction updated = transactionRepository.findById("TX0000000000001").orElseThrow();
         assertThat(updated.getTransAmt()).isEqualByComparingTo(new BigDecimal("150.00"));
         
         // Verify @Version field incremented (optimistic locking)
@@ -533,7 +551,7 @@ public class TransactionWriterTest {
 
         // Create test transaction
         Transaction transaction = Transaction.builder()
-                .transId("TX000000000000001")
+                .transId("TX0000000000001")
                 .transCardNum(testCard.getCardNum())
                 .transTypeCd("01")
                 .transCatCd(1001)
@@ -600,7 +618,7 @@ public class TransactionWriterTest {
     public void testWriteTransactionsForeignKeyViolation() throws Exception {
         // Create transaction with non-existent card number (invalid foreign key)
         Transaction transaction = Transaction.builder()
-                .transId("TX000000000000001")
+                .transId("TX0000000000001")
                 .transCardNum("9999999999999999") // Card does not exist in database
                 .transTypeCd("01")
                 .transCatCd(1001)
@@ -611,13 +629,21 @@ public class TransactionWriterTest {
 
         Chunk<Transaction> chunk = new Chunk<>(List.of(transaction));
 
-        // Verify foreign key violation throws DataIntegrityViolationException
-        assertThatThrownBy(() -> transactionWriter.write(chunk))
-                .isInstanceOf(DataIntegrityViolationException.class);
+        // Verify foreign key violation throws constraint exception
+        // Need to explicitly flush EntityManager to trigger immediate constraint checking
+        // Note: EntityManager.flush() may throw Hibernate ConstraintViolationException directly
+        // rather than Spring-wrapped DataIntegrityViolationException
+        assertThatThrownBy(() -> {
+            transactionWriter.write(chunk);
+            entityManager.flush();
+        }).satisfiesAnyOf(
+                ex -> assertThat(ex).isInstanceOf(DataIntegrityViolationException.class),
+                ex -> assertThat(ex).isInstanceOf(org.hibernate.exception.ConstraintViolationException.class)
+        );
 
-        // Verify transaction was NOT persisted (rollback occurred)
-        long count = transactionRepository.count();
-        assertThat(count).isEqualTo(0);
+        // Note: Cannot verify transaction count after constraint violation because PostgreSQL
+        // transaction is in aborted state and won't execute further queries.
+        // The exception itself confirms the transaction was not persisted.
     }
 
     /**
@@ -627,7 +653,7 @@ public class TransactionWriterTest {
      * violate primary key uniqueness constraint on trans_id column.
      * 
      * Test Scenario:
-     * - Create and persist initial transaction with trans_id "TX000000000000001"
+     * - Create and persist initial transaction with trans_id "TX0000000000001"
      * - Create second transaction with same trans_id (duplicate key)
      * - Attempt to write duplicate transaction via TransactionWriter
      * - Verify DataIntegrityViolationException is thrown
@@ -661,7 +687,7 @@ public class TransactionWriterTest {
     public void testWriteTransactionsDuplicateId() throws Exception {
         // Create and persist initial transaction
         Transaction initialTransaction = Transaction.builder()
-                .transId("TX000000000000001")
+                .transId("TX0000000000001")
                 .transCardNum(testCard.getCardNum())
                 .transTypeCd("01")
                 .transCatCd(1001)
@@ -673,7 +699,7 @@ public class TransactionWriterTest {
 
         // Create second transaction with same trans_id (duplicate key)
         Transaction duplicateTransaction = Transaction.builder()
-                .transId("TX000000000000001") // Same ID as initial transaction
+                .transId("TX0000000000001") // Same ID as initial transaction
                 .transCardNum(testCard.getCardNum())
                 .transTypeCd("02")
                 .transCatCd(1002)
@@ -693,7 +719,7 @@ public class TransactionWriterTest {
         assertThat(count).isEqualTo(1);
 
         // Verify original transaction unchanged
-        Transaction existing = transactionRepository.findById("TX000000000000001").orElseThrow();
+        Transaction existing = transactionRepository.findById("TX0000000000001").orElseThrow();
         assertThat(existing.getTransAmt()).isEqualByComparingTo(new BigDecimal("100.00"));
         assertThat(existing.getTransTypeCd()).isEqualTo("01");
     }
@@ -748,7 +774,7 @@ public class TransactionWriterTest {
     public void testWriteTransactionsOptimisticLocking() throws Exception {
         // Create and persist initial transaction
         Transaction initialTransaction = Transaction.builder()
-                .transId("TX000000000000001")
+                .transId("TX0000000000001")
                 .transCardNum(testCard.getCardNum())
                 .transTypeCd("01")
                 .transCatCd(1001)
@@ -757,27 +783,55 @@ public class TransactionWriterTest {
                 .transProcTs(Timestamp.valueOf(LocalDateTime.now()))
                 .build();
         transactionRepository.save(initialTransaction);
+        entityManager.flush(); // Ensure transaction is persisted to database
+        entityManager.clear(); // Clear persistence context to ensure fresh fetch below
 
-        // Simulate concurrent access: retrieve transaction twice (two separate instances)
-        Transaction transaction1 = transactionRepository.findById("TX000000000000001").orElseThrow();
-        Transaction transaction2 = transactionRepository.findById("TX000000000000001").orElseThrow();
+        // Simulate concurrent access: fetch transaction twice before any updates
+        // Fetch transaction1 (remains managed)
+        Transaction transaction1 = transactionRepository.findById("TX0000000000001").orElseThrow();
+        Integer originalVersion = transaction1.getVersion();
+        
+        // Fetch transaction2 and immediately detach it (becomes detached with same version as transaction1)
+        Transaction transaction2 = transactionRepository.findById("TX0000000000001").orElseThrow();
+        Integer transaction2Version = transaction2.getVersion(); // Capture version before detach
+        entityManager.detach(transaction2); // Detach from persistence context - now it's a stale copy
+        
+        // At this point:
+        // - transaction1 is managed (version should match database)
+        // - transaction2 is detached with same version as transaction1
+        // - Both should have same version since they were fetched from same database state
 
-        // Modify first instance and save (first update succeeds)
+        // Modify and save transaction1 (first update should succeed, incrementing version)
         transaction1.setTransAmt(new BigDecimal("150.00"));
         Chunk<Transaction> chunk1 = new Chunk<>(List.of(transaction1));
         transactionWriter.write(chunk1);
-
-        // Modify second instance and attempt to save (second update should fail)
+        entityManager.flush(); // Force immediate database update and version increment
+        
+        // Now database has version = 1, but transaction2 still has version = 0 (stale)
+        
+        // Modify second instance (detached entity with stale version 0)
         transaction2.setTransAmt(new BigDecimal("200.00"));
         Chunk<Transaction> chunk2 = new Chunk<>(List.of(transaction2));
 
         // Verify optimistic locking exception thrown (version mismatch)
-        assertThatThrownBy(() -> transactionWriter.write(chunk2))
-                .isInstanceOf(JpaOptimisticLockingFailureException.class);
+        // saveAll() will merge the detached entity, performing:
+        // UPDATE transaction SET ... WHERE trans_id = ? AND version = 0
+        // But database now has version = 1, so UPDATE affects 0 rows, triggering exception
+        assertThatThrownBy(() -> {
+            transactionWriter.write(chunk2);
+            entityManager.flush();
+        }).satisfiesAnyOf(
+                ex -> assertThat(ex).isInstanceOf(ObjectOptimisticLockingFailureException.class),
+                ex -> assertThat(ex).isInstanceOf(JpaOptimisticLockingFailureException.class),
+                ex -> assertThat(ex).isInstanceOf(org.hibernate.StaleObjectStateException.class),
+                ex -> assertThat(ex).isInstanceOf(jakarta.persistence.OptimisticLockException.class)
+        );
 
         // Verify database reflects only first update (second update rolled back)
-        Transaction final Transaction = transactionRepository.findById("TX000000000000001").orElseThrow();
+        entityManager.clear(); // Clear cache to force fresh read from database
+        Transaction finalTransaction = transactionRepository.findById("TX0000000000001").orElseThrow();
         assertThat(finalTransaction.getTransAmt()).isEqualByComparingTo(new BigDecimal("150.00"));
+        assertThat(finalTransaction.getVersion()).isGreaterThan(originalVersion);
     }
 
     /**
@@ -842,7 +896,7 @@ public class TransactionWriterTest {
         List<Transaction> transactions = new ArrayList<>();
         for (int i = 1; i <= 1000; i++) {
             Transaction transaction = Transaction.builder()
-                    .transId(String.format("TX%015d", i))
+                    .transId(String.format("TX%014d", i))
                     .transCardNum(testCard.getCardNum())
                     .transTypeCd("01")
                     .transCatCd(1001)
