@@ -2,6 +2,7 @@ package com.carddemo.model.dto;
 
 import com.carddemo.model.entity.Account;
 import com.fasterxml.jackson.annotation.JsonFormat;
+import jakarta.validation.constraints.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -56,7 +57,11 @@ public class AccountDto {
      * Maximum value: 99,999,999,999 (11 digits)
      * 
      * Unique identifier for the account record.
+     * Validation: Required (not null), must be positive, maximum 11 digits.
      */
+    @NotNull(message = "Account ID is required")
+    @Positive(message = "Account ID must be positive")
+    @Max(value = 99999999999L, message = "Account ID must be at most 11 digits")
     private Long acctId;
 
     /**
@@ -64,9 +69,13 @@ public class AccountDto {
      * 
      * Converted from: COBOL PIC X(01) ACCT-ACTIVE-STATUS
      * Valid values: 'Y' (active), 'N' (inactive), 'C' (closed), 'S' (suspended)
+     * From COBOL line 193: 88 FLG-ACCT-STATUS-ISVALID VALUES 'Y', 'N', 'C', 'S'
      * 
      * Indicates the current operational status of the account.
+     * Validation: Required, must be exactly one character matching [YNCS].
      */
+    @NotBlank(message = "Account status is required")
+    @Pattern(regexp = "[YNCS]", message = "Account status must be Y (active), N (inactive), C (closed), or S (suspended)")
     private String acctActiveStatus;
 
     /**
@@ -78,6 +87,9 @@ public class AccountDto {
      * 
      * Current outstanding balance on the account. Uses BigDecimal to preserve
      * COBOL COMP-3 packed decimal precision per Section 0.7.2 requirement.
+     * 
+     * NOTE: This field is READ-ONLY and calculated from transactions. Updates via
+     * REST API are ignored - balance is recalculated by AccountService.
      */
     private BigDecimal acctCurrBal;
 
@@ -86,9 +98,13 @@ public class AccountDto {
      * 
      * Converted from: COBOL PIC S9(10)V99 COMP-3 ACCT-CREDIT-LIMIT
      * Precision: 12 digits total, 2 decimal places
+     * Maximum: $50,000.00 per business rules (COACTUPC.cbl lines 500-800)
      * 
      * Maximum credit limit allowed for purchase transactions.
+     * Validation: Must be positive when provided for create/update operations.
      */
+    @DecimalMin(value = "0.01", message = "Credit limit must be positive")
+    @DecimalMax(value = "50000.00", message = "Credit limit cannot exceed $50,000.00")
     private BigDecimal acctCreditLimit;
 
     /**
@@ -98,7 +114,9 @@ public class AccountDto {
      * Precision: 12 digits total, 2 decimal places
      * 
      * Maximum credit limit allowed for cash advance transactions.
+     * Validation: Must be positive when provided for create/update operations.
      */
+    @DecimalMin(value = "0.01", message = "Cash credit limit must be positive")
     private BigDecimal acctCashCreditLimit;
 
     /**
@@ -108,8 +126,10 @@ public class AccountDto {
      * Format: YYYY-MM-DD
      * 
      * Date the account was originally opened.
+     * Validation: Required for account creation, must not be in the future.
      */
     @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
+    @PastOrPresent(message = "Account open date cannot be in the future")
     private LocalDate acctOpenDate;
 
     /**
@@ -165,7 +185,9 @@ public class AccountDto {
      * Maximum length: 10 characters (supports ZIP+4 format)
      * 
      * ZIP code for account billing address.
+     * Validation: Optional, but if provided, maximum 10 characters.
      */
+    @Size(max = 10, message = "ZIP code must be at most 10 characters")
     private String acctAddrZip;
 
     /**
@@ -175,7 +197,9 @@ public class AccountDto {
      * Maximum length: 10 characters
      * 
      * Grouping code for account categorization.
+     * Validation: Optional, but if provided, maximum 10 characters.
      */
+    @Size(max = 10, message = "Group ID must be at most 10 characters")
     private String acctGroupId;
 
     /**
