@@ -1,6 +1,9 @@
 package com.carddemo.repository;
 
 import com.carddemo.model.entity.Account;
+import com.carddemo.model.entity.TransactionCategory;
+import com.carddemo.model.entity.TransactionCategoryId;
+import com.carddemo.model.entity.TransactionType;
 import com.carddemo.model.entity.TransactionCategoryBalance;
 import com.carddemo.model.entity.TransactionCategoryBalance.TransactionCategoryBalanceId;
 import org.junit.jupiter.api.BeforeEach;
@@ -107,6 +110,12 @@ class TransactionCategoryBalanceRepositoryTest {
     private AccountRepository accountRepository;
 
     @Autowired
+    private TransactionCategoryRepository transactionCategoryRepository;
+
+    @Autowired
+    private TransactionTypeRepository transactionTypeRepository;
+
+    @Autowired
     private TestEntityManager entityManager;
 
     /**
@@ -134,14 +143,57 @@ class TransactionCategoryBalanceRepositoryTest {
     }
 
     /**
+     * Helper method to create transaction reference data.
+     * 
+     * Creates transaction_type and transaction_category records that tests depend on
+     * via foreign key constraints. This replaces the Flyway V7 migration data that
+     * isn't loaded in @DataJpaTest context.
+     * 
+     * Test data uses custom type codes (PU, CA, FE, PM, RT, AD, T0-T9) not in production
+     * data to avoid conflicts and clearly identify test records.
+     */
+    private void createTransactionReferenceData() {
+        // First create transaction types (required by foreign key)
+        String[] typeCodes = {"PU", "CA", "FE", "PM", "RT", "AD", "T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"};
+        for (String typeCode : typeCodes) {
+            transactionTypeRepository.save(TransactionType.builder()
+                    .transTypeCd(typeCode)
+                    .transTypeDesc("Test " + typeCode + " Type")
+                    .build());
+        }
+        
+        entityManager.flush();
+        
+        // Then create transaction categories that reference the types
+        // Create multiple category codes for each type to support all test scenarios
+        for (String typeCode : typeCodes) {
+            for (int catCd = 1000; catCd <= 5001; catCd++) {
+                transactionCategoryRepository.save(TransactionCategory.builder()
+                        .transTypeCd(typeCode)
+                        .tranCatCd(catCd)
+                        .tranCatTypeDesc("Test " + typeCode + " Category " + catCd)
+                        .build());
+            }
+        }
+        
+        entityManager.flush();
+    }
+
+    /**
      * Clean up test data before each test to ensure isolation.
+     * Creates necessary reference data for foreign key constraints.
      */
     @BeforeEach
     void setUp() {
         repository.deleteAll();
         accountRepository.deleteAll();
+        transactionCategoryRepository.deleteAll();
+        transactionTypeRepository.deleteAll();
         entityManager.flush();
         entityManager.clear();
+        
+        // Create transaction type and category reference data for foreign key constraints
+        createTransactionReferenceData();
     }
 
     // ========================================================================
