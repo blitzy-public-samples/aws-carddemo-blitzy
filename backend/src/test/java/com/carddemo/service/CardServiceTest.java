@@ -35,6 +35,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -213,8 +214,8 @@ class CardServiceTest {
             // Given: Invalid account ID (triggers validation error)
             Long invalidAccountId = -1L;
             
-            when(validationService.validateAccountId(invalidAccountId))
-                    .thenThrow(new BusinessException("VAL001", "Invalid account ID"));
+            doThrow(new BusinessException("VAL001", "Invalid account ID"))
+                    .when(validationService).validateAccountId(invalidAccountId);
 
             // When/Then: Should throw BusinessException for invalid account ID
             assertThrows(BusinessException.class, () -> {
@@ -315,8 +316,8 @@ class CardServiceTest {
             // Given: Invalid card number format
             String invalidCardNum = "123"; // Too short
             
-            when(validationService.validateCardNumber(invalidCardNum))
-                    .thenThrow(new BusinessException("VAL002", "Invalid card number format"));
+            doThrow(new BusinessException("VAL002", "Invalid card number format"))
+                    .when(validationService).validateCardNumber(invalidCardNum);
 
             // When/Then: Should throw BusinessException for invalid format
             assertThrows(BusinessException.class, () -> {
@@ -866,8 +867,8 @@ class CardServiceTest {
             // Given: Invalid card number length
             String shortNumber = "411111111"; // Only 9 digits
             
-            when(validationService.validateCardNumber(shortNumber))
-                    .thenThrow(new BusinessException("VAL002", "Invalid card number length"));
+            doThrow(new BusinessException("VAL002", "Invalid card number length"))
+                    .when(validationService).validateCardNumber(shortNumber);
 
             // When/Then: Should reject wrong length
             assertThrows(BusinessException.class, () -> {
@@ -907,8 +908,8 @@ class CardServiceTest {
             // Given: Non-numeric card number
             String invalidFormat = "ABCD-EFGH-IJKL-M"; // Contains letters
             
-            when(validationService.validateCardNumber(invalidFormat))
-                    .thenThrow(new BusinessException("VAL002", "Card number must be numeric"));
+            doThrow(new BusinessException("VAL002", "Card number must be numeric"))
+                    .when(validationService).validateCardNumber(invalidFormat);
 
             // When/Then: Should reject non-numeric format
             assertThrows(BusinessException.class, () -> {
