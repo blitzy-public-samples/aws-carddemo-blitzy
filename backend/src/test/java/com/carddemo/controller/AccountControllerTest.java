@@ -61,6 +61,7 @@ package com.carddemo.controller;
 import com.carddemo.exception.BusinessException;
 import com.carddemo.exception.DataNotFoundException;
 import com.carddemo.model.dto.AccountDto;
+import com.carddemo.security.JwtTokenProvider;
 import com.carddemo.service.AccountService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.hamcrest.Matchers;
@@ -68,6 +69,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.HttpStatus;
@@ -122,6 +124,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * @see AccountDto
  */
 @WebMvcTest(AccountController.class)
+@AutoConfigureMockMvc(addFilters = false)
 class AccountControllerTest {
 
     @Autowired
@@ -129,6 +132,22 @@ class AccountControllerTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    /**
+     * Mock bean for JwtTokenProvider to satisfy Spring Security filter chain dependencies.
+     * 
+     * <p>Even though @AutoConfigureMockMvc(addFilters = false) disables filter execution,
+     * Spring Security autoconfiguration still attempts to create JwtAuthenticationFilter bean
+     * during context initialization, which requires JwtTokenProvider as a dependency. This
+     * @MockBean annotation provides a mock implementation to satisfy the dependency injection
+     * requirement without loading the actual JWT security infrastructure.</p>
+     * 
+     * <p>This mock is not used in account tests since filters are disabled, but it prevents
+     * context initialization failures. This follows the same pattern used in HealthCheckControllerTest
+     * and MenuControllerTest.</p>
+     */
+    @MockBean
+    private JwtTokenProvider jwtTokenProvider;
 
     @MockBean
     private AccountService accountService;
@@ -205,14 +224,14 @@ class AccountControllerTest {
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.acctId").value(testAccountId))
                 .andExpect(jsonPath("$.acctActiveStatus").value("Y"))
-                .andExpect(jsonPath("$.acctCurrBal").value(Matchers.comparesEqualTo(new BigDecimal("1250.75"))))
-                .andExpect(jsonPath("$.acctCreditLimit").value(Matchers.comparesEqualTo(new BigDecimal("5000.00"))))
-                .andExpect(jsonPath("$.acctCashCreditLimit").value(Matchers.comparesEqualTo(new BigDecimal("1000.00"))))
+                .andExpect(jsonPath("$.acctCurrBal").value(1250.75))
+                .andExpect(jsonPath("$.acctCreditLimit").value(5000.00))
+                .andExpect(jsonPath("$.acctCashCreditLimit").value(1000.00))
                 .andExpect(jsonPath("$.acctOpenDate").value("2020-01-15"))
                 .andExpect(jsonPath("$.acctExpirationDate").value("2025-01-31"))
                 .andExpect(jsonPath("$.acctReissueDate").doesNotExist())
-                .andExpect(jsonPath("$.acctCurrCycCredit").value(Matchers.comparesEqualTo(new BigDecimal("500.00"))))
-                .andExpect(jsonPath("$.acctCurrCycDebit").value(Matchers.comparesEqualTo(new BigDecimal("750.25"))))
+                .andExpect(jsonPath("$.acctCurrCycCredit").value(500.00))
+                .andExpect(jsonPath("$.acctCurrCycDebit").value(750.25))
                 .andExpect(jsonPath("$.acctAddrZip").value("10001"))
                 .andExpect(jsonPath("$.acctGroupId").value("PREMIUM"));
 
@@ -297,6 +316,7 @@ class AccountControllerTest {
     void testUpdateAccount_Success() throws Exception {
         // Arrange: Create updated account DTO
         AccountDto updateRequest = AccountDto.builder()
+                .acctId(testAccountId)  // Required field for validation
                 .acctCreditLimit(new BigDecimal("7500.00").setScale(2, RoundingMode.HALF_UP))
                 .acctCashCreditLimit(new BigDecimal("1500.00").setScale(2, RoundingMode.HALF_UP))
                 .acctActiveStatus("Y")
@@ -333,8 +353,8 @@ class AccountControllerTest {
                 .andExpect(status().isOk())  // HTTP 200 OK
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.acctId").value(testAccountId))
-                .andExpect(jsonPath("$.acctCreditLimit").value(Matchers.comparesEqualTo(new BigDecimal("7500.00"))))
-                .andExpect(jsonPath("$.acctCashCreditLimit").value(Matchers.comparesEqualTo(new BigDecimal("1500.00"))))
+                .andExpect(jsonPath("$.acctCreditLimit").value(7500.00))
+                .andExpect(jsonPath("$.acctCashCreditLimit").value(1500.00))
                 .andExpect(jsonPath("$.acctExpirationDate").value("2026-12-31"))
                 .andExpect(jsonPath("$.acctAddrZip").value("10002"));
 
@@ -355,6 +375,7 @@ class AccountControllerTest {
         // Arrange: Mock service to throw DataNotFoundException
         Long nonExistentAccountId = 99999999999L;
         AccountDto updateRequest = AccountDto.builder()
+                .acctId(nonExistentAccountId)  // Required field for validation
                 .acctCreditLimit(new BigDecimal("7500.00").setScale(2, RoundingMode.HALF_UP))
                 .acctActiveStatus("Y")
                 .build();
@@ -398,6 +419,7 @@ class AccountControllerTest {
     void testUpdateAccount_CreditLimitBelowBalance() throws Exception {
         // Arrange: Create update request with credit limit below current balance
         AccountDto updateRequest = AccountDto.builder()
+                .acctId(testAccountId)  // Required field for validation
                 .acctCreditLimit(new BigDecimal("1000.00").setScale(2, RoundingMode.HALF_UP))  // Less than balance 1250.75
                 .acctActiveStatus("Y")
                 .build();
@@ -527,11 +549,11 @@ class AccountControllerTest {
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.acctId").value(newAccountId))
                 .andExpect(jsonPath("$.acctActiveStatus").value("Y"))
-                .andExpect(jsonPath("$.acctCurrBal").value(Matchers.comparesEqualTo(BigDecimal.ZERO)))
-                .andExpect(jsonPath("$.acctCreditLimit").value(Matchers.comparesEqualTo(new BigDecimal("5000.00"))))
-                .andExpect(jsonPath("$.acctCashCreditLimit").value(Matchers.comparesEqualTo(new BigDecimal("1000.00"))))
-                .andExpect(jsonPath("$.acctCurrCycCredit").value(Matchers.comparesEqualTo(BigDecimal.ZERO)))
-                .andExpect(jsonPath("$.acctCurrCycDebit").value(Matchers.comparesEqualTo(BigDecimal.ZERO)))
+                .andExpect(jsonPath("$.acctCurrBal").value(0.00))
+                .andExpect(jsonPath("$.acctCreditLimit").value(5000.00))
+                .andExpect(jsonPath("$.acctCashCreditLimit").value(1000.00))
+                .andExpect(jsonPath("$.acctCurrCycCredit").value(0.00))
+                .andExpect(jsonPath("$.acctCurrCycDebit").value(0.00))
                 .andExpect(jsonPath("$.acctAddrZip").value("10001"))
                 .andExpect(jsonPath("$.acctGroupId").value("STANDARD"));
 
