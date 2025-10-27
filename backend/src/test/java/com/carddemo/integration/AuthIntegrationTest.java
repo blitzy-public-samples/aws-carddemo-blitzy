@@ -778,8 +778,8 @@ public class AuthIntegrationTest {
      * - Option 3: Short token expiration (minimize invalidation need)
      * 
      * <p>Test validates:
-     * - POST /api/auth/logout returns 200 OK
-     * - Response contains success message
+     * - POST /api/auth/logout returns 204 No Content (REST API best practice)
+     * - Response has no body
      * - (Optional) Subsequent use of same token returns 401 Unauthorized
      */
     @Test
@@ -802,17 +802,13 @@ public class AuthIntegrationTest {
                 .path("token");
 
         // Act & Assert: POST /api/auth/logout with JWT token
+        // Logout returns 204 No Content with no body (REST API best practice)
         given()
                 .header("Authorization", "Bearer " + jwtToken)
         .when()
                 .post("/api/auth/logout")
         .then()
-                .statusCode(200)  // Logout successful
-                .body("message", anyOf(
-                    containsStringIgnoringCase("logout"),
-                    containsStringIgnoringCase("success"),
-                    containsStringIgnoringCase("goodbye")
-                ));  // Success message
+                .statusCode(204);  // No Content - logout successful, no response body
 
         // Optional: Verify token is invalidated (if token blacklist is implemented)
         // Note: This assertion depends on logout implementation strategy
