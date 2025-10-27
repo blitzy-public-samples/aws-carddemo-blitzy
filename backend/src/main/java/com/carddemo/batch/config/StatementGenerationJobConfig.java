@@ -169,8 +169,10 @@ public class StatementGenerationJobConfig {
     /**
      * Spring Batch ItemReader for Account entities.
      * Provides cursor-based pagination for account aggregation and balance calculation.
+     * NOTE: We cannot reuse the same reader instance across multiple steps as readers
+     * are stateful. Each step that reads accounts must create its own reader instance.
      */
-    private final AccountReader accountReader;
+    private final AccountRepository accountRepositoryForReaders;
 
     /**
      * Spring Batch ItemWriter for Account entities.
@@ -183,12 +185,6 @@ public class StatementGenerationJobConfig {
      * Used for querying transactions by date range, card number, and account ID.
      */
     private final TransactionRepository transactionRepository;
-
-    /**
-     * Spring Data JPA repository for Account entity database access.
-     * Used for retrieving and updating account records during statement generation.
-     */
-    private final AccountRepository accountRepository;
 
     /**
      * Spring Data JPA repository for DisclosureGroup entity database access.
@@ -283,6 +279,36 @@ public class StatementGenerationJobConfig {
     }
 
     /**
+     * Creates a new AccountReader instance for account aggregation step.
+     * Each step needs its own reader instance because readers are stateful.
+     * 
+     * @return New AccountReader instance for aggregation step
+     */
+    private AccountReader createAccountAggregationReader() {
+        return new AccountReader(accountRepositoryForReaders);
+    }
+
+    /**
+     * Creates a new AccountReader instance for balance calculation step.
+     * Each step needs its own reader instance because readers are stateful.
+     * 
+     * @return New AccountReader instance for balance calculation step
+     */
+    private AccountReader createBalanceCalculationReader() {
+        return new AccountReader(accountRepositoryForReaders);
+    }
+
+    /**
+     * Creates a new AccountReader instance for statement generation step.
+     * Each step needs its own reader instance because readers are stateful.
+     * 
+     * @return New AccountReader instance for statement generation step
+     */
+    private AccountReader createStatementGenerationReader() {
+        return new AccountReader(accountRepositoryForReaders);
+    }
+
+    /**
      * Step 2: Account Aggregation Step
      * 
      * Reads account records using AccountReader and aggregates transactions by account
@@ -317,7 +343,7 @@ public class StatementGenerationJobConfig {
         
         return new StepBuilder("accountAggregationStep", jobRepository)
                 .<Account, Account>chunk(1000, transactionManager)
-                .reader(accountReader)
+                .reader(createAccountAggregationReader())
                 .processor(accountAggregationProcessor())
                 .writer(items -> {
                     // Pass-through writer - aggregated data flows to next step
@@ -375,7 +401,7 @@ public class StatementGenerationJobConfig {
         
         return new StepBuilder("balanceCalculationStep", jobRepository)
                 .<Account, Account>chunk(1000, transactionManager)
-                .reader(accountReader)
+                .reader(createBalanceCalculationReader())
                 .processor(balanceCalculationProcessor())
                 .writer(accountWriter)
                 .listener(new BalanceCalculationStepListener())
@@ -426,7 +452,7 @@ public class StatementGenerationJobConfig {
         
         return new StepBuilder("statementGenerationStep", jobRepository)
                 .<Account, StatementOutput>chunk(1000, transactionManager)
-                .reader(accountReader)
+                .reader(createStatementGenerationReader())
                 .processor(statementGenerationProcessor())
                 .writer(statementOutputWriter())
                 .listener(new StatementGenerationStepListener())
