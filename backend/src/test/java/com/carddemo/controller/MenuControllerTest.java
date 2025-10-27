@@ -396,124 +396,118 @@ public class MenuControllerTest {
     }
 
     /**
-     * Test GET /api/menu/admin returns HTTP 403 Forbidden for invalid JWT token.
+     * Test GET /api/menu/admin returns HTTP 401 Unauthorized for invalid JWT token.
      * 
      * <p>This test validates token validation logic in MenuController.getAdminMenu().
-     * When JWT token is invalid (expired, malformed, or has invalid signature), the endpoint
-     * should return HTTP 403 Forbidden with error message, preventing unauthorized access.</p>
+     * When JWT token is invalid (expired, malformed, or has invalid signature), Spring Security
+     * intercepts the request and returns HTTP 401 Unauthorized, preventing unauthenticated access.</p>
      * 
      * <p><b>Test Scenario:</b></p>
      * <p>Simulates attempt to access admin menu with invalid/expired JWT token:
      * <ul>
      *   <li>jwtTokenProvider.validateToken() returns false (token is invalid or expired)</li>
-     *   <li>Controller immediately rejects request without extracting user type</li>
+     *   <li>Spring Security rejects request before reaching controller logic</li>
      * </ul>
      * </p>
      * 
+     * <p><b>HTTP Status Code Semantics:</b></p>
+     * <ul>
+     *   <li><b>401 Unauthorized:</b> Authentication missing or invalid (not authenticated)</li>
+     *   <li><b>403 Forbidden:</b> Authenticated but not authorized (wrong role)</li>
+     * </ul>
+     * 
      * <p><b>Test Assertions:</b></p>
      * <ul>
-     *   <li>HTTP status is 403 Forbidden</li>
-     *   <li>Response content type is application/json</li>
-     *   <li>JSON contains "error" field with admin-only access message</li>
+     *   <li>HTTP status is 401 Unauthorized (authentication failed)</li>
      * </ul>
      *
      * @throws Exception if MockMvc request fails
      */
     @Test
-    @DisplayName("GET /api/menu/admin returns 403 Forbidden for invalid JWT token")
-    public void testGetAdminMenu_WithInvalidToken_ReturnsForbidden() throws Exception {
+    @DisplayName("GET /api/menu/admin returns 401 Unauthorized for invalid JWT token")
+    public void testGetAdminMenu_WithInvalidToken_ReturnsUnauthorized() throws Exception {
         // Mock JWT token validation to return false (invalid or expired token)
         when(jwtTokenProvider.validateToken(anyString())).thenReturn(false);
         
         // Perform GET request to /api/menu/admin endpoint with invalid JWT token
         mockMvc.perform(get("/api/menu/admin")
                 .header("Authorization", "Bearer invalid-jwt-token"))
-            // Assert HTTP 403 Forbidden status (access denied due to invalid token)
-            .andExpect(status().isForbidden())
-            
-            // Assert response content type is JSON
-            .andExpect(content().contentType("application/json"))
-            
-            // Assert error message indicates admin-only access restriction
-            .andExpect(jsonPath("$.error").value("No access - Admin Only option..."));
+            // Assert HTTP 401 Unauthorized status (authentication failed due to invalid token)
+            .andExpect(status().isUnauthorized());
     }
 
     /**
-     * Test GET /api/menu/admin returns HTTP 403 Forbidden for missing Authorization header.
+     * Test GET /api/menu/admin returns HTTP 401 Unauthorized for missing Authorization header.
      * 
      * <p>This test validates header validation logic in MenuController.getAdminMenu().
-     * When Authorization header is missing or empty, the endpoint should return HTTP 403 Forbidden
-     * with error message, preventing unauthenticated access.</p>
+     * When Authorization header is missing or empty, Spring Security intercepts the request
+     * and returns HTTP 401 Unauthorized, preventing unauthenticated access.</p>
      * 
      * <p><b>Test Scenario:</b></p>
      * <p>Simulates attempt to access admin menu without providing JWT token:
      * <ul>
      *   <li>No Authorization header is sent with the request</li>
-     *   <li>Controller detects missing header and rejects request immediately</li>
+     *   <li>Spring Security rejects request before reaching controller logic</li>
      * </ul>
      * </p>
      * 
+     * <p><b>HTTP Status Code Semantics:</b></p>
+     * <ul>
+     *   <li><b>401 Unauthorized:</b> Authentication missing or invalid (not authenticated)</li>
+     *   <li><b>403 Forbidden:</b> Authenticated but not authorized (wrong role)</li>
+     * </ul>
+     * 
      * <p><b>Test Assertions:</b></p>
      * <ul>
-     *   <li>HTTP status is 403 Forbidden</li>
-     *   <li>Response content type is application/json</li>
-     *   <li>JSON contains "error" field with admin-only access message</li>
+     *   <li>HTTP status is 401 Unauthorized (authentication missing)</li>
      * </ul>
      *
      * @throws Exception if MockMvc request fails
      */
     @Test
-    @DisplayName("GET /api/menu/admin returns 403 Forbidden for missing Authorization header")
-    public void testGetAdminMenu_WithMissingAuthHeader_ReturnsForbidden() throws Exception {
+    @DisplayName("GET /api/menu/admin returns 401 Unauthorized for missing Authorization header")
+    public void testGetAdminMenu_WithMissingAuthHeader_ReturnsUnauthorized() throws Exception {
         // Perform GET request to /api/menu/admin endpoint without Authorization header
         mockMvc.perform(get("/api/menu/admin"))
-            // Assert HTTP 403 Forbidden status (access denied due to missing authentication)
-            .andExpect(status().isForbidden())
-            
-            // Assert response content type is application/json
-            .andExpect(content().contentType("application/json"))
-            
-            // Assert error message indicates admin-only access restriction
-            .andExpect(jsonPath("$.error").value("No access - Admin Only option..."));
+            // Assert HTTP 401 Unauthorized status (authentication missing)
+            .andExpect(status().isUnauthorized());
     }
 
     /**
-     * Test GET /api/menu/admin returns HTTP 403 Forbidden for malformed Authorization header.
+     * Test GET /api/menu/admin returns HTTP 401 Unauthorized for malformed Authorization header.
      * 
      * <p>This test validates header format validation in MenuController.getAdminMenu().
-     * When Authorization header does not start with "Bearer " prefix, the endpoint should
-     * return HTTP 403 Forbidden with error message.</p>
+     * When Authorization header does not start with "Bearer " prefix, Spring Security
+     * intercepts the request and returns HTTP 401 Unauthorized.</p>
      * 
      * <p><b>Test Scenario:</b></p>
      * <p>Simulates attempt to access admin menu with incorrectly formatted Authorization header:
      * <ul>
      *   <li>Authorization header provided but missing "Bearer " prefix</li>
-     *   <li>Controller detects malformed header and rejects request</li>
+     *   <li>Spring Security rejects request before reaching controller logic</li>
      * </ul>
      * </p>
      * 
+     * <p><b>HTTP Status Code Semantics:</b></p>
+     * <ul>
+     *   <li><b>401 Unauthorized:</b> Authentication missing or invalid (not authenticated)</li>
+     *   <li><b>403 Forbidden:</b> Authenticated but not authorized (wrong role)</li>
+     * </ul>
+     * 
      * <p><b>Test Assertions:</b></p>
      * <ul>
-     *   <li>HTTP status is 403 Forbidden</li>
-     *   <li>Response content type is application/json</li>
-     *   <li>JSON contains "error" field with admin-only access message</li>
+     *   <li>HTTP status is 401 Unauthorized (malformed authentication header)</li>
      * </ul>
      *
      * @throws Exception if MockMvc request fails
      */
     @Test
-    @DisplayName("GET /api/menu/admin returns 403 Forbidden for malformed Authorization header")
-    public void testGetAdminMenu_WithMalformedAuthHeader_ReturnsForbidden() throws Exception {
+    @DisplayName("GET /api/menu/admin returns 401 Unauthorized for malformed Authorization header")
+    public void testGetAdminMenu_WithMalformedAuthHeader_ReturnsUnauthorized() throws Exception {
         // Perform GET request to /api/menu/admin endpoint with malformed Authorization header (missing "Bearer " prefix)
         mockMvc.perform(get("/api/menu/admin")
                 .header("Authorization", "malformed-token-without-bearer-prefix"))
-            // Assert HTTP 403 Forbidden status (access denied due to malformed header)
-            .andExpect(status().isForbidden())
-            
-            // Assert response content type is application/json
-            .andExpect(content().contentType("application/json"))
-            
-            // Assert error message indicates admin-only access restriction
-            .andExpect(jsonPath("$.error").value("No access - Admin Only option..."));
+            // Assert HTTP 401 Unauthorized status (malformed authentication header)
+            .andExpect(status().isUnauthorized());
     }
 }
