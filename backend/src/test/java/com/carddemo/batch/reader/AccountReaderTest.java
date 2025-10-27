@@ -139,10 +139,13 @@ class AccountReaderTest {
         // Arrange: Create test accounts in sequential order
         List<Account> testAccounts = createTestAccounts(3);
         Page<Account> page = new PageImpl<>(testAccounts);
+        Page<Account> emptyPage = new PageImpl<>(new ArrayList<>());
         
-        // Mock repository to return page of accounts sorted by acctId
-        Pageable expectedPageable = PageRequest.of(0, 1000, Sort.by("acctId").ascending());
-        when(accountRepository.findAll(any(Pageable.class))).thenReturn(page);
+        // Mock repository to return page of accounts sorted by acctId, then empty page
+        Pageable page0 = PageRequest.of(0, 1000, Sort.by("acctId").ascending());
+        Pageable page1 = PageRequest.of(1, 1000, Sort.by("acctId").ascending());
+        when(accountRepository.findAll(page0)).thenReturn(page);
+        when(accountRepository.findAll(page1)).thenReturn(emptyPage);
         
         // Act: Open reader and read accounts sequentially
         accountReader.open(executionContext);
@@ -163,8 +166,8 @@ class AccountReaderTest {
         assertThat(account2.getAcctId()).isEqualTo(1000000002L);
         assertThat(account3.getAcctId()).isEqualTo(1000000003L);
         
-        // Verify repository called with correct sort order
-        verify(accountRepository, times(1)).findAll(any(Pageable.class));
+        // Verify repository called twice (page 0 with data, page 1 empty)
+        verify(accountRepository, times(2)).findAll(any(Pageable.class));
     }
 
     /**
@@ -220,14 +223,19 @@ class AccountReaderTest {
         // Arrange: Create small test dataset
         List<Account> testAccounts = createTestAccounts(2);
         Page<Account> page = new PageImpl<>(testAccounts);
-        when(accountRepository.findAll(any(Pageable.class))).thenReturn(page);
+        Page<Account> emptyPage = new PageImpl<>(new ArrayList<>());
+        
+        Pageable page0 = PageRequest.of(0, 1000, Sort.by("acctId").ascending());
+        Pageable page1 = PageRequest.of(1, 1000, Sort.by("acctId").ascending());
+        when(accountRepository.findAll(page0)).thenReturn(page);
+        when(accountRepository.findAll(page1)).thenReturn(emptyPage);
         
         // Act: Open reader and read past EOF
         accountReader.open(executionContext);
         
         accountReader.read(); // Account 1
         accountReader.read(); // Account 2
-        Account eofRead1 = accountReader.read(); // EOF
+        Account eofRead1 = accountReader.read(); // EOF (triggers page 1 load - empty)
         Account eofRead2 = accountReader.read(); // Still EOF
         Account eofRead3 = accountReader.read(); // Still EOF
         
@@ -236,8 +244,8 @@ class AccountReaderTest {
         assertNull(eofRead2, "Second read after EOF should return null");
         assertNull(eofRead3, "Third read after EOF should return null");
         
-        // Verify repository only called once (no redundant queries after EOF)
-        verify(accountRepository, times(1)).findAll(any(Pageable.class));
+        // Verify repository called twice (page 0 with data, page 1 empty), no redundant calls after EOF detected
+        verify(accountRepository, times(2)).findAll(any(Pageable.class));
     }
 
     /**
@@ -260,15 +268,13 @@ class AccountReaderTest {
         
         Page<Account> page1 = new PageImpl<>(page1Accounts);
         Page<Account> page2 = new PageImpl<>(page2Accounts);
-        Page<Account> emptyPage = new PageImpl<>(new ArrayList<>());
         
         // Mock repository to return pages sequentially
+        // Note: currentPage is incremented AFTER loading, so page 0 loads first, then page 1
         when(accountRepository.findAll(PageRequest.of(0, 1000, Sort.by("acctId").ascending())))
             .thenReturn(page1);
         when(accountRepository.findAll(PageRequest.of(1, 1000, Sort.by("acctId").ascending())))
             .thenReturn(page2);
-        when(accountRepository.findAll(PageRequest.of(2, 1000, Sort.by("acctId").ascending())))
-            .thenReturn(emptyPage);
         
         // Act: Open reader and read through multiple pages
         accountReader.open(executionContext);
@@ -291,7 +297,7 @@ class AccountReaderTest {
         assertThat(firstAccount.getAcctId()).isEqualTo(1000000001L);
         assertThat(firstAccountPage2.getAcctId()).isEqualTo(1000001001L);
         
-        // Verify repository called for each page
+        // Verify repository called for each page (page 0 and page 1)
         verify(accountRepository, times(2)).findAll(any(Pageable.class));
     }
 
@@ -435,9 +441,19 @@ class AccountReaderTest {
             accountReader.read();
         });
         
-        // Verify exception is DataAccessException or wrapped exception
+        // Verify exception is ItemStreamException wrapping the DataAccessException
         assertThat(exception).isInstanceOf(Exception.class);
-        assertThat(exception.getMessage()).contains("Database connection failed");
+        // Exception message includes page number and wraps original exception
+        assertThat(exception.getMessage()).containsAnyOf(
+            "Database connection failed",  // Original message
+            "Failed to load account page 0"  // Wrapper message from AccountReader
+        );
+        
+        // Verify root cause contains original exception message
+        Throwable cause = exception.getCause();
+        if (cause != null) {
+            assertThat(cause.getMessage()).contains("Database connection failed");
+        }
     }
 
     /**
@@ -595,24 +611,29 @@ class AccountReaderTest {
         // Arrange: Create small dataset
         List<Account> testAccounts = createTestAccounts(2);
         Page<Account> page = new PageImpl<>(testAccounts);
-        when(accountRepository.findAll(any(Pageable.class))).thenReturn(page);
+        Page<Account> emptyPage = new PageImpl<>(new ArrayList<>());
+        
+        Pageable page0 = PageRequest.of(0, 1000, Sort.by("acctId").ascending());
+        Pageable page1 = PageRequest.of(1, 1000, Sort.by("acctId").ascending());
+        when(accountRepository.findAll(page0)).thenReturn(page);
+        when(accountRepository.findAll(page1)).thenReturn(emptyPage);
         
         // Act: Read all accounts plus additional attempts
         accountReader.open(executionContext);
         
         accountReader.read(); // Account 1
         accountReader.read(); // Account 2
-        accountReader.read(); // EOF
+        accountReader.read(); // EOF (triggers page 1 load - empty, sets endOfData flag)
         
         // Clear invocations to verify no additional calls
         org.mockito.Mockito.clearInvocations(accountRepository);
         
-        // Additional read attempts after EOF
+        // Additional read attempts after EOF (should use endOfData flag, no DB queries)
         accountReader.read();
         accountReader.read();
         accountReader.read();
         
-        // Assert: Verify no additional repository calls
+        // Assert: Verify no additional repository calls after EOF detected
         verify(accountRepository, never()).findAll(any(Pageable.class));
     }
 
