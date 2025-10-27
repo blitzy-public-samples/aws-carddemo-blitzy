@@ -78,6 +78,7 @@ public class BillingService {
     private static final BigDecimal MINIMUM_PAYMENT_PERCENT = new BigDecimal("0.03");
     private static final BigDecimal LATE_FEE_AMOUNT = new BigDecimal("35.00");
     private static final BigDecimal DAYS_IN_YEAR = new BigDecimal("365");
+    private static final BigDecimal ZERO_AMOUNT = new BigDecimal("0.00"); // Zero with scale 2
     private static final int PAYMENT_DUE_DAYS = 21; // Days after statement date
     private static final int SCALE = 2; // Decimal scale for currency (COBOL V99)
     private static final int INTEREST_CALC_SCALE = 6; // Scale for intermediate interest calculations
@@ -148,7 +149,7 @@ public class BillingService {
         BigDecimal newCharges = transactions.stream()
                 .filter(t -> isDebit(t.getTransTypeCd()))
                 .map(TransactionDto::getTransAmt)
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .reduce(ZERO_AMOUNT, BigDecimal::add)
                 .setScale(SCALE, RoundingMode.HALF_UP);
         log.debug("New charges calculated: {}", newCharges);
 
@@ -156,7 +157,7 @@ public class BillingService {
         BigDecimal payments = transactions.stream()
                 .filter(t -> isCredit(t.getTransTypeCd()))
                 .map(TransactionDto::getTransAmt)
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .reduce(ZERO_AMOUNT, BigDecimal::add)
                 .setScale(SCALE, RoundingMode.HALF_UP);
         log.debug("Payments and credits calculated: {}", payments);
 
@@ -168,7 +169,7 @@ public class BillingService {
         // Step 9: Calculate interest if balance carried
         // Default APR: 18.99% (typical credit card rate)
         BigDecimal annualRate = new BigDecimal("0.1899");
-        BigDecimal interest = BigDecimal.ZERO;
+        BigDecimal interest = ZERO_AMOUNT;
         if (previousBalance.compareTo(BigDecimal.ZERO) > 0) {
             interest = calculateInterest(previousBalance, annualRate, daysInPeriod);
             newBalance = newBalance.add(interest).setScale(SCALE, RoundingMode.HALF_UP);
@@ -177,7 +178,7 @@ public class BillingService {
 
         // Step 10: Calculate late fee if applicable
         // Note: This requires previous due date - for this implementation, we'll check if any payment was late
-        BigDecimal lateFee = BigDecimal.ZERO;
+        BigDecimal lateFee = ZERO_AMOUNT;
         LocalDate previousDueDate = startDate.minusDays(PAYMENT_DUE_DAYS);
         LocalDate lastPaymentDate = transactions.stream()
                 .filter(t -> isCredit(t.getTransTypeCd()))
@@ -256,17 +257,17 @@ public class BillingService {
 
         if (balance == null || balance.compareTo(BigDecimal.ZERO) <= 0) {
             log.debug("Balance is zero or negative, no interest charged");
-            return BigDecimal.ZERO;
+            return ZERO_AMOUNT;
         }
 
         if (annualRate == null || annualRate.compareTo(BigDecimal.ZERO) <= 0) {
             log.warn("Invalid annual rate: {}, returning zero interest", annualRate);
-            return BigDecimal.ZERO;
+            return ZERO_AMOUNT;
         }
 
         if (days == null || days <= 0) {
             log.warn("Invalid days: {}, returning zero interest", days);
-            return BigDecimal.ZERO;
+            return ZERO_AMOUNT;
         }
 
         // Calculate daily interest rate (preserve precision with scale 6)
@@ -307,7 +308,7 @@ public class BillingService {
 
         if (balance == null || balance.compareTo(BigDecimal.ZERO) <= 0) {
             log.debug("Balance is zero or negative, no minimum payment required");
-            return BigDecimal.ZERO;
+            return ZERO_AMOUNT;
         }
 
         // Calculate 3% of balance
@@ -342,7 +343,7 @@ public class BillingService {
 
         if (dueDate == null || paymentDate == null) {
             log.debug("Due date or payment date is null, no late fee");
-            return BigDecimal.ZERO;
+            return ZERO_AMOUNT;
         }
 
         if (paymentDate.isAfter(dueDate)) {
@@ -351,7 +352,7 @@ public class BillingService {
         }
 
         log.debug("Payment is on time, no late fee");
-        return BigDecimal.ZERO;
+        return ZERO_AMOUNT;
     }
 
     /**
