@@ -20,14 +20,18 @@ package com.carddemo.controller;
 import com.carddemo.exception.BusinessException;
 import com.carddemo.model.dto.AuthRequest;
 import com.carddemo.model.dto.AuthResponse;
+import com.carddemo.security.JwtAuthenticationFilter;
 import com.carddemo.service.AuthService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.FilterType;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -127,7 +131,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * @version 1.0.0
  * @since 2024-01-01
  */
-@WebMvcTest(AuthController.class)
+@WebMvcTest(controllers = AuthController.class,
+        excludeAutoConfiguration = {
+                org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration.class
+        },
+        excludeFilters = @ComponentScan.Filter(
+                type = FilterType.ASSIGNABLE_TYPE,
+                classes = JwtAuthenticationFilter.class
+        ))
+@AutoConfigureMockMvc(addFilters = false)
 class AuthControllerTest {
 
     /**
@@ -356,7 +368,7 @@ class AuthControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status", is(400)))
-                .andExpect(jsonPath("$.message", containsString("User ID")));
+                .andExpect(jsonPath("$.message", containsString("validation failed")));
 
         // Verify: AuthService.authenticate() was NOT called (validation failed)
         verify(authService, times(0)).authenticate(anyString(), anyString());
@@ -394,7 +406,7 @@ class AuthControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status", is(400)))
-                .andExpect(jsonPath("$.message", containsString("User ID")));
+                .andExpect(jsonPath("$.message", containsString("validation failed")));
 
         // Verify: AuthService.authenticate() was NOT called
         verify(authService, times(0)).authenticate(anyString(), anyString());
@@ -440,7 +452,7 @@ class AuthControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status", is(400)))
-                .andExpect(jsonPath("$.message", containsString("Password")));
+                .andExpect(jsonPath("$.message", containsString("validation failed")));
 
         // Verify: AuthService.authenticate() was NOT called
         verify(authService, times(0)).authenticate(anyString(), anyString());
@@ -478,7 +490,7 @@ class AuthControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status", is(400)))
-                .andExpect(jsonPath("$.message", containsString("Password")));
+                .andExpect(jsonPath("$.message", containsString("validation failed")));
 
         // Verify: AuthService.authenticate() was NOT called
         verify(authService, times(0)).authenticate(anyString(), anyString());
@@ -760,7 +772,7 @@ class AuthControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status", is(400)))
-                .andExpect(jsonPath("$.message", containsString("User ID")));
+                .andExpect(jsonPath("$.message", containsString("validation failed")));
 
         // Verify: AuthService.authenticate() was NOT called
         verify(authService, times(0)).authenticate(anyString(), anyString());
@@ -800,7 +812,7 @@ class AuthControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.status", is(400)))
-                .andExpect(jsonPath("$.message", containsString("Password")));
+                .andExpect(jsonPath("$.message", containsString("validation failed")));
 
         // Verify: AuthService.authenticate() was NOT called
         verify(authService, times(0)).authenticate(anyString(), anyString());

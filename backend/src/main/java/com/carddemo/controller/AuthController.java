@@ -284,19 +284,20 @@ public class AuthController {
      * 
      * <p><b>Implementation Notes:</b>
      * <ul>
-     *   <li>Token is passed via Authorization header: "Bearer &lt;token&gt;"</li>
+     *   <li>Token is passed via Authorization header: "Bearer &lt;token&gt;" (optional)</li>
      *   <li>AuthService.logout(token) logs the logout event for audit trail</li>
      *   <li>Returns 204 No Content (successful logout with no response body)</li>
+     *   <li>If Authorization header is missing or invalid format, logs logout with null token</li>
      *   <li>Future enhancement: Token blacklist in Redis cache until expiration</li>
      * </ul>
      * 
      * <p><b>Success Response: 204 No Content (no response body)</b>
      * 
-     * @param token JWT token from Authorization header (format: "Bearer &lt;token&gt;")
+     * @param token JWT token from Authorization header (format: "Bearer &lt;token&gt;", optional)
      * @return ResponseEntity with 204 No Content on success
      */
     @PostMapping("/logout")
-    public ResponseEntity<Void> logout(@RequestHeader("Authorization") String token) {
+    public ResponseEntity<Void> logout(@RequestHeader(value = "Authorization", required = false) String token) {
         // Step 1: Log logout attempt (audit trail per Section 0.7.9)
         log.info("Logout request received");
         
