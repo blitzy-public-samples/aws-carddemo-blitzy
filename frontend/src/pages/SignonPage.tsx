@@ -118,7 +118,6 @@ import {
   Typography,
   CircularProgress,
 } from '@mui/material';
-import { login } from '../services/authService';
 import ErrorMessage from '../components/common/ErrorMessage';
 import { useAuth } from '../hooks/useAuth';
 import { AuthRequest } from '../types/user';
@@ -476,7 +475,7 @@ const SignonPage: React.FC = () => {
             validateOnChange={true}
             validateOnBlur={true}
           >
-            {({ errors, touched, isSubmitting, values, handleChange, handleBlur }) => (
+            {({ errors, touched, isSubmitting }) => (
               <Form noValidate>
                 {/* User ID Field - Replaces BMS USERID field */}
                 {/* COBOL: USERID DFHMDF ATTRB=(FSET,IC,NORM,UNPROT), LENGTH=8 */}
