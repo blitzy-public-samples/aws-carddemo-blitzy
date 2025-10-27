@@ -520,8 +520,6 @@ public class ReportService {
      * @throws BusinessException if reportDto is null or has no data
      */
     public String exportReportToCsv(ReportDto reportDto) {
-        log.info("Exporting report to CSV: {}", reportDto.getReportType());
-        
         // Step 1: Validate report data
         if (reportDto == null) {
             throw new BusinessException("BUS010", "Report data cannot be null");
@@ -530,6 +528,8 @@ public class ReportService {
         if (reportDto.getDataRows() == null || reportDto.getDataRows().isEmpty()) {
             throw new BusinessException("BUS010", "Report has no data to export");
         }
+        
+        log.info("Exporting report to CSV: {}", reportDto.getReportType());
         
         StringBuilder csv = new StringBuilder();
         

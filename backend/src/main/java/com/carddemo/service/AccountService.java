@@ -429,6 +429,39 @@ public class AccountService {
     }
 
     /**
+     * Get all accounts for report generation and batch processing.
+     * 
+     * <p>Retrieves all accounts from the database for use in:</p>
+     * <ul>
+     *   <li>Account summary reports showing aggregated statistics</li>
+     *   <li>Batch processing jobs that operate on all accounts</li>
+     *   <li>Data export and migration operations</li>
+     *   <li>Administrative dashboards displaying system-wide metrics</li>
+     * </ul>
+     * 
+     * <p><b>Performance Considerations:</b></p>
+     * <ul>
+     *   <li>This method retrieves all accounts - may return large result sets</li>
+     *   <li>Use with caution in production environments with many accounts</li>
+     *   <li>Consider pagination for UI-facing operations</li>
+     *   <li>Optimized for report generation and batch jobs where full dataset is needed</li>
+     * </ul>
+     * 
+     * @return List of all AccountDto objects in the system
+     */
+    @Transactional(readOnly = true)
+    public List<AccountDto> getAllAccounts() {
+        log.info("Retrieving all accounts for report generation");
+        
+        List<Account> accounts = accountRepository.findAll();
+        
+        log.debug("Retrieved {} total accounts", accounts.size());
+        return accounts.stream()
+                .map(this::mapToDto)
+                .collect(Collectors.toList());
+    }
+
+    /**
      * Calculate current balance with COBOL COMP-3 precision.
      * 
      * <p>Converted from COBOL calculation logic in CVACT01Y.cpy:</p>
