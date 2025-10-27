@@ -316,6 +316,13 @@ public class TransactionProcessor implements ItemProcessor<Transaction, Transact
     protected CardAccountXref validateCardXref(String cardNumber) {
         log.debug("Validating card number: {}", maskCardNumber(cardNumber));
         
+        // Check for null or empty card number (defensive programming)
+        // COBOL equivalent: IF DALYTRAN-CARD-NUM = SPACES OR LOW-VALUES
+        if (cardNumber == null || cardNumber.trim().isEmpty()) {
+            log.warn("Invalid card number: null or empty");
+            throw new DataNotFoundException("Invalid card number: null or empty");
+        }
+        
         // Query cross-reference table by card number
         // COBOL: READ XREF-FILE INTO CARD-XREF-RECORD KEY IS FD-XREF-CARD-NUM
         List<CardAccountXref> xrefs = cardAccountXrefRepository.findByXrefCardNum(cardNumber);

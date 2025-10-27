@@ -182,7 +182,7 @@ class TransactionProcessorTest {
                 .transAmt(new BigDecimal("100.00").setScale(DECIMAL_SCALE, ROUNDING_MODE))
                 .transSource("ATM")
                 .transDesc("Test transaction")
-                .transMerchantId("123456789")
+                .transMerchantId(123456789L)
                 .transMerchantName("Test Merchant")
                 .transMerchantCity("Test City")
                 .transMerchantZip("12345")
