@@ -1,6 +1,7 @@
 package com.carddemo.batch;
 
 import com.carddemo.batch.config.StatementGenerationJobConfig;
+import com.carddemo.batch.config.TestBatchConfig;
 import com.carddemo.model.entity.Account;
 import com.carddemo.model.entity.Card;
 import com.carddemo.model.entity.Transaction;
@@ -21,6 +22,7 @@ import org.springframework.batch.test.JobRepositoryTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -120,9 +122,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @version 1.0
  * @since 2024
  */
-@SpringBootTest
+@SpringBootTest(properties = {
+    "spring.batch.job.enabled=true"
+})
 @SpringBatchTest
 @Testcontainers
+@Import(TestBatchConfig.class)
 public class StatementGenerationJobTest {
 
     /**
@@ -269,13 +274,20 @@ public class StatementGenerationJobTest {
         // Configure job launcher test utils with the job under test
         jobLauncherTestUtils.setJob(statementGenerationJob);
         
-        // Clean Spring Batch job execution metadata
-        jobRepositoryTestUtils.removeJobExecutions();
-        
-        // Clear all test data from repositories
+        // Clear all test data from repositories FIRST (before batch metadata cleanup)
+        // Order matters: delete children before parents to avoid FK violations
         transactionRepository.deleteAll();
         cardRepository.deleteAll();
         accountRepository.deleteAll();
+        
+        // Clean Spring Batch job execution metadata LAST
+        // This ensures no active job references test data
+        try {
+            jobRepositoryTestUtils.removeJobExecutions();
+        } catch (Exception e) {
+            // If cleanup fails, continue - may be first run with no executions
+            System.out.println("Note: Failed to clean job executions (may be first run): " + e.getMessage());
+        }
     }
 
     /**
@@ -311,7 +323,7 @@ public class StatementGenerationJobTest {
         // Create test account with opening balance
         Account testAccount = createTestAccount(
             100001L,
-            "Y",
+            "A",
             new BigDecimal("1000.00"),
             new BigDecimal("5000.00"),
             "STANDARD"
@@ -322,7 +334,7 @@ public class StatementGenerationJobTest {
         Card testCard = createTestCard(
             "4111111111111111",
             100001L,
-            "Y"
+            "A"
         );
         cardRepository.save(testCard);
 
@@ -337,7 +349,7 @@ public class StatementGenerationJobTest {
 
         // Create a payment transaction
         Transaction paymentTransaction = createTestTransaction(
-            "TRANS-PAYMENT-01",
+            "T" + (System.currentTimeMillis() % 10000) + "-PAY-01",
             testCard.getCardNum(),
             new BigDecimal("300.00"),
             "04"  // Payment transaction
@@ -408,7 +420,7 @@ public class StatementGenerationJobTest {
         BigDecimal openingBalance = new BigDecimal("1234.56");
         Account testAccount = createTestAccount(
             100002L,
-            "Y",
+            "A",
             openingBalance,
             new BigDecimal("10000.00"),
             "PREMIUM"
@@ -419,13 +431,13 @@ public class StatementGenerationJobTest {
         Card testCard = createTestCard(
             "4111111111111112",
             100002L,
-            "Y"
+            "A"
         );
         cardRepository.save(testCard);
 
         // Create transactions with precise amounts
         Transaction purchaseTransaction = createTestTransaction(
-            "TRANS-PURCHASE-01",
+            "T" + (System.currentTimeMillis() % 10000) + "-PUR-01",
             testCard.getCardNum(),
             new BigDecimal("67.89"),  // Precise amount
             "01"
@@ -433,7 +445,7 @@ public class StatementGenerationJobTest {
         transactionRepository.save(purchaseTransaction);
 
         Transaction paymentTransaction = createTestTransaction(
-            "TRANS-PAYMENT-02",
+            "T" + (System.currentTimeMillis() % 10000) + "-PAY-02",
             testCard.getCardNum(),
             new BigDecimal("100.00"),
             "04"
@@ -489,7 +501,7 @@ public class StatementGenerationJobTest {
         // Create account with balance but no transactions
         Account testAccount = createTestAccount(
             100003L,
-            "Y",
+            "A",
             new BigDecimal("500.00"),
             new BigDecimal("5000.00"),
             "STANDARD"
@@ -500,7 +512,7 @@ public class StatementGenerationJobTest {
         Card testCard = createTestCard(
             "4111111111111113",
             100003L,
-            "Y"
+            "A"
         );
         cardRepository.save(testCard);
 
@@ -550,7 +562,7 @@ public class StatementGenerationJobTest {
         // Create test account
         Account testAccount = createTestAccount(
             100004L,
-            "Y",
+            "A",
             new BigDecimal("10000.00"),
             new BigDecimal("20000.00"),
             "PLATINUM"
@@ -561,7 +573,7 @@ public class StatementGenerationJobTest {
         Card testCard = createTestCard(
             "4111111111111114",
             100004L,
-            "Y"
+            "A"
         );
         cardRepository.save(testCard);
 
@@ -627,7 +639,7 @@ public class StatementGenerationJobTest {
         // Create test account
         Account testAccount = createTestAccount(
             100005L,
-            "Y",
+            "A",
             new BigDecimal("2000.00"),
             new BigDecimal("8000.00"),
             "STANDARD"
@@ -638,7 +650,7 @@ public class StatementGenerationJobTest {
         Card testCard = createTestCard(
             "4111111111111115",
             100005L,
-            "Y"
+            "A"
         );
         cardRepository.save(testCard);
 
@@ -653,7 +665,7 @@ public class StatementGenerationJobTest {
 
         // Create payment (type '04')
         Transaction payment = createTestTransaction(
-            "TRANS-PAYMENT-03",
+            "T" + (System.currentTimeMillis() % 10000) + "-PAY-03",
             testCard.getCardNum(),
             new BigDecimal("250.00"),
             "04"
@@ -716,7 +728,7 @@ public class StatementGenerationJobTest {
         // Create account with balance that will accrue interest
         Account testAccount = createTestAccount(
             100006L,
-            "Y",
+            "A",
             new BigDecimal("5000.00"),  // Higher balance for significant interest
             new BigDecimal("10000.00"),
             "STANDARD"
@@ -727,7 +739,7 @@ public class StatementGenerationJobTest {
         Card testCard = createTestCard(
             "4111111111111116",
             100006L,
-            "Y"
+            "A"
         );
         cardRepository.save(testCard);
 
@@ -783,7 +795,7 @@ public class StatementGenerationJobTest {
         // Create account with balance at credit limit
         Account testAccount = createTestAccount(
             100007L,
-            "Y",
+            "A",
             new BigDecimal("5000.00"),
             new BigDecimal("5000.00"),  // Balance equals limit
             "STANDARD"
@@ -794,13 +806,13 @@ public class StatementGenerationJobTest {
         Card testCard = createTestCard(
             "4111111111111117",
             100007L,
-            "Y"
+            "A"
         );
         cardRepository.save(testCard);
 
         // Create purchase that will push over limit
         Transaction overLimitPurchase = createTestTransaction(
-            "TRANS-OVERLIMIT-01",
+            "T" + (System.currentTimeMillis() % 10000) + "-OVLMT-01",
             testCard.getCardNum(),
             new BigDecimal("100.00"),  // Pushes balance over limit
             "01"
@@ -858,7 +870,7 @@ public class StatementGenerationJobTest {
         // Create minimal test data
         Account testAccount = createTestAccount(
             100008L,
-            "Y",
+            "A",
             new BigDecimal("1000.00"),
             new BigDecimal("5000.00"),
             "STANDARD"
@@ -918,7 +930,7 @@ public class StatementGenerationJobTest {
         for (int i = 1; i <= 10; i++) {
             Account account = createTestAccount(
                 100000L + i,
-                "Y",
+                "A",
                 new BigDecimal("1000.00"),
                 new BigDecimal("5000.00"),
                 "STANDARD"
@@ -930,7 +942,7 @@ public class StatementGenerationJobTest {
             Card card = createTestCard(
                 String.format("411111111111%04d", i),
                 account.getAcctId(),
-                "Y"
+                "A"
             );
             cardRepository.save(card);
 
@@ -988,7 +1000,7 @@ public class StatementGenerationJobTest {
         // Create active account
         Account activeAccount = createTestAccount(
             100020L,
-            "Y",  // Active
+            "A",  // Active
             new BigDecimal("1000.00"),
             new BigDecimal("5000.00"),
             "STANDARD"
@@ -998,7 +1010,7 @@ public class StatementGenerationJobTest {
         // Create inactive account
         Account inactiveAccount = createTestAccount(
             100021L,
-            "N",  // Inactive
+            "I",  // Inactive
             new BigDecimal("500.00"),
             new BigDecimal("3000.00"),
             "STANDARD"
@@ -1009,14 +1021,14 @@ public class StatementGenerationJobTest {
         Card activeCard = createTestCard(
             "4111111111112020",
             activeAccount.getAcctId(),
-            "Y"
+            "A"
         );
         cardRepository.save(activeCard);
 
         Card inactiveCard = createTestCard(
             "4111111111112021",
             inactiveAccount.getAcctId(),
-            "N"  // Inactive card
+            "I"  // Inactive card
         );
         cardRepository.save(inactiveCard);
 
@@ -1056,7 +1068,7 @@ public class StatementGenerationJobTest {
         // Create test account
         Account testAccount = createTestAccount(
             100030L,
-            "Y",
+            "A",
             new BigDecimal("1500.00"),
             new BigDecimal("7500.00"),
             "PREMIUM"
@@ -1067,7 +1079,7 @@ public class StatementGenerationJobTest {
         Card testCard = createTestCard(
             "4111111111113030",
             100030L,
-            "Y"
+            "A"
         );
         cardRepository.save(testCard);
 
@@ -1158,7 +1170,7 @@ public class StatementGenerationJobTest {
             .cardStatus(status)
             .cardEmbossedName("TEST CARDHOLDER")
             .cardExpirationDate(LocalDate.now().plusYears(3))
-            .cardActiveDate(LocalDate.now())
+            
             .build();
     }
 
@@ -1185,7 +1197,7 @@ public class StatementGenerationJobTest {
             .transCatCd(1001)  // Default category
             .transSource("WEB")
             .transDesc("Test Transaction")
-            .transMerchantId("MERCH0001")
+            .transMerchantId(1L)
             .transMerchantName("Test Merchant")
             .transMerchantCity("Test City")
             .transMerchantZip("12345")
@@ -1211,9 +1223,12 @@ public class StatementGenerationJobTest {
         String typeCd
     ) {
         List<Transaction> transactions = new ArrayList<>();
+        // Use last 4 digits of timestamp to keep ID under 16 chars (VARCHAR(16) limit)
+        long shortTimestamp = System.currentTimeMillis() % 10000;
         
         for (int i = 1; i <= count; i++) {
-            String transId = String.format("TRANS-%s-%05d", typeCd, i);
+            // Format: T{4digits}-{typeCd}-{seq} = max 14 chars (e.g., "T1234-01-001")
+            String transId = String.format("T%04d-%s-%03d", shortTimestamp, typeCd, i);
             Transaction transaction = createTestTransaction(
                 transId,
                 cardNum,
