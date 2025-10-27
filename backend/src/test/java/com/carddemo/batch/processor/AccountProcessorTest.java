@@ -136,6 +136,7 @@ public class AccountProcessorTest {
     void testProcessValidActiveAccount() throws Exception {
         // Given: A valid active account with positive balance
         Account account = createValidAccount();
+        BigDecimal originalBalance = account.getAcctCurrBal();
         
         // Mock interest rate lookup
         mockInterestRateLookup(TEST_GROUP_ID, STANDARD_INTEREST_RATE);
@@ -152,8 +153,8 @@ public class AccountProcessorTest {
         assertThat(result.getAcctCurrCycCredit()).isEqualTo(BigDecimal.ZERO);
         assertThat(result.getAcctCurrCycDebit()).isEqualTo(BigDecimal.ZERO);
         
-        // Verify balance is updated with interest
-        assertThat(result.getAcctCurrBal()).isGreaterThan(account.getAcctCurrBal());
+        // Verify balance is updated with interest (compare to saved original balance)
+        assertThat(result.getAcctCurrBal()).isGreaterThan(originalBalance);
     }
 
     @Test
@@ -175,7 +176,7 @@ public class AccountProcessorTest {
                 .build();
 
         // Mock interest rate: 12.50% annual
-        mock InterestRateLookup(TEST_GROUP_ID, STANDARD_INTEREST_RATE);
+        mockInterestRateLookup(TEST_GROUP_ID, STANDARD_INTEREST_RATE);
 
         // Expected interest calculation: (1000.00 * 12.50) / 1200 = 10.416666... = 10.42 (HALF_UP)
         BigDecimal expectedInterest = balance
@@ -344,6 +345,7 @@ public class AccountProcessorTest {
         // Given: Account with group ID that doesn't exist
         Account account = createValidAccount();
         account.setAcctGroupId("NONEXISTENT");
+        BigDecimal originalBalance = account.getAcctCurrBal();
         
         // Mock: Specific group not found, but DEFAULT group exists
         DisclosureGroupId specificGroupId = new DisclosureGroupId("NONEXISTENT", DEFAULT_TRAN_TYPE_CD, DEFAULT_TRAN_CAT_CD);
@@ -358,7 +360,7 @@ public class AccountProcessorTest {
 
         // Then: Account should be processed with DEFAULT interest rate
         assertThat(result).isNotNull();
-        assertThat(result.getAcctCurrBal()).isGreaterThan(account.getAcctCurrBal());
+        assertThat(result.getAcctCurrBal()).isGreaterThan(originalBalance);
         
         // Verify both lookups occurred
         verify(disclosureGroupRepository, times(1)).findById(eq(specificGroupId));
@@ -564,17 +566,19 @@ public class AccountProcessorTest {
     }
 
     @Test
-    @DisplayName("Should reject account expiring today")
-    void testRejectAccountExpiringToday() throws Exception {
-        // Given: Account with expiration date today
+    @DisplayName("Should process account expiring today (not yet expired)")
+    void testProcessAccountExpiringToday() throws Exception {
+        // Given: Account with expiration date today (still valid - expires at end of day)
         Account account = createValidAccount();
         account.setAcctExpirationDate(LocalDate.now());
+        
+        mockInterestRateLookup(TEST_GROUP_ID, STANDARD_INTEREST_RATE);
 
         // When: Processing the account
         Account result = accountProcessor.process(account);
 
-        // Then: Account should be rejected (expired as of today)
-        assertThat(result).isNull();
+        // Then: Account should be processed (not expired until tomorrow)
+        assertThat(result).isNotNull();
     }
 
     @Test
@@ -872,6 +876,7 @@ public class AccountProcessorTest {
 
         // When: Processing the same account twice
         Account firstResult = accountProcessor.process(account);
+        BigDecimal balanceAfterFirstProcessing = firstResult.getAcctCurrBal();
         
         // Reset cycle counters manually for second processing (simulating ItemReader reading updated record)
         firstResult.setAcctCurrCycCredit(new BigDecimal("100.00"));
@@ -887,7 +892,7 @@ public class AccountProcessorTest {
         assertThat(secondResult).isNotNull();
         
         // Second processing adds more interest to already updated balance
-        assertThat(secondResult.getAcctCurrBal()).isGreaterThan(firstResult.getAcctCurrBal());
+        assertThat(secondResult.getAcctCurrBal()).isGreaterThan(balanceAfterFirstProcessing);
         
         // Cycle counters should be reset in both cases
         assertThat(secondResult.getAcctCurrCycCredit()).isEqualByComparingTo(BigDecimal.ZERO);
@@ -924,9 +929,10 @@ public class AccountProcessorTest {
      * @return DisclosureGroup entity with specified interest rate
      */
     private DisclosureGroup createDisclosureGroup(String groupId, BigDecimal interestRate) {
-        DisclosureGroupId id = new DisclosureGroupId(groupId, DEFAULT_TRAN_TYPE_CD, DEFAULT_TRAN_CAT_CD);
         return DisclosureGroup.builder()
-                .id(id)
+                .discAcctGroupId(groupId)
+                .discTranTypeCd(DEFAULT_TRAN_TYPE_CD)
+                .discTranCatCd(DEFAULT_TRAN_CAT_CD)
                 .discIntRate(interestRate)
                 .build();
     }
