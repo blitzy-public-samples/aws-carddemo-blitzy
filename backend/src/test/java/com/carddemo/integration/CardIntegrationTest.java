@@ -331,10 +331,10 @@ public class CardIntegrationTest {
         createTestCustomer(TEST_CUSTOMER_ID_1);
 
         // Prepare request body
+        // Note: Customer ID is managed through CardAccountXref, not directly in Card/CardDto
         Map<String, Object> cardRequest = new HashMap<>();
         cardRequest.put("cardNum", TEST_CARD_NUM_3);
         cardRequest.put("cardAcctId", TEST_ACCOUNT_ID_1);
-        cardRequest.put("cardCardmemberId", TEST_CUSTOMER_ID_1);
         cardRequest.put("cardStatus", "A");
         cardRequest.put("cardEmbossedName", "JANE SMITH");
         cardRequest.put("cardExpirationDate", LocalDate.now().plusYears(3).toString());
@@ -369,10 +369,10 @@ public class CardIntegrationTest {
         createTestCard(TEST_CARD_NUM_1, TEST_ACCOUNT_ID_1, TEST_CUSTOMER_ID_1);
 
         // Prepare request with duplicate card number
+        // Note: Customer ID is managed through CardAccountXref, not directly in Card/CardDto
         Map<String, Object> cardRequest = new HashMap<>();
         cardRequest.put("cardNum", TEST_CARD_NUM_1);  // Duplicate
         cardRequest.put("cardAcctId", TEST_ACCOUNT_ID_1);
-        cardRequest.put("cardCardmemberId", TEST_CUSTOMER_ID_1);
         cardRequest.put("cardStatus", "A");
         cardRequest.put("cardEmbossedName", "DUPLICATE TEST");
         cardRequest.put("cardExpirationDate", LocalDate.now().plusYears(2).toString());
@@ -397,10 +397,10 @@ public class CardIntegrationTest {
     @Test
     void testCreateCard_InvalidAccountReference() {
         // Prepare request with non-existent account ID
+        // Note: Customer ID is managed through CardAccountXref, not directly in Card/CardDto
         Map<String, Object> cardRequest = new HashMap<>();
         cardRequest.put("cardNum", TEST_CARD_NUM_3);
         cardRequest.put("cardAcctId", 9999999999L);  // Non-existent account
-        cardRequest.put("cardCardmemberId", TEST_CUSTOMER_ID_1);
         cardRequest.put("cardStatus", "A");
         cardRequest.put("cardEmbossedName", "INVALID ACCT");
         cardRequest.put("cardExpirationDate", LocalDate.now().plusYears(2).toString());
@@ -726,6 +726,7 @@ public class CardIntegrationTest {
 
     /**
      * Create test card with default values.
+     * Note: Customer ID is managed through CardAccountXref, not directly in Card entity.
      */
     private void createTestCard(String cardNum, Long accountId, Long cardmemberId) {
         createTestCard(cardNum, accountId, cardmemberId, "A");
@@ -733,6 +734,7 @@ public class CardIntegrationTest {
 
     /**
      * Create test card with specified status.
+     * Note: Customer ID is managed through CardAccountXref, not directly in Card entity.
      */
     private void createTestCard(String cardNum, Long accountId, Long cardmemberId, String status) {
         createTestCard(cardNum, accountId, cardmemberId, status, 
@@ -741,6 +743,7 @@ public class CardIntegrationTest {
 
     /**
      * Create test card with specified status and expiration date.
+     * Note: Customer ID is managed through CardAccountXref, not directly in Card entity.
      */
     private void createTestCard(String cardNum, Long accountId, Long cardmemberId, 
                                 String status, LocalDate expirationDate) {
@@ -750,17 +753,17 @@ public class CardIntegrationTest {
 
     /**
      * Create test card with all parameters.
+     * Note: Customer ID parameter accepted for API compatibility but not stored in Card entity.
+     * Customer relationship is established through CardAccountXref entity.
      */
     private void createTestCard(String cardNum, Long accountId, Long cardmemberId,
                                 String status, LocalDate expirationDate, String embossedName) {
         Card card = Card.builder()
                 .cardNum(cardNum)
                 .cardAcctId(accountId)
-                .cardCardmemberId(cardmemberId)
                 .cardStatus(status)
                 .cardEmbossedName(embossedName)
                 .cardExpirationDate(expirationDate)
-                .cardActiveDate(LocalDate.now())
                 .build();
         cardRepository.save(card);
     }
