@@ -1,6 +1,8 @@
 package com.carddemo.repository;
 
 import com.carddemo.model.entity.Card;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -126,6 +128,29 @@ public interface CardRepository extends JpaRepository<Card, String> {
      *         Returns empty list if no cards found (equivalent to COBOL ENDFILE condition)
      */
     List<Card> findByCardAcctId(Long accountId);
+
+    /**
+     * Find all cards associated with a specific account ID with pagination support.
+     * 
+     * Paginated version of findByCardAcctId() to support efficient browsing of large
+     * result sets. Replaces COBOL screen-based pagination (7 rows per screen in COCRDLIC.cbl)
+     * with flexible page size and sorting.
+     * 
+     * This method enables the CardService.listCardsByAccount() method to return
+     * Page<CardDto> with pagination metadata (totalElements, totalPages, etc.) for
+     * frontend display and API responses.
+     * 
+     * Spring Data JPA automatically generates the SQL query with LIMIT/OFFSET:
+     * SELECT * FROM card WHERE card_acct_id = ? ORDER BY [sort] LIMIT ? OFFSET ?
+     * 
+     * Performance: O(log n + k) where n=total cards, k=page size
+     * Leverages idx_card_acct B-tree index for efficient retrieval
+     * 
+     * @param accountId the account ID to filter by (COBOL PIC 9(11) CARD-ACCT-ID)
+     * @param pageable pagination parameters (page number, size, sort order)
+     * @return Page of Card entities with pagination metadata
+     */
+    Page<Card> findByCardAcctId(Long accountId, Pageable pageable);
 
     /**
      * Find all cards with a specific status.

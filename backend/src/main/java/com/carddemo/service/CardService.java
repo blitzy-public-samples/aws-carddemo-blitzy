@@ -539,13 +539,14 @@ public class CardService {
         }
         
         // Step 5: Create Card entity
+        // Note: cardStatus defaults to 'I' (Inactive) if not provided
+        // Per COBOL CVACT02Y.cpy, valid status codes: 'A'=Active, 'I'=Inactive, 'S'=Stolen, 'L'=Lost, 'E'=Expired, 'C'=Closed
         Card newCard = Card.builder()
                 .cardNum(cardDto.getCardNum())
                 .cardAcctId(cardDto.getCardAcctId())
                 .cardStatus(cardDto.getCardStatus() != null ? cardDto.getCardStatus() : "I")
                 .cardEmbossedName(cardDto.getCardEmbossedName())
                 .cardExpirationDate(cardDto.getCardExpirationDate())
-                .cardActiveDate(LocalDate.now())
                 .build();
         
         // Step 6: Save card to database (replaces EXEC CICS WRITE FILE('CARDFILE'))
