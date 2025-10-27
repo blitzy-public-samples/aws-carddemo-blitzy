@@ -23,24 +23,17 @@
  * 
  * BMS Header Pattern Transformation:
  * COBOL (Fixed 80-character header):
- * ```
  * Line 1: Tran: MENU      AWS Mainframe Modernization       Date: 07/25/22
  * Line 2: Prog: COMEN01C              CardDemo              Time: 14:30:45
- * ```
  * 
  * React (Responsive AppBar):
- * ```typescript
- * <AppBar position="sticky">
- *   <Toolbar>
- *     <MenuIcon /> {/* Navigation toggle */}
- *     <Typography>AWS Mainframe Modernization</Typography>
- *     <Typography variant="caption">CardDemo</Typography>
- *     <Box>{user.firstName} {user.lastName}</Box>
- *     <Chip label="Admin" /> {/* Role badge */}
- *     <Button>Logout</Button>
- *   </Toolbar>
- * </AppBar>
- * ```
+ * - AppBar with sticky position
+ * - MenuIcon button for navigation toggle
+ * - Typography for title "AWS Mainframe Modernization"
+ * - Typography caption for subtitle "CardDemo"
+ * - Box displaying user.firstName and user.lastName
+ * - Chip label showing user role (Admin/User)
+ * - Button for Logout action
  * 
  * Per Agent Action Plan Section 0.4.19 and Section 0.7.1 MINIMAL CHANGE CLAUSE:
  * This component transforms BMS header fields from COTTL01Y.cpy and COMEN01.bms
@@ -122,27 +115,23 @@ interface HeaderProps {
  * Usage Examples:
  * 
  * Basic usage (no theme toggle):
- * ```typescript
+ * @example
  * <Header />
- * ```
  * 
  * With theme toggle:
- * ```typescript
- * const [themeMode, setThemeMode] = useState<'light' | 'dark'>('light');
- * 
+ * @example
+ * const [themeMode, setThemeMode] = useState('light');
  * <Header onThemeToggle={() => setThemeMode(prev => prev === 'light' ? 'dark' : 'light')} />
- * ```
  * 
  * In page layout:
- * ```typescript
- * <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+ * @example
+ * <Box sx=\{\{ display: 'flex', flexDirection: 'column', minHeight: '100vh' \}\}>
  *   <Header />
- *   <Box component="main" sx={{ flexGrow: 1, p: 3 }}>
- *     {/* Page content */}
+ *   <Box component="main" sx=\{\{ flexGrow: 1, p: 3 \}\}>
+ *     Page content goes here
  *   </Box>
  *   <Footer />
  * </Box>
- * ```
  * 
  * @param props - Component props
  * @returns React component rendering application header
