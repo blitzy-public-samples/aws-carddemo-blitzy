@@ -1,6 +1,7 @@
 package com.carddemo.batch;
 
 import com.carddemo.batch.config.AccountProcessingJobConfig;
+import com.carddemo.batch.config.TestBatchConfig;
 import com.carddemo.batch.processor.AccountProcessor;
 import com.carddemo.batch.reader.AccountReader;
 import com.carddemo.batch.writer.AccountWriter;
@@ -26,6 +27,7 @@ import org.springframework.batch.test.JobRepositoryTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -90,6 +92,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest
 @SpringBatchTest
 @Testcontainers
+@Import(TestBatchConfig.class)
 @DisplayName("Account Processing Job Integration Tests")
 public class AccountProcessingJobTest {
 
@@ -205,18 +208,32 @@ public class AccountProcessingJobTest {
     private CardAccountXrefRepository cardAccountXrefRepository;
 
     /**
+     * The accountProcessingJob bean being tested.
+     * 
+     * Injected from AccountProcessingJobConfig, this Job orchestrates
+     * four sequential steps for account processing batch operations.
+     * Must be manually set on jobLauncherTestUtils for testing.
+     */
+    @Autowired
+    private Job accountProcessingJob;
+
+    /**
      * Setup method executed before each test.
      * 
      * Responsibilities:
-     * 1. Clear all job execution metadata from job repository for test isolation
-     * 2. Delete all test data from database tables (accounts, cards, cross-references)
-     * 3. Reset database to clean state for each test execution
+     * 1. Set the Job bean on JobLauncherTestUtils for testing
+     * 2. Clear all job execution metadata from job repository for test isolation
+     * 3. Delete all test data from database tables (accounts, cards, cross-references)
+     * 4. Reset database to clean state for each test execution
      * 
      * This ensures each test starts with clean database and job repository state,
      * preventing test interference and enabling reliable, repeatable test execution.
      */
     @BeforeEach
     public void setUp() {
+        // Set the Job bean on JobLauncherTestUtils (required for multi-job contexts)
+        jobLauncherTestUtils.setJob(accountProcessingJob);
+        
         // Clear Spring Batch job execution metadata for test isolation
         jobRepositoryTestUtils.removeJobExecutions();
         
@@ -345,14 +362,14 @@ public class AccountProcessingJobTest {
             assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
             
             // Verify read and write counts
-            int readCount = stepExecution.getReadCount();
-            int writeCount = stepExecution.getWriteCount();
+            long readCount = stepExecution.getReadCount();
+            long writeCount = stepExecution.getWriteCount();
             
-            assertThat(readCount).isGreaterThan(0);
-            assertThat(writeCount).isGreaterThan(0);
+            assertThat(readCount).isGreaterThan(0L);
+            assertThat(writeCount).isGreaterThan(0L);
             
             // Verify commit count indicates chunking (should be less than read count)
-            int commitCount = stepExecution.getCommitCount();
+            long commitCount = stepExecution.getCommitCount();
             assertThat(commitCount).isLessThan(readCount);
             
             // Verify no rollbacks occurred
@@ -423,13 +440,13 @@ public class AccountProcessingJobTest {
         boolean hasFilteredRecords = false;
         
         for (StepExecution stepExecution : stepExecutions) {
-            int readCount = stepExecution.getReadCount();
-            int filterCount = stepExecution.getFilterCount();
+            long readCount = stepExecution.getReadCount();
+            long filterCount = stepExecution.getFilterCount();
             
             // If filtering occurs, verify it matches inactive account count
             if (filterCount > 0) {
                 hasFilteredRecords = true;
-                assertThat(filterCount).isGreaterThanOrEqualTo(5); // 3 inactive + 2 closed
+                assertThat(filterCount).isGreaterThanOrEqualTo(5L); // 3 inactive + 2 closed
             }
         }
     }
@@ -569,13 +586,13 @@ public class AccountProcessingJobTest {
         Collection<StepExecution> stepExecutions = jobExecution.getStepExecutions();
         for (StepExecution stepExecution : stepExecutions) {
             // Verify read count includes all records
-            int readCount = stepExecution.getReadCount();
-            assertThat(readCount).isGreaterThan(0);
+            long readCount = stepExecution.getReadCount();
+            assertThat(readCount).isGreaterThan(0L);
             
             // Verify skip count if errors occurred
-            int skipCount = stepExecution.getSkipCount();
+            long skipCount = stepExecution.getSkipCount();
             // Skip count may be 0 if all records are valid or error handling not triggered
-            assertThat(skipCount).isGreaterThanOrEqualTo(0);
+            assertThat(skipCount).isGreaterThanOrEqualTo(0L);
         }
     }
 
@@ -792,21 +809,21 @@ public class AccountProcessingJobTest {
         assertThat(stepExecutions).isNotEmpty();
 
         for (StepExecution stepExecution : stepExecutions) {
-            int readCount = stepExecution.getReadCount();
-            int writeCount = stepExecution.getWriteCount();
-            int filterCount = stepExecution.getFilterCount();
-            int skipCount = stepExecution.getSkipCount();
+            long readCount = stepExecution.getReadCount();
+            long writeCount = stepExecution.getWriteCount();
+            long filterCount = stepExecution.getFilterCount();
+            long skipCount = stepExecution.getSkipCount();
 
             // Verify read count matches or is subset of input data
-            assertThat(readCount).isLessThanOrEqualTo(expectedAccountCount);
+            assertThat(readCount).isLessThanOrEqualTo((long) expectedAccountCount);
             
             // Verify accounting: readCount = writeCount + filterCount + skipCount
-            int accountedRecords = writeCount + filterCount + skipCount;
+            long accountedRecords = writeCount + filterCount + skipCount;
             assertThat(accountedRecords).isEqualTo(readCount);
             
             // Verify write count is reasonable (at least some records written)
             if (readCount > 0) {
-                assertThat(writeCount).isGreaterThanOrEqualTo(0);
+                assertThat(writeCount).isGreaterThanOrEqualTo(0L);
             }
         }
 
