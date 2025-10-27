@@ -4,6 +4,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
+import jakarta.persistence.PostLoad;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
@@ -286,5 +287,39 @@ public class Account {
     @PreUpdate
     protected void onUpdate() {
         this.updatedAt = new Timestamp(System.currentTimeMillis());
+    }
+
+    /**
+     * JPA lifecycle callback: Normalize BigDecimal scales after loading entity from database.
+     * 
+     * PostgreSQL NUMERIC columns don't always preserve scale when returning values via JDBC.
+     * For example, 0.00 might be returned as 0 with scale=0 instead of scale=2.
+     * This method ensures all financial BigDecimal fields maintain scale=2 to preserve
+     * COBOL COMP-3 packed decimal precision per Section 0.7.2 requirement.
+     * 
+     * This normalization is critical for:
+     * - Bit-identical financial calculations matching mainframe COBOL behavior
+     * - Consistent decimal precision across all account balance operations
+     * - Meeting requirement that BigDecimal scale must always be 2 for currency amounts
+     * 
+     * Invoked automatically by JPA after loading entity from database queries.
+     */
+    @PostLoad
+    protected void normalizeDecimalScales() {
+        if (this.acctCurrBal != null) {
+            this.acctCurrBal = this.acctCurrBal.setScale(2, java.math.RoundingMode.HALF_UP);
+        }
+        if (this.acctCreditLimit != null) {
+            this.acctCreditLimit = this.acctCreditLimit.setScale(2, java.math.RoundingMode.HALF_UP);
+        }
+        if (this.acctCashCreditLimit != null) {
+            this.acctCashCreditLimit = this.acctCashCreditLimit.setScale(2, java.math.RoundingMode.HALF_UP);
+        }
+        if (this.acctCurrCycCredit != null) {
+            this.acctCurrCycCredit = this.acctCurrCycCredit.setScale(2, java.math.RoundingMode.HALF_UP);
+        }
+        if (this.acctCurrCycDebit != null) {
+            this.acctCurrCycDebit = this.acctCurrCycDebit.setScale(2, java.math.RoundingMode.HALF_UP);
+        }
     }
 }

@@ -11,13 +11,19 @@ import org.springframework.batch.item.Chunk;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.orm.jpa.JpaOptimisticLockingFailureException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import jakarta.persistence.EntityManager;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -143,6 +149,36 @@ public class AccountWriterTest {
             .withReuse(true);
 
     /**
+     * Configure Spring Boot to use Testcontainers PostgreSQL database.
+     * 
+     * This method overrides the default test database configuration to use the
+     * Testcontainers PostgreSQL container instead of H2 in-memory database.
+     * It dynamically sets the datasource properties based on the container's
+     * runtime configuration (URL, username, password).
+     * 
+     * @param registry Spring's dynamic property registry for test configuration
+     */
+    @DynamicPropertySource
+    static void configureTestDatabase(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", postgresContainer::getJdbcUrl);
+        registry.add("spring.datasource.username", postgresContainer::getUsername);
+        registry.add("spring.datasource.password", postgresContainer::getPassword);
+        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
+        registry.add("spring.jpa.properties.hibernate.dialect", () -> "org.hibernate.dialect.PostgreSQLDialect");
+    }
+
+    /**
+     * BigDecimal ZERO constant with scale=2 for COMP-3 precision.
+     * 
+     * Standard ZERO_WITH_SCALE has scale=0, which doesn't match COBOL COMP-3
+     * packed decimal precision requirement (scale=2 for currency). This constant
+     * ensures all zero values in tests maintain proper scale throughout database
+     * round-trip operations.
+     */
+    private static final BigDecimal ZERO_WITH_SCALE = BigDecimal.ZERO.setScale(2, RoundingMode.UNNECESSARY);
+
+    /**
      * AccountWriter instance under test.
      * 
      * Injected by Spring Boot Test framework with real AccountRepository dependency.
@@ -176,6 +212,17 @@ public class AccountWriterTest {
     private DisclosureGroupRepository disclosureGroupRepository;
 
     /**
+     * EntityManager for managing persistence context in tests.
+     * 
+     * Used to:
+     * - Clear first-level cache to force fresh reads from database
+     * - Detach entities to simulate separate transactions
+     * - Test optimistic locking scenarios with stale entities
+     */
+    @Autowired
+    private EntityManager entityManager;
+
+    /**
      * Test setup executed before each test method.
      * 
      * Responsibilities:
@@ -194,11 +241,15 @@ public class AccountWriterTest {
         
         // Create valid disclosure group for foreign key reference tests
         // Replicates COBOL DISCGRP.jcl data initialization job
+        Timestamp now = new Timestamp(System.currentTimeMillis());
         DisclosureGroup disclosureGroup = DisclosureGroup.builder()
                 .discAcctGroupId("STANDARD")
                 .discTranTypeCd("01")
                 .discTranCatCd(1)
                 .discIntRate(new BigDecimal("12.50"))
+                .createdAt(now)
+                .updatedAt(now)
+                // Note: version field not set - JPA manages it automatically for new entities
                 .build();
         disclosureGroupRepository.save(disclosureGroup);
     }
@@ -245,8 +296,8 @@ public class AccountWriterTest {
                     .acctCashCreditLimit(new BigDecimal("2500.00"))
                     .acctOpenDate(LocalDate.now().minusYears(i))
                     .acctExpirationDate(LocalDate.now().plusYears(5))
-                    .acctCurrCycCredit(BigDecimal.ZERO)
-                    .acctCurrCycDebit(BigDecimal.ZERO)
+                    .acctCurrCycCredit(ZERO_WITH_SCALE)
+                    .acctCurrCycDebit(ZERO_WITH_SCALE)
                     .acctAddrZip("12345")
                     .acctGroupId("STANDARD")
                     .build();
@@ -335,8 +386,8 @@ public class AccountWriterTest {
                 .acctCreditLimit(new BigDecimal("10000.00"))
                 .acctCashCreditLimit(new BigDecimal("5000.00"))
                 .acctOpenDate(LocalDate.of(2020, 1, 1))
-                .acctCurrCycCredit(BigDecimal.ZERO)
-                .acctCurrCycDebit(BigDecimal.ZERO)
+                .acctCurrCycCredit(ZERO_WITH_SCALE)
+                .acctCurrCycDebit(ZERO_WITH_SCALE)
                 .acctGroupId("STANDARD")
                 .build());
         
@@ -348,7 +399,7 @@ public class AccountWriterTest {
                 .acctCreditLimit(new BigDecimal("5000.00"))
                 .acctCashCreditLimit(new BigDecimal("2500.00"))
                 .acctOpenDate(LocalDate.of(2020, 1, 1))
-                .acctCurrCycCredit(BigDecimal.ZERO)
+                .acctCurrCycCredit(ZERO_WITH_SCALE)
                 .acctCurrCycDebit(new BigDecimal("500.25"))
                 .acctGroupId("STANDARD")
                 .build());
@@ -361,8 +412,8 @@ public class AccountWriterTest {
                 .acctCreditLimit(new BigDecimal("1000.00"))
                 .acctCashCreditLimit(new BigDecimal("500.00"))
                 .acctOpenDate(LocalDate.of(2020, 1, 1))
-                .acctCurrCycCredit(BigDecimal.ZERO)
-                .acctCurrCycDebit(BigDecimal.ZERO)
+                .acctCurrCycCredit(ZERO_WITH_SCALE)
+                .acctCurrCycDebit(ZERO_WITH_SCALE)
                 .acctGroupId("STANDARD")
                 .build());
         
@@ -370,12 +421,12 @@ public class AccountWriterTest {
         accounts.add(Account.builder()
                 .acctId(5L)
                 .acctActiveStatus("Y")
-                .acctCurrBal(BigDecimal.ZERO)
+                .acctCurrBal(ZERO_WITH_SCALE)
                 .acctCreditLimit(new BigDecimal("1000.00"))
                 .acctCashCreditLimit(new BigDecimal("500.00"))
                 .acctOpenDate(LocalDate.of(2020, 1, 1))
-                .acctCurrCycCredit(BigDecimal.ZERO)
-                .acctCurrCycDebit(BigDecimal.ZERO)
+                .acctCurrCycCredit(ZERO_WITH_SCALE)
+                .acctCurrCycDebit(ZERO_WITH_SCALE)
                 .acctGroupId("STANDARD")
                 .build());
         
@@ -411,7 +462,7 @@ public class AccountWriterTest {
         
         Optional<Account> account5 = accountRepository.findById(5L);
         assertThat(account5).isPresent();
-        assertThat(account5.get().getAcctCurrBal()).isEqualByComparingTo(BigDecimal.ZERO.setScale(2));
+        assertThat(account5.get().getAcctCurrBal()).isEqualByComparingTo(ZERO_WITH_SCALE);
         assertThat(account5.get().getAcctCurrBal().scale()).isEqualTo(2);
     }
 
@@ -456,8 +507,8 @@ public class AccountWriterTest {
                     .acctCreditLimit(new BigDecimal("5000.00"))
                     .acctCashCreditLimit(new BigDecimal("2500.00"))
                     .acctOpenDate(LocalDate.now())
-                    .acctCurrCycCredit(BigDecimal.ZERO)
-                    .acctCurrCycDebit(BigDecimal.ZERO)
+                    .acctCurrCycCredit(ZERO_WITH_SCALE)
+                    .acctCurrCycDebit(ZERO_WITH_SCALE)
                     .acctGroupId("STANDARD")
                     .build();
             initialAccounts.add(account);
@@ -538,6 +589,7 @@ public class AccountWriterTest {
      * @throws Exception expected exception from constraint violation
      */
     @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void testWriteAccountsTransactionRollback() throws Exception {
         // Arrange: Create chunk with valid and invalid accounts
         List<Account> accounts = new ArrayList<>();
@@ -550,8 +602,8 @@ public class AccountWriterTest {
                 .acctCreditLimit(new BigDecimal("5000.00"))
                 .acctCashCreditLimit(new BigDecimal("2500.00"))
                 .acctOpenDate(LocalDate.now())
-                .acctCurrCycCredit(BigDecimal.ZERO)
-                .acctCurrCycDebit(BigDecimal.ZERO)
+                .acctCurrCycCredit(ZERO_WITH_SCALE)
+                .acctCurrCycDebit(ZERO_WITH_SCALE)
                 .acctGroupId("STANDARD")
                 .build());
         
@@ -563,8 +615,8 @@ public class AccountWriterTest {
                 .acctCreditLimit(new BigDecimal("5000.00"))
                 .acctCashCreditLimit(new BigDecimal("2500.00"))
                 .acctOpenDate(LocalDate.now())
-                .acctCurrCycCredit(BigDecimal.ZERO)
-                .acctCurrCycDebit(BigDecimal.ZERO)
+                .acctCurrCycCredit(ZERO_WITH_SCALE)
+                .acctCurrCycDebit(ZERO_WITH_SCALE)
                 .acctGroupId("STANDARD")
                 .build());
         
@@ -576,8 +628,8 @@ public class AccountWriterTest {
                 .acctCreditLimit(new BigDecimal("5000.00"))
                 .acctCashCreditLimit(new BigDecimal("2500.00"))
                 .acctOpenDate(LocalDate.now())
-                .acctCurrCycCredit(BigDecimal.ZERO)
-                .acctCurrCycDebit(BigDecimal.ZERO)
+                .acctCurrCycCredit(ZERO_WITH_SCALE)
+                .acctCurrCycDebit(ZERO_WITH_SCALE)
                 .acctGroupId("STANDARD")
                 .build());
         
@@ -622,7 +674,7 @@ public class AccountWriterTest {
      * 7. Verify database reflects second transaction's update, not stale update
      * 
      * Expected Behavior:
-     * - JpaOptimisticLockingFailureException thrown on stale entity write
+     * - ObjectOptimisticLockingFailureException thrown on stale entity write
      * - Database contains second transaction's update
      * - First transaction's stale update rejected
      * - Version field prevents lost update problem
@@ -639,22 +691,25 @@ public class AccountWriterTest {
                 .acctCreditLimit(new BigDecimal("5000.00"))
                 .acctCashCreditLimit(new BigDecimal("2500.00"))
                 .acctOpenDate(LocalDate.now())
-                .acctCurrCycCredit(BigDecimal.ZERO)
-                .acctCurrCycDebit(BigDecimal.ZERO)
+                .acctCurrCycCredit(ZERO_WITH_SCALE)
+                .acctCurrCycDebit(ZERO_WITH_SCALE)
                 .acctGroupId("STANDARD")
                 .build();
-        accountRepository.save(initialAccount);
+        accountRepository.saveAndFlush(initialAccount);  // Flush to ensure entity is persisted before clearing
         
         // Simulate first transaction: read account (version=0)
         Account firstTransaction = accountRepository.findById(1L).orElseThrow();
         assertThat(firstTransaction.getVersion()).isEqualTo(0);
         firstTransaction.setAcctCurrBal(new BigDecimal("1500.00"));  // Modify but don't save
         
+        // Clear EntityManager to force fresh read (simulate separate transaction)
+        entityManager.clear();
+        
         // Simulate second transaction: update same account (version becomes 1)
         Account secondTransaction = accountRepository.findById(1L).orElseThrow();
         assertThat(secondTransaction.getVersion()).isEqualTo(0);
         secondTransaction.setAcctCurrBal(new BigDecimal("1200.00"));
-        accountRepository.save(secondTransaction);  // Save increments version to 1
+        accountRepository.saveAndFlush(secondTransaction);  // Save and flush to increment version
         
         // Verify second transaction persisted
         Account afterSecondTransaction = accountRepository.findById(1L).orElseThrow();
@@ -664,7 +719,7 @@ public class AccountWriterTest {
         // Act & Assert: First transaction attempts to write with stale version=0
         Chunk<Account> chunk = new Chunk<>(List.of(firstTransaction));
         assertThatThrownBy(() -> accountWriter.write(chunk))
-                .isInstanceOf(JpaOptimisticLockingFailureException.class);
+                .isInstanceOf(ObjectOptimisticLockingFailureException.class);
         
         // Verify database still contains second transaction's update (not first transaction's stale update)
         Account finalAccount = accountRepository.findById(1L).orElseThrow();
@@ -711,8 +766,8 @@ public class AccountWriterTest {
                 .acctCreditLimit(new BigDecimal("5000.00"))
                 .acctCashCreditLimit(new BigDecimal("2500.00"))
                 .acctOpenDate(LocalDate.now())
-                .acctCurrCycCredit(BigDecimal.ZERO)
-                .acctCurrCycDebit(BigDecimal.ZERO)
+                .acctCurrCycCredit(ZERO_WITH_SCALE)
+                .acctCurrCycDebit(ZERO_WITH_SCALE)
                 .acctGroupId("STANDARD")
                 .build();
         accountRepository.save(existingAccount);
@@ -728,8 +783,8 @@ public class AccountWriterTest {
                 .acctCreditLimit(new BigDecimal("10000.00"))
                 .acctCashCreditLimit(new BigDecimal("5000.00"))
                 .acctOpenDate(LocalDate.now())
-                .acctCurrCycCredit(BigDecimal.ZERO)
-                .acctCurrCycDebit(BigDecimal.ZERO)
+                .acctCurrCycCredit(ZERO_WITH_SCALE)
+                .acctCurrCycDebit(ZERO_WITH_SCALE)
                 .acctGroupId("STANDARD")
                 .build();
         
@@ -782,6 +837,7 @@ public class AccountWriterTest {
      * @throws Exception expected DataIntegrityViolationException if FK constraint exists
      */
     @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void testWriteAccountsForeignKeyViolation() throws Exception {
         // Arrange: Create account with invalid group ID (not in disclosure_group table)
         Account accountWithInvalidGroup = Account.builder()
@@ -791,8 +847,8 @@ public class AccountWriterTest {
                 .acctCreditLimit(new BigDecimal("5000.00"))
                 .acctCashCreditLimit(new BigDecimal("2500.00"))
                 .acctOpenDate(LocalDate.now())
-                .acctCurrCycCredit(BigDecimal.ZERO)
-                .acctCurrCycDebit(BigDecimal.ZERO)
+                .acctCurrCycCredit(ZERO_WITH_SCALE)
+                .acctCurrCycDebit(ZERO_WITH_SCALE)
                 .acctGroupId("INVALID_GROUP")  // Foreign key constraint violation
                 .build();
         
@@ -883,8 +939,8 @@ public class AccountWriterTest {
                 .acctCreditLimit(new BigDecimal("5000.00"))
                 .acctCashCreditLimit(new BigDecimal("2500.00"))
                 .acctOpenDate(LocalDate.now())
-                .acctCurrCycCredit(BigDecimal.ZERO)  // Reset to zero at cycle close
-                .acctCurrCycDebit(BigDecimal.ZERO)   // Reset to zero at cycle close
+                .acctCurrCycCredit(ZERO_WITH_SCALE)  // Reset to zero at cycle close
+                .acctCurrCycDebit(ZERO_WITH_SCALE)   // Reset to zero at cycle close
                 .acctGroupId("STANDARD")
                 .build());
         
@@ -916,9 +972,9 @@ public class AccountWriterTest {
         
         Optional<Account> account2 = accountRepository.findById(2L);
         assertThat(account2).isPresent();
-        assertThat(account2.get().getAcctCurrCycCredit()).isEqualByComparingTo(BigDecimal.ZERO.setScale(2));
+        assertThat(account2.get().getAcctCurrCycCredit()).isEqualByComparingTo(ZERO_WITH_SCALE);
         assertThat(account2.get().getAcctCurrCycCredit().scale()).isEqualTo(2);
-        assertThat(account2.get().getAcctCurrCycDebit()).isEqualByComparingTo(BigDecimal.ZERO.setScale(2));
+        assertThat(account2.get().getAcctCurrCycDebit()).isEqualByComparingTo(ZERO_WITH_SCALE);
         assertThat(account2.get().getAcctCurrCycDebit().scale()).isEqualTo(2);
         
         Optional<Account> account3 = accountRepository.findById(3L);

@@ -465,7 +465,13 @@ public class AccountWriter implements ItemWriter<Account> {
         // Extract list of account entities from the chunk
         // Chunk is Spring Batch's container for a group of items processed together
         // chunk.getItems() returns List<Account> for bulk persistence
-        accountRepository.saveAll(chunk.getItems());
+        accountRepository.saveAllAndFlush(chunk.getItems());
+        
+        // saveAllAndFlush() performs saveAll() followed by flush(), ensuring:
+        // - Immediate constraint validation (null checks, foreign keys, unique constraints)
+        // - Optimistic lock version checks occur immediately
+        // - SQL statements executed before method returns
+        // - Exceptions thrown immediately if database constraints violated
         
         // JPA/Hibernate automatically:
         // 1. Generates batched SQL UPDATE statements (hibernate.jdbc.batch_size=1000)
