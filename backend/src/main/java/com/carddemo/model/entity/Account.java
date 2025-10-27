@@ -86,10 +86,11 @@ public class Account {
      * Used to filter active accounts in queries and enforce business rules
      * for transaction processing.
      * 
-     * Column Definition: CHAR(1) to preserve COBOL fixed-length character semantics.
+     * Column Definition: VARCHAR(1) for Hibernate compatibility with PostgreSQL.
      * Per Section 0.7.2: Must maintain exact COBOL PIC X(01) behavior.
+     * Note: Changed from CHAR(1) to VARCHAR(1) to resolve Hibernate schema validation issues.
      */
-    @Column(name = "acct_active_status", nullable = false, columnDefinition = "CHAR(1)")
+    @Column(name = "acct_active_status", nullable = false, length = 1)
     private String acctActiveStatus;
 
     /**

@@ -135,10 +135,11 @@ public class Card {
      * Used in transaction authorization logic to validate card eligibility
      * before processing purchases or cash advances.
      * 
-     * Column Definition: CHAR(1) to preserve COBOL fixed-length character semantics.
+     * Column Definition: VARCHAR(1) for Hibernate compatibility with PostgreSQL.
      * Per Section 0.7.2: Must maintain exact COBOL PIC X(01) behavior.
+     * Note: Changed from CHAR(1) to VARCHAR(1) to resolve Hibernate schema validation issues.
      */
-    @Column(name = "card_active_status", nullable = false, columnDefinition = "CHAR(1)")
+    @Column(name = "card_active_status", nullable = false, length = 1)
     private String cardStatus;
 
     /**
