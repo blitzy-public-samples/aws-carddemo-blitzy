@@ -130,12 +130,11 @@ public class CardAccountXref {
      * - Customer contact information for card-specific communications
      * - Liability assignment for card transactions
      * 
-     * Note: Uses insertable=false, updatable=false because this column is
-     * also mapped by the customer @ManyToOne relationship. The relationship
-     * is the primary way to manage this foreign key, and this field provides
-     * read-only access to the raw ID value.
+     * Note: Unlike xref_card_num and xref_acct_id which are part of the composite primary key,
+     * xref_cust_id is NOT part of the primary key and CAN be managed directly for insert/update.
+     * The customer @ManyToOne relationship provides an alternative way to manage this foreign key.
      */
-    @Column(name = "xref_cust_id", nullable = false, insertable = false, updatable = false)
+    @Column(name = "xref_cust_id", nullable = false)
     private Long xrefCustId;
 
     /**
@@ -189,11 +188,13 @@ public class CardAccountXref {
      * Join column xref_cust_id references customer.cust_id primary key per
      * database schema defined in Section 0.3.4.
      * 
-     * Unlike card and account relationships, xref_cust_id is NOT part of the
-     * composite primary key, so this @JoinColumn does not require
-     * insertable=false, updatable=false.
+     * Uses insertable=false, updatable=false to avoid duplicate column management since
+     * xref_cust_id is already mapped as a direct field above. The xrefCustId field is
+     * the primary way to manage this foreign key value, and this relationship provides
+     * read-only navigation to the Customer entity.
      */
     @ManyToOne
-    @JoinColumn(name = "xref_cust_id", referencedColumnName = "cust_id", nullable = false)
+    @JoinColumn(name = "xref_cust_id", referencedColumnName = "cust_id", 
+                nullable = false, insertable = false, updatable = false)
     private Customer customer;
 }

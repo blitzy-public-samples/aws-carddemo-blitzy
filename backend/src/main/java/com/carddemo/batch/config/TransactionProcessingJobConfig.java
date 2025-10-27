@@ -122,6 +122,7 @@ import com.carddemo.model.entity.Account;
 import com.carddemo.model.entity.Transaction;
 import com.carddemo.model.entity.TransactionCategoryBalance;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardAccountXrefRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.repository.TransactionRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -207,12 +208,6 @@ public class TransactionProcessingJobConfig {
     private final TransactionReader transactionReader;
 
     /**
-     * ItemProcessor for transaction validation and processing.
-     * Implements business logic from CBTRN01C.cbl, CBTRN02C.cbl, CBTRN03C.cbl.
-     */
-    private final TransactionProcessor transactionProcessor;
-
-    /**
      * ItemWriter for bulk transaction entity persistence.
      * Uses JPA saveAll() for batch database writes with chunk commits.
      */
@@ -231,6 +226,12 @@ public class TransactionProcessingJobConfig {
     private final AccountRepository accountRepository;
 
     /**
+     * Repository for CardAccountXref entity database access.
+     * Used by all processors for card-account cross-reference lookups.
+     */
+    private final CardAccountXrefRepository cardAccountXrefRepository;
+
+    /**
      * Repository for TransactionCategoryBalance entity database access.
      * Used by categorization step for category balance aggregation.
      */
@@ -245,10 +246,10 @@ public class TransactionProcessingJobConfig {
      * @param jobRepository Spring Batch job repository for metadata persistence
      * @param transactionManager Spring transaction manager for transaction boundaries
      * @param transactionReader ItemReader for reading Transaction entities
-     * @param transactionProcessor ItemProcessor for transaction validation/processing
      * @param transactionWriter ItemWriter for bulk transaction persistence
      * @param transactionRepository JPA repository for Transaction entity access
      * @param accountRepository JPA repository for Account entity access
+     * @param cardAccountXrefRepository JPA repository for CardAccountXref entity access
      * @param transactionCategoryBalanceRepository JPA repository for category balance access
      */
     @Autowired
@@ -256,18 +257,18 @@ public class TransactionProcessingJobConfig {
             JobRepository jobRepository,
             PlatformTransactionManager transactionManager,
             TransactionReader transactionReader,
-            TransactionProcessor transactionProcessor,
             TransactionWriter transactionWriter,
             TransactionRepository transactionRepository,
             AccountRepository accountRepository,
+            CardAccountXrefRepository cardAccountXrefRepository,
             TransactionCategoryBalanceRepository transactionCategoryBalanceRepository) {
         this.jobRepository = jobRepository;
         this.transactionManager = transactionManager;
         this.transactionReader = transactionReader;
-        this.transactionProcessor = transactionProcessor;
         this.transactionWriter = transactionWriter;
         this.transactionRepository = transactionRepository;
         this.accountRepository = accountRepository;
+        this.cardAccountXrefRepository = cardAccountXrefRepository;
         this.transactionCategoryBalanceRepository = transactionCategoryBalanceRepository;
     }
 
@@ -322,6 +323,86 @@ public class TransactionProcessingJobConfig {
                 .next(transactionCategorizationStep())
                 .incrementer(new RunIdIncrementer())
                 .build();
+    }
+
+    /**
+     * Creates ItemProcessor for validation step (CBTRN01C).
+     * 
+     * Validates transactions without updating any balances.
+     * Returns valid transactions or null for invalid ones (Spring Batch filters nulls).
+     * 
+     * Processing mode: VALIDATION_ONLY
+     * - Validates card-account cross-reference
+     * - Validates account exists
+     * - Validates credit limit not exceeded
+     * - Validates account not expired
+     * - Does NOT update account balances
+     * - Does NOT update category balances
+     * 
+     * @return Configured TransactionProcessor in VALIDATION_ONLY mode
+     */
+    @Bean
+    public TransactionProcessor validationProcessor() {
+        log.info("Creating validationProcessor with VALIDATION_ONLY mode");
+        return new TransactionProcessor(
+                cardAccountXrefRepository,
+                accountRepository,
+                transactionCategoryBalanceRepository,
+                TransactionProcessor.ProcessingMode.VALIDATION_ONLY
+        );
+    }
+
+    /**
+     * Creates ItemProcessor for posting step (CBTRN02C).
+     * 
+     * Updates account balances only (no category balances).
+     * Performs full validation, then updates account current balance and cycle totals.
+     * 
+     * Processing mode: POSTING_ONLY
+     * - Validates card-account cross-reference
+     * - Validates account exists
+     * - Validates credit limit not exceeded
+     * - Validates account not expired
+     * - UPDATES account balances (acct_curr_bal, acct_curr_cyc_credit, acct_curr_cyc_debit)
+     * - Does NOT update category balances
+     * 
+     * @return Configured TransactionProcessor in POSTING_ONLY mode
+     */
+    @Bean
+    public TransactionProcessor postingProcessor() {
+        log.info("Creating postingProcessor with POSTING_ONLY mode");
+        return new TransactionProcessor(
+                cardAccountXrefRepository,
+                accountRepository,
+                transactionCategoryBalanceRepository,
+                TransactionProcessor.ProcessingMode.POSTING_ONLY
+        );
+    }
+
+    /**
+     * Creates ItemProcessor for categorization step (CBTRN03C).
+     * 
+     * Updates category balances only (no account balances).
+     * Performs card xref lookup, then updates transaction category balance aggregates.
+     * 
+     * Processing mode: CATEGORIZATION_ONLY
+     * - Validates card-account cross-reference  
+     * - Loads account (for account ID)
+     * - Skips credit limit and expiration validation (already validated by prior steps)
+     * - Does NOT update account balances
+     * - UPDATES category balances (tcat_bal aggregates by account/type/category)
+     * 
+     * @return Configured TransactionProcessor in CATEGORIZATION_ONLY mode
+     */
+    @Bean
+    public TransactionProcessor categorizationProcessor() {
+        log.info("Creating categorizationProcessor with CATEGORIZATION_ONLY mode");
+        return new TransactionProcessor(
+                cardAccountXrefRepository,
+                accountRepository,
+                transactionCategoryBalanceRepository,
+                TransactionProcessor.ProcessingMode.CATEGORIZATION_ONLY
+        );
     }
 
     /**
@@ -394,12 +475,12 @@ public class TransactionProcessingJobConfig {
      */
     @Bean
     public Step transactionValidationStep() {
-        log.info("Configuring transactionValidationStep with chunk size {} and TransactionReader/Processor/Writer", CHUNK_SIZE);
+        log.info("Configuring transactionValidationStep with chunk size {} and VALIDATION_ONLY processor", CHUNK_SIZE);
         
         return new StepBuilder("transactionValidationStep", jobRepository)
                 .<Transaction, Transaction>chunk(CHUNK_SIZE, transactionManager)
                 .reader(transactionReader)
-                .processor(transactionProcessor)
+                .processor(validationProcessor())
                 .writer(transactionWriter)
                 .listener(transactionValidationStepListener())
                 .build();
@@ -510,12 +591,12 @@ public class TransactionProcessingJobConfig {
      */
     @Bean
     public Step transactionPostingStep() {
-        log.info("Configuring transactionPostingStep with chunk size {} for account balance updates", CHUNK_SIZE);
+        log.info("Configuring transactionPostingStep with chunk size {} and POSTING_ONLY processor", CHUNK_SIZE);
         
         return new StepBuilder("transactionPostingStep", jobRepository)
                 .<Transaction, Transaction>chunk(CHUNK_SIZE, transactionManager)
                 .reader(transactionReader)
-                .processor(transactionProcessor)
+                .processor(postingProcessor())
                 .writer(transactionWriter)
                 .listener(transactionPostingStepListener())
                 .build();
@@ -632,12 +713,12 @@ public class TransactionProcessingJobConfig {
      */
     @Bean
     public Step transactionCategorizationStep() {
-        log.info("Configuring transactionCategorizationStep with chunk size {} for category balance aggregation", CHUNK_SIZE);
+        log.info("Configuring transactionCategorizationStep with chunk size {} and CATEGORIZATION_ONLY processor", CHUNK_SIZE);
         
         return new StepBuilder("transactionCategorizationStep", jobRepository)
                 .<Transaction, Transaction>chunk(CHUNK_SIZE, transactionManager)
                 .reader(transactionReader)
-                .processor(transactionProcessor)
+                .processor(categorizationProcessor())
                 .writer(transactionWriter)
                 .listener(transactionCategorizationStepListener())
                 .build();

@@ -7,13 +7,19 @@ import com.carddemo.batch.writer.TransactionWriter;
 import com.carddemo.model.entity.Account;
 import com.carddemo.model.entity.Card;
 import com.carddemo.model.entity.CardAccountXref;
+import com.carddemo.model.entity.Customer;
 import com.carddemo.model.entity.Transaction;
+import com.carddemo.model.entity.TransactionCategory;
 import com.carddemo.model.entity.TransactionCategoryBalance;
+import com.carddemo.model.entity.TransactionType;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardAccountXrefRepository;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
+import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionTypeRepository;
 
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
@@ -30,11 +36,9 @@ import org.springframework.batch.test.JobRepositoryTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.context.annotation.Import;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.jdbc.Sql;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -69,9 +73,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>Performance meeting 4-hour batch window requirement</li>
  * </ul>
  * 
- * <p>Uses @SpringBatchTest and Testcontainers for integration testing ensuring transaction 
- * processing maintains ACID properties and produces functionally equivalent results to COBOL 
- * programs with BigDecimal precision for all financial calculations matching COBOL COMP-3 arithmetic.
+ * <p>Uses @SpringBatchTest with H2 in-memory database (PostgreSQL compatibility mode) for 
+ * integration testing ensuring transaction processing maintains ACID properties and produces 
+ * functionally equivalent results to COBOL programs with BigDecimal precision for all financial 
+ * calculations matching COBOL COMP-3 arithmetic.
  * 
  * @see TransactionProcessingJobConfig
  * @see TransactionProcessor
@@ -80,28 +85,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest
 @SpringBatchTest
-@Testcontainers
+@ActiveProfiles("test")
+@Import(TestBatchConfig.class)
+@Sql(scripts = "/batch/schema-h2.sql")
 public class TransactionProcessingJobTest {
-
-    /**
-     * PostgreSQL Testcontainer for integration testing with real database.
-     * Ensures transaction processing maintains ACID properties equivalent to VSAM file operations.
-     */
-    @Container
-    private static final PostgreSQLContainer<?> postgresContainer = new PostgreSQLContainer<>("postgres:16-alpine")
-            .withDatabaseName("carddemo_test")
-            .withUsername("test")
-            .withPassword("test");
-
-    /**
-     * Configure Spring Boot to use Testcontainers PostgreSQL instance.
-     */
-    @DynamicPropertySource
-    static void postgresProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgresContainer::getJdbcUrl);
-        registry.add("spring.datasource.username", postgresContainer::getUsername);
-        registry.add("spring.datasource.password", postgresContainer::getPassword);
-    }
 
     @Autowired
     private JobLauncherTestUtils jobLauncherTestUtils;
@@ -122,7 +109,16 @@ public class TransactionProcessingJobTest {
     private CardAccountXrefRepository cardAccountXrefRepository;
 
     @Autowired
+    private CustomerRepository customerRepository;
+
+    @Autowired
     private TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
+
+    @Autowired
+    private TransactionCategoryRepository transactionCategoryRepository;
+
+    @Autowired
+    private TransactionTypeRepository transactionTypeRepository;
 
     @Autowired
     private Job transactionProcessingJob;
@@ -147,15 +143,34 @@ public class TransactionProcessingJobTest {
      */
     @BeforeEach
     public void setUp() {
-        // Clean up any existing job executions for test isolation
-        jobRepositoryTestUtils.removeJobExecutions();
-        
-        // Clear all test data for clean state
+        // Clean up all test data for fresh state (Spring caches context, so DB persists)
         transactionRepository.deleteAll();
+        transactionCategoryBalanceRepository.deleteAll();
         cardAccountXrefRepository.deleteAll();
         cardRepository.deleteAll();
         accountRepository.deleteAll();
-        transactionCategoryBalanceRepository.deleteAll();
+        customerRepository.deleteAll();
+        transactionCategoryRepository.deleteAll();
+        transactionTypeRepository.deleteAll();
+        
+        // Clean up Spring Batch job executions
+        jobRepositoryTestUtils.removeJobExecutions();
+        
+        // Create test customer (required for foreign key constraints)
+        Customer testCustomer = createTestCustomer(TEST_CUSTOMER_ID);
+        customerRepository.save(testCustomer);
+        
+        // Create transaction type reference data (required before transaction categories)
+        TransactionType debitType = createTestTransactionType(TRANSACTION_TYPE_DEBIT, "Debit Transaction");
+        TransactionType creditType = createTestTransactionType(TRANSACTION_TYPE_CREDIT, "Credit Transaction");
+        transactionTypeRepository.saveAll(List.of(debitType, creditType));
+        
+        // Create transaction category reference data (required for foreign key constraints)
+        TransactionCategory purchaseCategory = createTestTransactionCategory(
+                TRANSACTION_TYPE_DEBIT, TRANSACTION_CATEGORY_PURCHASE, "Purchase Transaction");
+        TransactionCategory paymentCategory = createTestTransactionCategory(
+                TRANSACTION_TYPE_CREDIT, TRANSACTION_CATEGORY_PAYMENT, "Payment Transaction");
+        transactionCategoryRepository.saveAll(List.of(purchaseCategory, paymentCategory));
         
         // Set up the transaction processing job for testing
         jobLauncherTestUtils.setJob(transactionProcessingJob);
@@ -166,8 +181,9 @@ public class TransactionProcessingJobTest {
      */
     @AfterEach
     public void tearDown() {
-        // Additional cleanup if needed
-        jobRepositoryTestUtils.removeJobExecutions();
+        // Note: With H2's create-drop mode in test profile, all tables including
+        // Spring Batch metadata are automatically dropped after each test.
+        // No explicit cleanup needed.
     }
 
     /**
@@ -274,6 +290,11 @@ public class TransactionProcessingJobTest {
         Card card = createTestCard(TEST_CARD_NUMBER_1, TEST_ACCOUNT_ID_1);
         cardRepository.save(card);
 
+        // Create dummy card for invalid transaction (to satisfy FK, but no xref = invalid)
+        Card invalidCard = createTestCard("9999999999999999", TEST_ACCOUNT_ID_1);
+        cardRepository.save(invalidCard);
+
+        // Only create xref for valid card (invalid card has no xref, so batch job will skip it)
         CardAccountXref xref = createTestXref(TEST_CARD_NUMBER_1, TEST_ACCOUNT_ID_1);
         cardAccountXrefRepository.saveAll(List.of(xref));
 
@@ -281,7 +302,7 @@ public class TransactionProcessingJobTest {
         Transaction validTrans = createTestTransaction("TXN001", TEST_CARD_NUMBER_1, 
                 TRANSACTION_TYPE_DEBIT, TRANSACTION_CATEGORY_PURCHASE, new BigDecimal("100.00"));
         
-        // Invalid transaction with non-existent card (should be skipped)
+        // Invalid transaction with card that has no cross-reference (should be skipped)
         Transaction invalidTrans = createTestTransaction("TXN002", "9999999999999999", 
                 TRANSACTION_TYPE_DEBIT, TRANSACTION_CATEGORY_PURCHASE, new BigDecimal("50.00"));
         
@@ -492,6 +513,11 @@ public class TransactionProcessingJobTest {
         Card card = createTestCard(TEST_CARD_NUMBER_1, TEST_ACCOUNT_ID_1);
         cardRepository.save(card);
 
+        // Create dummy card for invalid transaction (to satisfy FK, but no xref = invalid)
+        Card invalidCard = createTestCard("8888888888888888", TEST_ACCOUNT_ID_1);
+        cardRepository.save(invalidCard);
+
+        // Only create xref for valid card (invalid card has no xref, so batch job will skip it)
         CardAccountXref xref = createTestXref(TEST_CARD_NUMBER_1, TEST_ACCOUNT_ID_1);
         cardAccountXrefRepository.save(xref);
 
@@ -501,7 +527,7 @@ public class TransactionProcessingJobTest {
         Transaction validTrans2 = createTestTransaction("TXN002", TEST_CARD_NUMBER_1, 
                 TRANSACTION_TYPE_DEBIT, TRANSACTION_CATEGORY_PURCHASE, new BigDecimal("200.00"));
         
-        // Invalid transaction (card not in cross-reference)
+        // Invalid transaction (card exists but not in cross-reference, should be skipped)
         Transaction invalidTrans = createTestTransaction("TXN003", "8888888888888888", 
                 TRANSACTION_TYPE_DEBIT, TRANSACTION_CATEGORY_PURCHASE, new BigDecimal("50.00"));
         
@@ -848,11 +874,9 @@ public class TransactionProcessingJobTest {
         return Card.builder()
                 .cardNum(cardNumber)
                 .cardAcctId(accountId)
-                .cardCardmemberId(TEST_CUSTOMER_ID)
                 .cardStatus("A")
                 .cardEmbossedName("TEST CARDHOLDER")
                 .cardExpirationDate(LocalDate.now().plusYears(3))
-                .cardActiveDate(LocalDate.now().minusMonths(6))
                 .build();
     }
 
@@ -880,12 +904,12 @@ public class TransactionProcessingJobTest {
                 .transSource("WEB")
                 .transDesc("TEST TRANSACTION")
                 .transAmt(amount)
-                .transMerchantId("MERCH001")
+                .transMerchantId(123456789L)
                 .transMerchantName("Test Merchant")
                 .transMerchantCity("Test City")
                 .transMerchantZip("12345")
-                .transOrigTs(LocalDateTime.now())
-                .transProcTs(LocalDateTime.now())
+                .transOrigTs(new java.sql.Timestamp(System.currentTimeMillis()))
+                .transProcTs(new java.sql.Timestamp(System.currentTimeMillis()))
                 .build();
     }
 
@@ -899,6 +923,51 @@ public class TransactionProcessingJobTest {
                 .tcatTypeCd(transTypeCd)
                 .tcatCatCd(transCatCd)
                 .tcatBal(balance)
+                .build();
+    }
+
+    /**
+     * Create test customer entity matching COBOL CVCUS01Y.cpy structure.
+     */
+    private Customer createTestCustomer(Long customerId) {
+        return Customer.builder()
+                .custId(customerId)
+                .custFirstName("John")
+                .custMiddleName("Q")
+                .custLastName("Doe")
+                .custAddrLine1("123 Main St")
+                .custAddrLine2("Apt 4B")
+                .custAddrLine3("")
+                .custAddrStateCd("NY")
+                .custAddrCountryCd("USA")
+                .custAddrZip("10001")
+                .custPhoneNum1("212-555-1234")
+                .custPhoneNum2("")
+                .custSsn("123456789")
+                .custGovtIssuedId("DL123456")
+                .custDobYyyyMmDd(LocalDate.of(1980, 1, 1))
+                .custFicoCreditScore(750)
+                .build();
+    }
+
+    /**
+     * Create test transaction type matching COBOL CVTRA03Y.cpy structure.
+     */
+    private TransactionType createTestTransactionType(String transTypeCd, String description) {
+        return TransactionType.builder()
+                .transTypeCd(transTypeCd)
+                .transTypeDesc(description)
+                .build();
+    }
+
+    /**
+     * Create test transaction category matching COBOL CVTRA04Y.cpy structure.
+     */
+    private TransactionCategory createTestTransactionCategory(String transTypeCd, Integer tranCatCd, String description) {
+        return TransactionCategory.builder()
+                .transTypeCd(transTypeCd)
+                .tranCatCd(tranCatCd)
+                .tranCatTypeDesc(description)
                 .build();
     }
 }

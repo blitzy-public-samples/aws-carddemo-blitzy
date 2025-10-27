@@ -126,9 +126,37 @@ import java.util.Optional;
  * @see org.springframework.batch.item.ItemProcessor Spring Batch processor interface
  */
 @Slf4j
-@Component
-@RequiredArgsConstructor
 public class TransactionProcessor implements ItemProcessor<Transaction, Transaction> {
+
+    /**
+     * Processing mode enum to control which operations this processor performs.
+     * Enables single processor class to support three distinct COBOL programs.
+     */
+    public enum ProcessingMode {
+        /**
+         * Validation mode (CBTRN01C): Validates transactions without updating balances.
+         * Returns valid transactions or null for invalid ones (Spring Batch filters nulls).
+         */
+        VALIDATION_ONLY,
+        
+        /**
+         * Posting mode (CBTRN02C): Updates account balances only (no category balances).
+         * Performs full validation, then updates account current balance and cycle totals.
+         */
+        POSTING_ONLY,
+        
+        /**
+         * Categorization mode (CBTRN03C): Updates category balances only (no account balances).
+         * Performs card xref lookup, then updates transaction category balance aggregates.
+         */
+        CATEGORIZATION_ONLY,
+        
+        /**
+         * Full processing mode: Performs all operations (validation + posting + categorization).
+         * Used when running as a single-step job instead of three separate steps.
+         */
+        FULL_PROCESSING
+    }
 
     /**
      * Repository for card-account cross-reference lookups.
@@ -147,6 +175,30 @@ public class TransactionProcessor implements ItemProcessor<Transaction, Transact
      * Replaces COBOL EXEC CICS READ/WRITE/REWRITE FILE('TCATBAL') operations.
      */
     private final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
+
+    /**
+     * Processing mode that controls which operations this processor performs.
+     * Allows same processor to behave differently in validation vs posting vs categorization steps.
+     */
+    private final ProcessingMode processingMode;
+
+    /**
+     * Constructor for TransactionProcessor with specified processing mode.
+     * 
+     * @param cardAccountXrefRepository Repository for card-account cross-reference lookups
+     * @param accountRepository Repository for account operations
+     * @param transactionCategoryBalanceRepository Repository for category balance operations
+     * @param processingMode Mode controlling which operations to perform
+     */
+    public TransactionProcessor(CardAccountXrefRepository cardAccountXrefRepository,
+                               AccountRepository accountRepository,
+                               TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
+                               ProcessingMode processingMode) {
+        this.cardAccountXrefRepository = cardAccountXrefRepository;
+        this.accountRepository = accountRepository;
+        this.transactionCategoryBalanceRepository = transactionCategoryBalanceRepository;
+        this.processingMode = processingMode;
+    }
 
     /**
      * Date formatter for transaction timestamp comparisons.
@@ -217,42 +269,62 @@ public class TransactionProcessor implements ItemProcessor<Transaction, Transact
      */
     @Override
     public Transaction process(Transaction transaction) throws Exception {
-        log.info("Processing transaction ID: {}, Card Number: {}, Amount: {}", 
+        log.info("Processing transaction ID: {}, Card Number: {}, Amount: {} [Mode: {}]", 
                  transaction.getTransId(), 
                  maskCardNumber(transaction.getTransCardNum()), 
-                 transaction.getTransAmt());
+                 transaction.getTransAmt(),
+                 processingMode);
 
         try {
             // Step 1: Validate card number and retrieve account cross-reference
             // COBOL: PERFORM 1500-A-LOOKUP-XREF (CBTRN02C lines 380-392)
+            // Required for ALL processing modes
             CardAccountXref cardXref = validateCardXref(transaction.getTransCardNum());
             
             // Step 2: Load account record for balance and limit validation
             // COBOL: PERFORM 1500-B-LOOKUP-ACCT (CBTRN02C lines 393-422)
+            // Required for ALL processing modes
             Account account = loadAccount(cardXref.getXrefAcctId());
             
-            // Step 3: Validate credit limit not exceeded
-            // COBOL: Lines 403-413 in CBTRN02C (COMPUTE WS-TEMP-BAL, IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL)
-            validateCreditLimit(account, transaction.getTransAmt());
-            
-            // Step 4: Validate account not expired
-            // COBOL: Lines 414-420 in CBTRN02C (IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS)
-            validateAccountExpiration(account, transaction);
+            // Steps 3-4: Validation checks
+            // Only required for VALIDATION_ONLY, POSTING_ONLY, and FULL_PROCESSING modes
+            // CATEGORIZATION_ONLY skips these (already validated by prior steps)
+            if (processingMode != ProcessingMode.CATEGORIZATION_ONLY) {
+                // Step 3: Validate credit limit not exceeded
+                // COBOL: Lines 403-413 in CBTRN02C (COMPUTE WS-TEMP-BAL, IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL)
+                validateCreditLimit(account, transaction.getTransAmt());
+                
+                // Step 4: Validate account not expired
+                // COBOL: Lines 414-420 in CBTRN02C (IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS)
+                validateAccountExpiration(account, transaction);
+            }
             
             // Step 5: Update transaction category balance
             // COBOL: PERFORM 2700-UPDATE-TCATBAL (CBTRN02C lines 467-542)
-            updateCategoryBalance(account.getAcctId(), transaction.getTransTypeCd(), 
-                                 transaction.getTransCatCd(), transaction.getTransAmt());
+            // Only for CATEGORIZATION_ONLY and FULL_PROCESSING modes
+            // NOTE: Category balances track ABSOLUTE amounts, not adjusted (always positive)
+            if (processingMode == ProcessingMode.CATEGORIZATION_ONLY || 
+                processingMode == ProcessingMode.FULL_PROCESSING) {
+                updateCategoryBalance(account.getAcctId(), transaction.getTransTypeCd(), 
+                                     transaction.getTransCatCd(), transaction.getTransAmt());
+            }
             
             // Step 6: Update account balance and cycle totals
             // COBOL: PERFORM 2800-UPDATE-ACCOUNT-REC (CBTRN02C lines 545-560)
-            calculateNewBalance(account, transaction.getTransAmt());
+            // Only for POSTING_ONLY and FULL_PROCESSING modes
+            // NOTE: Account balance updates use adjusted amounts (credits are negative)
+            if (processingMode == ProcessingMode.POSTING_ONLY || 
+                processingMode == ProcessingMode.FULL_PROCESSING) {
+                // Adjust amount based on transaction type: DEBIT adds, CREDIT subtracts
+                BigDecimal adjustedAmount = adjustTransactionAmount(transaction.getTransAmt(), transaction.getTransTypeCd());
+                calculateNewBalance(account, adjustedAmount);
+                
+                // Save updated account balances
+                // COBOL: REWRITE FD-ACCTFILE-REC FROM ACCOUNT-RECORD (line 554)
+                accountRepository.save(account);
+            }
             
-            // Save updated account balances
-            // COBOL: REWRITE FD-ACCTFILE-REC FROM ACCOUNT-RECORD (line 554)
-            accountRepository.save(account);
-            
-            log.info("Transaction {} successfully processed and validated", transaction.getTransId());
+            log.info("Transaction {} successfully processed [Mode: {}]", transaction.getTransId(), processingMode);
             return transaction;
             
         } catch (DataNotFoundException e) {
@@ -451,19 +523,18 @@ public class TransactionProcessor implements ItemProcessor<Transaction, Transact
                  account.getAcctId(), transactionAmount);
         
         // Calculate predicted balance after transaction posting
-        // COBOL: COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT
-        BigDecimal cycleCredit = account.getAcctCurrCycCredit();
-        BigDecimal cycleDebit = account.getAcctCurrCycDebit();
+        // NOTE: For DEBIT transactions, use current balance + transaction amount
+        // For CREDIT transactions, transaction amount is already negative, so addition works correctly
+        // COBOL: COMPUTE WS-TEMP-BAL = ACCT-CURR-BAL + DALYTRAN-AMT
+        BigDecimal currentBalance = account.getAcctCurrBal();
         BigDecimal creditLimit = account.getAcctCreditLimit();
         
         // Preserve COBOL COMP-3 precision: scale 2, rounding HALF_UP
-        BigDecimal netCycleBalance = cycleCredit.subtract(cycleDebit)
-                                                .setScale(DECIMAL_SCALE, ROUNDING_MODE);
-        BigDecimal predictedBalance = netCycleBalance.add(transactionAmount)
-                                                     .setScale(DECIMAL_SCALE, ROUNDING_MODE);
+        BigDecimal predictedBalance = currentBalance.add(transactionAmount)
+                                                    .setScale(DECIMAL_SCALE, ROUNDING_MODE);
         
-        log.debug("Credit limit validation: Credit Limit={}, Cycle Credit={}, Cycle Debit={}, Net Cycle Balance={}, Predicted Balance={}", 
-                 creditLimit, cycleCredit, cycleDebit, netCycleBalance, predictedBalance);
+        log.debug("Credit limit validation: Credit Limit={}, Current Balance={}, Transaction Amount={}, Predicted Balance={}", 
+                 creditLimit, currentBalance, transactionAmount, predictedBalance);
         
         // Validate predicted balance does not exceed credit limit
         // COBOL: IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL THEN approve ELSE reject
@@ -471,8 +542,8 @@ public class TransactionProcessor implements ItemProcessor<Transaction, Transact
             // Transaction would exceed credit limit - reject
             // MOVE 102 TO WS-VALIDATION-FAIL-REASON
             // MOVE 'OVERLIMIT TRANSACTION' TO WS-VALIDATION-FAIL-REASON-DESC
-            log.warn("Transaction rejected: Overlimit. Account {}, Credit Limit: {}, Predicted Balance: {}", 
-                    account.getAcctId(), creditLimit, predictedBalance);
+            log.warn("Transaction rejected: Overlimit. Account {}, Credit Limit: {}, Current Balance: {}, Transaction Amount: {}, Predicted Balance: {}", 
+                    account.getAcctId(), creditLimit, currentBalance, transactionAmount, predictedBalance);
             throw new BusinessException("Overlimit transaction: predicted balance " + 
                                       predictedBalance + " exceeds credit limit " + creditLimit);
         }
@@ -609,6 +680,30 @@ public class TransactionProcessor implements ItemProcessor<Transaction, Transact
      * @param transactionAmount Transaction amount to post (positive = charge, negative = credit)
      *                          Converted from COBOL PIC S9(09)V99 COMP-3 DALYTRAN-AMT
      */
+    /**
+     * Adjust transaction amount based on transaction type.
+     * 
+     * <p>For credit card accounting:
+     * <ul>
+     *   <li>DEBIT transactions (purchases, charges) ADD to balance (positive amount)</li>
+     *   <li>CREDIT transactions (payments, refunds) SUBTRACT from balance (negative amount)</li>
+     * </ul>
+     * </p>
+     * 
+     * @param amount The transaction amount (always positive in database)
+     * @param transTypeCd Transaction type code ("DB" for debit, "CR" for credit)
+     * @return Adjusted amount: positive for debits, negative for credits
+     */
+    protected BigDecimal adjustTransactionAmount(BigDecimal amount, String transTypeCd) {
+        if ("CR".equals(transTypeCd)) {
+            // Credit transactions (payments) subtract from balance
+            return amount.negate();
+        } else {
+            // Debit transactions (purchases) add to balance
+            return amount;
+        }
+    }
+
     protected void calculateNewBalance(Account account, BigDecimal transactionAmount) {
         log.debug("Calculating new balance for account {}. Transaction amount: {}", 
                  account.getAcctId(), transactionAmount);
@@ -619,6 +714,7 @@ public class TransactionProcessor implements ItemProcessor<Transaction, Transact
         
         // Update current account balance
         // COBOL: ADD DALYTRAN-AMT TO ACCT-CURR-BAL
+        // Note: transactionAmount is already adjusted (positive for debits, negative for credits)
         BigDecimal newBalance = currentBalance.add(transactionAmount)
                                              .setScale(DECIMAL_SCALE, ROUNDING_MODE);
         account.setAcctCurrBal(newBalance);
