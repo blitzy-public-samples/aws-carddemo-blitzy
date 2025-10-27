@@ -119,6 +119,14 @@ public class DatabaseConfig {
     private String databasePassword;
 
     /**
+     * Database driver class name injected from application.yml.
+     * Production: org.postgresql.Driver
+     * Test: org.h2.Driver (for H2 in-memory database)
+     */
+    @Value("${spring.datasource.driver-class-name:org.postgresql.Driver}")
+    private String driverClassName;
+
+    /**
      * Flag to enable SQL logging in development profile.
      * Set to true in application-dev.yml, false in application-prod.yml.
      */
@@ -169,7 +177,7 @@ public class DatabaseConfig {
         dataSource.setJdbcUrl(databaseUrl);
         dataSource.setUsername(databaseUsername);
         dataSource.setPassword(databasePassword);
-        dataSource.setDriverClassName("org.postgresql.Driver");
+        dataSource.setDriverClassName(driverClassName);
         
         // Connection pool sizing (optimized for 10K TPS requirement)
         dataSource.setMaximumPoolSize(20);

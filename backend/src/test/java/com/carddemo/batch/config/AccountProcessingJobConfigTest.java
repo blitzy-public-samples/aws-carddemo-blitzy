@@ -13,6 +13,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.core.task.TaskExecutor;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /**
@@ -79,7 +80,8 @@ import org.springframework.transaction.PlatformTransactionManager;
  * - Section 0.7.5: Maintains COBOL sequential processing flow
  * 
  * Test Strategy:
- * - Uses @SpringBootTest to load full application context
+ * - Uses @SpringBootTest to load full application context with test profile
+ * - Activates 'test' profile for H2 in-memory database (no external dependencies)
  * - Injects ApplicationContext for bean lookup and validation
  * - Uses AssertJ for fluent assertions
  * - Tests configuration-level aspects (not runtime execution)
@@ -88,6 +90,7 @@ import org.springframework.transaction.PlatformTransactionManager;
  * @see AccountProcessingJobConfig Spring Batch configuration being tested
  */
 @SpringBootTest
+@ActiveProfiles("test")
 public class AccountProcessingJobConfigTest {
 
     /**
