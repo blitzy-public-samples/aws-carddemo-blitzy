@@ -56,6 +56,7 @@ import com.carddemo.model.entity.Transaction;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -136,6 +137,9 @@ class TransactionServiceTest {
     @Mock
     private AccountService mockAccountService;
 
+    @Mock
+    private com.carddemo.repository.TransactionCategoryBalanceRepository mockTransactionCategoryBalanceRepository;
+
     // Service under test with mocked dependencies injected
     @InjectMocks
     private TransactionService transactionService;
@@ -143,6 +147,7 @@ class TransactionServiceTest {
     // Test constants matching COBOL copybook CVTRA05Y.cpy field definitions
     private static final String TEST_TRANS_ID = "TXN001234567890";  // PIC X(16)
     private static final String TEST_CARD_NUM = "4111111111111111";  // PIC X(16)
+    private static final String TEST_CARD_NUM_MASKED = "************1111";  // Masked for security in DTO
     private static final String TEST_CARD_NUM_2 = "4222222222222222";
     private static final String TEST_TYPE_PURCHASE = "01";  // PIC X(02) - Debit
     private static final String TEST_TYPE_PAYMENT = "04";  // PIC X(02) - Credit
@@ -152,7 +157,7 @@ class TransactionServiceTest {
     private static final String TEST_SOURCE_ATM = "ATM";
     private static final String TEST_SOURCE_ONLINE = "ONLINE";
     private static final String TEST_DESC = "Purchase at Store XYZ";  // PIC X(100)
-    private static final String TEST_MERCHANT_ID = "123456789";  // PIC 9(09)
+    private static final Long TEST_MERCHANT_ID = 123456789L;  // PIC 9(09)
     private static final String TEST_MERCHANT_NAME = "Store XYZ";  // PIC X(50)
     private static final String TEST_MERCHANT_CITY = "New York";  // PIC X(50)
     private static final String TEST_MERCHANT_ZIP = "10001";  // PIC X(10)
@@ -202,7 +207,8 @@ class TransactionServiceTest {
         // Assert: Verify results
         assertNotNull(result);
         assertEquals(2, result.getTotalElements());
-        assertEquals(TEST_CARD_NUM, result.getContent().get(0).getTransCardNum());
+        // Card number is masked in DTO for security
+        assertEquals(TEST_CARD_NUM_MASKED, result.getContent().get(0).getTransCardNum());
         
         // Verify repository called with correct parameters
         verify(mockTransactionRepository).findByTransCardNumAndTransOrigTsBetween(
@@ -240,11 +246,12 @@ class TransactionServiceTest {
         // Assert
         assertNotNull(result);
         assertEquals(1, result.getTotalElements());
-        assertEquals(TEST_CARD_NUM, result.getContent().get(0).getTransCardNum());
+        // Card number is masked in DTO for security
+        assertEquals(TEST_CARD_NUM_MASKED, result.getContent().get(0).getTransCardNum());
         
-        // Verify only transactions for specified card returned
+        // Verify only transactions for specified card returned (masked)
         result.getContent().forEach(dto -> 
-            assertEquals(TEST_CARD_NUM, dto.getTransCardNum())
+            assertEquals(TEST_CARD_NUM_MASKED, dto.getTransCardNum())
         );
     }
 
@@ -318,7 +325,8 @@ class TransactionServiceTest {
         // Assert
         assertNotNull(result);
         assertEquals(1, result.getTotalElements());
-        assertEquals(TEST_CARD_NUM, result.getContent().get(0).getTransCardNum());
+        // Card number is masked in DTO for security
+        assertEquals(TEST_CARD_NUM_MASKED, result.getContent().get(0).getTransCardNum());
     }
 
     /**
@@ -396,7 +404,8 @@ class TransactionServiceTest {
         // Assert: Verify all 350-byte record fields
         assertNotNull(result);
         assertEquals(TEST_TRANS_ID, result.getTransId());
-        assertEquals(TEST_CARD_NUM, result.getTransCardNum());
+        // Card number is masked in DTO for security
+        assertEquals(TEST_CARD_NUM_MASKED, result.getTransCardNum());
         assertEquals(TEST_TYPE_PURCHASE, result.getTransTypeCd());
         assertEquals(TEST_CAT_CODE, result.getTransCatCd());
         assertEquals(TEST_SOURCE_POS, result.getTransSource());
@@ -465,7 +474,8 @@ class TransactionServiceTest {
         // Assert
         assertNotNull(result);
         assertEquals(TEST_TRANS_ID, result.getTransId());
-        assertEquals(TEST_CARD_NUM, result.getTransCardNum());
+        // Card number is masked in DTO for security
+        assertEquals(TEST_CARD_NUM_MASKED, result.getTransCardNum());
         
         // Note: Card relationship verified through entity, DTO may not expose card details
         verify(mockTransactionRepository).findById(TEST_TRANS_ID);
@@ -504,7 +514,8 @@ class TransactionServiceTest {
         // Assert: Verify all fields
         assertNotNull(result);
         assertEquals(TEST_TRANS_ID, result.getTransId());
-        assertEquals(TEST_CARD_NUM, result.getTransCardNum());
+        // Card number is masked in DTO for security
+        assertEquals(TEST_CARD_NUM_MASKED, result.getTransCardNum());
         assertEquals(TEST_TYPE_PURCHASE, result.getTransTypeCd());
         assertEquals(TEST_CAT_CODE, result.getTransCatCd());
         assertEquals(TEST_SOURCE_POS, result.getTransSource());
@@ -547,8 +558,9 @@ class TransactionServiceTest {
         AccountDto mockAccount = createTestAccountDto(TEST_ACCT_ID, TEST_BALANCE, TEST_CREDIT_LIMIT);
         when(mockAccountService.getAccountById(TEST_ACCT_ID)).thenReturn(mockAccount);
         
-        // Mock AccountService.updateAccount()
-        doNothing().when(mockAccountService).updateAccount(anyLong(), any(AccountDto.class));
+        // Mock AccountService.updateAccount() - it returns AccountDto, not void
+        AccountDto updatedAccount = createTestAccountDto(TEST_ACCT_ID, TEST_BALANCE, TEST_CREDIT_LIMIT);
+        when(mockAccountService.updateAccount(anyLong(), any(AccountDto.class))).thenReturn(updatedAccount);
         
         // Mock TransactionRepository.save()
         Transaction savedTransaction = createTestTransaction("TXN_GENERATED", TEST_CARD_NUM, TEST_AMOUNT);
@@ -559,7 +571,8 @@ class TransactionServiceTest {
 
         // Assert
         assertNotNull(result);
-        assertEquals(TEST_CARD_NUM, result.getTransCardNum());
+        // Card number is masked in DTO for security
+        assertEquals(TEST_CARD_NUM_MASKED, result.getTransCardNum());
         assertEquals(0, TEST_AMOUNT.compareTo(result.getTransAmt()));
         
         // Verify all service/repository methods called
@@ -621,7 +634,9 @@ class TransactionServiceTest {
         AccountDto mockAccount = createTestAccountDto(TEST_ACCT_ID, initialBalance, TEST_CREDIT_LIMIT);
         when(mockAccountService.getAccountById(TEST_ACCT_ID)).thenReturn(mockAccount);
         
-        doNothing().when(mockAccountService).updateAccount(anyLong(), any(AccountDto.class));
+        // Mock updateAccount to return updated account (not void)
+        AccountDto updatedAccount = createTestAccountDto(TEST_ACCT_ID, initialBalance, TEST_CREDIT_LIMIT);
+        when(mockAccountService.updateAccount(anyLong(), any(AccountDto.class))).thenReturn(updatedAccount);
         
         Transaction savedTransaction = createTestTransaction("TXN_GEN", TEST_CARD_NUM, TEST_AMOUNT);
         when(mockTransactionRepository.save(any(Transaction.class))).thenReturn(savedTransaction);
@@ -711,7 +726,14 @@ class TransactionServiceTest {
         BigDecimal largeAmount = new BigDecimal("20000.00").setScale(2, RoundingMode.HALF_UP);
         TransactionDto transactionDto = createTestTransactionDto(TEST_CARD_NUM, TEST_TYPE_PURCHASE, largeAmount);
         
-        setupSuccessfulPostTransactionMocks();
+        // Only mock what's needed before exception is thrown (don't use helper to avoid unnecessary stubbings)
+        doNothing().when(mockValidationService).validateAmount(any(BigDecimal.class));
+        doNothing().when(mockValidationService).validateCardNumber(anyString());
+        doNothing().when(mockValidationService).validateTransactionType(anyString());
+        doNothing().when(mockValidationService).validateTransactionCategory(anyInt());
+        
+        CardDto mockCard = createTestCardDto(TEST_CARD_NUM, TEST_ACCT_ID, "Y");
+        when(mockCardService.getCardByNumber(anyString())).thenReturn(mockCard);
         
         // Initial balance close to credit limit
         BigDecimal initialBalance = new BigDecimal("1000.00").setScale(2, RoundingMode.HALF_UP);
@@ -1147,7 +1169,8 @@ class TransactionServiceTest {
         // Assert
         assertNotNull(result);
         assertEquals(TEST_MERCHANT_ID, result.getTransMerchantId());
-        assertEquals(9, TEST_MERCHANT_ID.length(), "Merchant ID must be 9 characters");
+        assertTrue(TEST_MERCHANT_ID >= 100000000L && TEST_MERCHANT_ID <= 999999999L, 
+            "Merchant ID must be 9 digits (100000000-999999999)");
     }
 
     /**
@@ -1479,6 +1502,8 @@ class TransactionServiceTest {
         CardDto mockCard = createTestCardDto(TEST_CARD_NUM, TEST_ACCT_ID, "Y");
         when(mockCardService.getCardByNumber(anyString())).thenReturn(mockCard);
         
-        doNothing().when(mockAccountService).updateAccount(anyLong(), any(AccountDto.class));
+        // Mock updateAccount to return an AccountDto (it's not void)
+        AccountDto updatedAccount = createTestAccountDto(TEST_ACCT_ID, TEST_BALANCE, TEST_CREDIT_LIMIT);
+        when(mockAccountService.updateAccount(anyLong(), any(AccountDto.class))).thenReturn(updatedAccount);
     }
 }
