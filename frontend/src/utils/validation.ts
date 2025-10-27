@@ -231,7 +231,7 @@ export const validateAccountId = (
   }
   
   const trimmed = accountId.trim();
-  const { MIN_LENGTH, MAX_LENGTH, PATTERN } = VALIDATION_RULES.ACCOUNT_ID;
+  const { MIN_LENGTH, PATTERN } = VALIDATION_RULES.ACCOUNT_ID;
   
   if (trimmed.length !== MIN_LENGTH) {
     return {
@@ -347,7 +347,8 @@ const luhnCheck = (cardNumber: string): boolean => {
   
   // Process digits from right to left
   for (let i = cardNumber.length - 1; i >= 0; i--) {
-    let digit = parseInt(cardNumber[i], 10);
+    const char = cardNumber.charAt(i); // Use charAt instead of array access for type safety
+    let digit = parseInt(char, 10);
     
     if (isEven) {
       digit *= 2;
