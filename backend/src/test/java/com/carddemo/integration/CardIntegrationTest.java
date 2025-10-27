@@ -20,6 +20,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpStatus;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -115,6 +116,7 @@ import static org.hamcrest.Matchers.notNullValue;
  * @see CardDto
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles("integration-test")
 @Testcontainers
 public class CardIntegrationTest {
 
@@ -156,16 +158,18 @@ public class CardIntegrationTest {
     private CardAccountXrefRepository cardAccountXrefRepository;
 
     // Test data constants
-    private static final Long TEST_ACCOUNT_ID_1 = 1234567890L;
-    private static final Long TEST_ACCOUNT_ID_2 = 9876543210L;
-    private static final Long TEST_CUSTOMER_ID_1 = 100000001L;
-    private static final Long TEST_CUSTOMER_ID_2 = 100000002L;
-    private static final String TEST_CARD_NUM_1 = "4111111111111111";
-    private static final String TEST_CARD_NUM_2 = "5555555555554444";
-    private static final String TEST_CARD_NUM_3 = "3782822463100005";
+    private static final Long TEST_ACCOUNT_ID_1 = 12345678901L;  // 11 digits as required by ValidationService
+    private static final Long TEST_ACCOUNT_ID_2 = 98765432101L;  // 11 digits as required by ValidationService
+    private static final Long TEST_CUSTOMER_ID_1 = 100000001L;   // 9 digits as per COBOL PIC 9(09)
+    private static final Long TEST_CUSTOMER_ID_2 = 100000002L;   // 9 digits as per COBOL PIC 9(09)
+    // Valid test card numbers that pass Luhn checksum validation
+    // Note: All card numbers must be exactly 16 digits per ValidationService requirement
+    private static final String TEST_CARD_NUM_1 = "4111111111111111";  // Visa test card (valid Luhn)
+    private static final String TEST_CARD_NUM_2 = "5555555555554444";  // Mastercard test card (valid Luhn)
+    private static final String TEST_CARD_NUM_3 = "6011111111111117";  // Discover test card - 16 digits (valid Luhn)
     private static final String MASKED_CARD_NUM_1 = "****1111";
     private static final String MASKED_CARD_NUM_2 = "****4444";
-    private static final String MASKED_CARD_NUM_3 = "****0005";
+    private static final String MASKED_CARD_NUM_3 = "****1117";
 
     @BeforeEach
     void setUp() {
@@ -216,7 +220,7 @@ public class CardIntegrationTest {
                 .statusCode(HttpStatus.OK.value())
                 .body("content", hasSize(2))
                 .body("content[0].cardNum", containsString("****"))  // Verify masking
-                .body("content[0].cardAcctId", equalTo(TEST_ACCOUNT_ID_1.intValue()))
+                .body("content[0].cardAcctId", equalTo(TEST_ACCOUNT_ID_1))  // Compare as Long directly
                 .body("content[0].cardStatus", notNullValue())
                 .body("content[0].cardExpirationDate", notNullValue())
                 .body("content[0].cardEmbossedName", notNullValue())
@@ -279,7 +283,7 @@ public class CardIntegrationTest {
         .then()
                 .statusCode(HttpStatus.OK.value())
                 .body("cardNum", equalTo(MASKED_CARD_NUM_1))  // Verify masking
-                .body("cardAcctId", equalTo(TEST_ACCOUNT_ID_1.intValue()))
+                .body("cardAcctId", equalTo(TEST_ACCOUNT_ID_1))  // Compare as Long directly
                 .body("cardStatus", equalTo("A"))
                 .body("cardEmbossedName", equalTo("JOHN DOE TEST"))
                 .body("cardExpirationDate", notNullValue())
@@ -296,12 +300,15 @@ public class CardIntegrationTest {
      * - DataNotFoundException handling
      * - Standard ErrorResponse format
      * - Appropriate error message
+     * 
+     * Note: Uses valid Luhn card number (4000000000000002) that doesn't exist in database.
+     * Invalid Luhn numbers would return 400 (validation error) instead of 404 (not found).
      */
     @Test
     void testGetCardByNumber_NotFound() {
-        // Execute: GET /api/cards/{nonexistent}
+        // Execute: GET /api/cards/{nonexistent but valid Luhn card number}
         given()
-                .pathParam("cardNumber", "9999999999999999")
+                .pathParam("cardNumber", "4000000000000002")  // Valid Luhn, but doesn't exist
                 .contentType(ContentType.JSON)
         .when()
                 .get("/{cardNumber}")
@@ -348,7 +355,7 @@ public class CardIntegrationTest {
         .then()
                 .statusCode(HttpStatus.CREATED.value())
                 .body("cardNum", equalTo(MASKED_CARD_NUM_3))
-                .body("cardAcctId", equalTo(TEST_ACCOUNT_ID_1.intValue()))
+                .body("cardAcctId", equalTo(TEST_ACCOUNT_ID_1))  // Compare as Long directly
                 .body("cardStatus", equalTo("A"))
                 .body("cardEmbossedName", equalTo("JANE SMITH"));
     }
@@ -459,6 +466,9 @@ public class CardIntegrationTest {
      * Validates:
      * - DataNotFoundException for update operation
      * - HTTP 404 Not Found response
+     * 
+     * Note: Uses valid Luhn card number (5100000000000008) that doesn't exist in database.
+     * Invalid Luhn numbers would return 400 (validation error) instead of 404 (not found).
      */
     @Test
     void testUpdateCard_NotFound() {
@@ -467,9 +477,9 @@ public class CardIntegrationTest {
         updateRequest.put("cardStatus", "C");
         updateRequest.put("cardEmbossedName", "NOT FOUND");
 
-        // Execute: PUT /api/cards/{nonexistent}
+        // Execute: PUT /api/cards/{nonexistent but valid Luhn card number}
         given()
-                .pathParam("cardNumber", "9999999999999999")
+                .pathParam("cardNumber", "5100000000000008")  // Valid Luhn, but doesn't exist
                 .contentType(ContentType.JSON)
                 .body(updateRequest)
         .when()
@@ -499,8 +509,10 @@ public class CardIntegrationTest {
 
         // Test each valid status code
         String[] validStatuses = {"A", "C", "S", "E", "I", "L"};
-        for (String status : validStatuses) {
-            String cardNum = "41111111111" + String.format("%05d", validStatuses.length);
+        for (int i = 0; i < validStatuses.length; i++) {
+            String status = validStatuses[i];
+            // Generate valid card number that passes Luhn checksum
+            String cardNum = generateValidCardNumber("41111111111", 1000 + i);
             createTestCard(cardNum, TEST_ACCOUNT_ID_1, TEST_CUSTOMER_ID_1, status);
             
             // Verify card created with correct status
@@ -598,7 +610,8 @@ public class CardIntegrationTest {
         createTestCustomer(TEST_CUSTOMER_ID_1);
         
         for (int i = 1; i <= 15; i++) {
-            String cardNum = String.format("4111111111%06d", i);
+            // Generate valid card number that passes Luhn checksum
+            String cardNum = generateValidCardNumber("41111111111", i);
             createTestCard(cardNum, TEST_ACCOUNT_ID_1, TEST_CUSTOMER_ID_1);
             createTestCardXref(cardNum, TEST_ACCOUNT_ID_1, TEST_CUSTOMER_ID_1);
         }
@@ -685,6 +698,55 @@ public class CardIntegrationTest {
     // ========================================
     // Helper Methods for Test Data Creation
     // ========================================
+
+    /**
+     * Generate a valid card number that passes Luhn checksum validation.
+     * 
+     * @param prefix The card number prefix (e.g., "41111111111")
+     * @param sequenceNumber A sequence number to make card numbers unique
+     * @return A valid 16-digit card number that passes Luhn validation
+     */
+    private String generateValidCardNumber(String prefix, int sequenceNumber) {
+        // Format sequence number to fixed length
+        String sequence = String.format("%04d", sequenceNumber);
+        
+        // Combine prefix and sequence (15 digits total, leaving room for check digit)
+        String cardNumberWithoutCheckDigit = prefix + sequence;
+        
+        // Calculate Luhn check digit
+        int checkDigit = calculateLuhnCheckDigit(cardNumberWithoutCheckDigit);
+        
+        return cardNumberWithoutCheckDigit + checkDigit;
+    }
+    
+    /**
+     * Calculate the Luhn check digit for a card number.
+     * 
+     * @param cardNumberWithoutCheckDigit Card number without the final check digit
+     * @return The Luhn check digit (0-9)
+     */
+    private int calculateLuhnCheckDigit(String cardNumberWithoutCheckDigit) {
+        int sum = 0;
+        boolean alternate = true;  // Start with true because we're calculating for the check digit position
+        
+        // Process digits from right to left
+        for (int i = cardNumberWithoutCheckDigit.length() - 1; i >= 0; i--) {
+            int digit = Character.getNumericValue(cardNumberWithoutCheckDigit.charAt(i));
+            
+            if (alternate) {
+                digit *= 2;
+                if (digit > 9) {
+                    digit -= 9;
+                }
+            }
+            
+            sum += digit;
+            alternate = !alternate;
+        }
+        
+        // Calculate check digit: (10 - (sum % 10)) % 10
+        return (10 - (sum % 10)) % 10;
+    }
 
     /**
      * Create test account with default values.

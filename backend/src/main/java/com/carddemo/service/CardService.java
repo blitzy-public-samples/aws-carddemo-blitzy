@@ -522,7 +522,8 @@ public class CardService {
         // Step 3: Check for duplicate card number
         if (cardRepository.findById(cardDto.getCardNum()).isPresent()) {
             log.error("Duplicate card number: {}", maskCardNumber(cardDto.getCardNum()));
-            throw new BusinessException("CARD005", 
+            // BUS003 maps to HTTP 409 Conflict per GlobalExceptionHandler
+            throw new BusinessException("BUS003", 
                     "Card number already exists: " + maskCardNumber(cardDto.getCardNum()));
         }
         
