@@ -1,12 +1,14 @@
 package com.carddemo.controller;
 
 import com.carddemo.model.dto.CardDto;
+import com.carddemo.security.JwtTokenProvider;
 import com.carddemo.service.CardService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.data.domain.PageImpl;
@@ -122,6 +124,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * @see com.carddemo.model.entity.Card
  */
 @WebMvcTest(CardController.class)
+@AutoConfigureMockMvc(addFilters = false)
 class CardControllerTest {
 
     @Autowired
@@ -129,6 +132,22 @@ class CardControllerTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    /**
+     * Mock bean for JwtTokenProvider to satisfy Spring Security filter chain dependencies.
+     * 
+     * <p>Even though @AutoConfigureMockMvc(addFilters = false) disables filter execution,
+     * Spring Security autoconfiguration still attempts to create JwtAuthenticationFilter bean
+     * during context initialization, which requires JwtTokenProvider as a dependency. This
+     * @MockBean annotation provides a mock implementation to satisfy the dependency injection
+     * requirement without loading the actual JWT security infrastructure.</p>
+     * 
+     * <p>This mock is not used in card tests since filters are disabled, but it prevents
+     * context initialization failures. This follows the same pattern used in AccountControllerTest
+     * and other controller tests.</p>
+     */
+    @MockBean
+    private JwtTokenProvider jwtTokenProvider;
 
     @MockBean
     private CardService cardService;
@@ -246,11 +265,11 @@ class CardControllerTest {
                 // Validate card content array
                 .andExpect(jsonPath("$.content", hasSize(2)))
                 .andExpect(jsonPath("$.content[0].cardNum", is(MASKED_CARD_NUM_1)))
-                .andExpect(jsonPath("$.content[0].cardAcctId", is(TEST_ACCOUNT_ID.intValue())))
+                .andExpect(jsonPath("$.content[0].cardAcctId", is(TEST_ACCOUNT_ID)))
                 .andExpect(jsonPath("$.content[0].cardEmbossedName", is("JOHN DOE")))
                 .andExpect(jsonPath("$.content[0].cardStatus", is("Y")))
                 .andExpect(jsonPath("$.content[1].cardNum", is(MASKED_CARD_NUM_2)))
-                .andExpect(jsonPath("$.content[1].cardAcctId", is(TEST_ACCOUNT_ID.intValue())))
+                .andExpect(jsonPath("$.content[1].cardAcctId", is(TEST_ACCOUNT_ID)))
                 .andExpect(jsonPath("$.content[1].cardEmbossedName", is("JANE SMITH")))
                 .andExpect(jsonPath("$.content[1].cardStatus", is("N")))
                 // Validate pagination metadata
@@ -388,7 +407,7 @@ class CardControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.cardNum", is(MASKED_CARD_NUM_1)))
-                .andExpect(jsonPath("$.cardAcctId", is(TEST_ACCOUNT_ID.intValue())))
+                .andExpect(jsonPath("$.cardAcctId", is(TEST_ACCOUNT_ID)))
                 .andExpect(jsonPath("$.cardEmbossedName", is("JOHN DOE")))
                 .andExpect(jsonPath("$.cardStatus", is("Y")))
                 .andExpect(jsonPath("$.cardExpirationDate", notNullValue()));
@@ -489,7 +508,7 @@ class CardControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.cardNum", is(MASKED_CARD_NUM_1)))
-                .andExpect(jsonPath("$.cardAcctId", is(TEST_ACCOUNT_ID.intValue())))
+                .andExpect(jsonPath("$.cardAcctId", is(TEST_ACCOUNT_ID)))
                 .andExpect(jsonPath("$.cardEmbossedName", is("JOHN M DOE")))
                 .andExpect(jsonPath("$.cardStatus", is("N")))
                 .andExpect(jsonPath("$.cardExpirationDate", notNullValue()));
@@ -627,7 +646,7 @@ class CardControllerTest {
                 .andExpect(status().isCreated())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.cardNum", is(MASKED_CARD_NUM_1)))
-                .andExpect(jsonPath("$.cardAcctId", is(TEST_ACCOUNT_ID.intValue())))
+                .andExpect(jsonPath("$.cardAcctId", is(TEST_ACCOUNT_ID)))
                 .andExpect(jsonPath("$.cardEmbossedName", is("JOHN DOE")))
                 .andExpect(jsonPath("$.cardStatus", is("Y")))
                 .andExpect(jsonPath("$.cardExpirationDate", notNullValue()));
