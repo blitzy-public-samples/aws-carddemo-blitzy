@@ -41,6 +41,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.doThrow;
 
 /**
  * JUnit 5 unit test for AuthService testing user authentication logic extracted from COSGN00C.cbl PROCEDURE DIVISION.
@@ -421,8 +422,8 @@ class AuthServiceTest {
     void testAuthenticateUserBlankUserId() {
         // Given: ValidationService throws exception for blank userId
         String blankUserId = "   ";
-        when(mockValidationService.validateUserId(blankUserId))
-                .thenThrow(new BusinessException("Please enter User ID ..."));
+        doThrow(new BusinessException("Please enter User ID ..."))
+                .when(mockValidationService).validateUserId(blankUserId);
 
         // When/Then: Authentication fails with validation error
         assertThatThrownBy(() -> authService.authenticate(blankUserId, TEST_PASSWORD))
@@ -452,8 +453,8 @@ class AuthServiceTest {
     void testAuthenticateUserBlankPassword() {
         // Given: ValidationService throws exception for blank password
         String blankPassword = "   ";
-        when(mockValidationService.validatePassword(blankPassword))
-                .thenThrow(new BusinessException("Please enter Password ..."));
+        doThrow(new BusinessException("Please enter Password ..."))
+                .when(mockValidationService).validatePassword(blankPassword);
 
         // When/Then: Authentication fails with validation error
         assertThatThrownBy(() -> authService.authenticate(TEST_USER_ID, blankPassword))
