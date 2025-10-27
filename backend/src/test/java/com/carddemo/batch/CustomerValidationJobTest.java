@@ -6,26 +6,41 @@ import com.carddemo.batch.reader.CustomerReader;
 import com.carddemo.batch.writer.CustomerWriter;
 import com.carddemo.model.entity.Customer;
 import com.carddemo.repository.CustomerRepository;
+import jakarta.annotation.PostConstruct;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
+import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
+import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.JobRepositoryTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.task.SyncTaskExecutor;
+import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import javax.sql.DataSource;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -107,11 +122,45 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @version 1.0
  * @since 2024-01-01
  */
-@SpringBootTest
+@SpringBootTest(properties = {
+    "spring.batch.job.enabled=false"  // Disable automatic job execution on startup
+})
 @SpringBatchTest
 @Testcontainers
 @DisplayName("Customer Validation Batch Job Integration Tests")
 public class CustomerValidationJobTest {
+
+    /**
+     * Test Configuration for Synchronous JobLauncher
+     * 
+     * Provides a synchronous JobLauncher for integration tests to ensure
+     * job execution completes before test assertions run. This is necessary
+     * because the default application JobLauncher may be configured to run
+     * asynchronously, which causes test assertions to run before job completion.
+     * 
+     * The SyncTaskExecutor ensures that job execution happens on the same thread
+     * as the test, making it easier to debug and ensuring that database transactions
+     * are properly managed within the test's transaction boundaries.
+     */
+    @TestConfiguration
+    static class TestConfig {
+        /**
+         * Create a synchronous JobLauncher for tests
+         * 
+         * @param jobRepository Spring Batch job repository
+         * @return Synchronous JobLauncher
+         * @throws Exception if launcher cannot be initialized
+         */
+        @Bean
+        @Primary
+        public JobLauncher synchronousJobLauncher(JobRepository jobRepository) throws Exception {
+            TaskExecutorJobLauncher jobLauncher = new TaskExecutorJobLauncher();
+            jobLauncher.setJobRepository(jobRepository);
+            jobLauncher.setTaskExecutor(new SyncTaskExecutor());  // Synchronous execution
+            jobLauncher.afterPropertiesSet();
+            return jobLauncher;
+        }
+    }
 
     /**
      * PostgreSQL Testcontainer
@@ -146,6 +195,7 @@ public class CustomerValidationJobTest {
      * - spring.datasource.username: Container database username
      * - spring.datasource.password: Container database password
      * - spring.jpa.hibernate.ddl-auto: create-drop (recreate schema for each test)
+     * - spring.batch.jdbc.initialize-schema: always (create Spring Batch tables)
      * 
      * @param registry Spring DynamicPropertyRegistry for property overrides
      */
@@ -155,6 +205,7 @@ public class CustomerValidationJobTest {
         registry.add("spring.datasource.username", postgresContainer::getUsername);
         registry.add("spring.datasource.password", postgresContainer::getPassword);
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
+        registry.add("spring.batch.jdbc.initialize-schema", () -> "always");
     }
 
     /**
@@ -183,6 +234,16 @@ public class CustomerValidationJobTest {
     private JobRepositoryTestUtils jobRepositoryTestUtils;
 
     /**
+     * Customer Validation Job Bean
+     * 
+     * The specific Spring Batch Job instance being tested.
+     * Injected by Spring using the bean name defined in CustomerValidationJobConfig.
+     */
+    @Autowired
+    @Qualifier("customerValidationJob")
+    private Job customerValidationJob;
+
+    /**
      * Customer Repository for Test Data Setup
      * 
      * Used to:
@@ -204,6 +265,58 @@ public class CustomerValidationJobTest {
      */
     @Autowired
     private CustomerProcessor customerProcessor;
+
+    /**
+     * DataSource for Spring Batch schema initialization
+     * 
+     * Used to manually initialize Spring Batch metadata tables
+     * (BATCH_JOB_INSTANCE, BATCH_STEP_EXECUTION, etc.) before tests run.
+     */
+    @Autowired
+    private DataSource dataSource;
+
+    /**
+     * Initialize Spring Batch Schema Before All Tests
+     * 
+     * Manually creates Spring Batch metadata tables using the official
+     * Spring Batch PostgreSQL schema SQL script. This is necessary because
+     * Testcontainers with Hibernate ddl-auto=create-drop only creates JPA
+     * entity tables, not Spring Batch infrastructure tables.
+     * 
+     * Schema Tables Created:
+     * - BATCH_JOB_INSTANCE: Job definitions and unique parameters
+     * - BATCH_JOB_EXECUTION: Job execution metadata and status
+     * - BATCH_JOB_EXECUTION_PARAMS: Job parameters for each execution
+     * - BATCH_STEP_EXECUTION: Step execution metadata and status
+     * - BATCH_STEP_EXECUTION_CONTEXT: Reader position for checkpoint/restart
+     * - BATCH_JOB_EXECUTION_CONTEXT: Job-level execution context
+     * 
+     * This method runs once before all tests in the class.
+     */
+    @BeforeAll
+    public static void initializeBatchSchema(@Autowired DataSource dataSource) {
+        try {
+            ResourceDatabasePopulator populator = new ResourceDatabasePopulator();
+            populator.addScript(new ClassPathResource("org/springframework/batch/core/schema-postgresql.sql"));
+            populator.execute(dataSource);
+        } catch (Exception e) {
+            // Schema may already exist from previous test run, log and continue
+            System.err.println("Warning: Could not initialize Spring Batch schema: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Configure JobLauncherTestUtils with the specific Job to test
+     * 
+     * JobLauncherTestUtils needs to know which Job to launch. When multiple Jobs
+     * exist in the application context, we must explicitly set the Job.
+     * 
+     * This method runs after dependency injection completes.
+     */
+    @PostConstruct
+    public void configureJob() {
+        jobLauncherTestUtils.setJob(customerValidationJob);
+    }
 
     /**
      * Setup Method - Executed Before Each Test
@@ -306,7 +419,7 @@ public class CustomerValidationJobTest {
      * Validates that the customer processor correctly identifies and filters
      * customers with invalid SSN formats including:
      * - Non-numeric characters (e.g., "12A456789")
-     * - Wrong length (e.g., "12345678", "1234567890")
+     * - Wrong length (e.g., "12345678", "123456789")
      * - All zeros pattern (e.g., "000000000")
      * - Reserved 666 prefix (e.g., "666123456")
      * - All nines pattern (e.g., "999999999")
@@ -335,16 +448,16 @@ public class CustomerValidationJobTest {
     public void testInvalidSSNDetection() throws Exception {
         // Given: Customers with various invalid SSN formats
         List<Customer> customersWithInvalidSSN = List.of(
-                // Non-numeric SSN
-                createCustomerBuilder(1L).custSsn("12A456789").build(),
+                // Non-numeric SSN (truncated to fit database constraint)
+                createCustomerBuilder(1L).custSsn("12A45678").build(),
                 // Wrong length (too short)
                 createCustomerBuilder(2L).custSsn("12345678").build(),
-                // Wrong length (too long)
-                createCustomerBuilder(3L).custSsn("1234567890").build(),
                 // All zeros (invalid pattern)
-                createCustomerBuilder(4L).custSsn("000000000").build(),
+                createCustomerBuilder(3L).custSsn("000000000").build(),
                 // Reserved 666 prefix
-                createCustomerBuilder(5L).custSsn("666123456").build()
+                createCustomerBuilder(4L).custSsn("666123456").build(),
+                // All nines (test pattern)
+                createCustomerBuilder(5L).custSsn("999999999").build()
         );
         customerRepository.saveAll(customersWithInvalidSSN);
 
@@ -461,14 +574,14 @@ public class CustomerValidationJobTest {
     @Test
     @DisplayName("Should detect and filter customers with invalid phone number formats")
     public void testInvalidPhoneNumberDetection() throws Exception {
-        // Given: Customers with invalid phone numbers
+        // Given: Customers with invalid phone numbers (within database constraint but invalid for business logic)
         List<Customer> customersWithInvalidPhone = List.of(
-                // Phone number too long (exceeds 15 characters)
-                createCustomerBuilder(1L).custPhoneNum1("1234567890123456").build(),
-                // Phone number with invalid characters
-                createCustomerBuilder(2L).custPhoneNum1("123-456-ABCD").build(),
+                // Phone number with invalid characters (letters)
+                createCustomerBuilder(1L).custPhoneNum1("123-456-ABCD").build(),
                 // Phone number with no digits
-                createCustomerBuilder(3L).custPhoneNum1("---()---()").build()
+                createCustomerBuilder(2L).custPhoneNum1("---()---()").build(),
+                // Phone number at max length but all formatting characters
+                createCustomerBuilder(3L).custPhoneNum1("---------------").build()
         );
         customerRepository.saveAll(customersWithInvalidPhone);
 
@@ -723,9 +836,9 @@ public class CustomerValidationJobTest {
         allCustomers.addAll(createValidCustomers(10));
         
         // Add 5 invalid customers with different validation failures
-        allCustomers.add(createCustomerBuilder(100L).custSsn("INVALID").build()); // Invalid SSN
+        allCustomers.add(createCustomerBuilder(100L).custSsn("INVALID1").build()); // Invalid SSN (letters)
         allCustomers.add(createCustomerBuilder(101L).custAddrLine1(null).build()); // Missing address
-        allCustomers.add(createCustomerBuilder(102L).custPhoneNum1("1234567890123456").build()); // Invalid phone
+        allCustomers.add(createCustomerBuilder(102L).custPhoneNum1("123-456-ABCD").build()); // Invalid phone (letters)
         allCustomers.add(createCustomerBuilder(103L).custFicoCreditScore(999).build()); // FICO out of range
         allCustomers.add(createCustomerBuilder(104L).custDobYyyyMmDd(LocalDate.now().plusDays(1)).build()); // Future DOB
         
@@ -856,9 +969,11 @@ public class CustomerValidationJobTest {
         List<Customer> customers = new ArrayList<>();
         customers.addAll(createValidCustomers(20));
         
-        // Add 10 invalid customers with various failures
+        // Add 10 invalid customers with various failures (alternate between SSN patterns that fit in 9 chars)
         for (int i = 1; i <= 10; i++) {
-            customers.add(createCustomerBuilder(100L + i).custSsn("INVALID" + i).build());
+            // Use short invalid SSN patterns that fit in VARCHAR(9) database constraint
+            String invalidSsn = (i % 2 == 0) ? "000000000" : "999999999";
+            customers.add(createCustomerBuilder(100L + i).custSsn(invalidSsn).build());
         }
         
         customerRepository.saveAll(customers);
