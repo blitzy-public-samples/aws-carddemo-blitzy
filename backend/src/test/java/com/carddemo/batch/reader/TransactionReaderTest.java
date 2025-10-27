@@ -610,7 +610,6 @@ public class TransactionReaderTest {
         LocalDateTime day1Start = LocalDateTime.of(2024, 1, 15, 0, 0);
         LocalDateTime day2Start = LocalDateTime.of(2024, 1, 16, 0, 0);
         LocalDateTime day3Start = LocalDateTime.of(2024, 1, 17, 0, 0);
-        LocalDateTime day3End = LocalDateTime.of(2024, 1, 17, 23, 59, 59);
 
         // Create 10 transactions for each day
         createTestTransactionsForDate(10, day1Start);
@@ -618,8 +617,10 @@ public class TransactionReaderTest {
         createTestTransactionsForDate(10, day3Start);
 
         // Act: Query transactions for day 2 only
+        // Note: Between is inclusive on both ends, so use end of day 2 (23:59:59)
+        LocalDateTime day2End = day2Start.withHour(23).withMinute(59).withSecond(59);
         List<Transaction> day2Transactions = transactionRepository
-                .findByTransOrigTsBetween(day2Start, day3Start);
+                .findByTransOrigTsBetween(day2Start, day2End);
 
         // Assert: Verify only day 2 transactions returned
         assertThat(day2Transactions).hasSize(10);
@@ -637,8 +638,8 @@ public class TransactionReaderTest {
      * 
      * Validates:
      * - Inclusive start date
-     * - Exclusive end date
-     * - Edge case: start date = end date returns no records
+     * - Inclusive end date (Spring Data JPA Between is inclusive on both ends)
+     * - Transactions before and after range are excluded
      */
     @Test
     void testDateRangeBoundaryConditions() throws Exception {
@@ -656,6 +657,7 @@ public class TransactionReaderTest {
         Transaction transAfter = createSingleTransaction("TX005", endDate.plusMinutes(1));
 
         // Act: Query with date range
+        // Note: Spring Data JPA Between is inclusive on both ends
         List<Transaction> results = transactionRepository
                 .findByTransOrigTsBetween(startDate, endDate);
 
@@ -670,8 +672,11 @@ public class TransactionReaderTest {
         // Should include transactions within range
         assertThat(resultIds).contains("TX003");
         
-        // Should exclude end (exclusive) and transactions after
-        assertThat(resultIds).doesNotContain("TX004", "TX005");
+        // Should include end (inclusive - Between is inclusive on both ends)
+        assertThat(resultIds).contains("TX004");
+        
+        // Should exclude transactions after end
+        assertThat(resultIds).doesNotContain("TX005");
         
         // Should exclude transactions before range
         assertThat(resultIds).doesNotContain("TX001");
@@ -883,8 +888,8 @@ public class TransactionReaderTest {
                 .acctCurrBal(BigDecimal.valueOf(5000.00))
                 .acctCreditLimit(BigDecimal.valueOf(10000.00))
                 .acctCashCreditLimit(BigDecimal.valueOf(2000.00))
-                .acctOpenDate(java.sql.Date.valueOf(LocalDate.of(2020, 1, 1)))
-                .acctExpirationDate(java.sql.Date.valueOf(LocalDate.of(2025, 12, 31)))
+                .acctOpenDate(LocalDate.of(2020, 1, 1))
+                .acctExpirationDate(LocalDate.of(2025, 12, 31))
                 .build();
         accountRepository.save(account);
 
@@ -892,11 +897,9 @@ public class TransactionReaderTest {
         Card card = Card.builder()
                 .cardNum(TEST_CARD_NUM)
                 .cardAcctId(TEST_ACCOUNT_ID)
-                .cardCardmemberId(1000000001L)
-                .cardStatus("Y")
+                .cardStatus("A")
                 .cardEmbossedName("TEST CARDHOLDER")
-                .cardExpirationDate(java.sql.Date.valueOf(LocalDate.of(2025, 12, 31)))
-                .cardActiveDate(java.sql.Date.valueOf(LocalDate.of(2020, 1, 1)))
+                .cardExpirationDate(LocalDate.of(2025, 12, 31))
                 .build();
         cardRepository.save(card);
     }
@@ -921,7 +924,7 @@ public class TransactionReaderTest {
                     .transSource("POS")
                     .transDesc("Test Transaction " + (i + 1))
                     .transAmt(BigDecimal.valueOf(100.00 + i))
-                    .transMerchantId(String.format("M%08d", i % 100))
+                    .transMerchantId((long)(i % 100))
                     .transMerchantName("Test Merchant " + (i % 100))
                     .transMerchantCity("Test City")
                     .transMerchantZip("12345")
@@ -958,7 +961,7 @@ public class TransactionReaderTest {
                     .transSource("POS")
                     .transDesc("Transaction for " + baseDateTime.toLocalDate())
                     .transAmt(BigDecimal.valueOf(50.00 + i))
-                    .transMerchantId(String.format("M%08d", i))
+                    .transMerchantId((long)i)
                     .transMerchantName("Test Merchant")
                     .transMerchantCity("Test City")
                     .transMerchantZip("12345")
@@ -988,7 +991,7 @@ public class TransactionReaderTest {
                 .transSource("POS")
                 .transDesc("Single test transaction")
                 .transAmt(BigDecimal.valueOf(100.00))
-                .transMerchantId("M00000001")
+                .transMerchantId(1L)
                 .transMerchantName("Test Merchant")
                 .transMerchantCity("Test City")
                 .transMerchantZip("12345")
