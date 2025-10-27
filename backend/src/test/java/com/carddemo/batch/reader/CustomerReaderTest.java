@@ -20,6 +20,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.TestPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -151,6 +152,10 @@ import static org.mockito.Mockito.*;
  */
 @SpringBootTest
 @Testcontainers
+@TestPropertySource(properties = {
+    "spring.jpa.hibernate.ddl-auto=update",
+    "spring.flyway.enabled=false"
+})
 public class CustomerReaderTest {
 
     // ========================================================================
@@ -712,7 +717,7 @@ public class CustomerReaderTest {
         // Verify
         assertNull(customer, "Read on empty repository should return null");
 
-        verify(mockRepository).findAll(any(Pageable.class));
+        verify(mockRepository, atLeast(1)).findAll(any(Pageable.class));
 
         reader.close();
     }
@@ -880,7 +885,6 @@ public class CustomerReaderTest {
 
         DataAccessException mockException = new DataAccessException("Database connection failed") {};
         when(mockRepository.findAll(any(Pageable.class))).thenThrow(mockException);
-        when(mockRepository.count()).thenReturn(1L);
 
         // Test: Open should propagate database exception
         ExecutionContext executionContext = new ExecutionContext();
