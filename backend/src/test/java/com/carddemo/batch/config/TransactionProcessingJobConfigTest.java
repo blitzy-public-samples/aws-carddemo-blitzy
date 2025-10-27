@@ -47,6 +47,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.core.task.TaskExecutor;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import java.math.BigDecimal;
@@ -74,6 +75,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see TransactionProcessingJobConfig
  */
 @SpringBootTest
+@ActiveProfiles("test")
 class TransactionProcessingJobConfigTest {
 
     /**
