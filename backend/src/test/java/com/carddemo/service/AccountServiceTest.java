@@ -65,6 +65,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.lenient;
 
 /**
  * Comprehensive unit test for AccountService using Mockito for dependency mocking.
@@ -701,20 +702,17 @@ public class AccountServiceTest {
      * Test finding accounts by status.
      * 
      * COBOL equivalent: COACTVWC.cbl filtering accounts by ACCT-ACTIVE-STATUS
+     * Note: This test verifies the repository method exists and can be called correctly.
+     * A full service-layer test would require findAccountsByStatus() method in AccountService.
      */
     @Test
-    @DisplayName("Find Accounts By Status - Returns Filtered List")
+    @DisplayName("Find Accounts By Status - Repository Method Verification")
     void testFindAccountsByStatus() {
         // Arrange
         List<Account> activeAccounts = Arrays.asList(testAccount);
         when(mockAccountRepository.findByAcctActiveStatus("Y")).thenReturn(activeAccounts);
 
-        // Note: This test would require a method in AccountService that isn't explicitly shown
-        // in the provided code. However, based on the repository having this method,
-        // we can verify the repository call pattern
-        
-        // Verify repository method exists
-        when(mockAccountRepository.findByAcctActiveStatus("Y")).thenReturn(activeAccounts);
+        // Act - Call repository method directly for verification
         List<Account> result = mockAccountRepository.findByAcctActiveStatus("Y");
 
         // Assert
@@ -722,7 +720,8 @@ public class AccountServiceTest {
         assertEquals(1, result.size(), "Should return one active account");
         assertEquals("Y", result.get(0).getAcctActiveStatus(), "Account should be active");
 
-        verify(mockAccountRepository, times(2)).findByAcctActiveStatus("Y");
+        // Verify repository method was called once
+        verify(mockAccountRepository, times(1)).findByAcctActiveStatus("Y");
     }
 
     // ========== Date Handling Tests (PIC X(10) YYYY-MM-DD → LocalDate) ==========
@@ -940,7 +939,8 @@ public class AccountServiceTest {
         when(mockAccountRepository.findById(88888888888L)).thenReturn(Optional.empty());
         doNothing().when(mockValidationService).validateCreditLimit(any(BigDecimal.class));
         doNothing().when(mockValidationService).validateAmount(any(BigDecimal.class));
-        doNothing().when(mockValidationService).validateMandatoryField(anyString(), anyString());
+        // Use lenient() for validateMandatoryField as it may be called with "Y" (default) or null
+        lenient().doNothing().when(mockValidationService).validateMandatoryField(anyString(), anyString());
         doNothing().when(mockValidationService).validateDate(any(LocalDate.class));
         when(mockAccountRepository.save(any(Account.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
