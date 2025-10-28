@@ -158,8 +158,11 @@ public class TransactionProcessingJobTest {
     private static final Long TEST_ACCOUNT_ID_2 = 1000000002L;
     private static final Long TEST_ACCOUNT_ID_3 = 1000000003L;
     private static final Long TEST_CUSTOMER_ID = 9000000001L;
-    private static final String TRANSACTION_TYPE_DEBIT = "DB";
-    private static final String TRANSACTION_TYPE_CREDIT = "CR";
+    // Transaction type codes: numeric per TransactionService.java
+    // Debit: 01=Purchase, 02=Cash Advance, 03=Balance Transfer, 05=Fee, 06=Interest, 08=Debit Adj
+    // Credit: 04=Payment, 07=Credit Adjustment
+    private static final String TRANSACTION_TYPE_DEBIT = "01";  // Purchase (debit)
+    private static final String TRANSACTION_TYPE_CREDIT = "04"; // Payment (credit)
     private static final Integer TRANSACTION_CATEGORY_PURCHASE = 5010;
     private static final Integer TRANSACTION_CATEGORY_PAYMENT = 5020;
 
@@ -585,13 +588,21 @@ public class TransactionProcessingJobTest {
     /**
      * Test credit limit enforcement during transaction posting.
      * Validates that transactions exceeding credit limit are rejected.
+     * 
+     * Batch processing uses cycle-based credit limit validation (CBTRN02C.cbl):
+     * COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT
+     * IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL THEN accept ELSE reject
      */
     @Test
     public void testCreditLimitEnforcement() throws Exception {
-        // Arrange: Account with low credit limit
+        // Arrange: Account with existing cycle activity near credit limit
         BigDecimal initialBalance = new BigDecimal("4500.00");
         BigDecimal creditLimit = new BigDecimal("5000.00");
         Account account = createTestAccount(TEST_ACCOUNT_ID_1, initialBalance, creditLimit);
+        // Set cycle credit to represent $4500 in purchases already made this billing cycle
+        // This simulates mid-cycle state where customer has used most of their credit
+        account.setAcctCurrCycCredit(new BigDecimal("4500.00"));
+        account.setAcctCurrCycDebit(BigDecimal.ZERO);
         accountRepository.save(account);
 
         Card card = createTestCard(TEST_CARD_NUMBER_1, TEST_ACCOUNT_ID_1);
@@ -600,11 +611,13 @@ public class TransactionProcessingJobTest {
         CardAccountXref xref = createTestXref(TEST_CARD_NUMBER_1, TEST_ACCOUNT_ID_1);
         cardAccountXrefRepository.save(xref);
 
-        // Transaction that would exceed credit limit: 4500 + 600 = 5100 > 5000
+        // Transaction that would exceed credit limit using cycle formula:
+        // cycleCredit - cycleDebit + transaction = 4500 - 0 + 600 = 5100 > 5000 limit → REJECT
         Transaction exceedingTrans = createTestTransaction("TXN001", TEST_CARD_NUMBER_1, 
                 TRANSACTION_TYPE_DEBIT, TRANSACTION_CATEGORY_PURCHASE, new BigDecimal("600.00"));
         
-        // Transaction within limit
+        // Transaction within limit using cycle formula:
+        // cycleCredit - cycleDebit + transaction = 4500 - 0 + 400 = 4900 < 5000 limit → ACCEPT
         Transaction validTrans = createTestTransaction("TXN002", TEST_CARD_NUMBER_1, 
                 TRANSACTION_TYPE_DEBIT, TRANSACTION_CATEGORY_PURCHASE, new BigDecimal("400.00"));
         
@@ -625,9 +638,14 @@ public class TransactionProcessingJobTest {
 
         // Verify only valid transaction was posted
         Account updatedAccount = accountRepository.findById(TEST_ACCOUNT_ID_1).orElseThrow();
-        // Expected: 4500.00 + 400.00 = 4900.00 (exceeding transaction rejected)
+        // Expected balance: 4500.00 (initial) + 400.00 (valid transaction) = 4900.00
+        // Exceeding transaction (600.00) was rejected by cycle-based credit limit check
         BigDecimal expectedBalance = new BigDecimal("4500.00").add(new BigDecimal("400.00"));
         assertThat(updatedAccount.getAcctCurrBal()).isEqualByComparingTo(expectedBalance);
+        
+        // Verify cycle credit was updated only for accepted transaction
+        BigDecimal expectedCycleCredit = new BigDecimal("4500.00").add(new BigDecimal("400.00"));
+        assertThat(updatedAccount.getAcctCurrCycCredit()).isEqualByComparingTo(expectedCycleCredit);
     }
 
     /**
