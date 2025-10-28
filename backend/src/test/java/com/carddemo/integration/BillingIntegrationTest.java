@@ -58,6 +58,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -66,6 +67,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -114,6 +116,7 @@ import static org.hamcrest.Matchers.*;
  * @see com.carddemo.service.BillingService
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles("integration-test")
 @Testcontainers
 public class BillingIntegrationTest {
 
@@ -250,14 +253,13 @@ public class BillingIntegrationTest {
         // Create test card linked to account and customer
         // Replicates COBOL CARD-RECORD from CVACT02Y.cpy
         // Required for transactions (trans_card_num references card.card_num)
+        // Note: Customer ID is tracked in CardAccountXref, not directly in Card entity
         Card card = Card.builder()
                 .cardNum(testCardNum)
                 .cardAcctId(testAccountId)
-                .cardCardmemberId(testCustomerId)
-                .cardStatus("Y") // Active card
+                .cardStatus("A") // Active card (A = Active)
                 .cardEmbossedName("JOHN DOE")
                 .cardExpirationDate(LocalDate.now().plusYears(2))
-                .cardActiveDate(LocalDate.now().minusYears(1))
                 .build();
         cardRepository.save(card);
 
@@ -295,10 +297,10 @@ public class BillingIntegrationTest {
                 .transTypeCd("01") // Debit/Purchase
                 .transCatCd(1) // Category 1
                 .transAmt(new BigDecimal("150.50").setScale(SCALE, ROUNDING))
-                .transOrigTs(LocalDateTime.now().minusDays(30))
-                .transProcTs(LocalDateTime.now().minusDays(30))
+                .transOrigTs(Timestamp.valueOf(LocalDateTime.now().minusDays(30)))
+                .transProcTs(Timestamp.valueOf(LocalDateTime.now().minusDays(30)))
                 .transDesc("GROCERY STORE")
-                .transMerchantId("MER000001")
+                .transMerchantId(1L)
                 .transMerchantName("Best Groceries")
                 .transMerchantCity("Los Angeles")
                 .transMerchantZip("90001")
@@ -312,10 +314,10 @@ public class BillingIntegrationTest {
                 .transTypeCd("01") // Debit/Purchase
                 .transCatCd(2) // Category 2
                 .transAmt(new BigDecimal("50.25").setScale(SCALE, ROUNDING))
-                .transOrigTs(LocalDateTime.now().minusDays(25))
-                .transProcTs(LocalDateTime.now().minusDays(25))
+                .transOrigTs(Timestamp.valueOf(LocalDateTime.now().minusDays(25)))
+                .transProcTs(Timestamp.valueOf(LocalDateTime.now().minusDays(25)))
                 .transDesc("GAS STATION")
-                .transMerchantId("MER000002")
+                .transMerchantId(2L)
                 .transMerchantName("Quick Gas")
                 .transMerchantCity("Los Angeles")
                 .transMerchantZip("90002")
@@ -329,10 +331,10 @@ public class BillingIntegrationTest {
                 .transTypeCd("01") // Debit/Purchase
                 .transCatCd(3) // Category 3
                 .transAmt(new BigDecimal("49.75").setScale(SCALE, ROUNDING))
-                .transOrigTs(LocalDateTime.now().minusDays(20))
-                .transProcTs(LocalDateTime.now().minusDays(20))
+                .transOrigTs(Timestamp.valueOf(LocalDateTime.now().minusDays(20)))
+                .transProcTs(Timestamp.valueOf(LocalDateTime.now().minusDays(20)))
                 .transDesc("RESTAURANT")
-                .transMerchantId("MER000003")
+                .transMerchantId(3L)
                 .transMerchantName("Fine Dining")
                 .transMerchantCity("Los Angeles")
                 .transMerchantZip("90003")
@@ -346,10 +348,10 @@ public class BillingIntegrationTest {
                 .transTypeCd("02") // Credit/Payment
                 .transCatCd(2) // Payment category
                 .transAmt(new BigDecimal("100.00").setScale(SCALE, ROUNDING))
-                .transOrigTs(LocalDateTime.now().minusDays(15))
-                .transProcTs(LocalDateTime.now().minusDays(15))
+                .transOrigTs(Timestamp.valueOf(LocalDateTime.now().minusDays(15)))
+                .transProcTs(Timestamp.valueOf(LocalDateTime.now().minusDays(15)))
                 .transDesc("BILL PAYMENT - ONLINE")
-                .transMerchantId("999999999")
+                .transMerchantId(999999999L)
                 .transMerchantName("BILL PAYMENT")
                 .transMerchantCity("N/A")
                 .transMerchantZip("N/A")
@@ -429,17 +431,17 @@ public class BillingIntegrationTest {
             .statusCode(200)
             .contentType(ContentType.JSON)
             // Validate account ID
-            .body("accountId", equalTo(testAccountId.intValue()))
+            .body("accountId", equalTo(testAccountId.longValue()))
             // Validate statement date is not null
             .body("statementDate", notNullValue())
             // Validate due date exists and is after statement date
             .body("dueDate", notNullValue())
             // Validate previous balance matches account current balance
-            .body("previousBalance", comparesEqualTo(new BigDecimal("1000.00")))
+            .body("previousBalance", equalTo(new BigDecimal("1000.00").floatValue()))
             // Validate new charges (sum of all purchases: 150.50 + 50.25 + 49.75 = 250.50)
-            .body("newCharges", comparesEqualTo(new BigDecimal("250.50")))
+            .body("newCharges", equalTo(new BigDecimal("250.50").floatValue()))
             // Validate payments (sum of all payments: 100.00)
-            .body("paymentsAndCredits", comparesEqualTo(new BigDecimal("100.00")))
+            .body("paymentsAndCredits", equalTo(new BigDecimal("100.00").floatValue()))
             // Validate new balance is greater than previous balance + charges - payments
             .body("newBalance", greaterThan(new BigDecimal("1150.00").floatValue()))
             // Validate minimum payment is at least the fixed minimum ($25.00)
@@ -447,7 +449,7 @@ public class BillingIntegrationTest {
             // Validate interest is charged (should be positive for positive balance)
             .body("interestCharged", greaterThanOrEqualTo(new BigDecimal("0.00").floatValue()))
             // Validate credit limit
-            .body("creditLimit", comparesEqualTo(new BigDecimal("5000.00")))
+            .body("creditLimit", equalTo(new BigDecimal("5000.00").floatValue()))
             // Validate available credit (should be credit limit - new balance)
             .body("availableCredit", notNullValue())
             // Validate annual percentage rate
@@ -491,11 +493,11 @@ public class BillingIntegrationTest {
             .statusCode(200)
             .contentType(ContentType.JSON)
             // Validate account ID
-            .body("accountId", equalTo(testAccountId.intValue()))
+            .body("accountId", equalTo(testAccountId.longValue()))
             // Validate new charges (sum of all purchases: 150.50 + 50.25 + 49.75 = 250.50)
-            .body("newCharges", comparesEqualTo(new BigDecimal("250.50")))
+            .body("newCharges", equalTo(new BigDecimal("250.50").floatValue()))
             // Validate payments are zero (no payment transactions)
-            .body("paymentsAndCredits", comparesEqualTo(new BigDecimal("0.00")))
+            .body("paymentsAndCredits", equalTo(new BigDecimal("0.00").floatValue()))
             // Validate new balance = previous + charges + interest
             .body("newBalance", greaterThan(new BigDecimal("1250.00").floatValue()))
             // Validate minimum payment calculated correctly
@@ -526,11 +528,11 @@ public class BillingIntegrationTest {
             .statusCode(200)
             .contentType(ContentType.JSON)
             // Validate account ID
-            .body("accountId", equalTo(testAccountId.intValue()))
+            .body("accountId", equalTo(testAccountId.longValue()))
             // Validate new charges
-            .body("newCharges", comparesEqualTo(new BigDecimal("250.50")))
+            .body("newCharges", equalTo(new BigDecimal("250.50").floatValue()))
             // Validate payments
-            .body("paymentsAndCredits", comparesEqualTo(new BigDecimal("100.00")))
+            .body("paymentsAndCredits", equalTo(new BigDecimal("100.00").floatValue()))
             // Validate new balance reflects net of charges and payments plus interest
             .body("newBalance", greaterThan(new BigDecimal("1150.00").floatValue()))
             // Validate minimum payment
@@ -569,19 +571,19 @@ public class BillingIntegrationTest {
             .statusCode(200)
             .contentType(ContentType.JSON)
             // Validate account ID
-            .body("accountId", equalTo(testAccountId.intValue()))
+            .body("accountId", equalTo(testAccountId.longValue()))
             // Validate previous balance is zero
-            .body("previousBalance", comparesEqualTo(new BigDecimal("0.00")))
+            .body("previousBalance", equalTo(new BigDecimal("0.00").floatValue()))
             // Validate new charges are zero
-            .body("newCharges", comparesEqualTo(new BigDecimal("0.00")))
+            .body("newCharges", equalTo(new BigDecimal("0.00").floatValue()))
             // Validate payments are zero
-            .body("paymentsAndCredits", comparesEqualTo(new BigDecimal("0.00")))
+            .body("paymentsAndCredits", equalTo(new BigDecimal("0.00").floatValue()))
             // Validate interest is zero (no balance to charge interest on)
-            .body("interestCharged", comparesEqualTo(new BigDecimal("0.00")))
+            .body("interestCharged", equalTo(new BigDecimal("0.00").floatValue()))
             // Validate new balance is zero
-            .body("newBalance", comparesEqualTo(new BigDecimal("0.00")))
+            .body("newBalance", equalTo(new BigDecimal("0.00").floatValue()))
             // Validate minimum payment is zero (no balance)
-            .body("minimumPaymentDue", comparesEqualTo(new BigDecimal("0.00")));
+            .body("minimumPaymentDue", equalTo(new BigDecimal("0.00").floatValue()));
     }
 
     /**
@@ -613,11 +615,11 @@ public class BillingIntegrationTest {
             .statusCode(200)
             .contentType(ContentType.JSON)
             // Validate account ID
-            .body("accountId", equalTo(testAccountId.intValue()))
+            .body("accountId", equalTo(testAccountId.longValue()))
             // Validate previous balance exceeds credit limit
-            .body("previousBalance", comparesEqualTo(new BigDecimal("5500.00")))
+            .body("previousBalance", equalTo(new BigDecimal("5500.00").floatValue()))
             // Validate credit limit
-            .body("creditLimit", comparesEqualTo(new BigDecimal("5000.00")))
+            .body("creditLimit", equalTo(new BigDecimal("5000.00").floatValue()))
             // Validate available credit is negative
             .body("availableCredit", lessThan(new BigDecimal("0.00").floatValue()));
     }
@@ -785,7 +787,7 @@ public class BillingIntegrationTest {
             .statusCode(200)
             .contentType(ContentType.JSON)
             // For balance $500, 3% = $15, so should return fixed minimum $25.00
-            .body("minimumPaymentDue", comparesEqualTo(new BigDecimal("25.00")));
+            .body("minimumPaymentDue", equalTo(new BigDecimal("25.00").floatValue()));
     }
 
     /**

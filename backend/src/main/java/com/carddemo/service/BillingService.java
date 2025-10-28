@@ -72,6 +72,8 @@ public class BillingService {
     private final AccountService accountService;
     private final TransactionService transactionService;
     private final ValidationService validationService;
+    private final com.carddemo.repository.CardRepository cardRepository;
+    private final com.carddemo.repository.TransactionRepository transactionRepository;
 
     // Constants for billing calculations (matching COBOL business rules)
     private static final BigDecimal MINIMUM_PAYMENT_FIXED = new BigDecimal("25.00");
@@ -376,25 +378,52 @@ public class BillingService {
     public List<TransactionDto> getStatementData(Long accountId, LocalDate startDate, LocalDate endDate) {
         log.debug("Getting statement data for account: {}, period: {} to {}", accountId, startDate, endDate);
 
-        // Note: In the full implementation, we would:
-        // 1. Get all cards associated with this account via CardService
-        // 2. For each card, retrieve transactions
-        // 3. Aggregate all transactions
-        
-        // For this implementation, we'll use a simplified approach
-        // since TransactionService works with card numbers
+        // Convert LocalDate to LocalDateTime for timestamp comparisons
+        java.time.LocalDateTime startTs = startDate.atStartOfDay();
+        java.time.LocalDateTime endTs = endDate.atTime(23, 59, 59);
         
         List<TransactionDto> allTransactions = new ArrayList<>();
         
         try {
-            // Get account to access any related card information
-            AccountDto account = accountService.getAccountById(accountId);
+            // Step 1: Get all cards associated with this account
+            List<com.carddemo.model.entity.Card> cards = cardRepository.findByCardAcctId(accountId);
+            log.debug("Found {} cards for account {}", cards.size(), accountId);
             
-            // In a real implementation, iterate through all cards for this account
-            // For now, we'll return an empty list as card association is handled elsewhere
-            // This matches the COBOL behavior where transactions are queried separately
+            // Step 2: For each card, retrieve transactions within the date range
+            for (com.carddemo.model.entity.Card card : cards) {
+                List<com.carddemo.model.entity.Transaction> cardTransactions = 
+                    transactionRepository.findByTransCardNumAndTransOrigTsBetween(
+                        card.getCardNum(), 
+                        startTs, 
+                        endTs
+                    );
+                
+                log.debug("Found {} transactions for card {}", cardTransactions.size(), card.getCardNum());
+                
+                // Convert Transaction entities to TransactionDto
+                for (com.carddemo.model.entity.Transaction transaction : cardTransactions) {
+                    TransactionDto dto = new TransactionDto();
+                    dto.setTransId(transaction.getTransId());
+                    dto.setTransCardNum(transaction.getTransCardNum());
+                    dto.setTransTypeCd(transaction.getTransTypeCd());
+                    dto.setTransCatCd(transaction.getTransCatCd());
+                    dto.setTransAmt(transaction.getTransAmt());
+                    // Convert Timestamp to LocalDateTime
+                    dto.setTransOrigTs(transaction.getTransOrigTs() != null ? 
+                        transaction.getTransOrigTs().toLocalDateTime() : null);
+                    dto.setTransProcTs(transaction.getTransProcTs() != null ? 
+                        transaction.getTransProcTs().toLocalDateTime() : null);
+                    dto.setTransDesc(transaction.getTransDesc());
+                    dto.setTransMerchantId(transaction.getTransMerchantId());
+                    dto.setTransMerchantName(transaction.getTransMerchantName());
+                    dto.setTransMerchantCity(transaction.getTransMerchantCity());
+                    dto.setTransMerchantZip(transaction.getTransMerchantZip());
+                    dto.setTransSource(transaction.getTransSource());
+                    allTransactions.add(dto);
+                }
+            }
             
-            log.debug("Retrieved {} transactions for account {} in period", allTransactions.size(), accountId);
+            log.debug("Retrieved {} total transactions for account {} in period", allTransactions.size(), accountId);
             
         } catch (DataNotFoundException e) {
             log.warn("Account not found: {}", accountId);
