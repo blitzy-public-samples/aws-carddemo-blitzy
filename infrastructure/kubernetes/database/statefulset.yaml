@@ -1,0 +1,226 @@
+# Kubernetes StatefulSet for PostgreSQL 16.x Database
+# Replaces VSAM KSDS file structures with cloud-native PostgreSQL
+# Supports 11 migrated datasets: ACCTFILE, CARDFILE, CUSTFILE, TRANSACT, XREFFILE,
+# DALYTRAN, TCATBAL, DISCGRP, TRANCATG, TRANTYPE, USRSEC
+#
+# Migration from: CardDemo mainframe VSAM datasets
+# Purpose: Persistent database storage for credit card management system
+# Performance target: Sub-10ms primary key lookups (matching VSAM key access)
+# Transaction support: ACID transactions replacing CICS SYNCPOINT
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: carddemo
+  labels:
+    app: postgres
+    component: database
+    tier: data
+    version: "16.6"
+spec:
+  serviceName: postgres-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+      component: database
+  template:
+    metadata:
+      labels:
+        app: postgres
+        component: database
+        tier: data
+        version: "16.6"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9187"
+    spec:
+      serviceAccountName: postgres
+      securityContext:
+        fsGroup: 999
+        runAsUser: 999
+        runAsNonRoot: true
+      
+      # Pod anti-affinity for high availability in multi-replica scenarios
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - postgres
+                topologyKey: kubernetes.io/hostname
+      
+      containers:
+        - name: postgres
+          image: postgres:16.6-alpine
+          imagePullPolicy: IfNotPresent
+          
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          
+          env:
+            # Database initialization
+            - name: POSTGRES_DB
+              value: "carddemo"
+            
+            # Credentials from Kubernetes secrets
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: username
+            
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            
+            # PostgreSQL configuration for optimal performance
+            - name: POSTGRES_INITDB_ARGS
+              value: "--encoding=UTF8 --locale=en_US.utf8"
+            
+            - name: PGDATA
+              value: "/var/lib/postgresql/data/pgdata"
+            
+            # Performance tuning parameters
+            - name: POSTGRES_MAX_CONNECTIONS
+              value: "200"
+            
+            - name: POSTGRES_SHARED_BUFFERS
+              value: "512MB"
+            
+            - name: POSTGRES_EFFECTIVE_CACHE_SIZE
+              value: "2GB"
+            
+            - name: POSTGRES_WORK_MEM
+              value: "16MB"
+            
+            - name: POSTGRES_MAINTENANCE_WORK_MEM
+              value: "128MB"
+          
+          # Resource limits and requests for production workload
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          
+          # Liveness probe - checks if PostgreSQL is alive
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          
+          # Readiness probe - checks if PostgreSQL is ready to accept connections
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - -e
+                - |
+                  exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1 -p 5432
+                  [ -f /var/lib/postgresql/data/pgdata/postmaster.pid ]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          
+          # Startup probe - allows for longer startup time
+          startupProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 30
+          
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            
+            - name: postgres-config
+              mountPath: /etc/postgresql/postgresql.conf
+              subPath: postgresql.conf
+              readOnly: true
+            
+            - name: postgres-init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            
+            - name: postgres-tmp
+              mountPath: /tmp
+            
+            - name: postgres-run
+              mountPath: /var/run/postgresql
+      
+      volumes:
+        # ConfigMap for PostgreSQL configuration
+        - name: postgres-config
+          configMap:
+            name: postgres-config
+            defaultMode: 0644
+        
+        # ConfigMap for initialization scripts
+        - name: postgres-init
+          configMap:
+            name: postgres-init-scripts
+            defaultMode: 0755
+        
+        # Temporary directory
+        - name: postgres-tmp
+          emptyDir: {}
+        
+        # Runtime directory
+        - name: postgres-run
+          emptyDir: {}
+  
+  # Persistent volume claim template
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+        labels:
+          app: postgres
+          component: database
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 100Gi
+  
+  # Update strategy
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+  
+  # Pod management policy for stable network identity
+  podManagementPolicy: OrderedReady
+  
+  # Revision history limit
+  revisionHistoryLimit: 10

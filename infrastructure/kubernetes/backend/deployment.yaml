@@ -1,0 +1,268 @@
+---
+# Kubernetes Deployment for CardDemo Backend Application
+# Converted from: IBM CICS transaction processing environment
+# Purpose: Manages backend Spring Boot 3.4.5 application pods replacing 15 CICS online programs
+#          and 11 batch programs with modern Java 21 REST API and Spring Batch services
+# Migration Context: This deployment orchestrates the cloud-native replacement of mainframe
+#                    CICS regions that previously hosted COBOL transaction processing programs
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: carddemo-backend
+  namespace: carddemo
+  labels:
+    app: carddemo-backend
+    component: backend
+    tier: backend
+    version: v1
+    environment: production
+  annotations:
+    description: "Backend Spring Boot application replacing CICS transaction processing"
+    migration.source: "IBM CICS TS - 15 online programs + 11 batch programs"
+    contact: "carddemo-team@example.com"
+    deployment.kubernetes.io/revision: "1"
+
+spec:
+  # High availability: 3 replicas for fault tolerance and load distribution
+  # Supports 10,000 TPS throughput requirement per Agent Action Plan section 0.1.1
+  replicas: 3
+  
+  # Selector to match pod labels
+  selector:
+    matchLabels:
+      app: carddemo-backend
+      tier: backend
+  
+  # Rolling update strategy for zero-downtime deployments
+  # Per Agent Action Plan section 0.3.1 and section 0.7.10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1          # Allow 1 additional pod during updates (total: 4 pods)
+      maxUnavailable: 0    # Ensure no pods are unavailable during updates (zero-downtime)
+  
+  # Minimum seconds a new pod must be ready before considering it available
+  minReadySeconds: 10
+  
+  # Revision history limit for rollback capability
+  revisionHistoryLimit: 10
+  
+  # Progress deadline: fail deployment if not progressing within 10 minutes
+  progressDeadlineSeconds: 600
+  
+  # Pod template specification
+  template:
+    metadata:
+      labels:
+        app: carddemo-backend
+        component: backend
+        tier: backend
+        version: v1
+        environment: production
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+        description: "Spring Boot pod replacing CICS online transaction and batch processing"
+    
+    spec:
+      # Service account for pod identity and RBAC
+      serviceAccountName: carddemo-backend
+      
+      # Security context for pod-level security settings
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      
+      # Container specification
+      containers:
+      - name: backend
+        # Container image: Spring Boot 3.4.5 application with Java 21 runtime
+        # Replaces: COBOL programs running in CICS TS environment
+        image: carddemo-backend:latest
+        imagePullPolicy: Always
+        
+        # Container port for REST API endpoints
+        # Replaces: CICS transaction IDs and program entry points
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        # Environment variables from ConfigMap
+        # Application configuration replacing CICS system definitions
+        envFrom:
+        - configMapRef:
+            name: carddemo-backend-config
+        
+        # Environment variables from Secrets
+        # Sensitive configuration replacing RACF security definitions
+        env:
+        # Database credentials (replacing VSAM file access)
+        - name: SPRING_DATASOURCE_URL
+          valueFrom:
+            secretKeyRef:
+              name: carddemo-secrets
+              key: database-url
+        - name: SPRING_DATASOURCE_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: carddemo-secrets
+              key: database-username
+        - name: SPRING_DATASOURCE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: carddemo-secrets
+              key: database-password
+        
+        # JWT token secret for authentication (replacing RACF)
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: carddemo-secrets
+              key: jwt-secret
+        - name: JWT_EXPIRATION
+          valueFrom:
+            secretKeyRef:
+              name: carddemo-secrets
+              key: jwt-expiration
+        
+        # Spring profiles
+        - name: SPRING_PROFILES_ACTIVE
+          value: "prod"
+        
+        # JVM memory settings optimized for container environment
+        # Ensures proper memory management for 10,000 TPS throughput
+        - name: JAVA_OPTS
+          value: "-Xms1024m -Xmx1536m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+        
+        # Application timezone
+        - name: TZ
+          value: "UTC"
+        
+        # Resource requests and limits
+        # Per Agent Action Plan section 0.3.1 and performance requirements section 0.7.7
+        # Sized to handle 10,000 TPS with sub-200ms response times
+        resources:
+          requests:
+            cpu: 500m          # Minimum CPU: 0.5 cores
+            memory: 1Gi        # Minimum memory: 1 GiB
+          limits:
+            cpu: 2000m         # Maximum CPU: 2 cores
+            memory: 2Gi        # Maximum memory: 2 GiB
+        
+        # Readiness probe: determines if pod is ready to accept traffic
+        # Per Agent Action Plan section 0.3.1
+        # Uses Spring Boot Actuator health endpoint
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30    # Wait 30s after container starts
+          periodSeconds: 10          # Check every 10 seconds
+          timeoutSeconds: 5          # Timeout after 5 seconds
+          successThreshold: 1        # 1 success marks pod as ready
+          failureThreshold: 3        # 3 failures marks pod as not ready
+        
+        # Liveness probe: determines if pod is alive and should be restarted
+        # Per Agent Action Plan section 0.3.1
+        # Uses Spring Boot Actuator health endpoint
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 60    # Wait 60s after container starts
+          periodSeconds: 30          # Check every 30 seconds
+          timeoutSeconds: 5          # Timeout after 5 seconds
+          successThreshold: 1        # 1 success marks pod as alive
+          failureThreshold: 3        # 3 failures triggers pod restart
+        
+        # Startup probe: protects slow-starting containers during initialization
+        # Gives Spring Boot application up to 5 minutes to start (10s * 30 = 300s)
+        startupProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 10    # Wait 10s after container starts
+          periodSeconds: 10          # Check every 10 seconds
+          timeoutSeconds: 5          # Timeout after 5 seconds
+          successThreshold: 1        # 1 success completes startup
+          failureThreshold: 30       # Allow up to 30 failures (5 minutes total)
+        
+        # Container security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # Spring Boot needs write access for temp files
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+        
+        # Volume mounts for temporary storage
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: spring-boot-tmp
+          mountPath: /app/tmp
+      
+      # Volumes
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: spring-boot-tmp
+        emptyDir: {}
+      
+      # Restart policy
+      restartPolicy: Always
+      
+      # DNS policy
+      dnsPolicy: ClusterFirst
+      
+      # Termination grace period: allow 30 seconds for graceful shutdown
+      # Ensures in-flight transactions complete before pod termination
+      terminationGracePeriodSeconds: 30
+      
+      # Affinity rules for pod distribution across nodes
+      # Ensures high availability by spreading replicas
+      affinity:
+        # Prefer to schedule pods on different nodes
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - carddemo-backend
+              topologyKey: kubernetes.io/hostname
+        
+        # Prefer to schedule pods in different availability zones
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 50
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - carddemo-backend
+              topologyKey: topology.kubernetes.io/zone
+      
+      # Tolerations for node taints (if any)
+      tolerations:
+      - key: "application"
+        operator: "Equal"
+        value: "carddemo"
+        effect: "NoSchedule"

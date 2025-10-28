@@ -1,0 +1,31 @@
+# Kubernetes Service for CardDemo Frontend Application
+# Converted from: Mainframe 3270 terminal access architecture
+# Purpose: Provide stable ClusterIP endpoint for frontend Nginx pods serving React SPA
+# Replaces: CICS terminal connectivity for 17 BMS screens
+#
+# This Service provides internal cluster networking for the frontend application,
+# enabling load balancing across multiple frontend pod replicas and providing
+# a stable DNS name (frontend-service.carddemo.svc.cluster.local) for internal access.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: carddemo
+  labels:
+    app: carddemo-frontend
+    tier: frontend
+    component: web-server
+  annotations:
+    description: "ClusterIP service for CardDemo frontend React SPA"
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "false"
+spec:
+  type: ClusterIP
+  selector:
+    app: carddemo-frontend
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+    name: http
+  sessionAffinity: None

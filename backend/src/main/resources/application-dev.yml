@@ -1,0 +1,328 @@
+# ==============================================================================
+# Spring Boot Development Profile Configuration
+# ==============================================================================
+# This profile is activated with: --spring.profiles.active=dev
+# Purpose: Local development environment with verbose logging and relaxed settings
+# Database: Local PostgreSQL instance on localhost:5432
+# ==============================================================================
+
+spring:
+  # ============================================================================
+  # DataSource Configuration - Local PostgreSQL
+  # ============================================================================
+  datasource:
+    url: jdbc:postgresql://localhost:5432/carddemo
+    username: carddemo_dev
+    password: dev_password
+    driver-class-name: org.postgresql.Driver
+    
+    # HikariCP connection pool settings (relaxed for development)
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 2
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      auto-commit: false
+      pool-name: CardDemo-Dev-HikariCP
+
+  # ============================================================================
+  # JPA / Hibernate Configuration - Verbose SQL Logging
+  # ============================================================================
+  jpa:
+    # Show SQL statements in console (formatted for readability)
+    show-sql: true
+    properties:
+      hibernate:
+        # Format SQL for better readability
+        format_sql: true
+        # Show SQL comments in generated queries
+        use_sql_comments: true
+        # Log slow queries (queries taking more than 1000ms)
+        session.events.log.LOG_QUERIES_SLOWER_THAN_MS: 1000
+        # Detailed logging of JDBC parameters
+        type.descriptor.sql.BasicBinder: TRACE
+        # Disable second-level cache in development
+        cache.use_second_level_cache: false
+        cache.use_query_cache: false
+        # Validate schema on startup (useful for catching mapping errors)
+        hbm2ddl.auto: validate
+        # Use new ID generator mappings
+        id.new_generator_mappings: true
+        # JDBC batch size for inserts (useful for batch jobs)
+        jdbc.batch_size: 20
+        order_inserts: true
+        order_updates: true
+        # Dialect for PostgreSQL 16
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    
+    # Defer DataSource initialization until after Hibernate
+    defer-datasource-initialization: false
+    
+    # Open EntityManager in view for lazy loading in web requests
+    open-in-view: true
+
+  # ============================================================================
+  # Flyway Database Migration Configuration
+  # ============================================================================
+  flyway:
+    enabled: true
+    # Clean database on validation errors (DANGER: Only for development!)
+    clean-on-validation-error: true
+    # Baseline on migrate for existing database
+    baseline-on-migrate: true
+    baseline-version: 0
+    # Validate migrations on startup
+    validate-on-migrate: true
+    # Locations for migration scripts
+    locations: classpath:db/migration
+    # Placeholder replacement
+    placeholder-replacement: true
+    placeholders:
+      environment: development
+
+  # ============================================================================
+  # Caching Configuration - DISABLED for Development
+  # ============================================================================
+  cache:
+    type: none
+
+  # ============================================================================
+  # H2 Console Configuration (for quick database inspection if using H2)
+  # ============================================================================
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+      settings:
+        web-allow-others: true
+
+  # ============================================================================
+  # Spring Batch Configuration - Synchronous for Easier Debugging
+  # ============================================================================
+  batch:
+    job:
+      # Do NOT auto-start batch jobs on application startup
+      enabled: false
+    # Use synchronous task executor for easier debugging
+    jdbc:
+      initialize-schema: always
+      table-prefix: BATCH_
+
+  # ============================================================================
+  # Jackson JSON Configuration
+  # ============================================================================
+  jackson:
+    # Pretty-print JSON responses for easier debugging
+    serialization:
+      indent_output: true
+      write-dates-as-timestamps: false
+    # Handle Java 8 date/time types
+    deserialization:
+      adjust-dates-to-context-time-zone: false
+    default-property-inclusion: non_null
+    time-zone: UTC
+
+  # ============================================================================
+  # Web Server Configuration
+  # ============================================================================
+  web:
+    resources:
+      # Disable resource caching for hot-reload
+      cache:
+        period: 0
+
+  # ============================================================================
+  # DevTools Configuration (if spring-boot-devtools is on classpath)
+  # ============================================================================
+  devtools:
+    restart:
+      enabled: true
+      # Exclude static resources from triggering restart
+      exclude: static/**,public/**
+    livereload:
+      enabled: true
+
+# ==============================================================================
+# Server Configuration
+# ==============================================================================
+server:
+  port: 8080
+  # Detailed error messages in development
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: always
+    include-exception: true
+  # Tomcat configuration
+  tomcat:
+    # Access log for request debugging
+    accesslog:
+      enabled: true
+      pattern: '%h %l %u %t "%r" %s %b %D "%{Referer}i" "%{User-Agent}i"'
+      directory: logs
+      prefix: access_log
+      suffix: .log
+    # Thread configuration
+    threads:
+      max: 50
+      min-spare: 10
+
+# ==============================================================================
+# Logging Configuration - Verbose DEBUG Logging
+# ==============================================================================
+logging:
+  level:
+    # Root logging level
+    root: INFO
+    
+    # Spring Framework packages - DEBUG for detailed Spring lifecycle logging
+    org.springframework: DEBUG
+    org.springframework.web: DEBUG
+    org.springframework.security: DEBUG
+    org.springframework.boot: DEBUG
+    org.springframework.batch: DEBUG
+    
+    # Hibernate SQL logging - DEBUG for SQL statements
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+    org.hibernate.orm.jdbc.bind: TRACE
+    
+    # Connection pool logging
+    com.zaxxer.hikari: DEBUG
+    
+    # Flyway migration logging
+    org.flywaydb: DEBUG
+    
+    # Application packages - DEBUG for all CardDemo code
+    com.carddemo: DEBUG
+    
+    # Transaction management
+    org.springframework.transaction: DEBUG
+    org.springframework.orm.jpa: DEBUG
+    
+    # REST API request/response logging
+    org.springframework.web.servlet.mvc.method.annotation: TRACE
+    
+    # Reduce noise from some verbose libraries
+    org.apache.tomcat: INFO
+    org.apache.catalina: INFO
+    org.springframework.boot.autoconfigure: INFO
+
+  # Log pattern for console output
+  pattern:
+    console: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n'
+    file: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n'
+  
+  # Log file configuration
+  file:
+    name: logs/carddemo-dev.log
+    max-size: 10MB
+    max-history: 7
+    total-size-cap: 100MB
+
+# ==============================================================================
+# Management / Actuator Configuration - Fully Exposed for Development
+# ==============================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        # Expose ALL actuator endpoints in development
+        include: '*'
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always
+      show-components: always
+    shutdown:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+# ==============================================================================
+# Application-Specific Configuration
+# ==============================================================================
+carddemo:
+  # Security settings (relaxed for development)
+  security:
+    jwt:
+      secret: dev-secret-key-change-in-production-minimum-256-bits-for-hs256-algorithm
+      expiration-ms: 86400000  # 24 hours for development convenience
+      refresh-expiration-ms: 604800000  # 7 days
+    cors:
+      allowed-origins: 'http://localhost:3000,http://localhost:5173'
+      allowed-methods: 'GET,POST,PUT,DELETE,PATCH,OPTIONS'
+      allowed-headers: '*'
+      allow-credentials: true
+      max-age: 3600
+  
+  # Batch job configuration
+  batch:
+    # Run batch jobs synchronously in development for easier debugging
+    async-enabled: false
+    chunk-size: 100
+    # Thread pool size for parallel steps
+    thread-pool-size: 2
+  
+  # File processing configuration
+  file:
+    upload-dir: ./data/uploads
+    temp-dir: ./data/temp
+    max-file-size: 10485760  # 10MB
+  
+  # Development feature flags
+  features:
+    # Enable Swagger UI in development
+    swagger-enabled: true
+    # Enable detailed error responses
+    detailed-errors: true
+    # Enable test data generation endpoints
+    test-data-endpoints: true
+
+# ==============================================================================
+# SpringDoc OpenAPI / Swagger Configuration
+# ==============================================================================
+springdoc:
+  api-docs:
+    enabled: true
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: true
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+    display-request-duration: true
+    show-extensions: true
+    show-common-extensions: true
+  show-actuator: true
+
+# ==============================================================================
+# Development Notes
+# ==============================================================================
+# To use this profile:
+#   1. Ensure PostgreSQL is running on localhost:5432
+#   2. Create database: CREATE DATABASE carddemo;
+#   3. Create user: CREATE USER carddemo_dev WITH PASSWORD 'dev_password';
+#   4. Grant permissions: GRANT ALL PRIVILEGES ON DATABASE carddemo TO carddemo_dev;
+#   5. Run application: ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+#
+# Useful endpoints in development:
+#   - Application: http://localhost:8080
+#   - Swagger UI: http://localhost:8080/swagger-ui.html
+#   - H2 Console: http://localhost:8080/h2-console
+#   - Actuator: http://localhost:8080/actuator
+#   - Health Check: http://localhost:8080/actuator/health
+#
+# Database connection in H2 Console (if using PostgreSQL):
+#   JDBC URL: jdbc:postgresql://localhost:5432/carddemo
+#   User: carddemo_dev
+#   Password: dev_password
+# ==============================================================================

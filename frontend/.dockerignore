@@ -1,0 +1,67 @@
+# Docker ignore patterns for CardDemo Frontend React Application
+# Excludes unnecessary files from Docker build context for efficient builds and security
+# Per Agent Action Plan Section 0.4.16 - Frontend Application Configuration
+
+# Node.js Dependencies and Build Artifacts
+# Largest exclusion - prevents ~200MB+ of dependencies from being sent to Docker daemon
+node_modules/
+dist/
+build/
+.cache/
+coverage/
+.nyc_output/
+
+# IDE and Editor Configuration Files
+.idea/
+.vscode/
+.eclipse/
+*.swp
+*.swo
+.DS_Store
+
+# Version Control
+.git/
+.gitignore
+.gitattributes
+
+# Testing and Quality Tools Output
+coverage/
+.nyc_output/
+test-results/
+e2e-results/
+
+# Logs and Temporary Files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+tmp/
+temp/
+
+# Local Configuration and Secrets
+# These files may contain sensitive information
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*.local
+*.key
+*.pem
+
+# Documentation (optional - can be included if needed in container)
+README.md
+docs/
+
+# Keep these files for Docker build:
+# - src/ (source code)
+# - public/ (static assets)
+# - package.json (NPM package definition)
+# - package-lock.json (dependency lock file)
+# - tsconfig.json (TypeScript configuration)
+# - vite.config.ts (Vite build configuration)
+# - .eslintrc.json (ESLint rules for build-time linting)
+# - .prettierrc (Prettier formatting)
+# - Dockerfile (Docker image definition)

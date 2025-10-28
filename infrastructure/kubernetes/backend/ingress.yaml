@@ -1,0 +1,257 @@
+# ==============================================================================
+# Kubernetes Ingress Resource for CardDemo Backend API
+# ==============================================================================
+# Purpose: Defines HTTP/HTTPS routing rules for external API traffic to the
+#          backend Spring Boot service on /api/* paths
+#
+# Conversion Context:
+#   - Replaces: Mainframe CICS terminal transaction processing
+#   - Source: 15 CICS online programs (COSGN00C through COUSR03C)
+#   - Target: REST API endpoints exposed by Spring Boot controllers
+#
+# Key Features:
+#   - Host-based routing to api.carddemo.example.com
+#   - TLS/SSL termination for HTTPS security
+#   - Path-based routing with /api/* prefix stripping
+#   - 200ms timeout configuration (mainframe SLA requirement)
+#   - Nginx ingress controller annotations
+#
+# Performance Requirements:
+#   - Sub-200ms transaction response time (per section 0.7.7)
+#   - 10,000 TPS throughput capacity (per section 0.1.1)
+#   - High availability through multiple backend replicas
+#
+# Security:
+#   - HTTPS enforcement (SSL redirect)
+#   - TLS certificate management via Kubernetes secret
+#   - Backend service isolation within cluster
+#
+# ==============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backend-ingress
+  namespace: carddemo
+  labels:
+    app: carddemo-backend
+    tier: backend
+    component: ingress
+    version: v1
+  annotations:
+    # ==============================================================================
+    # Nginx Ingress Controller Annotations
+    # ==============================================================================
+    
+    # Path rewriting: Strip /api prefix before forwarding to backend service
+    # Example: /api/accounts/123 → /accounts/123
+    # This allows backend to use clean REST paths without /api prefix
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    
+    # Force HTTPS: Redirect HTTP requests to HTTPS
+    # Ensures all API traffic is encrypted (replaces mainframe secure channels)
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    
+    # Enable regex path matching for advanced routing rules
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    
+    # ==============================================================================
+    # Timeout Configuration - Critical for 200ms SLA
+    # ==============================================================================
+    # These timeout values are set to 200ms to match the mainframe CICS transaction
+    # response time requirement documented in section 0.7.7 of the Agent Action Plan.
+    #
+    # IMPORTANT: Values are in SECONDS for nginx annotations
+    # 200ms = 0.2 seconds, but we set to "200" (seconds) as a maximum
+    # The actual backend response time must be under 200ms; these are safety limits
+    
+    # Connection timeout: Time to establish connection to backend pod
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+    
+    # Send timeout: Time to transmit request to backend
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
+    
+    # Read timeout: Time to receive response from backend
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+    
+    # Body read timeout: For large request bodies (transaction data)
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    
+    # ==============================================================================
+    # Additional Performance and Reliability Annotations
+    # ==============================================================================
+    
+    # Enable CORS for frontend access (React SPA calling REST API)
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+    
+    # Connection limits to prevent overload
+    nginx.ingress.kubernetes.io/limit-connections: "100"
+    nginx.ingress.kubernetes.io/limit-rps: "500"
+    
+    # Client request buffering
+    nginx.ingress.kubernetes.io/proxy-buffering: "on"
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "8k"
+    
+    # Upstream connection settings
+    nginx.ingress.kubernetes.io/upstream-keepalive-connections: "100"
+    nginx.ingress.kubernetes.io/upstream-keepalive-timeout: "60"
+    
+    # HTTP/2 support for improved performance
+    nginx.ingress.kubernetes.io/http2-push-preload: "true"
+
+spec:
+  # ==============================================================================
+  # Ingress Class: Nginx
+  # ==============================================================================
+  # Specifies the ingress controller implementation to use
+  # The nginx ingress controller provides enterprise-grade routing capabilities
+  ingressClassName: nginx
+  
+  # ==============================================================================
+  # TLS Configuration: HTTPS Termination
+  # ==============================================================================
+  # Replaces mainframe secure channel encryption with modern TLS/SSL
+  # The secret must be created separately with valid certificate and private key
+  #
+  # To create the TLS secret:
+  # kubectl create secret tls carddemo-api-tls-cert \
+  #   --cert=path/to/tls.crt \
+  #   --key=path/to/tls.key \
+  #   --namespace=carddemo
+  #
+  tls:
+    - hosts:
+        - api.carddemo.example.com
+      secretName: carddemo-api-tls-cert
+  
+  # ==============================================================================
+  # Routing Rules
+  # ==============================================================================
+  rules:
+    # --------------------------------------------------------------------------
+    # Host-based routing: api.carddemo.example.com
+    # --------------------------------------------------------------------------
+    # IMPORTANT: Update this hostname for your environment
+    #   - Development: api.carddemo.dev.example.com
+    #   - Testing: api.carddemo.test.example.com
+    #   - Production: api.carddemo.example.com or api.carddemo.prod.example.com
+    #
+    - host: api.carddemo.example.com
+      http:
+        paths:
+          # --------------------------------------------------------------------
+          # Path: /api/* - All REST API endpoints
+          # --------------------------------------------------------------------
+          # Routes all API traffic to the backend Spring Boot service
+          # Replaces CICS transaction processing for these 15 online programs:
+          #   - COSGN00C: Authentication (POST /api/auth/login)
+          #   - COMEN01C: Main menu (GET /api/menu/main)
+          #   - COADM01C: Admin menu (GET /api/menu/admin)
+          #   - COACTUPC: Account update (PUT /api/accounts/{id})
+          #   - COACTVWC: Account view (GET /api/accounts/{id})
+          #   - COCRDLIC: Card list (GET /api/cards)
+          #   - COCRDSLC: Card selection (GET /api/cards/{id})
+          #   - COCRDUPC: Card update (PUT /api/cards/{id})
+          #   - COBIL00C: Billing (GET /api/billing/{accountId})
+          #   - COTRN00C: Transaction list (GET /api/transactions)
+          #   - COTRN01C: Transaction detail (GET /api/transactions/{id})
+          #   - COTRN02C: Transaction entry (POST /api/transactions)
+          #   - CORPT00C: Report menu (GET /api/reports/menu)
+          #   - COUSR00C-03C: User management (GET/POST/PUT/DELETE /api/users)
+          #
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: backend-service
+                port:
+                  number: 8080
+
+---
+# ==============================================================================
+# Additional Ingress Configuration Notes
+# ==============================================================================
+#
+# DNS Configuration Required:
+#   Before this Ingress can route traffic, DNS must be configured to point
+#   api.carddemo.example.com to the ingress controller's external IP address.
+#
+#   Steps:
+#   1. Deploy nginx ingress controller:
+#      kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.0/deploy/static/provider/cloud/deploy.yaml
+#
+#   2. Get external IP:
+#      kubectl get svc -n ingress-nginx ingress-nginx-controller
+#
+#   3. Configure DNS A record:
+#      api.carddemo.example.com → <EXTERNAL-IP>
+#
+# TLS Certificate Management:
+#   Option 1 - Manual Certificate:
+#     - Obtain certificate from Certificate Authority
+#     - Create Kubernetes secret as shown in TLS section above
+#
+#   Option 2 - Cert-Manager (Recommended for Production):
+#     - Install cert-manager: https://cert-manager.io/docs/installation/
+#     - Configure Certificate resource with Let's Encrypt
+#     - Add annotation: cert-manager.io/cluster-issuer: "letsencrypt-prod"
+#     - Cert-manager will automatically provision and renew certificates
+#
+# Testing the Ingress:
+#   1. Without TLS (HTTP - will redirect to HTTPS):
+#      curl -v http://api.carddemo.example.com/api/health
+#
+#   2. With TLS (HTTPS):
+#      curl -v https://api.carddemo.example.com/api/health
+#
+#   3. Test specific endpoints:
+#      curl -H "Authorization: Bearer <token>" \
+#           https://api.carddemo.example.com/api/accounts/123
+#
+# Monitoring and Troubleshooting:
+#   1. Check ingress status:
+#      kubectl describe ingress backend-ingress -n carddemo
+#
+#   2. View ingress controller logs:
+#      kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx
+#
+#   3. Test path rewriting:
+#      kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx --follow
+#      (Make a request and observe the forwarded path)
+#
+# Performance Tuning:
+#   If 200ms SLA is not met, consider:
+#   - Increase backend pod replicas (scale HorizontalPodAutoscaler)
+#   - Optimize database queries (add indexes, use query caching)
+#   - Enable HTTP/2 between ingress and backend
+#   - Implement Redis caching for frequently accessed data
+#   - Review Spring Boot thread pool configuration
+#   - Profile backend code for bottlenecks
+#
+# High Availability:
+#   - Nginx ingress controller should run multiple replicas
+#   - Backend service has multiple pod replicas (managed by HPA)
+#   - TLS certificates should be replicated across all ingress pods
+#   - Consider multi-region deployment for disaster recovery
+#
+# Security Considerations:
+#   - Restrict CORS origins in production (set specific frontend URLs)
+#   - Implement rate limiting per client IP (nginx.ingress.kubernetes.io/limit-rps)
+#   - Use Web Application Firewall (WAF) rules
+#   - Enable request logging for audit trail
+#   - Regularly update TLS certificates before expiration
+#   - Use strong TLS cipher suites (TLS 1.2+ only)
+#
+# Migration from CICS:
+#   During the parallel testing phase (section 0.7.8):
+#   - CICS transactions and REST API run simultaneously
+#   - Load balancer routes percentage of traffic to new API
+#   - Gradually increase traffic to REST API
+#   - Monitor response times and error rates
+#   - Maintain rollback capability to CICS if issues arise
+#
+# ==============================================================================

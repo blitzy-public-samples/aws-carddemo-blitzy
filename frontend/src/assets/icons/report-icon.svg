@@ -1,0 +1,33 @@
+<!--
+  Report Icon SVG
+  
+  Converted from: app/bms/CORPT00.bms (Transaction Reports screen)
+  Purpose: Represents report generation and data analysis features
+  
+  Design: Document with bar chart/graph overlay
+  - Document outline represents reports and printable content
+  - Bar chart/graph represents data analysis and transaction reporting
+  - Clean, simple lines suitable for both light and dark themes
+  - Scalable design works at 16px, 24px, 32px, 48px
+  - Uses currentColor for dynamic theming via CSS
+  
+  Copyright Amazon.com, Inc. or its affiliates.
+  Licensed under the Apache License, Version 2.0
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Document/Report Base -->
+  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+  
+  <!-- Folded Corner -->
+  <path d="M14 2v6h6"/>
+  
+  <!-- Bar Chart - representing transaction data analysis -->
+  <!-- Short bar -->
+  <line x1="8" y1="16" x2="8" y2="13"/>
+  <!-- Medium bar -->
+  <line x1="11" y1="16" x2="11" y2="11"/>
+  <!-- Tall bar -->
+  <line x1="14" y1="16" x2="14" y2="9"/>
+  <!-- Baseline -->
+  <line x1="7" y1="17" x2="15" y2="17"/>
+</svg>

@@ -1,0 +1,112 @@
+{
+  // TypeScript Configuration for CardDemo React Frontend
+  // Converted from COBOL mainframe application to modern React 18.3 + TypeScript 5.7
+  // Per Agent Action Plan Section 0.7.13: Strict type checking enabled
+  "compilerOptions": {
+    /* Language and Environment */
+    // ES2024 target for modern JavaScript features, Vite handles transpilation for older browsers
+    "target": "ES2024",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    // New JSX transform from React 17+, no need to import React in every file
+    "jsx": "react-jsx",
+    // ES2022 class field semantics
+    "useDefineForClassFields": true,
+
+    /* Module Resolution */
+    // ES modules with latest syntax
+    "module": "ESNext",
+    // Vite/bundler-specific resolution for better compatibility
+    "moduleResolution": "bundler",
+    // Allow importing JSON files as modules
+    "resolveJsonModule": true,
+    // Allow .ts/.tsx extensions in imports when not emitting
+    "allowImportingTsExtensions": true,
+    // Required by Vite/esbuild for fast transpilation
+    "isolatedModules": true,
+    // Better CommonJS/ES module interop
+    "esModuleInterop": true,
+    // Allow default imports from modules without default export
+    "allowSyntheticDefaultImports": true,
+
+    /* Type Checking - Strict Mode (Agent Action Plan Section 0.7.13) */
+    // Enable all strict type checking options for COBOL-to-TypeScript conversion safety
+    "strict": true,
+    // Additional strict checks beyond base strict mode
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    // Add undefined to unguarded index access (prevents runtime errors)
+    "noUncheckedIndexedAccess": true,
+    // Error when not all code paths return a value
+    "noImplicitReturns": true,
+    // Require bracket notation for index signatures
+    "noPropertyAccessFromIndexSignature": true,
+
+    /* Output and Emit */
+    // Vite handles transpilation, TypeScript only for type checking
+    "noEmit": true,
+    // Skip type checking of declaration files for faster compilation
+    "skipLibCheck": true,
+    // No .d.ts files since noEmit is true
+    "declaration": false,
+    // Vite generates source maps
+    "sourceMap": false,
+
+    /* Path Mapping for Clean Imports */
+    // Enables: import { Button } from '@components/common/Button'
+    // Must also be configured in vite.config.ts
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@components/*": ["./src/components/*"],
+      "@pages/*": ["./src/pages/*"],
+      "@services/*": ["./src/services/*"],
+      "@hooks/*": ["./src/hooks/*"],
+      "@context/*": ["./src/context/*"],
+      "@types/*": ["./src/types/*"],
+      "@utils/*": ["./src/utils/*"],
+      "@styles/*": ["./src/styles/*"],
+      "@assets/*": ["./src/assets/*"]
+    },
+
+    /* Advanced Options */
+    // Prevent case-sensitive import issues across operating systems
+    "forceConsistentCasingInFileNames": true,
+    // Only allow .ts/.tsx files, not .js (strict TypeScript-only codebase)
+    "allowJs": false,
+    // Don't type-check JS files
+    "checkJs": false,
+    // Enable incremental compilation for faster rebuilds
+    "incremental": true,
+    // Store incremental compilation info
+    "tsBuildInfoFile": "./.tsbuildinfo"
+  },
+
+  /* Include Patterns */
+  // All TypeScript source files in src/ directory
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/**/*.d.ts",
+    "vite-env.d.ts"
+  ],
+
+  /* Exclude Patterns */
+  // Exclude dependencies, build output, and test files
+  "exclude": [
+    "node_modules",
+    "dist",
+    "build",
+    "coverage",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "**/*.test.ts",
+    "**/*.test.tsx"
+  ],
+
+  /* Project References for Monorepo Setup */
+  // Reference to Vite config types (tsconfig.node.json)
+  "references": [
+    { "path": "./tsconfig.node.json" }
+  ]
+}

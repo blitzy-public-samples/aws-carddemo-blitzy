@@ -1,0 +1,229 @@
+# Docker Compose Configuration for CardDemo Modernized Application
+# Local Development Environment Orchestration
+#
+# This file enables single-command startup of the complete CardDemo stack:
+# - PostgreSQL 16.x database
+# - Spring Boot backend (Java 21)
+# - React frontend (served by Nginx)
+#
+# Usage:
+#   Start all services:     docker-compose up
+#   Start in background:    docker-compose up -d
+#   Stop services:          docker-compose down
+#   Remove all data:        docker-compose down -v
+#   View logs:              docker-compose logs -f [service]
+#
+# Note: This configuration is for LOCAL DEVELOPMENT ONLY.
+# Production deployment uses Kubernetes manifests in infrastructure/kubernetes/
+
+version: '3.9'
+
+services:
+  # PostgreSQL Database Service
+  # Replaces mainframe VSAM datasets with relational database
+  postgres:
+    image: postgres:16.6-alpine
+    container_name: carddemo-postgres
+    restart: unless-stopped
+    
+    ports:
+      - "5432:5432"
+    
+    environment:
+      # Database configuration
+      POSTGRES_DB: carddemo
+      POSTGRES_USER: carddemo_user
+      POSTGRES_PASSWORD: carddemo_password
+      
+      # PostgreSQL performance tuning for development
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=en_US.utf8"
+      
+    volumes:
+      # Persistent data storage across container restarts
+      - postgres-data:/var/lib/postgresql/data
+      
+      # Optional: Mount initialization scripts
+      # - ./backend/src/main/resources/db/init:/docker-entrypoint-initdb.d:ro
+    
+    networks:
+      - carddemo-network
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carddemo_user -d carddemo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    
+    # Resource limits for development environment
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+
+  # Backend Spring Boot Application Service
+  # Replaces COBOL CICS online programs and batch jobs
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        - MAVEN_OPTS=-Xmx1024m
+    
+    container_name: carddemo-backend
+    restart: unless-stopped
+    
+    ports:
+      - "8080:8080"  # REST API endpoints
+      - "5005:5005"  # Java remote debugging port
+    
+    environment:
+      # Spring Boot configuration
+      SPRING_PROFILES_ACTIVE: dev
+      
+      # Database connection (uses service name 'postgres' as hostname)
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/carddemo
+      SPRING_DATASOURCE_USERNAME: carddemo_user
+      SPRING_DATASOURCE_PASSWORD: carddemo_password
+      
+      # JPA/Hibernate configuration
+      SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+      SPRING_JPA_SHOW_SQL: "true"
+      SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: "true"
+      SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQLDialect
+      
+      # Flyway database migration
+      SPRING_FLYWAY_ENABLED: "true"
+      SPRING_FLYWAY_BASELINE_ON_MIGRATE: "true"
+      SPRING_FLYWAY_LOCATIONS: classpath:db/migration
+      
+      # Spring Batch configuration
+      SPRING_BATCH_JOB_ENABLED: "false"  # Don't auto-run batch jobs on startup
+      SPRING_BATCH_JDBC_INITIALIZE_SCHEMA: always
+      
+      # Security configuration
+      JWT_SECRET: dev-secret-key-change-in-production
+      JWT_EXPIRATION: 3600000  # 1 hour in milliseconds
+      
+      # Logging configuration
+      LOGGING_LEVEL_COM_CARDDEMO: DEBUG
+      LOGGING_LEVEL_ORG_SPRINGFRAMEWORK: INFO
+      LOGGING_LEVEL_ORG_HIBERNATE: INFO
+      
+      # Java debugging
+      JAVA_TOOL_OPTIONS: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
+    
+    volumes:
+      # Hot-reload source code during development (read-only)
+      # Note: Requires Spring Boot DevTools in dependencies
+      - ./backend/src:/app/src:ro
+      
+      # Maven cache to speed up builds
+      - maven-cache:/root/.m2
+    
+    depends_on:
+      postgres:
+        condition: service_healthy
+    
+    networks:
+      - carddemo-network
+    
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    
+    # Resource limits for development environment
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+
+  # Frontend React Application Service
+  # Replaces BMS 3270 terminal screens with modern web UI
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NODE_ENV=development
+    
+    container_name: carddemo-frontend
+    restart: unless-stopped
+    
+    ports:
+      - "3000:80"  # Nginx serving React SPA
+    
+    environment:
+      # Backend API base URL (accessible from browser)
+      VITE_API_BASE_URL: http://localhost:8080/api
+      
+      # Frontend configuration
+      NODE_ENV: development
+    
+    volumes:
+      # Hot-reload React source code during development (read-only)
+      # Note: Requires Vite dev server or proper HMR configuration
+      - ./frontend/src:/app/src:ro
+      
+      # Node modules cache
+      - node-modules-cache:/app/node_modules
+    
+    depends_on:
+      backend:
+        condition: service_healthy
+    
+    networks:
+      - carddemo-network
+    
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:80 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Resource limits for development environment
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+# Network Configuration
+# Bridge network enables service-to-service communication using service names
+networks:
+  carddemo-network:
+    driver: bridge
+    name: carddemo-network
+
+# Volume Configuration
+# Named volumes provide persistent storage across container lifecycle
+volumes:
+  # PostgreSQL data persistence
+  postgres-data:
+    driver: local
+    name: carddemo-postgres-data
+  
+  # Maven dependency cache (speeds up backend builds)
+  maven-cache:
+    driver: local
+    name: carddemo-maven-cache
+  
+  # Node modules cache (speeds up frontend builds)
+  node-modules-cache:
+    driver: local
+    name: carddemo-node-modules-cache

@@ -1,0 +1,231 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+###############################################################################
+# Kubernetes Persistent Volume Claim for CardDemo PostgreSQL Database
+###############################################################################
+# Purpose: Provides persistent storage for PostgreSQL 16.x database containing
+#          all migrated VSAM datasets from the mainframe CardDemo application
+#
+# Storage Requirements:
+# - Capacity: 100Gi to accommodate all 11 VSAM datasets:
+#   * ACCTFILE    -> account table (~50,000 records, 300 bytes each)
+#   * CARDFILE    -> card table (~100,000 records, 150 bytes each)
+#   * CUSTFILE    -> customer table (~50,000 records, 500 bytes each)
+#   * TRANSACT    -> transaction table (~1,000,000 records, 350 bytes each)
+#   * XREFFILE    -> card_account_xref table (~100,000 records)
+#   * DALYTRAN    -> daily_transaction table (~10,000 records)
+#   * TCATBAL     -> transaction_category_balance table (~100 records)
+#   * DISCGRP     -> disclosure_group table (~10 records)
+#   * TRANCATG    -> transaction_category table (~50 records)
+#   * TRANTYPE    -> transaction_type table (~100 records)
+#   * USRSEC      -> user_security table (~100 records)
+#
+# - Includes overhead for:
+#   * PostgreSQL indexes (replicating VSAM primary and alternate indexes)
+#   * Database system tables and metadata
+#   * WAL (Write-Ahead Logging) files
+#   * Transaction logs and temporary tables
+#   * Growth capacity for production data expansion
+#
+# Cloud Provider Storage Classes:
+# - AWS EBS: Use "gp3" (general purpose SSD) or "io2" (provisioned IOPS)
+# - Azure Disk: Use "managed-premium" or "managed-csi"
+# - GCP Persistent Disk: Use "pd-ssd" or "pd-balanced"
+# - On-premises: Use appropriate storage class from your storage provider
+#
+# Migration Context:
+# This PVC replaces mainframe VSAM KSDS (Key-Sequenced Data Sets) with
+# cloud-native persistent volumes, maintaining data durability and
+# performance characteristics equivalent to mainframe storage.
+###############################################################################
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  # PVC name follows Kubernetes naming conventions
+  name: postgresql-pvc
+  
+  # Deploy to carddemo namespace as specified in section 0.4.22
+  namespace: carddemo
+  
+  # Labels for resource identification and management
+  labels:
+    app: carddemo
+    component: database
+    tier: data
+    technology: postgresql
+    version: "16"
+    migration-source: vsam-ksds
+    managed-by: kubernetes
+  
+  # Annotations provide additional metadata and documentation
+  annotations:
+    description: "Persistent storage for CardDemo PostgreSQL database"
+    purpose: "Replaces mainframe VSAM datasets with cloud-native persistent volumes"
+    capacity: "100Gi"
+    vsam-datasets-migrated: "11"
+    postgresql-version: "16.x"
+    # Storage class selection guidance
+    storage-class-aws: "gp3"
+    storage-class-azure: "managed-premium"
+    storage-class-gcp: "pd-ssd"
+    # Performance requirements from Agent Action Plan section 0.7.7
+    performance-requirement: "Sub-10ms for primary key lookups (replicate VSAM key access)"
+    # Data retention policy
+    backup-policy: "Daily automated backups via CronJob"
+    retention-policy: "30 days point-in-time recovery"
+
+spec:
+  # Access mode: ReadWriteOnce for single-node attachment
+  # PostgreSQL StatefulSet requires exclusive access to the volume
+  # This prevents data corruption from multiple writers
+  accessModes:
+    - ReadWriteOnce
+  
+  # Volume mode: Filesystem (default)
+  # PostgreSQL requires a formatted filesystem (ext4, xfs)
+  volumeMode: Filesystem
+  
+  # Storage capacity: 100Gi as specified in Agent Action Plan section 0.3.1
+  # This accommodates:
+  # - All 11 migrated VSAM datasets (~2-5 GB raw data)
+  # - PostgreSQL indexes and system tables (~10-20 GB)
+  # - WAL files and transaction logs (~5-10 GB)
+  # - Growth capacity for production expansion (remaining ~65-80 GB)
+  resources:
+    requests:
+      storage: 100Gi
+  
+  # Storage class: Cloud provider-specific configuration
+  # IMPORTANT: Uncomment and set the appropriate storage class for your environment
+  # 
+  # For AWS EKS:
+  # storageClassName: gp3
+  # - gp3: General Purpose SSD (3000 IOPS baseline, 125 MB/s throughput)
+  # - io2: Provisioned IOPS SSD (for higher performance requirements)
+  # 
+  # For Azure AKS:
+  # storageClassName: managed-premium
+  # - managed-premium: Premium SSD (P30: 5000 IOPS, 200 MB/s)
+  # - managed-csi: Azure Disk CSI driver with premium performance
+  # 
+  # For Google GKE:
+  # storageClassName: pd-ssd
+  # - pd-ssd: SSD persistent disk (15 IOPS/GB, 0.48 MB/s per GB throughput)
+  # - pd-balanced: Balanced persistent disk (cost-effective alternative)
+  # 
+  # For on-premises Kubernetes:
+  # storageClassName: <your-storage-provider-class>
+  # - Examples: ceph-rbd, nfs-client, local-path
+  # 
+  # If storageClassName is omitted, the cluster's default storage class will be used
+  # Run "kubectl get storageclass" to list available storage classes in your cluster
+  storageClassName: ""  # Set to appropriate storage class for your cloud provider
+  
+  # Selector: Optional label selector for binding to specific PVs
+  # Typically not needed as dynamic provisioning will create a new PV
+  # Uncomment if you need to bind to a pre-provisioned PV
+  # selector:
+  #   matchLabels:
+  #     app: carddemo
+  #     component: database
+
+---
+###############################################################################
+# Usage Notes for StatefulSet Integration
+###############################################################################
+# This PVC is designed to be referenced by the PostgreSQL StatefulSet via
+# volumeClaimTemplates. However, it can also be pre-created and referenced
+# directly if manual PVC management is preferred.
+#
+# StatefulSet volumeClaimTemplates Example:
+# 
+# spec:
+#   volumeClaimTemplates:
+#   - metadata:
+#       name: postgresql-storage
+#     spec:
+#       accessModes: [ "ReadWriteOnce" ]
+#       storageClassName: "gp3"  # Set to your storage class
+#       resources:
+#         requests:
+#           storage: 100Gi
+#
+# Alternative: Direct Volume Mount (if PVC is pre-created):
+#
+# spec:
+#   template:
+#     spec:
+#       volumes:
+#       - name: postgresql-storage
+#         persistentVolumeClaim:
+#           claimName: postgresql-pvc
+#       containers:
+#       - name: postgresql
+#         volumeMounts:
+#         - name: postgresql-storage
+#           mountPath: /var/lib/postgresql/data
+#
+###############################################################################
+# Verification Commands
+###############################################################################
+# After applying this manifest:
+#
+# 1. Check PVC status:
+#    kubectl get pvc postgresql-pvc -n carddemo
+#
+# 2. Check PVC details:
+#    kubectl describe pvc postgresql-pvc -n carddemo
+#
+# 3. Verify PV binding:
+#    kubectl get pv
+#
+# 4. Check storage class:
+#    kubectl get storageclass
+#
+# Expected status: PVC should show "Bound" status with a dynamically
+# provisioned PV attached.
+###############################################################################
+# Performance Validation
+###############################################################################
+# To validate storage performance meets VSAM-equivalent requirements:
+#
+# 1. Deploy PostgreSQL StatefulSet with this PVC
+# 2. Run pgbench or custom benchmark tests
+# 3. Verify primary key lookups complete in sub-10ms (95th percentile)
+# 4. Confirm throughput supports 10,000 TPS as per section 0.7.7
+#
+# Performance tuning options:
+# - Increase IOPS provisioning for storage class
+# - Use faster storage tier (e.g., io2 on AWS, ultra disk on Azure)
+# - Enable read replicas for query load distribution
+# - Tune PostgreSQL configuration (shared_buffers, work_mem, etc.)
+###############################################################################
+# Backup and Disaster Recovery
+###############################################################################
+# This PVC should be integrated with backup solutions:
+#
+# 1. Volume snapshots (Kubernetes VolumeSnapshot API)
+# 2. PostgreSQL pg_dump/pg_basebackup via CronJob
+# 3. Cloud provider backup services (AWS Backup, Azure Backup, GCP snapshots)
+# 4. Velero for cluster-wide backup and restore
+#
+# Refer to infrastructure/kubernetes/database/backup-cronjob.yaml for
+# automated backup configuration.
+###############################################################################
+# Migration from VSAM
+###############################################################################
+# This PVC provides the persistent storage foundation for migrating data
+# from mainframe VSAM KSDS files to PostgreSQL tables.
+#
+# Migration process:
+# 1. Extract data from VSAM files (COBOL programs or utilities)
+# 2. Transform EBCDIC to ASCII encoding
+# 3. Convert COMP-3 packed decimal to PostgreSQL numeric types
+# 4. Load data using PostgreSQL COPY command or Flyway migrations
+# 5. Create indexes matching VSAM primary and alternate keys
+# 6. Validate record counts and referential integrity
+#
+# See infrastructure/scripts/migrate-data.sh for data migration orchestration.
+###############################################################################

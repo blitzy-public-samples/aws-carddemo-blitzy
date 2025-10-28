@@ -1,0 +1,1300 @@
+/**
+ * CardDemo Material-UI Theme Customization
+ * 
+ * This file provides comprehensive Material-UI component overrides and custom
+ * theme configuration for the CardDemo application. It extends the base design
+ * tokens defined in variables.css to customize MUI components with styles that
+ * match BMS 3270 terminal visual characteristics while providing modern web UX.
+ * 
+ * BMS Terminal Attribute Mappings:
+ * - ASKIP (Auto-Skip) → disabled/readonly fields with muted styling
+ * - PROT (Protected) → readonly fields, cannot be edited
+ * - UNPROT (Unprotected) → editable input fields with focus states
+ * - BRT (Bright) → emphasized text with bold weight
+ * - DRK (Dark) → hidden fields (passwords) with obscured display
+ * - HILIGHT=UNDERLINE → focused/active fields with underline decoration
+ * - IC (Initial Cursor) → autofocus attribute
+ * 
+ * BMS Color Attribute Mappings:
+ * - COLOR=BLUE → Primary theme color (labels, structure)
+ * - COLOR=YELLOW → Warning color (titles, important instructions)
+ * - COLOR=TURQUOISE → Info color (prompts, hints)
+ * - COLOR=GREEN → Success color (input fields, positive actions)
+ * - COLOR=RED → Error color (validation failures, error messages)
+ * - COLOR=NEUTRAL → Body text color (general content)
+ * 
+ * Converted from BMS map files:
+ * - COSGN00.bms (Signon screen)
+ * - COMEN01.bms (Main menu screen)
+ * - COACTUP.bms (Account update screen)
+ * And all other BMS maps in the CardDemo application.
+ * 
+ * Integration: This file is imported in App.tsx and works with Material-UI's
+ * ThemeProvider for runtime theme switching and CSS-in-JS emotion styles.
+ */
+
+/* ========================================
+   ROOT THEME VARIABLES
+   Override and extend variables.css tokens
+   for Material-UI component styling
+   ======================================== */
+
+:root {
+  /* Material-UI specific spacing (8px base unit) */
+  --mui-spacing-unit: 8px;
+  
+  /* MUI component heights aligned with terminal character cells (24 rows × 80 columns) */
+  --mui-input-height: 40px;
+  --mui-button-height: 40px;
+  --mui-toolbar-height: 64px;
+  --mui-table-row-height: 52px;
+  
+  /* Terminal-inspired monospace font for data display */
+  --mui-font-monospace: 'Roboto Mono', 'Courier New', Consolas, monospace;
+  
+  /* Focus ring width matching BMS HILIGHT=UNDERLINE */
+  --mui-focus-ring-width: 2px;
+  --mui-focus-underline-height: 2px;
+  
+  /* Card elevation levels (Material Design) */
+  --mui-elevation-1: 0px 2px 1px -1px rgba(0,0,0,0.2), 0px 1px 1px 0px rgba(0,0,0,0.14), 0px 1px 3px 0px rgba(0,0,0,0.12);
+  --mui-elevation-2: 0px 3px 1px -2px rgba(0,0,0,0.2), 0px 2px 2px 0px rgba(0,0,0,0.14), 0px 1px 5px 0px rgba(0,0,0,0.12);
+  --mui-elevation-4: 0px 2px 4px -1px rgba(0,0,0,0.2), 0px 4px 5px 0px rgba(0,0,0,0.14), 0px 1px 10px 0px rgba(0,0,0,0.12);
+  --mui-elevation-8: 0px 5px 5px -3px rgba(0,0,0,0.2), 0px 8px 10px 1px rgba(0,0,0,0.14), 0px 3px 14px 2px rgba(0,0,0,0.12);
+  --mui-elevation-16: 0px 8px 10px -5px rgba(0,0,0,0.2), 0px 16px 24px 2px rgba(0,0,0,0.14), 0px 6px 30px 5px rgba(0,0,0,0.12);
+  --mui-elevation-24: 0px 11px 15px -7px rgba(0,0,0,0.2), 0px 24px 38px 3px rgba(0,0,0,0.14), 0px 9px 46px 8px rgba(0,0,0,0.12);
+  
+  /* Transition timing for smooth interactions */
+  --mui-transition-duration-shortest: 150ms;
+  --mui-transition-duration-shorter: 200ms;
+  --mui-transition-duration-short: 250ms;
+  --mui-transition-duration-standard: 300ms;
+  --mui-transition-duration-complex: 375ms;
+  --mui-transition-duration-enteringScreen: 225ms;
+  --mui-transition-duration-leavingScreen: 195ms;
+  
+  /* Easing curves */
+  --mui-transition-easing-sharp: cubic-bezier(0.4, 0, 0.6, 1);
+  --mui-transition-easing-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1.0);
+  --mui-transition-easing-emphasized-accelerate: cubic-bezier(0.3, 0.0, 0.8, 0.15);
+}
+
+/* ========================================
+   MATERIAL-UI COMPONENT OVERRIDES
+   Global CSS class overrides for MUI components
+   ======================================== */
+
+/* -----------------------------------------
+   MuiButton - Button component overrides
+   Mapping BMS function key styling (F3=Exit, ENTER=Continue)
+   ----------------------------------------- */
+
+.MuiButton-root {
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.75;
+  letter-spacing: 0.02857em;
+  text-transform: uppercase;
+  min-width: 64px;
+  padding: 6px 16px;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--mui-transition-duration-short) var(--mui-transition-easing-sharp),
+              box-shadow var(--mui-transition-duration-short) var(--mui-transition-easing-sharp),
+              border-color var(--mui-transition-duration-short) var(--mui-transition-easing-sharp);
+}
+
+.MuiButton-contained {
+  box-shadow: var(--mui-elevation-2);
+}
+
+.MuiButton-contained:hover {
+  box-shadow: var(--mui-elevation-4);
+}
+
+.MuiButton-contained:active {
+  box-shadow: var(--mui-elevation-8);
+}
+
+/* Primary button (BMS GREEN input fields become primary actions) */
+.MuiButton-containedPrimary {
+  background-color: var(--color-primary-500);
+  color: var(--color-neutral-0);
+}
+
+.MuiButton-containedPrimary:hover {
+  background-color: var(--color-primary-700);
+}
+
+.MuiButton-containedPrimary:active {
+  background-color: var(--color-primary-800);
+}
+
+/* Secondary button (BMS BLUE structure elements) */
+.MuiButton-containedSecondary {
+  background-color: var(--color-secondary-500);
+  color: var(--color-neutral-0);
+}
+
+.MuiButton-containedSecondary:hover {
+  background-color: var(--color-secondary-700);
+}
+
+/* Error button (BMS RED error messages) */
+.MuiButton-containedError {
+  background-color: var(--color-error-500);
+  color: var(--color-neutral-0);
+}
+
+.MuiButton-containedError:hover {
+  background-color: var(--color-error-700);
+}
+
+/* Success button (BMS GREEN success states) */
+.MuiButton-containedSuccess {
+  background-color: var(--color-success-500);
+  color: var(--color-neutral-0);
+}
+
+.MuiButton-containedSuccess:hover {
+  background-color: var(--color-success-700);
+}
+
+/* Outlined buttons */
+.MuiButton-outlined {
+  border: 1px solid var(--color-border-default);
+  padding: 5px 15px;
+}
+
+.MuiButton-outlinedPrimary {
+  color: var(--color-primary-500);
+  border-color: var(--color-primary-500);
+}
+
+.MuiButton-outlinedPrimary:hover {
+  background-color: rgba(33, 150, 243, 0.04);
+  border-color: var(--color-primary-700);
+}
+
+/* Text buttons */
+.MuiButton-text {
+  padding: 6px 8px;
+}
+
+.MuiButton-textPrimary {
+  color: var(--color-primary-500);
+}
+
+.MuiButton-textPrimary:hover {
+  background-color: rgba(33, 150, 243, 0.04);
+}
+
+/* Disabled state (BMS ASKIP attribute) */
+.MuiButton-root:disabled {
+  color: var(--color-text-disabled);
+  box-shadow: none;
+  background-color: var(--color-background-disabled);
+  opacity: var(--opacity-disabled);
+}
+
+/* Size variants */
+.MuiButton-sizeSmall {
+  padding: 4px 10px;
+  font-size: var(--font-size-xs);
+}
+
+.MuiButton-sizeLarge {
+  padding: 8px 22px;
+  font-size: var(--font-size-base);
+}
+
+/* -----------------------------------------
+   MuiTextField - Input field overrides
+   Mapping BMS UNPROT/PROT field attributes
+   ----------------------------------------- */
+
+.MuiTextField-root {
+  width: 100%;
+}
+
+.MuiInputBase-root {
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+}
+
+/* Standard variant (default) */
+.MuiInput-root {
+  position: relative;
+}
+
+.MuiInput-root::before {
+  border-bottom: 1px solid var(--color-border-default);
+  transition: border-bottom-color var(--mui-transition-duration-shorter) var(--mui-transition-easing-sharp);
+}
+
+.MuiInput-root:hover:not(.Mui-disabled)::before {
+  border-bottom: 2px solid var(--color-text-primary);
+}
+
+/* BMS HILIGHT=UNDERLINE mapping - focused state underline */
+.MuiInput-root.Mui-focused::after {
+  border-bottom: 2px solid var(--color-primary-500);
+  transform: scaleX(1);
+}
+
+.MuiInput-root::after {
+  border-bottom: 2px solid var(--color-primary-500);
+  transform: scaleX(0);
+  transition: transform var(--mui-transition-duration-shorter) var(--mui-transition-easing-sharp);
+}
+
+/* Outlined variant (modern alternative) */
+.MuiOutlinedInput-root {
+  border-radius: var(--radius-sm);
+}
+
+.MuiOutlinedInput-notchedOutline {
+  border-color: var(--color-border-default);
+  border-width: 1px;
+  transition: border-color var(--mui-transition-duration-shorter) var(--mui-transition-easing-sharp);
+}
+
+.MuiOutlinedInput-root:hover .MuiOutlinedInput-notchedOutline {
+  border-color: var(--color-text-primary);
+}
+
+.MuiOutlinedInput-root.Mui-focused .MuiOutlinedInput-notchedOutline {
+  border-color: var(--color-primary-500);
+  border-width: 2px;
+}
+
+/* Filled variant */
+.MuiFilledInput-root {
+  background-color: var(--color-background-subtle);
+  border-top-left-radius: var(--radius-sm);
+  border-top-right-radius: var(--radius-sm);
+}
+
+.MuiFilledInput-root:hover {
+  background-color: var(--color-background-hover);
+}
+
+.MuiFilledInput-root.Mui-focused {
+  background-color: var(--color-background-subtle);
+}
+
+/* Input label (BMS field labels like "User ID:", "Password:") */
+.MuiInputLabel-root {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-base);
+  transition: color var(--mui-transition-duration-shorter) var(--mui-transition-easing-sharp);
+}
+
+.MuiInputLabel-root.Mui-focused {
+  color: var(--color-primary-500);
+}
+
+/* BMS TURQUOISE prompts mapping */
+.MuiInputLabel-root.MuiInputLabel-info {
+  color: var(--color-info-700);
+}
+
+/* Error state (BMS RED error messages) */
+.MuiInputLabel-root.Mui-error {
+  color: var(--color-error-500);
+}
+
+.MuiOutlinedInput-root.Mui-error .MuiOutlinedInput-notchedOutline {
+  border-color: var(--color-error-500);
+}
+
+.MuiInput-root.Mui-error::after {
+  border-bottom-color: var(--color-error-500);
+}
+
+/* BMS ASKIP/PROT disabled state */
+.MuiInputBase-root.Mui-disabled {
+  color: var(--color-text-disabled);
+  cursor: not-allowed;
+  opacity: var(--opacity-disabled);
+}
+
+.MuiOutlinedInput-root.Mui-disabled .MuiOutlinedInput-notchedOutline {
+  border-color: var(--color-border-light);
+}
+
+/* Helper text (field hints, "(8 Char)" from BMS) */
+.MuiFormHelperText-root {
+  font-size: var(--font-size-xs);
+  margin-top: 3px;
+  color: var(--color-text-hint);
+}
+
+.MuiFormHelperText-root.Mui-error {
+  color: var(--color-error-500);
+}
+
+/* BMS DRK attribute - password fields with obscured display */
+.MuiInputBase-input[type="password"] {
+  letter-spacing: 0.3em;
+}
+
+/* BMS NUM attribute - numeric only fields */
+.MuiInputBase-input[type="number"] {
+  font-family: var(--mui-font-monospace);
+  text-align: right;
+}
+
+/* Autofocus indicator (BMS IC attribute - Initial Cursor) */
+.MuiInputBase-input:autofocus {
+  animation: autofocus-pulse 1s ease-in-out;
+}
+
+@keyframes autofocus-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(33, 150, 243, 0.1);
+  }
+}
+
+/* -----------------------------------------
+   MuiCard - Card component overrides
+   Terminal screen panel representation
+   ----------------------------------------- */
+
+.MuiCard-root {
+  background-color: var(--color-background-paper);
+  border-radius: var(--card-border-radius);
+  box-shadow: var(--mui-elevation-1);
+  overflow: hidden;
+  transition: box-shadow var(--mui-transition-duration-short) var(--mui-transition-easing-sharp);
+}
+
+.MuiCard-root:hover {
+  box-shadow: var(--mui-elevation-4);
+}
+
+.MuiCardHeader-root {
+  padding: var(--spacing-md) var(--spacing-lg);
+  background-color: var(--color-primary-50);
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.MuiCardHeader-title {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-primary-700);
+}
+
+.MuiCardHeader-subheader {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.MuiCardContent-root {
+  padding: var(--card-padding);
+}
+
+.MuiCardContent-root:last-child {
+  padding-bottom: var(--card-padding);
+}
+
+.MuiCardActions-root {
+  padding: var(--spacing-sm) var(--spacing-lg);
+  border-top: 1px solid var(--color-border-light);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+}
+
+/* -----------------------------------------
+   MuiAppBar - Application bar overrides
+   BMS screen header (line 1-3 with Tran, Date, Time)
+   ----------------------------------------- */
+
+.MuiAppBar-root {
+  background-color: var(--color-primary-700);
+  color: var(--color-neutral-0);
+  box-shadow: var(--mui-elevation-4);
+}
+
+.MuiAppBar-colorPrimary {
+  background-color: var(--color-primary-700);
+}
+
+.MuiAppBar-colorSecondary {
+  background-color: var(--color-secondary-700);
+}
+
+.MuiToolbar-root {
+  min-height: var(--mui-toolbar-height);
+  padding-left: var(--spacing-lg);
+  padding-right: var(--spacing-lg);
+}
+
+.MuiToolbar-regular {
+  min-height: var(--mui-toolbar-height);
+}
+
+@media (min-width: 600px) {
+  .MuiToolbar-regular {
+    min-height: var(--mui-toolbar-height);
+  }
+}
+
+/* -----------------------------------------
+   MuiTable - Table component overrides
+   BMS list screens (COCRDLI, COTRN00)
+   ----------------------------------------- */
+
+.MuiTable-root {
+  width: 100%;
+  display: table;
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+.MuiTableHead-root {
+  background-color: var(--color-primary-50);
+}
+
+.MuiTableCell-root {
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-sm);
+  padding: var(--spacing-md) var(--spacing-md);
+  border-bottom: 1px solid var(--table-border-color);
+  color: var(--color-text-primary);
+}
+
+.MuiTableCell-head {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-primary-700);
+  background-color: var(--color-primary-50);
+  line-height: var(--line-height-tight);
+  border-bottom: 2px solid var(--color-primary-200);
+}
+
+.MuiTableCell-body {
+  line-height: var(--line-height-normal);
+}
+
+/* Monospace font for data columns (account numbers, amounts) */
+.MuiTableCell-data {
+  font-family: var(--mui-font-monospace);
+  text-align: right;
+}
+
+.MuiTableRow-root:hover {
+  background-color: var(--color-background-hover);
+}
+
+.MuiTableRow-root.Mui-selected {
+  background-color: var(--color-primary-50);
+}
+
+.MuiTableRow-root.Mui-selected:hover {
+  background-color: var(--color-primary-100);
+}
+
+/* -----------------------------------------
+   MuiDialog - Modal dialog overrides
+   BMS confirmation screens (COUSR03 - user delete confirm)
+   ----------------------------------------- */
+
+.MuiDialog-paper {
+  background-color: var(--color-background-paper);
+  border-radius: var(--modal-border-radius);
+  box-shadow: var(--mui-elevation-24);
+  margin: var(--spacing-lg);
+  max-width: var(--modal-max-width);
+}
+
+.MuiDialogTitle-root {
+  padding: var(--modal-padding);
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.MuiDialogContent-root {
+  padding: var(--modal-padding);
+  overflow-y: auto;
+}
+
+.MuiDialogActions-root {
+  padding: var(--spacing-md) var(--modal-padding);
+  border-top: 1px solid var(--color-border-light);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+}
+
+.MuiBackdrop-root {
+  background-color: var(--modal-backdrop-color);
+  backdrop-filter: blur(2px);
+}
+
+/* -----------------------------------------
+   MuiAlert - Alert component overrides
+   BMS ERRMSG fields (line 23)
+   ----------------------------------------- */
+
+.MuiAlert-root {
+  padding: var(--spacing-md) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  font-size: var(--font-size-sm);
+}
+
+/* BMS RED error messages */
+.MuiAlert-standardError {
+  background-color: var(--color-error-50);
+  color: var(--color-error-900);
+  border: 1px solid var(--color-error-200);
+}
+
+.MuiAlert-filledError {
+  background-color: var(--color-error-500);
+  color: var(--color-neutral-0);
+}
+
+/* BMS YELLOW warning messages */
+.MuiAlert-standardWarning {
+  background-color: var(--color-warning-50);
+  color: var(--color-warning-900);
+  border: 1px solid var(--color-warning-200);
+}
+
+.MuiAlert-filledWarning {
+  background-color: var(--color-warning-500);
+  color: var(--color-neutral-900);
+}
+
+/* BMS TURQUOISE info messages */
+.MuiAlert-standardInfo {
+  background-color: var(--color-info-50);
+  color: var(--color-info-900);
+  border: 1px solid var(--color-info-200);
+}
+
+.MuiAlert-filledInfo {
+  background-color: var(--color-info-500);
+  color: var(--color-neutral-0);
+}
+
+/* BMS GREEN success messages */
+.MuiAlert-standardSuccess {
+  background-color: var(--color-success-50);
+  color: var(--color-success-900);
+  border: 1px solid var(--color-success-200);
+}
+
+.MuiAlert-filledSuccess {
+  background-color: var(--color-success-500);
+  color: var(--color-neutral-0);
+}
+
+.MuiAlert-icon {
+  margin-right: var(--spacing-sm);
+  padding: 7px 0;
+  display: flex;
+  font-size: 22px;
+  opacity: 0.9;
+}
+
+.MuiAlert-message {
+  padding: 8px 0;
+  flex: 1;
+}
+
+/* -----------------------------------------
+   MuiPaper - Paper component base
+   General elevated surfaces
+   ----------------------------------------- */
+
+.MuiPaper-root {
+  background-color: var(--color-background-paper);
+  color: var(--color-text-primary);
+  transition: box-shadow var(--mui-transition-duration-short) var(--mui-transition-easing-sharp);
+}
+
+.MuiPaper-elevation0 {
+  box-shadow: none;
+}
+
+.MuiPaper-elevation1 {
+  box-shadow: var(--mui-elevation-1);
+}
+
+.MuiPaper-elevation2 {
+  box-shadow: var(--mui-elevation-2);
+}
+
+.MuiPaper-elevation4 {
+  box-shadow: var(--mui-elevation-4);
+}
+
+.MuiPaper-elevation8 {
+  box-shadow: var(--mui-elevation-8);
+}
+
+.MuiPaper-elevation16 {
+  box-shadow: var(--mui-elevation-16);
+}
+
+.MuiPaper-elevation24 {
+  box-shadow: var(--mui-elevation-24);
+}
+
+.MuiPaper-rounded {
+  border-radius: var(--radius-sm);
+}
+
+/* -----------------------------------------
+   MuiChip - Chip component overrides
+   Status indicators, tags
+   ----------------------------------------- */
+
+.MuiChip-root {
+  font-size: var(--font-size-xs);
+  height: 32px;
+  border-radius: var(--radius-full);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--spacing-sm);
+}
+
+.MuiChip-colorPrimary {
+  background-color: var(--color-primary-100);
+  color: var(--color-primary-700);
+}
+
+.MuiChip-colorSecondary {
+  background-color: var(--color-secondary-100);
+  color: var(--color-secondary-700);
+}
+
+.MuiChip-colorSuccess {
+  background-color: var(--color-success-100);
+  color: var(--color-success-700);
+}
+
+.MuiChip-colorError {
+  background-color: var(--color-error-100);
+  color: var(--color-error-700);
+}
+
+.MuiChip-colorWarning {
+  background-color: var(--color-warning-100);
+  color: var(--color-warning-900);
+}
+
+.MuiChip-colorInfo {
+  background-color: var(--color-info-100);
+  color: var(--color-info-700);
+}
+
+/* -----------------------------------------
+   MuiTooltip - Tooltip component overrides
+   Field help text and hints
+   ----------------------------------------- */
+
+.MuiTooltip-tooltip {
+  background-color: var(--color-neutral-700);
+  color: var(--color-neutral-0);
+  font-size: var(--font-size-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  max-width: 300px;
+}
+
+.MuiTooltip-arrow {
+  color: var(--color-neutral-700);
+}
+
+/* -----------------------------------------
+   MuiMenu - Menu/dropdown overrides
+   ----------------------------------------- */
+
+.MuiMenu-paper {
+  border-radius: var(--radius-sm);
+  box-shadow: var(--mui-elevation-8);
+  margin-top: var(--spacing-xs);
+}
+
+.MuiMenuItem-root {
+  font-size: var(--font-size-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  min-height: 48px;
+}
+
+.MuiMenuItem-root:hover {
+  background-color: var(--color-background-hover);
+}
+
+.MuiMenuItem-root.Mui-selected {
+  background-color: var(--color-primary-50);
+}
+
+.MuiMenuItem-root.Mui-selected:hover {
+  background-color: var(--color-primary-100);
+}
+
+/* -----------------------------------------
+   MuiPagination - Pagination overrides
+   BMS list browsing (page through records)
+   ----------------------------------------- */
+
+.MuiPagination-root {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.MuiPaginationItem-root {
+  border-radius: var(--radius-sm);
+  margin: 0 2px;
+  font-size: var(--font-size-sm);
+  min-width: 32px;
+  height: 32px;
+}
+
+.MuiPaginationItem-root:hover {
+  background-color: var(--color-background-hover);
+}
+
+.MuiPaginationItem-root.Mui-selected {
+  background-color: var(--color-primary-500);
+  color: var(--color-neutral-0);
+}
+
+.MuiPaginationItem-root.Mui-selected:hover {
+  background-color: var(--color-primary-700);
+}
+
+/* -----------------------------------------
+   MuiFormControl - Form control wrapper
+   ----------------------------------------- */
+
+.MuiFormControl-root {
+  margin-bottom: var(--spacing-md);
+  display: inline-flex;
+  flex-direction: column;
+  vertical-align: top;
+}
+
+.MuiFormControl-fullWidth {
+  width: 100%;
+}
+
+.MuiFormControl-marginNormal {
+  margin-top: var(--spacing-md);
+  margin-bottom: var(--spacing-sm);
+}
+
+.MuiFormControl-marginDense {
+  margin-top: var(--spacing-sm);
+  margin-bottom: var(--spacing-xs);
+}
+
+/* -----------------------------------------
+   MuiCheckbox - Checkbox overrides
+   ----------------------------------------- */
+
+.MuiCheckbox-root {
+  color: var(--color-text-secondary);
+  padding: 9px;
+}
+
+.MuiCheckbox-root:hover {
+  background-color: rgba(33, 150, 243, 0.04);
+}
+
+.MuiCheckbox-root.Mui-checked {
+  color: var(--color-primary-500);
+}
+
+.MuiCheckbox-root.Mui-disabled {
+  color: var(--color-text-disabled);
+}
+
+/* -----------------------------------------
+   MuiRadio - Radio button overrides
+   ----------------------------------------- */
+
+.MuiRadio-root {
+  color: var(--color-text-secondary);
+  padding: 9px;
+}
+
+.MuiRadio-root:hover {
+  background-color: rgba(33, 150, 243, 0.04);
+}
+
+.MuiRadio-root.Mui-checked {
+  color: var(--color-primary-500);
+}
+
+.MuiRadio-root.Mui-disabled {
+  color: var(--color-text-disabled);
+}
+
+/* -----------------------------------------
+   MuiSwitch - Switch/toggle overrides
+   BMS Active Y/N field representation
+   ----------------------------------------- */
+
+.MuiSwitch-root {
+  width: 58px;
+  height: 38px;
+  padding: 12px;
+}
+
+.MuiSwitch-switchBase {
+  padding: 9px;
+  color: var(--color-neutral-0);
+}
+
+.MuiSwitch-switchBase.Mui-checked {
+  color: var(--color-success-500);
+  transform: translateX(20px);
+}
+
+.MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track {
+  background-color: var(--color-success-500);
+  opacity: 0.5;
+}
+
+.MuiSwitch-track {
+  border-radius: 10px;
+  background-color: var(--color-neutral-400);
+  opacity: 0.38;
+}
+
+.MuiSwitch-thumb {
+  width: 20px;
+  height: 20px;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ========================================
+   CUSTOM COMPONENT VARIANTS
+   CardDemo-specific component styles
+   ======================================== */
+
+/* -----------------------------------------
+   Terminal-style components
+   High information density layouts
+   ----------------------------------------- */
+
+.terminal-screen {
+  background-color: var(--color-neutral-900);
+  color: var(--color-success-400);
+  font-family: var(--mui-font-monospace);
+  padding: var(--spacing-lg);
+  border-radius: var(--radius-sm);
+  min-height: 400px;
+  box-shadow: var(--mui-elevation-8);
+}
+
+.terminal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--color-success-700);
+  padding-bottom: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+  color: var(--color-primary-300);
+  font-size: var(--font-size-sm);
+}
+
+.terminal-row {
+  display: flex;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-xs);
+}
+
+.terminal-label {
+  color: var(--color-info-400);
+  min-width: 120px;
+}
+
+.terminal-value {
+  color: var(--color-success-400);
+  flex: 1;
+}
+
+/* -----------------------------------------
+   Data display components
+   Monospace formatting for financial data
+   ----------------------------------------- */
+
+.data-label {
+  color: var(--color-info-700);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  margin-bottom: var(--spacing-xs);
+}
+
+.data-value {
+  font-family: var(--mui-font-monospace);
+  font-size: var(--font-size-base);
+  color: var(--color-text-primary);
+}
+
+.data-value.amount {
+  text-align: right;
+  color: var(--color-success-700);
+}
+
+.data-value.negative {
+  color: var(--color-error-700);
+}
+
+/* -----------------------------------------
+   Status indicators
+   BMS BRT attribute for emphasized fields
+   ----------------------------------------- */
+
+.status-active {
+  color: var(--color-success-700);
+  font-weight: var(--font-weight-semibold);
+}
+
+.status-inactive {
+  color: var(--color-neutral-500);
+  font-weight: var(--font-weight-regular);
+}
+
+.status-error {
+  color: var(--color-error-700);
+  font-weight: var(--font-weight-semibold);
+}
+
+.status-warning {
+  color: var(--color-warning-700);
+  font-weight: var(--font-weight-semibold);
+}
+
+.status-pending {
+  color: var(--color-info-700);
+  font-weight: var(--font-weight-regular);
+}
+
+/* -----------------------------------------
+   Function key bar
+   BMS line 24 function key commands
+   ----------------------------------------- */
+
+.function-key-bar {
+  display: flex;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-primary-50);
+  border-top: 2px solid var(--color-primary-200);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  font-size: var(--font-size-sm);
+}
+
+.function-key {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--color-primary-700);
+}
+
+.function-key-label {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-warning-700);
+}
+
+.function-key-action {
+  color: var(--color-text-secondary);
+}
+
+/* ========================================
+   DARK MODE THEME
+   Inverted color scheme for low-light environments
+   ======================================== */
+
+[data-theme="dark"] {
+  /* Override light theme palette */
+  --color-text-primary: var(--color-neutral-50);
+  --color-text-secondary: var(--color-neutral-300);
+  --color-text-disabled: var(--color-neutral-600);
+  --color-text-hint: var(--color-neutral-500);
+  --color-text-inverse: var(--color-neutral-900);
+  
+  --color-background-default: var(--color-neutral-900);
+  --color-background-paper: var(--color-neutral-800);
+  --color-background-subtle: var(--color-neutral-800);
+  --color-background-hover: var(--color-neutral-700);
+  --color-background-disabled: var(--color-neutral-700);
+  
+  --color-border-default: var(--color-neutral-700);
+  --color-border-light: var(--color-neutral-800);
+  --color-border-strong: var(--color-neutral-600);
+  
+  /* Adjust shadows for dark backgrounds */
+  --mui-elevation-1: 0px 2px 1px -1px rgba(0,0,0,0.4), 0px 1px 1px 0px rgba(0,0,0,0.28), 0px 1px 3px 0px rgba(0,0,0,0.24);
+  --mui-elevation-2: 0px 3px 1px -2px rgba(0,0,0,0.4), 0px 2px 2px 0px rgba(0,0,0,0.28), 0px 1px 5px 0px rgba(0,0,0,0.24);
+  --mui-elevation-4: 0px 2px 4px -1px rgba(0,0,0,0.4), 0px 4px 5px 0px rgba(0,0,0,0.28), 0px 1px 10px 0px rgba(0,0,0,0.24);
+  --mui-elevation-8: 0px 5px 5px -3px rgba(0,0,0,0.4), 0px 8px 10px 1px rgba(0,0,0,0.28), 0px 3px 14px 2px rgba(0,0,0,0.24);
+  --mui-elevation-16: 0px 8px 10px -5px rgba(0,0,0,0.4), 0px 16px 24px 2px rgba(0,0,0,0.28), 0px 6px 30px 5px rgba(0,0,0,0.24);
+  --mui-elevation-24: 0px 11px 15px -7px rgba(0,0,0,0.4), 0px 24px 38px 3px rgba(0,0,0,0.28), 0px 9px 46px 8px rgba(0,0,0,0.24);
+  
+  /* Component-specific dark mode adjustments */
+  
+  .MuiCard-root {
+    background-color: var(--color-neutral-800);
+  }
+  
+  .MuiCardHeader-root {
+    background-color: var(--color-neutral-700);
+  }
+  
+  .MuiAppBar-root {
+    background-color: var(--color-neutral-800);
+    border-bottom: 1px solid var(--color-neutral-700);
+  }
+  
+  .MuiTableHead-root {
+    background-color: var(--color-neutral-800);
+  }
+  
+  .MuiTableCell-head {
+    background-color: var(--color-neutral-800);
+    border-bottom-color: var(--color-neutral-600);
+  }
+  
+  .MuiTableRow-root:hover {
+    background-color: var(--color-neutral-700);
+  }
+  
+  .MuiTableRow-root.Mui-selected {
+    background-color: rgba(33, 150, 243, 0.12);
+  }
+  
+  .MuiDialog-paper {
+    background-color: var(--color-neutral-800);
+  }
+  
+  .MuiFilledInput-root {
+    background-color: rgba(255, 255, 255, 0.09);
+  }
+  
+  .MuiFilledInput-root:hover {
+    background-color: rgba(255, 255, 255, 0.13);
+  }
+  
+  .function-key-bar {
+    background-color: var(--color-neutral-800);
+    border-top-color: var(--color-neutral-700);
+  }
+}
+
+/* ========================================
+   THEME TOGGLE TRANSITIONS
+   Smooth color transitions when switching themes
+   ======================================== */
+
+* {
+  transition: background-color var(--mui-transition-duration-short) var(--mui-transition-easing-sharp),
+              color var(--mui-transition-duration-short) var(--mui-transition-easing-sharp),
+              border-color var(--mui-transition-duration-short) var(--mui-transition-easing-sharp);
+}
+
+/* Exclude transitions for interactive elements to maintain responsiveness */
+.MuiButton-root,
+.MuiIconButton-root,
+.MuiInputBase-root,
+.MuiCheckbox-root,
+.MuiRadio-root,
+.MuiSwitch-root {
+  transition: none;
+}
+
+/* ========================================
+   RESPONSIVE BREAKPOINTS
+   Mobile-first responsive design
+   ======================================== */
+
+/* Extra small devices (phones, less than 600px) */
+@media (max-width: 599px) {
+  .MuiToolbar-root {
+    padding-left: var(--spacing-md);
+    padding-right: var(--spacing-md);
+  }
+  
+  .MuiCard-root {
+    margin: var(--spacing-sm);
+  }
+  
+  .MuiCardHeader-root,
+  .MuiCardContent-root,
+  .MuiCardActions-root {
+    padding: var(--spacing-md);
+  }
+  
+  .MuiDialog-paper {
+    margin: var(--spacing-md);
+    max-width: calc(100% - var(--spacing-lg));
+  }
+  
+  .MuiTableCell-root {
+    padding: var(--spacing-sm) var(--spacing-xs);
+    font-size: var(--font-size-xs);
+  }
+  
+  .function-key-bar {
+    flex-wrap: wrap;
+    gap: var(--spacing-sm);
+  }
+}
+
+/* Small devices (tablets, 600px and up) */
+@media (min-width: 600px) {
+  .MuiToolbar-root {
+    padding-left: var(--spacing-lg);
+    padding-right: var(--spacing-lg);
+  }
+}
+
+/* Medium devices (landscape tablets, 960px and up) */
+@media (min-width: 960px) {
+  .MuiContainer-root {
+    max-width: var(--container-md);
+  }
+  
+  .MuiDialog-paper {
+    margin: var(--spacing-xl);
+  }
+}
+
+/* Large devices (laptops/desktops, 1280px and up) */
+@media (min-width: 1280px) {
+  .MuiContainer-root {
+    max-width: var(--container-lg);
+  }
+  
+  .MuiTableCell-root {
+    padding: var(--spacing-md) var(--spacing-lg);
+  }
+}
+
+/* Extra large devices (large desktops, 1920px and up) */
+@media (min-width: 1920px) {
+  .MuiContainer-root {
+    max-width: var(--container-xl);
+  }
+}
+
+/* ========================================
+   PRINT STYLES
+   Optimized for printing reports
+   ======================================== */
+
+@media print {
+  .MuiAppBar-root,
+  .MuiDrawer-root,
+  .function-key-bar,
+  .MuiButton-root,
+  .MuiPagination-root {
+    display: none !important;
+  }
+  
+  .MuiCard-root {
+    box-shadow: none !important;
+    border: 1px solid var(--color-border-default);
+    page-break-inside: avoid;
+  }
+  
+  .MuiTable-root {
+    page-break-inside: auto;
+  }
+  
+  .MuiTableRow-root {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+  
+  body {
+    background-color: white;
+    color: black;
+  }
+}
+
+/* ========================================
+   ACCESSIBILITY ENHANCEMENTS
+   WCAG 2.1 Level AA compliance
+   ======================================== */
+
+/* Focus visible for keyboard navigation */
+*:focus-visible {
+  outline: var(--focus-outline);
+  outline-offset: var(--focus-outline-offset);
+}
+
+/* Skip to main content link */
+.skip-to-main {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--color-primary-500);
+  color: var(--color-neutral-0);
+  padding: var(--spacing-sm) var(--spacing-md);
+  text-decoration: none;
+  z-index: 9999;
+}
+
+.skip-to-main:focus {
+  top: 0;
+}
+
+/* Screen reader only content */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .MuiButton-root {
+    border: 2px solid currentColor;
+  }
+  
+  .MuiInputBase-root {
+    border: 2px solid currentColor;
+  }
+  
+  .MuiCard-root {
+    border: 2px solid var(--color-border-default);
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ========================================
+   END OF THEME CUSTOMIZATION
+   All Material-UI component overrides complete
+   ======================================== */

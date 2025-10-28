@@ -1,0 +1,22 @@
+<!--
+  User Icon SVG
+  
+  Converted from BMS 3270 terminal screens:
+  - COUSR00.bms (List Users)
+  - COUSR01.bms (Add User)
+  - COUSR02.bms (Update User)
+  - COUSR03.bms (Delete User)
+  
+  Purpose: Represents user management and identity administration features
+  Original context: Character-based user listings on mainframe terminal
+  Modern usage: Scalable vector icon for React SPA user management pages
+  
+  Design: Classic person silhouette with circular head and shoulders
+  Scalability: Designed for 16px, 24px, 32px, and 48px rendering
+  Theming: Uses currentColor for automatic theme adaptation
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true">
+  <!-- User icon with person silhouette -->
+  <title>User</title>
+  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+</svg>

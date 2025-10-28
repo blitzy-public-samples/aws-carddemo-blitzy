@@ -1,0 +1,152 @@
+<!--
+  CardDemo - Empty State Illustration
+  Converted from: BMS map empty screen states (COTRN00.bms, COCRDLI.bms, COACTVW.bms)
+  Purpose: Modern SVG placeholder for empty data lists (transactions, cards, accounts)
+  
+  Replaces: IBM 3270 terminal blank screens with modern web-appropriate visual feedback
+  Used in: TransactionListPage, CardListPage, AccountViewPage when no data is available
+  
+  Features:
+  - Neutral color scheme compatible with light/dark themes
+  - Accessible with title and desc elements for screen readers
+  - Optimized SVG markup for fast rendering
+  - Scalable vector graphics (300x300 default viewBox)
+  - Clean, minimal design with document/list iconography
+-->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 300 300"
+  width="300"
+  height="300"
+  role="img"
+  aria-labelledby="emptyStateTitle emptyStateDesc"
+>
+  <title id="emptyStateTitle">No Data Available</title>
+  <desc id="emptyStateDesc">
+    An illustration indicating that no data is currently available to display. 
+    This appears when transaction lists, card lists, or account views have no records.
+  </desc>
+  
+  <!-- Background circle for visual context -->
+  <circle
+    cx="150"
+    cy="150"
+    r="140"
+    fill="none"
+    stroke="#E5E7EB"
+    stroke-width="2"
+    opacity="0.5"
+  />
+  
+  <!-- Document/List icon representation -->
+  <g id="documentIcon">
+    <!-- Main document rectangle -->
+    <rect
+      x="80"
+      y="60"
+      width="140"
+      height="180"
+      rx="8"
+      ry="8"
+      fill="none"
+      stroke="#9CA3AF"
+      stroke-width="3"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    
+    <!-- Document fold/corner -->
+    <path
+      d="M 180 60 L 180 90 L 220 90"
+      fill="none"
+      stroke="#9CA3AF"
+      stroke-width="3"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M 180 60 L 220 60 L 220 90 L 180 90 Z"
+      fill="#F3F4F6"
+      opacity="0.5"
+    />
+    
+    <!-- Empty list lines (shorter to indicate emptiness) -->
+    <line
+      x1="100"
+      y1="110"
+      x2="170"
+      y2="110"
+      stroke="#D1D5DB"
+      stroke-width="2"
+      stroke-linecap="round"
+      opacity="0.6"
+    />
+    <line
+      x1="100"
+      y1="130"
+      x2="160"
+      y2="130"
+      stroke="#D1D5DB"
+      stroke-width="2"
+      stroke-linecap="round"
+      opacity="0.5"
+    />
+    <line
+      x1="100"
+      y1="150"
+      x2="155"
+      y2="150"
+      stroke="#D1D5DB"
+      stroke-width="2"
+      stroke-linecap="round"
+      opacity="0.4"
+    />
+    <line
+      x1="100"
+      y1="170"
+      x2="150"
+      y2="170"
+      stroke="#D1D5DB"
+      stroke-width="2"
+      stroke-linecap="round"
+      opacity="0.3"
+    />
+  </g>
+  
+  <!-- Empty indicator - circular badge with dash -->
+  <g id="emptyIndicator">
+    <circle
+      cx="190"
+      cy="200"
+      r="30"
+      fill="#F9FAFB"
+      stroke="#9CA3AF"
+      stroke-width="2"
+    />
+    <!-- Horizontal dash indicating "empty" -->
+    <line
+      x1="170"
+      y1="200"
+      x2="210"
+      y2="200"
+      stroke="#6B7280"
+      stroke-width="3"
+      stroke-linecap="round"
+    />
+  </g>
+  
+  <!-- Bottom text area (subtle indication) -->
+  <g id="emptyText" opacity="0.7">
+    <text
+      x="150"
+      y="270"
+      font-family="system-ui, -apple-system, sans-serif"
+      font-size="14"
+      fill="#6B7280"
+      text-anchor="middle"
+      font-weight="500"
+    >
+      No items to display
+    </text>
+  </g>
+</svg>

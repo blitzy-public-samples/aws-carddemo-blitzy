@@ -1,0 +1,101 @@
+# CardDemo Backend - Docker Build Context Ignore Patterns
+# Excludes unnecessary files from Docker build context to optimize build performance
+# and prevent sensitive files from being included in container images
+
+# Maven build artifacts
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+
+# Maven wrapper (will be downloaded inside container if needed)
+.mvn/
+mvnw
+mvnw.cmd
+
+# IDE configuration files
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+.eclipse/
+.metadata/
+*.sublime-*
+nbproject/
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# Test reports and coverage data
+surefire-reports/
+failsafe-reports/
+test-output/
+coverage/
+.jacoco/
+*.exec
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Local environment configuration (sensitive data)
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.p12
+*.jks
+application-local.yml
+application-local.properties
+
+# Documentation (build in separate stage if needed)
+README.md
+CONTRIBUTING.md
+docs/
+*.md
+
+# CI/CD configurations (not needed in runtime image)
+.gitlab-ci.yml
+.travis.yml
+azure-pipelines.yml
+Jenkinsfile
+
+# Docker files (already used, don't need in context)
+docker-compose.yml
+docker-compose.*.yml
+
+# Kubernetes manifests (deployed separately)
+k8s/
+kubernetes/
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Keep these files (commented to document what IS included):
+# src/
+# pom.xml
+# Dockerfile

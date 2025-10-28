@@ -1,0 +1,263 @@
+# ============================================================================
+# Spring Boot Test Profile Configuration
+# ============================================================================
+# Purpose: Test environment configuration for automated unit and integration
+#          testing with in-memory H2 database for fast execution and test
+#          isolation without external dependencies.
+#
+# Conversion Note: This is a new configuration created for the Java/Spring Boot
+#                  modernization. No equivalent exists in the COBOL mainframe
+#                  environment. Provides test-specific settings optimized for
+#                  automated testing, CI/CD pipelines, and developer workflows.
+# ============================================================================
+
+spring:
+  # ============================================================================
+  # Profile Configuration
+  # ============================================================================
+  config:
+    activate:
+      on-profile: test
+
+  # ============================================================================
+  # DataSource Configuration - H2 In-Memory Database
+  # ============================================================================
+  # Using H2 in-memory database with PostgreSQL compatibility mode to ensure
+  # test behavior closely matches production PostgreSQL while maintaining fast
+  # test execution and complete test isolation.
+  # ============================================================================
+  datasource:
+    # H2 in-memory database with PostgreSQL compatibility mode
+    url: jdbc:h2:mem:testdb;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: 
+    
+    # HikariCP connection pool settings for testing
+    hikari:
+      # Smaller pool size for testing (default: 10)
+      maximum-pool-size: 5
+      minimum-idle: 1
+      connection-timeout: 5000
+      idle-timeout: 300000
+      max-lifetime: 600000
+      # Disable connection leak detection in tests for performance
+      leak-detection-threshold: 0
+      pool-name: CardDemo-Test-HikariCP
+
+  # ============================================================================
+  # H2 Console Configuration (Disabled for Automated Tests)
+  # ============================================================================
+  h2:
+    console:
+      enabled: false  # Disable H2 web console in automated tests
+
+  # ============================================================================
+  # JPA/Hibernate Configuration
+  # ============================================================================
+  # Using create-drop DDL mode for clean test slate on each test execution.
+  # This ensures complete test isolation and eliminates cross-test contamination.
+  # ============================================================================
+  jpa:
+    # Hibernate DDL auto configuration
+    hibernate:
+      ddl-auto: create-drop  # Create schema on startup, drop on shutdown for clean tests
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+        implicit-strategy: org.springframework.boot.orm.jpa.hibernate.SpringImplicitNamingStrategy
+    
+    # JPA properties
+    properties:
+      hibernate:
+        # Disable SQL logging in tests for cleaner output
+        show_sql: false
+        format_sql: false
+        use_sql_comments: false
+        
+        # H2-specific dialect with PostgreSQL compatibility
+        dialect: org.hibernate.dialect.H2Dialect
+        
+        # Batch processing settings (same as production for consistency)
+        jdbc:
+          batch_size: 50
+          fetch_size: 100
+          time_zone: UTC
+        order_inserts: true
+        order_updates: true
+        
+        # Schema validation (skip in tests, using create-drop)
+        hbm2ddl:
+          auto: create-drop
+        
+        # Performance settings
+        generate_statistics: false  # Disable for test performance
+
+    # Show SQL for debugging (disabled, use logging configuration instead)
+    show-sql: false
+    
+    # Open EntityManager in view pattern (disabled for testing)
+    open-in-view: false
+
+  # ============================================================================
+  # Flyway Migration Configuration (Disabled for Testing)
+  # ============================================================================
+  # Flyway is disabled in test profile because we use JPA's create-drop DDL
+  # mode for faster test execution. Schema is created automatically from
+  # entity annotations, eliminating migration execution overhead.
+  # ============================================================================
+  flyway:
+    enabled: false  # Disable Flyway migrations in tests, use JPA DDL instead
+
+  # ============================================================================
+  # SQL Initialization Configuration
+  # ============================================================================
+  # Configure test data initialization from SQL scripts if needed.
+  # By default, test data is loaded via @BeforeEach methods or test fixtures.
+  # ============================================================================
+  sql:
+    init:
+      mode: never  # Use 'always' to load data.sql, 'never' for test-specific data loading
+      platform: h2
+      encoding: UTF-8
+      # schema-locations: classpath:schema-test.sql  # Optional: custom test schema
+      # data-locations: classpath:data-test.sql      # Optional: test data
+
+  # ============================================================================
+  # Spring Batch Configuration for Testing
+  # ============================================================================
+  # Configure Spring Batch for synchronous execution in tests and enable
+  # JobLauncherTestUtils support for batch job testing.
+  # ============================================================================
+  batch:
+    # Job execution settings
+    job:
+      enabled: false  # Disable automatic job execution on startup
+      
+    # JDBC initialization settings
+    jdbc:
+      initialize-schema: embedded  # Auto-create batch tables in H2
+      table-prefix: BATCH_
+      isolation-level-for-create: default
+
+  # ============================================================================
+  # Actuator Configuration (Disabled for Testing)
+  # ============================================================================
+  # Actuator endpoints are disabled in test profile to avoid port conflicts
+  # and unnecessary overhead during automated testing.
+  # ============================================================================
+  boot:
+    admin:
+      client:
+        enabled: false  # Disable Spring Boot Admin client in tests
+
+# ============================================================================
+# Management/Actuator Configuration
+# ============================================================================
+management:
+  endpoints:
+    enabled-by-default: false  # Disable all actuator endpoints in tests
+    web:
+      exposure:
+        include: health  # Only expose health endpoint if needed
+  endpoint:
+    health:
+      enabled: true
+      show-details: never
+  health:
+    defaults:
+      enabled: false
+  metrics:
+    enable:
+      all: false  # Disable all metrics collection in tests
+
+# ============================================================================
+# Server Configuration
+# ============================================================================
+server:
+  port: 0  # Random available port for parallel test execution
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: never  # Don't include stacktraces in test responses
+    include-exception: true
+
+# ============================================================================
+# Logging Configuration
+# ============================================================================
+# Configure test-specific logging levels to reduce noise in test output.
+# Most packages set to WARN level, with ERROR level for SQL to minimize
+# console output during automated testing.
+# ============================================================================
+logging:
+  level:
+    root: WARN
+    
+    # Application logging (INFO for debugging, WARN for clean test output)
+    com.carddemo: INFO
+    
+    # Spring Framework (WARN to reduce noise)
+    org.springframework: WARN
+    org.springframework.boot: WARN
+    org.springframework.web: WARN
+    org.springframework.security: WARN
+    org.springframework.batch: WARN
+    org.springframework.data: WARN
+    
+    # Hibernate/JPA (ERROR to minimize SQL logging)
+    org.hibernate: ERROR
+    org.hibernate.SQL: ERROR
+    org.hibernate.type.descriptor.sql.BasicBinder: ERROR
+    org.hibernate.orm.jdbc.bind: ERROR
+    
+    # HikariCP connection pool (WARN)
+    com.zaxxer.hikari: WARN
+    
+    # H2 Database (ERROR)
+    org.h2: ERROR
+    
+    # Flyway (WARN, though disabled)
+    org.flywaydb: WARN
+    
+    # Test frameworks (WARN)
+    org.junit: WARN
+    org.testcontainers: WARN
+  
+  # Logging pattern for tests
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+# ============================================================================
+# Application-Specific Test Configuration
+# ============================================================================
+# CardDemo application-specific settings for test environment
+# ============================================================================
+app:
+  # Security settings for testing
+  security:
+    jwt:
+      secret: test-secret-key-for-jwt-token-generation-minimum-256-bits-required
+      expiration: 3600000  # 1 hour (in milliseconds)
+      refresh-expiration: 7200000  # 2 hours
+  
+  # Batch job settings for testing
+  batch:
+    chunk-size: 10  # Smaller chunk size for faster test execution
+    max-threads: 1  # Single-threaded execution for test predictability
+    
+  # Test data settings
+  test:
+    data:
+      load-sample-data: false  # Control whether to load sample test data
+      reset-sequences: true    # Reset database sequences between tests
+
+# ============================================================================
+# Spring Test Configuration
+# ============================================================================
+spring.test:
+  # Database initialization for tests
+  database:
+    replace: any  # Replace any datasource with embedded database for testing
+  
+  # Mock configuration
+  mockmvc:
+    print: false  # Don't print MockMvc results by default (enable in specific tests)

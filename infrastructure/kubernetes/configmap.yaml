@@ -1,0 +1,471 @@
+# Kubernetes ConfigMap for CardDemo Backend Application
+# Replaces mainframe JCL job parameters and CICS transaction settings
+# Contains non-sensitive application configuration data
+# Mounted by backend pods as environment variables and configuration files
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carddemo-backend-config
+  namespace: carddemo
+  labels:
+    app: carddemo
+    component: backend
+    environment: production
+    version: "1.0"
+    managed-by: kubernetes
+  annotations:
+    description: "Backend application configuration for CardDemo credit card management system"
+    source: "Migrated from mainframe CICS/JCL configuration"
+    documentation: "https://github.com/carddemo/carddemo-modernized/blob/main/backend/README.md"
+
+data:
+  # =============================================================================
+  # APPLICATION CONFIGURATION (application.yml equivalent)
+  # =============================================================================
+  application.yml: |
+    # Spring Boot Application Configuration
+    # Converted from mainframe CICS transaction settings
+    
+    spring:
+      application:
+        name: carddemo-backend
+      
+      # Database Configuration
+      # Replaces VSAM file system with PostgreSQL
+      datasource:
+        # Database connection URL (references secret for credentials)
+        url: ${DATABASE_URL}
+        username: ${POSTGRES_USER}
+        password: ${POSTGRES_PASSWORD}
+        driver-class-name: org.postgresql.Driver
+        
+        # HikariCP Connection Pool Settings
+        # Optimized for high-throughput transaction processing (10,000 TPS requirement)
+        hikari:
+          pool-name: CardDemoConnectionPool
+          maximum-pool-size: 50
+          minimum-idle: 10
+          connection-timeout: 30000
+          idle-timeout: 600000
+          max-lifetime: 1800000
+          connection-test-query: SELECT 1
+          auto-commit: false
+          leak-detection-threshold: 60000
+      
+      # JPA/Hibernate Configuration
+      # Replaces COBOL VSAM I/O operations
+      jpa:
+        database-platform: org.hibernate.dialect.PostgreSQLDialect
+        show-sql: false
+        hibernate:
+          ddl-auto: validate
+          naming:
+            physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+            implicit-strategy: org.hibernate.boot.model.naming.ImplicitNamingStrategyJpaCompliantImpl
+        properties:
+          hibernate:
+            format_sql: true
+            use_sql_comments: false
+            jdbc:
+              batch_size: 50
+              fetch_size: 100
+            order_inserts: true
+            order_updates: true
+            connection:
+              provider_disables_autocommit: false
+            query:
+              in_clause_parameter_padding: true
+            generate_statistics: false
+      
+      # Spring Batch Configuration
+      # Replaces JCL batch job execution
+      batch:
+        job:
+          enabled: true
+        jdbc:
+          initialize-schema: never
+          isolation-level-for-create: serializable
+      
+      # Flyway Database Migration
+      # Replaces VSAM dataset initialization
+      flyway:
+        enabled: true
+        baseline-on-migrate: true
+        validate-on-migrate: true
+        locations: classpath:db/migration
+        schemas: public
+        table: flyway_schema_history
+      
+      # Jackson JSON Configuration
+      jackson:
+        serialization:
+          write-dates-as-timestamps: false
+          indent-output: false
+        deserialization:
+          fail-on-unknown-properties: false
+        default-property-inclusion: non_null
+        time-zone: UTC
+        date-format: yyyy-MM-dd'T'HH:mm:ss.SSSZ
+      
+      # Server Configuration
+      # Replaces CICS transaction server settings
+    server:
+      port: 8080
+      compression:
+        enabled: true
+        mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json
+        min-response-size: 1024
+      http2:
+        enabled: true
+      servlet:
+        context-path: /
+        session:
+          timeout: 30m
+          cookie:
+            http-only: true
+            secure: true
+            same-site: strict
+      tomcat:
+        threads:
+          max: 200
+          min-spare: 20
+        max-connections: 8192
+        accept-count: 100
+        connection-timeout: 20s
+      error:
+        include-message: always
+        include-binding-errors: always
+        include-stacktrace: never
+        include-exception: false
+    
+    # Management Endpoints (Spring Boot Actuator)
+    # Provides health checks and metrics for Kubernetes
+    management:
+      endpoints:
+        web:
+          exposure:
+            include: health,info,metrics,prometheus
+          base-path: /actuator
+      endpoint:
+        health:
+          show-details: when-authorized
+          probes:
+            enabled: true
+        metrics:
+          enabled: true
+      metrics:
+        export:
+          prometheus:
+            enabled: true
+        distribution:
+          percentiles-histogram:
+            http.server.requests: true
+      health:
+        livenessState:
+          enabled: true
+        readinessState:
+          enabled: true
+    
+    # Logging Configuration
+    # Replaces mainframe system logging
+    logging:
+      level:
+        root: INFO
+        com.carddemo: INFO
+        com.carddemo.controller: INFO
+        com.carddemo.service: INFO
+        com.carddemo.repository: INFO
+        com.carddemo.batch: INFO
+        com.carddemo.security: INFO
+        org.springframework.web: WARN
+        org.springframework.security: WARN
+        org.springframework.batch: INFO
+        org.hibernate.SQL: WARN
+        org.hibernate.type.descriptor.sql.BasicBinder: WARN
+        org.postgresql: WARN
+      pattern:
+        console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+        file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  
+  # =============================================================================
+  # DATABASE CONNECTION PARAMETERS
+  # =============================================================================
+  DATABASE_HOST: "postgres-service.carddemo.svc.cluster.local"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "carddemo"
+  DATABASE_SCHEMA: "public"
+  
+  # Connection pool settings
+  DB_POOL_MAX_SIZE: "50"
+  DB_POOL_MIN_IDLE: "10"
+  DB_POOL_CONNECTION_TIMEOUT: "30000"
+  DB_POOL_IDLE_TIMEOUT: "600000"
+  DB_POOL_MAX_LIFETIME: "1800000"
+  
+  # =============================================================================
+  # SPRING BOOT APPLICATION SETTINGS
+  # =============================================================================
+  SERVER_PORT: "8080"
+  SPRING_PROFILES_ACTIVE: "production"
+  
+  # Transaction settings (replaces CICS SYNCPOINT behavior)
+  SPRING_TRANSACTION_DEFAULT_TIMEOUT: "30"
+  SPRING_JPA_OPEN_IN_VIEW: "false"
+  
+  # =============================================================================
+  # SPRING BATCH CONFIGURATION
+  # Replaces JCL batch job parameters
+  # =============================================================================
+  
+  # Batch job execution settings
+  BATCH_JOB_ENABLED: "true"
+  BATCH_CHUNK_SIZE: "1000"
+  BATCH_THREAD_POOL_SIZE: "10"
+  BATCH_MAX_THREADS: "20"
+  BATCH_QUEUE_CAPACITY: "100"
+  
+  # Account processing batch job (replaces CBACTJ01-04)
+  ACCOUNT_BATCH_CHUNK_SIZE: "1000"
+  ACCOUNT_BATCH_SKIP_LIMIT: "10"
+  ACCOUNT_BATCH_RETRY_LIMIT: "3"
+  
+  # Transaction processing batch job (replaces CBTRNJ01-03)
+  TRANSACTION_BATCH_CHUNK_SIZE: "2000"
+  TRANSACTION_BATCH_SKIP_LIMIT: "10"
+  TRANSACTION_BATCH_RETRY_LIMIT: "3"
+  
+  # Customer validation batch job (replaces CBCUSJ01)
+  CUSTOMER_BATCH_CHUNK_SIZE: "1000"
+  CUSTOMER_BATCH_SKIP_LIMIT: "5"
+  CUSTOMER_BATCH_RETRY_LIMIT: "3"
+  
+  # Statement generation batch job (replaces CBSTM03A/B)
+  STATEMENT_BATCH_CHUNK_SIZE: "500"
+  STATEMENT_BATCH_SKIP_LIMIT: "5"
+  STATEMENT_BATCH_RETRY_LIMIT: "3"
+  
+  # Batch window timing (maintains 4-hour overnight processing window)
+  BATCH_WINDOW_START_HOUR: "2"
+  BATCH_WINDOW_END_HOUR: "6"
+  BATCH_WINDOW_DURATION_HOURS: "4"
+  
+  # =============================================================================
+  # PERFORMANCE AND RESOURCE SETTINGS
+  # =============================================================================
+  
+  # Transaction performance requirements (maintains mainframe SLAs)
+  TRANSACTION_TIMEOUT_MS: "200"
+  MAX_TRANSACTIONS_PER_SECOND: "10000"
+  RESPONSE_TIME_SLA_MS: "200"
+  
+  # Thread pool settings
+  ASYNC_EXECUTOR_CORE_POOL_SIZE: "10"
+  ASYNC_EXECUTOR_MAX_POOL_SIZE: "50"
+  ASYNC_EXECUTOR_QUEUE_CAPACITY: "500"
+  
+  # Circuit breaker settings
+  CIRCUIT_BREAKER_FAILURE_RATE_THRESHOLD: "50"
+  CIRCUIT_BREAKER_WAIT_DURATION_SECONDS: "60"
+  CIRCUIT_BREAKER_SLIDING_WINDOW_SIZE: "100"
+  
+  # =============================================================================
+  # SECURITY CONFIGURATION
+  # Replaces RACF security system
+  # =============================================================================
+  
+  # JWT token settings
+  JWT_EXPIRATION_MS: "3600000"
+  JWT_REFRESH_EXPIRATION_MS: "86400000"
+  JWT_ISSUER: "carddemo-backend"
+  
+  # Security roles (replaces RACF profiles)
+  SECURITY_ROLE_ADMIN: "ROLE_ADMIN"
+  SECURITY_ROLE_USER: "ROLE_USER"
+  SECURITY_ROLE_OPERATOR: "ROLE_OPERATOR"
+  
+  # Password policy
+  PASSWORD_MIN_LENGTH: "8"
+  PASSWORD_MAX_FAILED_ATTEMPTS: "5"
+  PASSWORD_LOCKOUT_DURATION_MINUTES: "30"
+  
+  # Session settings
+  SESSION_TIMEOUT_MINUTES: "30"
+  SESSION_MAX_CONCURRENT: "1"
+  
+  # =============================================================================
+  # APPLICATION FEATURE FLAGS
+  # =============================================================================
+  
+  # Feature toggles
+  FEATURE_ACCOUNT_MANAGEMENT: "true"
+  FEATURE_CARD_MANAGEMENT: "true"
+  FEATURE_TRANSACTION_PROCESSING: "true"
+  FEATURE_BILLING: "true"
+  FEATURE_REPORTING: "true"
+  FEATURE_USER_MANAGEMENT: "true"
+  FEATURE_BATCH_PROCESSING: "true"
+  
+  # Validation settings (maintains COBOL field validation rules)
+  VALIDATION_STRICT_MODE: "true"
+  VALIDATION_PRESERVE_COBOL_RULES: "true"
+  
+  # =============================================================================
+  # INTEGRATION SETTINGS
+  # =============================================================================
+  
+  # External system interfaces (preserve mainframe interface formats)
+  EXTERNAL_INTERFACE_PRESERVE_FORMAT: "true"
+  EXTERNAL_INTERFACE_EBCDIC_ENCODING: "false"
+  
+  # Payment network interface
+  PAYMENT_NETWORK_ENABLED: "true"
+  PAYMENT_NETWORK_ISO8583_FORMAT: "true"
+  
+  # Bank core system interface
+  BANK_CORE_INTERFACE_ENABLED: "true"
+  BANK_CORE_FIXED_WIDTH_FORMAT: "true"
+  
+  # Regulatory reporting interface
+  REGULATORY_REPORTING_ENABLED: "true"
+  REGULATORY_REPORTING_PRESERVE_LAYOUT: "true"
+  
+  # =============================================================================
+  # MONITORING AND OBSERVABILITY
+  # =============================================================================
+  
+  # Metrics collection
+  METRICS_ENABLED: "true"
+  METRICS_EXPORT_PROMETHEUS: "true"
+  METRICS_STEP_SECONDS: "60"
+  
+  # Health check settings
+  HEALTH_CHECK_ENABLED: "true"
+  HEALTH_CHECK_DATABASE_ENABLED: "true"
+  HEALTH_CHECK_DISK_SPACE_ENABLED: "true"
+  
+  # Tracing settings
+  TRACING_ENABLED: "false"
+  TRACING_SAMPLE_RATE: "0.1"
+  
+  # =============================================================================
+  # DATA PRECISION SETTINGS
+  # Maintains COBOL COMP-3 precision requirements
+  # =============================================================================
+  
+  # BigDecimal settings for financial calculations
+  DECIMAL_SCALE_CURRENCY: "2"
+  DECIMAL_SCALE_INTEREST: "4"
+  DECIMAL_ROUNDING_MODE: "HALF_UP"
+  DECIMAL_PRECISION_STRICT: "true"
+  
+  # Date format settings (maintains COBOL date formats)
+  DATE_FORMAT_DISPLAY: "yyyy-MM-dd"
+  DATE_FORMAT_COBOL: "yyyy-MM-dd"
+  DATETIME_FORMAT_ISO: "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
+  TIMEZONE_DEFAULT: "UTC"
+  
+  # =============================================================================
+  # ERROR HANDLING CONFIGURATION
+  # =============================================================================
+  
+  # Error handling settings
+  ERROR_HANDLING_INCLUDE_STACKTRACE: "false"
+  ERROR_HANDLING_LOG_ERRORS: "true"
+  ERROR_HANDLING_PRESERVE_COBOL_CODES: "true"
+  
+  # Retry policy
+  RETRY_MAX_ATTEMPTS: "3"
+  RETRY_BACKOFF_INITIAL_MS: "1000"
+  RETRY_BACKOFF_MULTIPLIER: "2.0"
+  RETRY_BACKOFF_MAX_MS: "10000"
+  
+  # =============================================================================
+  # CACHING CONFIGURATION
+  # =============================================================================
+  
+  # Cache settings
+  CACHE_ENABLED: "true"
+  CACHE_TYPE: "caffeine"
+  CACHE_TTL_SECONDS: "3600"
+  CACHE_MAX_SIZE: "10000"
+  
+  # Cache names for specific entities
+  CACHE_ACCOUNT: "accounts"
+  CACHE_CARD: "cards"
+  CACHE_CUSTOMER: "customers"
+  CACHE_TRANSACTION_TYPE: "transaction-types"
+  CACHE_TRANSACTION_CATEGORY: "transaction-categories"
+  
+  # =============================================================================
+  # API CONFIGURATION
+  # =============================================================================
+  
+  # REST API settings
+  API_BASE_PATH: "/api"
+  API_VERSION: "v1"
+  API_CORS_ENABLED: "true"
+  API_CORS_ALLOWED_ORIGINS: "*"
+  API_CORS_ALLOWED_METHODS: "GET,POST,PUT,DELETE,OPTIONS"
+  API_CORS_MAX_AGE_SECONDS: "3600"
+  
+  # Rate limiting
+  RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_REQUESTS_PER_MINUTE: "1000"
+  RATE_LIMIT_BURST_CAPACITY: "2000"
+  
+  # API documentation
+  SWAGGER_ENABLED: "true"
+  SWAGGER_BASE_PATH: "/api-docs"
+  SWAGGER_UI_PATH: "/swagger-ui.html"
+  
+  # =============================================================================
+  # FILE PROCESSING CONFIGURATION
+  # Replaces mainframe file I/O settings
+  # =============================================================================
+  
+  # File upload settings
+  FILE_UPLOAD_MAX_SIZE_MB: "10"
+  FILE_UPLOAD_MAX_REQUEST_SIZE_MB: "10"
+  FILE_UPLOAD_TEMP_DIR: "/tmp/uploads"
+  
+  # File export settings (maintains fixed-width format for external systems)
+  FILE_EXPORT_FIXED_WIDTH: "true"
+  FILE_EXPORT_ENCODING: "UTF-8"
+  FILE_EXPORT_LINE_ENDING: "CRLF"
+  
+  # =============================================================================
+  # MAINTENANCE AND OPERATIONAL SETTINGS
+  # =============================================================================
+  
+  # Maintenance mode
+  MAINTENANCE_MODE_ENABLED: "false"
+  MAINTENANCE_ALLOW_ADMIN_ACCESS: "true"
+  
+  # Graceful shutdown
+  SHUTDOWN_GRACE_PERIOD_SECONDS: "30"
+  SHUTDOWN_WAIT_FOR_REQUESTS: "true"
+  
+  # Database maintenance
+  DB_VACUUM_ENABLED: "true"
+  DB_ANALYZE_ENABLED: "true"
+  DB_MAINTENANCE_WINDOW_HOUR: "3"
+  
+  # Backup settings
+  BACKUP_ENABLED: "true"
+  BACKUP_SCHEDULE_CRON: "0 0 1 * * ?"
+  BACKUP_RETENTION_DAYS: "30"
+  
+  # =============================================================================
+  # ENVIRONMENT-SPECIFIC OVERRIDES
+  # =============================================================================
+  
+  # Application environment
+  APP_ENVIRONMENT: "production"
+  APP_VERSION: "1.0.0"
+  APP_BUILD_TIMESTAMP: "2025-01-01T00:00:00Z"
+  
+  # Debug settings
+  DEBUG_ENABLED: "false"
+  DEBUG_LOG_SQL: "false"
+  DEBUG_LOG_REQUESTS: "false"
