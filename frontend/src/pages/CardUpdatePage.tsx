@@ -63,9 +63,9 @@ import {
   Paper,
   Alert
 } from '@mui/material';
-import { CardForm, CardFormData } from '../components/forms/CardForm';
+import CardForm, { CardFormData } from '../components/forms/CardForm';
 import { Card } from '../types/card';
-import { cardService } from '../services/cardService';
+import * as cardService from '../services/cardService';
 import { useAuth } from '../hooks/useAuth';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import ErrorMessage from '../components/common/ErrorMessage';
