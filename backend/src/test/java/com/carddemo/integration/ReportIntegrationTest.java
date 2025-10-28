@@ -67,6 +67,7 @@ import org.junit.jupiter.api.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -144,6 +145,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * @since 2024
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles("integration-test")
 @Testcontainers
 @DisplayName("Report Generation API Integration Tests")
 public class ReportIntegrationTest {
@@ -338,33 +340,32 @@ public class ReportIntegrationTest {
         // Create test cards linked to accounts
         testCards = new ArrayList<>();
         
+        // Card numbers must pass Luhn algorithm checksum validation
+        // Using valid Visa test card numbers that pass Luhn checksum
         Card card1 = Card.builder()
-                .cardNum("4000123456780001")
+                .cardNum("4532015112830366")  // Valid Visa test card (passes Luhn)
                 .cardAcctId(2000000001L)
-                .cardStatus("Y")
+                .cardStatus("A")  // Active
                 .cardEmbossedName("JOHN DOE")
                 .cardExpirationDate(LocalDate.of(2028, 1, 31))
-                .cardActiveDate(LocalDate.of(2023, 1, 15))
                 .build();
         testCards.add(card1);
         
         Card card2 = Card.builder()
-                .cardNum("4000123456780002")
+                .cardNum("4556737586899855")  // Valid Visa test card (passes Luhn)
                 .cardAcctId(2000000002L)
-                .cardStatus("Y")
+                .cardStatus("A")  // Active
                 .cardEmbossedName("JANE SMITH")
                 .cardExpirationDate(LocalDate.of(2028, 3, 31))
-                .cardActiveDate(LocalDate.of(2023, 3, 20))
                 .build();
         testCards.add(card2);
         
         Card card3 = Card.builder()
-                .cardNum("4000123456780003")
+                .cardNum("4916592289993918")  // Valid Visa test card (passes Luhn)
                 .cardAcctId(2000000003L)
-                .cardStatus("Y")
+                .cardStatus("A")  // Active
                 .cardEmbossedName("BOB JOHNSON")
                 .cardExpirationDate(LocalDate.of(2028, 6, 30))
-                .cardActiveDate(LocalDate.of(2023, 6, 10))
                 .build();
         testCards.add(card3);
         
@@ -399,13 +400,13 @@ public class ReportIntegrationTest {
         // Transaction 1: Recent purchase (card 1, category 1001 - Groceries)
         Transaction tx1 = Transaction.builder()
                 .transId("TX000000000001")
-                .transCardNum("4000123456780001")
+                .transCardNum("4532015112830366")  // Card 1 - valid Luhn
                 .transTypeCd("01")  // Purchase
                 .transCatCd(1001)   // Groceries
                 .transSource("POS")
                 .transDesc("WHOLE FOODS MARKET")
                 .transAmt(new BigDecimal("125.50").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("MERCH0001")
+                .transMerchantId(100000001L)
                 .transMerchantName("Whole Foods Market")
                 .transMerchantCity("New York")
                 .transMerchantZip("10001")
@@ -417,13 +418,13 @@ public class ReportIntegrationTest {
         // Transaction 2: Recent gas purchase (card 1, category 1002 - Gas)
         Transaction tx2 = Transaction.builder()
                 .transId("TX000000000002")
-                .transCardNum("4000123456780001")
+                .transCardNum("4532015112830366")  // Card 1 - valid Luhn
                 .transTypeCd("01")  // Purchase
                 .transCatCd(1002)   // Gas
                 .transSource("POS")
                 .transDesc("SHELL GAS STATION")
                 .transAmt(new BigDecimal("55.75").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("MERCH0002")
+                .transMerchantId(100000002L)
                 .transMerchantName("Shell Gas Station")
                 .transMerchantCity("New York")
                 .transMerchantZip("10002")
@@ -435,13 +436,13 @@ public class ReportIntegrationTest {
         // Transaction 3: Dining purchase (card 2, category 1003 - Dining)
         Transaction tx3 = Transaction.builder()
                 .transId("TX000000000003")
-                .transCardNum("4000123456780002")
+                .transCardNum("4556737586899855")  // Card 2 - valid Luhn
                 .transTypeCd("01")  // Purchase
                 .transCatCd(1003)   // Dining
                 .transSource("POS")
                 .transDesc("THE CHEESECAKE FACTORY")
                 .transAmt(new BigDecimal("89.25").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("MERCH0003")
+                .transMerchantId(100000003L)
                 .transMerchantName("The Cheesecake Factory")
                 .transMerchantCity("Los Angeles")
                 .transMerchantZip("90210")
@@ -453,13 +454,13 @@ public class ReportIntegrationTest {
         // Transaction 4: Large purchase (card 2, category 1001 - Groceries)
         Transaction tx4 = Transaction.builder()
                 .transId("TX000000000004")
-                .transCardNum("4000123456780002")
+                .transCardNum("4556737586899855")  // Card 2 - valid Luhn
                 .transTypeCd("01")  // Purchase
                 .transCatCd(1001)   // Groceries
                 .transSource("POS")
                 .transDesc("COSTCO WHOLESALE")
                 .transAmt(new BigDecimal("275.80").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("MERCH0004")
+                .transMerchantId(100000004L)
                 .transMerchantName("Costco Wholesale")
                 .transMerchantCity("Los Angeles")
                 .transMerchantZip("90211")
@@ -471,13 +472,13 @@ public class ReportIntegrationTest {
         // Transaction 5: Cash advance (card 3, no category for cash)
         Transaction tx5 = Transaction.builder()
                 .transId("TX000000000005")
-                .transCardNum("4000123456780003")
+                .transCardNum("4916592289993918")  // Card 3 - valid Luhn
                 .transTypeCd("02")  // Cash Advance
                 .transCatCd(0)      // No category for cash
                 .transSource("ATM")
                 .transDesc("BANK OF AMERICA ATM")
                 .transAmt(new BigDecimal("300.00").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("MERCH0005")
+                .transMerchantId(100000005L)
                 .transMerchantName("Bank of America ATM")
                 .transMerchantCity("Dallas")
                 .transMerchantZip("75001")
@@ -489,13 +490,13 @@ public class ReportIntegrationTest {
         // Transaction 6: Payment (card 3, no category for payment)
         Transaction tx6 = Transaction.builder()
                 .transId("TX000000000006")
-                .transCardNum("4000123456780003")
+                .transCardNum("4916592289993918")  // Card 3 - valid Luhn
                 .transTypeCd("04")  // Payment
                 .transCatCd(0)      // No category for payment
                 .transSource("ONLINE")
                 .transDesc("ONLINE PAYMENT")
                 .transAmt(new BigDecimal("-500.00").setScale(2, RoundingMode.HALF_UP))  // Negative for payment
-                .transMerchantId("PAYMENT")
+                .transMerchantId(999999999L)
                 .transMerchantName("Online Payment")
                 .transMerchantCity("Dallas")
                 .transMerchantZip("75001")
@@ -507,13 +508,13 @@ public class ReportIntegrationTest {
         // Transaction 7: Large dining expense (card 1, category 1003)
         Transaction tx7 = Transaction.builder()
                 .transId("TX000000000007")
-                .transCardNum("4000123456780001")
+                .transCardNum("4532015112830366")  // Card 1 - valid Luhn
                 .transTypeCd("01")  // Purchase
                 .transCatCd(1003)   // Dining
                 .transSource("POS")
                 .transDesc("NOBU RESTAURANT")
                 .transAmt(new BigDecimal("450.00").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("MERCH0006")
+                .transMerchantId(100000006L)
                 .transMerchantName("Nobu Restaurant")
                 .transMerchantCity("New York")
                 .transMerchantZip("10019")
@@ -525,13 +526,13 @@ public class ReportIntegrationTest {
         // Transaction 8: Recent gas purchase (card 3, category 1002)
         Transaction tx8 = Transaction.builder()
                 .transId("TX000000000008")
-                .transCardNum("4000123456780003")
+                .transCardNum("4916592289993918")  // Card 3 - valid Luhn
                 .transTypeCd("01")  // Purchase
                 .transCatCd(1002)   // Gas
                 .transSource("POS")
                 .transDesc("CHEVRON GAS STATION")
                 .transAmt(new BigDecimal("62.40").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("MERCH0007")
+                .transMerchantId(100000007L)
                 .transMerchantName("Chevron Gas Station")
                 .transMerchantCity("Dallas")
                 .transMerchantZip("75002")
@@ -678,7 +679,7 @@ public class ReportIntegrationTest {
         // Prepare request body with card number filter
         Map<String, Object> requestBody = Map.of(
             "reportType", "TRANSACTION_ACTIVITY",
-            "cardNumber", "4000123456780001",
+            "cardNumber", "4532015112830366",
             "startDate", LocalDate.now().minusDays(60).toString(),
             "endDate", LocalDate.now().toString()
         );
@@ -707,7 +708,7 @@ public class ReportIntegrationTest {
         // Prepare request body with transaction type filter (Purchase only)
         Map<String, Object> requestBody = Map.of(
             "reportType", "TRANSACTION_ACTIVITY",
-            "cardNumber", "4000123456780001",
+            "cardNumber", "4532015112830366",
             "startDate", LocalDate.now().minusDays(60).toString(),
             "endDate", LocalDate.now().toString(),
             "transactionType", "01"  // Purchase
@@ -736,7 +737,7 @@ public class ReportIntegrationTest {
         // Prepare request body with category filter (Groceries = 1001)
         Map<String, Object> requestBody = Map.of(
             "reportType", "TRANSACTION_ACTIVITY",
-            "cardNumber", "4000123456780001",
+            "cardNumber", "4532015112830366",
             "startDate", LocalDate.now().minusDays(60).toString(),
             "endDate", LocalDate.now().toString(),
             "transactionCategory", 1001  // Groceries
@@ -765,7 +766,7 @@ public class ReportIntegrationTest {
         // Prepare request body with amount range filter
         Map<String, Object> requestBody = Map.of(
             "reportType", "TRANSACTION_ACTIVITY",
-            "cardNumber", "4000123456780001",
+            "cardNumber", "4532015112830366",
             "startDate", LocalDate.now().minusDays(60).toString(),
             "endDate", LocalDate.now().toString(),
             "minAmount", 100.00,
@@ -888,7 +889,7 @@ public class ReportIntegrationTest {
         // Prepare request body with date range having no data (far future)
         Map<String, Object> requestBody = Map.of(
             "reportType", "TRANSACTION_ACTIVITY",
-            "cardNumber", "4000123456780001",
+            "cardNumber", "4532015112830366",
             "startDate", "2030-01-01",
             "endDate", "2030-01-31"
         );
@@ -1190,7 +1191,7 @@ public class ReportIntegrationTest {
         // Prepare request body for card 1 transactions
         Map<String, Object> requestBody = Map.of(
             "reportType", "TRANSACTION_ACTIVITY",
-            "cardNumber", "4000123456780001",
+            "cardNumber", "4532015112830366",
             "startDate", LocalDate.now().minusDays(60).toString(),
             "endDate", LocalDate.now().toString()
         );

@@ -43,6 +43,8 @@ import com.carddemo.exception.BusinessException;
 import com.carddemo.model.dto.AccountDto;
 import com.carddemo.model.dto.TransactionDto;
 import com.carddemo.model.dto.UserDto;
+import com.carddemo.model.entity.Transaction;
+import com.carddemo.repository.TransactionRepository;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -136,6 +138,7 @@ public class ReportService {
     private final UserService userService;
     private final CardService cardService;
     private final ValidationService validationService;
+    private final TransactionRepository transactionRepository;
     
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final DateTimeFormatter DATETIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -644,14 +647,33 @@ public class ReportService {
         
         // Handle case where card number is not provided (report for all cards)
         if (cardNumber == null || cardNumber.trim().isEmpty()) {
-            // For reports without card number filter, we would need to query all transactions
-            // This requires a different method signature or enhancement to TransactionService
-            log.debug("No card number filter - would retrieve all transactions");
-            // For now, return empty list - this would be enhanced to query all transactions
+            // Query all transactions for the date range without card filter
+            log.debug("No card number filter - retrieving all transactions for date range");
+            
+            // Convert LocalDate to LocalDateTime (start of day to end of day)
+            LocalDateTime startDateTime = startDate.atStartOfDay();
+            LocalDateTime endDateTime = endDate.atTime(23, 59, 59);
+            
+            // Query first page to get total pages
+            Page<Transaction> firstPage = transactionRepository.findByTransOrigTsBetween(
+                    startDateTime, endDateTime, Pageable.ofSize(100));
+            
+            // Convert Transaction entities to TransactionDto
+            firstPage.getContent().forEach(tx -> allTransactions.add(convertToDto(tx)));
+            
+            // Query remaining pages if any
+            int totalPages = firstPage.getTotalPages();
+            for (int page = 1; page < totalPages; page++) {
+                Page<Transaction> nextPage = transactionRepository.findByTransOrigTsBetween(
+                        startDateTime, endDateTime, Pageable.ofSize(100).withPage(page));
+                nextPage.getContent().forEach(tx -> allTransactions.add(convertToDto(tx)));
+            }
+            
+            log.debug("Retrieved {} transactions total (all cards)", allTransactions.size());
             return allTransactions;
         }
         
-        // Query first page to get total pages
+        // Query first page to get total pages (with card filter)
         Page<TransactionDto> firstPage = transactionService.listTransactions(
                 cardNumber, startDate, endDate, Pageable.ofSize(100));
         
@@ -665,8 +687,37 @@ public class ReportService {
             allTransactions.addAll(nextPage.getContent());
         }
         
-        log.debug("Retrieved {} transactions total", allTransactions.size());
+        log.debug("Retrieved {} transactions total for card {}", allTransactions.size(), cardNumber);
         return allTransactions;
+    }
+    
+    /**
+     * Convert Transaction entity to TransactionDto.
+     * 
+     * <p>Performs entity-to-DTO mapping for transaction data. This method encapsulates
+     * the conversion logic to avoid code duplication when querying transactions.</p>
+     * 
+     * @param transaction Transaction entity from database
+     * @return TransactionDto with mapped fields
+     */
+    private TransactionDto convertToDto(Transaction transaction) {
+        return TransactionDto.builder()
+                .transId(transaction.getTransId())
+                .transCardNum(transaction.getTransCardNum())
+                .transTypeCd(transaction.getTransTypeCd())
+                .transCatCd(transaction.getTransCatCd())
+                .transSource(transaction.getTransSource())
+                .transDesc(transaction.getTransDesc())
+                .transAmt(transaction.getTransAmt())
+                .transMerchantId(transaction.getTransMerchantId())
+                .transMerchantName(transaction.getTransMerchantName())
+                .transMerchantCity(transaction.getTransMerchantCity())
+                .transMerchantZip(transaction.getTransMerchantZip())
+                .transOrigTs(transaction.getTransOrigTs() != null ? 
+                        transaction.getTransOrigTs().toLocalDateTime() : null)
+                .transProcTs(transaction.getTransProcTs() != null ? 
+                        transaction.getTransProcTs().toLocalDateTime() : null)
+                .build();
     }
 
     /**

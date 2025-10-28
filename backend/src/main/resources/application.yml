@@ -200,7 +200,9 @@ server:
   
   # Servlet context path (API base path)
   servlet:
-    context-path: ${CONTEXT_PATH:/api}
+    # Note: Context path commented out to avoid duplicate /api prefix in URLs
+    # All controllers use @RequestMapping("/api/...") which provides the /api prefix
+    # context-path: ${CONTEXT_PATH:/api}
     # Session timeout (30 minutes)
     session:
       timeout: 30m
