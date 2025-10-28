@@ -234,8 +234,8 @@ const CardListPage: React.FC = () => {
       // Update state with retrieved data
       // Maps to COBOL: 4000-POPULATE-SCREEN-DATA paragraph
       setCards(response.cards);
-      setTotalCards(response.pagination.totalItems);
-      setTotalPages(response.pagination.totalPages);
+      setTotalCards(response.pagination.totalItems ?? 0);
+      setTotalPages(response.pagination.totalPages ?? 1);
       
       if (resetPage) {
         setCurrentPage(1);
@@ -375,22 +375,7 @@ const CardListPage: React.FC = () => {
     navigate(`/cards/${cardData.cardNumber}`);
   };
 
-  /**
-   * Handle pagination change
-   * 
-   * Maps to COBOL: F7=Backward / F8=Forward pagination
-   * Updates WS-CA-SCREEN-NUM and reloads screen data
-   * 
-   * @param page - New page number (1-based)
-   */
-  const handlePageChange = (page: number) => {
-    setCurrentPage(page);
-    // Trigger data fetch for new page
-    // Maps to COBOL: F8 pressed, increment WS-CA-SCREEN-NUM, perform 3000-READ-CARD-DATA
-    setTimeout(() => {
-      fetchCards(false);
-    }, 100);
-  };
+
 
   /**
    * Convert Card objects to CardData format for CardTable
