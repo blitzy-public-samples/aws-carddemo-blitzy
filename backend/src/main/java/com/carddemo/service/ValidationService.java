@@ -302,12 +302,15 @@ public class ValidationService {
      * Validates a transaction category code.
      * <p>
      * Replaces COBOL validation for transaction category codes from CVTRA04Y.cpy
+     * Original COBOL from COTRN02C.cbl lines 329-334 only validates category is NUMERIC,
+     * allowing 0 as a valid value (commonly used for payment transactions type '02').
      * </p>
      * <p>
      * Validation Rules:
      * <ul>
      *   <li>Category code must not be null</li>
-     *   <li>Category code must be positive</li>
+     *   <li>Category code must be non-negative (>= 0)</li>
+     *   <li>Category 0 is valid per COBOL logic and database schema (no FK constraint)</li>
      * </ul>
      * </p>
      * 
@@ -326,11 +329,11 @@ public class ValidationService {
             );
         }
         
-        if (category <= 0) {
-            log.warn("Transaction category must be positive: {}", category);
+        if (category < 0) {
+            log.warn("Transaction category must be non-negative: {}", category);
             throw new ValidationException(
                 "VAL003",
-                "Transaction category must be a positive number",
+                "Transaction category must be a non-negative number",
                 "transactionCategory"
             );
         }
