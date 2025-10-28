@@ -311,8 +311,12 @@ const AdminMenuPage: React.FC = () => {
         navigate('/');
       }, 3000);
       
+      // Return cleanup function to clear timer on unmount
       return () => clearTimeout(timer);
     }
+    
+    // Return undefined for all other code paths (TypeScript strict compliance)
+    return undefined;
   }, [isAuthenticated, user, navigate]);
 
   /**
