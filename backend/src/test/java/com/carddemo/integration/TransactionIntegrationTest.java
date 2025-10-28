@@ -52,8 +52,11 @@ import com.carddemo.model.dto.TransactionDto;
 import com.carddemo.model.entity.Account;
 import com.carddemo.model.entity.Card;
 import com.carddemo.model.entity.Transaction;
+import com.carddemo.model.entity.TransactionCategory;
+import com.carddemo.model.entity.TransactionCategoryId;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import io.restassured.RestAssured;
@@ -82,6 +85,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.*;
@@ -103,6 +107,10 @@ import static org.hamcrest.Matchers.*;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("integration-test")
+@org.springframework.test.context.TestPropertySource(properties = {
+    "spring.flyway.enabled=true",
+    "spring.jpa.hibernate.ddl-auto=none"
+})
 @Testcontainers
 public class TransactionIntegrationTest {
 
@@ -129,12 +137,19 @@ public class TransactionIntegrationTest {
      * - spring.datasource.url (JDBC URL from container)
      * - spring.datasource.username
      * - spring.datasource.password
+     * - spring.flyway.enabled (must enable Flyway to load reference data)
+     * 
+     * CRITICAL: Flyway must be enabled to run V7__insert_initial_data.sql migration
+     * which populates transaction_category, transaction_type, and disclosure_group
+     * tables. Without this data, transaction category validation will fail.
      */
     @DynamicPropertySource
     static void registerPostgresProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", postgresContainer::getJdbcUrl);
         registry.add("spring.datasource.username", postgresContainer::getUsername);
         registry.add("spring.datasource.password", postgresContainer::getPassword);
+        // Enable Flyway migrations to load reference data (transaction_category, etc.)
+        registry.add("spring.flyway.enabled", () -> "true");
     }
 
     /**
@@ -173,6 +188,13 @@ public class TransactionIntegrationTest {
      */
     @Autowired
     private CardRepository cardRepository;
+
+    /**
+     * Transaction category repository for test data verification.
+     * Used to verify reference data is loaded correctly from Flyway migrations.
+     */
+    @Autowired
+    private TransactionCategoryRepository transactionCategoryRepository;
 
     /**
      * Transaction category balance repository for test data cleanup.
@@ -343,6 +365,7 @@ public class TransactionIntegrationTest {
         accountRepository.deleteAll();
     }
     
+
     /**
      * Test GET /api/transactions - retrieve transaction list without filters.
      * 

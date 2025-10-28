@@ -486,8 +486,14 @@ public class TransactionService {
 
         // Step 9: Update transaction category balance
         // Replaces COBOL PERFORM UPDATE-CATEGORY-BALANCE paragraph
-        updateCategoryBalance(account.getAcctId(), transactionDto.getTransTypeCd(), 
-                             transactionDto.getTransCatCd(), transactionDto.getTransAmt());
+        // Skip category balance update for category 0 (special case - e.g., payments without category)
+        // Category 0 doesn't exist in transaction_category table and would violate FK constraint
+        if (transactionDto.getTransCatCd() != null && transactionDto.getTransCatCd() != 0) {
+            updateCategoryBalance(account.getAcctId(), transactionDto.getTransTypeCd(), 
+                                 transactionDto.getTransCatCd(), transactionDto.getTransAmt());
+        } else {
+            log.debug("Skipping category balance update for category 0 (special case)");
+        }
 
         // Step 10: Return transaction DTO
         // @Transactional annotation ensures automatic SYNCPOINT on method completion
