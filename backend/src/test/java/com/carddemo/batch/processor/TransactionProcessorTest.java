@@ -121,8 +121,8 @@ class TransactionProcessorTest {
 
     /**
      * Processor under test with mocked dependencies injected.
+     * Created manually in setUp() to provide ProcessingMode parameter.
      */
-    @InjectMocks
     private TransactionProcessor transactionProcessor;
 
     /**
@@ -153,7 +153,7 @@ class TransactionProcessorTest {
     private static final String TEST_TRANSACTION_ID = "TX0000000001";
     private static final Long TEST_ACCOUNT_ID = 1000000001L;
     private static final Long TEST_CUSTOMER_ID = 2000000001L;
-    private static final String TEST_TRANSACTION_TYPE = "PU"; // Purchase
+    private static final String TEST_TRANSACTION_TYPE = "01"; // Purchase (debit)
     private static final Integer TEST_CATEGORY_CODE = 5411; // Grocery
     private static final BigDecimal TEST_CREDIT_LIMIT = new BigDecimal("10000.00");
     private static final int DECIMAL_SCALE = 2;
@@ -173,6 +173,18 @@ class TransactionProcessorTest {
      */
     @BeforeEach
     void setUp() {
+        // Create TransactionProcessor with FULL_PROCESSING mode for complete testing
+        // This matches CBTRN02C behavior which performs all operations:
+        // - Validation (card xref, account, credit limit, expiration)
+        // - Account balance posting (2800-UPDATE-ACCOUNT-REC)
+        // - Category balance aggregation (2700-UPDATE-TCATBAL)
+        transactionProcessor = new TransactionProcessor(
+                cardAccountXrefRepository,
+                accountRepository,
+                transactionCategoryBalanceRepository,
+                TransactionProcessor.ProcessingMode.FULL_PROCESSING
+        );
+        
         // Create test transaction (from COBOL DALYTRAN-RECORD)
         testTransaction = Transaction.builder()
                 .transId(TEST_TRANSACTION_ID)

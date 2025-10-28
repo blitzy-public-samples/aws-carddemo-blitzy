@@ -522,19 +522,23 @@ public class TransactionProcessor implements ItemProcessor<Transaction, Transact
         log.debug("Validating credit limit for account {}. Transaction amount: {}", 
                  account.getAcctId(), transactionAmount);
         
-        // Calculate predicted balance after transaction posting
-        // NOTE: For DEBIT transactions, use current balance + transaction amount
-        // For CREDIT transactions, transaction amount is already negative, so addition works correctly
-        // COBOL: COMPUTE WS-TEMP-BAL = ACCT-CURR-BAL + DALYTRAN-AMT
-        BigDecimal currentBalance = account.getAcctCurrBal();
+        // Calculate predicted balance after transaction posting using cycle totals
+        // COBOL from CBTRN02C.cbl lines 403-413:
+        // COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT
+        // IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL THEN approve ELSE reject
+        BigDecimal cycleCredit = account.getAcctCurrCycCredit();
+        BigDecimal cycleDebit = account.getAcctCurrCycDebit();
         BigDecimal creditLimit = account.getAcctCreditLimit();
         
         // Preserve COBOL COMP-3 precision: scale 2, rounding HALF_UP
-        BigDecimal predictedBalance = currentBalance.add(transactionAmount)
-                                                    .setScale(DECIMAL_SCALE, ROUNDING_MODE);
+        // Predicted balance = (cycle credit - cycle debit) + new transaction amount
+        BigDecimal predictedBalance = cycleCredit
+                                        .subtract(cycleDebit)
+                                        .add(transactionAmount)
+                                        .setScale(DECIMAL_SCALE, ROUNDING_MODE);
         
-        log.debug("Credit limit validation: Credit Limit={}, Current Balance={}, Transaction Amount={}, Predicted Balance={}", 
-                 creditLimit, currentBalance, transactionAmount, predictedBalance);
+        log.debug("Credit limit validation: Credit Limit={}, Cycle Credit={}, Cycle Debit={}, Transaction Amount={}, Predicted Balance={}", 
+                 creditLimit, cycleCredit, cycleDebit, transactionAmount, predictedBalance);
         
         // Validate predicted balance does not exceed credit limit
         // COBOL: IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL THEN approve ELSE reject
@@ -542,8 +546,8 @@ public class TransactionProcessor implements ItemProcessor<Transaction, Transact
             // Transaction would exceed credit limit - reject
             // MOVE 102 TO WS-VALIDATION-FAIL-REASON
             // MOVE 'OVERLIMIT TRANSACTION' TO WS-VALIDATION-FAIL-REASON-DESC
-            log.warn("Transaction rejected: Overlimit. Account {}, Credit Limit: {}, Current Balance: {}, Transaction Amount: {}, Predicted Balance: {}", 
-                    account.getAcctId(), creditLimit, currentBalance, transactionAmount, predictedBalance);
+            log.warn("Transaction rejected: Overlimit. Account {}, Credit Limit: {}, Cycle Credit: {}, Cycle Debit: {}, Transaction Amount: {}, Predicted Balance: {}", 
+                    account.getAcctId(), creditLimit, cycleCredit, cycleDebit, transactionAmount, predictedBalance);
             throw new BusinessException("Overlimit transaction: predicted balance " + 
                                       predictedBalance + " exceeds credit limit " + creditLimit);
         }
@@ -690,16 +694,26 @@ public class TransactionProcessor implements ItemProcessor<Transaction, Transact
      * </ul>
      * </p>
      * 
+     * <p>Transaction type codes:
+     * <ul>
+     *   <li>Debit: 01=Purchase, 02=Cash Advance, 03=Balance Transfer, 05=Fee, 06=Interest, 08=Debit Adj</li>
+     *   <li>Credit: 04=Payment, 07=Credit Adjustment</li>
+     * </ul>
+     * </p>
+     * 
      * @param amount The transaction amount (always positive in database)
-     * @param transTypeCd Transaction type code ("DB" for debit, "CR" for credit)
+     * @param transTypeCd Transaction type code (numeric string)
      * @return Adjusted amount: positive for debits, negative for credits
      */
     protected BigDecimal adjustTransactionAmount(BigDecimal amount, String transTypeCd) {
-        if ("CR".equals(transTypeCd)) {
+        // Credit types: 04=Payment, 07=Credit Adjustment
+        // These transactions reduce the account balance (customer pays)
+        if ("04".equals(transTypeCd) || "07".equals(transTypeCd)) {
             // Credit transactions (payments) subtract from balance
             return amount.negate();
         } else {
             // Debit transactions (purchases) add to balance
+            // Debit types: 01=Purchase, 02=Cash Advance, 03=Balance Transfer, 05=Fee, 06=Interest, 08=Debit Adj
             return amount;
         }
     }
