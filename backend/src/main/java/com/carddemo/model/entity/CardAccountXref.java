@@ -197,4 +197,26 @@ public class CardAccountXref {
     @JoinColumn(name = "xref_cust_id", referencedColumnName = "cust_id", 
                 nullable = false, insertable = false, updatable = false)
     private Customer customer;
+
+    /**
+     * Lifecycle callback to synchronize xrefCustId from customer relationship before persist/update.
+     * 
+     * This method ensures that when a CardAccountXref is created or updated with a customer relationship,
+     * the xrefCustId foreign key field is automatically populated from customer.getCustId().
+     * 
+     * This handles two scenarios:
+     * 1. New entity: xrefCustId is NULL, needs to be populated
+     * 2. Updated entity: customer changed, xrefCustId needs to be synchronized
+     * 
+     * This prevents ConstraintViolationException when xrefCustId is NULL and keeps
+     * the foreign key field in sync with the relationship object.
+     */
+    @jakarta.persistence.PrePersist
+    @jakarta.persistence.PreUpdate
+    protected void syncCustomerId() {
+        if (customer != null) {
+            // Always sync customer ID - handles both new entities and customer changes
+            xrefCustId = customer.getCustId();
+        }
+    }
 }

@@ -45,6 +45,7 @@ package com.carddemo.service;
 
 import com.carddemo.exception.BusinessException;
 import com.carddemo.exception.DataNotFoundException;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.model.dto.AccountDto;
 import com.carddemo.model.entity.Account;
 import com.carddemo.repository.AccountRepository;
@@ -243,6 +244,17 @@ public class AccountService {
                     return new DataNotFoundException("Account", accountId);
                 });
         
+        // Optimistic locking check: Verify version matches if provided
+        // Replaces COBOL VSAM RBA (Relative Byte Address) check from COACTUPC.cbl
+        log.debug("Version check - DTO version: {}, Entity version: {}", 
+                accountDto.getVersion(), existingAccount.getVersion());
+        if (accountDto.getVersion() != null && !accountDto.getVersion().equals(existingAccount.getVersion())) {
+            log.warn("Version mismatch for account {}: expected {}, got {}",
+                    accountId, existingAccount.getVersion(), accountDto.getVersion());
+            throw new jakarta.persistence.OptimisticLockException(
+                    "Account was modified by another transaction");
+        }
+        
         // Validate credit limit if being updated
         if (accountDto.getAcctCreditLimit() != null) {
             validationService.validateCreditLimit(accountDto.getAcctCreditLimit());
@@ -300,6 +312,18 @@ public class AccountService {
             BigDecimal updatedBalance = calculateCurrentBalance(existingAccount);
             existingAccount.setAcctCurrBal(updatedBalance);
             log.debug("Recalculated current balance to: {}", updatedBalance);
+        }
+        
+        // CRITICAL VALIDATION: Balance must not exceed credit limit
+        // (COBOL business rule from COACTUPC.cbl)
+        if (existingAccount.getAcctCurrBal() != null && existingAccount.getAcctCreditLimit() != null) {
+            if (existingAccount.getAcctCurrBal().compareTo(existingAccount.getAcctCreditLimit()) > 0) {
+                log.warn("Balance {} exceeds credit limit {} for account {}",
+                        existingAccount.getAcctCurrBal(), existingAccount.getAcctCreditLimit(), accountId);
+                throw new ValidationException("VAL011",
+                        "Account balance cannot exceed credit limit",
+                        "acctCurrBal");
+            }
         }
         
         // Update current cycle credit if provided (used by TransactionService)

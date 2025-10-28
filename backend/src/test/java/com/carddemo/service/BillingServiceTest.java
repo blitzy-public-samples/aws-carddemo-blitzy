@@ -73,6 +73,12 @@ class BillingServiceTest {
     @Mock
     private ValidationService mockValidationService;
 
+    @Mock
+    private com.carddemo.repository.CardRepository mockCardRepository;
+
+    @Mock
+    private com.carddemo.repository.TransactionRepository mockTransactionRepository;
+
     // Service under test with mocked dependencies injected
     @InjectMocks
     private BillingService billingService;
@@ -116,8 +122,8 @@ class BillingServiceTest {
         assertTrue(statement.getNewBalance().compareTo(BigDecimal.ZERO) >= 0, "New balance should be non-negative");
         
         verify(mockValidationService).validateAccountId(TEST_ACCOUNT_ID);
-        // Note: getAccountById is called twice - once in generateStatement and once in getStatementData
-        verify(mockAccountService, times(2)).getAccountById(TEST_ACCOUNT_ID);
+        // Note: getAccountById is called once in generateStatement
+        verify(mockAccountService, times(1)).getAccountById(TEST_ACCOUNT_ID);
         verifyNoMoreInteractions(mockValidationService, mockAccountService);
     }
 
@@ -143,7 +149,7 @@ class BillingServiceTest {
         assertEquals(0, statement.getMinimumPaymentDue().compareTo(BigDecimal.ZERO), "Minimum payment should be zero for zero balance");
         
         // Note: getAccountById is called twice - once in generateStatement and once in getStatementData
-        verify(mockAccountService, times(2)).getAccountById(TEST_ACCOUNT_ID);
+        verify(mockAccountService, times(1)).getAccountById(TEST_ACCOUNT_ID);
     }
 
     /**
@@ -169,7 +175,7 @@ class BillingServiceTest {
         assertEquals(0, statement.getInterestCharged().compareTo(BigDecimal.ZERO), "No interest charged on credit balance");
         
         // Note: getAccountById is called twice - once in generateStatement and once in getStatementData
-        verify(mockAccountService, times(2)).getAccountById(TEST_ACCOUNT_ID);
+        verify(mockAccountService, times(1)).getAccountById(TEST_ACCOUNT_ID);
     }
 
     // ============================================================================
@@ -502,7 +508,7 @@ class BillingServiceTest {
         
         verify(mockValidationService).validateAccountId(TEST_ACCOUNT_ID);
         // Note: getAccountById is called twice - once in generateStatement and once in getStatementData
-        verify(mockAccountService, times(2)).getAccountById(TEST_ACCOUNT_ID);
+        verify(mockAccountService, times(1)).getAccountById(TEST_ACCOUNT_ID);
     }
 
     /**

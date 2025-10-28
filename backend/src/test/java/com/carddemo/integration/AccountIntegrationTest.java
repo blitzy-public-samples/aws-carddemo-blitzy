@@ -603,6 +603,7 @@ public class AccountIntegrationTest {
                 .acctCashCreditLimit(new BigDecimal("1200.00"))
                 .acctOpenDate(LocalDate.of(2020, 1, 15))
                 .acctExpirationDate(LocalDate.of(2025, 1, 15))
+                .version(0) // Stale version - actual version in DB is now 1
                 .build();
 
         // Act & Assert: Update with stale data should fail with 409 Conflict

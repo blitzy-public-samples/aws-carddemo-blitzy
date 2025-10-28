@@ -1,6 +1,7 @@
 package com.carddemo.exception;
 
 import com.carddemo.model.dto.ErrorResponse;
+import jakarta.persistence.OptimisticLockException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -462,6 +463,71 @@ public class GlobalExceptionHandler {
         );
         
         return new ResponseEntity<>(errorResponse, status);
+    }
+
+    /**
+     * Handles OptimisticLockException - thrown when concurrent modification is detected.
+     * 
+     * <p>This method handles JPA optimistic locking violations that occur when an entity
+     * is updated by another transaction between the time it was read and updated. This
+     * corresponds to COBOL/CICS concurrent update detection.</p>
+     * 
+     * <h3>COBOL Pattern Replaced:</h3>
+     * <pre>
+     * COBOL (COACTUPC.cbl EXEC CICS REWRITE with version check):
+     *   EXEC CICS READ FILE('ACCTDAT') UPDATE
+     *        INTO(ACCOUNT-RECORD)
+     *        RIDFLD(WS-ACCOUNT-ID)
+     *        RESP(WS-RESP-CD)
+     *   END-EXEC
+     *   
+     *   EXEC CICS REWRITE FILE('ACCTDAT')
+     *        FROM(ACCOUNT-RECORD)
+     *        RESP(WS-RESP-CD)
+     *   END-EXEC
+     *   
+     *   IF WS-RESP-CD = DFHRESP(DUPKEY) OR DFHRESP(INVREQ)
+     *     MOVE 'Record was modified by another user' TO WS-MESSAGE
+     *     MOVE 409 TO WS-STATUS-CODE
+     *   END-IF
+     * </pre>
+     * 
+     * <h3>HTTP Response Example:</h3>
+     * <pre>
+     * HTTP/1.1 409 Conflict
+     * Content-Type: application/json
+     * 
+     * {
+     *   "timestamp": "2025-10-28T11:30:00",
+     *   "status": 409,
+     *   "error": "Conflict",
+     *   "message": "Update conflict: Resource was modified by another transaction. Please refresh and try again.",
+     *   "details": "Optimistic locking failure - version mismatch",
+     *   "path": "/api/accounts/123"
+     * }
+     * </pre>
+     * 
+     * @param ex The OptimisticLockException thrown by JPA when version mismatch detected
+     * @param request WebRequest containing HTTP request details including URI path
+     * @return ResponseEntity with HTTP 409 status and ErrorResponse body
+     */
+    @ExceptionHandler(OptimisticLockException.class)
+    public ResponseEntity<ErrorResponse> handleOptimisticLockException(
+            OptimisticLockException ex,
+            WebRequest request) {
+        
+        log.warn("Optimistic locking failure: {}", ex.getMessage());
+        
+        ErrorResponse errorResponse = new ErrorResponse(
+                LocalDateTime.now(),
+                HttpStatus.CONFLICT.value(),
+                "Conflict",
+                "Update conflict: Resource was modified by another transaction. Please refresh and try again.",
+                "Optimistic locking failure - version mismatch",
+                extractPath(request)
+        );
+        
+        return new ResponseEntity<>(errorResponse, HttpStatus.CONFLICT);
     }
 
     /**

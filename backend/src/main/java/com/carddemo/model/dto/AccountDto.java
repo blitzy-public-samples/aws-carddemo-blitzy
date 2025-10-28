@@ -225,6 +225,19 @@ public class AccountDto {
     private LocalDateTime updatedAt;
 
     /**
+     * Version field for JPA optimistic locking.
+     * 
+     * Corresponds to the @Version field in Account entity. Used to detect
+     * concurrent modifications. When included in update requests, the service
+     * layer validates this matches the current entity version.
+     * 
+     * COBOL equivalent: VSAM RBA (Relative Byte Address) check from COACTUPC.cbl
+     * 
+     * @see com.carddemo.model.entity.Account#version
+     */
+    private Integer version;
+
+    /**
      * Static factory method to convert Account entity to AccountDto.
      * 
      * This method implements the entity-to-DTO conversion pattern, extracting all
@@ -269,6 +282,7 @@ public class AccountDto {
                 .acctGroupId(account.getAcctGroupId())
                 .createdAt(account.getCreatedAt() != null ? account.getCreatedAt().toLocalDateTime() : null)
                 .updatedAt(account.getUpdatedAt() != null ? account.getUpdatedAt().toLocalDateTime() : null)
+                .version(account.getVersion())
                 .build();
     }
 }

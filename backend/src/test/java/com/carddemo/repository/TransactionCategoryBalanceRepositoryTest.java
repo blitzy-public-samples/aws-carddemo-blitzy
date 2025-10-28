@@ -715,11 +715,13 @@ class TransactionCategoryBalanceRepositoryTest {
      * Test cascade delete behavior.
      * 
      * Validates:
-     * - Deleting an account with associated balances triggers appropriate behavior
-     * - Either cascade delete removes balances, or constraint violation prevents deletion
+     * - Deleting an account with associated balances triggers cascade delete
+     * - Transaction category balances are automatically deleted when account is deleted
      * 
-     * Note: Actual behavior depends on cascade configuration in entity relationship.
-     * Default is to throw constraint violation if balances exist.
+     * Note: Database schema (V5__create_reference_tables.sql) configures
+     * ON DELETE CASCADE for fk_tcat_bal_account constraint, which means
+     * deleting an account automatically deletes all associated balances.
+     * This is correct behavior for aggregated/derived balance tables.
      */
     @Test
     void testCascadeDelete() {
@@ -734,13 +736,17 @@ class TransactionCategoryBalanceRepositoryTest {
         repository.save(balance);
         entityManager.flush();
         
-        // Attempt to delete account with existing balances
-        // Expect either: cascade delete of balances, or constraint violation
-        // Note: Can be DataIntegrityViolationException or ConstraintViolationException depending on Spring/Hibernate version
-        assertThrows(Exception.class, () -> {
-            accountRepository.deleteById(12345678901L);
-            entityManager.flush();
-        });
+        // Verify balance exists before deletion
+        TransactionCategoryBalanceId id = new TransactionCategoryBalanceId(12345678901L, "PU", 1001);
+        assertTrue(repository.findById(id).isPresent(), "Balance should exist before account deletion");
+        
+        // Delete account - should cascade delete the balance (no exception)
+        accountRepository.deleteById(12345678901L);
+        entityManager.flush();
+        entityManager.clear();
+        
+        // Verify balance was cascade deleted
+        assertFalse(repository.findById(id).isPresent(), "Balance should be cascade deleted when account is deleted");
     }
 
     // ========================================================================

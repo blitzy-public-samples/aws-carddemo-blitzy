@@ -752,12 +752,18 @@ class ValidationServiceTest {
      * <p>
      * COBOL equivalent: CVTRA03Y.cpy transaction type code validation
      * </p>
+     * <p>
+     * Valid types per COBOL copybook: 01-08
+     * 01=Purchase, 02=Cash Advance, 03=Balance Transfer, 04=Payment, 
+     * 05=Fee, 06=Interest, 07=Credit Adjustment, 08=Debit Adjustment
+     * </p>
      */
     @Test
     void testValidateTransactionType() {
-        // Valid 2-character type code
+        // Valid 2-character type codes (01-08 per COBOL copybook)
         assertDoesNotThrow(() -> validationService.validateTransactionType("01"));
-        assertDoesNotThrow(() -> validationService.validateTransactionType("99"));
+        assertDoesNotThrow(() -> validationService.validateTransactionType("02"));
+        assertDoesNotThrow(() -> validationService.validateTransactionType("08"));
         
         // Invalid - null
         ValidationException exception = assertThrows(ValidationException.class,
@@ -769,6 +775,10 @@ class ValidationServiceTest {
             () -> validationService.validateTransactionType("1"));
         assertThrows(ValidationException.class,
             () -> validationService.validateTransactionType("123"));
+        
+        // Invalid - out of valid range (only 01-08 are valid)
+        assertThrows(ValidationException.class,
+            () -> validationService.validateTransactionType("99"));
     }
 
     /**
@@ -776,23 +786,31 @@ class ValidationServiceTest {
      * <p>
      * COBOL equivalent: CVTRA04Y.cpy transaction category code validation
      * </p>
+     * <p>
+     * Note: Category 0 is valid per COBOL logic and is used for payment transactions
+     * and cash advances where no specific category applies (see TransactionControllerTest,
+     * TransactionIntegrationTest, and ReportIntegrationTest for usage examples).
+     * </p>
      */
     @Test
     void testValidateTransactionCategory() {
-        // Valid positive category
+        // Valid positive categories
         assertDoesNotThrow(() -> validationService.validateTransactionCategory(1));
         assertDoesNotThrow(() -> validationService.validateTransactionCategory(999));
+        
+        // Valid - zero (used for payment transactions with no specific category)
+        assertDoesNotThrow(() -> validationService.validateTransactionCategory(0));
         
         // Invalid - null
         ValidationException exception = assertThrows(ValidationException.class,
             () -> validationService.validateTransactionCategory(null));
         assertEquals("VAL003", exception.getErrorCode());
         
-        // Invalid - zero or negative
-        assertThrows(ValidationException.class,
-            () -> validationService.validateTransactionCategory(0));
+        // Invalid - negative
         assertThrows(ValidationException.class,
             () -> validationService.validateTransactionCategory(-1));
+        assertThrows(ValidationException.class,
+            () -> validationService.validateTransactionCategory(-100));
     }
 
     /**

@@ -53,6 +53,7 @@ import com.carddemo.model.dto.TransactionDto;
 import com.carddemo.model.entity.Account;
 import com.carddemo.model.entity.Card;
 import com.carddemo.model.entity.Transaction;
+import com.carddemo.model.entity.TransactionCategoryId;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.TransactionRepository;
@@ -126,7 +127,7 @@ class TransactionServiceTest {
     private AccountRepository mockAccountRepository;
 
     @Mock
-    private CardRepository mockCardRepository;
+    private com.carddemo.repository.TransactionCategoryRepository mockTransactionCategoryRepository;
 
     @Mock
     private ValidationService mockValidationService;
@@ -168,6 +169,19 @@ class TransactionServiceTest {
     private static final BigDecimal TEST_AMOUNT_LARGE = new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP);
     private static final BigDecimal TEST_BALANCE = new BigDecimal("10000.00").setScale(2, RoundingMode.HALF_UP);
     private static final BigDecimal TEST_CREDIT_LIMIT = new BigDecimal("15000.00").setScale(2, RoundingMode.HALF_UP);
+
+    /**
+     * Set up common mocks before each test.
+     * This ensures transaction category repository returns true for existsById checks.
+     */
+    @org.junit.jupiter.api.BeforeEach
+    void setUp() {
+        // Mock transactionCategoryRepository.existsById() to return true for valid categories
+        // This prevents "Invalid transaction category code" errors in tests
+        // Use lenient() to allow stubbing even if not used in all tests
+        lenient().when(mockTransactionCategoryRepository.existsById(any(TransactionCategoryId.class)))
+            .thenReturn(true);
+    }
 
     //=============================================================================
     // CATEGORY 1: Transaction Listing Tests (COTRN00C.cbl)
@@ -458,7 +472,7 @@ class TransactionServiceTest {
         Card mockCard = Card.builder()
             .cardNum(TEST_CARD_NUM)
             .cardAcctId(TEST_ACCT_ID)
-            .cardStatus("Y")
+            .cardStatus("A")
             .cardEmbossedName("JOHN DOE")
             .build();
         
@@ -551,7 +565,7 @@ class TransactionServiceTest {
         doNothing().when(mockValidationService).validateTransactionCategory(anyInt());
         
         // Mock CardService.getCardByNumber()
-        CardDto mockCard = createTestCardDto(TEST_CARD_NUM, TEST_ACCT_ID, "Y");
+        CardDto mockCard = createTestCardDto(TEST_CARD_NUM, TEST_ACCT_ID, "A");
         when(mockCardService.getCardByNumber(TEST_CARD_NUM)).thenReturn(mockCard);
         
         // Mock AccountService.getAccountById()
@@ -627,7 +641,7 @@ class TransactionServiceTest {
         doNothing().when(mockValidationService).validateTransactionType(anyString());
         doNothing().when(mockValidationService).validateTransactionCategory(anyInt());
         
-        CardDto mockCard = createTestCardDto(TEST_CARD_NUM, TEST_ACCT_ID, "Y");
+        CardDto mockCard = createTestCardDto(TEST_CARD_NUM, TEST_ACCT_ID, "A");
         when(mockCardService.getCardByNumber(TEST_CARD_NUM)).thenReturn(mockCard);
         
         BigDecimal initialBalance = new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP);
@@ -732,7 +746,7 @@ class TransactionServiceTest {
         doNothing().when(mockValidationService).validateTransactionType(anyString());
         doNothing().when(mockValidationService).validateTransactionCategory(anyInt());
         
-        CardDto mockCard = createTestCardDto(TEST_CARD_NUM, TEST_ACCT_ID, "Y");
+        CardDto mockCard = createTestCardDto(TEST_CARD_NUM, TEST_ACCT_ID, "A");
         when(mockCardService.getCardByNumber(anyString())).thenReturn(mockCard);
         
         // Initial balance close to credit limit
@@ -1499,7 +1513,7 @@ class TransactionServiceTest {
         doNothing().when(mockValidationService).validateTransactionType(anyString());
         doNothing().when(mockValidationService).validateTransactionCategory(anyInt());
         
-        CardDto mockCard = createTestCardDto(TEST_CARD_NUM, TEST_ACCT_ID, "Y");
+        CardDto mockCard = createTestCardDto(TEST_CARD_NUM, TEST_ACCT_ID, "A");
         when(mockCardService.getCardByNumber(anyString())).thenReturn(mockCard);
         
         // Mock updateAccount to return an AccountDto (it's not void)
