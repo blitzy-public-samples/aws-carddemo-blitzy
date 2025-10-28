@@ -49,6 +49,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration;
+import org.springframework.boot.autoconfigure.security.servlet.SecurityFilterAutoConfiguration;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.data.domain.Page;
@@ -108,7 +111,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * @see TransactionService
  * @see TransactionDto
  */
-@WebMvcTest(TransactionController.class)
+@WebMvcTest(value = TransactionController.class, 
+    excludeAutoConfiguration = {SecurityAutoConfiguration.class, SecurityFilterAutoConfiguration.class})
+@AutoConfigureMockMvc(addFilters = false)
 class TransactionControllerTest {
 
     @Autowired
@@ -119,6 +124,12 @@ class TransactionControllerTest {
 
     @MockBean
     private TransactionService transactionService;
+
+    @MockBean
+    private com.carddemo.service.ValidationService validationService;
+
+    @MockBean
+    private com.carddemo.security.JwtTokenProvider jwtTokenProvider;
 
     private TransactionDto testTransactionDto;
     private List<TransactionDto> testTransactionList;
@@ -146,7 +157,7 @@ class TransactionControllerTest {
                 .transSource("POS")
                 .transDesc("GROCERY STORE PURCHASE")
                 .transAmt(new BigDecimal("125.50").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("123456789")
+                .transMerchantId(123456789L)
                 .transMerchantName("LOCAL GROCERY")
                 .transMerchantCity("SEATTLE")
                 .transMerchantZip("98101")
@@ -163,7 +174,7 @@ class TransactionControllerTest {
                 .transSource("ONLINE")
                 .transDesc("PAYMENT - THANK YOU")
                 .transAmt(new BigDecimal("500.00").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("000000000")
+                .transMerchantId(0L)
                 .transMerchantName("CARDHOLDER PAYMENT")
                 .transMerchantCity("")
                 .transMerchantZip("")
@@ -179,7 +190,7 @@ class TransactionControllerTest {
                 .transSource("ATM")
                 .transDesc("CASH WITHDRAWAL")
                 .transAmt(new BigDecimal("200.00").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("987654321")
+                .transMerchantId(987654321L)
                 .transMerchantName("BANK ATM")
                 .transMerchantCity("SEATTLE")
                 .transMerchantZip("98102")
@@ -237,7 +248,7 @@ class TransactionControllerTest {
                 .andExpect(jsonPath("$.content[0].transCardNum", is("************1234")))
                 .andExpect(jsonPath("$.content[0].transTypeCd", is("01")))
                 .andExpect(jsonPath("$.content[0].transCatCd", is(5411)))
-                .andExpect(jsonPath("$.content[0].transAmt", is(125.50)))  // BigDecimal with scale 2
+                .andExpect(jsonPath("$.content[0].transAmt", is("125.50")))  // BigDecimal with scale 2 as string
                 .andExpect(jsonPath("$.content[0].transDesc", is("GROCERY STORE PURCHASE")))
                 .andExpect(jsonPath("$.totalElements", is(3)))
                 .andExpect(jsonPath("$.totalPages", is(1)))
@@ -389,8 +400,8 @@ class TransactionControllerTest {
                 .andExpect(jsonPath("$.transCatCd", is(5411)))
                 .andExpect(jsonPath("$.transSource", is("POS")))
                 .andExpect(jsonPath("$.transDesc", is("GROCERY STORE PURCHASE")))
-                .andExpect(jsonPath("$.transAmt", is(125.50)))  // BigDecimal with scale 2
-                .andExpect(jsonPath("$.transMerchantId", is("123456789")))
+                .andExpect(jsonPath("$.transAmt", is("125.50")))  // BigDecimal with scale 2 as string
+                .andExpect(jsonPath("$.transMerchantId", is(123456789)))
                 .andExpect(jsonPath("$.transMerchantName", is("LOCAL GROCERY")))
                 .andExpect(jsonPath("$.transMerchantCity", is("SEATTLE")))
                 .andExpect(jsonPath("$.transMerchantZip", is("98101")));
@@ -482,7 +493,7 @@ class TransactionControllerTest {
                 .transSource("POS")
                 .transDesc("GROCERY STORE PURCHASE")
                 .transAmt(new BigDecimal("125.50").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("123456789")
+                .transMerchantId(123456789L)
                 .transMerchantName("LOCAL GROCERY")
                 .transMerchantCity("SEATTLE")
                 .transMerchantZip("98101")
@@ -498,7 +509,7 @@ class TransactionControllerTest {
                 .transSource("POS")
                 .transDesc("GROCERY STORE PURCHASE")
                 .transAmt(new BigDecimal("125.50").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("123456789")
+                .transMerchantId(123456789L)
                 .transMerchantName("LOCAL GROCERY")
                 .transMerchantCity("SEATTLE")
                 .transMerchantZip("98101")
@@ -520,7 +531,7 @@ class TransactionControllerTest {
                 .andExpect(jsonPath("$.transCardNum", is("************1234")))  // Masked
                 .andExpect(jsonPath("$.transTypeCd", is("01")))
                 .andExpect(jsonPath("$.transCatCd", is(5411)))
-                .andExpect(jsonPath("$.transAmt", is(125.50)))  // BigDecimal with scale 2
+                .andExpect(jsonPath("$.transAmt", is("125.50")))  // BigDecimal with scale 2 as string
                 .andExpect(jsonPath("$.transDesc", is("GROCERY STORE PURCHASE")));
     }
 
@@ -558,7 +569,7 @@ class TransactionControllerTest {
                 .transSource("POS")
                 .transDesc("GROCERY STORE PURCHASE")
                 .transAmt(new BigDecimal("-125.50"))  // Invalid negative amount
-                .transMerchantId("123456789")
+                .transMerchantId(123456789L)
                 .transMerchantName("LOCAL GROCERY")
                 .transMerchantCity("SEATTLE")
                 .transMerchantZip("98101")
@@ -612,7 +623,7 @@ class TransactionControllerTest {
                 .transSource("POS")
                 .transDesc("LARGE PURCHASE")
                 .transAmt(new BigDecimal("10000.00").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("123456789")
+                .transMerchantId(123456789L)
                 .transMerchantName("ELECTRONICS STORE")
                 .transMerchantCity("SEATTLE")
                 .transMerchantZip("98101")
@@ -623,11 +634,11 @@ class TransactionControllerTest {
         when(transactionService.postTransaction(any(TransactionDto.class)))
                 .thenThrow(new com.carddemo.exception.BusinessException("Transaction exceeds credit limit"));
 
-        // Then: POST /api/transactions returns 422 Unprocessable Entity
+        // Then: POST /api/transactions returns 400 Bad Request (BusinessException mapped by GlobalExceptionHandler)
         mockMvc.perform(post("/api/transactions")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(requestDto)))
-                .andExpect(status().isUnprocessableEntity())
+                .andExpect(status().isBadRequest())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.message", containsString("Transaction exceeds credit limit")));
     }
@@ -664,7 +675,7 @@ class TransactionControllerTest {
                 .transSource("POS")
                 .transDesc("PRECISION TEST")
                 .transAmt(new BigDecimal("100.456").setScale(2, RoundingMode.HALF_UP))  // Rounds to 100.46
-                .transMerchantId("123456789")
+                .transMerchantId(123456789L)
                 .transMerchantName("TEST MERCHANT")
                 .transMerchantCity("SEATTLE")
                 .transMerchantZip("98101")
@@ -680,7 +691,7 @@ class TransactionControllerTest {
                 .transSource("POS")
                 .transDesc("PRECISION TEST")
                 .transAmt(new BigDecimal("100.46").setScale(2, RoundingMode.HALF_UP))  // Exactly 2 decimals
-                .transMerchantId("123456789")
+                .transMerchantId(123456789L)
                 .transMerchantName("TEST MERCHANT")
                 .transMerchantCity("SEATTLE")
                 .transMerchantZip("98101")
@@ -698,7 +709,7 @@ class TransactionControllerTest {
                         .content(objectMapper.writeValueAsString(requestDto)))
                 .andExpect(status().isCreated())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.transAmt", is(100.46)))  // Exactly 2 decimals (COMP-3 precision)
+                .andExpect(jsonPath("$.transAmt", is("100.46")))  // Exactly 2 decimals (COMP-3 precision) as string
                 .andExpect(jsonPath("$.transId", notNullValue()));
     }
 
@@ -738,7 +749,7 @@ class TransactionControllerTest {
                 .transSource("POS")
                 .transDesc("PURCHASE ATTEMPT")
                 .transAmt(new BigDecimal("50.00").setScale(2, RoundingMode.HALF_UP))
-                .transMerchantId("123456789")
+                .transMerchantId(123456789L)
                 .transMerchantName("TEST MERCHANT")
                 .transMerchantCity("SEATTLE")
                 .transMerchantZip("98101")
