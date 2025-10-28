@@ -53,6 +53,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
@@ -103,6 +104,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * @see AccountService
  */
 @WebMvcTest(BillingController.class)
+@AutoConfigureMockMvc(addFilters = false)
 class BillingControllerTest {
 
     @Autowired
@@ -116,6 +118,9 @@ class BillingControllerTest {
 
     @MockBean
     private AccountService accountService;
+
+    @MockBean
+    private com.carddemo.security.JwtTokenProvider jwtTokenProvider;
 
     // Test data constants (matching COBOL test scenarios)
     private static final Long TEST_ACCOUNT_ID = 12345678901L; // COBOL PIC 9(11)
@@ -205,24 +210,24 @@ class BillingControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 // Validate account identifier
-                .andExpect(jsonPath("$.accountId", is(TEST_ACCOUNT_ID.intValue())))
+                .andExpect(jsonPath("$.accountId", is(TEST_ACCOUNT_ID.longValue())))
                 // Validate date fields are not null
                 .andExpect(jsonPath("$.statementDate", notNullValue()))
                 .andExpect(jsonPath("$.periodStartDate", notNullValue()))
                 .andExpect(jsonPath("$.periodEndDate", notNullValue()))
                 .andExpect(jsonPath("$.dueDate", notNullValue()))
                 // Validate monetary amounts with COBOL COMP-3 precision (scale 2)
-                .andExpect(jsonPath("$.previousBalance", comparesEqualTo(TEST_PREVIOUS_BALANCE)))
-                .andExpect(jsonPath("$.newCharges", comparesEqualTo(TEST_NEW_CHARGES)))
-                .andExpect(jsonPath("$.paymentsAndCredits", comparesEqualTo(TEST_PAYMENTS)))
-                .andExpect(jsonPath("$.interestCharged", comparesEqualTo(TEST_INTEREST)))
-                .andExpect(jsonPath("$.lateFee", comparesEqualTo(TEST_LATE_FEE)))
-                .andExpect(jsonPath("$.newBalance", comparesEqualTo(TEST_BALANCE)))
-                .andExpect(jsonPath("$.minimumPaymentDue", comparesEqualTo(TEST_MIN_PAYMENT)))
-                .andExpect(jsonPath("$.creditLimit", comparesEqualTo(TEST_CREDIT_LIMIT)))
-                .andExpect(jsonPath("$.availableCredit", comparesEqualTo(TEST_AVAILABLE_CREDIT)))
+                .andExpect(jsonPath("$.previousBalance", is(TEST_PREVIOUS_BALANCE.doubleValue())))
+                .andExpect(jsonPath("$.newCharges", is(TEST_NEW_CHARGES.doubleValue())))
+                .andExpect(jsonPath("$.paymentsAndCredits", is(TEST_PAYMENTS.doubleValue())))
+                .andExpect(jsonPath("$.interestCharged", is(TEST_INTEREST.doubleValue())))
+                .andExpect(jsonPath("$.lateFee", is(TEST_LATE_FEE.doubleValue())))
+                .andExpect(jsonPath("$.newBalance", is(TEST_BALANCE.doubleValue())))
+                .andExpect(jsonPath("$.minimumPaymentDue", is(TEST_MIN_PAYMENT.doubleValue())))
+                .andExpect(jsonPath("$.creditLimit", is(TEST_CREDIT_LIMIT.doubleValue())))
+                .andExpect(jsonPath("$.availableCredit", is(TEST_AVAILABLE_CREDIT.doubleValue())))
                 // Validate APR and days in period
-                .andExpect(jsonPath("$.annualPercentageRate", comparesEqualTo(TEST_APR)))
+                .andExpect(jsonPath("$.annualPercentageRate", is(TEST_APR.doubleValue())))
                 .andExpect(jsonPath("$.daysInPeriod", is(31)))
                 // Validate transactions list exists (even if empty)
                 .andExpect(jsonPath("$.transactions", notNullValue()));
@@ -281,9 +286,9 @@ class BillingControllerTest {
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.accountId", is(TEST_ACCOUNT_ID.intValue())))
+                .andExpect(jsonPath("$.accountId", is(TEST_ACCOUNT_ID.longValue())))
                 .andExpect(jsonPath("$.statementDate", is("2024-01-31")))
-                .andExpect(jsonPath("$.newBalance", comparesEqualTo(TEST_BALANCE)));
+                .andExpect(jsonPath("$.newBalance", is(TEST_BALANCE.doubleValue())));
 
         // Verify service was called with exact date from query parameter
         verify(billingService, times(1))
@@ -351,7 +356,7 @@ class BillingControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 // Validate balance is returned as number (not string) with proper precision
-                .andExpect(jsonPath("$", comparesEqualTo(TEST_BALANCE)));
+                .andExpect(jsonPath("$", is(TEST_BALANCE.doubleValue())));
 
         // Verify AccountService was called with correct account ID
         verify(accountService, times(1))
@@ -436,17 +441,17 @@ class BillingControllerTest {
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.accountId", is(TEST_ACCOUNT_ID.intValue())))
+                .andExpect(jsonPath("$.accountId", is(TEST_ACCOUNT_ID.longValue())))
                 // Validate all amounts are zero with proper scale 2
-                .andExpect(jsonPath("$.previousBalance", comparesEqualTo(zeroAmount)))
-                .andExpect(jsonPath("$.newCharges", comparesEqualTo(zeroAmount)))
-                .andExpect(jsonPath("$.paymentsAndCredits", comparesEqualTo(zeroAmount)))
-                .andExpect(jsonPath("$.interestCharged", comparesEqualTo(zeroAmount)))
-                .andExpect(jsonPath("$.lateFee", comparesEqualTo(zeroAmount)))
-                .andExpect(jsonPath("$.newBalance", comparesEqualTo(zeroAmount)))
-                .andExpect(jsonPath("$.minimumPaymentDue", comparesEqualTo(zeroAmount)))
+                .andExpect(jsonPath("$.previousBalance", is(zeroAmount.doubleValue())))
+                .andExpect(jsonPath("$.newCharges", is(zeroAmount.doubleValue())))
+                .andExpect(jsonPath("$.paymentsAndCredits", is(zeroAmount.doubleValue())))
+                .andExpect(jsonPath("$.interestCharged", is(zeroAmount.doubleValue())))
+                .andExpect(jsonPath("$.lateFee", is(zeroAmount.doubleValue())))
+                .andExpect(jsonPath("$.newBalance", is(zeroAmount.doubleValue())))
+                .andExpect(jsonPath("$.minimumPaymentDue", is(zeroAmount.doubleValue())))
                 // Available credit equals full credit limit when balance is zero
-                .andExpect(jsonPath("$.availableCredit", comparesEqualTo(TEST_CREDIT_LIMIT)));
+                .andExpect(jsonPath("$.availableCredit", is(TEST_CREDIT_LIMIT.doubleValue())));
 
         verify(billingService, times(1))
                 .generateStatement(eq(TEST_ACCOUNT_ID), any(LocalDate.class));
@@ -513,12 +518,12 @@ class BillingControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 // Validate all amounts maintain exact scale 2 precision
-                .andExpect(jsonPath("$.previousBalance", comparesEqualTo(preciseBalance)))
-                .andExpect(jsonPath("$.newCharges", comparesEqualTo(preciseCharges)))
-                .andExpect(jsonPath("$.paymentsAndCredits", comparesEqualTo(precisePayments)))
-                .andExpect(jsonPath("$.interestCharged", comparesEqualTo(preciseInterest)))
-                .andExpect(jsonPath("$.lateFee", comparesEqualTo(preciseFee)))
-                .andExpect(jsonPath("$.newBalance", comparesEqualTo(calculatedBalance)));
+                .andExpect(jsonPath("$.previousBalance", is(preciseBalance.doubleValue())))
+                .andExpect(jsonPath("$.newCharges", is(preciseCharges.doubleValue())))
+                .andExpect(jsonPath("$.paymentsAndCredits", is(precisePayments.doubleValue())))
+                .andExpect(jsonPath("$.interestCharged", is(preciseInterest.doubleValue())))
+                .andExpect(jsonPath("$.lateFee", is(preciseFee.doubleValue())))
+                .andExpect(jsonPath("$.newBalance", is(calculatedBalance.doubleValue())));
 
         verify(billingService, times(1))
                 .generateStatement(eq(TEST_ACCOUNT_ID), any(LocalDate.class));
@@ -556,7 +561,7 @@ class BillingControllerTest {
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$", comparesEqualTo(zeroBalance)));
+                .andExpect(jsonPath("$", is(zeroBalance.doubleValue())));
 
         verify(accountService, times(1))
                 .getAccountById(eq(TEST_ACCOUNT_ID));
