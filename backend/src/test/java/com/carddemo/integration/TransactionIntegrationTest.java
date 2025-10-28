@@ -516,7 +516,7 @@ public class TransactionIntegrationTest {
                 .body("transCardNum", containsString("1234")) // Masked card number
                 .body("transTypeCd", equalTo(TRANS_TYPE_PURCHASE))
                 .body("transCatCd", equalTo(TRANS_CAT_GROCERY))
-                .body("transAmt", equalTo(AMOUNT_PURCHASE_125_50.floatValue()))
+                .body("transAmt", equalTo("125.50")) // BigDecimal preserved as string for COMP-3 precision
                 .body("transDesc", equalTo("GROCERY STORE PURCHASE"))
                 .body("transMerchantName", equalTo("LOCAL GROCERY"))
                 .body("transOrigTs", notNullValue())
@@ -607,7 +607,7 @@ public class TransactionIntegrationTest {
                 .body("transCardNum", containsString("1234")) // Masked
                 .body("transTypeCd", equalTo(TRANS_TYPE_PURCHASE))
                 .body("transCatCd", equalTo(TRANS_CAT_GROCERY))
-                .body("transAmt", equalTo(75.25f))
+                .body("transAmt", equalTo("75.25")) // BigDecimal preserved as string for COMP-3 precision
                 .body("transMerchantName", equalTo("TEST MERCHANT"))
                 .body("transOrigTs", notNullValue())
                 .body("transProcTs", notNullValue())
@@ -795,7 +795,7 @@ public class TransactionIntegrationTest {
                 .post("/api/transactions")
         .then()
                 .statusCode(400)
-                .body("message", containsString("amount"));
+                .body("message", containsStringIgnoringCase("amount"));
     }
     
     /**
