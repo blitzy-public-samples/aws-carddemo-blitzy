@@ -654,6 +654,64 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Handles IllegalArgumentException - thrown when invalid arguments are passed to methods.
+     * 
+     * <p>This method handles IllegalArgumentException which typically indicates client errors
+     * such as invalid parameter values, invalid enum values, or invalid business operation
+     * parameters. Returns HTTP 400 Bad Request.</p>
+     * 
+     * <h3>Examples:</h3>
+     * <ul>
+     *   <li>Invalid report type in ReportController</li>
+     *   <li>Invalid format parameter in export operations</li>
+     *   <li>Invalid enum values for status codes</li>
+     *   <li>Out of range parameter values</li>
+     * </ul>
+     * 
+     * <h3>Response Example:</h3>
+     * <pre>
+     * HTTP/1.1 400 Bad Request
+     * Content-Type: application/json
+     * 
+     * {
+     *   "timestamp": "2025-10-28T08:56:31",
+     *   "status": 400,
+     *   "error": "Bad Request",
+     *   "message": "Invalid report type: INVALID_TYPE",
+     *   "details": "IllegalArgumentException: Invalid report type: INVALID_TYPE. Valid types are: ACCOUNT_SUMMARY, TRANSACTION_ACTIVITY, USER_ACTIVITY, CUSTOM",
+     *   "path": "/api/reports/generate"
+     * }
+     * </pre>
+     * 
+     * @param ex The IllegalArgumentException thrown when invalid arguments are provided
+     * @param request WebRequest containing HTTP request details including URI path
+     * @return ResponseEntity with HTTP 400 status and ErrorResponse body
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalArgumentException(
+            IllegalArgumentException ex,
+            WebRequest request) {
+        
+        log.warn("Invalid argument provided | Path: {} | Error: {}",
+                extractPath(request),
+                ex.getMessage());
+        
+        String details = "IllegalArgumentException: " + 
+                (ex.getMessage() != null ? ex.getMessage() : "Invalid argument provided");
+        
+        ErrorResponse errorResponse = new ErrorResponse(
+                LocalDateTime.now(),
+                HttpStatus.BAD_REQUEST.value(),
+                "Bad Request",
+                ex.getMessage() != null ? ex.getMessage() : "Invalid argument provided",
+                details,
+                extractPath(request)
+        );
+        
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+    }
+
+    /**
      * Handles all other unhandled exceptions - catch-all for unexpected errors.
      * 
      * <p>This is the catch-all exception handler for any exception not caught by specific
