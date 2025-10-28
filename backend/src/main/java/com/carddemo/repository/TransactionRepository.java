@@ -167,6 +167,19 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *         Returns empty list if no transactions found for the card.
      */
     List<Transaction> findByTransCardNum(String cardNum);
+    
+    /**
+     * Find all transactions for a specific card with pagination.
+     * 
+     * Paginated version of findByTransCardNum for efficient handling of large result sets.
+     * Essential for cards with thousands of transactions to maintain sub-200ms response times.
+     * Used when browsing all transactions for a card without date range filter.
+     * 
+     * @param cardNum Card number to filter transactions (16-character card number)
+     * @param pageable Pagination parameters (page number, page size, sort order)
+     * @return Page of Transaction entities with pagination metadata
+     */
+    Page<Transaction> findByTransCardNum(String cardNum, Pageable pageable);
 
     /**
      * Find all transactions within a date range based on transaction origination timestamp.
@@ -211,6 +224,20 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *         transactions found in the date range.
      */
     List<Transaction> findByTransOrigTsBetween(LocalDateTime startDate, LocalDateTime endDate);
+    
+    /**
+     * Find all transactions within a date range with pagination.
+     * 
+     * Paginated version of findByTransOrigTsBetween for efficient handling of large date ranges.
+     * Essential for maintaining sub-200ms response times when querying transactions across
+     * extended time periods (months or years) that could return thousands of records.
+     * 
+     * @param startDate Start of date range (inclusive)
+     * @param endDate End of date range (inclusive)
+     * @param pageable Pagination parameters (page number, page size, sort order)
+     * @return Page of Transaction entities with pagination metadata
+     */
+    Page<Transaction> findByTransOrigTsBetween(LocalDateTime startDate, LocalDateTime endDate, Pageable pageable);
 
     /**
      * Find all transactions for a specific card within a date range.

@@ -222,27 +222,50 @@ public class TransactionService {
         log.debug("Listing transactions for card: {}, date range: {} to {}, page: {}", 
                   cardNumber, startDate, endDate, pageable.getPageNumber());
 
-        // Step 1: Validate card number using ValidationService (COBOL field validation)
-        validationService.validateCardNumber(cardNumber);
+        // Step 1: Validate card number if provided (optional filter parameter)
+        // Card number filter is optional per COTRN00C.cbl - can browse all transactions
+        if (cardNumber != null && !cardNumber.isEmpty()) {
+            validationService.validateCardNumber(cardNumber);
+        }
 
         // Step 2: Validate date range
         if (startDate != null && endDate != null && startDate.isAfter(endDate)) {
             throw new BusinessException("Start date cannot be after end date");
         }
 
-        // Step 3: Convert LocalDate to LocalDateTime for timestamp comparison
-        // COBOL uses PIC X(26) timestamp fields, Java uses LocalDateTime
-        LocalDateTime startDateTime = startDate.atStartOfDay();
-        LocalDateTime endDateTime = endDate.atTime(23, 59, 59);
+        // Step 3: Query transactions with optional filters (replaces CICS STARTBR / READNEXT loop)
+        Page<Transaction> transactions;
+        
+        // Handle different filter combinations matching COTRN00C.cbl browse logic
+        if (cardNumber != null && !cardNumber.isEmpty() && startDate != null && endDate != null) {
+            // Both card number and date range filters provided
+            LocalDateTime startDateTime = startDate.atStartOfDay();
+            LocalDateTime endDateTime = endDate.atTime(23, 59, 59);
+            transactions = transactionRepository.findByTransCardNumAndTransOrigTsBetween(
+                cardNumber, startDateTime, endDateTime, pageable);
+            log.info("Found {} transactions for card {} in date range {} to {}", 
+                     transactions.getTotalElements(), cardNumber, startDate, endDate);
+        } else if (cardNumber != null && !cardNumber.isEmpty()) {
+            // Only card number filter provided
+            transactions = transactionRepository.findByTransCardNum(cardNumber, pageable);
+            log.info("Found {} transactions for card {}", 
+                     transactions.getTotalElements(), cardNumber);
+        } else if (startDate != null && endDate != null) {
+            // Only date range filter provided
+            LocalDateTime startDateTime = startDate.atStartOfDay();
+            LocalDateTime endDateTime = endDate.atTime(23, 59, 59);
+            transactions = transactionRepository.findByTransOrigTsBetween(
+                startDateTime, endDateTime, pageable);
+            log.info("Found {} transactions in date range {} to {}", 
+                     transactions.getTotalElements(), startDate, endDate);
+        } else {
+            // No filters - return all transactions (COBOL browse all records)
+            transactions = transactionRepository.findAll(pageable);
+            log.info("Found {} total transactions (no filters)", 
+                     transactions.getTotalElements());
+        }
 
-        // Step 4: Query transactions from repository (replaces CICS STARTBR / READNEXT loop)
-        Page<Transaction> transactions = transactionRepository.findByTransCardNumAndTransOrigTsBetween(
-            cardNumber, startDateTime, endDateTime, pageable);
-
-        log.info("Found {} transactions for card {} in date range {} to {}", 
-                 transactions.getTotalElements(), cardNumber, startDate, endDate);
-
-        // Step 5: Convert entities to DTOs using mapToDto() private method
+        // Step 4: Convert entities to DTOs using mapToDto() private method
         return transactions.map(this::mapToDto);
     }
 
