@@ -104,7 +104,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Box, Container, Typography, Paper, Alert } from '@mui/material';
 import { getUserById, updateUser, UpdateUserRequest } from '../services/userService';
-import { UserForm, UserFormData } from '../components/forms/UserForm';
+import UserForm, { UserFormData } from '../components/forms/UserForm';
 import Header from '../components/common/Header';
 import Footer from '../components/common/Footer';
 import ErrorMessage from '../components/common/ErrorMessage';
@@ -121,9 +121,10 @@ import { useAuth } from '../hooks/useAuth';
  * Component State Management:
  * - user: User | null - Loaded user data from getUserById API
  * - loading: boolean - Loading flag for initial data fetch
- * - submitting: boolean - Loading flag for form submission
  * - error: string | null - Error message for display
  * - success: boolean - Success flag to show confirmation message
+ * 
+ * Note: Form submission loading state is managed by UserForm component via Formik's isSubmitting
  * 
  * URL Parameters:
  * - userId: string - User ID from route path /users/:userId/edit
@@ -169,10 +170,6 @@ const UserUpdatePage: React.FC = () => {
   // State: Initial data loading flag (getUserById in progress)
   // Equivalent to COBOL "WAIT" status during EXEC CICS READ operation
   const [loading, setLoading] = useState<boolean>(true);
-  
-  // State: Form submission loading flag (updateUser in progress)
-  // Equivalent to COBOL "WAIT" status during EXEC CICS REWRITE operation
-  const [submitting, setSubmitting] = useState<boolean>(false);
   
   // State: Error message for display
   // Equivalent to COBOL WS-ERROR-MSG (PIC X(78)) displayed in ERRMSG field
@@ -318,8 +315,7 @@ const UserUpdatePage: React.FC = () => {
    */
   const handleSubmit = async (values: UserFormData): Promise<void> => {
     try {
-      // Set submitting state (show loading spinner on submit button)
-      setSubmitting(true);
+      // Clear error and success state before submission
       setError(null);
       setSuccess(false);
 
@@ -379,9 +375,6 @@ const UserUpdatePage: React.FC = () => {
       
       // Clear success flag on error
       setSuccess(false);
-    } finally {
-      // Clear submitting state to re-enable submit button
-      setSubmitting(false);
     }
   };
 
