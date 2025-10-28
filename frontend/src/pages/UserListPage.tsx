@@ -35,7 +35,7 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Box, Button, Container, Paper, Typography, Stack } from '@mui/material';
 import PersonAddIcon from '@mui/icons-material/PersonAdd';
@@ -44,11 +44,11 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 
 // Internal imports - component dependencies
 import { getAllUsers } from '../services/userService';
-import { UserTable } from '../components/tables/UserTable';
-import { Header } from '../components/common/Header';
-import { Footer } from '../components/common/Footer';
-import { ErrorMessage } from '../components/common/ErrorMessage';
-import { LoadingSpinner } from '../components/common/LoadingSpinner';
+import UserTable from '../components/tables/UserTable';
+import Header from '../components/common/Header';
+import Footer from '../components/common/Footer';
+import ErrorMessage from '../components/common/ErrorMessage';
+import LoadingSpinner from '../components/common/LoadingSpinner';
 
 // Type definitions
 import { User } from '../types/user';
@@ -94,7 +94,7 @@ const UserListPage: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState<number>(0);
-  const [pageSize, setPageSize] = useState<number>(10); // Match BMS 10-row display
+  const [pageSize] = useState<number>(10); // Match BMS 10-row display (fixed page size)
   const [totalUsers, setTotalUsers] = useState<number>(0);
   const [searchUserId, setSearchUserId] = useState<string>('');
 
@@ -144,16 +144,17 @@ const UserListPage: React.FC = () => {
       setLoading(true);
       setError(null);
 
-      // Call userService API with pagination and search parameters
+      // Call userService API with pagination parameters
+      // Note: Server-side filtering by userId not currently supported by API
+      // Search functionality handled client-side
       const response = await getAllUsers({
-        page,
+        page: page + 1, // API uses 1-based page numbering
         pageSize,
-        userId: searchUserId || undefined,
       });
 
       // Update state with fetched data
       setUsers(response.users);
-      setTotalUsers(response.total);
+      setTotalUsers(response.pagination.totalItems || 0);
     } catch (err: any) {
       // Error handling for various failure scenarios
       if (err.response) {
@@ -201,34 +202,30 @@ const UserListPage: React.FC = () => {
   }, [page, pageSize, searchUserId, isAuthenticated, user]);
 
   /**
-   * Handle Row Click
+   * Handle Row Selection
    * 
-   * Navigates to user detail/edit page when user row is clicked.
+   * Navigates to appropriate page based on action (update or delete).
    * 
    * Conversion from COBOL:
-   * - Selection field (SEL0001-SEL0010) input of 'U' → Row click navigation
+   * - Selection field (SEL0001-SEL0010) input of 'U' → action='update'
+   * - Selection field input of 'D' → action='delete'
    * - EXEC CICS XCTL PROGRAM('COUSR02C') → navigate(`/users/${userId}/edit`)
+   * - EXEC CICS XCTL PROGRAM('COUSR03C') → navigate(`/users/${userId}/delete`)
    * - COMMAREA passing of user ID → URL path parameter
    * 
-   * @param userId - User ID to navigate to edit page
+   * @param selectedUsers - Array of selected user records (UserData format from table)
+   * @param action - Action to perform ('update' or 'delete')
    */
-  const handleRowClick = (userId: string) => {
-    navigate(`/users/${userId}/edit`);
-  };
-
-  /**
-   * Handle Delete Action
-   * 
-   * Navigates to user delete confirmation page.
-   * 
-   * Conversion from COBOL:
-   * - Selection field input of 'D' → Delete button click
-   * - EXEC CICS XCTL PROGRAM('COUSR03C') → navigate(`/users/${userId}/delete`)
-   * 
-   * @param userId - User ID to navigate to delete confirmation page
-   */
-  const handleDeleteClick = (userId: string) => {
-    navigate(`/users/${userId}/delete`);
+  const handleRowSelect = (selectedUsers: any[], action: 'update' | 'delete') => {
+    // Navigate to appropriate page for first selected user
+    if (selectedUsers.length > 0 && selectedUsers[0]) {
+      const userId = selectedUsers[0].userId;
+      if (action === 'update') {
+        navigate(`/users/${userId}/edit`);
+      } else if (action === 'delete') {
+        navigate(`/users/${userId}/delete`);
+      }
+    }
   };
 
   /**
@@ -283,10 +280,10 @@ const UserListPage: React.FC = () => {
    * - F8=Forward → Next page
    * - PAGENUM display field → DataGrid page indicator
    * 
-   * @param newPage - New page number (0-indexed)
+   * @param newPage - New page number (1-based from UserTable)
    */
   const handlePageChange = (newPage: number) => {
-    setPage(newPage);
+    setPage(newPage - 1); // Convert from 1-based to 0-based
   };
 
   /**
@@ -301,6 +298,26 @@ const UserListPage: React.FC = () => {
   const handleBack = () => {
     navigate('/');
   };
+
+  /**
+   * Convert User[] to UserData[] format for UserTable
+   * 
+   * Maps User interface (userFirstName, userLastName) to UserData interface
+   * (firstName, lastName) expected by UserTable component.
+   * 
+   * Conversion necessary due to different naming conventions:
+   * - Backend/API: userFirstName, userLastName (COBOL SEC-USR-FNAME, SEC-USR-LNAME)
+   * - Table component: firstName, lastName (BMS FNAME, LNAME fields)
+   */
+  const userData = useMemo(() => {
+    return users.map(user => ({
+      userId: user.userId,
+      firstName: user.userFirstName,
+      lastName: user.userLastName,
+      userType: user.userType,
+      id: user.userId, // Use userId as unique id for DataGrid
+    }));
+  }, [users]);
 
   /**
    * Render Loading State
@@ -426,15 +443,15 @@ const UserListPage: React.FC = () => {
 
           {/* User Table Component */}
           <UserTable
-            users={users}
-            onRowClick={handleRowClick}
-            onDeleteClick={handleDeleteClick}
+            users={userData}
+            onRowSelect={handleRowSelect}
             onSearch={handleSearch}
-            page={page}
+            pageNumber={page + 1} // Convert from 0-based to 1-based
             pageSize={pageSize}
-            total={totalUsers}
+            totalPages={Math.ceil(totalUsers / pageSize) || 1}
             onPageChange={handlePageChange}
             loading={loading}
+            error={error || undefined}
           />
 
           {/* Helper Text */}
