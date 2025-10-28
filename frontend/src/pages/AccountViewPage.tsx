@@ -262,7 +262,7 @@ const AccountViewPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   
   // Authentication state from useAuth hook (replaces COBOL COMMAREA)
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated } = useAuth();
   
   // Component state management
   const [loading, setLoading] = useState<boolean>(true);
