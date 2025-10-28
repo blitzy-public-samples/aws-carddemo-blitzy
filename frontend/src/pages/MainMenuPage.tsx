@@ -192,7 +192,7 @@ const MainMenuPage: React.FC = () => {
   const navigate = useNavigate();
 
   // Authentication context - retrieve user info from COBOL COCOM01Y.cpy COMMAREA
-  const { user, isAuthenticated } = useAuth();
+  const { user } = useAuth();
 
   // Error message state for form validation errors (replaces BMS ERRMSG field)
   const [errorMessage, setErrorMessage] = useState<string>('');
