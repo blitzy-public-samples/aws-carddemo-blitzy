@@ -81,6 +81,7 @@ spring:
         jdbc:
           batch_size: 50
           fetch_size: 100
+          time_zone: UTC
         order_inserts: true
         order_updates: true
         
@@ -90,10 +91,6 @@ spring:
         
         # Performance settings
         generate_statistics: false  # Disable for test performance
-        
-        # Timezone configuration
-        jdbc:
-          time_zone: UTC
 
     # Show SQL for debugging (disabled, use logging configuration instead)
     show-sql: false
