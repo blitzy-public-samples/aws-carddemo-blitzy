@@ -113,7 +113,7 @@ const paymentValidationSchema = yup.object({
       (value) => {
         if (!value) return false;
         const parts = value.split('.');
-        return parts.length === 1 || (parts.length === 2 && parts[1].length <= 2);
+        return parts.length === 1 || (parts.length === 2 && (parts[1]?.length || 0) <= 2);
       }
     )
     .test(
@@ -147,7 +147,7 @@ const BillingPage: React.FC = () => {
   const { accountId } = useParams<{ accountId: string }>();
 
   // Authentication context
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated } = useAuth();
 
   // Component state
   const [billingInfo, setBillingInfo] = useState<BillingInfo | null>(null);
