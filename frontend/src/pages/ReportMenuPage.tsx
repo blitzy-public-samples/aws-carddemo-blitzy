@@ -105,6 +105,7 @@ interface ReportFormValues {
   confirmation: string;
 }
 
+/**
  * Yup validation schema matching COBOL validation logic from CORPT00C.cbl
  * 
  * COBOL Validation Rules Preserved:
@@ -221,6 +222,7 @@ const validationSchema = yup.object().shape({
     .uppercase()
 });
 
+/**
  * ReportMenuPage Component
  * 
  * React functional component for report generation menu.
@@ -242,7 +244,7 @@ const validationSchema = yup.object().shape({
  */
 const ReportMenuPage: React.FC = () => {
   // Authentication context - replaces COBOL COMMAREA user validation
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated } = useAuth();
   
   // React Router navigation - replaces COBOL EXEC CICS RETURN TRANSID
   const navigate = useNavigate();
@@ -341,8 +343,8 @@ const ReportMenuPage: React.FC = () => {
         }
         
         // Parse dates for range validation
-        const startDate = new Date(values.startYear, parseInt(values.startMonth) - 1, parseInt(values.startDay));
-        const endDate = new Date(values.endYear, parseInt(values.endMonth) - 1, parseInt(values.endDay));
+        const startDate = new Date(parseInt(values.startYear), parseInt(values.startMonth) - 1, parseInt(values.startDay));
+        const endDate = new Date(parseInt(values.endYear), parseInt(values.endMonth) - 1, parseInt(values.endDay));
         
         // Validate start date is before or equal to end date
         if (startDate > endDate) {
