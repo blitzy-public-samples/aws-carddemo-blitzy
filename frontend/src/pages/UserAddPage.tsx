@@ -67,13 +67,12 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Box, Container, Paper, Typography } from '@mui/material';
 import { createUser } from '../services/userService';
-import { UserForm, UserFormData } from '../components/forms/UserForm';
-import { Header } from '../components/common/Header';
-import { Footer } from '../components/common/Footer';
-import { User } from '../types/user';
+import UserForm, { UserFormData } from '../components/forms/UserForm';
+import Header from '../components/common/Header';
+import Footer from '../components/common/Footer';
 import { useAuth } from '../hooks/useAuth';
 import { USER_TYPES } from '../utils/constants';
-import { ErrorMessage } from '../components/common/ErrorMessage';
+import ErrorMessage from '../components/common/ErrorMessage';
 
 /**
  * UserAddPage functional component
@@ -148,10 +147,6 @@ const UserAddPage: React.FC = () => {
   // Authentication context hook providing user session data
   // Replaces COBOL COCOM01Y.cpy CARDDEMO-COMMAREA session management
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
-  
-  // Component state for form submission status
-  // Replaces COBOL WS-SUBMIT-FLAG working storage variable
-  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   
   // Component state for error message display
   // Replaces COBOL WS-ERROR-MSG working storage variable
@@ -250,14 +245,11 @@ const UserAddPage: React.FC = () => {
       // Clear any previous error messages
       // Equivalent to MOVE SPACES TO WS-ERROR-MSG
       setErrorMessage(null);
-      
-      // Set submitting flag to disable form and show loading indicator
-      // Equivalent to MOVE 'Y' TO WS-SUBMIT-FLAG
-      setIsSubmitting(true);
 
       // Call API to create new user
       // Backend will hash password with BCrypt per security requirements
       // Replaces EXEC CICS WRITE FILE('USRSEC')
+      // Note: Form submission state (isSubmitting) is managed internally by UserForm component via Formik
       await createUser({
         userId: formData.userId,
         userFirstName: formData.userFirstName,
@@ -272,10 +264,7 @@ const UserAddPage: React.FC = () => {
     } catch (error: any) {
       // Error occurred - display error message to user
       // Equivalent to PERFORM DISPLAY-ERROR-MESSAGE paragraph
-      
-      // Reset submitting flag to re-enable form
-      // Equivalent to MOVE 'N' TO WS-SUBMIT-FLAG
-      setIsSubmitting(false);
+      // Note: Form will be re-enabled automatically by Formik after async operation completes
       
       // Handle specific error scenarios matching COBOL RESP codes
       if (error.response?.status === 409) {
@@ -466,11 +455,11 @@ const UserAddPage: React.FC = () => {
         >
           {/* Reusable UserForm component handling all field validation and layout */}
           {/* Replaces BMS fields: FNAME, LNAME, USERID, PASSWD, USRTYPE */}
+          {/* Note: UserForm manages submission state internally via Formik */}
           <UserForm
             mode="create"
             onSubmit={handleSubmit}
             onCancel={handleCancel}
-            isSubmitting={isSubmitting}
           />
         </Paper>
 
