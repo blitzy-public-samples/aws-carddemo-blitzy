@@ -290,9 +290,29 @@ public class AccountService {
             log.debug("Updated group ID to: {}", accountDto.getAcctGroupId());
         }
         
-        // Recalculate current balance (replaces COBOL COMPUTE statements)
-        BigDecimal updatedBalance = calculateCurrentBalance(existingAccount);
-        existingAccount.setAcctCurrBal(updatedBalance);
+        // Update current balance if provided (used by TransactionService for balance updates)
+        // Otherwise, recalculate balance from transactions (used by AccountController for manual updates)
+        if (accountDto.getAcctCurrBal() != null) {
+            existingAccount.setAcctCurrBal(accountDto.getAcctCurrBal());
+            log.debug("Updated current balance to: {}", accountDto.getAcctCurrBal());
+        } else {
+            // Recalculate current balance (replaces COBOL COMPUTE statements)
+            BigDecimal updatedBalance = calculateCurrentBalance(existingAccount);
+            existingAccount.setAcctCurrBal(updatedBalance);
+            log.debug("Recalculated current balance to: {}", updatedBalance);
+        }
+        
+        // Update current cycle credit if provided (used by TransactionService)
+        if (accountDto.getAcctCurrCycCredit() != null) {
+            existingAccount.setAcctCurrCycCredit(accountDto.getAcctCurrCycCredit());
+            log.debug("Updated current cycle credit to: {}", accountDto.getAcctCurrCycCredit());
+        }
+        
+        // Update current cycle debit if provided (used by TransactionService)
+        if (accountDto.getAcctCurrCycDebit() != null) {
+            existingAccount.setAcctCurrCycDebit(accountDto.getAcctCurrCycDebit());
+            log.debug("Updated current cycle debit to: {}", accountDto.getAcctCurrCycDebit());
+        }
         
         // Save with optimistic locking (replaces EXEC CICS REWRITE + SYNCPOINT)
         Account savedAccount = accountRepository.save(existingAccount);

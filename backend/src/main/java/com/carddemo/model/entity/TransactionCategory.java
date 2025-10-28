@@ -69,7 +69,7 @@ public class TransactionCategory implements Serializable {
      * COBOL: TRAN-CAT-TYPE-DESC PIC X(50)
      * Contains human-readable description of the transaction category.
      */
-    @Column(name = "trans_cat_type_desc", length = 50, nullable = false)
+    @Column(name = "trans_cat_desc", length = 50, nullable = false)
     private String tranCatTypeDesc;
 
     /**

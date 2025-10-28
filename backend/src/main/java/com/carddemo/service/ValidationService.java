@@ -295,6 +295,28 @@ public class ValidationService {
             );
         }
         
+        // Validate against valid transaction types from CVTRA03Y.cpy (TRANTYPE file)
+        // Valid types per COBOL copybook: 01-08
+        // 01=Purchase, 02=Cash Advance, 03=Balance Transfer, 04=Payment, 
+        // 05=Fee, 06=Interest, 07=Credit Adjustment, 08=Debit Adjustment
+        String[] validTypes = {"01", "02", "03", "04", "05", "06", "07", "08"};
+        boolean isValid = false;
+        for (String validType : validTypes) {
+            if (validType.equals(trimmedType)) {
+                isValid = true;
+                break;
+            }
+        }
+        
+        if (!isValid) {
+            log.warn("Invalid transaction type code: {}", type);
+            throw new ValidationException(
+                "VAL003",
+                "Invalid transaction type code. Must be one of: 01-08",
+                "transactionType"
+            );
+        }
+        
         log.debug("Transaction type validation successful");
     }
     

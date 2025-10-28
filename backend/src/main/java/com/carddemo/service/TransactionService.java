@@ -73,8 +73,10 @@ import com.carddemo.model.dto.TransactionDto;
 import com.carddemo.model.entity.Transaction;
 import com.carddemo.model.entity.TransactionCategoryBalance;
 import com.carddemo.model.entity.TransactionCategoryBalance.TransactionCategoryBalanceId;
+import com.carddemo.model.entity.TransactionCategoryId;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
+import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -175,6 +177,7 @@ public class TransactionService {
     private final TransactionRepository transactionRepository;
     private final AccountRepository accountRepository;
     private final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
+    private final TransactionCategoryRepository transactionCategoryRepository;
     private final CardService cardService;
     private final AccountService accountService;
     private final ValidationService validationService;
@@ -540,6 +543,21 @@ public class TransactionService {
             throw new BusinessException("Transaction category code is required");
         }
         validationService.validateTransactionCategory(transactionDto.getTransCatCd());
+        
+        // Validate transaction category exists in database (COBOL: EXEC CICS READ FILE('TRANCATG'))
+        // Original COBOL from COTRN02C.cbl category validation
+        // Category 0 is valid per COBOL logic (payment transactions without specific category)
+        if (transactionDto.getTransCatCd() != 0) {
+            TransactionCategoryId categoryId = new TransactionCategoryId(
+                transactionDto.getTransTypeCd(), 
+                transactionDto.getTransCatCd()
+            );
+            if (!transactionCategoryRepository.existsById(categoryId)) {
+                log.warn("Invalid transaction category: type={}, category={}", 
+                    transactionDto.getTransTypeCd(), transactionDto.getTransCatCd());
+                throw new BusinessException("Invalid transaction category code");
+            }
+        }
 
         // Validate merchant data is present for purchase transactions
         if ("01".equals(transactionDto.getTransTypeCd())) {

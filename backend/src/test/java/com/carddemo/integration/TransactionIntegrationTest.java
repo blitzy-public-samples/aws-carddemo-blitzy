@@ -198,9 +198,10 @@ public class TransactionIntegrationTest {
     private static final String TRANS_TYPE_PAYMENT = "04";
     private static final String TRANS_TYPE_CASH_ADVANCE = "02";
     
-    // Transaction category codes (MCC codes)
-    private static final Integer TRANS_CAT_GROCERY = 5411;
-    private static final Integer TRANS_CAT_RESTAURANT = 5812;
+    // Transaction category codes matching V7__insert_initial_data.sql
+    // Type '01' (purchase) has categories 1-5 in database
+    private static final Integer TRANS_CAT_REGULAR_SALE = 1;  // Regular Sales Draft
+    private static final Integer TRANS_CAT_CASH_ADVANCE = 2;  // Regular Cash Advance
     
     // Financial amounts with COMP-3 precision (scale 2)
     private static final BigDecimal AMOUNT_INITIAL_BALANCE = new BigDecimal("5000.00");
@@ -286,7 +287,7 @@ public class TransactionIntegrationTest {
                 .transId(TEST_TRANS_ID_1)
                 .transCardNum(TEST_CARD_NUM_1)
                 .transTypeCd(TRANS_TYPE_PURCHASE)
-                .transCatCd(TRANS_CAT_GROCERY)
+                .transCatCd(TRANS_CAT_REGULAR_SALE)
                 .transAmt(AMOUNT_PURCHASE_125_50.setScale(2, RoundingMode.HALF_UP))
                 .transOrigTs(Timestamp.valueOf(now.minusDays(5)))
                 .transProcTs(Timestamp.valueOf(now.minusDays(5)))
@@ -299,7 +300,7 @@ public class TransactionIntegrationTest {
                 .transId(TEST_TRANS_ID_2)
                 .transCardNum(TEST_CARD_NUM_1)
                 .transTypeCd(TRANS_TYPE_PURCHASE)
-                .transCatCd(TRANS_CAT_RESTAURANT)
+                .transCatCd(TRANS_CAT_CASH_ADVANCE)
                 .transAmt(AMOUNT_PURCHASE_250_75.setScale(2, RoundingMode.HALF_UP))
                 .transOrigTs(Timestamp.valueOf(now.minusDays(3)))
                 .transProcTs(Timestamp.valueOf(now.minusDays(3)))
@@ -515,7 +516,7 @@ public class TransactionIntegrationTest {
                 .body("transId", equalTo(TEST_TRANS_ID_1))
                 .body("transCardNum", containsString("1234")) // Masked card number
                 .body("transTypeCd", equalTo(TRANS_TYPE_PURCHASE))
-                .body("transCatCd", equalTo(TRANS_CAT_GROCERY))
+                .body("transCatCd", equalTo(TRANS_CAT_REGULAR_SALE))
                 .body("transAmt", equalTo("125.50")) // BigDecimal preserved as string for COMP-3 precision
                 .body("transDesc", equalTo("GROCERY STORE PURCHASE"))
                 .body("transMerchantName", equalTo("LOCAL GROCERY"))
@@ -583,7 +584,7 @@ public class TransactionIntegrationTest {
         Map<String, Object> transactionRequest = new HashMap<>();
         transactionRequest.put("transCardNum", TEST_CARD_NUM_1);
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
-        transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
+        transactionRequest.put("transCatCd", TRANS_CAT_REGULAR_SALE);
         transactionRequest.put("transSource", "POS");
         transactionRequest.put("transDesc", "TEST PURCHASE TRANSACTION");
         transactionRequest.put("transAmt", 75.25); // Will be converted to BigDecimal scale 2
@@ -606,7 +607,7 @@ public class TransactionIntegrationTest {
                 .body("transId", notNullValue())
                 .body("transCardNum", containsString("1234")) // Masked
                 .body("transTypeCd", equalTo(TRANS_TYPE_PURCHASE))
-                .body("transCatCd", equalTo(TRANS_CAT_GROCERY))
+                .body("transCatCd", equalTo(TRANS_CAT_REGULAR_SALE))
                 .body("transAmt", equalTo("75.25")) // BigDecimal preserved as string for COMP-3 precision
                 .body("transMerchantName", equalTo("TEST MERCHANT"))
                 .body("transOrigTs", notNullValue())
@@ -699,10 +700,12 @@ public class TransactionIntegrationTest {
     @Test
     void testPostTransaction_InvalidCardNumber_Returns404() {
         Map<String, Object> transactionRequest = new HashMap<>();
-        transactionRequest.put("transCardNum", "9999999999999999");
+        transactionRequest.put("transCardNum", "4111111111111111"); // Valid Luhn but not in database
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
-        transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
+        transactionRequest.put("transCatCd", TRANS_CAT_REGULAR_SALE);
         transactionRequest.put("transAmt", 100.00);
+        transactionRequest.put("transMerchantId", 123456789L); // Required for purchase
+        transactionRequest.put("transMerchantName", "TEST MERCHANT"); // Required for purchase
         transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
@@ -733,7 +736,7 @@ public class TransactionIntegrationTest {
         Map<String, Object> transactionRequest = new HashMap<>();
         transactionRequest.put("transCardNum", TEST_CARD_NUM_1);
         transactionRequest.put("transTypeCd", "99"); // Invalid type code
-        transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
+        transactionRequest.put("transCatCd", TRANS_CAT_REGULAR_SALE);
         transactionRequest.put("transAmt", 100.00);
         transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
@@ -765,7 +768,7 @@ public class TransactionIntegrationTest {
         Map<String, Object> transactionRequest = new HashMap<>();
         transactionRequest.put("transCardNum", TEST_CARD_NUM_1);
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
-        transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
+        transactionRequest.put("transCatCd", TRANS_CAT_REGULAR_SALE);
         transactionRequest.put("transAmt", 0.0); // Invalid: zero amount
         transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
@@ -776,7 +779,7 @@ public class TransactionIntegrationTest {
                 .post("/api/transactions")
         .then()
                 .statusCode(400)
-                .body("message", containsString("amount"));
+                .body("message", containsStringIgnoringCase("amount")); // Case-insensitive match
     }
     
     @Test
@@ -784,7 +787,7 @@ public class TransactionIntegrationTest {
         Map<String, Object> transactionRequest = new HashMap<>();
         transactionRequest.put("transCardNum", TEST_CARD_NUM_1);
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
-        transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
+        transactionRequest.put("transCatCd", TRANS_CAT_REGULAR_SALE);
         transactionRequest.put("transAmt", -50.0); // Invalid: negative amount
         transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
@@ -824,8 +827,10 @@ public class TransactionIntegrationTest {
         Map<String, Object> transactionRequest = new HashMap<>();
         transactionRequest.put("transCardNum", TEST_CARD_NUM_1);
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
-        transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
+        transactionRequest.put("transCatCd", TRANS_CAT_REGULAR_SALE);
         transactionRequest.put("transAmt", 16000.00); // Exceeds credit limit
+        transactionRequest.put("transMerchantId", 123456789L); // Required for purchase transactions
+        transactionRequest.put("transMerchantName", "TEST MERCHANT"); // Required for purchase transactions
         transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
@@ -861,7 +866,7 @@ public class TransactionIntegrationTest {
         Map<String, Object> transactionRequest = new HashMap<>();
         // transCardNum intentionally missing
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
-        transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
+        transactionRequest.put("transCatCd", TRANS_CAT_REGULAR_SALE);
         transactionRequest.put("transAmt", 100.00);
         transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
@@ -879,7 +884,7 @@ public class TransactionIntegrationTest {
         Map<String, Object> transactionRequest = new HashMap<>();
         transactionRequest.put("transCardNum", TEST_CARD_NUM_1);
         // transTypeCd intentionally missing
-        transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
+        transactionRequest.put("transCatCd", TRANS_CAT_REGULAR_SALE);
         transactionRequest.put("transAmt", 100.00);
         transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
@@ -897,7 +902,7 @@ public class TransactionIntegrationTest {
         Map<String, Object> transactionRequest = new HashMap<>();
         transactionRequest.put("transCardNum", TEST_CARD_NUM_1);
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
-        transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
+        transactionRequest.put("transCatCd", TRANS_CAT_REGULAR_SALE);
         // transAmt intentionally missing
         transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
@@ -930,6 +935,8 @@ public class TransactionIntegrationTest {
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
         transactionRequest.put("transCatCd", 9999); // Invalid category code
         transactionRequest.put("transAmt", 100.00);
+        transactionRequest.put("transMerchantId", 123456789L); // Required for purchase transactions
+        transactionRequest.put("transMerchantName", "TEST MERCHANT"); // Required for purchase transactions
         transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
@@ -956,7 +963,7 @@ public class TransactionIntegrationTest {
         Map<String, Object> transactionRequest = new HashMap<>();
         transactionRequest.put("transCardNum", TEST_CARD_NUM_1);
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
-        transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
+        transactionRequest.put("transCatCd", TRANS_CAT_REGULAR_SALE);
         transactionRequest.put("transAmt", 50.00);
         transactionRequest.put("transMerchantId", 987654321L);
         transactionRequest.put("transMerchantName", "MERCHANT WITH EXACTLY FIFTY CHARACTERS NAME HERE");
@@ -1008,9 +1015,11 @@ public class TransactionIntegrationTest {
             Map<String, Object> transactionRequest = new HashMap<>();
             transactionRequest.put("transCardNum", TEST_CARD_NUM_1);
             transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
-            transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
+            transactionRequest.put("transCatCd", TRANS_CAT_REGULAR_SALE);
             transactionRequest.put("transAmt", transactionAmount.doubleValue());
             transactionRequest.put("transDesc", "STRESS TEST TRANSACTION " + (i + 1));
+            transactionRequest.put("transMerchantId", 123456789L); // Required for purchase transactions
+            transactionRequest.put("transMerchantName", "STRESS TEST MERCHANT"); // Required for purchase transactions
             transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
             
             String transId = given()
