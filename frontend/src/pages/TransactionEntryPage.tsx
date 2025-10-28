@@ -76,13 +76,12 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Alert, Box, Container, Paper, Typography } from '@mui/material';
 import transactionService from '../services/transactionService';
-import TransactionForm, { TransactionFormData } from '../components/forms/TransactionForm';
+import { TransactionForm, TransactionFormData } from '../components/forms/TransactionForm';
 import Header from '../components/common/Header';
 import Footer from '../components/common/Footer';
 import ErrorMessage from '../components/common/ErrorMessage';
 import { useAuth } from '../hooks/useAuth';
 import { formatCurrency } from '../utils/currencyFormatter';
-import { validateCardNumber } from '../utils/validation';
 
 /**
  * TransactionEntryPage Component
@@ -109,10 +108,6 @@ const TransactionEntryPage: React.FC = () => {
   // State for error message display
   // COBOL equivalent: WS-ERR-MSG field with ERR-FLG indicator
   const [errorMessage, setErrorMessage] = useState<string>('');
-
-  // State for form submission loading indicator
-  // COBOL equivalent: Processing indicator before EXEC CICS WRITE
-  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   /**
    * Authentication Check Effect
@@ -153,7 +148,6 @@ const TransactionEntryPage: React.FC = () => {
       // Clear any previous messages
       setSuccessMessage('');
       setErrorMessage('');
-      setIsSubmitting(true);
 
       // Prepare transaction data for API request
       // Map form fields to Transaction DTO matching backend expectations
@@ -266,9 +260,6 @@ const TransactionEntryPage: React.FC = () => {
 
       // Log error for troubleshooting
       console.error('Transaction creation error:', error);
-    } finally {
-      // Reset submitting state
-      setIsSubmitting(false);
     }
   };
 
@@ -382,12 +373,9 @@ const TransactionEntryPage: React.FC = () => {
     >
       {/* Page Header Component
           BMS equivalent: Rows 1-2 with TRNNAME, TITLE01, CURDATE, PGMNAME, TITLE02, CURTIME
-          COBOL: MOVE 'CT02' TO TRNNAMEO, MOVE 'CardDemo' TO TITLE01O, etc. */}
-      <Header
-        transactionCode="CT02"
-        title="Add Transaction"
-        programName="COTRN02C"
-      />
+          COBOL: MOVE 'CT02' TO TRNNAMEO, MOVE 'CardDemo' TO TITLE01O, etc.
+          Note: Header component displays standard CardDemo branding without custom props */}
+      <Header />
 
       {/* Main Content Area
           BMS equivalent: Rows 4-21 with form fields and labels */}
