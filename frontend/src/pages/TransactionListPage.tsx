@@ -65,7 +65,6 @@ import {
   Paper,
   Grid,
   CircularProgress,
-  Alert,
 } from '@mui/material';
 import { Pagination } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
@@ -112,7 +111,7 @@ import { validateLength } from '../utils/validation';
 const TransactionListPage: React.FC = () => {
   // Authentication check (replaces COBOL COMMAREA session validation)
   // COBOL: EXEC CICS RETRIEVE INTO(CARDDEMO-COMMAREA) / Check CDEMO-USER-ID
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated } = useAuth();
   const navigate = useNavigate();
 
   // State management for transaction list and filters
@@ -301,7 +300,7 @@ const TransactionListPage: React.FC = () => {
    * @param page - New page number (1-based)
    */
   const handlePageChange = useCallback(
-    (event: React.ChangeEvent<unknown>, page: number) => {
+    (_event: React.ChangeEvent<unknown>, page: number) => {
       // Material-UI Pagination uses 1-based indexing (matches COBOL WS-PAGE-NUM)
       setCurrentPage(page);
       // fetchTransactions will be triggered by useEffect
@@ -536,7 +535,7 @@ const TransactionListPage: React.FC = () => {
                 }))}
                 onRowSelectionChange={(selectedIds) => {
                   // Handle row selection (replaces BMS SEL fields)
-                  if (selectedIds.length > 0) {
+                  if (selectedIds.length > 0 && selectedIds[0]) {
                     handleRowClick(selectedIds[0]);
                   }
                 }}
