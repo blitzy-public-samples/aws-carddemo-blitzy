@@ -55,6 +55,7 @@ import com.carddemo.model.entity.Transaction;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import io.restassured.RestAssured;
 import io.restassured.http.ContentType;
 import org.hamcrest.Matchers;
@@ -64,6 +65,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -75,6 +77,7 @@ import java.math.RoundingMode;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -99,6 +102,7 @@ import static org.hamcrest.Matchers.*;
  * Uses Testcontainers PostgreSQL for database isolation ensuring test independence.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles("integration-test")
 @Testcontainers
 public class TransactionIntegrationTest {
 
@@ -170,9 +174,19 @@ public class TransactionIntegrationTest {
     @Autowired
     private CardRepository cardRepository;
 
+    /**
+     * Transaction category balance repository for test data cleanup.
+     * Provides access to transaction_category_balance table for:
+     * - Cleaning up category balance records created by transaction posting
+     * - Satisfying foreign key constraints during account deletion
+     */
+    @Autowired
+    private TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
+
     // Test data constants matching COBOL data structures
-    private static final Long TEST_ACCOUNT_ID_1 = 1000000001L;
-    private static final Long TEST_ACCOUNT_ID_2 = 1000000002L;
+    // Account IDs must be exactly 11 digits per ValidationService.validateAccountId (VAL007)
+    private static final Long TEST_ACCOUNT_ID_1 = 10000000001L; // 11 digits
+    private static final Long TEST_ACCOUNT_ID_2 = 10000000002L; // 11 digits
     private static final String TEST_CARD_NUM_1 = "4000123412341234";
     private static final String TEST_CARD_NUM_2 = "4000567856785678";
     private static final String TEST_TRANS_ID_1 = "0000000000000001";
@@ -194,6 +208,9 @@ public class TransactionIntegrationTest {
     private static final BigDecimal AMOUNT_PURCHASE_125_50 = new BigDecimal("125.50");
     private static final BigDecimal AMOUNT_PURCHASE_250_75 = new BigDecimal("250.75");
     private static final BigDecimal AMOUNT_PAYMENT_500_00 = new BigDecimal("500.00");
+    
+    // Date time formatter matching @JsonFormat pattern in TransactionDto
+    private static final DateTimeFormatter TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
     
     /**
      * Setup method executed before each test.
@@ -247,8 +264,7 @@ public class TransactionIntegrationTest {
         Card card1 = Card.builder()
                 .cardNum(TEST_CARD_NUM_1)
                 .cardAcctId(TEST_ACCOUNT_ID_1)
-                .cardCardmemberId(1000000001L)
-                .cardStatus("Y")
+                .cardStatus("A") // Active status per Card entity valid values
                 .cardExpirationDate(LocalDate.of(2026, 12, 31))
                 .build();
         cardRepository.save(card1);
@@ -257,8 +273,7 @@ public class TransactionIntegrationTest {
         Card card2 = Card.builder()
                 .cardNum(TEST_CARD_NUM_2)
                 .cardAcctId(TEST_ACCOUNT_ID_2)
-                .cardCardmemberId(1000000002L)
-                .cardStatus("Y")
+                .cardStatus("A") // Active status per Card entity valid values
                 .cardExpirationDate(LocalDate.of(2026, 12, 31))
                 .build();
         cardRepository.save(card2);
@@ -311,15 +326,17 @@ public class TransactionIntegrationTest {
      * Cleanup method executed after each test.
      * 
      * Deletes all test data from repositories to ensure test isolation:
-     * 1. Delete all transactions (must be first due to foreign key constraints)
-     * 2. Delete all cards (must be before accounts due to foreign key)
-     * 3. Delete all accounts
+     * 1. Delete all transaction category balances (created by transaction posting)
+     * 2. Delete all transactions (must be before accounts due to foreign key)
+     * 3. Delete all cards (must be before accounts due to foreign key)
+     * 4. Delete all accounts
      * 
-     * Prevents test data pollution between test methods.
+     * Prevents test data pollution between test methods and foreign key violations.
      */
     @AfterEach
     void tearDown() {
         // Delete in correct order to satisfy foreign key constraints
+        transactionCategoryBalanceRepository.deleteAll();
         transactionRepository.deleteAll();
         cardRepository.deleteAll();
         accountRepository.deleteAll();
@@ -574,7 +591,7 @@ public class TransactionIntegrationTest {
         transactionRequest.put("transMerchantName", "TEST MERCHANT");
         transactionRequest.put("transMerchantCity", "SEATTLE");
         transactionRequest.put("transMerchantZip", "98101");
-        transactionRequest.put("transOrigTs", LocalDateTime.now().toString());
+        transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         // Post transaction and measure response time (must be < 200ms per Section 0.7.7)
         long startTime = System.currentTimeMillis();
@@ -641,7 +658,7 @@ public class TransactionIntegrationTest {
         paymentRequest.put("transSource", "ONLINE");
         paymentRequest.put("transDesc", "ONLINE PAYMENT");
         paymentRequest.put("transAmt", 200.00);
-        paymentRequest.put("transOrigTs", LocalDateTime.now().toString());
+        paymentRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
                 .contentType(ContentType.JSON)
@@ -686,7 +703,7 @@ public class TransactionIntegrationTest {
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
         transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
         transactionRequest.put("transAmt", 100.00);
-        transactionRequest.put("transOrigTs", LocalDateTime.now().toString());
+        transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
                 .contentType(ContentType.JSON)
@@ -718,7 +735,7 @@ public class TransactionIntegrationTest {
         transactionRequest.put("transTypeCd", "99"); // Invalid type code
         transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
         transactionRequest.put("transAmt", 100.00);
-        transactionRequest.put("transOrigTs", LocalDateTime.now().toString());
+        transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
                 .contentType(ContentType.JSON)
@@ -750,7 +767,7 @@ public class TransactionIntegrationTest {
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
         transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
         transactionRequest.put("transAmt", 0.0); // Invalid: zero amount
-        transactionRequest.put("transOrigTs", LocalDateTime.now().toString());
+        transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
                 .contentType(ContentType.JSON)
@@ -769,7 +786,7 @@ public class TransactionIntegrationTest {
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
         transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
         transactionRequest.put("transAmt", -50.0); // Invalid: negative amount
-        transactionRequest.put("transOrigTs", LocalDateTime.now().toString());
+        transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
                 .contentType(ContentType.JSON)
@@ -809,7 +826,7 @@ public class TransactionIntegrationTest {
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
         transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
         transactionRequest.put("transAmt", 16000.00); // Exceeds credit limit
-        transactionRequest.put("transOrigTs", LocalDateTime.now().toString());
+        transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
                 .contentType(ContentType.JSON)
@@ -846,7 +863,7 @@ public class TransactionIntegrationTest {
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
         transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
         transactionRequest.put("transAmt", 100.00);
-        transactionRequest.put("transOrigTs", LocalDateTime.now().toString());
+        transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
                 .contentType(ContentType.JSON)
@@ -864,7 +881,7 @@ public class TransactionIntegrationTest {
         // transTypeCd intentionally missing
         transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
         transactionRequest.put("transAmt", 100.00);
-        transactionRequest.put("transOrigTs", LocalDateTime.now().toString());
+        transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
                 .contentType(ContentType.JSON)
@@ -882,7 +899,7 @@ public class TransactionIntegrationTest {
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
         transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
         // transAmt intentionally missing
-        transactionRequest.put("transOrigTs", LocalDateTime.now().toString());
+        transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
                 .contentType(ContentType.JSON)
@@ -913,7 +930,7 @@ public class TransactionIntegrationTest {
         transactionRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
         transactionRequest.put("transCatCd", 9999); // Invalid category code
         transactionRequest.put("transAmt", 100.00);
-        transactionRequest.put("transOrigTs", LocalDateTime.now().toString());
+        transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
                 .contentType(ContentType.JSON)
@@ -945,7 +962,7 @@ public class TransactionIntegrationTest {
         transactionRequest.put("transMerchantName", "MERCHANT WITH EXACTLY FIFTY CHARACTERS NAME HERE");
         transactionRequest.put("transMerchantCity", "CITY WITH EXACTLY FIFTY CHARACTERS NAME HERE ALSO");
         transactionRequest.put("transMerchantZip", "98101-1234"); // 10 characters
-        transactionRequest.put("transOrigTs", LocalDateTime.now().toString());
+        transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         given()
                 .contentType(ContentType.JSON)
@@ -994,7 +1011,7 @@ public class TransactionIntegrationTest {
             transactionRequest.put("transCatCd", TRANS_CAT_GROCERY);
             transactionRequest.put("transAmt", transactionAmount.doubleValue());
             transactionRequest.put("transDesc", "STRESS TEST TRANSACTION " + (i + 1));
-            transactionRequest.put("transOrigTs", LocalDateTime.now().toString());
+            transactionRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
             
             String transId = given()
                     .contentType(ContentType.JSON)
@@ -1061,7 +1078,7 @@ public class TransactionIntegrationTest {
         invalidRequest.put("transTypeCd", TRANS_TYPE_PURCHASE);
         invalidRequest.put("transCatCd", 9999); // Invalid category
         invalidRequest.put("transAmt", 100.00);
-        invalidRequest.put("transOrigTs", LocalDateTime.now().toString());
+        invalidRequest.put("transOrigTs", LocalDateTime.now().format(TIMESTAMP_FORMATTER));
         
         // Capture initial balance
         Account accountBefore = accountRepository.findById(TEST_ACCOUNT_ID_1).orElseThrow();

@@ -359,9 +359,10 @@ public class TransactionService {
 
         // Step 2: Retrieve card details and validate card status
         // Replaces COBOL EXEC CICS READ FILE('CCXREF') followed by card validation
+        // Note: COBOL uses 'Y' but PostgreSQL constraint uses 'A' for active per V2 migration
         CardDto card = cardService.getCardByNumber(transactionDto.getTransCardNum());
         
-        if (!"Y".equals(card.getCardStatus())) {
+        if (!"A".equals(card.getCardStatus())) {
             log.error("Card is not active: {}", transactionDto.getTransCardNum());
             throw new BusinessException("Card is not active");
         }
