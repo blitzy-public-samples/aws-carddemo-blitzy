@@ -84,7 +84,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import { AuthProvider, useAuth } from './context/AuthContext';
-import { ThemeContextProvider, useThemeContext } from './context/ThemeContext';
+import { ThemeContextProvider, useTheme } from './context/ThemeContext';
 import LoadingSpinner from './components/common/LoadingSpinner';
 
 /**
@@ -188,14 +188,14 @@ const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
  * Purpose: Inner component that accesses theme context and applies Material-UI
  *          ThemeProvider. Must be inside ThemeContextProvider to access theme.
  * 
- * This separation is necessary because useThemeContext() hook requires the
+ * This separation is necessary because useTheme() hook requires the
  * component to be wrapped by ThemeContextProvider, which happens in App component.
  */
 const AppContent: React.FC = () => {
-  const { theme } = useThemeContext();
+  const { muiTheme } = useTheme();
   
   return (
-    <ThemeProvider theme={theme}>
+    <ThemeProvider theme={muiTheme}>
       <CssBaseline />
       <Suspense fallback={<LoadingSpinner />}>
         <Routes>
