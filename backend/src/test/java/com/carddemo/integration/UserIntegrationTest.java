@@ -294,6 +294,9 @@ public class UserIntegrationTest {
     @AfterEach
     public void tearDown() {
         userSecurityRepository.deleteAll();
+        
+        // Reset RestAssured basePath to prevent test pollution
+        RestAssured.basePath = "";
     }
 
     // ========================================================================

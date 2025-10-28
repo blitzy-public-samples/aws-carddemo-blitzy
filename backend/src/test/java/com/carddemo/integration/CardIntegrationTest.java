@@ -185,6 +185,9 @@ public class CardIntegrationTest {
         cardRepository.deleteAll();
         accountRepository.deleteAll();
         customerRepository.deleteAll();
+        
+        // Reset RestAssured basePath to prevent test pollution
+        RestAssured.basePath = "";
     }
 
     /**
