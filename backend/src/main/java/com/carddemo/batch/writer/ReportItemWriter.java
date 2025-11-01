@@ -292,10 +292,10 @@ public class ReportItemWriter implements ItemWriter<Object>, StepExecutionListen
      * Closes file writer and logs report generation metrics.
      * 
      * @param stepExecution Spring Batch step execution context
-     * @return null (no specific exit status)
+     * @return ExitStatus.COMPLETED on success, ExitStatus.FAILED on error
      */
     @Override
-    public void afterStep(StepExecution stepExecution) {
+    public org.springframework.batch.core.ExitStatus afterStep(StepExecution stepExecution) {
         this.reportEndTime = LocalDateTime.now();
         
         try {
@@ -311,6 +311,9 @@ public class ReportItemWriter implements ItemWriter<Object>, StepExecutionListen
             
             // Log report generation metrics
             logReportMetrics();
+            
+            // Return COMPLETED status for successful execution
+            return org.springframework.batch.core.ExitStatus.COMPLETED;
             
         } catch (IOException e) {
             logger.error("Error closing report writer: {}", e.getMessage(), e);
@@ -577,8 +580,15 @@ public class ReportItemWriter implements ItemWriter<Object>, StepExecutionListen
         String extension = compressionEnabled ? ".txt.gz" : ".txt";
         
         File outputFile;
-        if (outputResource != null && outputResource.getFile().exists()) {
+        if (outputResource != null) {
+            // Use provided resource path
             outputFile = outputResource.getFile();
+            
+            // Ensure parent directory exists
+            File parentDir = outputFile.getParentFile();
+            if (parentDir != null && !parentDir.exists()) {
+                parentDir.mkdirs();
+            }
         } else {
             // Create file with timestamp in filename
             String filename = baseName + "_" + timestamp + extension;
