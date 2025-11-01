@@ -1,102 +1,288 @@
+# Docker Compose Configuration for CardDemo Java Application
+# Local Development Environment Stack
+# 
+# This compose file orchestrates a complete local development environment for the
+# CardDemo credit card management application migrated from IBM mainframe COBOL/CICS
+# to modern Java Spring Boot microservices architecture.
+#
+# Services:
+#   - postgres: PostgreSQL 15.5 database for persistent data storage
+#   - redis: Redis 7.2 for session management and caching
+#   - backend: Spring Boot 3.2.x Java application server
+#   - frontend: React 18 single-page application
+#
+# Usage:
+#   Start all services: docker-compose up -d
+#   Stop all services: docker-compose down
+#   View logs: docker-compose logs -f [service-name]
+#   Rebuild services: docker-compose up -d --build
+
 version: '3.8'
 
 services:
+  # PostgreSQL Database Service
+  # Replaces legacy VSAM KSDS files (CUSTDAT, ACCTDAT, CARDDAT, TRANSACT, USRSEC)
+  # with modern relational database providing ACID guarantees and referential integrity
   postgres:
     image: postgres:15.5-alpine
     container_name: carddemo-postgres
     environment:
+      # Database configuration
       POSTGRES_DB: carddemo
       POSTGRES_USER: carddemo
       POSTGRES_PASSWORD: carddemo123
+      # PostgreSQL performance tuning for development
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=en_US.UTF-8"
     ports:
+      # Expose PostgreSQL on standard port for local development access
       - "5432:5432"
     volumes:
+      # Persistent volume for database data (survives container restarts)
       - postgres-data:/var/lib/postgresql/data
+      # Optional: Mount initialization scripts
+      # - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U carddemo"]
-      interval: 30s
-      timeout: 10s
+      # Verify PostgreSQL is ready to accept connections
+      test: ["CMD-SHELL", "pg_isready -U carddemo -d carddemo"]
+      interval: 10s
+      timeout: 5s
       retries: 5
+      start_period: 30s
     networks:
       - carddemo-network
     restart: unless-stopped
+    # Resource limits for development environment
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
+  # Redis Cache and Session Store
+  # Provides session management for stateless REST APIs replacing CICS COMMAREA
+  # and caching for frequently accessed reference data
   redis:
     image: redis:7.2-alpine
     container_name: carddemo-redis
+    command: redis-server --appendonly yes --appendfsync everysec
     ports:
+      # Expose Redis on standard port
       - "6379:6379"
     volumes:
+      # Persistent volume for Redis AOF (Append-Only File) data
       - redis-data:/data
     healthcheck:
+      # Verify Redis is responding to ping commands
       test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
+      interval: 10s
+      timeout: 5s
       retries: 5
+      start_period: 10s
     networks:
       - carddemo-network
     restart: unless-stopped
+    # Resource limits for Redis
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
 
+  # Spring Boot Backend Service
+  # Java 21 application server hosting RESTful APIs that replace CICS transactions
+  # Includes Spring Data JPA for database access, Spring Security for authentication,
+  # and Spring Batch for batch processing jobs
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        # Build-time arguments for multi-stage Docker build
+        MAVEN_VERSION: 3.9.6
+        JAVA_VERSION: 21
     container_name: carddemo-backend
     ports:
+      # Expose Spring Boot application on port 8080
       - "8080:8080"
+      # Expose Spring Boot Actuator debug port (optional)
+      - "8081:8081"
     depends_on:
+      # Wait for database and cache to be healthy before starting backend
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment:
+      # Spring Boot application configuration
       SPRING_PROFILES_ACTIVE: dev
+      
+      # Database connection configuration
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/carddemo
       SPRING_DATASOURCE_USERNAME: carddemo
       SPRING_DATASOURCE_PASSWORD: carddemo123
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+      
+      # HikariCP connection pool configuration (replaces VSAM buffer pools)
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 20
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 5
+      SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT: 30000
+      SPRING_DATASOURCE_HIKARI_IDLE_TIMEOUT: 600000
+      SPRING_DATASOURCE_HIKARI_MAX_LIFETIME: 1800000
+      
+      # JPA/Hibernate configuration
+      SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+      SPRING_JPA_SHOW_SQL: true
+      SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: true
+      SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQLDialect
+      
+      # Flyway database migration configuration
+      SPRING_FLYWAY_ENABLED: true
+      SPRING_FLYWAY_BASELINE_ON_MIGRATE: true
+      SPRING_FLYWAY_LOCATIONS: classpath:db/migration
+      
+      # Redis session management configuration
       SPRING_REDIS_HOST: redis
       SPRING_REDIS_PORT: 6379
+      SPRING_REDIS_TIMEOUT: 2000ms
+      SPRING_SESSION_STORE_TYPE: redis
+      SPRING_SESSION_REDIS_NAMESPACE: carddemo:session
+      
+      # JWT token configuration
+      JWT_SECRET: dev-secret-key-change-in-production
+      JWT_EXPIRATION: 86400000
+      
+      # Logging configuration
+      LOGGING_LEVEL_ROOT: INFO
+      LOGGING_LEVEL_COM_CARDDEMO: DEBUG
+      LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_WEB: DEBUG
+      LOGGING_LEVEL_ORG_HIBERNATE_SQL: DEBUG
+      
+      # Actuator configuration for monitoring
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,metrics,prometheus
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+      MANAGEMENT_SERVER_PORT: 8081
+      
+      # Application performance configuration
+      SERVER_TOMCAT_THREADS_MAX: 200
+      SERVER_TOMCAT_THREADS_MIN_SPARE: 10
+      SERVER_TOMCAT_CONNECTION_TIMEOUT: 20000
+      SERVER_TOMCAT_MAX_CONNECTIONS: 10000
+      
     volumes:
-      - ./backend:/app
+      # Mount source code for hot reload in development (optional)
+      # - ./backend/src:/app/src
+      # Maven repository cache to speed up builds
+      - maven-cache:/root/.m2
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/actuator/health"]
+      # Verify Spring Boot application is healthy via Actuator endpoint
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8081/actuator/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 60s
     networks:
       - carddemo-network
     restart: unless-stopped
+    # Resource limits for backend application
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
 
+  # React Frontend Service
+  # Single-page application replacing BMS 3270 terminal screens
+  # Provides modern web UI with Material-UI components and Redux state management
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      target: development
+      args:
+        NODE_VERSION: 20
     container_name: carddemo-frontend
     ports:
+      # Expose React development server on port 3000
       - "3000:3000"
     depends_on:
       - backend
     environment:
+      # React application configuration
       REACT_APP_API_URL: http://localhost:8080/api
+      REACT_APP_API_TIMEOUT: 30000
+      
+      # Development mode configuration
       NODE_ENV: development
+      CHOKIDAR_USEPOLLING: true
+      WATCHPACK_POLLING: true
+      
+      # Feature flags for development
+      REACT_APP_ENABLE_REDUX_DEVTOOLS: true
+      REACT_APP_ENABLE_DEBUG_MODE: true
     volumes:
-      - ./frontend:/app
+      # Mount source code for hot module replacement (HMR)
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      # Exclude node_modules from volume mount (use container's version)
       - /app/node_modules
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      # Verify React development server is responding
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 45s
     networks:
       - carddemo-network
     restart: unless-stopped
+    # Resource limits for frontend development server
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
+# Docker Network Configuration
+# Isolated bridge network for inter-service communication
+# Replaces mainframe VTAM networking with modern container networking
 networks:
   carddemo-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
 
+# Docker Volume Configuration
+# Named volumes for persistent data storage across container lifecycle
 volumes:
+  # PostgreSQL data volume (replaces VSAM catalogs)
   postgres-data:
     driver: local
+    driver_opts:
+      type: none
+      device: ${PWD}/data/postgres
+      o: bind
+  
+  # Redis data volume for session persistence
   redis-data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${PWD}/data/redis
+      o: bind
+  
+  # Maven repository cache for faster backend builds
+  maven-cache:
     driver: local
