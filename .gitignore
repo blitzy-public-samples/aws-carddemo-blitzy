@@ -1,0 +1,102 @@
+# Java/Maven Backend
+target/
+*.class
+*.jar
+*.war
+*.ear
+.mvn/
+mvnw
+mvnw.cmd
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# React/Node Frontend
+node_modules/
+build/
+dist/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# IDE and Editor
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.eclipse/
+.settings/
+.project
+.classpath
+.factorypath
+.springBeans
+.sts4-cache
+
+# Database
+*.db
+*.sql.log
+*.sqlite
+
+# Docker
+.dockerignore
+
+# Operating System
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Logs and Temporary
+logs/
+*.log
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+# Spring Boot
+application-local.yml
+application-local.properties
+application-secret.yml
+application-secret.properties
+
+# Testing
+.coverage/
+htmlcov/
+coverage/
+*.cover
+.pytest_cache/
+test-results/
+
+# Build artifacts
+out/
+bin/
+
+# Flyway
+.flywaydb/
+
+# Sensitive data
+secrets.yaml
+*.pem
+*.key
+*.crt
