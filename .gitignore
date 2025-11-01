@@ -50,9 +50,6 @@ lerna-debug.log*
 *.sql.log
 *.sqlite
 
-# Docker
-.dockerignore
-
 # Operating System
 .DS_Store
 .DS_Store?
