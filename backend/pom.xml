@@ -1,10 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+    CardDemo Backend - Maven Project Object Model (POM)
+    
+    Spring Boot 3.2.1 backend for CardDemo credit card management system
+    migrated from IBM mainframe COBOL/CICS/VSAM to cloud-native Java architecture.
+    
+    Migration Scope:
+    - COBOL programs → Spring Boot services
+    - VSAM files → PostgreSQL database
+    - CICS transactions → REST APIs
+    - JCL batch jobs → Spring Batch jobs
+    - BMS screens → React frontend (separate module)
+    
+    Key Technologies:
+    - Java 21 LTS
+    - Spring Boot 3.2.1
+    - PostgreSQL 15+
+    - Spring Security 6.x with JWT
+    - Spring Batch 5.x
+    - Redis for session management
+-->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
          https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     
+    <!-- Spring Boot Parent POM for dependency management -->
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
@@ -12,100 +34,159 @@
         <relativePath/>
     </parent>
     
+    <!-- Project Coordinates -->
     <groupId>com.carddemo</groupId>
     <artifactId>carddemo-backend</artifactId>
     <version>1.0.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
     <name>CardDemo Backend</name>
-    <description>CardDemo Mainframe to Spring Boot Migration - Backend Services</description>
+    <description>Spring Boot backend for CardDemo credit card management system migrated from COBOL/CICS</description>
     
+    <!-- Project Properties -->
     <properties>
+        <!-- Java Version -->
         <java.version>21</java.version>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        
+        <!-- Spring Cloud Version -->
         <spring-cloud.version>2023.0.0</spring-cloud.version>
+        
+        <!-- Dependency Versions (non-managed by Spring Boot) -->
         <mapstruct.version>1.5.5.Final</mapstruct.version>
         <lombok.version>1.18.30</lombok.version>
         <jjwt.version>0.12.3</jjwt.version>
         <springdoc.version>2.3.0</springdoc.version>
+        <commons-lang3.version>3.14.0</commons-lang3.version>
+        <commons-collections4.version>4.4</commons-collections4.version>
+        <guava.version>33.0.0-jre</guava.version>
+        <postgresql.version>42.7.1</postgresql.version>
+        <flyway.version>10.4.1</flyway.version>
+        <hikaricp.version>5.1.0</hikaricp.version>
+        <jackson.version>2.16.1</jackson.version>
+        <testcontainers.version>1.19.3</testcontainers.version>
+        <rest-assured.version>5.4.0</rest-assured.version>
+        <h2.version>2.2.224</h2.version>
+        <mockito.version>5.8.0</mockito.version>
+        <logback.version>1.4.14</logback.version>
+        <slf4j.version>2.0.11</slf4j.version>
+        <micrometer.version>1.12.2</micrometer.version>
+        
+        <!-- Plugin Versions -->
+        <maven-compiler-plugin.version>3.12.1</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
+        <jacoco-maven-plugin.version>0.8.11</jacoco-maven-plugin.version>
+        
+        <!-- Code Coverage Thresholds -->
+        <jacoco.line.coverage>0.80</jacoco.line.coverage>
+        <jacoco.branch.coverage>0.70</jacoco.branch.coverage>
     </properties>
     
     <dependencies>
-        <!-- Spring Boot Web -->
+        <!-- ============================================ -->
+        <!-- Spring Boot Core Starters                   -->
+        <!-- ============================================ -->
+        
+        <!-- Spring Boot Web - REST API foundation with embedded Tomcat -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
         
-        <!-- Spring Boot Data JPA -->
+        <!-- Spring Boot Data JPA - Database access layer with Hibernate -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
         
-        <!-- Spring Boot Batch -->
+        <!-- Spring Boot Batch - Batch processing (replaces JCL jobs) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-batch</artifactId>
         </dependency>
         
-        <!-- Spring Boot Security -->
+        <!-- Spring Boot Security - Authentication and authorization (replaces RACF) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
         
-        <!-- Spring Boot Validation -->
+        <!-- Spring Boot Validation - Bean validation for DTOs -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
         
-        <!-- Spring Boot Actuator -->
+        <!-- Spring Boot Actuator - Production monitoring and management -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
         
-        <!-- Spring Boot Data Redis -->
+        <!-- Spring Boot Data Redis - Redis integration for caching -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
         
-        <!-- Spring Session Redis -->
+        <!-- ============================================ -->
+        <!-- Session Management                          -->
+        <!-- ============================================ -->
+        
+        <!-- Spring Session Redis - Redis-backed HTTP session (replaces CICS COMMAREA) -->
         <dependency>
             <groupId>org.springframework.session</groupId>
             <artifactId>spring-session-data-redis</artifactId>
+            <version>3.2.1</version>
         </dependency>
         
-        <!-- PostgreSQL Driver -->
+        <!-- ============================================ -->
+        <!-- Database Drivers and Tools                  -->
+        <!-- ============================================ -->
+        
+        <!-- PostgreSQL JDBC Driver - Database connectivity (replaces VSAM) -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
-            <version>42.7.1</version>
+            <version>${postgresql.version}</version>
         </dependency>
         
-        <!-- Flyway Database Migrations -->
+        <!-- HikariCP Connection Pool - High performance JDBC connection pooling -->
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+            <version>${hikaricp.version}</version>
+        </dependency>
+        
+        <!-- Flyway Core - Database migration tool -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
-            <version>10.4.1</version>
+            <version>${flyway.version}</version>
         </dependency>
         
+        <!-- Flyway PostgreSQL Support -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
-            <version>10.4.1</version>
+            <version>${flyway.version}</version>
+            <scope>runtime</scope>
         </dependency>
         
-        <!-- JWT Token -->
+        <!-- ============================================ -->
+        <!-- Security and Authentication                 -->
+        <!-- ============================================ -->
+        
+        <!-- JWT API - JWT token generation and validation -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>
             <version>${jjwt.version}</version>
         </dependency>
         
+        <!-- JWT Implementation -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-impl</artifactId>
@@ -113,6 +194,7 @@
             <scope>runtime</scope>
         </dependency>
         
+        <!-- JWT Jackson JSON Processor -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-jackson</artifactId>
@@ -120,14 +202,36 @@
             <scope>runtime</scope>
         </dependency>
         
-        <!-- MapStruct -->
+        <!-- ============================================ -->
+        <!-- Object Mapping and Serialization            -->
+        <!-- ============================================ -->
+        
+        <!-- MapStruct - Entity to DTO mapping code generator -->
         <dependency>
             <groupId>org.mapstruct</groupId>
             <artifactId>mapstruct</artifactId>
             <version>${mapstruct.version}</version>
         </dependency>
         
-        <!-- Lombok -->
+        <!-- Jackson Databind - JSON serialization/deserialization -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        
+        <!-- Jackson Java 8 Date/Time Support -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        
+        <!-- ============================================ -->
+        <!-- Code Generation and Boilerplate Reduction   -->
+        <!-- ============================================ -->
+        
+        <!-- Lombok - Reduce boilerplate code with annotations -->
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
@@ -135,88 +239,169 @@
             <scope>provided</scope>
         </dependency>
         
-        <!-- OpenAPI Documentation -->
+        <!-- ============================================ -->
+        <!-- API Documentation                           -->
+        <!-- ============================================ -->
+        
+        <!-- SpringDoc OpenAPI - OpenAPI 3.0 documentation and Swagger UI -->
         <dependency>
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
             <version>${springdoc.version}</version>
         </dependency>
         
-        <!-- Apache Commons -->
+        <!-- ============================================ -->
+        <!-- Utility Libraries                           -->
+        <!-- ============================================ -->
+        
+        <!-- Apache Commons Lang3 - String and number utilities -->
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
-            <version>3.14.0</version>
+            <version>${commons-lang3.version}</version>
         </dependency>
         
+        <!-- Apache Commons Collections4 - Enhanced collections framework -->
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-collections4</artifactId>
-            <version>4.4</version>
+            <version>${commons-collections4.version}</version>
         </dependency>
         
-        <!-- Guava -->
+        <!-- Google Guava - Core libraries for collections and utilities -->
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
-            <version>33.0.0-jre</version>
+            <version>${guava.version}</version>
         </dependency>
         
-        <!-- Micrometer Prometheus -->
+        <!-- ============================================ -->
+        <!-- Monitoring and Observability                -->
+        <!-- ============================================ -->
+        
+        <!-- Micrometer Core - Application metrics instrumentation -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <version>${micrometer.version}</version>
+        </dependency>
+        
+        <!-- Micrometer Prometheus Registry - Prometheus metrics -->
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
+            <version>${micrometer.version}</version>
         </dependency>
         
-        <!-- Test Dependencies -->
+        <!-- ============================================ -->
+        <!-- Logging                                     -->
+        <!-- ============================================ -->
+        
+        <!-- Logback Classic - Logging implementation -->
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>${logback.version}</version>
+        </dependency>
+        
+        <!-- SLF4J API - Simple Logging Facade for Java -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
+        
+        <!-- ============================================ -->
+        <!-- Test Dependencies                           -->
+        <!-- ============================================ -->
+        
+        <!-- Spring Boot Test Starter - JUnit 5, Mockito, AssertJ -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
         
+        <!-- Spring Security Test - Security testing utilities -->
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-test</artifactId>
+            <version>6.2.1</version>
             <scope>test</scope>
         </dependency>
         
+        <!-- Spring Batch Test - Batch testing support -->
         <dependency>
             <groupId>org.springframework.batch</groupId>
             <artifactId>spring-batch-test</artifactId>
+            <version>5.1.1</version>
             <scope>test</scope>
         </dependency>
         
+        <!-- H2 Database - In-memory database for unit tests -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
+            <version>${h2.version}</version>
             <scope>test</scope>
         </dependency>
         
+        <!-- Testcontainers - Docker containers for integration tests -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers</artifactId>
-            <version>1.19.3</version>
+            <version>${testcontainers.version}</version>
             <scope>test</scope>
         </dependency>
         
+        <!-- Testcontainers PostgreSQL - PostgreSQL test container -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
-            <version>1.19.3</version>
+            <version>${testcontainers.version}</version>
             <scope>test</scope>
         </dependency>
         
+        <!-- Testcontainers JUnit Jupiter - JUnit 5 integration -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        
+        <!-- Mockito Core - Mocking framework for unit tests -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+        
+        <!-- Mockito JUnit Jupiter - Mockito JUnit 5 integration -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-junit-jupiter</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+        
+        <!-- REST Assured - REST API testing library -->
         <dependency>
             <groupId>io.rest-assured</groupId>
             <artifactId>rest-assured</artifactId>
-            <version>5.4.0</version>
+            <version>${rest-assured.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
     
+    <!-- ============================================ -->
+    <!-- Dependency Management                       -->
+    <!-- ============================================ -->
+    
     <dependencyManagement>
         <dependencies>
+            <!-- Spring Cloud BOM for consistent cloud dependency versions -->
             <dependency>
                 <groupId>org.springframework.cloud</groupId>
                 <artifactId>spring-cloud-dependencies</artifactId>
@@ -227,29 +412,91 @@
         </dependencies>
     </dependencyManagement>
     
+    <!-- ============================================ -->
+    <!-- Build Configuration                         -->
+    <!-- ============================================ -->
+    
     <build>
+        <finalName>carddemo-backend-${project.version}</finalName>
+        
+        <!-- Resource Filtering for Property Substitution -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>**/*.yml</include>
+                    <include>**/*.yaml</include>
+                    <include>**/*.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>**/*.yml</exclude>
+                    <exclude>**/*.yaml</exclude>
+                    <exclude>**/*.properties</exclude>
+                </excludes>
+            </resource>
+        </resources>
+        
         <plugins>
+            <!-- ============================================ -->
+            <!-- Spring Boot Maven Plugin                    -->
+            <!-- ============================================ -->
+            
+            <!-- Spring Boot packaging plugin for executable JAR -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>3.2.1</version>
                 <configuration>
+                    <!-- Exclude Lombok from final JAR (compile-time only) -->
                     <excludes>
                         <exclude>
                             <groupId>org.projectlombok</groupId>
                             <artifactId>lombok</artifactId>
                         </exclude>
                     </excludes>
+                    <!-- Layered JAR for optimized Docker images -->
+                    <layers>
+                        <enabled>true</enabled>
+                    </layers>
+                    <!-- Build info for Actuator -->
+                    <executable>true</executable>
                 </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                            <goal>build-info</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
             
+            <!-- ============================================ -->
+            <!-- Maven Compiler Plugin                       -->
+            <!-- ============================================ -->
+            
+            <!-- Java compiler with annotation processing -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.12.1</version>
+                <version>${maven-compiler-plugin.version}</version>
                 <configuration>
-                    <source>21</source>
-                    <target>21</target>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                    <encoding>${project.build.sourceEncoding}</encoding>
+                    <compilerArgs>
+                        <arg>-parameters</arg>
+                        <arg>-Xlint:unchecked</arg>
+                        <arg>-Xlint:deprecation</arg>
+                    </compilerArgs>
+                    <!-- Annotation Processors: MapStruct and Lombok -->
                     <annotationProcessorPaths>
+                        <!-- MapStruct must come before Lombok for proper integration -->
                         <path>
                             <groupId>org.mapstruct</groupId>
                             <artifactId>mapstruct-processor</artifactId>
@@ -260,6 +507,7 @@
                             <artifactId>lombok</artifactId>
                             <version>${lombok.version}</version>
                         </path>
+                        <!-- Lombok-MapStruct binding for compatibility -->
                         <path>
                             <groupId>org.projectlombok</groupId>
                             <artifactId>lombok-mapstruct-binding</artifactId>
@@ -269,11 +517,218 @@
                 </configuration>
             </plugin>
             
+            <!-- ============================================ -->
+            <!-- Maven Surefire Plugin (Unit Tests)          -->
+            <!-- ============================================ -->
+            
+            <!-- Unit test execution plugin -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven-surefire-plugin.version}</version>
+                <configuration>
+                    <argLine>@{argLine} -Xmx1024m -XX:+EnableDynamicAgentLoading</argLine>
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*Tests.java</include>
+                    </includes>
+                    <excludes>
+                        <exclude>**/*IntegrationTest.java</exclude>
+                        <exclude>**/*IT.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+            
+            <!-- ============================================ -->
+            <!-- Maven Failsafe Plugin (Integration Tests)   -->
+            <!-- ============================================ -->
+            
+            <!-- Integration test execution plugin -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
                 <version>3.2.5</version>
+                <configuration>
+                    <includes>
+                        <include>**/*IntegrationTest.java</include>
+                        <include>**/*IT.java</include>
+                    </includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            
+            <!-- ============================================ -->
+            <!-- JaCoCo Code Coverage Plugin                 -->
+            <!-- ============================================ -->
+            
+            <!-- Code coverage analysis plugin -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco-maven-plugin.version}</version>
+                <executions>
+                    <!-- Prepare agent for test execution -->
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <!-- Generate coverage report -->
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <!-- Enforce minimum coverage thresholds -->
+                    <execution>
+                        <id>check</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <!-- Minimum 80% line coverage -->
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.line.coverage}</minimum>
+                                        </limit>
+                                        <!-- Minimum 70% branch coverage -->
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.branch.coverage}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>
+    
+    <!-- ============================================ -->
+    <!-- Build Profiles                              -->
+    <!-- ============================================ -->
+    
+    <profiles>
+        <!-- Development Profile -->
+        <profile>
+            <id>dev</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <properties>
+                <spring.profiles.active>dev</spring.profiles.active>
+            </properties>
+            <dependencies>
+                <!-- H2 Console for development -->
+                <dependency>
+                    <groupId>com.h2database</groupId>
+                    <artifactId>h2</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        
+        <!-- Production Profile -->
+        <profile>
+            <id>prod</id>
+            <properties>
+                <spring.profiles.active>prod</spring.profiles.active>
+            </properties>
+            <build>
+                <plugins>
+                    <!-- Additional optimizations for production -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-compiler-plugin</artifactId>
+                        <configuration>
+                            <optimize>true</optimize>
+                            <debug>false</debug>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        
+        <!-- Integration Tests Profile -->
+        <profile>
+            <id>integration-tests</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+    
+    <!-- ============================================ -->
+    <!-- Repository Configuration                    -->
+    <!-- ============================================ -->
+    
+    <repositories>
+        <repository>
+            <id>central</id>
+            <name>Maven Central</name>
+            <url>https://repo.maven.apache.org/maven2</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+        <repository>
+            <id>spring-milestones</id>
+            <name>Spring Milestones</name>
+            <url>https://repo.spring.io/milestone</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+    
+    <pluginRepositories>
+        <pluginRepository>
+            <id>central</id>
+            <name>Maven Central</name>
+            <url>https://repo.maven.apache.org/maven2</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </pluginRepository>
+        <pluginRepository>
+            <id>spring-milestones</id>
+            <name>Spring Milestones</name>
+            <url>https://repo.spring.io/milestone</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </pluginRepository>
+    </pluginRepositories>
 </project>
