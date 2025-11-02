@@ -1,0 +1,274 @@
+# Kubernetes CronJob for Bill Payment Batch Processing
+# Transforms COBOL bill payment logic from COBIL00C.cbl to Spring Batch job
+# Executes daily to process pending bill payments, update account balances,
+# and generate payment confirmation records for CardDemo credit card system
+#
+# Business Logic (from COBIL00C.cbl):
+# - Reads pending payment requests from payment queue
+# - Validates account existence and balance availability
+# - Creates transaction records with type '02' (BILL PAYMENT)
+# - Updates account current balance with COMP-3 precision (BigDecimal)
+# - Generates unique transaction IDs
+# - Records payment confirmations with timestamps
+# - Handles errors and maintains transaction integrity
+#
+# Migration Notes:
+# - CICS transaction processing → Spring Batch chunk-oriented processing
+# - VSAM file I/O → PostgreSQL database operations via JPA
+# - COMP-3 packed decimal → BigDecimal with scale 2, RoundingMode.HALF_UP
+# - EXEC CICS SYNCPOINT → @Transactional boundaries in Spring Batch
+# - Sequential processing → Parallel chunk processing with configurable size
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: bill-payment-batch-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: bill-payment
+    tier: backend
+    environment: production
+  annotations:
+    description: "Daily bill payment batch processing for CardDemo credit card management"
+    migration-source: "app/cbl/COBIL00C.cbl"
+    spring-batch-job: "BillPaymentBatchJob"
+    business-function: "Process pending bill payments and update account balances"
+
+spec:
+  # Daily execution at 3:00 AM UTC (matches typical mainframe batch window)
+  schedule: "0 3 * * *"
+  
+  # Timezone for schedule (optional, defaults to UTC)
+  timeZone: "UTC"
+  
+  # Prevent concurrent executions to maintain data integrity
+  # Equivalent to COBOL/CICS single-threaded transaction processing
+  concurrencyPolicy: Forbid
+  
+  # Retain last 3 successful jobs for audit trail and troubleshooting
+  successfulJobsHistoryLimit: 3
+  
+  # Retain only 1 failed job to investigate issues
+  failedJobsHistoryLimit: 1
+  
+  # Deadline for starting a job if it misses scheduled time (10 minutes)
+  startingDeadlineSeconds: 600
+  
+  # Suspend CronJob execution (set to false for active processing)
+  suspend: false
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: bill-payment
+        tier: backend
+    spec:
+      # Maximum retry attempts for failed job (matches COBOL error handling)
+      backoffLimit: 2
+      
+      # Maximum execution time: 2 hours (7200 seconds)
+      # Ensures job completes within 4-hour batch processing window
+      activeDeadlineSeconds: 7200
+      
+      # Cleanup completed jobs after 24 hours
+      ttlSecondsAfterFinished: 86400
+      
+      # Parallelism: 1 pod at a time (sequential processing like COBOL batch)
+      parallelism: 1
+      
+      # Completions: Job succeeds when 1 pod completes successfully
+      completions: 1
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: bill-payment
+            tier: backend
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8080"
+            prometheus.io/path: "/actuator/prometheus"
+        spec:
+          # Restart policy for failed pods
+          restartPolicy: OnFailure
+          
+          # Service account for database and secret access
+          serviceAccountName: carddemo-batch-sa
+          
+          # Security context for pod
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          
+          containers:
+          - name: bill-payment-batch
+            image: carddemo-backend:latest
+            imagePullPolicy: Always
+            
+            # Execute Spring Batch job for bill payment processing
+            command:
+              - java
+              - -jar
+              - /app/carddemo-backend.jar
+            
+            args:
+              - --spring.batch.job.names=BillPaymentBatchJob
+              - --spring.profiles.active=batch
+              - --logging.level.com.carddemo.batch=DEBUG
+            
+            # Environment variables for configuration
+            env:
+            # Database connection
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: database.url
+            
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.username
+            
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.password
+            
+            # Redis connection for distributed locking
+            - name: SPRING_REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: redis.host
+            
+            - name: SPRING_REDIS_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: redis.port
+            
+            # Spring Batch configuration
+            - name: SPRING_BATCH_JOB_ENABLED
+              value: "true"
+            
+            - name: SPRING_BATCH_INITIALIZE_SCHEMA
+              value: "never"
+            
+            # Chunk size for batch processing (1000 records per transaction)
+            - name: BATCH_CHUNK_SIZE
+              value: "1000"
+            
+            # Skip limit before job failure (100 payment errors allowed)
+            - name: BATCH_SKIP_LIMIT
+              value: "100"
+            
+            # Retry attempts for transient failures
+            - name: BATCH_RETRY_LIMIT
+              value: "3"
+            
+            # Numeric precision for COMP-3 equivalence
+            - name: DECIMAL_SCALE
+              value: "2"
+            
+            - name: DECIMAL_ROUNDING_MODE
+              value: "HALF_UP"
+            
+            # JVM heap settings for batch processing
+            - name: JAVA_OPTS
+              value: "-Xms256m -Xmx768m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+            
+            # Resource requests (guaranteed resources)
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+                ephemeral-storage: "1Gi"
+              
+              # Resource limits (maximum allowed)
+              limits:
+                memory: "1Gi"
+                cpu: "1000m"
+                ephemeral-storage: "2Gi"
+            
+            # Container security context
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              runAsNonRoot: true
+              runAsUser: 1000
+              capabilities:
+                drop:
+                  - ALL
+            
+            # Liveness probe to detect deadlocked jobs
+            livenessProbe:
+              httpGet:
+                path: /actuator/health/liveness
+                port: 8080
+                scheme: HTTP
+              initialDelaySeconds: 60
+              periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 3
+              successThreshold: 1
+            
+            # Readiness probe to ensure job is ready to process
+            readinessProbe:
+              httpGet:
+                path: /actuator/health/readiness
+                port: 8080
+                scheme: HTTP
+              initialDelaySeconds: 30
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+              successThreshold: 1
+            
+            # Volume mounts for logs and temporary files
+            volumeMounts:
+            - name: batch-logs
+              mountPath: /var/log/carddemo
+            
+            - name: tmp-volume
+              mountPath: /tmp
+          
+          # Volumes for logging and temporary storage
+          volumes:
+          - name: batch-logs
+            emptyDir:
+              sizeLimit: 500Mi
+          
+          - name: tmp-volume
+            emptyDir:
+              sizeLimit: 500Mi
+          
+          # Node affinity for batch processing (optional)
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                  - key: workload-type
+                    operator: In
+                    values:
+                    - batch
+          
+          # Tolerations for dedicated batch nodes (optional)
+          tolerations:
+          - key: workload-type
+            operator: Equal
+            value: batch
+            effect: NoSchedule
