@@ -1,12 +1,84 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
+    <!-- Character Encoding - UTF-8 for international support (replacing EBCDIC mainframe encoding) -->
     <meta charset="UTF-8" />
+    
+    <!-- Responsive Design - Mobile-first viewport configuration -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CardDemo</title>
+    
+    <!-- Browser Compatibility - Force latest rendering engine -->
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    
+    <!-- PWA Theme Color - Material-UI primary blue matching CardDemo branding -->
+    <meta name="theme-color" content="#1976d2" />
+    
+    <!-- SEO & Accessibility -->
+    <meta name="description" content="CardDemo Credit Card Management System - Modern cloud-native application migrated from IBM mainframe COBOL/CICS to Java Spring Boot and React" />
+    <meta name="author" content="CardDemo Development Team" />
+    <meta name="keywords" content="credit card management, carddemo, account management, transaction processing" />
+    
+    <!-- Security Headers - Content Security Policy for XSS protection -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' http://localhost:8080 https:;" />
+    
+    <!-- Progressive Web App Manifest -->
+    <link rel="manifest" href="/manifest.json" />
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    
+    <!-- Apple Touch Icon for iOS PWA support -->
+    <link rel="apple-touch-icon" href="/logo192.png" />
+    
+    <!-- Page Title - Browser tab and bookmarks -->
+    <title>CardDemo - Credit Card Management System</title>
+    
+    <!-- Performance Optimization - DNS prefetch for backend API -->
+    <link rel="preconnect" href="http://localhost:8080" crossorigin />
+    
+    <!-- Material-UI Roboto Font - Default typography for Material-UI components -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap"
+    />
+    
+    <!-- Material-UI Icons Font - Icon library for UI components -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/icon?family=Material+Icons"
+    />
   </head>
   <body>
+    <!-- Noscript Fallback - Graceful degradation for users without JavaScript -->
+    <noscript>
+      <div style="padding: 40px; text-align: center; font-family: 'Roboto', Arial, sans-serif; background-color: #fff3cd; border: 2px solid #ffc107; border-radius: 8px; margin: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+        <h1 style="color: #856404; margin-bottom: 16px;">JavaScript Required</h1>
+        <p style="color: #856404; font-size: 16px; line-height: 1.5; margin-bottom: 12px;">
+          <strong>CardDemo Credit Card Management System</strong> requires JavaScript to be enabled in your browser.
+        </p>
+        <p style="color: #856404; font-size: 14px; line-height: 1.5;">
+          This application uses React 18 to provide a modern, responsive interface replacing the legacy 3270 terminal screens.
+        </p>
+        <p style="color: #856404; font-size: 14px; line-height: 1.5; margin-top: 16px;">
+          Please enable JavaScript in your browser settings and refresh this page to continue.
+        </p>
+      </div>
+    </noscript>
+    
+    <!-- React Root Mounting Point - All 17 CardDemo React components render within this div -->
+    <!-- Replaces legacy BMS 3270 terminal screens: -->
+    <!-- - LoginComponent (COSGN00M) -->
+    <!-- - MainMenuComponent (COMEN01M) -->
+    <!-- - AccountViewComponent (COACTVWM) -->
+    <!-- - CardListComponent (COCRDLIM) -->
+    <!-- - TransactionListComponent (COTRN00M) -->
+    <!-- - BillPaymentComponent (COBIL00M) -->
+    <!-- - And 11 additional screen components -->
     <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
+    
+    <!-- Vite Module Script - Entry point for React application -->
+    <!-- Development: Vite dev server with HMR (Hot Module Replacement) -->
+    <!-- Production: Vite bundles and optimizes to /assets/index.[hash].js -->
+    <script type="module" src="/src/index.js"></script>
   </body>
 </html>
