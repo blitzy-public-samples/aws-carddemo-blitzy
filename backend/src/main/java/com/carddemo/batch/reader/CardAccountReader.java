@@ -212,10 +212,9 @@ public class CardAccountReader extends JpaPagingItemReader<Card> {
      * </p>
      * 
      * @param executionContext Spring Batch execution context for restart capability
-     * @throws Exception if reader initialization fails
      */
     @Override
-    public void open(ExecutionContext executionContext) throws Exception {
+    public void open(ExecutionContext executionContext) {
         logger.info("Opening CardAccountReader for card-account association reading");
         logger.debug("ExecutionContext contains: {}", executionContext);
         
@@ -339,11 +338,9 @@ public class CardAccountReader extends JpaPagingItemReader<Card> {
      *     Display error and abend
      * </pre>
      * </p>
-     * 
-     * @throws Exception if resource cleanup fails
      */
     @Override
-    public void close() throws Exception {
+    public void close() {
         logger.info("Closing CardAccountReader. Total cards read: {}", getCurrentItemCount());
         
         try {
