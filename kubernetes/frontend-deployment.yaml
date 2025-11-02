@@ -1,0 +1,490 @@
+# Kubernetes Deployment for CardDemo React Frontend Application
+# Migrated from: Legacy BMS 3270 terminal screens
+# Purpose: Deploy React 18 SPA served by Nginx with high availability and zero-downtime updates
+# Related Resources: frontend-service.yaml, frontend-nginx-config ConfigMap, ingress.yaml
+#
+# Architecture Context (Section 0.3 - Target Architecture):
+# - React 18 SPA with 17 functional components
+# - Client-side routing via React Router 6.x
+# - State management via Redux Toolkit 2.x
+# - API communication via Axios 1.6.5
+# - Material-UI 5.15.3 component library
+#
+# BMS Screen Transformations (Section 0.4):
+# - COSGN00M.bms → LoginComponent.jsx (/)
+# - COMEN01M.bms → MainMenuComponent.jsx (/menu)
+# - COACTVWM.bms → AccountViewComponent.jsx (/accounts)
+# - COCRDLIM.bms → CardListComponent.jsx (/cards)
+# - COTRN00M.bms → TransactionListComponent.jsx (/transactions)
+# - COBIL00M.bms → BillPaymentComponent.jsx (/payments/bill)
+# - [11 additional screen transformations per Section 0.4]
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deployment
+  namespace: default
+  labels:
+    app: carddemo
+    component: frontend
+    tier: ui
+    version: v1
+    managed-by: kubernetes
+  annotations:
+    description: "CardDemo React 18 frontend deployment with Nginx serving static SPA assets"
+    migration-source: "Legacy BMS 3270 screens"
+    deployment-strategy: "RollingUpdate for zero-downtime deployments"
+spec:
+  # Replica Configuration
+  # 2 replicas for high availability and load distribution
+  # Lightweight static asset serving allows lower resource footprint per pod
+  # Can scale to 5+ replicas for higher traffic scenarios
+  replicas: 2
+  
+  # Update Strategy - Zero Downtime Deployments
+  # RollingUpdate ensures continuous service availability during UI updates
+  # maxSurge: 1 allows one extra pod during rollout
+  # maxUnavailable: 0 ensures no downtime (always maintain minimum replicas)
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  
+  # Selector to match pod labels
+  selector:
+    matchLabels:
+      app: carddemo
+      component: frontend
+      tier: ui
+  
+  # Pod Template Specification
+  template:
+    metadata:
+      labels:
+        app: carddemo
+        component: frontend
+        tier: ui
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+        prometheus.io/path: "/metrics"
+    
+    spec:
+      # Security Context at Pod Level
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101  # nginx user
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      
+      # Container Specification
+      containers:
+      - name: frontend
+        # Image built from: frontend/Dockerfile (multi-stage: npm build → Nginx serve)
+        # Multi-stage build process:
+        # Stage 1: Node.js 20-alpine - npm install, npm run build
+        # Stage 2: Nginx 1.25-alpine - copy build artifacts, serve static files
+        image: carddemo-frontend:latest
+        imagePullPolicy: Always  # Use IfNotPresent for semantic versioned tags
+        
+        # Port Configuration
+        # Nginx serves React SPA on standard HTTP port 80
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+        
+        # Environment Variables
+        # API_URL injected at build time or runtime for backend communication
+        # Allows same image to be deployed across different environments
+        env:
+        - name: API_URL
+          value: "http://backend-service:8080"
+        - name: NODE_ENV
+          value: "production"
+        
+        # Volume Mounts
+        # Mount Nginx configuration from ConfigMap for SPA routing support
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+        - name: nginx-run
+          mountPath: /var/run
+        
+        # Resource Limits
+        # Lightweight static asset serving has minimal resource requirements
+        # Requests: Guaranteed minimum resources
+        # Limits: Maximum resources to prevent resource starvation
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        
+        # Liveness Probe
+        # Checks if container is alive and functioning
+        # Kubernetes will restart container if probe fails
+        # HTTP GET to root path (/) should return 200 OK
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        
+        # Readiness Probe
+        # Checks if container is ready to accept traffic
+        # Pod will be removed from service endpoints if probe fails
+        # More aggressive timing than liveness for faster failure detection
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 2
+          successThreshold: 1
+          failureThreshold: 3
+        
+        # Security Context at Container Level
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 101  # nginx user
+          capabilities:
+            drop:
+            - ALL
+      
+      # Volumes
+      # ConfigMap for Nginx configuration enabling SPA routing
+      # EmptyDir volumes for writable directories required by Nginx
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: frontend-nginx-config
+          defaultMode: 0644
+      - name: nginx-cache
+        emptyDir: {}
+      - name: nginx-run
+        emptyDir: {}
+      
+      # DNS Policy
+      dnsPolicy: ClusterFirst
+      
+      # Restart Policy
+      restartPolicy: Always
+      
+      # Termination Grace Period
+      # Allow 30 seconds for graceful shutdown
+      terminationGracePeriodSeconds: 30
+
+---
+# ConfigMap for Nginx Configuration
+# Provides SPA routing support (fallback to index.html for client-side routes)
+# Implements security headers and static asset caching
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-nginx-config
+  namespace: default
+  labels:
+    app: carddemo
+    component: frontend
+    tier: ui
+  annotations:
+    description: "Nginx configuration for React SPA with client-side routing support"
+data:
+  nginx.conf: |
+    # Nginx configuration for CardDemo React 18 SPA
+    # Optimized for serving static assets with client-side routing
+    
+    # Worker process configuration
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+    
+    events {
+      # Maximum concurrent connections per worker
+      worker_connections 1024;
+      use epoll;
+      multi_accept on;
+    }
+    
+    http {
+      # MIME types
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+      
+      # Logging format
+      log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_for"';
+      
+      access_log /var/log/nginx/access.log main;
+      
+      # Performance optimization
+      sendfile on;
+      tcp_nopush on;
+      tcp_nodelay on;
+      keepalive_timeout 65;
+      types_hash_max_size 2048;
+      
+      # Gzip compression for text-based assets
+      gzip on;
+      gzip_vary on;
+      gzip_proxied any;
+      gzip_comp_level 6;
+      gzip_types text/plain text/css text/xml text/javascript
+                 application/json application/javascript application/xml+rss
+                 application/rss+xml font/truetype font/opentype
+                 application/vnd.ms-fontobject image/svg+xml;
+      gzip_disable "msie6";
+      
+      # Server block for React SPA
+      server {
+        listen 80;
+        server_name localhost;
+        
+        # Document root - React build output
+        root /usr/share/nginx/html;
+        index index.html;
+        
+        # Security headers
+        # X-Frame-Options: Prevent clickjacking attacks
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        # X-Content-Type-Options: Prevent MIME-sniffing attacks
+        add_header X-Content-Type-Options "nosniff" always;
+        # X-XSS-Protection: Enable browser XSS protection
+        add_header X-XSS-Protection "1; mode=block" always;
+        # Referrer-Policy: Control referrer information
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        
+        # SPA routing support
+        # All routes handled by client-side React Router
+        # Fallback to index.html for any non-file requests
+        location / {
+          try_files $uri $uri/ /index.html;
+          
+          # CORS headers for API communication (if needed)
+          add_header Access-Control-Allow-Origin "*" always;
+          add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+          add_header Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization" always;
+          
+          # Handle preflight requests
+          if ($request_method = 'OPTIONS') {
+            add_header Access-Control-Allow-Origin "*";
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS";
+            add_header Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization";
+            add_header Content-Length 0;
+            add_header Content-Type text/plain;
+            return 204;
+          }
+        }
+        
+        # Cache static assets aggressively
+        # CSS, JS, fonts, images - 1 year cache with immutable flag
+        location ~* \\.(?:css|js)$ {
+          expires 1y;
+          add_header Cache-Control "public, immutable";
+          access_log off;
+        }
+        
+        location ~* \\.(?:jpg|jpeg|gif|png|ico|svg|webp)$ {
+          expires 1y;
+          add_header Cache-Control "public, immutable";
+          access_log off;
+        }
+        
+        location ~* \\.(?:woff|woff2|ttf|eot|otf)$ {
+          expires 1y;
+          add_header Cache-Control "public, immutable";
+          access_log off;
+        }
+        
+        # Don't cache index.html to ensure users get latest version
+        location = /index.html {
+          expires -1;
+          add_header Cache-Control "no-cache, no-store, must-revalidate";
+        }
+        
+        # Health check endpoint for Kubernetes probes
+        location /health {
+          access_log off;
+          return 200 "healthy\n";
+          add_header Content-Type text/plain;
+        }
+        
+        # Metrics endpoint for Prometheus (if nginx-prometheus-exporter is used)
+        location /metrics {
+          stub_status on;
+          access_log off;
+        }
+        
+        # Deny access to hidden files (e.g., .git, .env)
+        location ~ /\. {
+          deny all;
+          access_log off;
+          log_not_found off;
+        }
+        
+        # Error pages
+        error_page 404 /index.html;
+        error_page 500 502 503 504 /50x.html;
+        location = /50x.html {
+          root /usr/share/nginx/html;
+        }
+      }
+    }
+
+---
+# Horizontal Pod Autoscaler for Frontend
+# Automatically scales replicas based on CPU and memory utilization
+# Ensures UI remains responsive under varying load conditions
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend-hpa
+  namespace: default
+  labels:
+    app: carddemo
+    component: frontend
+    tier: ui
+  annotations:
+    description: "Auto-scales frontend pods based on CPU and memory metrics"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend-deployment
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  # Scale based on CPU utilization
+  # Target: 70% average CPU utilization across all pods
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  # Scale based on memory utilization
+  # Target: 80% average memory utilization across all pods
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+
+---
+# Pod Disruption Budget for Frontend
+# Ensures minimum availability during voluntary disruptions (node drains, cluster upgrades)
+# Maintains at least 1 replica available at all times
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend-pdb
+  namespace: default
+  labels:
+    app: carddemo
+    component: frontend
+    tier: ui
+  annotations:
+    description: "Maintains minimum frontend availability during cluster maintenance"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: carddemo
+      component: frontend
+      tier: ui
+
+# React SPA Routes (from BMS Maps per Section 0.4)
+# ================================================
+#
+# Authentication:
+# - / → LoginComponent.jsx (COSGN00M - Sign-on screen)
+#
+# Main Navigation:
+# - /menu → MainMenuComponent.jsx (COMEN01M - Main menu)
+#
+# Account Management:
+# - /accounts → AccountViewComponent.jsx (COACTVWM - Account view)
+# - /accounts/add → AccountAddComponent.jsx (COACTADD - Add account)
+# - /accounts/:id/edit → AccountUpdateComponent.jsx (COACTUPM - Update account)
+#
+# Card Management:
+# - /cards → CardListComponent.jsx (COCRDLIM - Card list, 7 per page)
+# - /cards/:id → CardSelectComponent.jsx (COCRDSLM - Card detail)
+# - /cards/:id/edit → CardUpdateComponent.jsx (COCRDUPM - Card update)
+#
+# Transaction Management:
+# - /transactions → TransactionListComponent.jsx (COTRN00M - Transaction list, 10 per page)
+# - /transactions/categories → TransactionCategoryComponent.jsx (COTRN01M - Category summary)
+# - /transactions/add → TransactionAddComponent.jsx (COTRN02M - Add transaction)
+#
+# Payment Processing:
+# - /payments/bill → BillPaymentComponent.jsx (COBIL00M - Bill payment)
+#
+# Reporting & Admin:
+# - /reports → ReportMenuComponent.jsx (CORPT00M - Report menu)
+# - /admin → AdminComponent.jsx (COADM01M - Admin functions)
+# - /users → UserManagementComponent.jsx (COUSR00M - User management)
+# - /users/profile → UserProfileComponent.jsx (COUSR01M - User profile)
+#
+# Performance Characteristics (Section 0.9):
+# ==========================================
+# - Initial page load: <2 seconds (gzip compression, code splitting)
+# - Subsequent navigation: <100ms (client-side routing, no full page reload)
+# - Cache-Control headers: 1 year for static assets, no-cache for index.html
+# - Lazy loading: Code splitting via React.lazy() for route-based chunks
+#
+# Frontend Technology Stack (Section 0.5):
+# ========================================
+# - React 18.2.0 - Component framework
+# - React Router 6.21.1 - Client-side routing
+# - Redux Toolkit 2.0.1 - State management
+# - Axios 1.6.5 - HTTP client for API calls
+# - Material-UI 5.15.3 - Component library (3270 screen equivalent)
+# - Formik 2.4.5 + Yup 1.3.3 - Form validation
+#
+# Build Process (Docker multi-stage):
+# ====================================
+# 1. Stage 1: Node.js 20-alpine - npm install, npm run build
+# 2. Stage 2: Nginx 1.25-alpine - copy build artifacts, serve static files
+#
+# Related Kubernetes Resources:
+# ==============================
+# - Service: frontend-service.yaml (ClusterIP service exposing port 80)
+# - Ingress: ingress.yaml (external access routing)
+# - Backend API: backend-service.yaml (API proxy target)
+# - ConfigMap: frontend-nginx-config (this file, inline above)
