@@ -1,0 +1,249 @@
+# ==============================================================================
+# Kubernetes PersistentVolumeClaim for PostgreSQL Database
+# ==============================================================================
+# Purpose: Provides durable storage for PostgreSQL database data persistence
+# Component: CardDemo Database Layer - PostgreSQL 15+
+# Storage: 10Gi persistent volume for VSAM-to-PostgreSQL migrated data
+# ==============================================================================
+# Related Resources:
+#   - postgres-deployment.yaml: Consumes this PVC for data directory mount
+#   - postgres-service.yaml: Service endpoint for database connections
+#   - secrets.yaml: Database credentials (POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD)
+# ==============================================================================
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+
+metadata:
+  name: postgres-pvc
+  namespace: default
+  labels:
+    app: carddemo
+    component: database
+    service: postgres
+    tier: data
+    managed-by: kubernetes
+  annotations:
+    description: "Persistent volume claim for CardDemo PostgreSQL database data storage"
+    purpose: "VSAM-to-PostgreSQL migration data persistence across pod restarts"
+
+spec:
+  # ==============================================================================
+  # Access Modes
+  # ==============================================================================
+  # ReadWriteOnce: Volume can be mounted as read-write by a single node
+  # Rationale: PostgreSQL requires exclusive write access to data directory
+  # Single-writer architecture ensures data consistency and prevents corruption
+  # ==============================================================================
+  accessModes:
+    - ReadWriteOnce
+
+  # ==============================================================================
+  # Storage Request
+  # ==============================================================================
+  # Requested Capacity: 10 GiB
+  # Justification: Sufficient for CardDemo application data including:
+  #   - Customer records (CUSTDAT VSAM → customer table)
+  #   - Account records (ACCTDAT VSAM → account table)  
+  #   - Card records (CARDDAT VSAM → card table)
+  #   - Transaction history (TRANSACT VSAM → transaction table)
+  #   - User security data (USRSEC VSAM → user_security table)
+  #   - Cross-reference tables (XREF, CXACAIX → account_xref, card_xref)
+  #   - Reference data (transaction_type, transaction_category)
+  #   - Spring Batch job repository metadata (batch_job_instance, batch_job_execution)
+  #   - Flyway schema version history (flyway_schema_history)
+  #   - PostgreSQL system catalogs and indexes
+  #   - Write-Ahead Log (WAL) files for transaction durability
+  #   - Application audit logs and compliance data
+  #
+  # Growth Considerations:
+  #   - Initial data load: ~2-3 GB
+  #   - Transaction growth: ~100 MB/month (estimated)
+  #   - Index overhead: ~20-30% of table data
+  #   - 10 GB provides 2-3 years of growth headroom
+  #
+  # Production Sizing:
+  #   - Monitor disk usage via PostgreSQL metrics or df command
+  #   - Scale up if usage exceeds 70% (7 GB used)
+  #   - Many StorageClasses support volume expansion without downtime
+  #   - For high-volume production: Consider 50-100 GB initial allocation
+  # ==============================================================================
+  resources:
+    requests:
+      storage: 10Gi
+
+  # ==============================================================================
+  # Storage Class
+  # ==============================================================================
+  # Default: 'standard' (environment-dependent, customize for your cluster)
+  #
+  # Cloud Provider Options:
+  #
+  # AWS EKS:
+  #   - gp3: General Purpose SSD (recommended) - 3000 IOPS baseline, cost-effective
+  #   - gp2: General Purpose SSD (legacy) - IOPS scales with volume size
+  #   - io1: Provisioned IOPS SSD - for high-performance requirements (>10k IOPS)
+  #   - io2: Next-gen Provisioned IOPS - enhanced durability (99.999%)
+  #
+  # Google GKE:
+  #   - standard-rwo: Standard persistent disk (ReadWriteOnce)
+  #   - premium-rwo: SSD persistent disk - higher performance, lower latency
+  #   - balanced-rwo: Balanced persistent disk - cost/performance middle ground
+  #
+  # Azure AKS:
+  #   - managed-premium: Premium SSD managed disk - production workloads
+  #   - managed-csi: Azure Disk CSI driver - newer, feature-rich
+  #   - managed-csi-premium: Premium SSD via CSI driver
+  #   - azurefile: Azure Files for ReadWriteMany (not applicable here)
+  #
+  # On-Premises / Self-Managed:
+  #   - local-path: Local node storage (hostPath-based, no replication)
+  #   - nfs-client: NFS-backed dynamic provisioner
+  #   - ceph-rbd: Ceph block device (distributed storage)
+  #   - longhorn: Cloud-native distributed block storage
+  #
+  # Performance Considerations:
+  #   - PostgreSQL benefits from low-latency storage (SSD/NVMe)
+  #   - Transaction workload requires good random I/O performance
+  #   - For production: Use premium/SSD-backed storage classes
+  #   - For dev/test: Standard storage acceptable for cost savings
+  #
+  # Volume Expansion:
+  #   - Check if StorageClass has 'allowVolumeExpansion: true'
+  #   - If supported: kubectl edit pvc postgres-pvc (increase storage)
+  #   - If not supported: Backup → Delete PVC → Recreate with larger size → Restore
+  # ==============================================================================
+  storageClassName: standard
+
+  # ==============================================================================
+  # Volume Mode
+  # ==============================================================================
+  # Filesystem: Standard file system mount (default for PostgreSQL)
+  # Alternative: Block (raw block device, not applicable for PostgreSQL)
+  #
+  # PostgreSQL Data Directory Structure:
+  #   /var/lib/postgresql/data/pgdata/
+  #   ├── base/              (database files)
+  #   ├── global/            (cluster-wide tables)
+  #   ├── pg_wal/            (write-ahead log)
+  #   ├── pg_stat/           (statistics files)
+  #   ├── pg_tblspc/         (tablespaces)
+  #   └── postgresql.conf    (configuration)
+  # ==============================================================================
+  volumeMode: Filesystem
+
+  # ==============================================================================
+  # Selector (Optional - for Static Provisioning)
+  # ==============================================================================
+  # Leave empty for dynamic provisioning (recommended)
+  # Dynamic provisioning: PersistentVolume automatically created by StorageClass
+  #
+  # For Static Provisioning (pre-created PV):
+  # selector:
+  #   matchLabels:
+  #     volume-type: postgres
+  #     environment: production
+  #
+  # Use static provisioning when:
+  #   - Pre-allocated storage volumes required
+  #   - Specific disk hardware assignments needed
+  #   - Local storage (non-cloud) with manual volume management
+  # ==============================================================================
+  # selector: {}  # Omitted for dynamic provisioning
+
+# ==============================================================================
+# Deployment Notes
+# ==============================================================================
+# 1. Apply Order:
+#    - Create this PVC BEFORE postgres-deployment.yaml
+#    - PVC must be in 'Bound' state before PostgreSQL pod starts
+#    - Check status: kubectl get pvc postgres-pvc
+#
+# 2. Verification:
+#    kubectl get pvc postgres-pvc -o wide
+#    Expected: STATUS=Bound, VOLUME=<auto-generated-pv-name>
+#
+# 3. Troubleshooting:
+#    - STATUS=Pending: Check StorageClass exists and is default
+#    - No available volumes: Dynamic provisioner may not be installed
+#    - Permission denied: Check pod security context and fsGroup settings
+#
+# 4. Data Persistence:
+#    - Data survives pod deletions and restarts
+#    - Data survives node failures (cloud-backed storage)
+#    - Deleting PVC deletes the PersistentVolume and ALL data (caution!)
+#
+# 5. Backup Strategy (Production):
+#    - Schedule regular pg_dump backups via CronJob
+#    - Use Velero for volume-level backups
+#    - Consider PostgreSQL streaming replication for HA
+#    - Store backups in object storage (S3, GCS, Azure Blob)
+#
+# 6. Monitoring:
+#    - Monitor disk usage: kubectl exec <postgres-pod> -- df -h /var/lib/postgresql/data
+#    - Set up Prometheus alerts for disk usage > 70%
+#    - Use postgres_exporter for detailed database metrics
+#    - Track I/O metrics via StorageClass-specific monitoring
+#
+# 7. High Availability Considerations:
+#    - Single PVC = Single point of failure
+#    - For production HA: Consider StatefulSet with PostgreSQL replication
+#    - Master-slave replication: Separate PVCs for master and replica(s)
+#    - Cloud-managed databases: RDS (AWS), Cloud SQL (GCP), Azure Database
+#
+# 8. Security:
+#    - PVC data is as secure as the underlying storage
+#    - Enable encryption at rest (StorageClass parameter)
+#    - AWS EKS: Use encrypted gp3 volumes
+#    - GCP GKE: Encryption enabled by default
+#    - Azure AKS: Use encrypted managed disks
+#    - Secure database credentials in secrets.yaml (never in ConfigMap)
+#
+# 9. Performance Tuning:
+#    - PostgreSQL shared_buffers: 25% of available memory
+#    - effective_cache_size: 50-75% of total system memory
+#    - max_connections: Match HikariCP pool size (50 per Section 0.5)
+#    - work_mem: 16-32 MB for complex queries
+#    - maintenance_work_mem: 256 MB for index creation
+#
+# 10. Disaster Recovery:
+#     - Implement point-in-time recovery (PITR) with WAL archiving
+#     - Store WAL archives in S3/GCS/Azure Blob
+#     - Test backup restoration regularly
+#     - Document recovery procedures
+#     - Maintain RTO (Recovery Time Objective) < 1 hour
+#     - Maintain RPO (Recovery Point Objective) < 15 minutes
+# ==============================================================================
+
+# ==============================================================================
+# Data Migration Context (COBOL-to-Java Migration)
+# ==============================================================================
+# This PVC supports the migration of mainframe VSAM KSDS files to PostgreSQL:
+#
+# VSAM Files → PostgreSQL Tables:
+#   CUSTDAT  → customer (customer data)
+#   ACCTDAT  → account (account data)
+#   CARDDAT  → card (card data)
+#   TRANSACT → transaction (transaction history)
+#   USRSEC   → user_security (authentication data)
+#   XREF     → account_xref (cross-references)
+#   CXACAIX  → card_xref (card cross-references)
+#
+# Initial Data Load:
+#   - Flyway migrations create schema: V1__create_customer_table.sql through V9
+#   - Test data loaded from app/data/ASCII/*.txt files
+#   - EBCDIC conversion handled during migration
+#   - COMP-3 packed decimal → NUMERIC(p,s) with precision preservation
+#
+# Performance Requirements:
+#   - Transaction response time: <200ms (95th percentile)
+#   - Concurrent connections: 50 (HikariCP pool size)
+#   - Peak throughput: 10,000 TPS
+#   - Batch processing window: <4 hours
+#
+# Related Agent Action Plan References:
+#   - Section 0.1: Core Refactoring Objective (VSAM → PostgreSQL)
+#   - Section 0.3: Data Access Layer (JPA Repositories)
+#   - Section 0.5: Database Layer (PostgreSQL 15+)
+#   - Section 0.9: Data Integrity Requirements (zero data loss)
+# ==============================================================================
