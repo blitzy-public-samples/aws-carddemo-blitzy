@@ -158,10 +158,10 @@ public class TransactionAggregateWriter implements ItemWriter<TransactionAggrega
                     
                     // Preserve entity ID and creation timestamp
                     aggregate.setId(existing.getId());
-                    aggregate.setCreatedDate(existing.getCreatedDate());
+                    aggregate.setCreatedAt(existing.getCreatedAt());
                     
                     // Update modification timestamp
-                    aggregate.setUpdatedDate(LocalDateTime.now());
+                    aggregate.setLastUpdated(LocalDateTime.now());
                     
                     // Validate BigDecimal precision for financial amounts
                     if (aggregate.getCategoryBalance() != null) {
@@ -178,8 +178,8 @@ public class TransactionAggregateWriter implements ItemWriter<TransactionAggrega
                     updateCount++;
                 } else {
                     // INSERT new aggregate
-                    aggregate.setCreatedDate(LocalDateTime.now());
-                    aggregate.setUpdatedDate(LocalDateTime.now());
+                    aggregate.setCreatedAt(LocalDateTime.now());
+                    aggregate.setLastUpdated(LocalDateTime.now());
                     
                     // Validate BigDecimal precision for financial amounts
                     if (aggregate.getCategoryBalance() != null) {
