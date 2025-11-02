@@ -1,0 +1,672 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+    
+    Licensed under the Apache License, Version 2.0 (the "License").
+    You may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+    
+        http://www.apache.org/licenses/LICENSE-2.0
+    
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+    ******************************************************************
+    * Application: CardDemo Batch Processing                        *
+    * Job Name:    Account Data Load Job                            *
+    * Type:        Spring Batch XML Configuration                   *
+    * Purpose:     Comprehensive account data loading workflow      *
+    *                                                                *
+    * Migrated From:                                                *
+    *   - CUSTFILE.jcl (Customer VSAM file definition)             *
+    *   - ACCTFILE.jcl (Account VSAM file definition)              *
+    *   - INTCALC.jcl (Interest calculation job)                   *
+    *   - CBCUS01C.cbl (Customer data read/print)                  *
+    *   - CBACT01C.cbl (Account data read/print)                   *
+    *   - CBACT02C.cbl (Card cross-reference build)                *
+    *   - CBACT03C.cbl (Account balance calculation)               *
+    *   - CBACT04C.cbl (Interest calculation)                      *
+    *                                                                *
+    * Job Flow:                                                      *
+    *   1. loadCustomerDataStep - Load customer records             *
+    *   2. loadAccountDataStep - Load account records               *
+    *   3. buildAccountXrefStep - Generate cross-references         *
+    *   4. calculateBalancesStep - Calculate account balances       *
+    *   5. calculateInterestStep - Calculate interest charges       *
+    *                                                                *
+    * Processing Strategy: Chunk-oriented with 1000 record chunks   *
+    * Error Handling: Skip limit 100, Retry limit 3                *
+    * Restart: Enabled via JobRepository execution context          *
+    ******************************************************************
+-->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:batch="http://www.springframework.org/schema/batch"
+       xmlns:context="http://www.springframework.org/schema/context"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans
+           https://www.springframework.org/schema/beans/spring-beans.xsd
+           http://www.springframework.org/schema/batch
+           https://www.springframework.org/schema/batch/spring-batch.xsd
+           http://www.springframework.org/schema/context
+           https://www.springframework.org/schema/context/spring-context.xsd">
+
+    <!-- Enable component scanning for batch components -->
+    <context:component-scan base-package="com.carddemo.batch"/>
+    <context:annotation-config/>
+
+    <!-- 
+        ================================================================
+        MAIN JOB DEFINITION: Account Data Load Job
+        ================================================================
+        
+        This job orchestrates the complete account data loading workflow,
+        migrating functionality from multiple JCL jobs and COBOL programs:
+        
+        - CUSTFILE.jcl: Customer VSAM KSDS (KEYS(9 0), RECORDSIZE(500 500))
+        - ACCTFILE.jcl: Account VSAM KSDS (KEYS(11 0), RECORDSIZE(300 300))
+        - INTCALC.jcl: Interest calculation batch job
+        
+        Job execution is sequential with conditional transitions.
+        Each step must complete successfully before proceeding to next.
+    -->
+    <batch:job id="accountDataLoadJob" restartable="true">
+        
+        <!-- 
+            ============================================================
+            STEP 1: Load Customer Data
+            ============================================================
+            
+            Migrated from: CBCUS01C.cbl + CUSTFILE.jcl
+            
+            COBOL Logic:
+            - SELECT CUSTFILE-FILE ASSIGN TO CUSTFILE
+            - ORGANIZATION IS INDEXED
+            - ACCESS MODE IS SEQUENTIAL
+            - RECORD KEY IS FD-CUST-ID (PIC 9(09))
+            - RECORDSIZE(500 500)
+            
+            Spring Batch Equivalent:
+            - JdbcCursorItemReader for sequential database read
+            - CustomerItemReader with SQL: SELECT * FROM customer ORDER BY customer_id
+            - Chunk size 1000 derived from VSAM BUFSIZE parameter
+            - Validates CUST-ID format (9 digits)
+            - Writes to PostgreSQL customer table via JPA
+        -->
+        <batch:step id="loadCustomerDataStep" next="loadAccountDataStep">
+            <batch:tasklet>
+                <batch:chunk 
+                    reader="customerItemReader" 
+                    writer="customerItemWriter" 
+                    commit-interval="1000"
+                    skip-limit="100"
+                    retry-limit="3">
+                    
+                    <!-- 
+                        Skip Policy: Handle data validation errors
+                        Equivalent to COBOL file-status checking:
+                        IF CUSTFILE-STATUS = '00' (success)
+                        IF CUSTFILE-STATUS = '10' (end of file)
+                        ELSE (error condition - skip in batch)
+                    -->
+                    <batch:skippable-exception-classes>
+                        <batch:include class="org.springframework.dao.DataIntegrityViolationException"/>
+                        <batch:include class="javax.validation.ConstraintViolationException"/>
+                        <batch:include class="org.springframework.dao.DuplicateKeyException"/>
+                    </batch:skippable-exception-classes>
+                    
+                    <!-- 
+                        Retry Policy: Transient failures
+                        Handles temporary database connectivity issues
+                    -->
+                    <batch:retryable-exception-classes>
+                        <batch:include class="org.springframework.dao.TransientDataAccessException"/>
+                        <batch:include class="org.springframework.dao.RecoverableDataAccessException"/>
+                        <batch:include class="java.sql.SQLException"/>
+                    </batch:retryable-exception-classes>
+                    
+                    <!-- 
+                        Checkpoint/Restart capability
+                        JobRepository persists execution context after each chunk
+                        Allows restart from last successful commit
+                    -->
+                    <batch:streams>
+                        <batch:stream ref="customerItemReader"/>
+                        <batch:stream ref="customerItemWriter"/>
+                    </batch:streams>
+                </batch:chunk>
+            </batch:tasklet>
+            
+            <!-- 
+                Step Listeners: Logging and monitoring
+                Equivalent to COBOL DISPLAY statements:
+                DISPLAY 'START OF EXECUTION OF PROGRAM CBCUS01C'
+                DISPLAY 'END OF EXECUTION OF PROGRAM CBCUS01C'
+            -->
+            <batch:listeners>
+                <batch:listener ref="customerStepExecutionListener"/>
+            </batch:listeners>
+        </batch:step>
+
+        <!-- 
+            ============================================================
+            STEP 2: Load Account Data
+            ============================================================
+            
+            Migrated from: CBACT01C.cbl + ACCTFILE.jcl
+            
+            COBOL Logic:
+            - SELECT ACCTFILE-FILE ASSIGN TO ACCTFILE
+            - ORGANIZATION IS INDEXED
+            - ACCESS MODE IS SEQUENTIAL
+            - RECORD KEY IS FD-ACCT-ID (PIC 9(11))
+            - RECORDSIZE(300 300)
+            - READ ACCTFILE-FILE INTO ACCOUNT-RECORD
+            
+            Spring Batch Equivalent:
+            - AccountItemReader with SQL ordered by account_id
+            - Validates account-to-customer relationships via foreign key
+            - AccountItemWriter uses JPA AccountRepository
+            - Maintains referential integrity with customer table
+            
+            Dependency: Requires successful completion of loadCustomerDataStep
+            JCL Equivalent: COND=(0,NE) - only execute if previous step succeeded
+        -->
+        <batch:step id="loadAccountDataStep" next="buildAccountXrefStep">
+            <batch:tasklet>
+                <batch:chunk 
+                    reader="accountItemReader" 
+                    writer="accountItemWriter" 
+                    commit-interval="1000"
+                    skip-limit="100"
+                    retry-limit="3">
+                    
+                    <batch:skippable-exception-classes>
+                        <batch:include class="org.springframework.dao.DataIntegrityViolationException"/>
+                        <batch:include class="javax.validation.ConstraintViolationException"/>
+                        <batch:include class="org.springframework.dao.DuplicateKeyException"/>
+                        <batch:include class="com.carddemo.exception.CustomerNotFoundException"/>
+                    </batch:skippable-exception-classes>
+                    
+                    <batch:retryable-exception-classes>
+                        <batch:include class="org.springframework.dao.TransientDataAccessException"/>
+                        <batch:include class="org.springframework.dao.RecoverableDataAccessException"/>
+                        <batch:include class="java.sql.SQLException"/>
+                    </batch:retryable-exception-classes>
+                    
+                    <batch:streams>
+                        <batch:stream ref="accountItemReader"/>
+                        <batch:stream ref="accountItemWriter"/>
+                    </batch:streams>
+                </batch:chunk>
+            </batch:tasklet>
+            
+            <batch:listeners>
+                <batch:listener ref="accountStepExecutionListener"/>
+            </batch:listeners>
+        </batch:step>
+
+        <!-- 
+            ============================================================
+            STEP 3: Build Account Cross-Reference
+            ============================================================
+            
+            Migrated from: CBACT02C.cbl (cross-reference build logic)
+            
+            COBOL Logic:
+            - Reads XREF VSAM file (card-to-account cross-reference)
+            - SELECT XREFFILE-FILE ASSIGN TO XREFFILE
+            - RECORD KEY IS FD-XREF-CARD-NUM (PIC X(16))
+            - Builds relationships between cards, customers, and accounts
+            
+            Spring Batch Equivalent:
+            - AccountDataProcessor generates cross-reference entries
+            - Replaces VSAM XREF file with PostgreSQL account_xref table
+            - Composite keys: (customer_id, account_id)
+            - Enforces referential integrity via foreign key constraints
+            
+            VSAM to PostgreSQL Mapping:
+            - XREF VSAM file → account_xref table
+            - Key structure: Customer-Account relationship
+            - Access pattern: Random read by composite key
+        -->
+        <batch:step id="buildAccountXrefStep" next="calculateBalancesStep">
+            <batch:tasklet>
+                <batch:chunk 
+                    reader="accountXrefItemReader" 
+                    processor="accountDataProcessor" 
+                    writer="accountXrefItemWriter" 
+                    commit-interval="1000"
+                    skip-limit="100"
+                    retry-limit="3">
+                    
+                    <batch:skippable-exception-classes>
+                        <batch:include class="org.springframework.dao.DataIntegrityViolationException"/>
+                        <batch:include class="javax.validation.ConstraintViolationException"/>
+                        <batch:include class="org.springframework.dao.DuplicateKeyException"/>
+                        <batch:include class="com.carddemo.exception.AccountNotFoundException"/>
+                        <batch:include class="com.carddemo.exception.CustomerNotFoundException"/>
+                    </batch:skippable-exception-classes>
+                    
+                    <batch:retryable-exception-classes>
+                        <batch:include class="org.springframework.dao.TransientDataAccessException"/>
+                        <batch:include class="org.springframework.dao.RecoverableDataAccessException"/>
+                        <batch:include class="java.sql.SQLException"/>
+                    </batch:retryable-exception-classes>
+                    
+                    <batch:streams>
+                        <batch:stream ref="accountXrefItemReader"/>
+                        <batch:stream ref="accountXrefItemWriter"/>
+                    </batch:streams>
+                </batch:chunk>
+            </batch:tasklet>
+            
+            <batch:listeners>
+                <batch:listener ref="accountXrefStepExecutionListener"/>
+            </batch:listeners>
+        </batch:step>
+
+        <!-- 
+            ============================================================
+            STEP 4: Calculate Account Balances
+            ============================================================
+            
+            Migrated from: CBACT03C.cbl (account balance calculation)
+            
+            COBOL Logic:
+            - COMP-3 packed decimal arithmetic
+            - COMPUTE statements with precise decimal handling
+            - PIC S9(13)V99 COMP-3 for balance fields
+            
+            Spring Batch Equivalent:
+            - AccountBalanceJob aggregates transaction balances
+            - Uses BigDecimal with scale=2, RoundingMode.HALF_UP
+            - Maintains COMP-3 precision rules for financial compliance
+            
+            Critical Precision Requirements:
+            - All balance fields: BigDecimal(15, 2)
+            - Rounding mode: HALF_UP (matches COBOL default)
+            - No precision loss during aggregation
+            
+            COBOL PIC S9(13)V99 COMP-3 Equivalent:
+            - Java: @Column(precision = 15, scale = 2)
+            - Always set scale: balance.setScale(2, RoundingMode.HALF_UP)
+            
+            Balance Calculation:
+            - Sum of all transaction amounts per account
+            - Separate calculations for debits and credits
+            - Current balance = opening balance + credits - debits
+        -->
+        <batch:step id="calculateBalancesStep" next="calculateInterestStep">
+            <batch:tasklet>
+                <batch:chunk 
+                    reader="accountBalanceItemReader" 
+                    processor="accountBalanceProcessor" 
+                    writer="accountBalanceItemWriter" 
+                    commit-interval="1000"
+                    skip-limit="100"
+                    retry-limit="3">
+                    
+                    <batch:skippable-exception-classes>
+                        <batch:include class="org.springframework.dao.DataIntegrityViolationException"/>
+                        <batch:include class="javax.validation.ConstraintViolationException"/>
+                        <batch:include class="java.lang.ArithmeticException"/>
+                        <batch:include class="com.carddemo.exception.AccountNotFoundException"/>
+                    </batch:skippable-exception-classes>
+                    
+                    <batch:retryable-exception-classes>
+                        <batch:include class="org.springframework.dao.TransientDataAccessException"/>
+                        <batch:include class="org.springframework.dao.RecoverableDataAccessException"/>
+                        <batch:include class="java.sql.SQLException"/>
+                    </batch:retryable-exception-classes>
+                    
+                    <batch:streams>
+                        <batch:stream ref="accountBalanceItemReader"/>
+                        <batch:stream ref="accountBalanceItemWriter"/>
+                    </batch:streams>
+                </batch:chunk>
+            </batch:tasklet>
+            
+            <batch:listeners>
+                <batch:listener ref="accountBalanceStepExecutionListener"/>
+            </batch:listeners>
+        </batch:step>
+
+        <!-- 
+            ============================================================
+            STEP 5: Calculate Interest Charges
+            ============================================================
+            
+            Migrated from: CBACT04C.cbl + INTCALC.jcl
+            
+            JCL Execution:
+            - STEP15 EXEC PGM=CBACT04C,PARM='2022071800'
+            - Date parameter passed for interest calculation period
+            
+            COBOL Logic:
+            - Reads transaction category balance file (TCATBAL)
+            - Accesses account file for interest rate
+            - Accesses discount group file for rate adjustments
+            - Complex interest calculation with COMP-3 precision
+            
+            Interest Calculation Formula (from CBACT04C):
+            - Daily Interest = (Annual Rate / 365) * Daily Balance
+            - COMP-3 to BigDecimal conversion: exact decimal arithmetic
+            - Scale: 2 decimal places for currency
+            - Rounding: HALF_UP for financial compliance
+            
+            Spring Batch Equivalent:
+            - InterestCalculationProcessor implements COBOL logic
+            - Uses BigDecimal for all calculations
+            - Maintains exact decimal precision (no rounding discrepancies)
+            - Transaction date parameter injected via JobParameters
+            
+            Financial Precision Requirements:
+            - Interest rate: BigDecimal(8, 5) - PIC S9(3)V9(5) COMP-3
+            - Daily rate: annual_rate / 365, scale 8
+            - Interest amount: BigDecimal(12, 2) - PIC S9(10)V99 COMP-3
+            - All intermediate calculations maintain precision
+            
+            File Access Pattern:
+            - TCATBAL: Sequential read (ACCESS MODE IS SEQUENTIAL)
+            - ACCTFILE: Random read by account ID (ACCESS MODE IS RANDOM)
+            - DISCGRP: Random read by discount group key (ACCESS MODE IS RANDOM)
+            - XREFFILE: Random read with alternate key (ALTERNATE RECORD KEY)
+        -->
+        <batch:step id="calculateInterestStep">
+            <batch:tasklet>
+                <batch:chunk 
+                    reader="interestCalculationItemReader" 
+                    processor="interestCalculationProcessor" 
+                    writer="interestCalculationItemWriter" 
+                    commit-interval="1000"
+                    skip-limit="100"
+                    retry-limit="3">
+                    
+                    <batch:skippable-exception-classes>
+                        <batch:include class="org.springframework.dao.DataIntegrityViolationException"/>
+                        <batch:include class="javax.validation.ConstraintViolationException"/>
+                        <batch:include class="java.lang.ArithmeticException"/>
+                        <batch:include class="com.carddemo.exception.AccountNotFoundException"/>
+                        <batch:include class="com.carddemo.exception.InvalidInterestRateException"/>
+                    </batch:skippable-exception-classes>
+                    
+                    <batch:retryable-exception-classes>
+                        <batch:include class="org.springframework.dao.TransientDataAccessException"/>
+                        <batch:include class="org.springframework.dao.RecoverableDataAccessException"/>
+                        <batch:include class="java.sql.SQLException"/>
+                    </batch:retryable-exception-classes>
+                    
+                    <batch:streams>
+                        <batch:stream ref="interestCalculationItemReader"/>
+                        <batch:stream ref="interestCalculationItemWriter"/>
+                    </batch:streams>
+                </batch:chunk>
+            </batch:tasklet>
+            
+            <batch:listeners>
+                <batch:listener ref="interestCalculationStepExecutionListener"/>
+            </batch:listeners>
+            
+            <!-- 
+                Job Completion: Final step has no "next" attribute
+                Job status set to COMPLETED upon successful execution
+                JobRepository persists final execution state
+            -->
+        </batch:step>
+
+        <!-- 
+            ============================================================
+            JOB-LEVEL LISTENERS
+            ============================================================
+            
+            Equivalent to JCL job-level notifications and logging
+            Provides comprehensive job execution tracking
+        -->
+        <batch:listeners>
+            <batch:listener ref="accountLoadJobExecutionListener"/>
+        </batch:listeners>
+
+    </batch:job>
+
+    <!-- 
+        ====================================================================
+        ITEM READERS: Data Source Components
+        ====================================================================
+        
+        ItemReaders encapsulate data retrieval logic, replacing COBOL
+        file I/O operations (READ statements).
+        
+        All readers use JdbcCursorItemReader for large dataset processing
+        with forward-only cursors (equivalent to VSAM sequential access).
+    -->
+
+    <!-- 
+        Customer Item Reader
+        Migrated from: CBCUS01C.cbl file reading logic
+        
+        COBOL: READ CUSTFILE-FILE INTO CUSTOMER-RECORD
+        SQL:   SELECT * FROM customer ORDER BY customer_id
+    -->
+    <bean id="customerItemReader" class="com.carddemo.batch.reader.CustomerItemReader" scope="step">
+        <property name="dataSource" ref="dataSource"/>
+        <property name="fetchSize" value="1000"/>
+        <property name="saveState" value="true"/>
+    </bean>
+
+    <!-- 
+        Account Item Reader
+        Migrated from: CBACT01C.cbl file reading logic
+        
+        COBOL: READ ACCTFILE-FILE INTO ACCOUNT-RECORD
+        SQL:   SELECT * FROM account ORDER BY account_id
+    -->
+    <bean id="accountItemReader" class="com.carddemo.batch.reader.AccountItemReader" scope="step">
+        <property name="dataSource" ref="dataSource"/>
+        <property name="fetchSize" value="1000"/>
+        <property name="saveState" value="true"/>
+    </bean>
+
+    <!-- 
+        Account Cross-Reference Item Reader
+        Reads existing account data to generate cross-reference entries
+    -->
+    <bean id="accountXrefItemReader" class="com.carddemo.batch.reader.AccountXrefItemReader" scope="step">
+        <property name="dataSource" ref="dataSource"/>
+        <property name="fetchSize" value="1000"/>
+        <property name="saveState" value="true"/>
+    </bean>
+
+    <!-- 
+        Account Balance Item Reader
+        Reads accounts requiring balance recalculation
+    -->
+    <bean id="accountBalanceItemReader" class="com.carddemo.batch.reader.AccountBalanceItemReader" scope="step">
+        <property name="dataSource" ref="dataSource"/>
+        <property name="fetchSize" value="1000"/>
+        <property name="saveState" value="true"/>
+    </bean>
+
+    <!-- 
+        Interest Calculation Item Reader
+        Migrated from: CBACT04C.cbl TCATBAL file reading
+        
+        COBOL: READ TCATBAL-FILE (transaction category balance)
+        Reads accounts eligible for interest calculation
+    -->
+    <bean id="interestCalculationItemReader" class="com.carddemo.batch.reader.InterestCalculationItemReader" scope="step">
+        <property name="dataSource" ref="dataSource"/>
+        <property name="fetchSize" value="1000"/>
+        <property name="saveState" value="true"/>
+        <property name="calculationDate" value="#{jobParameters['calculationDate']}"/>
+    </bean>
+
+    <!-- 
+        ====================================================================
+        ITEM PROCESSORS: Business Logic Components
+        ====================================================================
+        
+        ItemProcessors implement business logic, replacing COBOL
+        PROCEDURE DIVISION logic.
+    -->
+
+    <!-- 
+        Account Data Processor
+        Generates cross-reference entries for account-customer relationships
+        Migrated from: CBACT02C.cbl cross-reference building logic
+    -->
+    <bean id="accountDataProcessor" class="com.carddemo.batch.processor.AccountDataProcessor">
+        <property name="accountRepository" ref="accountRepository"/>
+        <property name="customerRepository" ref="customerRepository"/>
+    </bean>
+
+    <!-- 
+        Account Balance Processor
+        Migrated from: CBACT03C.cbl balance calculation logic
+        
+        Implements COBOL COMPUTE statements with BigDecimal precision
+        Maintains COMP-3 packed decimal arithmetic equivalence
+    -->
+    <bean id="accountBalanceProcessor" class="com.carddemo.batch.processor.AccountBalanceProcessor">
+        <property name="transactionRepository" ref="transactionRepository"/>
+        <property name="scale" value="2"/>
+        <property name="roundingMode" value="HALF_UP"/>
+    </bean>
+
+    <!-- 
+        Interest Calculation Processor
+        Migrated from: CBACT04C.cbl interest calculation logic
+        
+        Implements complex interest calculation algorithm:
+        - Daily interest = (annual_rate / 365) * daily_balance
+        - All calculations use BigDecimal with scale 8 intermediate, scale 2 final
+        - Rounding mode: HALF_UP (matches COBOL ROUNDED)
+        
+        COBOL Equivalent:
+        - COMPUTE WS-DAILY-INTEREST ROUNDED = 
+            (WS-ANNUAL-RATE / 365) * WS-DAILY-BALANCE
+        - WS-ANNUAL-RATE PIC S9(3)V9(5) COMP-3
+        - WS-DAILY-INTEREST PIC S9(10)V99 COMP-3
+    -->
+    <bean id="interestCalculationProcessor" class="com.carddemo.batch.processor.InterestCalculationProcessor">
+        <property name="accountRepository" ref="accountRepository"/>
+        <property name="discountGroupRepository" ref="discountGroupRepository"/>
+        <property name="interestRateScale" value="5"/>
+        <property name="calculationScale" value="8"/>
+        <property name="resultScale" value="2"/>
+        <property name="roundingMode" value="HALF_UP"/>
+    </bean>
+
+    <!-- 
+        ====================================================================
+        ITEM WRITERS: Data Persistence Components
+        ====================================================================
+        
+        ItemWriters handle data persistence, replacing COBOL WRITE/REWRITE
+        statements with JPA repository operations.
+    -->
+
+    <!-- 
+        Customer Item Writer
+        Persists customer records to PostgreSQL customer table
+        Uses JPA CustomerRepository for transactional writes
+    -->
+    <bean id="customerItemWriter" class="com.carddemo.batch.writer.CustomerItemWriter">
+        <property name="customerRepository" ref="customerRepository"/>
+    </bean>
+
+    <!-- 
+        Account Item Writer
+        Persists account records to PostgreSQL account table
+        Enforces foreign key constraint to customer table
+    -->
+    <bean id="accountItemWriter" class="com.carddemo.batch.writer.AccountItemWriter">
+        <property name="accountRepository" ref="accountRepository"/>
+    </bean>
+
+    <!-- 
+        Account Cross-Reference Item Writer
+        Persists cross-reference entries to account_xref table
+        Replaces VSAM XREF file writes
+    -->
+    <bean id="accountXrefItemWriter" class="com.carddemo.batch.writer.AccountXrefItemWriter">
+        <property name="accountXrefRepository" ref="accountXrefRepository"/>
+    </bean>
+
+    <!-- 
+        Account Balance Item Writer
+        Updates account balance fields in account table
+        Uses JPA merge operation for update
+    -->
+    <bean id="accountBalanceItemWriter" class="com.carddemo.batch.writer.AccountBalanceItemWriter">
+        <property name="accountRepository" ref="accountRepository"/>
+    </bean>
+
+    <!-- 
+        Interest Calculation Item Writer
+        Persists calculated interest as new transaction records
+        Creates interest charge transactions in transaction table
+    -->
+    <bean id="interestCalculationItemWriter" class="com.carddemo.batch.writer.InterestCalculationItemWriter">
+        <property name="transactionRepository" ref="transactionRepository"/>
+        <property name="transactionType" value="INTEREST"/>
+    </bean>
+
+    <!-- 
+        ====================================================================
+        STEP EXECUTION LISTENERS
+        ====================================================================
+        
+        Listeners provide logging, monitoring, and error handling
+        Equivalent to COBOL DISPLAY statements and error paragraphs
+    -->
+
+    <bean id="customerStepExecutionListener" class="com.carddemo.batch.listener.CustomerStepExecutionListener"/>
+    <bean id="accountStepExecutionListener" class="com.carddemo.batch.listener.AccountStepExecutionListener"/>
+    <bean id="accountXrefStepExecutionListener" class="com.carddemo.batch.listener.AccountXrefStepExecutionListener"/>
+    <bean id="accountBalanceStepExecutionListener" class="com.carddemo.batch.listener.AccountBalanceStepExecutionListener"/>
+    <bean id="interestCalculationStepExecutionListener" class="com.carddemo.batch.listener.InterestCalculationStepExecutionListener"/>
+
+    <!-- 
+        ====================================================================
+        JOB EXECUTION LISTENER
+        ====================================================================
+        
+        Job-level listener for overall job monitoring
+        Equivalent to JCL job-level notification and logging
+    -->
+
+    <bean id="accountLoadJobExecutionListener" class="com.carddemo.batch.listener.AccountLoadJobExecutionListener"/>
+
+    <!-- 
+        ====================================================================
+        REPOSITORY REFERENCES
+        ====================================================================
+        
+        Spring Data JPA repositories for database operations
+        These beans are defined in Java configuration classes
+    -->
+
+    <!-- Repositories are auto-wired from Spring Data JPA context -->
+    <!-- Declared here for XML configuration reference -->
+    
+    <!-- 
+        Note: The following repository beans are expected to be available
+        from the Spring application context via component scanning:
+        
+        - customerRepository: CustomerRepository interface
+        - accountRepository: AccountRepository interface
+        - transactionRepository: TransactionRepository interface
+        - accountXrefRepository: AccountXrefRepository interface
+        - discountGroupRepository: DiscountGroupRepository interface (for interest calculation)
+        
+        These repositories provide CRUD operations replacing VSAM file I/O:
+        - findById() replaces READ with key
+        - save() replaces WRITE/REWRITE
+        - delete() replaces DELETE
+        - findAll() with pagination replaces sequential READ
+    -->
+
+</beans>
