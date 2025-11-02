@@ -292,11 +292,11 @@ public class JwtTokenProvider {
         try {
             SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
             
-            Claims claims = Jwts.parserBuilder()
-                    .setSigningKey(key)
+            Claims claims = Jwts.parser()
+                    .verifyWith(key)
                     .build()
-                    .parseClaimsJws(token)
-                    .getBody();
+                    .parseSignedClaims(token)
+                    .getPayload();
             
             String username = claims.getSubject();
             
@@ -367,11 +367,11 @@ public class JwtTokenProvider {
         try {
             SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
             
-            Claims claims = Jwts.parserBuilder()
-                    .setSigningKey(key)
+            Claims claims = Jwts.parser()
+                    .verifyWith(key)
                     .build()
-                    .parseClaimsJws(token)
-                    .getBody();
+                    .parseSignedClaims(token)
+                    .getPayload();
             
             String roles = claims.get(SecurityConstants.ROLES_CLAIM, String.class);
             
@@ -450,10 +450,10 @@ public class JwtTokenProvider {
             
             // Parse and validate token
             // This throws exceptions if signature invalid, expired, or malformed
-            Jwts.parserBuilder()
-                    .setSigningKey(key)
+            Jwts.parser()
+                    .verifyWith(key)
                     .build()
-                    .parseClaimsJws(token);
+                    .parseSignedClaims(token);
             
             if (logger.isDebugEnabled()) {
                 logger.debug("Token validation successful");
