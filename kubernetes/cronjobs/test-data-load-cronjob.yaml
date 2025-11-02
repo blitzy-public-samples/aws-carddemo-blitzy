@@ -1,0 +1,457 @@
+# Kubernetes CronJob for Test Data Load Batch Job
+# 
+# Purpose: Load test data from app/data/ASCII files into PostgreSQL database
+# Environment: Development and Testing ONLY (NOT for production)
+# Schedule: Weekly on Sunday at midnight (manual trigger recommended)
+# 
+# Source Transformation:
+#   FROM: app/jcl/LOADDATA.jcl (JCL test data load script)
+#   FROM: app/data/ASCII/*.txt (ASCII-encoded fixed-width test data files)
+#   TO: Kubernetes CronJob → Spring Batch TestDataLoadJob
+#
+# Business Logic:
+#   - Truncates existing test data (dev/test environments only)
+#   - Loads customer data from custdata.txt (50 records)
+#   - Loads account data from acctdata.txt (50 records)
+#   - Loads card data from carddata.txt (50 records)
+#   - Loads transaction data from dailytran.txt
+#   - Loads user security data from usrsec.txt
+#   - Loads reference data: trantype.txt, trancatg.txt, discgrp.txt
+#   - Converts EBCDIC to UTF-8 if needed (per Section 0.1)
+#   - Validates fixed-width record formats
+#   - Preserves COMP-3 decimal precision as BigDecimal
+#
+# Safety:
+#   - Suspended by default (suspend: true)
+#   - Requires manual enablement in dev/test environments
+#   - Environment guard prevents execution in production
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: test-data-load-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: test-data-load
+    tier: backend
+    environment: dev
+  annotations:
+    description: "Load test data from ASCII files for development and testing"
+    source.migration: "app/jcl/LOADDATA.jcl"
+    migration.agent: "Blitzy COBOL-to-Java Migration Platform"
+    migration.date: "2024"
+    safety.level: "dev-test-only"
+spec:
+  # Schedule: Weekly on Sunday at midnight UTC
+  # Rationale: Refresh test data weekly to maintain clean test environment
+  schedule: "0 0 * * 0"
+  
+  # Timezone specification (optional, defaults to controller timezone)
+  timeZone: "UTC"
+  
+  # Suspended by default - must be manually enabled in dev/test environments
+  # CRITICAL: This prevents accidental execution in production
+  suspend: true
+  
+  # Concurrency Policy: Forbid overlapping executions
+  # Prevents data corruption from concurrent test data loads
+  concurrencyPolicy: Forbid
+  
+  # History Limits: Keep minimal history for test jobs
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 1
+  
+  # Starting Deadline: Allow 5 minutes grace period for scheduling
+  startingDeadlineSeconds: 300
+  
+  # Job Template Specification
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: test-data-load
+        tier: backend
+        environment: dev
+    spec:
+      # Backoff Limit: Retry once on failure
+      backoffLimit: 1
+      
+      # Active Deadline: 1 hour maximum runtime
+      # Test data load should complete within 10-15 minutes for 50 records per file
+      activeDeadlineSeconds: 3600
+      
+      # TTL: Clean up completed job after 24 hours
+      ttlSecondsAfterFinished: 86400
+      
+      # Completions and Parallelism: Single sequential execution
+      completions: 1
+      parallelism: 1
+      
+      # Pod Template
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: test-data-load
+            tier: backend
+            environment: dev
+        spec:
+          # Restart Policy: OnFailure allows retry within same pod
+          restartPolicy: OnFailure
+          
+          # Service Account: Use default or specify custom service account for database access
+          serviceAccountName: carddemo-batch-sa
+          
+          # Security Context: Run as non-root user
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          
+          # Init Container: Verify environment is dev/test before proceeding
+          initContainers:
+          - name: environment-guard
+            image: busybox:1.36
+            command:
+            - sh
+            - -c
+            - |
+              echo "Verifying environment safety for test data load..."
+              if [ "$SPRING_PROFILES_ACTIVE" = "prod" ] || [ "$SPRING_PROFILES_ACTIVE" = "production" ]; then
+                echo "ERROR: Test data load is NOT PERMITTED in production environment"
+                echo "SPRING_PROFILES_ACTIVE=$SPRING_PROFILES_ACTIVE"
+                exit 1
+              fi
+              echo "Environment check passed: $SPRING_PROFILES_ACTIVE"
+              echo "Proceeding with test data load..."
+            env:
+            - name: SPRING_PROFILES_ACTIVE
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: SPRING_PROFILES_ACTIVE
+                  optional: false
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+              readOnlyRootFilesystem: true
+          
+          # Main Container: Spring Batch TestDataLoadJob
+          containers:
+          - name: test-data-load-job
+            image: carddemo-backend:latest
+            imagePullPolicy: Always
+            
+            # Command: Execute Spring Batch job
+            command:
+            - java
+            - -jar
+            - /app/carddemo-backend.jar
+            
+            # Arguments: Specify job name and operational parameters
+            args:
+            - --spring.batch.job.names=TestDataLoadJob
+            - --spring.profiles.active=$(SPRING_PROFILES_ACTIVE)
+            - --test.data.truncate=true
+            - --test.data.validate=true
+            - --test.data.source=/data/ASCII
+            
+            # Environment Variables
+            env:
+            # Spring Profile (from ConfigMap)
+            - name: SPRING_PROFILES_ACTIVE
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: SPRING_PROFILES_ACTIVE
+            
+            # Database Connection (from ConfigMap)
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: SPRING_DATASOURCE_URL
+            
+            # Database Credentials (from Secret)
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: POSTGRES_USERNAME
+            
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: POSTGRES_PASSWORD
+            
+            # Database Driver
+            - name: SPRING_DATASOURCE_DRIVER_CLASS_NAME
+              value: "org.postgresql.Driver"
+            
+            # JPA Configuration
+            - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+              value: "none"
+            
+            - name: SPRING_JPA_SHOW_SQL
+              value: "false"
+            
+            # Batch Configuration
+            - name: SPRING_BATCH_JOB_ENABLED
+              value: "true"
+            
+            - name: SPRING_BATCH_INITIALIZE_SCHEMA
+              value: "never"
+            
+            # Java Options: Memory and GC configuration
+            - name: JAVA_OPTS
+              value: "-Xms256m -Xmx512m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+            
+            # Timezone
+            - name: TZ
+              value: "UTC"
+            
+            # Test Data Configuration
+            - name: TEST_DATA_ENCODING
+              value: "ASCII"
+            
+            - name: TEST_DATA_VALIDATE_FORMAT
+              value: "true"
+            
+            - name: TEST_DATA_CHUNK_SIZE
+              value: "50"
+            
+            # Logging Configuration
+            - name: LOGGING_LEVEL_COM_CARDDEMO
+              value: "INFO"
+            
+            - name: LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_BATCH
+              value: "INFO"
+            
+            # Resource Limits and Requests
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+                ephemeral-storage: "1Gi"
+              limits:
+                memory: "1Gi"
+                cpu: "500m"
+                ephemeral-storage: "2Gi"
+            
+            # Volume Mounts
+            volumeMounts:
+            # Test data files volume
+            - name: test-data
+              mountPath: /data/ASCII
+              readOnly: true
+            
+            # Temporary directory for processing
+            - name: temp-data
+              mountPath: /tmp
+            
+            # Security Context: Container-level security
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+              readOnlyRootFilesystem: false
+              runAsNonRoot: true
+              runAsUser: 1000
+            
+            # Liveness Probe: Check if job is still alive
+            # Disabled for batch jobs to prevent premature termination
+            # livenessProbe:
+            #   exec:
+            #     command:
+            #     - /bin/sh
+            #     - -c
+            #     - ps aux | grep java
+            #   initialDelaySeconds: 60
+            #   periodSeconds: 30
+            #   timeoutSeconds: 10
+            #   failureThreshold: 3
+          
+          # Volumes
+          volumes:
+          # Test Data ConfigMap: Contains ASCII test data files
+          - name: test-data
+            configMap:
+              name: carddemo-test-data
+              optional: false
+          
+          # Temporary Data: EmptyDir for processing
+          - name: temp-data
+            emptyDir:
+              sizeLimit: 1Gi
+          
+          # Image Pull Secrets (if using private registry)
+          # imagePullSecrets:
+          # - name: carddemo-registry-secret
+          
+          # Node Selector: Schedule on appropriate nodes
+          nodeSelector:
+            workload-type: batch
+          
+          # Tolerations: Allow scheduling on tainted nodes
+          tolerations:
+          - key: "batch-workload"
+            operator: "Equal"
+            value: "true"
+            effect: "NoSchedule"
+          
+          # Affinity: Prefer nodes with SSD for faster I/O
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 1
+                preference:
+                  matchExpressions:
+                  - key: storage-type
+                    operator: In
+                    values:
+                    - ssd
+            
+            # Pod Anti-Affinity: Avoid scheduling on same node as production workloads
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchExpressions:
+                  - key: environment
+                    operator: In
+                    values:
+                    - prod
+                    - production
+                topologyKey: kubernetes.io/hostname
+
+---
+# ConfigMap for Test Data Files
+# NOTE: In production deployment, this would reference actual test data files
+# For demonstration, this shows the structure
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carddemo-test-data
+  namespace: default
+  labels:
+    app: carddemo
+    component: test-data
+    environment: dev
+  annotations:
+    description: "Test data files for CardDemo application"
+    source: "app/data/ASCII"
+data:
+  # Placeholder for test data file references
+  # In actual deployment, test data would be mounted from persistent volume or object storage
+  README.txt: |
+    Test Data Load Configuration
+    ============================
+    
+    This ConfigMap contains references to test data files for the CardDemo application.
+    
+    Source Files (from app/data/ASCII):
+    - custdata.txt (50 records): Customer master data
+    - acctdata.txt (50 records): Account master data  
+    - carddata.txt (50 records): Card master data
+    - dailytran.txt: Transaction data
+    - usrsec.txt: User security credentials
+    - cardxref.txt (50 records): Card cross-reference data
+    - custxref.txt: Customer cross-reference data
+    - trantype.txt (7 records): Transaction type reference data
+    - trancatg.txt (18 records): Transaction category reference data
+    - discgrp.txt: Discount group configuration data
+    - tcatbal.txt (50 records): Transaction category balance data
+    
+    Data Format:
+    - Encoding: ASCII
+    - Format: Fixed-width, no headers
+    - Record structure: Defined in COBOL copybooks (migrated to Java entities)
+    - Line endings: Preserved from source
+    - Field padding: Space-padded text, zero-padded numeric
+    
+    Loading Process:
+    1. Validate file format and record structure
+    2. Truncate existing test data tables
+    3. Parse fixed-width records per schema
+    4. Convert data types (COMP-3 → BigDecimal)
+    5. Validate foreign key relationships
+    6. Insert records in dependency order:
+       - Customer → Account → Card → Transaction
+       - User Security
+       - Reference Data (trantype, trancatg, discgrp)
+    7. Verify referential integrity
+    8. Generate load summary report
+    
+    Safety:
+    - Only executes in dev/test environments
+    - Production environment check prevents accidental execution
+    - Suspended by default (manual enablement required)
+
+---
+# Service Account for Batch Jobs
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: carddemo-batch-sa
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+  annotations:
+    description: "Service account for CardDemo batch job execution"
+
+---
+# Role for Batch Job Permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: carddemo-batch-role
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+rules:
+# ConfigMap access for test data
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["carddemo-test-data", "carddemo-config"]
+  verbs: ["get", "list"]
+
+# Secret access for database credentials
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["carddemo-secrets"]
+  verbs: ["get"]
+
+# Pod logs for monitoring
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get", "list"]
+
+---
+# Role Binding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: carddemo-batch-rolebinding
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: carddemo-batch-role
+subjects:
+- kind: ServiceAccount
+  name: carddemo-batch-sa
+  namespace: default
