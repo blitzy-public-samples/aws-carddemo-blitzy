@@ -1,0 +1,332 @@
+# ==============================================================================
+# Kubernetes CronJob: Card Report Generation Batch Job
+# ==============================================================================
+# Migration Source: app/jcl/CCARDRPT.jcl → Kubernetes CronJob YAML
+# Business Logic: Card management reports per Agent Action Plan Section 0.6
+# 
+# Purpose:
+#   Executes Spring Batch CardReportJob to generate comprehensive card 
+#   management reports including:
+#   - Card status summary (active, expired, blocked)
+#   - Expiration tracking and alerts
+#   - Card usage analytics
+#   - Card activation/deactivation statistics
+#
+# Schedule: Weekly on Monday at 7:00 AM UTC
+# Concurrency: Forbid overlapping executions
+# ==============================================================================
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: card-report-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: card-report
+    tier: backend
+    managed-by: kubernetes
+  annotations:
+    description: "Weekly card report generation batch job migrated from COBOL/JCL"
+    migration-source: "app/jcl/CCARDRPT.jcl"
+    business-function: "Card management reporting and analytics"
+    compliance: "Maintains report format for regulatory compliance per Section 0.9"
+spec:
+  # ==============================================================================
+  # Schedule Configuration
+  # ==============================================================================
+  # Weekly execution on Monday at 7:00 AM UTC
+  # Rationale: Generate weekly card management reports for operations review
+  schedule: "0 7 * * 1"
+  
+  # Prevent concurrent executions to avoid data inconsistency
+  concurrencyPolicy: Forbid
+  
+  # Job History Management
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 2
+  
+  # Allow job to start within 5 minutes of scheduled time
+  startingDeadlineSeconds: 300
+  
+  # Enable/disable job execution (default: enabled)
+  suspend: false
+  
+  # ==============================================================================
+  # Job Template Specification
+  # ==============================================================================
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: card-report
+    spec:
+      # Retry Configuration
+      # Retry up to 1 time on failure (reports are idempotent)
+      backoffLimit: 1
+      
+      # Maximum runtime: 1 hour for card report generation
+      # Rationale: Card dataset is smaller than transaction data
+      activeDeadlineSeconds: 3600
+      
+      # Job Cleanup: Remove completed jobs after 48 hours (2 days)
+      ttlSecondsAfterFinished: 172800
+      
+      # ==============================================================================
+      # Pod Template
+      # ==============================================================================
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: card-report
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8080"
+            prometheus.io/path: "/actuator/prometheus"
+        spec:
+          # Restart only on failure
+          restartPolicy: OnFailure
+          
+          # Service account for database access
+          serviceAccountName: carddemo-batch
+          
+          # ==============================================================================
+          # Container Specification
+          # ==============================================================================
+          containers:
+          - name: card-report-job
+            image: carddemo-backend:latest
+            imagePullPolicy: Always
+            
+            # Spring Boot application execution command
+            command:
+              - java
+              - -jar
+              - /app/carddemo-backend.jar
+            
+            # Spring Batch job arguments
+            args:
+              - --spring.batch.job.names=CardReportJob
+              - --spring.profiles.active=batch
+              - --report.type=card-management
+              - --report.date=$(date +%Y-%m-%d)
+            
+            # ==============================================================================
+            # Environment Variables
+            # ==============================================================================
+            env:
+              # JVM Configuration
+              - name: JAVA_OPTS
+                value: "-Xms256m -Xmx512m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+PrintGCDetails -Xloggc:/var/log/gc.log"
+              
+              # Timezone Configuration
+              - name: TZ
+                value: "UTC"
+              
+              # Spring Boot Profile
+              - name: SPRING_PROFILES_ACTIVE
+                value: "batch"
+              
+              # Batch Processing Configuration
+              - name: SPRING_BATCH_JOB_ENABLED
+                value: "true"
+              
+              # Chunk Size Configuration
+              - name: BATCH_CHUNK_SIZE
+                value: "1000"
+              
+              # Report Output Configuration
+              - name: REPORT_OUTPUT_DIR
+                value: "/reports"
+              
+              # Database Connection (from ConfigMap)
+              - name: SPRING_DATASOURCE_URL
+                valueFrom:
+                  configMapKeyRef:
+                    name: carddemo-config
+                    key: database.url
+              
+              # Database Username (from Secret)
+              - name: SPRING_DATASOURCE_USERNAME
+                valueFrom:
+                  secretKeyRef:
+                    name: carddemo-secrets
+                    key: database.username
+              
+              # Database Password (from Secret)
+              - name: SPRING_DATASOURCE_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: carddemo-secrets
+                    key: database.password
+              
+              # HikariCP Connection Pool Configuration
+              - name: SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE
+                value: "10"
+              
+              - name: SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE
+                value: "2"
+              
+              - name: SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT
+                value: "30000"
+              
+              # Logging Configuration
+              - name: LOGGING_LEVEL_COM_CARDDEMO
+                value: "INFO"
+              
+              - name: LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_BATCH
+                value: "INFO"
+            
+            # ==============================================================================
+            # Environment Variables from ConfigMap and Secrets
+            # ==============================================================================
+            envFrom:
+              - configMapRef:
+                  name: carddemo-config
+              - secretRef:
+                  name: carddemo-secrets
+            
+            # ==============================================================================
+            # Resource Requirements
+            # ==============================================================================
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+              limits:
+                memory: "1Gi"
+                cpu: "500m"
+            
+            # ==============================================================================
+            # Volume Mounts
+            # ==============================================================================
+            volumeMounts:
+              # Report output directory
+              - name: reports-volume
+                mountPath: /reports
+              
+              # Application logs
+              - name: logs-volume
+                mountPath: /var/log
+            
+            # ==============================================================================
+            # Health Checks
+            # ==============================================================================
+            # Liveness probe: Check if application is running
+            livenessProbe:
+              httpGet:
+                path: /actuator/health/liveness
+                port: 8080
+              initialDelaySeconds: 60
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 3
+            
+            # Readiness probe: Check if application is ready to process
+            readinessProbe:
+              httpGet:
+                path: /actuator/health/readiness
+                port: 8080
+              initialDelaySeconds: 30
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+          
+          # ==============================================================================
+          # Volumes
+          # ==============================================================================
+          volumes:
+            # Persistent volume for report storage
+            - name: reports-volume
+              persistentVolumeClaim:
+                claimName: carddemo-reports-pvc
+            
+            # EmptyDir for application logs
+            - name: logs-volume
+              emptyDir: {}
+          
+          # ==============================================================================
+          # Security Context
+          # ==============================================================================
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          
+          # ==============================================================================
+          # Image Pull Secrets (if using private registry)
+          # ==============================================================================
+          imagePullSecrets:
+            - name: carddemo-registry-secret
+
+# ==============================================================================
+# Business Logic Implementation Notes
+# ==============================================================================
+# 
+# The CardReportJob Spring Batch job performs the following operations:
+#
+# 1. Card Status Report Generation:
+#    - Queries card table with aggregation by card_status
+#    - Counts: ACTIVE, EXPIRED, BLOCKED, SUSPENDED cards
+#    - Groups by account type and card type
+#    - Preserves referential integrity with account foreign keys per Section 0.9
+#
+# 2. Expiration Tracking:
+#    - Identifies cards expiring in next 30/60/90 days
+#    - Generates alert list for customer notification
+#    - Sorts by expiration date (card_expiry_date column)
+#    - Date arithmetic using Java LocalDate per Section 0.1
+#
+# 3. Card Usage Analytics:
+#    - Calculates transaction counts per card (from transaction table)
+#    - Computes average transaction value per card
+#    - Identifies inactive cards (no transactions in 90 days)
+#    - Maintains BigDecimal precision for amounts per Section 0.9
+#
+# 4. Activation/Deactivation Statistics:
+#    - Counts new card activations in reporting period
+#    - Tracks card blocks and suspensions
+#    - Analyzes card lifecycle events
+#    - Preserves audit trail per regulatory requirements
+#
+# 5. Report Output:
+#    - Generates formatted report in CSV/PDF format
+#    - Outputs to /reports volume mount
+#    - Maintains identical report format per Section 0.2
+#    - Supports downstream consumption by monthly/yearly reports
+#
+# Data Sources:
+#   - PostgreSQL card table (migrated from VSAM CARDDAT)
+#   - PostgreSQL account table (foreign key relationship)
+#   - PostgreSQL transaction table (usage analytics)
+#   - PostgreSQL account_xref table (cross-reference data)
+#
+# Performance Characteristics:
+#   - Chunk-oriented processing: 1000 records per chunk
+#   - Read-only queries with database indexes
+#   - Expected runtime: 15-30 minutes for typical dataset
+#   - Resource-efficient: 512Mi memory request
+#
+# Error Handling:
+#   - Skip invalid card records (skip limit: 100)
+#   - Retry on transient database errors (retry limit: 3)
+#   - Log processing errors to application log
+#   - Generate error summary in report footer
+#
+# Compliance and Audit:
+#   - Maintains complete audit trail per Section 0.9
+#   - Preserves report format for regulatory compliance
+#   - Supports external audit verification
+#   - Logs all report generation events
+#
+# Dependencies:
+#   - Runs independently (no job dependencies)
+#   - Requires database availability
+#   - Requires report volume mount access
+#   - Output consumed by management review processes
+#
+# ==============================================================================
