@@ -1,0 +1,422 @@
+# ==============================================================================
+# Kubernetes CronJob: Monthly Report Generation
+# ==============================================================================
+# Purpose: Executes Spring Batch MonthlyReportJob to generate comprehensive
+#          monthly summary reports for the CardDemo credit card management system
+#
+# Migration Context:
+#   Source: app/jcl/CMONTHRP.jcl (JCL batch script)
+#   Target: Kubernetes CronJob with Spring Batch integration
+#   Business Logic: Monthly report generation per Section 0.1
+#
+# Report Contents:
+#   - Account activity summaries
+#   - Transaction volumes and values by category
+#   - Revenue analysis (interest and fees)
+#   - Month-over-month comparisons
+#   - Compliance and regulatory reports
+#
+# Execution Schedule: Monthly on 1st at 8:00 AM UTC
+# ==============================================================================
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: monthly-report-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: monthly-report
+    tier: backend
+    migration-source: CMONTHRP.jcl
+  annotations:
+    description: "Monthly report generation batch job migrated from mainframe JCL"
+    contact: "carddemo-batch-team"
+    documentation: "https://carddemo.example.com/docs/batch/monthly-report"
+spec:
+  # Schedule: Monthly on 1st at 8:00 AM UTC
+  # Runs after daily/weekly batch jobs complete
+  schedule: "0 8 1 * *"
+  
+  # Timezone for schedule (optional, defaults to UTC)
+  timeZone: "UTC"
+  
+  # Concurrency Policy: Forbid prevents overlapping executions
+  # Critical for report generation to avoid duplicate processing
+  concurrencyPolicy: Forbid
+  
+  # Job History: Keep 12 months for yearly analysis
+  successfulJobsHistoryLimit: 12
+  failedJobsHistoryLimit: 3
+  
+  # Starting Deadline: Allow 10 minutes delay before marking as missed
+  startingDeadlineSeconds: 600
+  
+  # Suspend: Set to false for active scheduling
+  suspend: false
+  
+  # Job Template Definition
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: monthly-report
+        tier: backend
+    spec:
+      # Retry Configuration
+      # backoffLimit: 1 allows one retry on failure
+      backoffLimit: 1
+      
+      # Active Deadline: 2-hour maximum runtime (7200 seconds)
+      # Ensures job completes within batch processing window
+      activeDeadlineSeconds: 7200
+      
+      # TTL: Cleanup completed jobs after 30 days (2592000 seconds)
+      ttlSecondsAfterFinished: 2592000
+      
+      # Parallelism: Single pod execution for sequential processing
+      parallelism: 1
+      
+      # Completions: Job completes after single successful execution
+      completions: 1
+      
+      # Pod Template
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: monthly-report
+            tier: backend
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8080"
+            prometheus.io/path: "/actuator/prometheus"
+        spec:
+          # Restart Policy: OnFailure allows retry within backoffLimit
+          restartPolicy: OnFailure
+          
+          # Service Account for RBAC permissions
+          serviceAccountName: carddemo-batch-sa
+          
+          # Security Context for pod-level security
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          
+          # Init Containers: Pre-job validation
+          initContainers:
+            - name: wait-for-database
+              image: postgres:15-alpine
+              command:
+                - sh
+                - -c
+                - |
+                  until pg_isready -h $POSTGRES_HOST -p $POSTGRES_PORT -U $POSTGRES_USER; do
+                    echo "Waiting for PostgreSQL database..."
+                    sleep 5
+                  done
+                  echo "PostgreSQL is ready!"
+              env:
+                - name: POSTGRES_HOST
+                  valueFrom:
+                    configMapKeyRef:
+                      name: carddemo-config
+                      key: database.host
+                - name: POSTGRES_PORT
+                  valueFrom:
+                    configMapKeyRef:
+                      name: carddemo-config
+                      key: database.port
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: carddemo-secrets
+                      key: database.username
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+          
+          # Main Application Container
+          containers:
+            - name: monthly-report-job
+              image: carddemo-backend:latest
+              imagePullPolicy: Always
+              
+              # Command: Execute Spring Batch job
+              command:
+                - java
+                - -jar
+                - /app/carddemo-backend.jar
+              
+              # Arguments: Specify job name and parameters
+              args:
+                - --spring.batch.job.names=MonthlyReportJob
+                - --spring.profiles.active=batch,prod
+                - --report.month=$(date -u -d 'last month' +%Y%m)
+                - --report.type=monthly
+                - --report.format=pdf,excel
+              
+              # Environment Variables
+              env:
+                # Spring Profile
+                - name: SPRING_PROFILES_ACTIVE
+                  value: "batch,prod"
+                
+                # Java Options for heap and GC tuning
+                - name: JAVA_OPTS
+                  value: "-Xms1g -Xmx1g -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/heapdump.hprof"
+                
+                # Timezone
+                - name: TZ
+                  value: "UTC"
+                
+                # Database Configuration
+                - name: SPRING_DATASOURCE_URL
+                  valueFrom:
+                    configMapKeyRef:
+                      name: carddemo-config
+                      key: database.url
+                
+                - name: SPRING_DATASOURCE_USERNAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: carddemo-secrets
+                      key: database.username
+                
+                - name: SPRING_DATASOURCE_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: carddemo-secrets
+                      key: database.password
+                
+                # Database Pool Configuration
+                - name: SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE
+                  value: "10"
+                
+                - name: SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE
+                  value: "5"
+                
+                # Batch Configuration
+                - name: SPRING_BATCH_JOB_ENABLED
+                  value: "true"
+                
+                - name: SPRING_BATCH_JDBC_INITIALIZE_SCHEMA
+                  value: "never"
+                
+                # Report Output Configuration
+                - name: REPORT_OUTPUT_PATH
+                  value: "/reports/monthly"
+                
+                - name: REPORT_RETENTION_DAYS
+                  value: "365"
+                
+                # Logging Configuration
+                - name: LOGGING_LEVEL_COM_CARDDEMO
+                  value: "INFO"
+                
+                - name: LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_BATCH
+                  value: "DEBUG"
+              
+              # Environment From ConfigMap and Secrets
+              envFrom:
+                - configMapRef:
+                    name: carddemo-config
+                    optional: true
+                - secretRef:
+                    name: carddemo-secrets
+                    optional: false
+              
+              # Resource Limits and Requests
+              # Requests: Guaranteed resources
+              # Limits: Maximum allowed resources
+              resources:
+                requests:
+                  memory: "1Gi"
+                  cpu: "500m"
+                  ephemeral-storage: "2Gi"
+                limits:
+                  memory: "2Gi"
+                  cpu: "1000m"
+                  ephemeral-storage: "5Gi"
+              
+              # Volume Mounts
+              volumeMounts:
+                # Report Output Directory
+                - name: report-storage
+                  mountPath: /reports
+                  subPath: monthly
+                
+                # Temporary Directory for processing
+                - name: tmp-storage
+                  mountPath: /tmp
+                
+                # Application Configuration
+                - name: app-config
+                  mountPath: /app/config
+                  readOnly: true
+              
+              # Security Context for container
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false
+                runAsNonRoot: true
+                runAsUser: 1000
+                capabilities:
+                  drop:
+                    - ALL
+              
+              # Liveness Probe: Check application health
+              livenessProbe:
+                httpGet:
+                  path: /actuator/health/liveness
+                  port: 8080
+                  scheme: HTTP
+                initialDelaySeconds: 60
+                periodSeconds: 30
+                timeoutSeconds: 10
+                successThreshold: 1
+                failureThreshold: 3
+              
+              # Readiness Probe: Check if ready to accept traffic
+              readinessProbe:
+                httpGet:
+                  path: /actuator/health/readiness
+                  port: 8080
+                  scheme: HTTP
+                initialDelaySeconds: 30
+                periodSeconds: 10
+                timeoutSeconds: 5
+                successThreshold: 1
+                failureThreshold: 3
+          
+          # Volumes
+          volumes:
+            # Persistent Volume for Report Storage
+            - name: report-storage
+              persistentVolumeClaim:
+                claimName: carddemo-reports-pvc
+            
+            # EmptyDir for Temporary Storage
+            - name: tmp-storage
+              emptyDir:
+                sizeLimit: 2Gi
+            
+            # ConfigMap for Application Configuration
+            - name: app-config
+              configMap:
+                name: carddemo-batch-config
+                optional: true
+          
+          # Image Pull Secrets
+          imagePullSecrets:
+            - name: carddemo-registry-secret
+          
+          # DNS Policy
+          dnsPolicy: ClusterFirst
+          
+          # Termination Grace Period: Allow 120 seconds for graceful shutdown
+          terminationGracePeriodSeconds: 120
+          
+          # Node Selector: Schedule on nodes with batch workload label
+          nodeSelector:
+            workload-type: batch
+          
+          # Affinity Rules: Prefer nodes in batch pool
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: node-pool
+                        operator: In
+                        values:
+                          - batch-pool
+          
+          # Tolerations: Allow scheduling on tainted nodes
+          tolerations:
+            - key: "batch-workload"
+              operator: "Equal"
+              value: "true"
+              effect: "NoSchedule"
+
+---
+# ==============================================================================
+# Business Logic Documentation
+# ==============================================================================
+# This CronJob executes MonthlyReportJob which implements the following:
+#
+# Data Sources:
+#   - customer table: Customer master data
+#   - account table: Account master data
+#   - card table: Card data and status
+#   - transaction table: Monthly transaction records
+#   - transaction_aggregate table: Pre-aggregated statistics
+#
+# Processing Steps:
+#   1. Extract transaction data for previous month
+#   2. Aggregate by category and type
+#   3. Calculate monthly totals:
+#      - Total transaction count
+#      - Total transaction value
+#      - Average transaction amount
+#      - Transactions by category
+#   4. Calculate account statistics:
+#      - New accounts opened
+#      - Accounts closed
+#      - Average account balance
+#      - Total outstanding balance
+#   5. Calculate card statistics:
+#      - Active cards
+#      - Cards issued
+#      - Cards cancelled
+#      - Card utilization rates
+#   6. Calculate revenue:
+#      - Total interest charged
+#      - Total fees collected
+#      - Revenue by account type
+#   7. Generate comparison with previous month
+#   8. Format and output report files
+#
+# Precision Requirements (per Section 0.9):
+#   - All financial calculations use BigDecimal
+#   - Scale: 2 decimal places for currency
+#   - Rounding Mode: HALF_UP
+#   - Maintains COBOL COMP-3 equivalence
+#
+# Output Formats:
+#   - PDF: Executive summary report
+#   - Excel: Detailed data tables
+#   - CSV: Raw data export
+#
+# Regulatory Compliance (per Section 0.9):
+#   - Maintains identical report formats for audit trail
+#   - Complete audit trail for compliance reporting
+#   - Report archival for regulatory retention requirements
+#
+# Performance Considerations:
+#   - Chunk processing: 1000 records per chunk
+#   - Database connection pooling: 10 connections
+#   - Indexed queries for efficient data retrieval
+#   - Expected runtime: 30-60 minutes for typical month
+#
+# Error Handling:
+#   - Validation errors logged to batch job repository
+#   - Failed report generation triggers alert
+#   - Retry policy: 1 automatic retry with exponential backoff
+#   - Manual intervention required after retry exhaustion
+#
+# Dependencies:
+#   - Runs after daily/weekly batch jobs complete (8 AM)
+#   - Requires completed transaction aggregation
+#   - Database must be available and responsive
+#   - Report storage volume must have sufficient space
+# ==============================================================================
