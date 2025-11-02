@@ -38,12 +38,13 @@ public class MessageFormatter {
     /**
      * Message constants from CCDA-COMMON-MESSAGES (CSMSG01Y.cpy)
      * Maintains exact text values from COBOL PIC X(50) VALUE definitions
+     * All constants are space-padded to 50 characters to match COBOL PIC X(50)
      */
     public static final String CCDA_MSG_THANK_YOU = 
-        "Thank you for using CardDemo application...      ";
+        "Thank you for using CardDemo application...       ";
     
     public static final String CCDA_MSG_INVALID_KEY = 
-        "Invalid key pressed. Please see below...         ";
+        "Invalid key pressed. Please see below...          ";
     
     /**
      * Field length constants matching COBOL PIC clauses from ABEND-DATA structure
