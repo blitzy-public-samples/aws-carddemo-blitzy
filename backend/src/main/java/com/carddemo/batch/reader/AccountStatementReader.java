@@ -170,7 +170,6 @@ public class AccountStatementReader extends AbstractItemCountingItemStreamItemRe
      * <p>This method is called by Spring Batch before reading begins. It performs
      * the following operations:</p>
      * <ol>
-     *   <li>Checks ExecutionContext for restart state (last processed account ID)</li>
      *   <li>Initializes the first page of accounts from the database</li>
      *   <li>Sets up the iterator for the current page</li>
      *   <li>Logs statement generation start metrics</li>
@@ -178,30 +177,21 @@ public class AccountStatementReader extends AbstractItemCountingItemStreamItemRe
      * 
      * <p><b>COBOL Equivalent:</b> OPEN XREFFILE (line 765-777 in CBSTM03A.CBL)</p>
      * 
-     * @param executionContext Spring Batch execution context for state persistence
      * @throws ItemStreamException if database access fails
      */
     @Override
-    protected void doOpen(ExecutionContext executionContext) throws ItemStreamException {
+    protected void doOpen() throws ItemStreamException {
         try {
             logger.info("Opening AccountStatementReader for statement period {} to {}",
                     statementPeriodStart, statementPeriodEnd);
             
-            // Check for restart scenario - resume from last processed account
-            if (executionContext.containsKey(LAST_ACCOUNT_ID_KEY)) {
-                lastAccountId = executionContext.getLong(LAST_ACCOUNT_ID_KEY);
-                currentPage = executionContext.getInt(CURRENT_PAGE_KEY, 0);
-                totalAccountsRead = executionContext.getLong(TOTAL_ACCOUNTS_KEY, 0L);
-                
-                logger.info("Restarting from last account ID: {}, page: {}, total read: {}",
-                        lastAccountId, currentPage, totalAccountsRead);
-            } else {
-                // Fresh start
-                lastAccountId = null;
+            // Only reset state if not restarting (lastAccountId would have been set by open())
+            if (lastAccountId == null) {
                 currentPage = 0;
                 totalAccountsRead = 0L;
-                
                 logger.info("Starting fresh statement generation run");
+            } else {
+                logger.info("Continuing statement generation from restart point");
             }
             
             // Load first page of accounts
@@ -315,7 +305,10 @@ public class AccountStatementReader extends AbstractItemCountingItemStreamItemRe
      * @throws ItemStreamException if state update fails
      */
     @Override
-    protected void doUpdate(ExecutionContext executionContext) throws ItemStreamException {
+    public void update(ExecutionContext executionContext) throws ItemStreamException {
+        // Call parent implementation first
+        super.update(executionContext);
+        
         try {
             if (lastAccountId != null) {
                 executionContext.putLong(LAST_ACCOUNT_ID_KEY, lastAccountId);
@@ -331,6 +324,29 @@ public class AccountStatementReader extends AbstractItemCountingItemStreamItemRe
             logger.error("Error updating ExecutionContext", e);
             throw new ItemStreamException("Failed to update ExecutionContext", e);
         }
+    }
+    
+    /**
+     * Opens the reader with ExecutionContext for restart support.
+     * This method handles restart scenario by checking for saved state.
+     * 
+     * @param executionContext Spring Batch execution context
+     * @throws ItemStreamException if open fails
+     */
+    @Override
+    public void open(ExecutionContext executionContext) throws ItemStreamException {
+        // Check for restart scenario before calling super.open()
+        if (executionContext.containsKey(LAST_ACCOUNT_ID_KEY)) {
+            lastAccountId = executionContext.getLong(LAST_ACCOUNT_ID_KEY);
+            currentPage = executionContext.getInt(CURRENT_PAGE_KEY, 0);
+            totalAccountsRead = executionContext.getLong(TOTAL_ACCOUNTS_KEY, 0L);
+            
+            logger.info("Restarting from last account ID: {}, page: {}, total read: {}",
+                    lastAccountId, currentPage, totalAccountsRead);
+        }
+        
+        // Call parent implementation which will call doOpen()
+        super.open(executionContext);
     }
     
     /**
