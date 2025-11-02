@@ -1,0 +1,269 @@
+# Kubernetes CronJob for Transaction Report Generation Batch Job
+# Migrated from: app/jcl/CTRNSRPT.jcl
+# Business Logic: Transaction report batch processing per Agent Action Plan Section 0.4
+# 
+# This CronJob generates daily transaction analysis reports including:
+# - Volume reports (count by type/category)
+# - Value reports (sum by type/category)
+# - Trend analysis (comparison with previous periods)
+#
+# Schedule: Daily at 6:00 AM UTC (after transaction aggregation at 4:00 AM)
+# Dependencies: Requires transaction-aggregation-cronjob to complete first
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: transaction-report-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: transaction-report
+    tier: backend
+    version: v1.0.0
+  annotations:
+    description: "Daily transaction report generation for management and regulatory reporting"
+    source: "Migrated from CTRNSRPT.jcl"
+    spring.batch.job: "TransactionReportJob"
+spec:
+  # Schedule: Daily at 6:00 AM UTC (0 6 * * *)
+  # Runs after transaction-aggregation-cronjob (4 AM) to use aggregated data
+  schedule: "0 6 * * *"
+  
+  # Concurrency Policy: Forbid prevents overlapping executions
+  # Critical for report integrity - one report generation at a time
+  concurrencyPolicy: Forbid
+  
+  # Job History Limits
+  # Keep 7 days of successful job history for audit trail
+  successfulJobsHistoryLimit: 7
+  # Keep 3 failed job attempts for debugging
+  failedJobsHistoryLimit: 3
+  
+  # Scheduling Controls
+  # Job must start within 5 minutes of scheduled time, or skip this execution
+  startingDeadlineSeconds: 300
+  
+  # Suspension flag - set to true to temporarily disable job
+  suspend: false
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: transaction-report
+    spec:
+      # Backoff Limit: Retry up to 2 times on failure
+      backoffLimit: 2
+      
+      # Active Deadline: Maximum runtime of 1 hour (3600 seconds)
+      # Report generation should complete within this window
+      activeDeadlineSeconds: 3600
+      
+      # TTL: Clean up completed jobs after 24 hours (86400 seconds)
+      ttlSecondsAfterFinished: 86400
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: transaction-report
+        spec:
+          # Restart Policy: OnFailure allows pod restart on failure
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: transaction-report-job
+            image: carddemo-backend:latest
+            imagePullPolicy: Always
+            
+            # Command: Execute Spring Boot application
+            command:
+              - java
+              - -jar
+              - /app/carddemo-backend.jar
+            
+            # Arguments: Specify Spring Batch job name and report date parameter
+            # Report date uses current date in YYYYMMDD format
+            args:
+              - --spring.batch.job.names=TransactionReportJob
+              - --report.date=$(date +%Y%m%d)
+              - --spring.profiles.active=batch
+            
+            # Environment Variables
+            env:
+              # Spring Profile
+              - name: SPRING_PROFILES_ACTIVE
+                value: "batch"
+              
+              # Database Connection (from ConfigMap)
+              - name: SPRING_DATASOURCE_URL
+                valueFrom:
+                  configMapKeyRef:
+                    name: carddemo-config
+                    key: database.url
+              
+              # Database Username (from Secret)
+              - name: SPRING_DATASOURCE_USERNAME
+                valueFrom:
+                  secretKeyRef:
+                    name: carddemo-secrets
+                    key: database.username
+              
+              # Database Password (from Secret)
+              - name: SPRING_DATASOURCE_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: carddemo-secrets
+                    key: database.password
+              
+              # JVM Options for optimal batch processing
+              - name: JAVA_OPTS
+                value: "-Xms512m -Xmx1536m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+              
+              # Timezone
+              - name: TZ
+                value: "UTC"
+              
+              # Batch Configuration
+              - name: SPRING_BATCH_JOB_ENABLED
+                value: "true"
+              
+              # Report Output Configuration
+              - name: REPORT_OUTPUT_DIR
+                value: "/reports"
+              
+              # Report Format (CSV and PDF)
+              - name: REPORT_FORMAT
+                value: "CSV,PDF"
+            
+            # Resource Limits and Requests
+            # Requests: Guaranteed resources for the job
+            # Limits: Maximum resources the job can use
+            resources:
+              requests:
+                memory: "1Gi"
+                cpu: "500m"
+              limits:
+                memory: "2Gi"
+                cpu: "1000m"
+            
+            # Volume Mounts: Mount shared volume for report output
+            volumeMounts:
+              - name: reports-volume
+                mountPath: /reports
+                readOnly: false
+              
+              # Mount application configuration
+              - name: config-volume
+                mountPath: /config
+                readOnly: true
+            
+            # Security Context
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              runAsUser: 1000
+              capabilities:
+                drop:
+                  - ALL
+            
+            # Liveness and Readiness Probes
+            # Not applicable for batch jobs - they run to completion
+          
+          # Volumes
+          volumes:
+            # Persistent Volume for report output
+            - name: reports-volume
+              persistentVolumeClaim:
+                claimName: carddemo-reports-pvc
+            
+            # ConfigMap for application configuration
+            - name: config-volume
+              configMap:
+                name: carddemo-batch-config
+                optional: true
+          
+          # Image Pull Secrets (if using private registry)
+          imagePullSecrets:
+            - name: carddemo-registry-secret
+          
+          # Service Account for RBAC
+          serviceAccountName: carddemo-batch-sa
+          
+          # Node Selector (optional - for dedicated batch processing nodes)
+          nodeSelector:
+            workload: batch
+          
+          # Tolerations (optional - allow scheduling on specific nodes)
+          tolerations:
+            - key: "batch"
+              operator: "Equal"
+              value: "true"
+              effect: "NoSchedule"
+
+---
+# Business Logic Notes (from CTRNSRPT.jcl and Agent Action Plan Section 0.6):
+#
+# The Spring Batch TransactionReportJob performs the following operations:
+#
+# 1. Data Retrieval:
+#    - Reads transaction data from PostgreSQL transaction table
+#    - Reads aggregated data from transaction_aggregate table
+#    - Filters by date range (previous day's transactions by default)
+#
+# 2. Volume Report Generation:
+#    - Groups transactions by type (purchase, payment, cash advance, etc.)
+#    - Groups transactions by category (retail, dining, travel, etc.)
+#    - Calculates transaction count for each type/category
+#    - Generates CSV output with counts
+#
+# 3. Value Report Generation:
+#    - Sums transaction amounts by type and category
+#    - Uses BigDecimal precision for all financial calculations per Section 0.9
+#    - RoundingMode.HALF_UP for maintaining COBOL COMP-3 equivalence
+#    - Generates CSV output with sums
+#
+# 4. Trend Analysis:
+#    - Compares current period with previous periods (day/week/month)
+#    - Calculates percentage changes in volume and value
+#    - Identifies anomalies and significant deviations
+#
+# 5. Statistical Calculations:
+#    - Count: Total number of transactions
+#    - Sum: Total transaction value
+#    - Average: Mean transaction amount
+#    - Min: Smallest transaction amount
+#    - Max: Largest transaction amount
+#
+# 6. Output Generation:
+#    - CSV format: Machine-readable for downstream processing
+#    - PDF format: Human-readable for management review
+#    - Report files written to /reports volume
+#    - File naming: transaction_report_YYYYMMDD.csv and .pdf
+#
+# 7. Regulatory Compliance:
+#    - Maintains identical report formats per Section 0.2
+#    - Audit trail preservation per Section 0.9
+#    - Report retention per compliance requirements
+#    - All reports archived for regulatory review
+#
+# 8. Error Handling:
+#    - Validates data completeness before report generation
+#    - Logs all processing errors
+#    - Generates error report if data issues detected
+#    - Sends notifications on job failure
+#
+# Dependencies and Scheduling:
+# - Runs AFTER transaction-aggregation-cronjob (4 AM vs 6 AM)
+# - Output consumed by monthly-report-cronjob and yearly-report-cronjob
+# - Critical for daily management reporting
+# - Data latency: Reports on previous day's data (T-1)
+#
+# Performance Considerations:
+# - Chunk-oriented processing: 1000 records per chunk
+# - Database indexes on transaction date and category fields
+# - Parallel processing for multiple report types
+# - Memory-efficient streaming for large datasets
