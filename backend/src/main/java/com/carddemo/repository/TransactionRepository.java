@@ -37,7 +37,7 @@ import java.util.Optional;
  * @see Transaction
  */
 @Repository
-public interface TransactionRepository extends JpaRepository<Transaction, Long> {
+public interface TransactionRepository extends JpaRepository<Transaction, String> {
 
     /**
      * Finds a transaction by its unique transaction ID.
