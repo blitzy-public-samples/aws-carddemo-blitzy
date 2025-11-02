@@ -1,64 +1,386 @@
+# ============================================================================
+# CardDemo Spring Boot Application Configuration
+# Base configuration for all environments
+# Migrated from mainframe CICS/VSAM environment
+# ============================================================================
+
+# Application Metadata
 spring:
   application:
-    name: carddemo-backend
-  
+    name: carddemo
+
+# ============================================================================
+# Server Configuration
+# ============================================================================
+server:
+  port: ${SERVER_PORT:8080}
+  servlet:
+    context-path: /
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: on_param
+    include-exception: false
+  compression:
+    enabled: true
+    mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json
+    min-response-size: 1024
+
+# ============================================================================
+# Database Configuration (PostgreSQL)
+# Migrated from VSAM KSDS files
+# VSAM BUFSPACE=37376 → connection pool sizing
+# VSAM CISIZE=18432 → batch chunk size reference
+# ============================================================================
+spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/carddemo
-    username: carddemo
-    password: carddemo123
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:carddemo}
+    username: ${DB_USERNAME:carddemo}
+    password: ${DB_PASSWORD:carddemo}
     driver-class-name: org.postgresql.Driver
+    
+    # HikariCP Connection Pool Configuration
+    # Derived from VSAM BUFSPACE and concurrent access patterns
     hikari:
-      maximum-pool-size: 20
-      minimum-idle: 5
-      connection-timeout: 30000
-  
+      pool-name: CardDemoHikariPool
+      minimum-idle: ${DB_POOL_MIN:10}
+      maximum-pool-size: ${DB_POOL_MAX:30}
+      connection-timeout: ${DB_CONNECTION_TIMEOUT:20000}
+      idle-timeout: ${DB_IDLE_TIMEOUT:300000}
+      max-lifetime: ${DB_MAX_LIFETIME:1800000}
+      leak-detection-threshold: ${DB_LEAK_DETECTION:60000}
+      connection-test-query: SELECT 1
+      auto-commit: false
+      
+      # Connection pool properties for statement caching
+      data-source-properties:
+        cachePrepStmts: true
+        prepStmtCacheSize: 250
+        prepStmtCacheSqlLimit: 2048
+        useServerPrepStmts: true
+        useLocalSessionState: true
+        rewriteBatchedStatements: true
+        cacheResultSetMetadata: true
+        cacheServerConfiguration: true
+        elideSetAutoCommits: true
+        maintainTimeStats: false
+
+# ============================================================================
+# JPA / Hibernate Configuration
+# Transaction isolation level: READ_COMMITTED (VSAM equivalent)
+# ============================================================================
+spring:
   jpa:
+    open-in-view: false
+    show-sql: ${JPA_SHOW_SQL:false}
+    generate-ddl: false
     hibernate:
       ddl-auto: validate
-    show-sql: false
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+        implicit-strategy: org.springframework.boot.orm.jpa.hibernate.SpringImplicitNamingStrategy
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
         format_sql: true
-  
+        use_sql_comments: true
+        jdbc:
+          time_zone: UTC
+          batch_size: ${HIBERNATE_BATCH_SIZE:50}
+          fetch_size: ${HIBERNATE_FETCH_SIZE:100}
+        connection:
+          isolation: 2
+        order_inserts: true
+        order_updates: true
+        batch_versioned_data: true
+        query:
+          in_clause_parameter_padding: true
+          fail_on_pagination_over_collection_fetch: true
+          plan_cache_max_size: 2048
+        cache:
+          use_second_level_cache: false
+          use_query_cache: false
+        temp:
+          use_jdbc_metadata_defaults: false
+        enable_lazy_load_no_trans: false
+
+# ============================================================================
+# Flyway Database Migration Configuration
+# ============================================================================
+spring:
   flyway:
-    enabled: true
+    enabled: ${FLYWAY_ENABLED:true}
     baseline-on-migrate: true
+    baseline-version: 0
     locations: classpath:db/migration
+    sql-migration-prefix: V
+    sql-migration-separator: __
+    sql-migration-suffixes: .sql
+    validate-on-migrate: true
+    out-of-order: false
+    ignore-missing-migrations: false
+    ignore-ignored-migrations: false
+    ignore-pending-migrations: false
+    clean-disabled: true
+    clean-on-validation-error: false
+
+# ============================================================================
+# Spring Security Configuration
+# JWT token-based authentication (replacing CICS session management)
+# Password encryption: BCrypt with strength 12
+# ============================================================================
+jwt:
+  secret: ${JWT_SECRET:changeThisSecretKeyInProductionToASecureRandomValue}
+  expiration: ${JWT_EXPIRATION:86400000}
   
+spring:
+  security:
+    user:
+      password: ${ADMIN_PASSWORD:}
+
+# ============================================================================
+# Redis Session Management Configuration
+# Replacing CICS COMMAREA state preservation
+# ============================================================================
+spring:
   data:
     redis:
-      host: localhost
-      port: 6379
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: ${REDIS_TIMEOUT:2000}
+      lettuce:
+        pool:
+          max-active: ${REDIS_POOL_MAX_ACTIVE:20}
+          max-idle: ${REDIS_POOL_MAX_IDLE:10}
+          min-idle: ${REDIS_POOL_MIN_IDLE:5}
+          max-wait: ${REDIS_POOL_MAX_WAIT:2000}
+        shutdown-timeout: 100ms
   
   session:
     store-type: redis
+    timeout: ${SESSION_TIMEOUT:1800}
     redis:
       namespace: carddemo:session
-  
+      flush-mode: on_save
+      cleanup-cron: 0 */10 * * * *
+
+# ============================================================================
+# Spring Batch Configuration
+# Migrated from JCL batch processing
+# VSAM CISIZE=18432 → chunk size 1000 records
+# ============================================================================
+spring:
   batch:
+    job:
+      enabled: ${BATCH_JOB_ENABLED:false}
     jdbc:
       initialize-schema: always
-    job:
-      enabled: false
+      table-prefix: BATCH_
+      isolation-level-for-create: ISOLATION_READ_COMMITTED
+    
+# Batch Job Configuration Parameters
+batch:
+  chunk-size: ${BATCH_CHUNK_SIZE:1000}
+  skip-limit: ${BATCH_SKIP_LIMIT:100}
+  retry-limit: ${BATCH_RETRY_LIMIT:3}
+  retry-backoff-initial: ${BATCH_RETRY_BACKOFF_INITIAL:1000}
+  retry-backoff-multiplier: ${BATCH_RETRY_BACKOFF_MULTIPLIER:2.0}
+  retry-backoff-max: ${BATCH_RETRY_BACKOFF_MAX:10000}
+  thread-pool-size: ${BATCH_THREAD_POOL_SIZE:4}
+  throttle-limit: ${BATCH_THROTTLE_LIMIT:10}
 
-server:
-  port: 8080
-  servlet:
-    context-path: /api
+# ============================================================================
+# Internationalization / Message Sources
+# ============================================================================
+spring:
+  messages:
+    basename: messages/messages,messages/errors
+    encoding: UTF-8
+    cache-duration: 3600
+    fallback-to-system-locale: true
+    use-code-as-default-message: false
 
+# ============================================================================
+# OpenAPI / Swagger Documentation Configuration
+# ============================================================================
+springdoc:
+  api-docs:
+    path: /api-docs
+    enabled: ${SPRINGDOC_ENABLED:true}
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: ${SWAGGER_UI_ENABLED:true}
+    disable-swagger-default-url: true
+    display-request-duration: true
+    operations-sorter: method
+    tags-sorter: alpha
+  show-actuator: false
+  default-consumes-media-type: application/json
+  default-produces-media-type: application/json
+
+# ============================================================================
+# Actuator / Monitoring Configuration
+# ============================================================================
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: ${ACTUATOR_ENDPOINTS:health,info,metrics,prometheus}
+      base-path: /actuator
+      path-mapping:
+        health: health
+        info: info
+        metrics: metrics
+        prometheus: prometheus
+    enabled-by-default: false
+  
   endpoint:
     health:
-      show-details: always
+      enabled: true
+      show-details: ${ACTUATOR_HEALTH_DETAILS:when-authorized}
+      show-components: when-authorized
+      probes:
+        enabled: true
+    info:
+      enabled: true
+    metrics:
+      enabled: true
+    prometheus:
+      enabled: true
+  
+  health:
+    defaults:
+      enabled: true
+    db:
+      enabled: true
+    diskspace:
+      enabled: true
+      threshold: 10MB
+    ping:
+      enabled: true
+    redis:
+      enabled: true
+  
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+        descriptions: true
+        step: 1m
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5, 0.95, 0.99
+      slo:
+        http.server.requests: 50ms,100ms,200ms,500ms,1s
+    tags:
+      application: ${spring.application.name}
+      environment: ${ENVIRONMENT:dev}
+  
+  info:
+    env:
+      enabled: true
+    java:
+      enabled: true
+    os:
+      enabled: true
+    git:
+      mode: full
+      enabled: true
 
+# ============================================================================
+# Logging Configuration
+# ============================================================================
 logging:
   level:
-    root: INFO
-    com.carddemo: DEBUG
-    org.springframework.web: INFO
-    org.hibernate.SQL: DEBUG
+    root: ${LOG_LEVEL_ROOT:INFO}
+    com.carddemo: ${LOG_LEVEL_APP:INFO}
+    org.springframework.web: ${LOG_LEVEL_SPRING_WEB:INFO}
+    org.springframework.security: ${LOG_LEVEL_SPRING_SECURITY:INFO}
+    org.springframework.data: ${LOG_LEVEL_SPRING_DATA:INFO}
+    org.springframework.batch: ${LOG_LEVEL_SPRING_BATCH:INFO}
+    org.hibernate.SQL: ${LOG_LEVEL_HIBERNATE_SQL:INFO}
+    org.hibernate.type.descriptor.sql.BasicBinder: ${LOG_LEVEL_HIBERNATE_BINDER:INFO}
+    org.flywaydb: ${LOG_LEVEL_FLYWAY:INFO}
+    io.lettuce.core: ${LOG_LEVEL_REDIS:WARN}
+    com.zaxxer.hikari: ${LOG_LEVEL_HIKARI:INFO}
+  
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  
+  file:
+    name: ${LOG_FILE:logs/carddemo.log}
+    max-size: ${LOG_FILE_MAX_SIZE:10MB}
+    max-history: ${LOG_FILE_MAX_HISTORY:30}
+    total-size-cap: ${LOG_FILE_TOTAL_SIZE_CAP:1GB}
+
+# ============================================================================
+# Jackson JSON Configuration
+# ============================================================================
+spring:
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+      indent-output: false
+      fail-on-empty-beans: false
+    deserialization:
+      fail-on-unknown-properties: false
+      fail-on-numbers-for-enums: false
+    default-property-inclusion: non_null
+    time-zone: UTC
+    date-format: yyyy-MM-dd'T'HH:mm:ss.SSS'Z'
+
+# ============================================================================
+# CORS Configuration
+# ============================================================================
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:8080}
+  allowed-methods: ${CORS_ALLOWED_METHODS:GET,POST,PUT,DELETE,PATCH,OPTIONS}
+  allowed-headers: ${CORS_ALLOWED_HEADERS:*}
+  exposed-headers: ${CORS_EXPOSED_HEADERS:Authorization,Content-Type,Accept}
+  allow-credentials: ${CORS_ALLOW_CREDENTIALS:true}
+  max-age: ${CORS_MAX_AGE:3600}
+
+# ============================================================================
+# Application-Specific Configuration
+# ============================================================================
+carddemo:
+  security:
+    password-encoder:
+      strength: ${PASSWORD_ENCODER_STRENGTH:12}
+    max-login-attempts: ${MAX_LOGIN_ATTEMPTS:5}
+    account-lockout-duration: ${ACCOUNT_LOCKOUT_DURATION:900}
+  
+  transaction:
+    timeout: ${TRANSACTION_TIMEOUT:30}
+    response-time-target-ms: ${RESPONSE_TIME_TARGET:200}
+    max-tps: ${MAX_TPS:10000}
+  
+  pagination:
+    card-list-page-size: ${CARD_LIST_PAGE_SIZE:7}
+    transaction-list-page-size: ${TRANSACTION_LIST_PAGE_SIZE:10}
+    default-page-size: ${DEFAULT_PAGE_SIZE:20}
+    max-page-size: ${MAX_PAGE_SIZE:100}
+  
+  batch:
+    processing-window-hours: ${BATCH_PROCESSING_WINDOW:4}
+    enable-checkpoint-restart: ${BATCH_CHECKPOINT_ENABLED:true}
+  
+  audit:
+    enabled: ${AUDIT_ENABLED:true}
+    log-request-body: ${AUDIT_LOG_REQUEST_BODY:false}
+    log-response-body: ${AUDIT_LOG_RESPONSE_BODY:false}
+
+# ============================================================================
+# Profile-Specific Configuration
+# This is the base configuration file
+# Override with application-dev.yml and application-prod.yml
+# ============================================================================
