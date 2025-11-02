@@ -1,0 +1,41 @@
+# ============================================================================
+# CardDemo Spring Boot Test Configuration
+# Test-specific overrides for unit and integration testing
+# ============================================================================
+
+spring:
+  # Disable Flyway for tests - H2 database doesn't support PostgreSQL syntax
+  flyway:
+    enabled: false
+  
+  # JPA Configuration for Tests
+  jpa:
+    # Use H2 dialect for in-memory database
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+    # Auto-generate schema from entities for tests
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+  
+  # Disable batch processing for tests
+  batch:
+    job:
+      enabled: false
+  
+  # Test datasource is auto-configured by Spring Boot Test to use H2
+
+# Disable Redis for repository tests (not needed for @DataJpaTest)
+management:
+  health:
+    redis:
+      enabled: false
+
+# Logging for tests
+logging:
+  level:
+    root: WARN
+    com.carddemo: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE

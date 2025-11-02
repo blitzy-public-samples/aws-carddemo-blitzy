@@ -4,39 +4,17 @@
 # Migrated from mainframe CICS/VSAM environment
 # ============================================================================
 
-# Application Metadata
+# Application Metadata and Spring Configuration
 spring:
   application:
     name: carddemo
 
-# ============================================================================
-# Server Configuration
-# ============================================================================
-server:
-  port: ${SERVER_PORT:8080}
-  servlet:
-    context-path: /
-    encoding:
-      charset: UTF-8
-      enabled: true
-      force: true
-  error:
-    include-message: always
-    include-binding-errors: always
-    include-stacktrace: on_param
-    include-exception: false
-  compression:
-    enabled: true
-    mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json
-    min-response-size: 1024
-
-# ============================================================================
-# Database Configuration (PostgreSQL)
-# Migrated from VSAM KSDS files
-# VSAM BUFSPACE=37376 → connection pool sizing
-# VSAM CISIZE=18432 → batch chunk size reference
-# ============================================================================
-spring:
+  # ==========================================================================
+  # Database Configuration (PostgreSQL)
+  # Migrated from VSAM KSDS files
+  # VSAM BUFSPACE=37376 → connection pool sizing
+  # VSAM CISIZE=18432 → batch chunk size reference
+  # ==========================================================================
   datasource:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:carddemo}
     username: ${DB_USERNAME:carddemo}
@@ -69,11 +47,10 @@ spring:
         elideSetAutoCommits: true
         maintainTimeStats: false
 
-# ============================================================================
-# JPA / Hibernate Configuration
-# Transaction isolation level: READ_COMMITTED (VSAM equivalent)
-# ============================================================================
-spring:
+  # ==========================================================================
+  # JPA / Hibernate Configuration
+  # Transaction isolation level: READ_COMMITTED (VSAM equivalent)
+  # ==========================================================================
   jpa:
     open-in-view: false
     show-sql: ${JPA_SHOW_SQL:false}
@@ -108,10 +85,9 @@ spring:
           use_jdbc_metadata_defaults: false
         enable_lazy_load_no_trans: false
 
-# ============================================================================
-# Flyway Database Migration Configuration
-# ============================================================================
-spring:
+  # ==========================================================================
+  # Flyway Database Migration Configuration
+  # ==========================================================================
   flyway:
     enabled: ${FLYWAY_ENABLED:true}
     baseline-on-migrate: true
@@ -128,25 +104,19 @@ spring:
     clean-disabled: true
     clean-on-validation-error: false
 
-# ============================================================================
-# Spring Security Configuration
-# JWT token-based authentication (replacing CICS session management)
-# Password encryption: BCrypt with strength 12
-# ============================================================================
-jwt:
-  secret: ${JWT_SECRET:changeThisSecretKeyInProductionToASecureRandomValue}
-  expiration: ${JWT_EXPIRATION:86400000}
-  
-spring:
+  # ==========================================================================
+  # Spring Security Configuration
+  # JWT token-based authentication (replacing CICS session management)
+  # Password encryption: BCrypt with strength 12
+  # ==========================================================================
   security:
     user:
       password: ${ADMIN_PASSWORD:}
 
-# ============================================================================
-# Redis Session Management Configuration
-# Replacing CICS COMMAREA state preservation
-# ============================================================================
-spring:
+  # ==========================================================================
+  # Redis Session Management Configuration
+  # Replacing CICS COMMAREA state preservation
+  # ==========================================================================
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -170,12 +140,11 @@ spring:
       flush-mode: on_save
       cleanup-cron: 0 */10 * * * *
 
-# ============================================================================
-# Spring Batch Configuration
-# Migrated from JCL batch processing
-# VSAM CISIZE=18432 → chunk size 1000 records
-# ============================================================================
-spring:
+  # ==========================================================================
+  # Spring Batch Configuration
+  # Migrated from JCL batch processing
+  # VSAM CISIZE=18432 → chunk size 1000 records
+  # ==========================================================================
   batch:
     job:
       enabled: ${BATCH_JOB_ENABLED:false}
@@ -183,8 +152,64 @@ spring:
       initialize-schema: always
       table-prefix: BATCH_
       isolation-level-for-create: ISOLATION_READ_COMMITTED
-    
+
+  # ==========================================================================
+  # Internationalization / Message Sources
+  # ==========================================================================
+  messages:
+    basename: messages/messages,messages/errors
+    encoding: UTF-8
+    cache-duration: 3600
+    fallback-to-system-locale: true
+    use-code-as-default-message: false
+
+  # ==========================================================================
+  # Jackson JSON Configuration
+  # ==========================================================================
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+      indent-output: false
+      fail-on-empty-beans: false
+    deserialization:
+      fail-on-unknown-properties: false
+      fail-on-numbers-for-enums: false
+    default-property-inclusion: non_null
+    time-zone: UTC
+    date-format: yyyy-MM-dd'T'HH:mm:ss.SSS'Z'
+
+# ============================================================================
+# Server Configuration
+# ============================================================================
+server:
+  port: ${SERVER_PORT:8080}
+  servlet:
+    context-path: /
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: on_param
+    include-exception: false
+  compression:
+    enabled: true
+    mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json
+    min-response-size: 1024
+
+# ============================================================================
+# JWT Configuration
+# JWT token-based authentication (replacing CICS session management)
+# ============================================================================
+jwt:
+  secret: ${JWT_SECRET:changeThisSecretKeyInProductionToASecureRandomValue}
+  expiration: ${JWT_EXPIRATION:86400000}
+
+# ============================================================================
 # Batch Job Configuration Parameters
+# ============================================================================
 batch:
   chunk-size: ${BATCH_CHUNK_SIZE:1000}
   skip-limit: ${BATCH_SKIP_LIMIT:100}
@@ -194,17 +219,6 @@ batch:
   retry-backoff-max: ${BATCH_RETRY_BACKOFF_MAX:10000}
   thread-pool-size: ${BATCH_THREAD_POOL_SIZE:4}
   throttle-limit: ${BATCH_THROTTLE_LIMIT:10}
-
-# ============================================================================
-# Internationalization / Message Sources
-# ============================================================================
-spring:
-  messages:
-    basename: messages/messages,messages/errors
-    encoding: UTF-8
-    cache-duration: 3600
-    fallback-to-system-locale: true
-    use-code-as-default-message: false
 
 # ============================================================================
 # OpenAPI / Swagger Documentation Configuration
@@ -321,22 +335,6 @@ logging:
     max-size: ${LOG_FILE_MAX_SIZE:10MB}
     max-history: ${LOG_FILE_MAX_HISTORY:30}
     total-size-cap: ${LOG_FILE_TOTAL_SIZE_CAP:1GB}
-
-# ============================================================================
-# Jackson JSON Configuration
-# ============================================================================
-spring:
-  jackson:
-    serialization:
-      write-dates-as-timestamps: false
-      indent-output: false
-      fail-on-empty-beans: false
-    deserialization:
-      fail-on-unknown-properties: false
-      fail-on-numbers-for-enums: false
-    default-property-inclusion: non_null
-    time-zone: UTC
-    date-format: yyyy-MM-dd'T'HH:mm:ss.SSS'Z'
 
 # ============================================================================
 # CORS Configuration
