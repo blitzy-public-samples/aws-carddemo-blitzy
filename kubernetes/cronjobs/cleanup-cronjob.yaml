@@ -1,0 +1,252 @@
+# =============================================================================
+# Kubernetes CronJob: cleanup-cronjob
+# =============================================================================
+# Purpose: Scheduled cleanup batch job for CardDemo application maintenance
+#
+# Source Transformation:
+#   FROM: app/jcl/CLEANUP.jcl (JCL batch script)
+#   TO: Kubernetes CronJob triggering Spring Batch CleanupJob
+#
+# Business Logic:
+#   - Archives old transaction records (transactions older than retention period)
+#   - Purges expired Redis sessions (removes stale session data)
+#   - Removes temporary processing files (cleans up batch job artifacts)
+#   - Vacuums database tables (optimizes PostgreSQL performance)
+#   - Generates cleanup report (audit trail of cleanup operations)
+#
+# Schedule: Weekly on Sunday at 4:00 AM UTC
+# Rationale: Off-peak hours to minimize impact on production systems
+#
+# Migration Context:
+#   - Part of JCL to Spring Batch + Kubernetes CronJob transformation
+#   - Batch processing containerization per Agent Action Plan Section 0.1
+#   - Maintains equivalent cleanup operations from mainframe batch
+#
+# =============================================================================
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cleanup-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: cleanup
+    tier: backend
+    version: "1.0"
+  annotations:
+    description: "Weekly system cleanup and maintenance batch job"
+    source: "app/jcl/CLEANUP.jcl"
+    target-job: "CleanupJob"
+    migration-phase: "COBOL-to-Java-Spring-Boot"
+
+spec:
+  # ==========================================================================
+  # Schedule Configuration
+  # ==========================================================================
+  schedule: "0 4 * * 0"  # Weekly on Sunday at 4:00 AM UTC
+  timeZone: "UTC"
+  
+  # ==========================================================================
+  # Concurrency and History Management
+  # ==========================================================================
+  concurrencyPolicy: Forbid  # Prevent overlapping cleanup executions
+  successfulJobsHistoryLimit: 3  # Retain 3 weeks of successful job history
+  failedJobsHistoryLimit: 1  # Retain only last failure for troubleshooting
+  
+  # Starting deadline: Job must start within 10 minutes of scheduled time
+  startingDeadlineSeconds: 600
+  
+  # ==========================================================================
+  # Job Template
+  # ==========================================================================
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: cleanup
+        tier: backend
+    
+    spec:
+      # ======================================================================
+      # Job Execution Configuration
+      # ======================================================================
+      backoffLimit: 1  # Retry once on failure
+      activeDeadlineSeconds: 7200  # 2-hour maximum runtime
+      ttlSecondsAfterFinished: 172800  # Clean up job after 48 hours
+      
+      # ======================================================================
+      # Pod Template
+      # ======================================================================
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: cleanup
+            tier: backend
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8080"
+            prometheus.io/path: "/actuator/prometheus"
+        
+        spec:
+          restartPolicy: OnFailure
+          
+          # ==================================================================
+          # Container Specification
+          # ==================================================================
+          containers:
+          - name: cleanup-job
+            image: carddemo-backend:latest
+            imagePullPolicy: Always
+            
+            # ================================================================
+            # Command and Arguments
+            # ================================================================
+            command:
+              - java
+              - -jar
+              - /app/carddemo-backend.jar
+            
+            args:
+              - --spring.batch.job.names=CleanupJob
+              - --spring.profiles.active=batch
+            
+            # ================================================================
+            # Environment Variables
+            # ================================================================
+            env:
+              # Java runtime options optimized for cleanup operations
+              - name: JAVA_OPTS
+                value: "-Xms256m -Xmx512m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+              
+              # Timezone configuration
+              - name: TZ
+                value: "UTC"
+              
+              # Spring Batch specific configuration
+              - name: SPRING_BATCH_JOB_ENABLED
+                value: "true"
+              
+              # Cleanup job parameters
+              - name: CLEANUP_TRANSACTION_RETENTION_DAYS
+                value: "365"  # Archive transactions older than 1 year
+              
+              - name: CLEANUP_SESSION_EXPIRY_HOURS
+                value: "24"  # Purge sessions inactive for 24 hours
+              
+              - name: CLEANUP_TEMP_FILE_AGE_DAYS
+                value: "7"  # Remove temp files older than 7 days
+              
+              - name: CLEANUP_ENABLE_VACUUM
+                value: "true"  # Enable PostgreSQL VACUUM operations
+              
+              # Database connection from ConfigMap
+              - name: SPRING_DATASOURCE_URL
+                valueFrom:
+                  configMapKeyRef:
+                    name: carddemo-config
+                    key: database.url
+              
+              # Database credentials from Secret
+              - name: SPRING_DATASOURCE_USERNAME
+                valueFrom:
+                  secretKeyRef:
+                    name: carddemo-secrets
+                    key: database.username
+              
+              - name: SPRING_DATASOURCE_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: carddemo-secrets
+                    key: database.password
+              
+              # Redis connection from ConfigMap
+              - name: SPRING_REDIS_HOST
+                valueFrom:
+                  configMapKeyRef:
+                    name: carddemo-config
+                    key: redis.host
+              
+              - name: SPRING_REDIS_PORT
+                valueFrom:
+                  configMapKeyRef:
+                    name: carddemo-config
+                    key: redis.port
+              
+              # Redis password from Secret
+              - name: SPRING_REDIS_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: carddemo-secrets
+                    key: redis.password
+                    optional: true
+            
+            # ================================================================
+            # Resource Requirements
+            # ================================================================
+            # Lower resource allocation for maintenance operations
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+            
+            # ================================================================
+            # Volume Mounts
+            # ================================================================
+            volumeMounts:
+              # Mount for temporary file cleanup
+              - name: temp-storage
+                mountPath: /tmp/carddemo
+              
+              # Mount for cleanup reports
+              - name: reports
+                mountPath: /reports
+              
+              # Mount for batch job logs
+              - name: batch-logs
+                mountPath: /logs
+          
+          # ==================================================================
+          # Volumes
+          # ==================================================================
+          volumes:
+            # Temporary storage volume
+            - name: temp-storage
+              emptyDir:
+                sizeLimit: "1Gi"
+            
+            # Reports volume (persistent)
+            - name: reports
+              persistentVolumeClaim:
+                claimName: carddemo-reports-pvc
+            
+            # Batch logs volume
+            - name: batch-logs
+              persistentVolumeClaim:
+                claimName: carddemo-batch-logs-pvc
+          
+          # ==================================================================
+          # Pod Security Context
+          # ==================================================================
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          
+          # ==================================================================
+          # Service Account
+          # ==================================================================
+          serviceAccountName: carddemo-batch-sa
+          
+          # ==================================================================
+          # Image Pull Secrets
+          # ==================================================================
+          imagePullSecrets:
+            - name: carddemo-registry-secret
