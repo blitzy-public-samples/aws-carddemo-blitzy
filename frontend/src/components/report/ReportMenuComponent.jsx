@@ -16,7 +16,7 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Box,
   Card,
@@ -203,12 +203,7 @@ const ReportMenuComponent = () => {
     try {
       setLoading(true);
       
-      // Calculate current month start and end dates
-      const now = new Date();
-      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-
-      // Submit report to backend
+      // Submit report to backend (service calculates current month dates)
       await reportService.generateMonthlyReport();
       
       // Success message (lines 448-454 in CORPT00C.cbl)
@@ -243,12 +238,7 @@ const ReportMenuComponent = () => {
     try {
       setLoading(true);
       
-      // Calculate current year start and end dates
-      const now = new Date();
-      const startOfYear = new Date(now.getFullYear(), 0, 1);
-      const endOfYear = new Date(now.getFullYear(), 11, 31);
-
-      // Submit report to backend
+      // Submit report to backend (service calculates current year dates)
       await reportService.generateYearlyReport();
       
       // Success message
