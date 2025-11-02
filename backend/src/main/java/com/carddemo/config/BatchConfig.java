@@ -242,7 +242,8 @@ public class BatchConfig {
      * 
      * Skippable exceptions (transient errors):
      * - org.springframework.dao.DataAccessException (database connectivity issues)
-     * - org.springframework.dao.DeadlockLoserDataAccessException (deadlock resolution)
+     * - org.springframework.dao.CannotAcquireLockException (lock acquisition failures)
+     * - org.springframework.dao.PessimisticLockingFailureException (pessimistic locking failures)
      * - org.springframework.dao.OptimisticLockingFailureException (concurrent updates)
      * 
      * Non-skippable exceptions (fatal errors):
@@ -262,7 +263,8 @@ public class BatchConfig {
         
         // Skippable exceptions - transient errors that may resolve on retry
         skippableExceptions.put(org.springframework.dao.DataAccessException.class, true);
-        skippableExceptions.put(org.springframework.dao.DeadlockLoserDataAccessException.class, true);
+        skippableExceptions.put(org.springframework.dao.CannotAcquireLockException.class, true);
+        skippableExceptions.put(org.springframework.dao.PessimisticLockingFailureException.class, true);
         skippableExceptions.put(org.springframework.dao.OptimisticLockingFailureException.class, true);
         
         // Non-skippable exceptions - fatal errors requiring immediate job failure
@@ -379,6 +381,12 @@ public class BatchConfig {
                 String jobName = stepExecution.getJobExecution().getJobInstance().getJobName();
                 
                 // Log step completion with comprehensive metrics
+                // Calculate duration in milliseconds
+                long durationMs = java.time.Duration.between(
+                    stepExecution.getStartTime(), 
+                    stepExecution.getEndTime()
+                ).toMillis();
+                
                 logger.info(
                     "Completed batch step: {} in job: {} - " +
                     "Status: {}, Read: {}, Written: {}, Skipped: {}, Commits: {}, Duration: {}ms",
@@ -389,7 +397,7 @@ public class BatchConfig {
                     stepExecution.getWriteCount(),
                     stepExecution.getSkipCount(),
                     stepExecution.getCommitCount(),
-                    stepExecution.getEndTime().getTime() - stepExecution.getStartTime().getTime()
+                    durationMs
                 );
 
                 // Log errors if step failed
