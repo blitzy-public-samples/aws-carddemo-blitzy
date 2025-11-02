@@ -334,12 +334,13 @@ axios.interceptors.response.use(
         toast.error('Access denied. You do not have permission to perform this action.');
         break;
         
-      case 404: // Not Found - DFHRESP(NOTFND)
+      case 404: { // Not Found - DFHRESP(NOTFND)
         const notFoundMessage = getErrorMessage(error);
         toast.error(notFoundMessage);
         break;
+      }
         
-      case 400: // Bad Request - DFHRESP(INVREQ)
+      case 400: { // Bad Request - DFHRESP(INVREQ)
         const validationErrors = extractValidationErrors(error.response?.data);
         
         if (Object.keys(validationErrors).length > 0) {
@@ -352,6 +353,7 @@ axios.interceptors.response.use(
           toast.error(getErrorMessage(error));
         }
         break;
+      }
         
       case 409: // Conflict
         toast.warning('Data has been modified by another user. Please refresh and try again.');
