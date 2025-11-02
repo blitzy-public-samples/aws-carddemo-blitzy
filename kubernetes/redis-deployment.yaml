@@ -1,0 +1,264 @@
+# Redis Deployment for CardDemo Application
+# Purpose: Provides Redis 7.x cache server for Spring Session storage and application caching
+# Migration Context: Replaces CICS COMMAREA state preservation with Redis-backed Spring Session
+# Related Resources: redis-service.yaml, secrets.yaml, configmap.yaml, backend-deployment.yaml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-deployment
+  namespace: default
+  labels:
+    app: carddemo
+    component: cache
+    service: redis
+    version: "7.2"
+    managed-by: blitzy
+  annotations:
+    description: "Redis cache server for session management and application caching"
+    migration.carddemo/source: "CICS COMMAREA state management"
+    migration.carddemo/target: "Redis-backed Spring Session"
+spec:
+  # Replica Configuration
+  # Single replica for development/test environments
+  # For production HA: Consider Redis Sentinel or Redis Cluster
+  replicas: 1
+  
+  # Rolling Update Strategy
+  # Ensures zero-downtime updates with graceful transitions
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1          # Allow 1 extra pod during update
+      maxUnavailable: 0    # Maintain availability during rollout
+  
+  # Pod Selector
+  selector:
+    matchLabels:
+      app: carddemo
+      component: cache
+      service: redis
+  
+  # Pod Template
+  template:
+    metadata:
+      labels:
+        app: carddemo
+        component: cache
+        service: redis
+        version: "7.2"
+      annotations:
+        prometheus.io/scrape: "false"  # Redis metrics via redis_exporter if needed
+        prometheus.io/port: "6379"
+    
+    spec:
+      # Security Context (Pod-level)
+      securityContext:
+        runAsUser: 999      # redis user
+        runAsGroup: 999     # redis group
+        fsGroup: 999
+        runAsNonRoot: true
+      
+      # Container Specification
+      containers:
+      - name: redis
+        # Redis 7.2 Alpine - lightweight and secure base image
+        image: redis:7.2-alpine
+        imagePullPolicy: IfNotPresent
+        
+        # Redis Command with AOF Persistence
+        # Enables Append-Only File for session durability across pod restarts
+        args:
+          - redis-server
+          - --appendonly
+          - "yes"
+          - --appendfsync
+          - everysec            # Balance between performance and durability
+          - --maxmemory
+          - 768mb               # Leave headroom under 1Gi limit
+          - --maxmemory-policy
+          - allkeys-lru         # Evict least recently used keys when memory limit reached
+          - --save
+          - ""                  # Disable RDB snapshots (AOF provides persistence)
+          - --loglevel
+          - notice              # Standard logging level
+        
+        # Environment Variables
+        # Optional: Uncomment if Redis authentication is required
+        # env:
+        # - name: REDIS_PASSWORD
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: carddemo-secrets
+        #       key: REDIS_PASSWORD
+        
+        # Port Configuration
+        ports:
+        - containerPort: 6379
+          name: redis
+          protocol: TCP
+        
+        # Volume Mounts
+        # Stores AOF and configuration files for persistence
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+          readOnly: false
+        
+        # Resource Limits
+        # Adequate for session storage and reference data caching
+        # Supports 100,000+ ops/sec, far exceeding 10,000 TPS requirement
+        resources:
+          requests:
+            memory: "256Mi"    # Minimum memory allocation
+            cpu: "100m"        # Minimum CPU allocation (0.1 core)
+          limits:
+            memory: "1Gi"      # Maximum memory allocation
+            cpu: "500m"        # Maximum CPU allocation (0.5 core)
+        
+        # Liveness Probe
+        # Verifies Redis is responding to commands
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 30    # Wait 30s for Redis to start
+          periodSeconds: 10          # Check every 10 seconds
+          timeoutSeconds: 5          # Timeout after 5 seconds
+          failureThreshold: 3        # Restart after 3 consecutive failures
+          successThreshold: 1
+        
+        # Readiness Probe
+        # Determines when Redis is ready to accept traffic
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5     # Check readiness after 5 seconds
+          periodSeconds: 5           # Check every 5 seconds
+          timeoutSeconds: 3          # Timeout after 3 seconds
+          failureThreshold: 3        # Mark unready after 3 failures
+          successThreshold: 1        # Mark ready after 1 success
+        
+        # Security Context (Container-level)
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true    # Security hardening
+          capabilities:
+            drop:
+            - ALL
+          privileged: false
+        
+        # Lifecycle Hooks
+        # Graceful shutdown for data consistency
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - sh
+              - -c
+              - redis-cli SHUTDOWN SAVE  # Ensure AOF flush before termination
+      
+      # Volumes
+      # emptyDir for dev/test; use PersistentVolumeClaim for production
+      volumes:
+      - name: redis-data
+        emptyDir: {}
+        # Alternative for production with durable session storage:
+        # persistentVolumeClaim:
+        #   claimName: redis-pvc
+      
+      # Restart Policy
+      restartPolicy: Always
+      
+      # DNS Policy
+      dnsPolicy: ClusterFirst
+      
+      # Termination Grace Period
+      # Allow time for graceful shutdown and AOF flush
+      terminationGracePeriodSeconds: 30
+
+---
+# Redis Use Cases in CardDemo Application:
+#
+# 1. Spring Session Management (Primary Use Case):
+#    - Replaces CICS COMMAREA state preservation pattern
+#    - Stores HTTP session data with Spring Session Redis integration
+#    - Session namespace: "carddemo:session" (configured in configmap.yaml)
+#    - Enables stateless backend pod scaling and horizontal scalability
+#    - Session timeout: 24 hours (aligned with JWT token expiration)
+#    - Supports sub-200ms transaction response time requirement
+#
+# 2. Application Caching (Secondary Use Case):
+#    - Transaction type reference data (TRANTYPE) caching
+#    - Transaction category reference data (TRANCATG) caching
+#    - User authentication data temporary storage
+#    - Reduces PostgreSQL query load for frequently accessed data
+#    - Cache TTL: Configurable per data type (typically 5-60 minutes)
+#
+# 3. JWT Token Management:
+#    - Token blacklist for logout functionality
+#    - Token refresh tracking and validation
+#    - Supports security requirements per Section 0.9
+#
+# Performance Characteristics:
+#    - Sub-millisecond read/write latency
+#    - Supports 100,000+ operations/second
+#    - Far exceeds 10,000 TPS CardDemo requirement
+#    - Minimal CPU/memory footprint (256Mi-1Gi)
+#
+# Data Persistence Strategy:
+#    - AOF (Append-Only File) enabled with everysec fsync
+#    - Balance between performance and data safety
+#    - AOF rewrite triggers automatically for file compaction
+#    - emptyDir volume for dev/test (data lost on pod restart)
+#    - PersistentVolumeClaim recommended for production (data survives restarts)
+#
+# High Availability Considerations (Future Enhancement):
+#    - Current: Single replica (adequate for dev/test)
+#    - Production HA Option 1: Redis Sentinel (automatic failover, master election)
+#    - Production HA Option 2: Redis Cluster (distributed sharding, higher throughput)
+#    - Not required for initial migration but recommended for production deployment
+#
+# Backup Strategy:
+#    - AOF file persistence to mounted volume
+#    - RDB snapshots disabled (AOF provides sufficient durability)
+#    - For critical sessions: Consider periodic AOF backup to object storage
+#    - Volume snapshots if using PersistentVolumeClaim
+#
+# Related Kubernetes Resources:
+#    - Service: redis-service.yaml (ClusterIP service for backend access)
+#    - Secrets: secrets.yaml (REDIS_PASSWORD if authentication enabled)
+#    - ConfigMap: configmap.yaml (SPRING_REDIS_HOST, SPRING_SESSION_STORE_TYPE)
+#    - Consumer: backend-deployment.yaml (Spring Boot pods connecting to Redis)
+#
+# Security Notes:
+#    - ClusterIP Service provides network isolation (not exposed externally)
+#    - Optional: Enable Redis AUTH with password from Kubernetes Secret
+#    - runAsNonRoot and readOnlyRootFilesystem for container hardening
+#    - Drop all capabilities for minimal privilege
+#
+# Monitoring and Observability:
+#    - Liveness probe: Ensures Redis process is responsive
+#    - Readiness probe: Ensures Redis is ready to serve requests
+#    - Optional: Deploy redis_exporter for Prometheus metrics
+#    - Metrics: memory usage, connected clients, ops/sec, hit/miss ratio
+#    - Logs: Available via kubectl logs redis-deployment-<pod-id>
+#
+# Configuration via Backend Application:
+#    Spring Boot application.yml should configure:
+#    - spring.redis.host: redis-service (Kubernetes service DNS)
+#    - spring.redis.port: 6379
+#    - spring.session.store-type: redis
+#    - spring.session.timeout: 24h
+#    - spring.redis.lettuce.pool.max-active: 20
+#    - spring.redis.lettuce.pool.max-idle: 10
+#
+# Deployment Notes:
+#    - Apply this file: kubectl apply -f redis-deployment.yaml
+#    - Verify deployment: kubectl get deployments redis-deployment
+#    - Check pod status: kubectl get pods -l service=redis
+#    - View logs: kubectl logs -l service=redis -f
+#    - Test connectivity: kubectl exec -it <backend-pod> -- redis-cli -h redis-service ping
