@@ -1,0 +1,145 @@
+# Kubernetes Service for CardDemo Spring Boot Backend API
+# Exposes backend REST API within the cluster for internal access
+# External access via Ingress controller with TLS termination
+#
+# Service DNS: backend-service.default.svc.cluster.local
+# Short form: backend-service (within same namespace)
+#
+# Related Components:
+# - Backend Deployment: backend-deployment.yaml (pods serving this service)
+# - Ingress: ingress.yaml (external routing to this service)
+# - Frontend: frontend-deployment.yaml (consumes this API)
+# - Dependencies: postgres-service, redis-service (via backend app config)
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: default
+  labels:
+    app: carddemo
+    component: backend
+    tier: api
+    version: v1
+  annotations:
+    # Prometheus monitoring configuration
+    prometheus.io/scrape: 'true'
+    prometheus.io/port: '8080'
+    prometheus.io/path: '/actuator/prometheus'
+    # Service description
+    description: 'CardDemo Spring Boot backend API service exposing REST endpoints for COBOL-to-Java migrated business logic'
+spec:
+  # Service type: ClusterIP (internal only)
+  # Backend API should only be exposed through Ingress controller with TLS
+  # This ensures security and centralized routing
+  type: ClusterIP
+  
+  # Session affinity: None (stateless backend)
+  # Backend services are stateless with session state managed in Redis
+  # This enables true horizontal scaling and rolling updates
+  # Load balancer can distribute requests across any backend pod
+  sessionAffinity: None
+  
+  # Pod selector - matches labels from backend-deployment.yaml pod template
+  # Directs traffic to backend pods with these labels
+  selector:
+    app: carddemo
+    component: backend
+    tier: api
+  
+  # Port configuration
+  ports:
+    # HTTP port for REST API
+    - name: http
+      # Port exposed by the Service (cluster-internal)
+      port: 8080
+      # Port on the backend pod containers
+      targetPort: 8080
+      # Protocol
+      protocol: TCP
+      # Application protocol (for service mesh compatibility)
+      appProtocol: http
+  
+  # IP family configuration for dual-stack support
+  ipFamilyPolicy: PreferDualStack
+  ipFamilies:
+    - IPv4
+    - IPv6
+
+---
+# Service endpoints exposed by backend-service:
+#
+# REST API Endpoints (CICS Transaction → REST transformation):
+# - POST   /api/auth/login              (COSGN00C → AuthenticationService)
+# - POST   /api/auth/logout             (COSGN00C → AuthenticationService)
+# - GET    /api/menu                    (COMEN01C → MenuNavigationService)
+# - GET    /api/accounts                (COACTVWC → AccountViewService)
+# - GET    /api/accounts/{id}           (COACTVWC → AccountViewService)
+# - POST   /api/accounts                (COACTADD → AccountCreationService)
+# - PUT    /api/accounts/{id}           (COACTUPC → AccountUpdateService)
+# - GET    /api/cards                   (COCRDLIC → CardListService)
+# - GET    /api/cards/{id}              (COCRDSLC → CardDetailService)
+# - PUT    /api/cards/{id}              (COCRDUPC → CardUpdateService)
+# - GET    /api/transactions            (COTRN00C → TransactionListService)
+# - GET    /api/transactions/categories (COTRN01C → TransactionCategoryService)
+# - POST   /api/transactions            (COTRN02C → TransactionCreationService)
+# - POST   /api/payments/bill           (COBIL00C → BillPaymentService)
+# - GET    /api/reports                 (CORPT00C → ReportMenuService)
+# - GET    /api/admin/*                 (COADM01C → AdminService)
+# - GET    /api/users                   (COUSR00C → UserManagementService)
+# - GET    /api/users/{id}              (COUSR01C → UserProfileService)
+#
+# Monitoring Endpoints (Spring Boot Actuator):
+# - GET    /actuator/health             (Kubernetes health probes)
+# - GET    /actuator/health/liveness    (Liveness probe)
+# - GET    /actuator/health/readiness   (Readiness probe)
+# - GET    /actuator/prometheus         (Prometheus metrics scraping)
+# - GET    /actuator/info               (Application information)
+# - GET    /actuator/metrics            (Micrometer metrics)
+#
+# Traffic Flow:
+# User/Frontend → Ingress Controller → backend-service (ClusterIP) → Backend Pod(s) (8080)
+#
+# Load Balancing:
+# - Default round-robin load balancing across backend pods
+# - Supports multiple replicas for high availability and horizontal scaling
+# - Connection draining during pod termination via readiness probe
+# - No session stickiness (stateless with Redis session management)
+#
+# Performance Characteristics:
+# - Stable ClusterIP for reliable internal API routing
+# - Supports horizontal pod autoscaling based on CPU/memory/custom metrics
+# - Enables canary deployments and blue-green deployment strategies
+# - Connection timeout and retry policies managed by Ingress controller
+# - Target response time: <200ms at 95th percentile per SLA requirements
+#
+# Security:
+# - No direct external exposure (security enforced via Ingress)
+# - Internal cluster communication only
+# - TLS termination at Ingress level
+# - JWT authentication enforced by Spring Security within application
+# - RBAC authorization via @PreAuthorize annotations
+#
+# High Availability:
+# - Multiple backend pod replicas for fault tolerance
+# - Automatic failover if pod becomes unhealthy
+# - Kubernetes DNS provides service discovery
+# - StatefulSet not required (stateless application)
+#
+# Integration:
+# - Consumed by: ingress.yaml (HTTP routing rules)
+# - Consumed by: frontend-deployment.yaml (REACT_APP_API_URL environment variable)
+# - Backed by: backend-deployment.yaml pods (multiple replicas)
+# - Dependencies: postgres-service (database), redis-service (session store)
+#
+# Monitoring:
+# - Prometheus scrapes metrics from /actuator/prometheus endpoint
+# - Grafana dashboards visualize API performance metrics
+# - Spring Boot Actuator provides health status
+# - Request rate, error rate, and latency tracked per endpoint
+#
+# Deployment Considerations:
+# - Service remains stable during backend pod rolling updates
+# - DNS name unchanged across deployments (backend-service)
+# - Supports zero-downtime deployments with readiness probes
+# - Compatible with Kubernetes service mesh implementations (Istio, Linkerd)
