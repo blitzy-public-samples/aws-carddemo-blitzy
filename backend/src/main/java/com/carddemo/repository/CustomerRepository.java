@@ -43,13 +43,13 @@ import java.util.Optional;
  *   <li>findByCustomerId: Direct lookup by primary key (9-digit ID)</li>
  *   <li>findByLastName: Search customers by last name</li>
  *   <li>findBySsn: Lookup by Social Security Number (PII-sensitive)</li>
- *   <li>findByEmail: Search by email address</li>
+ *   <li>findByPhoneNumber: Search by phone number</li>
  * </ul>
  * 
  * <p><b>Performance Optimization:</b></p>
  * <ul>
  *   <li>Primary key index on customer_id for O(log n) lookup</li>
- *   <li>Secondary indexes on frequently searched fields (SSN, email)</li>
+ *   <li>Secondary indexes on frequently searched fields (SSN, phone, zip)</li>
  *   <li>Pagination support for large result sets</li>
  *   <li>HikariCP connection pooling (20-50 connections per Section 0.5)</li>
  * </ul>
@@ -104,26 +104,17 @@ public interface CustomerRepository extends JpaRepository<Customer, Long> {
      */
     Optional<Customer> findBySsn(String ssn);
 
-    /**
-     * Finds a customer by email address.
-     * 
-     * <p><b>COBOL Equivalent:</b> No direct COBOL equivalent (new field)</p>
-     * <p><b>Index:</b> Secondary index on email for fast lookup</p>
-     * 
-     * @param email Customer email address (CUST-EMAIL)
-     * @return Optional containing customer if found, empty otherwise
-     */
-    Optional<Customer> findByEmail(String email);
+
 
     /**
      * Finds customers by phone number (partial match).
      * 
      * <p><b>COBOL Equivalent:</b> Sequential scan with CUST-PHONE filter</p>
      * 
-     * @param phone Customer phone number substring
+     * @param phoneNumber Customer phone number substring
      * @return List of customers matching the phone number pattern
      */
-    List<Customer> findByPhoneContaining(String phone);
+    List<Customer> findByPhoneNumber1Containing(String phoneNumber);
 
     /**
      * Finds customers by ZIP code.
@@ -212,15 +203,7 @@ public interface CustomerRepository extends JpaRepository<Customer, Long> {
      */
     boolean existsBySsn(String ssn);
 
-    /**
-     * Checks if a customer exists with the given email address.
-     * 
-     * <p><b>Use Case:</b> Email uniqueness validation</p>
-     * 
-     * @param email Email address
-     * @return true if customer with email exists, false otherwise
-     */
-    boolean existsByEmail(String email);
+
 
     /**
      * Saves a customer entity to the database (insert or update).
