@@ -113,7 +113,7 @@ public class AccountBalanceProcessor implements ItemProcessor<Account, AccountBa
             return null;
         }
 
-        Long accountId = account.getAccountId();
+        Long accountId = account.getId();
         logger.debug("Processing account balance calculation for account ID: {}", accountId);
 
         try {

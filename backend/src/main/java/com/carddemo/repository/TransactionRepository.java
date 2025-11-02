@@ -51,6 +51,18 @@ public interface TransactionRepository extends JpaRepository<Transaction, Long> 
     Optional<Transaction> findByTransactionId(String transactionId);
 
     /**
+     * Retrieves all transactions for a specific account (non-paginated).
+     * <p>
+     * Used by batch processing jobs that need to process all transactions
+     * for an account, such as balance calculation and aggregation jobs.
+     * </p>
+     *
+     * @param accountId the 11-digit account identifier
+     * @return List of all transactions for the account
+     */
+    List<Transaction> findByAccountId(Long accountId);
+
+    /**
      * Retrieves paginated transactions for a specific account.
      * <p>
      * Replaces: COTRN00C.cbl STARTBR/READNEXT browsing pattern (lines 593-668)
