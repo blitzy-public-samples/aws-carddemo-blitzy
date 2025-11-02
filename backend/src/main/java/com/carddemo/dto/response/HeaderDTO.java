@@ -17,6 +17,7 @@
 
 package com.carddemo.dto.response;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
@@ -171,8 +172,13 @@ public class HeaderDTO implements Serializable {
      * <p>This method performs programmatic validation beyond Bean Validation annotations,
      * ensuring strict compliance with the original mainframe field length limitations.</p>
      * 
+     * <p><strong>Note:</strong> This method is annotated with @JsonIgnore to prevent it from 
+     * being serialized as a JSON property during REST API responses, as it is a utility method 
+     * rather than a data field.</p>
+     * 
      * @return true if all fields are within 40-character limit or null, false otherwise
      */
+    @JsonIgnore
     public boolean isValidFieldLengths() {
         return (title01 == null || title01.length() <= 40) &&
                (title02 == null || title02.length() <= 40) &&
@@ -185,8 +191,13 @@ public class HeaderDTO implements Serializable {
      * <p>This utility method helps identify whether the header has been customized
      * or contains the standard default values from the COBOL copybook.</p>
      * 
+     * <p><strong>Note:</strong> This method is annotated with @JsonIgnore to prevent it from 
+     * being serialized as a JSON property during REST API responses, as it is a utility method 
+     * rather than a data field.</p>
+     * 
      * @return true if all fields match default COBOL values, false otherwise
      */
+    @JsonIgnore
     public boolean isDefaultBranding() {
         return "      AWS Mainframe Modernization       ".equals(title01) &&
                "              CardDemo                  ".equals(title02) &&
