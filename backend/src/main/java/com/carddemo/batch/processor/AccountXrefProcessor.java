@@ -130,15 +130,15 @@ public class AccountXrefProcessor implements ItemProcessor<Card, AccountXrefProc
         Account account = card.getAccount();
         
         // Validate account has customer reference
-        if (account.getCustomerId() == null) {
-            String errorMessage = String.format("Account has no customer: %d", account.getId());
+        if (account.getCustomer() == null) {
+            String errorMessage = String.format("Account has no customer: %d", account.getAccountId());
             logger.error("Cross-reference validation failed: {}", errorMessage);
             throw new ValidationException(errorMessage);
         }
         
         // Extract identifiers for cross-reference entries
-        Long customerId = account.getCustomerId();
-        Long accountId = account.getId();
+        Long customerId = account.getCustomer().getCustomerId();
+        Long accountId = account.getAccountId();
         String cardNumber = card.getCardNumber();
         
         // Create AccountXref entry (customer-to-account mapping)

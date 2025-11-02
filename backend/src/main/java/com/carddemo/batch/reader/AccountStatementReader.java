@@ -229,12 +229,12 @@ public class AccountStatementReader extends AbstractItemCountingItemStreamItemRe
         // Check if current iterator has more items
         if (accountIterator != null && accountIterator.hasNext()) {
             Account account = accountIterator.next();
-            lastAccountId = account.getId();
+            lastAccountId = account.getAccountId();
             totalAccountsRead++;
             
             if (logger.isDebugEnabled()) {
                 logger.debug("Read account {} for statement generation (total read: {})",
-                        account.getId(), totalAccountsRead);
+                        account.getAccountId(), totalAccountsRead);
             }
             
             return account;
