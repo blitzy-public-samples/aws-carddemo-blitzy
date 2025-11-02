@@ -27,6 +27,10 @@
   "theme_color": "#1976d2",
   "background_color": "#ffffff",
   "orientation": "portrait-primary",
-  "categories": ["finance", "business", "productivity"],
+  "categories": [
+    "finance",
+    "business",
+    "productivity"
+  ],
   "prefer_related_applications": false
 }
