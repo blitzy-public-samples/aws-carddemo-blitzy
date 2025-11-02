@@ -14,7 +14,7 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import {
   Box,
@@ -83,7 +83,8 @@ const Loading = ({
 
   // Theme colors matching BMS color scheme (BLUE primary, TURQUOISE secondary)
   const primaryColor = '#1976d2'; // BLUE primary
-  const secondaryColor = '#00acc1'; // TURQUOISE secondary
+  // eslint-disable-next-line no-unused-vars
+  const secondaryColor = '#00acc1'; // TURQUOISE secondary - Reserved for future UI enhancements
 
   /**
    * Renders spinner loading indicator using Material-UI CircularProgress
