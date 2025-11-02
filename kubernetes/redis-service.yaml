@@ -1,0 +1,133 @@
+# Redis Service Manifest for CardDemo Application
+# Part of COBOL-to-Java Migration - Mainframe to Cloud-Native Architecture
+# 
+# Purpose: Kubernetes Service resource exposing Redis cache within the cluster
+# Provides stable DNS endpoint for backend application session management and caching
+# Enables Spring Session Redis integration for stateless backend pods
+#
+# Related Components:
+# - Backend: Connects via SPRING_REDIS_HOST environment variable
+# - Deployment: Backed by redis-deployment.yaml pods
+# - Configuration: configmap.yaml defines connection parameters
+#
+# Redis Use Cases:
+# 1. Session Management: Spring Session Redis for HTTP session persistence
+#    - Replaces CICS COMMAREA state preservation pattern
+#    - Enables horizontal scaling of stateless backend pods
+#    - Session data survives pod restarts and scaling
+# 2. Cache Layer: Frequently accessed reference data
+#    - Transaction type codes
+#    - Transaction category definitions
+#    - JWT token management (authentication)
+#
+# Connection Flow:
+# Backend Pod → redis-service (DNS) → ClusterIP → Redis Pod (6379)
+
+apiVersion: v1
+kind: Service
+metadata:
+  # Service name used for DNS resolution within cluster
+  # Accessible as: redis-service.default.svc.cluster.local
+  # Short form: redis-service (within same namespace)
+  name: redis-service
+  
+  # Namespace for service deployment
+  # Matches backend and database services for simplified network policies
+  namespace: default
+  
+  # Labels for service identification and organization
+  labels:
+    app: carddemo
+    component: cache
+    service: redis
+    tier: backend
+    managed-by: kubernetes
+    migration-source: mainframe-cics
+    version: v1
+  
+  # Annotations for service documentation and monitoring
+  annotations:
+    description: "Redis cache service for CardDemo session management and caching"
+    migration-notes: "Replaces CICS COMMAREA state preservation with Redis-backed sessions"
+    service-type: "internal-cache"
+    prometheus.io/scrape: "false"  # Redis metrics collected via exporter if needed
+    contact: "carddemo-platform-team"
+
+spec:
+  # Service Type: ClusterIP
+  # Rationale: Internal-only access for security best practices
+  # Redis should only be accessible from backend pods within cluster
+  # No external exposure to prevent unauthorized access
+  type: ClusterIP
+  
+  # Pod Selector: Identifies Redis pods backing this service
+  # Must match labels in redis-deployment.yaml pod template spec
+  selector:
+    app: carddemo
+    component: cache
+    service: redis
+  
+  # Port Configuration
+  ports:
+    # Redis protocol port
+    - name: redis
+      # Service port: Port exposed by the service (client connects to this)
+      port: 6379
+      
+      # Target port: Port on the pod (Redis container listens on this)
+      targetPort: 6379
+      
+      # Protocol: TCP (Redis uses TCP for client-server communication)
+      protocol: TCP
+  
+  # Session Affinity: None
+  # Rationale: Redis client libraries handle connection pooling and failover
+  # Multiple backend pods can connect to Redis service simultaneously
+  # Load balancing handled at application layer by Spring Data Redis
+  sessionAffinity: None
+  
+  # IP Family Policy: SingleStack (IPv4)
+  # Ensures consistent networking for internal cluster communication
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+    - IPv4
+
+---
+# Service Account (Optional but recommended for production)
+# Provides identity for Redis pods with minimal required permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: redis-service-account
+  namespace: default
+  labels:
+    app: carddemo
+    component: cache
+    service: redis
+
+---
+# Network Policy (Optional - Uncomment for enhanced security)
+# Restricts Redis access to only backend pods
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: redis-network-policy
+#   namespace: default
+# spec:
+#   podSelector:
+#     matchLabels:
+#       app: carddemo
+#       component: cache
+#       service: redis
+#   policyTypes:
+#     - Ingress
+#   ingress:
+#     # Allow traffic only from backend pods
+#     - from:
+#       - podSelector:
+#           matchLabels:
+#             app: carddemo
+#             component: backend
+#       ports:
+#       - protocol: TCP
+#         port: 6379
