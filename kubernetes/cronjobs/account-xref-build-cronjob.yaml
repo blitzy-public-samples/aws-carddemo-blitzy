@@ -1,0 +1,429 @@
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
+
+# =========================================================================
+# Kubernetes CronJob: Account Cross-Reference Build
+# =========================================================================
+# Purpose: Scheduled execution of Spring Batch AccountXrefBuildJob
+# 
+# Source Migration:
+#   FROM: app/jcl/READCARD.jcl (JCL executing CBACT02C)
+#   FROM: app/cbl/CBACT02C.cbl (COBOL cross-reference build program)
+#   TO:   Kubernetes CronJob triggering AccountXrefBuildJob
+#
+# Business Function:
+#   - Reads account and card data from PostgreSQL
+#   - Builds and maintains account cross-reference relationships
+#   - Replaces VSAM XREF file operations with PostgreSQL foreign keys
+#   - Updates CXACAIX alternate index equivalents (PostgreSQL indexes)
+#   - Ensures referential integrity between accounts, cards, and customers
+#
+# Schedule: Daily at 1:30 AM UTC
+# Rationale: Runs after account-data-load-cronjob to build relationships
+#
+# Original COBOL Logic (CBACT02C):
+#   - Sequential read of CARDDATA VSAM KSDS file
+#   - Record processing and validation
+#   - Cross-reference index maintenance
+#
+# Modernized Approach:
+#   - Spring Batch chunk-oriented processing
+#   - PostgreSQL foreign key constraint validation
+#   - Transactional integrity with rollback capability
+#   - Prometheus metrics for monitoring
+# =========================================================================
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: account-xref-build-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: account-xref
+    tier: backend
+    migrated-from: CBACT02C
+  annotations:
+    description: "Account cross-reference build batch job"
+    source-cobol-program: "CBACT02C.cbl"
+    source-jcl-script: "READCARD.jcl"
+    migration-date: "2024"
+    business-function: "Build and maintain account-card cross-reference relationships"
+spec:
+  # Schedule: Daily at 1:30 AM UTC
+  # Cron format: minute hour day-of-month month day-of-week
+  # Runs after account-data-load (scheduled at 1:00 AM)
+  schedule: "30 1 * * *"
+  
+  # Timezone for schedule interpretation (optional, defaults to UTC)
+  # timeZone: "America/Chicago"
+  
+  # Concurrency policy: Forbid prevents overlapping executions
+  # Critical for data integrity during cross-reference building
+  concurrencyPolicy: Forbid
+  
+  # Starting deadline: 300 seconds (5 minutes)
+  # If job misses schedule by more than 5 minutes, skip this execution
+  startingDeadlineSeconds: 300
+  
+  # History limits for job retention
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  
+  # Suspend flag: Set to true to temporarily disable cron execution
+  suspend: false
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: account-xref
+    spec:
+      # Backoff limit: Number of retries before marking job as failed
+      backoffLimit: 2
+      
+      # Active deadline: 3600 seconds (1 hour) maximum execution time
+      # Original COBOL batch typically completes within 15-20 minutes
+      activeDeadlineSeconds: 3600
+      
+      # TTL after finished: 86400 seconds (24 hours)
+      # Job pods are cleaned up 24 hours after completion
+      ttlSecondsAfterFinished: 86400
+      
+      # Completions: 1 (job completes after 1 successful pod execution)
+      completions: 1
+      
+      # Parallelism: 1 (no parallel processing for this job)
+      parallelism: 1
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: account-xref
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8080"
+            prometheus.io/path: "/actuator/prometheus"
+        spec:
+          restartPolicy: OnFailure
+          
+          # Service account for database access and secrets
+          serviceAccountName: carddemo-batch-sa
+          
+          # Security context for pod
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          
+          # Init container to wait for database availability
+          initContainers:
+          - name: wait-for-db
+            image: busybox:1.36
+            command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for PostgreSQL to be ready..."
+              until nc -z postgres-service 5432; do
+                echo "PostgreSQL is unavailable - sleeping"
+                sleep 5
+              done
+              echo "PostgreSQL is up - proceeding with job execution"
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              runAsUser: 1000
+              capabilities:
+                drop:
+                - ALL
+          
+          containers:
+          - name: account-xref-build-job
+            image: carddemo-backend:latest
+            imagePullPolicy: IfNotPresent
+            
+            # Command to execute Spring Batch job
+            command:
+            - java
+            args:
+            - -Xmx768m
+            - -Xms512m
+            - -XX:+UseG1GC
+            - -XX:MaxGCPauseMillis=200
+            - -XX:+HeapDumpOnOutOfMemoryError
+            - -XX:HeapDumpPath=/tmp/heap_dump.hprof
+            - -Dspring.profiles.active=prod
+            - -Djava.security.egd=file:/dev/./urandom
+            - -jar
+            - /app/carddemo-backend.jar
+            - --spring.batch.job.names=AccountXrefBuildJob
+            - --spring.batch.job.enabled=true
+            
+            # Environment variables
+            env:
+            # Database configuration
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: database.url
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.username
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.password
+            
+            # Database connection pool configuration
+            - name: SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE
+              value: "10"
+            - name: SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE
+              value: "5"
+            - name: SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT
+              value: "30000"
+            - name: SPRING_DATASOURCE_HIKARI_IDLE_TIMEOUT
+              value: "600000"
+            
+            # Spring Batch configuration
+            - name: SPRING_BATCH_JOB_ENABLED
+              value: "true"
+            - name: SPRING_BATCH_INITIALIZE_SCHEMA
+              value: "never"
+            
+            # Batch job specific configuration
+            - name: BATCH_CHUNK_SIZE
+              value: "1000"
+            - name: BATCH_SKIP_LIMIT
+              value: "100"
+            - name: BATCH_RETRY_LIMIT
+              value: "3"
+            
+            # Application logging
+            - name: LOGGING_LEVEL_ROOT
+              value: "INFO"
+            - name: LOGGING_LEVEL_COM_CARDDEMO
+              value: "DEBUG"
+            - name: LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_BATCH
+              value: "INFO"
+            
+            # Job execution metadata
+            - name: JOB_NAME
+              value: "AccountXrefBuildJob"
+            - name: JOB_DESCRIPTION
+              value: "Build account cross-reference relationships"
+            - name: SOURCE_PROGRAM
+              value: "CBACT02C"
+            
+            # Resource requests and limits
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+                ephemeral-storage: "1Gi"
+              limits:
+                memory: "1Gi"
+                cpu: "1000m"
+                ephemeral-storage: "2Gi"
+            
+            # Security context for container
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              runAsUser: 1000
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                - ALL
+            
+            # Volume mounts
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: app-logs
+              mountPath: /app/logs
+            
+            # Liveness probe: Check application health during execution
+            livenessProbe:
+              httpGet:
+                path: /actuator/health/liveness
+                port: 8080
+                scheme: HTTP
+              initialDelaySeconds: 60
+              periodSeconds: 30
+              timeoutSeconds: 10
+              successThreshold: 1
+              failureThreshold: 3
+            
+            # Readiness probe: Ensure application is ready before processing
+            readinessProbe:
+              httpGet:
+                path: /actuator/health/readiness
+                port: 8080
+                scheme: HTTP
+              initialDelaySeconds: 30
+              periodSeconds: 15
+              timeoutSeconds: 5
+              successThreshold: 1
+              failureThreshold: 3
+          
+          # Volumes for temporary storage and logs
+          volumes:
+          - name: tmp
+            emptyDir: {}
+          - name: app-logs
+            emptyDir: {}
+          
+          # DNS policy and configuration
+          dnsPolicy: ClusterFirst
+          
+          # Termination grace period: 60 seconds for graceful shutdown
+          terminationGracePeriodSeconds: 60
+          
+          # Node selector for scheduling (optional)
+          # nodeSelector:
+          #   workload-type: batch
+          
+          # Tolerations for node taints (optional)
+          # tolerations:
+          # - key: "batch-workload"
+          #   operator: "Equal"
+          #   value: "true"
+          #   effect: "NoSchedule"
+          
+          # Affinity rules for pod placement (optional)
+          # affinity:
+          #   podAntiAffinity:
+          #     preferredDuringSchedulingIgnoredDuringExecution:
+          #     - weight: 100
+          #       podAffinityTerm:
+          #         labelSelector:
+          #           matchExpressions:
+          #           - key: job
+          #             operator: In
+          #             values:
+          #             - account-xref
+          #         topologyKey: kubernetes.io/hostname
+
+# =========================================================================
+# DEPLOYMENT NOTES
+# =========================================================================
+#
+# Prerequisites:
+#   1. PostgreSQL database must be running and accessible
+#   2. AccountXrefBuildJob Spring Batch job must be implemented
+#   3. ConfigMap 'carddemo-config' must exist with database.url
+#   4. Secret 'carddemo-secrets' must exist with database credentials
+#   5. ServiceAccount 'carddemo-batch-sa' must exist with appropriate RBAC
+#
+# Deployment Command:
+#   kubectl apply -f account-xref-build-cronjob.yaml
+#
+# Verification Commands:
+#   kubectl get cronjobs account-xref-build-cronjob
+#   kubectl get jobs -l job=account-xref
+#   kubectl logs -l job=account-xref --tail=100
+#
+# Manual Job Execution (for testing):
+#   kubectl create job account-xref-manual-$(date +%s) \
+#     --from=cronjob/account-xref-build-cronjob
+#
+# Suspend CronJob (temporarily disable):
+#   kubectl patch cronjob account-xref-build-cronjob \
+#     -p '{"spec":{"suspend":true}}'
+#
+# Resume CronJob:
+#   kubectl patch cronjob account-xref-build-cronjob \
+#     -p '{"spec":{"suspend":false}}'
+#
+# Delete CronJob:
+#   kubectl delete cronjob account-xref-build-cronjob
+#
+# =========================================================================
+# MONITORING AND TROUBLESHOOTING
+# =========================================================================
+#
+# View CronJob Status:
+#   kubectl describe cronjob account-xref-build-cronjob
+#
+# View Job Execution History:
+#   kubectl get jobs -l job=account-xref --sort-by=.metadata.creationTimestamp
+#
+# View Job Logs:
+#   kubectl logs -l job=account-xref --timestamps=true
+#
+# Check Job Failure Reasons:
+#   kubectl describe job <job-name>
+#   kubectl logs <pod-name> --previous (for crashed pods)
+#
+# Prometheus Metrics:
+#   - spring_batch_job_duration_seconds
+#   - spring_batch_job_status
+#   - spring_batch_item_read_count
+#   - spring_batch_item_process_count
+#   - spring_batch_item_write_count
+#
+# Common Issues:
+#   1. Database connection timeout: Increase startingDeadlineSeconds
+#   2. Job exceeds time limit: Increase activeDeadlineSeconds
+#   3. Concurrent execution conflicts: Verify concurrencyPolicy=Forbid
+#   4. Resource constraints: Adjust memory/CPU limits
+#   5. Missing dependencies: Check init container logs
+#
+# =========================================================================
+# BUSINESS LOGIC MAPPING
+# =========================================================================
+#
+# COBOL CBACT02C Logic Flow:
+#   1. OPEN INPUT CARDFILE (VSAM KSDS)
+#   2. READ CARDFILE sequential access
+#   3. DISPLAY CARD-RECORD for each card
+#   4. CLOSE CARDFILE
+#   5. Error handling for file status codes
+#
+# Spring Batch AccountXrefBuildJob Flow:
+#   1. ItemReader: Query cards and accounts from PostgreSQL
+#   2. ItemProcessor: Build cross-reference relationships
+#      - Validate account-card relationships
+#      - Validate customer-account relationships
+#      - Build account_xref and card_xref entries
+#   3. ItemWriter: Insert/update cross-reference tables
+#      - Enforce foreign key constraints
+#      - Update relationship indexes
+#   4. Error handling: Skip records with validation errors (up to skip limit)
+#   5. Transaction management: Chunk-level commits with rollback
+#
+# Data Transformation:
+#   VSAM XREF file → PostgreSQL account_xref table
+#   VSAM CXACAIX alternate index → PostgreSQL card_xref table
+#   File-based relationships → Foreign key constraints
+#
+# Performance Considerations:
+#   - Chunk size: 1000 records (configurable via BATCH_CHUNK_SIZE)
+#   - Database connection pool: 10 connections max
+#   - Expected execution time: 15-20 minutes for typical dataset
+#   - Memory usage: 512Mi-1Gi depending on data volume
+#
+# =========================================================================
