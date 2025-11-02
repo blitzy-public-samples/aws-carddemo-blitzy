@@ -48,6 +48,7 @@ import com.zaxxer.hikari.HikariDataSource;
 import jakarta.persistence.EntityManagerFactory;
 import org.flywaydb.core.Flyway;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -119,7 +120,7 @@ public class DatabaseConfig {
         dataSource.setJdbcUrl(environment.getRequiredProperty("spring.datasource.url"));
         dataSource.setUsername(environment.getRequiredProperty("spring.datasource.username"));
         dataSource.setPassword(environment.getRequiredProperty("spring.datasource.password"));
-        dataSource.setDriverClassName("org.postgresql.Driver");
+        dataSource.setDriverClassName(environment.getProperty("spring.datasource.driver-class-name", "org.postgresql.Driver"));
         
         // Connection pool configuration per Section 0.9 requirements
         dataSource.setMinimumIdle(20);
@@ -347,6 +348,7 @@ public class DatabaseConfig {
      * @return configured Flyway instance for database migrations
      */
     @Bean(initMethod = "migrate")
+    @ConditionalOnProperty(name = "spring.flyway.enabled", havingValue = "true", matchIfMissing = true)
     public Flyway flyway(DataSource dataSource) {
         return Flyway.configure()
             .dataSource(dataSource)
