@@ -385,7 +385,7 @@ public class DailyTransactionProcessor implements ItemProcessor<DailyTransaction
         transaction.setCardNumber(dailyTransaction.getCardNumber());
         
         // COBOL: MOVE DALYTRAN-ORIG-TS TO TRAN-ORIG-TS
-        transaction.setOriginalTimestamp(dailyTransaction.getOriginalTimestamp());
+        transaction.setOriginationTimestamp(dailyTransaction.getOriginalTimestamp());
         
         // COBOL: PERFORM Z-GET-DB2-FORMAT-TIMESTAMP (lines 692-705)
         // COBOL: MOVE DB2-FORMAT-TS TO TRAN-PROC-TS
