@@ -52,16 +52,17 @@ public class DateConverter {
      * Uses STRICT resolver style to reject invalid dates per COBOL validation rules.
      */
     private static final DateTimeFormatter CCYYMMDD_FORMATTER = DateTimeFormatter
-            .ofPattern("yyyyMMdd")
+            .ofPattern("uuuuMMdd")
             .withResolverStyle(ResolverStyle.STRICT);
 
     /**
      * Date formatter for MM/DD/YY format with 2-digit year.
      * Matches COBOL WS-CURDATE-MM-DD-YY structure from CSDAT01Y.cpy lines 30-35.
      * Uses STRICT resolver style to enforce valid date component ranges.
+     * Base year for 2-digit year: 2000 (years 00-99 become 2000-2099)
      */
     private static final DateTimeFormatter MMDDYY_FORMATTER = DateTimeFormatter
-            .ofPattern("MM/dd/yy")
+            .ofPattern("MM/dd/uu")
             .withResolverStyle(ResolverStyle.STRICT);
 
     /**
@@ -71,7 +72,7 @@ public class DateConverter {
      * Uses STRICT resolver style to validate all date and time components.
      */
     private static final DateTimeFormatter ISO_TIMESTAMP_FORMATTER = DateTimeFormatter
-            .ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS")
+            .ofPattern("uuuu-MM-dd HH:mm:ss.SSSSSS")
             .withResolverStyle(ResolverStyle.STRICT);
 
     /**
