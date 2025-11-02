@@ -11,6 +11,7 @@ import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.TransactionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Isolation;
@@ -19,7 +20,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
-import java.util.List;
 
 /**
  * Spring Batch ItemWriter implementation for posting validated transactions to the permanent
@@ -31,11 +31,12 @@ import java.util.List;
  * - Lines 562-579: 2900-WRITE-TRANSACTION-FILE paragraph
  * </p>
  * <p>
- * The write operation performs multi-table updates within a single transaction boundary:
- * 1. Inserts transaction record to transaction table
- * 2. Updates account current balance: ACCT-CURR-BAL += TRAN-AMT
- * 3. Updates account current cycle credit if amount >= 0
- * 4. Updates account current cycle debit if amount < 0
+ * The write operation performs multi-table updates within a single transaction boundary
+ * following the exact COBOL sequence (lines 440-442):
+ * 1. Updates account current balance: ACCT-CURR-BAL += TRAN-AMT (line 441)
+ * 2. Updates account current cycle credit if amount >= 0 (line 441)
+ * 3. Updates account current cycle debit if amount < 0 (line 441)
+ * 4. Inserts transaction record to transaction table (line 442)
  * </p>
  * <p>
  * All operations are atomic - if any operation fails, all changes in the chunk are rolled back.
@@ -99,7 +100,7 @@ public class TransactionPostWriter implements ItemWriter<Transaction> {
      *     WRITE FD-TRANFILE-REC FROM TRAN-RECORD
      * </pre>
      *
-     * @param items list of Transaction entities to be posted (chunk from Spring Batch)
+     * @param chunk chunk of Transaction entities to be posted (chunk from Spring Batch)
      * @throws Exception if any database operation fails (triggers rollback of entire chunk)
      */
     @Override
@@ -107,18 +108,18 @@ public class TransactionPostWriter implements ItemWriter<Transaction> {
             isolation = Isolation.READ_COMMITTED,
             rollbackFor = Exception.class
     )
-    public void write(List<? extends Transaction> items) throws Exception {
-        logger.info("Starting transaction post writer for {} transactions", items.size());
+    public void write(Chunk<? extends Transaction> chunk) throws Exception {
+        logger.info("Starting transaction post writer for {} transactions", chunk.size());
 
         int successCount = 0;
         int errorCount = 0;
 
-        for (Transaction transaction : items) {
+        for (Transaction transaction : chunk) {
             try {
                 // Set processing timestamp (equivalent to Z-GET-DB2-FORMAT-TIMESTAMP in COBOL line 437)
                 // COBOL: PERFORM Z-GET-DB2-FORMAT-TIMESTAMP
                 // COBOL: MOVE DB2-FORMAT-TS TO TRAN-PROC-TS (line 438)
-                transaction.setProcessTimestamp(LocalDateTime.now());
+                transaction.setProcessingTimestamp(LocalDateTime.now());
 
                 // Extract account ID and transaction amount for balance updates
                 Long accountId = transaction.getAccountId();
@@ -142,13 +143,16 @@ public class TransactionPostWriter implements ItemWriter<Transaction> {
                 transactionAmount = transactionAmount.setScale(2, RoundingMode.HALF_UP);
                 transaction.setTransactionAmount(transactionAmount);
 
-                // Step 1: Write transaction to database (COBOL line 564: WRITE FD-TRANFILE-REC)
-                // Equivalent to 2900-WRITE-TRANSACTION-FILE paragraph
+                // Step 1: Update account balances FIRST (COBOL line 441: PERFORM 2800-UPDATE-ACCOUNT-REC)
+                // This must happen before transaction save to ensure referential integrity
+                // and proper error handling (if account not found, transaction should not be saved)
+                updateAccountBalances(accountId, transactionAmount);
+                logger.debug("Updated account balances for account: {}", accountId);
+
+                // Step 2: Write transaction to database (COBOL line 442: PERFORM 2900-WRITE-TRANSACTION-FILE)
+                // Transaction is saved AFTER account update to prevent orphan transactions
                 transactionRepository.save(transaction);
                 logger.debug("Saved transaction: {}", transaction.getTransactionId());
-
-                // Step 2: Update account balances (COBOL lines 545-560: 2800-UPDATE-ACCOUNT-REC)
-                updateAccountBalances(accountId, transactionAmount);
 
                 successCount++;
 
