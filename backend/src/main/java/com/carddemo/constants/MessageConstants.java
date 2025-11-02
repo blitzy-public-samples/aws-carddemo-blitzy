@@ -59,7 +59,7 @@ public final class MessageConstants {
      * Usage: Application exit screens, operation completion confirmations
      */
     public static final String THANK_YOU_MESSAGE = 
-        "Thank you for using CardDemo application...      ";
+        "Thank you for using CardDemo application...       ";
 
     /**
      * Invalid key press message displayed when user presses an unrecognized function key
@@ -70,7 +70,7 @@ public final class MessageConstants {
      * Usage: BMS screen navigation error handling, invalid PF key detection
      */
     public static final String INVALID_KEY_MESSAGE = 
-        "Invalid key pressed. Please see below...         ";
+        "Invalid key pressed. Please see below...          ";
 
     /**
      * Invalid option message displayed when user enters a menu selection or option
@@ -80,7 +80,7 @@ public final class MessageConstants {
      * Usage: Menu selection validation, option availability checks
      */
     public static final String INVALID_OPTION_MESSAGE = 
-        "Invalid option selected. Please try again...     ";
+        "Invalid option selected. Please try again...      ";
 
     /**
      * Menu selection prompt message displayed on menu screens to guide users
@@ -90,7 +90,7 @@ public final class MessageConstants {
      * Usage: Main menu screen, secondary menu screens, report menu
      */
     public static final String MENU_SELECTION_PROMPT = 
-        "Please select an option from the menu above...   ";
+        "Please select an option from the menu above...    ";
 
     /**
      * Error message prefix used to construct dynamic error messages.
@@ -120,7 +120,7 @@ public final class MessageConstants {
      * Usage: Form validation errors, field-level validation feedback
      */
     public static final String VALIDATION_ERROR_MESSAGE = 
-        "Validation error. Please check your input...     ";
+        "Validation error. Please check your input...      ";
 
     /**
      * System error message displayed when an unexpected system-level error occurs,
@@ -130,7 +130,7 @@ public final class MessageConstants {
      * Usage: Exception handling, system failure scenarios, technical errors
      */
     public static final String SYSTEM_ERROR_MESSAGE = 
-        "System error occurred. Please contact support... ";
+        "System error occurred. Please contact support...  ";
 
     /**
      * Maximum length for all message constants, matching the COBOL PIC X(50) specification.
