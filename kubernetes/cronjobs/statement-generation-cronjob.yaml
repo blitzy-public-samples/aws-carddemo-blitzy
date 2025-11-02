@@ -1,0 +1,448 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+###############################################################################
+# Kubernetes CronJob: Monthly Statement Generation
+###############################################################################
+# Migrated from: app/jcl/CREASTMT.JCL (JCL) and app/cbl/CBSTM03A.CBL (COBOL)
+# 
+# Purpose: Generate monthly credit card statements for all active cards with
+#          transaction history and balance information
+#
+# Original JCL Workflow:
+#   STEP010: SORT - Sort TRANSACT file by card number and transaction ID
+#   STEP020: IDCAMS REPRO - Load sorted transactions into VSAM KSDS
+#   STEP030: IEFBR14 - Delete previous statement files
+#   STEP040: CBSTM03A - Generate statements in text and HTML formats
+#
+# Spring Batch Equivalent:
+#   StatementGenerationJob performs:
+#   - Read transactions sorted by card number and transaction ID (ORDER BY)
+#   - Read card cross-reference (XREFFILE → card_xref table)
+#   - Read account data (ACCTFILE → account table)
+#   - Read customer data (CUSTFILE → customer table)
+#   - Generate statement for each card with transaction history
+#   - Produce statement output in text and HTML formats
+#
+# Business Logic Preserved:
+#   - Groups transactions by card number
+#   - Retrieves customer name and address for statement header
+#   - Displays account ID, current balance, FICO score
+#   - Lists all transactions with ID, description, and amount
+#   - Calculates total transaction amount per statement
+#   - Generates both plain text and HTML formatted statements
+#
+# Schedule: Monthly on 1st day at 3:00 AM UTC (after month-end processing)
+# Concurrency: Forbid overlapping executions
+# Timeout: 4 hours maximum execution time
+# History: Keep 12 successful runs (yearly history), 3 failed runs
+###############################################################################
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: statement-generation-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: statement-generation
+    migration-source: CBSTM03A
+    tier: backend
+  annotations:
+    description: "Monthly credit card statement generation batch job"
+    source-jcl: "app/jcl/CREASTMT.JCL"
+    source-cobol: "app/cbl/CBSTM03A.CBL"
+    migration-date: "2024"
+spec:
+  # Schedule: Monthly on 1st day at 3:00 AM UTC
+  # Cron format: minute hour day-of-month month day-of-week
+  # "0 3 1 * *" = At 03:00 on day 1 of every month
+  schedule: "0 3 1 * *"
+  
+  # Timezone for schedule (optional, defaults to UTC)
+  # timeZone: "UTC"
+  
+  # Concurrency policy: Forbid overlapping executions
+  # If previous job still running when schedule triggers, skip new execution
+  concurrencyPolicy: Forbid
+  
+  # Number of successful finished jobs to retain (12 months = yearly history)
+  successfulJobsHistoryLimit: 12
+  
+  # Number of failed finished jobs to retain for troubleshooting
+  failedJobsHistoryLimit: 3
+  
+  # Deadline for starting the job after scheduled time (10 minutes)
+  # If job cannot start within this window, it will be counted as failed
+  startingDeadlineSeconds: 600
+  
+  # Suspend job scheduling (set to true to temporarily disable)
+  suspend: false
+  
+  # Job template specification
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: statement-generation
+        migration-source: CBSTM03A
+    spec:
+      # Retry policy: Allow 2 retries before marking job as failed
+      backoffLimit: 2
+      
+      # Maximum time allowed for job execution (4 hours = 14400 seconds)
+      # Matches original JCL TIME=1440 requirement
+      activeDeadlineSeconds: 14400
+      
+      # Time to live after job finishes (30 days = 2592000 seconds)
+      # After this period, finished job will be automatically deleted
+      ttlSecondsAfterFinished: 2592000
+      
+      # Parallelism: Run single pod at a time (batch job serialization)
+      parallelism: 1
+      
+      # Completions: Job completes after 1 successful pod execution
+      completions: 1
+      
+      # Pod template specification
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: statement-generation
+        spec:
+          # Restart policy: Never restart pod on failure (rely on job retry)
+          restartPolicy: Never
+          
+          # Service account for database access and secrets
+          serviceAccountName: carddemo-batch-sa
+          
+          # Security context for pod
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          
+          # Init containers (optional - for pre-job validation)
+          initContainers:
+          - name: check-db-ready
+            image: postgres:15-alpine
+            command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres-service -p 5432 -U ${DB_USERNAME}; do
+                echo "Waiting for PostgreSQL to be ready..."
+                sleep 5
+              done
+              echo "PostgreSQL is ready"
+            env:
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-db-secret
+                  key: username
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+          
+          # Main container specification
+          containers:
+          - name: statement-generation-job
+            image: carddemo-backend:latest
+            imagePullPolicy: IfNotPresent
+            
+            # Command to execute Spring Batch job
+            # Runs specific job by name to avoid running all batch jobs
+            command:
+            - java
+            - -jar
+            - /app/carddemo-backend.jar
+            
+            # Arguments for Spring Boot application
+            args:
+            - --spring.batch.job.names=StatementGenerationJob
+            - --spring.profiles.active=production
+            - --logging.level.com.carddemo.batch=DEBUG
+            
+            # Environment variables for database and application configuration
+            env:
+            # Database connection settings
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: database-url
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-db-secret
+                  key: username
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-db-secret
+                  key: password
+            
+            # JPA/Hibernate configuration
+            - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+              value: "validate"
+            - name: SPRING_JPA_SHOW_SQL
+              value: "false"
+            - name: SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT
+              value: "org.hibernate.dialect.PostgreSQLDialect"
+            
+            # Batch job configuration
+            - name: SPRING_BATCH_JOB_ENABLED
+              value: "true"
+            - name: SPRING_BATCH_INITIALIZE_SCHEMA
+              value: "never"
+            
+            # Statement generation specific configuration
+            - name: STATEMENT_OUTPUT_PATH
+              value: "/data/statements"
+            - name: STATEMENT_GENERATION_BATCH_SIZE
+              value: "100"
+            - name: STATEMENT_HTML_ENABLED
+              value: "true"
+            - name: STATEMENT_TEXT_ENABLED
+              value: "true"
+            
+            # Chunk processing configuration (matching COBOL batch patterns)
+            - name: BATCH_CHUNK_SIZE
+              value: "50"
+            - name: BATCH_SKIP_LIMIT
+              value: "10"
+            - name: BATCH_RETRY_LIMIT
+              value: "3"
+            
+            # Logging configuration
+            - name: LOGGING_LEVEL_ROOT
+              value: "INFO"
+            - name: LOGGING_LEVEL_COM_CARDDEMO
+              value: "INFO"
+            - name: LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_BATCH
+              value: "INFO"
+            
+            # Java JVM options for optimal batch processing
+            - name: JAVA_OPTS
+              value: >-
+                -Xms768m
+                -Xmx1536m
+                -XX:+UseG1GC
+                -XX:MaxGCPauseMillis=200
+                -XX:+HeapDumpOnOutOfMemoryError
+                -XX:HeapDumpPath=/data/heap-dumps
+                -Djava.security.egd=file:/dev/./urandom
+            
+            # Resource requests and limits
+            resources:
+              requests:
+                # Minimum resources required to start pod
+                memory: "1Gi"
+                cpu: "500m"
+              limits:
+                # Maximum resources pod can consume
+                memory: "2Gi"
+                cpu: "2000m"
+            
+            # Volume mounts for statement output and temporary files
+            volumeMounts:
+            - name: statement-output
+              mountPath: /data/statements
+            - name: temp-storage
+              mountPath: /tmp
+            - name: heap-dumps
+              mountPath: /data/heap-dumps
+            
+            # Security context for container
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              runAsNonRoot: true
+              runAsUser: 1000
+              capabilities:
+                drop:
+                - ALL
+            
+            # Liveness probe: Check if container is running
+            # Disabled during batch job execution to avoid premature restarts
+            # livenessProbe:
+            #   httpGet:
+            #     path: /actuator/health/liveness
+            #     port: 8080
+            #   initialDelaySeconds: 300
+            #   periodSeconds: 60
+            #   timeoutSeconds: 10
+            #   failureThreshold: 3
+            
+            # Readiness probe: Not applicable for batch jobs
+            # readinessProbe not configured
+          
+          # Volumes for persistent and temporary storage
+          volumes:
+          # Persistent volume for statement output files
+          - name: statement-output
+            persistentVolumeClaim:
+              claimName: carddemo-statement-pvc
+          
+          # EmptyDir for temporary files (cleared after job completion)
+          - name: temp-storage
+            emptyDir:
+              sizeLimit: 512Mi
+          
+          # EmptyDir for heap dumps in case of OutOfMemory errors
+          - name: heap-dumps
+            emptyDir:
+              sizeLimit: 2Gi
+          
+          # Image pull secrets for private container registry (if needed)
+          # imagePullSecrets:
+          # - name: carddemo-registry-secret
+          
+          # Node selector for scheduling on specific nodes (optional)
+          # nodeSelector:
+          #   workload-type: batch
+          
+          # Tolerations for node taints (optional)
+          # tolerations:
+          # - key: "batch-workload"
+          #   operator: "Equal"
+          #   value: "true"
+          #   effect: "NoSchedule"
+          
+          # Affinity rules for pod scheduling (optional)
+          # affinity:
+          #   nodeAffinity:
+          #     preferredDuringSchedulingIgnoredDuringExecution:
+          #     - weight: 100
+          #       preference:
+          #         matchExpressions:
+          #         - key: node-role.kubernetes.io/batch
+          #           operator: In
+          #           values:
+          #           - "true"
+
+###############################################################################
+# Supporting Resources Required:
+###############################################################################
+# 
+# 1. ConfigMap: carddemo-config
+#    - database-url: PostgreSQL JDBC connection URL
+#
+# 2. Secret: carddemo-db-secret
+#    - username: Database username
+#    - password: Database password
+#
+# 3. ServiceAccount: carddemo-batch-sa
+#    - Permissions for database access and secret reading
+#
+# 4. PersistentVolumeClaim: carddemo-statement-pvc
+#    - Storage for generated statement files
+#    - Recommended size: 10Gi or more depending on statement volume
+#
+# 5. Service: postgres-service
+#    - PostgreSQL database service endpoint
+#
+###############################################################################
+# Deployment Instructions:
+###############################################################################
+#
+# 1. Ensure all supporting resources are created first
+#
+# 2. Create the CronJob:
+#    kubectl apply -f statement-generation-cronjob.yaml
+#
+# 3. Verify CronJob creation:
+#    kubectl get cronjob statement-generation-cronjob
+#
+# 4. View CronJob details:
+#    kubectl describe cronjob statement-generation-cronjob
+#
+# 5. Manually trigger job for testing (creates immediate job):
+#    kubectl create job statement-generation-manual-001 \
+#      --from=cronjob/statement-generation-cronjob
+#
+# 6. Monitor job execution:
+#    kubectl get jobs -l job=statement-generation
+#    kubectl get pods -l job=statement-generation
+#
+# 7. View job logs:
+#    kubectl logs -l job=statement-generation -f
+#
+# 8. Check job history:
+#    kubectl get jobs -l job=statement-generation --sort-by=.metadata.creationTimestamp
+#
+# 9. Suspend CronJob (temporarily disable):
+#    kubectl patch cronjob statement-generation-cronjob -p '{"spec":{"suspend":true}}'
+#
+# 10. Resume CronJob:
+#     kubectl patch cronjob statement-generation-cronjob -p '{"spec":{"suspend":false}}'
+#
+# 11. Delete CronJob:
+#     kubectl delete cronjob statement-generation-cronjob
+#
+###############################################################################
+# Monitoring and Observability:
+###############################################################################
+#
+# Job Metrics Available via Prometheus:
+# - spring_batch_job_active_count
+# - spring_batch_job_seconds
+# - spring_batch_step_seconds
+# - jvm_memory_used_bytes
+# - jvm_gc_pause_seconds
+#
+# Log Aggregation:
+# - Logs sent to stdout/stderr are collected by Kubernetes
+# - Centralized logging via ELK stack or CloudWatch
+#
+# Alerting Rules:
+# - Alert on job failure (exitCode != 0)
+# - Alert on job duration exceeding 3 hours
+# - Alert on consecutive job failures (3+)
+# - Alert on job not running on schedule
+#
+###############################################################################
+# Troubleshooting:
+###############################################################################
+#
+# Common Issues and Solutions:
+#
+# 1. Job not starting on schedule:
+#    - Check CronJob suspend status: kubectl get cronjob
+#    - Verify schedule expression is correct
+#    - Check startingDeadlineSeconds hasn't expired
+#
+# 2. Job failing immediately:
+#    - Check pod logs: kubectl logs <pod-name>
+#    - Verify database connectivity
+#    - Ensure all secrets and configmaps exist
+#    - Check resource availability on nodes
+#
+# 3. Job timing out (activeDeadlineSeconds):
+#    - Increase activeDeadlineSeconds if legitimate processing time
+#    - Optimize batch chunk size
+#    - Check for database performance issues
+#    - Review transaction data volume
+#
+# 4. Out of memory errors:
+#    - Increase memory limits in resources.limits
+#    - Adjust JAVA_OPTS heap settings (-Xmx)
+#    - Reduce batch chunk size
+#    - Check for memory leaks in application code
+#
+# 5. Database connection issues:
+#    - Verify postgres-service is accessible
+#    - Check database credentials in secrets
+#    - Ensure init container passes
+#    - Review database connection pool settings
+#
+###############################################################################
