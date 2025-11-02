@@ -1,0 +1,175 @@
+# Kubernetes CronJob for Customer Profile Batch Processing
+# Migrated from JCL CCUSTPRO.jcl to Spring Batch + Kubernetes CronJob
+# Part of CardDemo COBOL-to-Java modernization per Agent Action Plan Section 0.6
+#
+# Business Logic:
+# - Analyzes customer transaction patterns and spending behaviors
+# - Updates customer risk profiles based on transaction history
+# - Calculates customer segments for marketing and risk management
+# - Generates customer analytics reports for business intelligence
+#
+# Execution Schedule: Weekly on Monday at 5:00 AM UTC
+# Execution Window: Maximum 2 hours (7200 seconds)
+# Resource Allocation: 512Mi-1Gi memory, 250m-1000m CPU
+#
+# Related Components:
+# - Spring Batch Job: CustomerProfileJob.java
+# - Database Tables: customer, account, card, transaction
+# - Output: Customer profile analytics and segment classifications
+#
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: customer-profile-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: customer-profile
+    tier: backend
+    migration-source: jcl
+  annotations:
+    description: "Weekly customer profile analysis and segmentation batch job"
+    source-jcl: "app/jcl/CCUSTPRO.jcl"
+    target-job: "CustomerProfileJob"
+    batch-window: "7200s"
+spec:
+  # Schedule: Weekly on Monday at 5:00 AM UTC
+  # Runs after weekend transaction processing is complete
+  schedule: "0 5 * * 1"
+  
+  # Concurrency Policy: Forbid overlapping executions
+  # Ensures data consistency during customer profile analysis
+  concurrencyPolicy: Forbid
+  
+  # Starting deadline: Job must start within 5 minutes of schedule
+  startingDeadlineSeconds: 300
+  
+  # Job History Limits
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  
+  # Suspend flag: false (job is active)
+  suspend: false
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: customer-profile
+    spec:
+      # Retry Policy: Retry once on failure
+      backoffLimit: 1
+      
+      # Active Deadline: Maximum 2-hour execution window
+      # Aligns with 4-hour batch processing window requirement from Section 0.1
+      activeDeadlineSeconds: 7200
+      
+      # TTL: Clean up completed jobs after 48 hours (172800 seconds)
+      ttlSecondsAfterFinished: 172800
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: customer-profile
+        spec:
+          # Restart Policy: OnFailure to retry failed pods
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: customer-profile-job
+            
+            # Container Image: CardDemo backend with Spring Batch
+            image: carddemo-backend:latest
+            imagePullPolicy: Always
+            
+            # Command: Execute Spring Batch job via Spring Boot JAR
+            command:
+              - java
+              - -jar
+              - /app/carddemo-backend.jar
+            
+            # Arguments: Specify CustomerProfileJob for execution
+            args:
+              - --spring.batch.job.names=CustomerProfileJob
+              - --spring.profiles.active=batch
+            
+            # Environment Variables: Database and application configuration
+            env:
+              # JVM Options: Memory and garbage collection tuning
+              - name: JAVA_OPTS
+                value: "-Xms512m -Xmx1024m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+              
+              # Timezone: UTC for consistent batch execution
+              - name: TZ
+                value: "UTC"
+              
+              # Spring Profiles: Batch profile for batch-specific configuration
+              - name: SPRING_PROFILES_ACTIVE
+                value: "batch"
+            
+            # Environment Variables from ConfigMap and Secrets
+            envFrom:
+              # Application configuration (non-sensitive)
+              - configMapRef:
+                  name: carddemo-config
+              
+              # Database credentials and sensitive configuration
+              - secretRef:
+                  name: carddemo-secrets
+            
+            # Resource Requirements
+            resources:
+              # Resource Requests: Guaranteed allocation
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+              
+              # Resource Limits: Maximum allocation
+              limits:
+                memory: "1Gi"
+                cpu: "1000m"
+            
+            # Volume Mounts: For report output and temporary data
+            volumeMounts:
+              # Reports output directory
+              - name: reports-volume
+                mountPath: /app/reports
+              
+              # Temporary processing directory
+              - name: temp-volume
+                mountPath: /tmp
+          
+          # Volumes: Persistent and ephemeral storage
+          volumes:
+            # Reports volume: Persistent storage for customer analytics reports
+            - name: reports-volume
+              persistentVolumeClaim:
+                claimName: carddemo-reports-pvc
+            
+            # Temporary volume: Ephemeral storage for processing
+            - name: temp-volume
+              emptyDir:
+                sizeLimit: "1Gi"
+
+---
+# PersistentVolumeClaim for Reports Output
+# Ensures customer profile reports are persisted beyond job lifecycle
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: carddemo-reports-pvc
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
