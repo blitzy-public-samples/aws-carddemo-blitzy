@@ -185,9 +185,14 @@ public class TransactionGroupReader implements ItemStreamReader<TransactionGroup
             logger.info("Executing transaction aggregation query for date range {} to {}", 
                        startDate, endDate);
             
+            // Using modern JdbcTemplate query with PreparedStatementSetter to avoid deprecated method
             this.transactionGroups = jdbcTemplate.query(
-                AGGREGATION_QUERY,
-                new Object[]{startDate.atStartOfDay(), endDate.atStartOfDay()},
+                connection -> {
+                    var ps = connection.prepareStatement(AGGREGATION_QUERY);
+                    ps.setObject(1, startDate.atStartOfDay());
+                    ps.setObject(2, endDate.atStartOfDay());
+                    return ps;
+                },
                 new TransactionGroupRowMapper()
             );
 
@@ -196,7 +201,7 @@ public class TransactionGroupReader implements ItemStreamReader<TransactionGroup
 
             if (transactionGroups == null || transactionGroups.isEmpty()) {
                 logger.warn("No transaction groups found for date range {} to {}", startDate, endDate);
-                transactionGroups = List.of(); // Empty list for null safety
+                transactionGroups = new java.util.ArrayList<>(); // Empty mutable list for null safety
             }
 
         } catch (Exception e) {
@@ -286,12 +291,8 @@ public class TransactionGroupReader implements ItemStreamReader<TransactionGroup
         try {
             logger.info("Closing TransactionGroupReader. Processed {} transaction groups", currentIndex);
             
-            // Clear in-memory data
-            if (transactionGroups != null) {
-                transactionGroups.clear();
-                transactionGroups = null;
-            }
-            
+            // Clear in-memory data - set to null instead of clearing to avoid issues with immutable lists
+            transactionGroups = null;
             currentIndex = 0;
 
         } catch (Exception e) {
