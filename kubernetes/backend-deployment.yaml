@@ -1,0 +1,278 @@
+# Kubernetes Deployment for CardDemo Spring Boot Backend API
+# This deployment manages the Java Spring Boot 3.x microservices layer
+# transformed from legacy COBOL/CICS transaction processing
+#
+# COBOL Programs → Java Services Transformation (28 programs):
+# - Online Transaction Services (17): AuthenticationService, MenuNavigationService,
+#   AccountViewService, AccountUpdateService, CardListService, etc.
+# - Batch Processing Jobs (11): Executed via separate CronJob pods
+#
+# Performance Requirements:
+# - Transaction response time: <200ms at 95th percentile
+# - Peak throughput: 10,000 TPS
+# - Concurrent user support: 150+ users
+# - Memory: Within 10% of CICS region allocation
+#
+# Related Resources:
+# - Service: backend-service.yaml (port 8080)
+# - ConfigMap: configmap.yaml (database, Redis, application config)
+# - Secrets: secrets.yaml (database credentials, JWT secret)
+# - Dependencies: postgres-service, redis-service
+# - Ingress: ingress.yaml (exposes /api/* externally)
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-deployment
+  namespace: default
+  labels:
+    app: carddemo
+    component: backend
+    tier: api
+  annotations:
+    # Prometheus metrics scraping configuration
+    prometheus.io/scrape: 'true'
+    prometheus.io/port: '8080'
+    prometheus.io/path: '/actuator/prometheus'
+spec:
+  # Replica Configuration
+  # High availability: 3 replicas for load distribution and zero-downtime deployments
+  # Supports 10,000 TPS requirement with horizontal scaling capability
+  replicas: 3
+  
+  # Rolling Update Strategy
+  # Ensures zero-downtime deployment with gradual pod replacement
+  # maxSurge: 1 - allows 1 extra pod during update (temporary 4 pods)
+  # maxUnavailable: 0 - maintains minimum 3 replicas during update
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  
+  # Pod Selector
+  # Matches pods with these labels for management by this deployment
+  selector:
+    matchLabels:
+      app: carddemo
+      component: backend
+      tier: api
+  
+  # Pod Template Specification
+  template:
+    metadata:
+      labels:
+        app: carddemo
+        component: backend
+        tier: api
+        version: v1
+      annotations:
+        prometheus.io/scrape: 'true'
+    
+    spec:
+      # Init Container: Wait for PostgreSQL to be ready
+      # Prevents backend from starting before database is available
+      # Essential for Flyway migrations to succeed
+      initContainers:
+      - name: wait-for-postgres
+        image: busybox:1.36
+        command:
+        - 'sh'
+        - '-c'
+        - 'until nc -z postgres-service 5432; do echo waiting for postgres; sleep 2; done'
+      
+      # Main Application Container
+      containers:
+      - name: backend
+        # Container Image
+        # Built from backend/Dockerfile (multi-stage: Maven build → Java 21 runtime)
+        # Contains Spring Boot 3.2.1 application with all 28 COBOL programs transformed to Java services
+        image: carddemo-backend:latest
+        imagePullPolicy: Always  # Use IfNotPresent for semantic versions
+        
+        # Port Configuration
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        
+        # Environment Variables from ConfigMap and Secrets
+        # ConfigMap: Non-sensitive configuration (database URLs, Redis host, logging)
+        # Secrets: Sensitive data (database credentials, JWT secret, passwords)
+        envFrom:
+        - configMapRef:
+            name: carddemo-config
+        - secretRef:
+            name: carddemo-secrets
+        
+        # Additional Environment Variables
+        # JVM tuning for performance and memory management
+        env:
+        - name: JAVA_OPTS
+          value: "-Xms512m -Xmx2048m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+        - name: SPRING_PROFILES_ACTIVE
+          value: "prod"
+        - name: TZ
+          value: "UTC"
+        
+        # Volume Mounts
+        # Logs directory for application logging (optional)
+        volumeMounts:
+        - name: logs
+          mountPath: /app/logs
+        
+        # Resource Limits and Requests
+        # Maintains within 10% of CICS memory allocation per requirements
+        # Adequate for Spring Boot + JPA + connection pooling with 10,000 TPS workload
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+        
+        # Liveness Probe
+        # Checks if application is running and healthy
+        # Kubelet restarts container if probe fails repeatedly
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 90  # Allow Flyway migrations and Spring context initialization
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        
+        # Readiness Probe
+        # Checks if application is ready to accept traffic
+        # Removes pod from service load balancing if probe fails
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 60
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+        
+        # Startup Probe
+        # Checks if application has started successfully
+        # Provides additional time for slow startup (database migrations)
+        startupProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          failureThreshold: 30  # Allow up to 5 minutes for database migrations
+          timeoutSeconds: 5
+        
+        # Lifecycle Hooks
+        # Graceful shutdown: allow in-flight requests to complete
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - "sh"
+              - "-c"
+              - "sleep 15"
+        
+        # Security Context
+        # Run as non-root user for security hardening
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          readOnlyRootFilesystem: false  # Spring Boot requires write access for temp files
+          capabilities:
+            drop:
+            - ALL
+      
+      # Volumes
+      # EmptyDir for application logs (ephemeral)
+      volumes:
+      - name: logs
+        emptyDir: {}
+      
+      # Termination Grace Period
+      # Time to wait for graceful shutdown before forcefully terminating pod
+      # Aligns with preStop hook sleep duration
+      terminationGracePeriodSeconds: 30
+
+---
+# Horizontal Pod Autoscaler (HPA)
+# Automatically scales backend pods based on CPU and memory utilization
+# Ensures application can handle variable load while maintaining performance SLAs
+#
+# Scaling Behavior:
+# - Minimum 3 replicas: Maintains high availability baseline
+# - Maximum 10 replicas: Supports peak load up to 10,000 TPS
+# - CPU target 70%: Scales up when average CPU exceeds 70%
+# - Memory target 80%: Scales up when average memory exceeds 80%
+#
+# Scale-up: Aggressive (add pods quickly under load)
+# Scale-down: Conservative (remove pods slowly to prevent thrashing)
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: default
+  labels:
+    app: carddemo
+    component: backend
+    tier: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend-deployment
+  
+  # Replica Boundaries
+  minReplicas: 3
+  maxReplicas: 10
+  
+  # Scaling Metrics
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  
+  # Scaling Behavior Configuration
+  # Controls how quickly pods are added or removed
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60  # Wait 60s before scaling up again
+      policies:
+      - type: Percent
+        value: 50  # Scale up by 50% of current pods
+        periodSeconds: 60
+      - type: Pods
+        value: 2  # Or add 2 pods
+        periodSeconds: 60
+      selectPolicy: Max  # Use the policy that adds more pods
+    scaleDown:
+      stabilizationWindowSeconds: 300  # Wait 5 minutes before scaling down
+      policies:
+      - type: Percent
+        value: 10  # Scale down by 10% of current pods
+        periodSeconds: 60
+      - type: Pods
+        value: 1  # Or remove 1 pod
+        periodSeconds: 60
+      selectPolicy: Min  # Use the policy that removes fewer pods
+
