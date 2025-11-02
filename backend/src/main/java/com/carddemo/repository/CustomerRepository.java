@@ -105,13 +105,15 @@ public interface CustomerRepository extends JpaRepository<Customer, Long> {
      * <p><b>Performance:</b> Uses B-tree index on customer_id column providing
      * sub-millisecond lookup times matching VSAM KSDS key-based access patterns.</p>
      * 
-     * @param customerId The 9-digit customer identifier as String (CUST-ID PIC 9(09))
-     *                   Accepts String to match REST API parameter types; Spring Data JPA
-     *                   automatically converts to Long for database query
+     * <p><b>Note:</b> This method uses Long type to match the entity primary key type.
+     * Service layer code receiving String IDs from REST APIs should convert to Long
+     * before calling this method (e.g., Long.parseLong(customerIdString)).</p>
+     * 
+     * @param customerId The 9-digit customer identifier as Long (CUST-ID PIC 9(09))
      * @return Optional containing the Customer entity if found, empty Optional if not found
      *         (equivalent to COBOL DFHRESP(NOTFND) condition)
      */
-    Optional<Customer> findByCustomerId(String customerId);
+    Optional<Customer> findByCustomerId(Long customerId);
 
     /**
      * Finds a customer by their Social Security Number (SSN).
@@ -152,7 +154,7 @@ public interface CustomerRepository extends JpaRepository<Customer, Long> {
      * @return Optional containing the Customer entity if found with matching SSN,
      *         empty Optional if no customer exists with that SSN
      */
-    Optional<Customer> findByCustomerSsn(String ssn);
+    Optional<Customer> findBySsn(String ssn);
 
     /**
      * Finds all customers whose last name contains the specified substring (case-insensitive).
@@ -188,15 +190,15 @@ public interface CustomerRepository extends JpaRepository<Customer, Long> {
      * <p><b>Example Usage:</b></p>
      * <pre>
      * // Find all customers with last name containing "Smith"
-     * List&lt;Customer&gt; customers = customerRepository.findByCustomerLastNameContaining("Smith");
-     * // Returns: Smith, Smithson, Blacksmith, etc.
+     * List&lt;Customer&gt; customers = customerRepository.findByLastNameContainingIgnoreCase("Smith");
+     * // Returns: Smith, Smithson, Blacksmith, etc. (case-insensitive)
      * </pre>
      * 
      * @param lastName The last name substring to search for (CUST-LAST-NAME PIC X(25))
      *                 Search is case-insensitive and matches any part of the last name
      * @return List of Customer entities matching the search criteria, empty list if no matches found
      */
-    List<Customer> findByCustomerLastNameContaining(String lastName);
+    List<Customer> findByLastNameContainingIgnoreCase(String lastName);
 
     /**
      * Finds all customers with pagination support for efficient large dataset handling.
