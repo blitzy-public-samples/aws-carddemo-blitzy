@@ -1,0 +1,289 @@
+# Kubernetes Service YAML manifest for React frontend application
+# Exposes the CardDemo web UI within the cluster for internal routing
+# 
+# Purpose: Provides stable DNS endpoint for Ingress controller routing
+# Service Type: ClusterIP (internal cluster access only)
+# External Access: Via Ingress controller with TLS termination
+#
+# This Service resource is part of the CardDemo COBOL-to-Java technology migration
+# transforming BMS 3270 terminal screens to modern React 18 single-page application.
+#
+# Related Resources:
+# - frontend-deployment.yaml: Backend deployment managing React/Nginx pods
+# - ingress.yaml: External routing configuration exposing UI via HTTPS
+# - backend-service.yaml: REST API endpoint for frontend data operations
+#
+# Traffic Flow:
+# User Browser → Ingress Controller → frontend-service (ClusterIP) → Frontend Pod (Nginx:80) → React SPA
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: default
+  labels:
+    app: carddemo
+    component: frontend
+    tier: ui
+    version: v1
+  annotations:
+    description: "CardDemo React 18 frontend service exposing static SPA assets"
+    service.type: "ClusterIP"
+    routing: "Internal cluster DNS with Ingress exposure"
+spec:
+  # Service Type: ClusterIP for internal cluster access
+  # External access provided via Ingress controller
+  # No direct external LoadBalancer or NodePort exposure for security
+  type: ClusterIP
+  
+  # Port Configuration
+  # Exposes port 80 for standard HTTP traffic (TLS termination at Ingress)
+  # Routes traffic to Nginx container serving React build artifacts
+  ports:
+    - name: http
+      port: 80                # Service port (cluster-internal)
+      targetPort: 80          # Container port (Nginx listening port)
+      protocol: TCP
+      appProtocol: http       # Service mesh compatibility annotation
+  
+  # Pod Selector
+  # Routes traffic to pods matching these labels from frontend-deployment.yaml
+  # Ensures requests are load-balanced across all frontend replica pods
+  selector:
+    app: carddemo
+    component: frontend
+    tier: ui
+  
+  # Session Affinity: None
+  # React SPA is completely stateless with client-side routing
+  # All application state managed via Redux store and JWT tokens
+  # Backend session state stored in Redis (not frontend-dependent)
+  # Any frontend pod can serve any request without session stickiness
+  sessionAffinity: None
+  
+  # IP Family Policy (optional, defaults to SingleStack)
+  # Supports IPv4 addressing for cluster networking
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+    - IPv4
+
+---
+# Service DNS Configuration (automatic via Kubernetes)
+#
+# Internal DNS Names:
+# - Fully Qualified: frontend-service.default.svc.cluster.local
+# - Namespace Short Form: frontend-service (within default namespace)
+# - Service Short Form: frontend-service (accessible from any namespace)
+#
+# DNS Resolution:
+# - Ingress Controller resolves to ClusterIP for routing
+# - Other services can reference frontend-service for internal communication
+# - DNS provided by CoreDNS or kube-dns cluster DNS service
+
+---
+# React SPA Routing Configuration
+#
+# The Nginx container in frontend pods serves the React application with
+# client-side routing (React Router 6). All routes fallback to index.html
+# to enable single-page application navigation without server-side routing.
+#
+# Frontend Routes (BMS Map to React Component transformation):
+# - / → LoginComponent.jsx (COSGN00M - Sign-on screen)
+# - /menu → MainMenuComponent.jsx (COMEN01M - Main menu)
+# - /accounts → AccountViewComponent.jsx (COACTVWM - Account view)
+# - /accounts/add → AccountAddComponent.jsx (COACTADD - Add account screen)
+# - /accounts/:id/edit → AccountUpdateComponent.jsx (COACTUPM - Update account)
+# - /cards → CardListComponent.jsx (COCRDLIM - Card list, 7 per page)
+# - /cards/:id → CardSelectComponent.jsx (COCRDSLM - Card detail view)
+# - /cards/:id/edit → CardUpdateComponent.jsx (COCRDUPM - Card update)
+# - /transactions → TransactionListComponent.jsx (COTRN00M - Transaction list, 10 per page)
+# - /transactions/categories → TransactionCategoryComponent.jsx (COTRN01M - Category summary)
+# - /transactions/add → TransactionAddComponent.jsx (COTRN02M - Add transaction)
+# - /payments/bill → BillPaymentComponent.jsx (COBIL00M - Bill payment)
+# - /reports → ReportMenuComponent.jsx (CORPT00M - Report menu)
+# - /admin → AdminComponent.jsx (COADM01M - Admin functions)
+# - /users → UserManagementComponent.jsx (COUSR00M - User management)
+# - /users/profile → UserProfileComponent.jsx (COUSR01M - User profile)
+
+---
+# Nginx Static Asset Serving Configuration
+#
+# The Nginx web server in frontend pods serves:
+# - index.html: Main entry point (served for all SPA routes)
+# - JavaScript bundles: React application code (Webpack/Vite build output)
+# - CSS stylesheets: Material-UI 5 styled components
+# - Static assets: Images, fonts, icons, manifest.json, favicon.ico
+#
+# Nginx Configuration Features (defined in frontend-deployment.yaml ConfigMap):
+# - Gzip compression: Reduces bundle sizes for faster loading
+# - Browser caching: 1-year cache for static assets, no-cache for index.html
+# - Security headers: X-Frame-Options, X-Content-Type-Options, X-XSS-Protection
+# - SPA fallback: try_files $uri $uri/ /index.html for React Router support
+# - Health check endpoint: /health returns 200 OK for readiness probes
+
+---
+# Load Balancing Strategy
+#
+# Kubernetes Service provides automatic round-robin load balancing across
+# all healthy frontend pods matching the selector labels.
+#
+# Load Balancing Characteristics:
+# - Algorithm: Round-robin (default kube-proxy behavior)
+# - Health Checks: Only routes to pods passing readiness probes
+# - Session Persistence: None (stateless SPA architecture)
+# - Pod Selection: Dynamic based on pod label matching
+# - Failure Handling: Automatic removal of unhealthy pods from rotation
+# - Scale Support: Automatically includes new pods added by deployment scaling
+
+---
+# Performance Characteristics
+#
+# Frontend Service Performance Profile:
+# - Latency: Sub-millisecond service routing overhead
+# - Throughput: Handles thousands of concurrent connections
+# - Static Asset Serving: Nginx optimized for high-performance file serving
+# - Connection Handling: Nginx worker processes scale with CPU cores
+# - Resource Footprint: Minimal CPU/memory for static content delivery
+# - Caching: Nginx efficiently caches static assets in memory
+# - Compression: Gzip reduces network transfer by 70-80% for text assets
+
+---
+# Security Considerations
+#
+# Security Features:
+# - No Direct External Exposure: ClusterIP prevents direct internet access
+# - TLS Termination at Ingress: HTTPS encryption handled by Ingress controller
+# - Network Policy Support: Can restrict pod-to-pod communication if needed
+# - Security Headers: Nginx adds OWASP-recommended HTTP security headers
+# - Read-Only Root Filesystem: Frontend pods run with read-only root (security context)
+# - Non-Root User: Nginx runs as user 101 (nginx) not root
+# - Resource Limits: Prevents DoS via resource exhaustion attacks
+# - CORS Handling: Backend API handles CORS; frontend served from same origin via Ingress
+
+---
+# Integration with Other Services
+#
+# Frontend Service Integrations:
+# - Ingress Controller: Routes external HTTPS requests to frontend-service
+# - Backend API: Frontend JavaScript makes AJAX calls to /api/* via Ingress
+# - Authentication: JWT tokens stored in browser localStorage, sent in API request headers
+# - Session Management: Redux Toolkit manages client-side application state
+# - Error Handling: Global error boundary in React catches and displays errors
+# - Monitoring: Browser telemetry can be sent to backend /actuator/metrics endpoints
+
+---
+# High Availability Configuration
+#
+# HA Features:
+# - Multiple Replicas: frontend-deployment.yaml specifies 2+ replica pods
+# - Rolling Updates: Zero-downtime deployments with maxUnavailable: 0
+# - Pod Anti-Affinity: Distributes pods across nodes (optional in deployment)
+# - Health Checks: Liveness and readiness probes ensure traffic routing to healthy pods
+# - Fast Failover: Kubernetes automatically replaces crashed pods within seconds
+# - Horizontal Scaling: Easily scale replicas for increased traffic capacity
+
+---
+# Technology Stack Specifications
+#
+# Frontend Framework Stack:
+# - React: 18.2.0 - Component framework
+# - React Router: 6.21.1 - Client-side routing
+# - Redux Toolkit: 2.0.1 - State management
+# - Axios: 1.6.5 - HTTP client for backend API calls
+# - Material-UI: 5.15.3 - Component library (modernized 3270 screen equivalent)
+# - Formik: 2.4.5 - Form handling
+# - Yup: 1.3.3 - Schema validation
+#
+# Build & Deployment Stack:
+# - Node.js: 20.x LTS - Build environment
+# - Vite: 5.x - Fast build tool and dev server
+# - Nginx: 1.25-alpine - Production web server
+# - Docker: Multi-stage build (npm build → Nginx serve)
+
+---
+# Operational Notes
+#
+# Service Management:
+# - View service details: kubectl describe svc frontend-service
+# - Check endpoints: kubectl get endpoints frontend-service
+# - Monitor traffic: kubectl logs -l component=frontend -f
+# - Test service DNS: kubectl run -it --rm debug --image=busybox --restart=Never -- nslookup frontend-service
+# - Port forward for testing: kubectl port-forward svc/frontend-service 8080:80
+# - Update service: kubectl apply -f kubernetes/frontend-service.yaml
+#
+# Troubleshooting:
+# - No endpoints: Check pod selector labels match deployment template labels
+# - Connection refused: Verify container port 80 is listening in frontend pods
+# - DNS resolution failure: Check CoreDNS pods are running in kube-system namespace
+# - Ingress not routing: Verify ingress.yaml references frontend-service correctly
+
+---
+# Migration Context
+#
+# COBOL-to-Java Technology Migration:
+# This service is part of the comprehensive CardDemo mainframe application
+# migration from IBM z/OS to cloud-native Java/Spring Boot architecture.
+#
+# Legacy System Equivalent:
+# - CICS Transaction Server: Handled 3270 terminal screen rendering
+# - BMS Mapsets: 17 screen definitions for terminal UI
+# - Terminal Access: TN3270 emulator clients
+#
+# Modern System Replacement:
+# - React SPA: Client-side rendering in web browser
+# - React Components: 17 functional components mapped from BMS screens
+# - Web Access: HTTPS via modern web browsers (Chrome, Firefox, Safari, Edge)
+#
+# Functional Equivalence:
+# - All 17 BMS screens have equivalent React component implementations
+# - PF key functions mapped to UI buttons and keyboard shortcuts
+# - Field validation rules preserved using Yup schema validation
+# - Screen navigation flows maintained via React Router configuration
+# - Pagination patterns preserved (7 cards per page, 10 transactions per page)
+# - User workflows identical to mainframe terminal experience
+
+---
+# Deployment Verification
+#
+# Post-Deployment Validation Steps:
+# 1. Verify service created: kubectl get svc frontend-service
+# 2. Check service endpoints: kubectl get endpoints frontend-service
+# 3. Confirm ClusterIP assigned: kubectl describe svc frontend-service | grep IP
+# 4. Test DNS resolution: kubectl run test --rm -it --image=busybox -- nslookup frontend-service
+# 5. Verify pod selector matches: kubectl get pods -l component=frontend
+# 6. Check Ingress routes to service: kubectl describe ingress carddemo-ingress
+# 7. Test external access via Ingress: curl -k https://carddemo.example.com/
+# 8. Monitor service logs: kubectl logs -l component=frontend --tail=50
+# 9. Validate React app loads: Check browser console for no errors
+# 10. Test API integration: Verify frontend can communicate with backend-service
+
+---
+# Performance Tuning Recommendations
+#
+# Optimization Strategies:
+# - CDN Integration: Consider CloudFront or CloudFlare for global static asset distribution
+# - HTTP/2 Support: Enable in Nginx for multiplexed connections
+# - Brotli Compression: Superior to gzip for text assets (requires Nginx module)
+# - Resource Hints: Add preload/prefetch directives in index.html for critical resources
+# - Code Splitting: Lazy load route components with React.lazy() for faster initial load
+# - Service Worker: Implement PWA caching for offline capability (future enhancement)
+# - Image Optimization: Use WebP format with fallbacks for smaller image sizes
+# - Bundle Analysis: Run webpack-bundle-analyzer to identify optimization opportunities
+
+---
+# Compliance and Standards
+#
+# Kubernetes Best Practices Compliance:
+# - Label Standardization: Uses consistent app, component, tier labels
+# - Namespace Isolation: Deployed to default namespace (consider dedicated namespace in production)
+# - Service Discovery: Relies on Kubernetes DNS for automatic service resolution
+# - Port Naming: Uses descriptive port names for clarity and service mesh compatibility
+# - Resource Metadata: Comprehensive annotations for documentation and tooling integration
+# - Security Posture: No unnecessary external exposure, principle of least privilege
+# - High Availability: Supports multiple replicas with automatic load balancing
+
+---
+# End of frontend-service.yaml
+# This Service resource enables the CardDemo React application to be accessed
+# via Ingress routing while maintaining internal cluster network isolation and
+# automatic load balancing across multiple frontend replica pods.
