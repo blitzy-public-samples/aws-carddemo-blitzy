@@ -15,7 +15,7 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { Component } from 'react';
+import { Component } from 'react';
 import { useNavigate } from 'react-router-dom';
 import PropTypes from 'prop-types';
 import {
