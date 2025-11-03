@@ -263,24 +263,31 @@ EOF
 ##############################################################################
 
 load_data_from_sql() {
-    log_info "Using test-data.sql for data loading (text files are in fixed-width format)..."
+    log_info "Using SQL file for data loading (text files are in fixed-width format)..."
     
-    local sql_file="${DATA_DIR}/test-data.sql"
+    # Try corrected file first, then fall back to original test-data.sql
+    local sql_file="${DATA_DIR}/test-data-corrected.sql"
+    if [ ! -f "$sql_file" ]; then
+        sql_file="${DATA_DIR}/test-data.sql"
+        log_warn "test-data-corrected.sql not found, trying test-data.sql"
+    fi
     
     if [ ! -f "$sql_file" ]; then
-        log_error "test-data.sql file not found: $sql_file"
+        log_error "No SQL data file found"
         log_error "Fixed-width format parsing not yet implemented"
+        log_error "Please create test-data-corrected.sql with schema-aligned column names"
         exit 1
     fi
     
+    log_info "Using SQL file: $(basename $sql_file)"
     export PGPASSWORD="${CARDDEMO_PASSWORD}"
     
     # Execute the SQL file
     if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -f "$sql_file" >> "${LOG_FILE}" 2>&1; then
-        log_info "${GREEN}✓${NC} Successfully loaded data from test-data.sql"
+        log_info "${GREEN}✓${NC} Successfully loaded data from SQL file"
         return 0
     else
-        log_error "Failed to load data from test-data.sql"
+        log_error "Failed to load data from SQL file"
         exit 1
     fi
 }
@@ -689,8 +696,7 @@ SELECT
     '  ' || COALESCE(account_status, 'NULL'),
     LPAD(COUNT(*)::text, 10, ' ')
 FROM account
-GROUP BY account_status
-ORDER BY account_status;
+GROUP BY account_status;
 
 -- Card Status Distribution
 SELECT 
@@ -705,8 +711,7 @@ SELECT
     '  ' || COALESCE(card_status, 'NULL'),
     LPAD(COUNT(*)::text, 10, ' ')
 FROM card
-GROUP BY card_status
-ORDER BY card_status;
+GROUP BY card_status;
 EOF
 }
 
