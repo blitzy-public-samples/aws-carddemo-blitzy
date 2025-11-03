@@ -230,9 +230,11 @@ public class DatabaseConfig {
         properties.setProperty("hibernate.format_sql", "true");
         properties.setProperty("hibernate.use_sql_comments", "true");
         
-        // Schema management (Flyway handles DDL, Hibernate validates)
-        properties.setProperty("hibernate.ddl-auto", "validate");
-        properties.setProperty("hibernate.hbm2ddl.auto", "validate");
+        // Schema management (Flyway handles DDL in production, Hibernate validates by default)
+        // For test environments, this can be overridden via spring.jpa.hibernate.ddl-auto property
+        String ddlAuto = environment.getProperty("spring.jpa.hibernate.ddl-auto", "validate");
+        properties.setProperty("hibernate.ddl-auto", ddlAuto);
+        properties.setProperty("hibernate.hbm2ddl.auto", ddlAuto);
         
         // Batch processing optimization (critical for batch job performance)
         properties.setProperty("hibernate.jdbc.batch_size", "50");
