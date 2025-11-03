@@ -82,6 +82,70 @@ public class UserManagementRequest {
     private Integer pageNumber;
 
     /**
+     * User ID for individual user operations (CREATE, EDIT).
+     * Maps to COBOL field SEC-USR-ID PIC X(8) from CSUSR01Y copybook.
+     * 
+     * <p>Required for CREATE and EDIT actions. Must be 8 characters maximum
+     * per COBOL PIC X(8) specification. Used as primary key for user identification.
+     */
+    @Size(max = 8, message = "User ID must not exceed 8 characters")
+    @JsonProperty("userId")
+    private String userId;
+
+    /**
+     * User's first name for individual user operations.
+     * Maps to COBOL field SEC-USR-FNAME PIC X(20) from CSUSR01Y copybook.
+     * 
+     * <p>Required for CREATE action, optional for EDIT action.
+     * Maximum length of 20 characters per COBOL specification.
+     */
+    @Size(max = 20, message = "First name must not exceed 20 characters")
+    @JsonProperty("firstName")
+    private String firstName;
+
+    /**
+     * User's last name for individual user operations.
+     * Maps to COBOL field SEC-USR-LNAME PIC X(20) from CSUSR01Y copybook.
+     * 
+     * <p>Required for CREATE action, optional for EDIT action.
+     * Maximum length of 20 characters per COBOL specification.
+     */
+    @Size(max = 20, message = "Last name must not exceed 20 characters")
+    @JsonProperty("lastName")
+    private String lastName;
+
+    /**
+     * User's password for individual user operations.
+     * Maps to COBOL field SEC-USR-PWD PIC X(8) but will be BCrypt hashed.
+     * 
+     * <p>CRITICAL SECURITY: Plain text password from request will be BCrypt hashed
+     * before storage. COBOL stored plain text 8 characters, Java stores BCrypt hash
+     * 60 characters with strength 12 per Section 0.9 security requirements.
+     * 
+     * <p>Required for CREATE action, optional for EDIT action (only if password change).
+     */
+    @Size(min = 1, max = 50, message = "Password must be between 1 and 50 characters")
+    @JsonProperty("password")
+    private String password;
+
+    /**
+     * User type code indicating security role level.
+     * Maps to COBOL field SEC-USR-TYPE PIC X(1) from CSUSR01Y copybook.
+     * 
+     * <p><b>Valid Values:</b></p>
+     * <ul>
+     *   <li>'R' = Regular User (ROLE_USER)</li>
+     *   <li>'A' = Administrative User (ROLE_ADMIN)</li>
+     * </ul>
+     * 
+     * <p>Required for CREATE action, optional for EDIT action.
+     * Maps to Spring Security role hierarchy per two-tier security model.
+     */
+    @Pattern(regexp = "[RA]", message = "User type must be 'R' (Regular) or 'A' (Admin)")
+    @JsonProperty("userType")
+    private String userType;
+
+    /**
      * List of user selections from the current page, supporting batch operations
      * on multiple users simultaneously.
      * 
