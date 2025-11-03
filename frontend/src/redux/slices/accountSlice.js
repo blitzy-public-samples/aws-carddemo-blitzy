@@ -46,8 +46,7 @@ import {
   getAccount,
   getAccountsByCustomer,
   updateAccount as updateAccountService,
-  createAccount as createAccountService,
-  getAccountBalance
+  createAccount as createAccountService
 } from '../../services/accountService';
 
 /**
