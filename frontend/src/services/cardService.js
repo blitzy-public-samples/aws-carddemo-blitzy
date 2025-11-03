@@ -170,12 +170,12 @@ const getCards = async (accountId = null, page = 1, pageSize = 7) => {
  */
 const getCard = async (cardNumber) => {
   try {
-    // Validate card number format
-    if (!cardNumber || typeof cardNumber !== 'string') {
+    // Validate card number format - check type first
+    if (typeof cardNumber !== 'string') {
       throw new Error('Invalid card number format. Card number is required.');
     }
     
-    // Card number should be 16 digits (basic validation)
+    // Trim and check for empty string
     const trimmedCardNumber = cardNumber.trim();
     if (trimmedCardNumber.length === 0) {
       throw new Error('Invalid card number format. Card number cannot be empty.');
@@ -264,11 +264,12 @@ const getCard = async (cardNumber) => {
  */
 const updateCard = async (cardNumber, cardData) => {
   try {
-    // Validate card number
-    if (!cardNumber || typeof cardNumber !== 'string') {
+    // Validate card number - check type first
+    if (typeof cardNumber !== 'string') {
       throw new Error('Invalid card number format. Card number is required.');
     }
     
+    // Trim and check for empty string
     const trimmedCardNumber = cardNumber.trim();
     if (trimmedCardNumber.length === 0) {
       throw new Error('Invalid card number format. Card number cannot be empty.');
@@ -298,8 +299,22 @@ const updateCard = async (cardNumber, cardData) => {
         throw new Error('Invalid expiry date format. Must be YYYY-MM-DD.');
       }
       
-      // Validate that expiry date is in the future
+      // Validate that it's a valid date (catches invalid months/days like 2028-13-01)
       const expiryDate = new Date(cardData.expiryDate);
+      if (isNaN(expiryDate.getTime())) {
+        throw new Error('Invalid expiry date format. Must be YYYY-MM-DD.');
+      }
+      
+      // Additional validation: Check if date string matches the parsed date
+      // This catches cases like '2028-13-01' which Date constructor might interpret differently
+      const [year, month, day] = cardData.expiryDate.split('-').map(Number);
+      if (expiryDate.getFullYear() !== year || 
+          expiryDate.getMonth() + 1 !== month || 
+          expiryDate.getDate() !== day) {
+        throw new Error('Invalid expiry date format. Must be YYYY-MM-DD.');
+      }
+      
+      // Validate that expiry date is in the future
       const today = new Date();
       today.setHours(0, 0, 0, 0); // Normalize to start of day
       
@@ -380,11 +395,12 @@ const updateCard = async (cardNumber, cardData) => {
  */
 const getCardsByCustomer = async (customerId) => {
   try {
-    // Validate customer ID
-    if (!customerId || typeof customerId !== 'string') {
+    // Validate customer ID - check type first
+    if (typeof customerId !== 'string') {
       throw new Error('Invalid customer ID format. Customer ID is required.');
     }
     
+    // Trim and check for empty string
     const trimmedCustomerId = customerId.trim();
     if (trimmedCustomerId.length === 0) {
       throw new Error('Invalid customer ID format. Customer ID cannot be empty.');
