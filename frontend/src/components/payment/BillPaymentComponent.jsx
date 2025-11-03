@@ -41,7 +41,7 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Stepper,
@@ -60,13 +60,13 @@ import {
   Radio,
   CircularProgress
 } from '@mui/material';
-import { Formik, Form, Field } from 'formik';
+import { Formik, Form } from 'formik';
 import * as Yup from 'yup';
 
 // Internal imports - from depends_on_files
 import apiClient from '../../services/apiClient';
 import { formatCurrency } from '../../utils/formatters';
-import { FIELD_LENGTHS, TRANSACTION_TYPES, SUCCESS_MESSAGES, ERROR_MESSAGES } from '../../utils/constants';
+import { FIELD_LENGTHS } from '../../utils/constants';
 
 /**
  * Validation Schema for Bill Payment Form
@@ -145,14 +145,6 @@ const BillPaymentComponent = () => {
   // Extract pre-filled account ID from route state (if navigated from account/transaction view)
   // Maps to COBOL CDEMO-CB00-TRN-SELECTED (lines 116-119)
   const prefilledAccountId = location.state?.accountId || '';
-  
-  // Define stepper steps for visual workflow progress
-  // Maps to COBOL transaction flow stages in COBIL00C.cbl
-  const steps = [
-    'Account Selection',  // Step 0: Input account ID, fetch balance
-    'Confirmation',       // Step 1: Review payment details, confirm Y/N
-    'Payment Processing'  // Step 2: Create transaction, update balance
-  ];
   
   // Initial form values
   // Maps to COBOL WORKING-STORAGE initialized variables
@@ -477,7 +469,7 @@ const BillPaymentComponent = () => {
         validateOnBlur={true}
       >
         {(formikProps) => {
-          const { values, errors, touched, setFieldValue, handleChange, handleBlur, isValid } = formikProps;
+          const { values, errors, touched, handleChange, handleBlur } = formikProps;
           
           return (
             <Form>
