@@ -1,5 +1,7 @@
 package com.carddemo.config;
 
+import com.carddemo.security.JwtAuthenticationFilter;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -9,6 +11,7 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 /**
  * Security Configuration for CardDemo Application
@@ -32,6 +35,9 @@ import org.springframework.security.web.SecurityFilterChain;
 @EnableWebSecurity
 @EnableMethodSecurity(prePostEnabled = true)
 public class SecurityConfig {
+
+    @Autowired
+    private JwtAuthenticationFilter jwtAuthenticationFilter;
 
     /**
      * Password encoder bean using BCrypt with strength 12
@@ -70,7 +76,8 @@ public class SecurityConfig {
                 .requestMatchers("/actuator/health", "/actuator/info").permitAll() // Allow health checks
                 .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll() // Allow API documentation
                 .anyRequest().authenticated() // All other requests require authentication
-            );
+            )
+            .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class); // Add JWT filter
 
         return http.build();
     }
