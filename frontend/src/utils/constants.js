@@ -333,12 +333,13 @@ export const FIELD_LENGTHS = {
 /**
  * Date format patterns for display and API communication
  * Maintains compatibility with COBOL date handling (CEEDAYS conversion)
+ * Using date-fns format tokens: yyyy = year, MM = month, dd = day, HH = hour, mm = minute, ss = second
  */
 export const DATE_FORMATS = {
-  DISPLAY: 'MM/DD/YYYY',       // For UI display
-  API: 'YYYY-MM-DD',           // For API requests (ISO 8601)
-  COBOL: 'YYYYMMDD',           // COBOL date format (no delimiters)
-  TIMESTAMP: 'YYYY-MM-DD HH:mm:ss'
+  DISPLAY: 'MM/dd/yyyy',       // For UI display (e.g., 11/03/2024)
+  API: 'yyyy-MM-dd',           // For API requests (ISO 8601, e.g., 2024-11-03)
+  COBOL: 'yyyyMMdd',           // COBOL date format (no delimiters, e.g., 20241103)
+  TIMESTAMP: 'yyyy-MM-dd HH:mm:ss'  // Full timestamp (e.g., 2024-11-03 14:30:45)
 };
 
 // =============================================================================
