@@ -12,7 +12,7 @@ INSERT INTO account (
   current_balance, credit_limit, cash_credit_limit,
   open_date, expiration_date, reissue_date,
   current_cycle_credit, current_cycle_debit,
-  address_zip, account_group_id
+  address_zip, account_group_id, version
 ) VALUES
   -- Test Account 1: Customer 1 (John Smith) - Active account with positive balance
   -- Used in primary test cases (testFindById_ValidAccountId, testUpdate_ExistingAccount)
@@ -20,7 +20,7 @@ INSERT INTO account (
    1250.75, 5000.00, 1000.00,
    '2020-01-15', '2027-01-15', '2024-12-01',
    500.00, 1750.75,
-   '75001', 'GROUP001'),
+   '75001', 'GROUP001', 0),
   
   -- Test Account 2: Customer 1 (John Smith) - Active account with negative balance (credit)
   -- Used for findByCustomerId tests (multiple accounts per customer) and balance range queries
@@ -28,7 +28,7 @@ INSERT INTO account (
    -150.50, 10000.00, 2000.00,
    '2019-06-10', '2028-06-10', '2023-05-15',
    2000.00, 2150.50,
-   '75001', 'GROUP002'),
+   '75001', 'GROUP002', 0),
   
   -- Test Account 3: Customer 2 (Jane Doe) - Active account with high balance
   -- Used for findByCreditLimitGreaterThan and aggregation tests
@@ -36,4 +36,4 @@ INSERT INTO account (
    3500.00, 15000.00, 3000.00,
    '2021-03-20', '2026-03-20', '2025-02-15',
    1500.00, 5000.00,
-   '90001', 'GROUP001');
+   '90001', 'GROUP001', 0);

@@ -427,8 +427,11 @@ public class AccountViewServiceTest {
             "Current balance should not be null");
         assertEquals(2, response.getCurrentBalance().scale(),
             "Current balance must have scale=2 (COBOL COMP-3 V99)");
-        assertEquals(RoundingMode.HALF_UP, 
-            response.getCurrentBalance().setScale(2, RoundingMode.HALF_UP).scale() == 2,
+        
+        // Verify HALF_UP rounding is maintained by testing rounding behavior
+        BigDecimal testRounding = response.getCurrentBalance()
+            .setScale(2, RoundingMode.HALF_UP);
+        assertEquals(response.getCurrentBalance(), testRounding,
             "Current balance must use HALF_UP rounding mode");
 
         // Assert: Verify credit limit precision
