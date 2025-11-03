@@ -2,6 +2,7 @@ package com.carddemo.repository;
 
 import com.carddemo.entity.TransactionType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -281,6 +282,7 @@ public interface TransactionTypeRepository extends JpaRepository<TransactionType
      * @see TransactionType Entity class representing reference data records
      * @see java.util.List Standard Java collection for ordered elements
      */
+    @Query("SELECT t FROM TransactionType t ORDER BY t.typeCode ASC")
     List<TransactionType> findAllByOrderByTypeCodeAsc();
 
     /**
