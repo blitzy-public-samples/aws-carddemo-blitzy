@@ -254,13 +254,50 @@ public class AccountItemReader extends AbstractItemCountingItemStreamItemReader<
     }
 
     /**
+     * Opens the reader and restores state from ExecutionContext if job is restarting.
+     * Overrides AbstractItemStreamSupport.open() to restore custom pagination state.
+     * 
+     * @param executionContext Spring Batch execution context containing persisted state
+     * @throws ItemStreamException if reader initialization fails
+     */
+    @Override
+    public void open(ExecutionContext executionContext) throws ItemStreamException {
+        // Call parent to invoke doOpen() and restore item count
+        super.open(executionContext);
+        
+        // Restore pagination state from ExecutionContext if present (job restart scenario)
+        if (executionContext.containsKey(CURRENT_PAGE_KEY)) {
+            this.currentPage = executionContext.getInt(CURRENT_PAGE_KEY, 0);
+        }
+        
+        if (executionContext.containsKey(CURRENT_POSITION_KEY)) {
+            int savedPosition = executionContext.getInt(CURRENT_POSITION_KEY, 0);
+            
+            // If restarting mid-page, fetch the page where we left off
+            if (savedPosition > 0 || this.currentPage > 0) {
+                try {
+                    // Fetch the page but preserve the saved position
+                    fetchNextPage();
+                    // Restore the position within the page (fetchNextPage resets it to 0)
+                    this.currentPositionInPage = savedPosition;
+                } catch (Exception e) {
+                    throw new ItemStreamException("Failed to fetch page during restart", e);
+                }
+            } else {
+                this.currentPositionInPage = 0;
+            }
+        }
+    }
+
+    /**
      * Template method implementation for initializing reader state.
      * Called by AbstractItemCountingItemStreamItemReader.open() during reader initialization.
      * 
      * <p><strong>Restart Support:</strong></p>
-     * <p>If ExecutionContext contains saved state from previous execution (job restart scenario),
-     * this method restores the reader position to continue from last checkpoint. This implements
-     * equivalent checkpoint/restart capability to mainframe batch job restart.</p>
+     * <p>ExecutionContext state restoration is handled automatically by the parent class
+     * through the open(ExecutionContext) method. This doOpen() method initializes resources
+     * without direct ExecutionContext access. State restoration happens in jumpToItem() which
+     * is called by the parent class after doOpen().</p>
      * 
      * <p><strong>COBOL Equivalent:</strong></p>
      * <pre>
@@ -275,44 +312,23 @@ public class AccountItemReader extends AbstractItemCountingItemStreamItemReader<
      *       END-IF
      * 
      * Java Equivalent:
-     *   protected void doOpen(ExecutionContext executionContext) {
-     *       // Restore state from ExecutionContext (checkpoint)
+     *   protected void doOpen() {
      *       // Initialize pagination parameters
      *       // No explicit "open" needed - repository always available
+     *       // Parent class handles ExecutionContext restoration via jumpToItem()
      *   }
      * </pre>
      * 
-     * @param executionContext Spring Batch execution context containing persisted state from 
-     *                         previous run (if job is restarting) or empty context for initial run
-     * @throws ItemStreamException if reader initialization fails (database connection errors, etc.)
+     * @throws Exception if reader initialization fails (database connection errors, etc.)
      */
     @Override
-    protected void doOpen(ExecutionContext executionContext) throws ItemStreamException {
-        try {
-            // Restore reader state from ExecutionContext for restart scenario
-            if (executionContext.containsKey(CURRENT_PAGE_KEY)) {
-                this.currentPage = executionContext.getInt(CURRENT_PAGE_KEY, 0);
-            } else {
-                this.currentPage = 0;
-            }
-
-            if (executionContext.containsKey(CURRENT_POSITION_KEY)) {
-                this.currentPositionInPage = executionContext.getInt(CURRENT_POSITION_KEY, 0);
-            } else {
-                this.currentPositionInPage = 0;
-            }
-
-            // Initialize empty page buffer
-            this.currentPageContent = new ArrayList<>();
-
-            // If restarting mid-page, fetch the page where we left off
-            if (this.currentPositionInPage > 0) {
-                fetchNextPage();
-            }
-
-        } catch (Exception e) {
-            throw new ItemStreamException("Failed to open AccountItemReader", e);
-        }
+    protected void doOpen() throws Exception {
+        // Initialize pagination state
+        this.currentPage = 0;
+        this.currentPositionInPage = 0;
+        
+        // Initialize empty page buffer
+        this.currentPageContent = new ArrayList<>();
     }
 
     /**
@@ -387,8 +403,9 @@ public class AccountItemReader extends AbstractItemCountingItemStreamItemReader<
     }
 
     /**
-     * Template method implementation for persisting reader state to ExecutionContext.
+     * Persists reader state to ExecutionContext for checkpoint/restart capability.
      * Called periodically by Spring Batch framework at chunk commit boundaries.
+     * Overrides AbstractItemStreamSupport.update() to save custom pagination state.
      * 
      * <p><strong>Checkpoint/Restart Implementation:</strong></p>
      * <p>This method implements equivalent checkpoint capability to mainframe batch job checkpoints.
@@ -411,7 +428,10 @@ public class AccountItemReader extends AbstractItemCountingItemStreamItemReader<
      * @throws ItemStreamException if state persistence fails
      */
     @Override
-    protected void doUpdate(ExecutionContext executionContext) throws ItemStreamException {
+    public void update(ExecutionContext executionContext) throws ItemStreamException {
+        // Call parent to save item count
+        super.update(executionContext);
+        
         try {
             // Persist current page number for restart capability
             executionContext.putInt(CURRENT_PAGE_KEY, this.currentPage);
