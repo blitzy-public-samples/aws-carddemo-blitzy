@@ -258,14 +258,9 @@ class MenuNavigationServiceTest {
      */
     @Test
     void testProcessMenuSelection_InvalidOption_ReturnsError() {
-        // Arrange: Set up authentication with regular user
-        Authentication authentication = new UsernamePasswordAuthenticationToken(
-            regularUser,
-            null,
-            List.of(new SimpleGrantedAuthority("ROLE_USER"))
-        );
-        when(securityContext.getAuthentication()).thenReturn(authentication);
-
+        // Note: Invalid options are caught by validation BEFORE authentication check,
+        // so no need to mock authentication context for these test cases
+        
         // Test Case 1: Option number too high (> 10)
         MenuSelectionResult resultTooHigh = menuNavigationService.processMenuSelection("99");
         assertNotNull(resultTooHigh, "Result should not be null");
@@ -335,14 +330,9 @@ class MenuNavigationServiceTest {
      */
     @Test
     void testMenuDisplay_FormatsHeader_WithCurrentDateTime() {
-        // Arrange: Set up authentication with regular user
-        Authentication authentication = new UsernamePasswordAuthenticationToken(
-            regularUser,
-            null,
-            List.of(new SimpleGrantedAuthority("ROLE_USER"))
-        );
-        when(securityContext.getAuthentication()).thenReturn(authentication);
-
+        // Note: buildMenuResponse() receives user object directly,
+        // so no need to mock authentication context
+        
         // Act: Build menu response
         List<MenuOptionDTO> options = menuNavigationService.getMenuOptionsForUser("U");
         MenuResponse response = menuNavigationService.buildMenuResponse(regularUser, options);
@@ -385,14 +375,9 @@ class MenuNavigationServiceTest {
      */
     @Test
     void testReceiveMenuScreen_EmptyInput_PromptsForSelection() {
-        // Arrange: Set up authentication
-        Authentication authentication = new UsernamePasswordAuthenticationToken(
-            regularUser,
-            null,
-            List.of(new SimpleGrantedAuthority("ROLE_USER"))
-        );
-        when(securityContext.getAuthentication()).thenReturn(authentication);
-
+        // Note: validateMenuOption() doesn't use authentication context,
+        // it only validates input format
+        
         // Test Case 1: Null input
         String validationResultNull = menuNavigationService.validateMenuOption(null);
         assertNotNull(validationResultNull, "Validation should return error message for null");
@@ -763,14 +748,9 @@ class MenuNavigationServiceTest {
      */
     @Test
     void testProcessMenuSelection_NegativeOption_ReturnsError() {
-        // Arrange: Set up authentication
-        Authentication authentication = new UsernamePasswordAuthenticationToken(
-            regularUser,
-            null,
-            List.of(new SimpleGrantedAuthority("ROLE_USER"))
-        );
-        when(securityContext.getAuthentication()).thenReturn(authentication);
-
+        // Note: Negative options are caught by validation BEFORE authentication check,
+        // so no need to mock authentication context
+        
         // Act: Process negative option
         MenuSelectionResult result = menuNavigationService.processMenuSelection("-1");
 
