@@ -65,7 +65,7 @@
  * <Route path="/accounts/:accountId/edit" element={<AccountUpdateComponent />} />
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Formik, Form, Field } from 'formik';
 import * as Yup from 'yup';
@@ -223,7 +223,6 @@ const AccountUpdateComponent = () => {
   // Component state management
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [account, setAccount] = useState(null);
   const [initialValues, setInitialValues] = useState({
     accountId: '',
     accountStatus: 'Y',
@@ -300,7 +299,6 @@ const AccountUpdateComponent = () => {
         // Call accountService.getAccount() to retrieve account data
         // Maps COBOL: EXEC CICS READ DATASET('ACCTDAT')
         const data = await accountService.getAccount(accountId);
-        setAccount(data);
         
         // Parse date fields into separate year/month/day components
         // Maps COBOL date field parsing from CCYYMMDD format
@@ -572,7 +570,7 @@ const AccountUpdateComponent = () => {
           onSubmit={handleSubmit}
           enableReinitialize={true}
         >
-          {({ values, errors, touched, isSubmitting, setFieldValue }) => (
+          {({ values, errors, touched, isSubmitting }) => (
             <Form>
               {/* Account Information Section */}
               <Typography variant="h6" gutterBottom color="primary">
