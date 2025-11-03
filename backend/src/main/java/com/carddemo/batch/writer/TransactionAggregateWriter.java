@@ -146,7 +146,7 @@ public class TransactionAggregateWriter implements ItemWriter<TransactionAggrega
 
                 // UPSERT logic: Check if aggregate already exists
                 Optional<TransactionAggregate> existingOpt = transactionAggregateRepository
-                    .findByAccountIdAndTransactionTypeCodeAndTransactionCategoryCode(
+                    .findById_AccountIdAndId_TransactionTypeCodeAndId_TransactionCategoryCode(
                         aggregate.getAccountId(),
                         aggregate.getTransactionTypeCode(),
                         aggregate.getTransactionCategoryCode()
