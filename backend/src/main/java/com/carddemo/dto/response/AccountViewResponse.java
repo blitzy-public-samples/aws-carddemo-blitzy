@@ -195,6 +195,16 @@ public class AccountViewResponse implements Serializable {
     private BigDecimal currentBalance;
     
     /**
+     * Available credit amount (Calculated field: creditLimit - currentBalance).
+     * Represents the remaining credit available for transactions.
+     * Preserves COMP-3 precision with BigDecimal(15,2) matching COBOL semantics.
+     * Calculated in service layer to ensure consistency.
+     */
+    @JsonProperty("availableCredit")
+    @Digits(integer = 13, fraction = 2, message = "Available credit must have at most 13 integer digits and 2 decimal places")
+    private BigDecimal availableCredit;
+    
+    /**
      * Cycle credit total (COBOL: ACRCYCRO PIC +ZZZ,ZZZ,ZZZ.99).
      * Total credits posted during current billing cycle.
      * Preserves COMP-3 precision with BigDecimal(15,2) matching COBOL semantics.
@@ -298,6 +308,14 @@ public class AccountViewResponse implements Serializable {
     @JsonProperty("addressLine2")
     @Size(max = 50, message = "Address line 2 must not exceed 50 characters")
     private String addressLine2;
+    
+    /**
+     * Mailing address line 3 (COBOL: ACSADL3O PIC X(50)).
+     * Tertiary address line (additional address details).
+     */
+    @JsonProperty("addressLine3")
+    @Size(max = 50, message = "Address line 3 must not exceed 50 characters")
+    private String addressLine3;
     
     /**
      * City name (COBOL: ACSCITYO PIC X(50)).

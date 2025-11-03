@@ -77,7 +77,6 @@ public class AccountUpdateService {
 
     private final AccountRepository accountRepository;
     private final CustomerRepository customerRepository;
-    private final ValidationUtils validationUtils;
     private final DateUtils dateUtils;
     private final DecimalUtils decimalUtils;
 
@@ -86,19 +85,16 @@ public class AccountUpdateService {
      * 
      * @param accountRepository Repository for account data access
      * @param customerRepository Repository for customer data access
-     * @param validationUtils Utility for field validation
      * @param dateUtils Utility for date operations
      * @param decimalUtils Utility for BigDecimal operations
      */
     public AccountUpdateService(
             AccountRepository accountRepository,
             CustomerRepository customerRepository,
-            ValidationUtils validationUtils,
             DateUtils dateUtils,
             DecimalUtils decimalUtils) {
         this.accountRepository = accountRepository;
         this.customerRepository = customerRepository;
-        this.validationUtils = validationUtils;
         this.dateUtils = dateUtils;
         this.decimalUtils = decimalUtils;
     }
@@ -302,7 +298,7 @@ public class AccountUpdateService {
         // Validate first name (COBOL: 1225-EDIT-ALPHA-REQD)
         if (request.getFirstName() != null) {
             ValidationUtils.ValidationResult firstNameResult = 
-                validationUtils.validateNotBlank(request.getFirstName());
+                ValidationUtils.validateNotBlank(request.getFirstName());
             if (!firstNameResult.isValid()) {
                 throw new AccountUpdateException(
                     "First name validation failed: " + firstNameResult.getErrorMessage(),
@@ -315,7 +311,7 @@ public class AccountUpdateService {
         // Validate last name (COBOL: 1225-EDIT-ALPHA-REQD)
         if (request.getLastName() != null) {
             ValidationUtils.ValidationResult lastNameResult = 
-                validationUtils.validateNotBlank(request.getLastName());
+                ValidationUtils.validateNotBlank(request.getLastName());
             if (!lastNameResult.isValid()) {
                 throw new AccountUpdateException(
                     "Last name validation failed: " + lastNameResult.getErrorMessage(),

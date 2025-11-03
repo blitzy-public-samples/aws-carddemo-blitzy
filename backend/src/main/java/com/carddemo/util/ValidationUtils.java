@@ -52,6 +52,9 @@ import java.util.regex.Pattern;
  *   <li>PIC clause length → validateLength() methods</li>
  * </ul>
  * 
+ * <p><strong>Note:</strong> This is a static utility class and cannot be instantiated.
+ * All methods are static and should be called directly on the class.
+ * 
  * @version CardDemo_v1.0 COBOL-to-Java Migration
  * @see StringUtils
  * @see DateValidator

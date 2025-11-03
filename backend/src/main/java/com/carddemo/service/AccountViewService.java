@@ -351,13 +351,13 @@ public class AccountViewService {
      * @throws IllegalArgumentException if account or account.customer is null
      */
     public AccountViewResponse formatAccountViewResponse(Account account) {
-        log.debug("Formatting account view response for accountId: {}", account.getAccountId());
-        
-        // Validate input account
+        // Validate input account first before any access
         if (account == null) {
             log.error("Cannot format null account");
             throw new IllegalArgumentException("Account cannot be null for formatting");
         }
+        
+        log.debug("Formatting account view response for accountId: {}", account.getAccountId());
         
         // Retrieve associated customer (lazy load via JPA relationship)
         // Replaces EXEC CICS READ CUSTDAT from lines 826-834
@@ -389,8 +389,8 @@ public class AccountViewService {
         
         // Set account dates (COBOL lines 487-489)
         response.setDateOpened(account.getOpenDate());
-        response.setDateExpires(account.getExpirationDate());
-        response.setDateReissued(account.getReissueDate());
+        response.setExpiryDate(account.getExpirationDate());
+        response.setReissueDate(account.getReissueDate());
         
         // Set account financial data with COMP-3 precision preservation (COBOL lines 475-490)
         response.setCurrentBalance(
@@ -399,7 +399,7 @@ public class AccountViewService {
         response.setCreditLimit(
             DecimalUtils.setScaleWithRounding(account.getCreditLimit(), DecimalUtils.MONEY_SCALE)
         );
-        response.setCashCreditLimit(
+        response.setCashLimit(
             DecimalUtils.setScaleWithRounding(account.getCashCreditLimit(), DecimalUtils.MONEY_SCALE)
         );
         
@@ -419,10 +419,10 @@ public class AccountViewService {
         );
         
         // Set account group ID (COBOL line 490)
-        response.setAccountGroupId(account.getAccountGroupId());
+        response.setAccountGroupCode(account.getAccountGroupId());
         
         // Set customer identifier (COBOL line 494)
-        response.setCustomerId(customer.getCustomerId().toString());
+        response.setCustomerNumber(customer.getCustomerId().toString());
         
         // Set customer name fields (COBOL lines 508-510)
         response.setFirstName(customer.getFirstName());
@@ -434,31 +434,32 @@ public class AccountViewService {
         response.setCustomerSSN(maskedSSN);
         
         // Set customer date of birth (COBOL line 507)
-        response.setDateOfBirth(customer.getDateOfBirth());
+        response.setCustomerDOB(customer.getDateOfBirth());
         
         // Set customer FICO credit score (COBOL lines 505-506)
-        response.setFicoScore(customer.getFicoCreditScore());
+        response.setCustomerFICO(customer.getFicoCreditScore() != null ? 
+            customer.getFicoCreditScore().toString() : null);
         
         // Set customer mailing address (COBOL lines 511-516)
         response.setAddressLine1(customer.getAddressLine1());
         response.setAddressLine2(customer.getAddressLine2());
         response.setAddressLine3(customer.getAddressLine3());
-        response.setStateCode(customer.getStateCode());
+        response.setState(customer.getStateCode());
         response.setZipCode(customer.getZipCode());
-        response.setCountryCode(customer.getCountryCode());
+        response.setCountry(customer.getCountryCode());
         
         // Set customer contact information (COBOL lines 517-518)
-        response.setPhoneNumber1(customer.getPhoneNumber1());
-        response.setPhoneNumber2(customer.getPhoneNumber2());
+        response.setPhone1(customer.getPhoneNumber1());
+        response.setPhone2(customer.getPhoneNumber2());
         
         // Set government issued ID (COBOL line 519)
-        response.setGovernmentIssuedId(customer.getGovernmentIssuedId());
+        response.setGovernmentId(customer.getGovernmentIssuedId());
         
         // Set EFT account ID (COBOL line 520)
-        response.setEftAccountId(customer.getEftAccountId());
+        response.setEftAccountNumber(customer.getEftAccountId());
         
         // Set primary cardholder indicator (COBOL lines 521-522)
-        response.setPrimaryCardHolderIndicator(customer.getPrimaryCardHolderIndicator());
+        response.setProfileFlag(customer.getPrimaryCardHolderIndicator());
         
         log.debug("Successfully formatted account view response with {} fields populated",
                  getPopulatedFieldCount(response));
@@ -618,33 +619,33 @@ public class AccountViewService {
         if (response.getAccountId() != null) count++;
         if (response.getAccountStatus() != null) count++;
         if (response.getDateOpened() != null) count++;
-        if (response.getDateExpires() != null) count++;
-        if (response.getDateReissued() != null) count++;
+        if (response.getExpiryDate() != null) count++;
+        if (response.getReissueDate() != null) count++;
         if (response.getCurrentBalance() != null) count++;
         if (response.getCreditLimit() != null) count++;
-        if (response.getCashCreditLimit() != null) count++;
+        if (response.getCashLimit() != null) count++;
         if (response.getAvailableCredit() != null) count++;
         if (response.getCycleCreditTotal() != null) count++;
         if (response.getCycleDebitTotal() != null) count++;
-        if (response.getAccountGroupId() != null) count++;
-        if (response.getCustomerId() != null) count++;
+        if (response.getAccountGroupCode() != null) count++;
+        if (response.getCustomerNumber() != null) count++;
         if (response.getFirstName() != null) count++;
         if (response.getMiddleName() != null) count++;
         if (response.getLastName() != null) count++;
         if (response.getCustomerSSN() != null) count++;
-        if (response.getDateOfBirth() != null) count++;
-        if (response.getFicoScore() != null) count++;
+        if (response.getCustomerDOB() != null) count++;
+        if (response.getCustomerFICO() != null) count++;
         if (response.getAddressLine1() != null) count++;
         if (response.getAddressLine2() != null) count++;
         if (response.getAddressLine3() != null) count++;
-        if (response.getStateCode() != null) count++;
+        if (response.getState() != null) count++;
         if (response.getZipCode() != null) count++;
-        if (response.getCountryCode() != null) count++;
-        if (response.getPhoneNumber1() != null) count++;
-        if (response.getPhoneNumber2() != null) count++;
-        if (response.getGovernmentIssuedId() != null) count++;
-        if (response.getEftAccountId() != null) count++;
-        if (response.getPrimaryCardHolderIndicator() != null) count++;
+        if (response.getCountry() != null) count++;
+        if (response.getPhone1() != null) count++;
+        if (response.getPhone2() != null) count++;
+        if (response.getGovernmentId() != null) count++;
+        if (response.getEftAccountNumber() != null) count++;
+        if (response.getProfileFlag() != null) count++;
         
         return count;
     }
