@@ -43,7 +43,7 @@
  * @module components/admin/AdminComponent
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import {
@@ -53,8 +53,7 @@ import {
   CardContent,
   Typography,
   Alert,
-  Box,
-  IconButton
+  Box
 } from '@mui/material';
 import {
   People as PeopleIcon,
