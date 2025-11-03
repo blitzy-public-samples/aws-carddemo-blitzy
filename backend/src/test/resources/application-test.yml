@@ -16,6 +16,7 @@ spring:
       ddl-auto: create-drop
     generate-ddl: true
     show-sql: false
+    defer-datasource-initialization: true
     properties:
       hibernate:
         dialect: org.hibernate.dialect.H2Dialect
@@ -29,7 +30,8 @@ spring:
   
   sql:
     init:
-      mode: never
+      mode: always
+      schema-locations: classpath:schema.sql
   
   data:
     redis:
