@@ -318,11 +318,13 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleCardNotFoundException(
             CardNotFoundException ex, WebRequest request) {
         
-        // Card number is already masked in the exception
-        logger.warn("Card not found: {}", ex.getCardNumber());
+        // Card identifier is already masked in the exception
+        logger.warn("Card not found: {} (type: {})", 
+                   ex.getCardIdentifier(), ex.getIdentifierType());
         
         Map<String, Object> details = new HashMap<>();
-        details.put("cardNumber", ex.getCardNumber()); // Already masked
+        details.put("cardIdentifier", ex.getCardIdentifier()); // Already masked
+        details.put("identifierType", ex.getIdentifierType() != null ? ex.getIdentifierType().name() : "UNKNOWN");
         
         ErrorResponse errorResponse = buildErrorResponse(
             "CARD_NOT_FOUND",
@@ -406,13 +408,13 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleInsufficientBalanceException(
             InsufficientBalanceException ex, WebRequest request) {
         
-        logger.warn("Insufficient balance: requested={}, available={}", 
-                   ex.getRequestedAmount(), ex.getAvailableBalance());
+        logger.warn("Insufficient balance: requested={}, available={}, accountId={}", 
+                   ex.getRequestedAmount(), ex.getAvailableCredit(), ex.getAccountId());
         
         Map<String, Object> details = new HashMap<>();
         details.put("requestedAmount", ex.getRequestedAmount());
-        details.put("availableBalance", ex.getAvailableBalance());
-        details.put("accountIdentifier", ex.getAccountIdentifier());
+        details.put("availableCredit", ex.getAvailableCredit());
+        details.put("accountId", ex.getAccountId());
         
         ErrorResponse errorResponse = buildErrorResponse(
             "INSUFFICIENT_BALANCE",
@@ -443,11 +445,14 @@ public class GlobalExceptionHandler {
         logger.error("Transaction exception: {}", ex.getMessage(), ex);
         
         Map<String, Object> details = new HashMap<>();
-        if (ex.getTransactionId() != null) {
-            details.put("transactionId", ex.getTransactionId());
-        }
         if (ex.getErrorCode() != null) {
             details.put("errorCode", ex.getErrorCode());
+        }
+        if (ex.getRespCode() != null) {
+            details.put("respCode", ex.getRespCode());
+        }
+        if (ex.getResp2Code() != null) {
+            details.put("resp2Code", ex.getResp2Code());
         }
         
         // Determine status based on error type
@@ -543,11 +548,16 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleInvalidPayeeException(
             InvalidPayeeException ex, WebRequest request) {
         
-        logger.warn("Invalid payee: {}", ex.getMessage());
+        logger.warn("Invalid payee: {} - Reason: {}", ex.getPayeeId(), ex.getReason());
         
         Map<String, Object> details = new HashMap<>();
         details.put("payeeId", ex.getPayeeId());
-        details.put("validationError", ex.getValidationError());
+        if (ex.getPayeeName() != null) {
+            details.put("payeeName", ex.getPayeeName());
+        }
+        if (ex.getReason() != null) {
+            details.put("reason", ex.getReason().name());
+        }
         
         ErrorResponse errorResponse = buildErrorResponse(
             "INVALID_PAYEE",
@@ -611,11 +621,13 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleCardUpdateException(
             CardUpdateException ex, WebRequest request) {
         
-        logger.error("Card update failed: {}", ex.getMessage());
+        logger.error("Card update failed: {} - Reason: {}", ex.getCardNumber(), ex.getFailureReason());
         
         Map<String, Object> details = new HashMap<>();
         details.put("cardNumber", ex.getCardNumber()); // Already masked
-        details.put("updateField", ex.getUpdateField());
+        if (ex.getFailureReason() != null) {
+            details.put("failureReason", ex.getFailureReason().name());
+        }
         
         // Determine status based on error type
         HttpStatus status = ex.getMessage().contains("concurrent") || 
@@ -648,11 +660,13 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleAccountUpdateException(
             AccountUpdateException ex, WebRequest request) {
         
-        logger.error("Account update failed: {}", ex.getMessage());
+        logger.error("Account update failed: {} - Reason: {}", ex.getAccountId(), ex.getFailureReason());
         
         Map<String, Object> details = new HashMap<>();
-        details.put("accountIdentifier", ex.getAccountIdentifier());
-        details.put("updateField", ex.getUpdateField());
+        details.put("accountId", ex.getAccountId());
+        if (ex.getFailureReason() != null) {
+            details.put("failureReason", ex.getFailureReason().name());
+        }
         
         // Determine status based on error type
         HttpStatus status = ex.getMessage().contains("concurrent") || 
@@ -685,11 +699,13 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleProfileUpdateException(
             ProfileUpdateException ex, WebRequest request) {
         
-        logger.error("Profile update failed: {}", ex.getMessage());
+        logger.error("Profile update failed: {} - Reason: {}", ex.getUserId(), ex.getFailureReason());
         
         Map<String, Object> details = new HashMap<>();
         details.put("userId", ex.getUserId());
-        details.put("updateField", ex.getUpdateField());
+        if (ex.getFailureReason() != null) {
+            details.put("failureReason", ex.getFailureReason().name());
+        }
         
         // Determine status based on error type
         HttpStatus status;
