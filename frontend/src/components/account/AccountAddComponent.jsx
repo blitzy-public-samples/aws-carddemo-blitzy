@@ -47,9 +47,8 @@
  * @module components/account/AccountAddComponent
  */
 
-import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Formik, Form, Field } from 'formik';
+import { Formik, Form } from 'formik';
 import * as Yup from 'yup';
 import {
   Box,
