@@ -349,7 +349,7 @@ public class AccountItemWriter implements ItemWriter<Account> {
             // Perform batch insert/update operation via JPA repository
             // JPA automatically detects whether to INSERT (new entity) or UPDATE (existing entity)
             // based on primary key existence and @Version field state
-            List<Account> savedAccounts = accountRepository.saveAll(accounts);
+            accountRepository.saveAll(accounts);
 
             // Force synchronization of persistence context with database
             // This ensures all SQL statements are executed immediately
