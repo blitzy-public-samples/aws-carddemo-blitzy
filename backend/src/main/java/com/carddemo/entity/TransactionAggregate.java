@@ -227,6 +227,49 @@ public class TransactionAggregate implements Serializable {
     private LocalDateTime lastUpdated;
 
     /**
+     * Timestamp when this aggregation record was first created.
+     * 
+     * <p>Added for complete audit trail tracking per Section 0.9 audit requirements.
+     * Set once on initial entity creation and never modified afterwards. Enables
+     * tracking of when aggregation records are first established versus updated.</p>
+     * 
+     * <p>Constraints:
+     * <ul>
+     *   <li>Nullable: true (set on first persistence)</li>
+     *   <li>Timezone: UTC for consistency across distributed systems</li>
+     *   <li>Immutable after initial creation</li>
+     * </ul>
+     * </p>
+     */
+    @Column(name = "created_at")
+    private LocalDateTime createdAt;
+
+    /**
+     * Count of transactions that have been aggregated into this balance.
+     * 
+     * <p>Not present in original COBOL but added to support batch processing
+     * validation and reporting. Tracks how many individual transactions contributed
+     * to the current categoryBalance value. Useful for:
+     * <ul>
+     *   <li>Validating aggregation accuracy (record count matches source)</li>
+     *   <li>Reporting average transaction size per category</li>
+     *   <li>Identifying categories with unusual transaction volumes</li>
+     *   <li>Troubleshooting aggregation discrepancies</li>
+     * </ul>
+     * </p>
+     * 
+     * <p>Constraints:
+     * <ul>
+     *   <li>Nullable: true (defaults to 0 if not set)</li>
+     *   <li>Must be non-negative when set</li>
+     *   <li>Updated by TransactionAggregationJob during batch processing</li>
+     * </ul>
+     * </p>
+     */
+    @Column(name = "transaction_count")
+    private Integer transactionCount;
+
+    /**
      * Many-to-one relationship to Account entity via accountId.
      * 
      * <p>Establishes foreign key constraint from transaction_aggregate.account_id to
@@ -388,6 +431,47 @@ public class TransactionAggregate implements Serializable {
             this.categoryBalance = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
         }
         this.categoryBalance = this.categoryBalance.add(amount).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    // ========== Convenience Methods for Composite Key Access ==========
+
+    /**
+     * Convenience getter for accountId from composite key.
+     * 
+     * <p>Delegates to id.getAccountId() for easier API access without
+     * needing to navigate through the embedded composite key. Commonly
+     * used in batch processing and service layer code.</p>
+     * 
+     * @return the account ID component of the composite key, or null if id is not set
+     */
+    public Long getAccountId() {
+        return id != null ? id.getAccountId() : null;
+    }
+
+    /**
+     * Convenience getter for transactionTypeCode from composite key.
+     * 
+     * <p>Delegates to id.getTransactionTypeCode() for easier API access
+     * without needing to navigate through the embedded composite key.
+     * Commonly used in batch processing and service layer code.</p>
+     * 
+     * @return the transaction type code component of the composite key, or null if id is not set
+     */
+    public String getTransactionTypeCode() {
+        return id != null ? id.getTransactionTypeCode() : null;
+    }
+
+    /**
+     * Convenience getter for transactionCategoryCode from composite key.
+     * 
+     * <p>Delegates to id.getTransactionCategoryCode() for easier API access
+     * without needing to navigate through the embedded composite key.
+     * Commonly used in batch processing and service layer code.</p>
+     * 
+     * @return the transaction category code component of the composite key, or null if id is not set
+     */
+    public Integer getTransactionCategoryCode() {
+        return id != null ? id.getTransactionCategoryCode() : null;
     }
 
     /**
@@ -735,11 +819,16 @@ public class TransactionAggregate implements Serializable {
     // Lombok @Data generates: public void setTransactionCategory(TransactionCategory transactionCategory)
 
     /**
-     * Equals method provided by Lombok @Data annotation.
+     * Equals method based on composite key only (JPA entity equality semantics).
      * 
-     * <p>Compares TransactionAggregate instances based on composite key (id field only,
-     * per JPA entity equality semantics). Two aggregates are equal if they have the
-     * same composite key (accountId, transactionTypeCode, transactionCategoryCode).</p>
+     * <p>Compares TransactionAggregate instances based on composite key (id field only).
+     * Two aggregates are equal if they have the same composite key (accountId, 
+     * transactionTypeCode, transactionCategoryCode). This follows JPA best practices
+     * where entity equality is determined by the primary key, not by all fields.</p>
+     * 
+     * <p>Overrides Lombok @Data default equals() which would compare all fields. For
+     * JPA entities, only the ID should determine equality to ensure proper behavior
+     * in collections and caching.</p>
      * 
      * <p>Supports entity equality checks in service layer and test assertions ensuring
      * functional equivalence with COBOL aggregation comparison logic. Critical for
@@ -748,16 +837,29 @@ public class TransactionAggregate implements Serializable {
      * @param o Object to compare with this TransactionAggregate
      * @return true if objects are equal (same composite key), false otherwise
      */
-    // Lombok @Data generates: public boolean equals(Object o)
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        TransactionAggregate that = (TransactionAggregate) o;
+        return Objects.equals(id, that.id);
+    }
 
     /**
-     * HashCode method provided by Lombok @Data annotation.
+     * HashCode method based on composite key only (JPA entity hash code semantics).
      * 
      * <p>Generates hash code based on composite key (id field) for use in collections
-     * (HashMap, HashSet). Enables efficient caching and collection operations supporting
-     * sub-200ms response times under 10,000 TPS load per Section 0.2 performance requirements.</p>
+     * (HashMap, HashSet). Overrides Lombok @Data default hashCode() to ensure it's
+     * consistent with the custom equals() method that uses only the ID field.</p>
      * 
-     * @return hash code value for this TransactionAggregate
+     * <p>Enables efficient caching and collection operations supporting sub-200ms 
+     * response times under 10,000 TPS load per Section 0.2 performance requirements.
+     * Maintains equals/hashCode contract: equal entities have equal hash codes.</p>
+     * 
+     * @return hash code value for this TransactionAggregate based on composite key
      */
-    // Lombok @Data generates: public int hashCode()
+    @Override
+    public int hashCode() {
+        return Objects.hash(id);
+    }
 }
