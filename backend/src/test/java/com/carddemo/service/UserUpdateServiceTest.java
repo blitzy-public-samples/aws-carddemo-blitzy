@@ -35,6 +35,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Optional;
 
@@ -130,6 +131,14 @@ public class UserUpdateServiceTest {
     private UserSecurity adminUser;
     
     /**
+     * Helper method to create authorities collection with proper generic type.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Collection createAuthorities(String role) {
+        return Collections.singletonList(new SimpleGrantedAuthority(role));
+    }
+    
+    /**
      * Test setup method executed before each test.
      * 
      * <p>Initializes test user objects and configures default mock behaviors.
@@ -170,10 +179,10 @@ public class UserUpdateServiceTest {
         adminUser.setPassword("$2a$12$zyxwvutsrqponmlkjihgfedcba0987654321ABCDEFGHIJKLMNOPQ"); // BCrypt hash
         adminUser.setUserType(SecurityConstants.USER_TYPE_ADMIN);
         
-        // Configure default mock behaviors
+        // Configure default mock behaviors (lenient to avoid unnecessary stubbing exceptions)
         SecurityContextHolder.setContext(securityContext);
-        when(securityContext.getAuthentication()).thenReturn(authentication);
-        when(authentication.isAuthenticated()).thenReturn(true);
+        lenient().when(securityContext.getAuthentication()).thenReturn(authentication);
+        lenient().when(authentication.isAuthenticated()).thenReturn(true);
     }
     
     /**
@@ -213,7 +222,7 @@ public class UserUpdateServiceTest {
         // Arrange: Configure authentication as regular user
         when(authentication.getName()).thenReturn("USER0001");
         when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_USER))
+            createAuthorities(SecurityConstants.ROLE_USER)
         );
         
         // Mock repository to return existing user
@@ -278,7 +287,7 @@ public class UserUpdateServiceTest {
         // Arrange: Configure authentication as regular user (not admin)
         when(authentication.getName()).thenReturn("USER0001");
         when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_USER))
+            createAuthorities(SecurityConstants.ROLE_USER)
         );
         
         // Mock repository to return existing user
@@ -328,7 +337,7 @@ public class UserUpdateServiceTest {
         // Arrange: Configure authentication as USER0001
         when(authentication.getName()).thenReturn("USER0001");
         when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_USER))
+            createAuthorities(SecurityConstants.ROLE_USER)
         );
         
         // Create another user's data
@@ -385,7 +394,7 @@ public class UserUpdateServiceTest {
         // Arrange: Configure authentication as admin
         when(authentication.getName()).thenReturn("ADMIN001");
         when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_ADMIN))
+            createAuthorities(SecurityConstants.ROLE_ADMIN)
         );
         
         // Mock repository to return target user
@@ -454,11 +463,14 @@ public class UserUpdateServiceTest {
         // Arrange: Configure authentication
         when(authentication.getName()).thenReturn("USER0001");
         when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_USER))
+            createAuthorities(SecurityConstants.ROLE_USER)
         );
         
         // Mock repository
         when(userSecurityRepository.findByUserId("USER0001")).thenReturn(Optional.of(testUser));
+        
+        // Save original password before update (testUser object will be modified in-place)
+        String originalPasswordHash = testUser.getPassword();
         
         // Mock password encoder to return new hash
         String newPasswordHash = "$2a$12$NEWHASHabcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHI";
@@ -481,7 +493,7 @@ public class UserUpdateServiceTest {
         // Assert: Password was re-encrypted
         assertNotNull(result);
         assertEquals(newPasswordHash, result.getPassword());
-        assertNotEquals(testUser.getPassword(), result.getPassword());
+        assertNotEquals(originalPasswordHash, result.getPassword());
         
         // Verify BCrypt encoder was called
         verify(passwordEncoder, times(1)).encode("newPassword123");
@@ -521,7 +533,7 @@ public class UserUpdateServiceTest {
         // Arrange: Configure authentication
         when(authentication.getName()).thenReturn("ADMIN001");
         when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_ADMIN))
+            createAuthorities(SecurityConstants.ROLE_ADMIN)
         );
         
         // Mock repository to return empty (user not found)
@@ -581,7 +593,7 @@ public class UserUpdateServiceTest {
         // Arrange: Configure authentication
         when(authentication.getName()).thenReturn("USER0001");
         when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_USER))
+            createAuthorities(SecurityConstants.ROLE_USER)
         );
         
         // Mock repository to return user
@@ -650,7 +662,7 @@ public class UserUpdateServiceTest {
         // Arrange: Configure authentication
         when(authentication.getName()).thenReturn("USER0001");
         when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_USER))
+            createAuthorities(SecurityConstants.ROLE_USER)
         );
         
         // Mock repository
@@ -733,7 +745,7 @@ public class UserUpdateServiceTest {
         // Arrange: Configure authentication
         when(authentication.getName()).thenReturn("USER0001");
         when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_USER))
+            createAuthorities(SecurityConstants.ROLE_USER)
         );
         
         // Mock repository
@@ -800,7 +812,7 @@ public class UserUpdateServiceTest {
         // Arrange: Configure authentication
         when(authentication.getName()).thenReturn("USER0001");
         when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_USER))
+            createAuthorities(SecurityConstants.ROLE_USER)
         );
         
         // Mock repository
@@ -870,7 +882,7 @@ public class UserUpdateServiceTest {
         // Arrange: Configure authentication as admin
         when(authentication.getName()).thenReturn("ADMIN001");
         when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_ADMIN))
+            createAuthorities(SecurityConstants.ROLE_ADMIN)
         );
         
         // Mock repository
@@ -933,7 +945,7 @@ public class UserUpdateServiceTest {
         // Arrange: Configure authentication
         when(authentication.getName()).thenReturn("USER0001");
         when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_USER))
+            createAuthorities(SecurityConstants.ROLE_USER)
         );
         
         // Set creation date on test user (future enhancement)
@@ -992,11 +1004,7 @@ public class UserUpdateServiceTest {
      */
     @Test
     public void updateUser_CannotChangeUserId_ThrowsException() {
-        // Arrange: Configure authentication as admin
-        when(authentication.getName()).thenReturn("ADMIN001");
-        when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_ADMIN))
-        );
+        // Arrange: No authentication stubbing needed - userId validation happens before authorization check
         
         // Create update with different userId (attempting to change primary key)
         UserSecurity updatedUser = new UserSecurity();
@@ -1049,17 +1057,13 @@ public class UserUpdateServiceTest {
      */
     @Test
     public void updateUser_StatusChange_ValidatesEnum() {
-        // Arrange: Configure authentication as admin (status changes require admin)
-        when(authentication.getName()).thenReturn("ADMIN001");
-        when(authentication.getAuthorities()).thenReturn(
-            Collections.singletonList(new SimpleGrantedAuthority(SecurityConstants.ROLE_ADMIN))
-        );
-        
-        // Mock repository
+        // Arrange: Mock repository - authentication stubbing happens in @BeforeEach setup
         when(userSecurityRepository.findByUserId("USER0001")).thenReturn(Optional.of(testUser));
         
         // Test Case: Attempt status change (future enhancement)
         // Current implementation throws UnsupportedOperationException
+        // Note: This test validates that the method exists and throws the expected exception
+        // Once status management is implemented, this test should be updated to validate enum values
         assertThrows(UnsupportedOperationException.class, () -> {
             userUpdateService.changeUserStatus("USER0001", "INACTIVE");
         });
