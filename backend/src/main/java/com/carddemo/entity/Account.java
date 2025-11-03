@@ -8,6 +8,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -226,6 +227,20 @@ public class Account implements Serializable {
     @JoinColumn(name = "customer_id", nullable = false)
     @JsonIgnore
     private Customer customer;
+
+    /**
+     * Version field for optimistic locking.
+     * 
+     * <p>JPA automatically increments this field on every update operation.
+     * When a concurrent update is detected (version mismatch), JPA throws
+     * OptimisticLockException, preventing data overwrites and maintaining
+     * data integrity per Section 0.9 transaction management requirements.</p>
+     * 
+     * <p>Maps to COBOL: DATA-WAS-CHANGED-BEFORE-UPDATE (9700-CHECK-CHANGE-IN-REC)</p>
+     */
+    @Version
+    @Column(name = "version")
+    private Long version;
 
     /**
      * Custom setter for currentBalance ensuring COBOL COMP-3 precision preservation.
