@@ -281,12 +281,28 @@ public class AccountUpdateService {
         if (request.getCustomerId() != null) {
             // Validate first name (COBOL: 1225-EDIT-ALPHA-REQD)
             if (request.getFirstName() != null) {
-                validationUtils.validateAccountNumber(request.getFirstName());
+                ValidationUtils.ValidationResult firstNameResult = 
+                    validationUtils.validateNotBlank(request.getFirstName());
+                if (!firstNameResult.isValid()) {
+                    throw new AccountUpdateException(
+                        "First name validation failed: " + firstNameResult.getErrorMessage(),
+                        account.getAccountId().toString(),
+                        AccountUpdateException.UpdateFailureReason.INVALID_FIELD_VALUE
+                    );
+                }
             }
 
             // Validate last name (COBOL: 1225-EDIT-ALPHA-REQD)
             if (request.getLastName() != null) {
-                validationUtils.validateAccountNumber(request.getLastName());
+                ValidationUtils.ValidationResult lastNameResult = 
+                    validationUtils.validateNotBlank(request.getLastName());
+                if (!lastNameResult.isValid()) {
+                    throw new AccountUpdateException(
+                        "Last name validation failed: " + lastNameResult.getErrorMessage(),
+                        account.getAccountId().toString(),
+                        AccountUpdateException.UpdateFailureReason.INVALID_FIELD_VALUE
+                    );
+                }
             }
         }
 
