@@ -390,7 +390,6 @@ public class AccountStatementReader extends AbstractItemCountingItemStreamItemRe
                 // Restart scenario - fetch accounts after the last processed one
                 logger.debug("Restart mode: fetching accounts after ID {}", lastAccountId);
                 accountPage = accountRepository.findActiveAccountsForStatementPeriodAfterAccountId(
-                        statementPeriodStart,
                         statementPeriodEnd,
                         lastAccountId,
                         pageable
@@ -398,7 +397,6 @@ public class AccountStatementReader extends AbstractItemCountingItemStreamItemRe
             } else {
                 // Normal scenario - fetch next page of accounts
                 accountPage = accountRepository.findActiveAccountsForStatementPeriod(
-                        statementPeriodStart,
                         statementPeriodEnd,
                         pageable
                 );
