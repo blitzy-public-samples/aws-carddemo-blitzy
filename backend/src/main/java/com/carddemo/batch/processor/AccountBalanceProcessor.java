@@ -186,14 +186,13 @@ public class AccountBalanceProcessor implements ItemProcessor<Account, AccountBa
             accountBalance.setDebitAmount(totalDebits);
             accountBalance.setBalanceAmount(closingBalance);
             accountBalance.setEffectiveDate(LocalDate.now());
-            accountBalance.setTransactionCount(transactions.size());
+            
+            // Calculate and set closing balance using the entity's calculation method
+            accountBalance.calculateClosingBalance();
 
-            // Validate closing balance is not negative (business rule enforcement)
+            // Log warning if closing balance is negative (business rule validation)
             if (closingBalance.compareTo(BigDecimal.ZERO) < 0) {
                 logger.warn("Account {} has negative balance: {}", accountId, closingBalance);
-                accountBalance.setBalanceStatus("NEGATIVE");
-            } else {
-                accountBalance.setBalanceStatus("POSITIVE");
             }
 
             return accountBalance;
