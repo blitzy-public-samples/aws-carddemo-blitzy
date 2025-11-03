@@ -56,15 +56,15 @@ import java.util.stream.Collectors;
  * - CDEMO-USER-TYPE role check (lines 136-143) → @PreAuthorize + UserSecurity.getUserType()
  * 
  * Security Model:
- * - COBOL CDEMO-USRTYP-USER ('R') → ROLE_USER authority
+ * - COBOL CDEMO-USRTYP-USER ('U') → ROLE_USER authority
  * - COBOL CDEMO-USRTYP-ADMIN ('A') → ROLE_ADMIN authority
  * - Admin-only menu options filtered using CDEMO-MENU-OPT-USRTYPE check (line 137)
  * 
  * Business Rules Preserved:
- * 1. Menu options numbered 1-10 (matching COBOL CDEMO-MENU-OPT-COUNT structure)
- * 2. Admin-only options (CDEMO-MENU-OPT-USRTYPE = 'A') hidden from regular users
+ * 1. Menu options numbered 1-10 (matching COBOL CDEMO-MENU-OPT-COUNT structure from COMEN02Y.cpy)
+ * 2. All menu options available to regular users (CDEMO-MENU-OPT-USRTYPE = 'U')
  * 3. Invalid option selection returns error message (lines 127-133)
- * 4. Non-admin access to admin options returns "No access" message (lines 138-142)
+ * 4. Non-admin access to admin-level programs returns "No access" message (lines 138-142)
  * 5. DUMMY program names indicate "coming soon" features (lines 146-164)
  * 
  * Transaction Boundary:
@@ -85,23 +85,26 @@ public class MenuNavigationService {
     
     // Menu option constants matching COBOL CDEMO-MENU-OPT structure
     private static final int MAX_MENU_OPTIONS = 12;
-    private static final String USER_TYPE_REGULAR = "R";
+    // User type constants matching COBOL COCOM01Y.cpy:
+    // CDEMO-USRTYP-USER VALUE 'U' and CDEMO-USRTYP-ADMIN VALUE 'A'
+    private static final String USER_TYPE_USER = "U";
     private static final String USER_TYPE_ADMIN = "A";
     
     // Menu option data structure matching COBOL COMEN02Y copybook
     // Replaces CDEMO-MENU-OPT-COUNT, CDEMO-MENU-OPT-NUM, CDEMO-MENU-OPT-NAME,
     // CDEMO-MENU-OPT-PGMNAME, CDEMO-MENU-OPT-USRTYPE
+    // CRITICAL: Menu text and ordering preserved exactly from COBOL COMEN02Y.cpy (lines 25-84)
     private static final MenuOption[] MENU_OPTIONS = {
-        new MenuOption(1, "View Account Details", "COACTVWC", "R"),
-        new MenuOption(2, "View Card Details", "COCRDSLC", "R"),
-        new MenuOption(3, "View Transactions", "COTRN00C", "R"),
-        new MenuOption(4, "Update Account Information", "COACTUPC", "R"),
-        new MenuOption(5, "Update Card Information", "COCRDUPC", "R"),
-        new MenuOption(6, "Add New Transaction", "COTRN02C", "R"),
-        new MenuOption(7, "Bill Payment", "COBIL00C", "R"),
-        new MenuOption(8, "View Reports", "CORPT00C", "R"),
-        new MenuOption(9, "User Management", "COUSR00C", "A"),
-        new MenuOption(10, "Administrative Functions", "COADM01C", "A")
+        new MenuOption(1, "Account View", "COACTVWC", "U"),
+        new MenuOption(2, "Account Update", "COACTUPC", "U"),
+        new MenuOption(3, "Credit Card List", "COCRDLIC", "U"),
+        new MenuOption(4, "Credit Card View", "COCRDSLC", "U"),
+        new MenuOption(5, "Credit Card Update", "COCRDUPC", "U"),
+        new MenuOption(6, "Transaction List", "COTRN00C", "U"),
+        new MenuOption(7, "Transaction View", "COTRN01C", "U"),
+        new MenuOption(8, "Transaction Add", "COTRN02C", "U"),
+        new MenuOption(9, "Transaction Reports", "CORPT00C", "U"),
+        new MenuOption(10, "Bill Payment", "COBIL00C", "U")
     };
     
     /**
@@ -109,7 +112,7 @@ public class MenuNavigationService {
      * 
      * This method replaces the COBOL MAIN-PARA and SEND-MENU-SCREEN logic from
      * COMEN01C.cbl lines 75-194. It retrieves the current authenticated user from
-     * Spring Security context, determines their user type ('R' or 'A'), and returns
+     * Spring Security context, determines their user type ('U' or 'A'), and returns
      * only the menu options they are authorized to access.
      * 
      * COBOL Equivalent:
@@ -227,7 +230,7 @@ public class MenuNavigationService {
         
         // Check user authorization for selected option
         // Replaces COBOL: Lines 136-143 (CDEMO-USRTYP-USER check and admin validation)
-        if (USER_TYPE_REGULAR.equals(user.getUserType()) && 
+        if (USER_TYPE_USER.equals(user.getUserType()) && 
             USER_TYPE_ADMIN.equals(selectedOption.getRequiredUserType())) {
             logger.warn("processMenuSelection() - User {} attempted to access admin option {}", 
                        user.getUserId(), option);
@@ -269,10 +272,13 @@ public class MenuNavigationService {
      * - Implicit filtering: Only options displayed if user has access
      * 
      * Filter Logic:
-     * - Regular users ('R'): See options marked 'R' only (options 1-8)
-     * - Admin users ('A'): See all options including 'A' (options 1-10)
+     * - Regular users ('U'): See all 10 menu options (all marked 'U' in COMEN02Y.cpy)
+     * - Admin users ('A'): See all options (admin users can access all functions)
      * 
-     * @param userType the user type ('R' for Regular, 'A' for Admin)
+     * Note: All menu options in COMEN01C are marked with user type 'U' per COMEN02Y.cpy.
+     * Admin-specific menus are handled separately via COADM01C program.
+     * 
+     * @param userType the user type ('U' for Regular User, 'A' for Admin)
      * @return List of MenuOptionDTO objects filtered by authorization
      */
     public List<MenuOptionDTO> getMenuOptionsForUser(String userType) {
@@ -309,7 +315,7 @@ public class MenuNavigationService {
      * - Current Date: MM/DD/YY format (lines 221-225)
      * - Current Time: HH:MM:SS format (lines 227-231)
      * - User Name: firstName + lastName from UserSecurity
-     * - User Type: 'R' or 'A' from UserSecurity
+     * - User Type: 'U' or 'A' from UserSecurity
      * 
      * @param user the authenticated user
      * @param options the filtered menu options for the user
@@ -421,10 +427,10 @@ public class MenuNavigationService {
      * - CDEMO-USRTYP-ADMIN 88-level → userType == 'A'
      * 
      * User Type Values:
-     * - 'R': Regular User (ROLE_USER)
-     * - 'A': Administrative User (ROLE_ADMIN + ROLE_USER)
+     * - 'U': Regular User (ROLE_USER) - matches COBOL CDEMO-USRTYP-USER
+     * - 'A': Administrative User (ROLE_ADMIN + ROLE_USER) - matches COBOL CDEMO-USRTYP-ADMIN
      * 
-     * @param userType the user type character ('R' or 'A')
+     * @param userType the user type character ('U' or 'A')
      * @return true if user type is 'A' (admin), false otherwise
      */
     public boolean isAdminUser(String userType) {
@@ -444,12 +450,15 @@ public class MenuNavigationService {
      * - Filtering prevents display of admin options to regular users
      * 
      * Filter Rules:
-     * - Regular users ('R'): See only options with requiredUserType = 'R'
-     * - Admin users ('A'): See all options (both 'R' and 'A')
+     * - Regular users ('U'): See only options with requiredUserType = 'U'
+     * - Admin users ('A'): See all options (both 'U' and 'A')
      * - Preserves COBOL hierarchical access model where admins can access all functions
      * 
+     * Note: In COMEN01C, all menu options are marked 'U' per COMEN02Y.cpy, so regular
+     * users see all 10 options. Admin users are typically routed to COADM01C instead.
+     * 
      * @param allOptions complete list of menu options
-     * @param userType the user type ('R' or 'A')
+     * @param userType the user type ('U' or 'A')
      * @return filtered list of menu options based on user authorization
      */
     public List<MenuOptionDTO> filterMenuOptionsByRole(List<MenuOptionDTO> allOptions, String userType) {
@@ -466,7 +475,7 @@ public class MenuNavigationService {
         // Regular users see only non-admin options
         // Replaces COBOL: Lines 136-143 authorization check
         List<MenuOptionDTO> filtered = allOptions.stream()
-            .filter(option -> USER_TYPE_REGULAR.equals(option.getRequiredUserType()))
+            .filter(option -> USER_TYPE_USER.equals(option.getRequiredUserType()))
             .collect(Collectors.toList());
         
         logger.debug("filterMenuOptionsByRole() - Regular user, returning {} of {} options", 
