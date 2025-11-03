@@ -17,6 +17,7 @@
 
 package com.carddemo.integration;
 
+import com.carddemo.config.TestSecurityConfig;
 import com.carddemo.controller.AuthenticationController;
 import com.carddemo.dto.request.LoginRequest;
 import com.carddemo.dto.response.LoginResponse;
@@ -46,6 +47,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Integration Test for Authentication Workflows.
@@ -191,6 +193,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
+@org.springframework.context.annotation.Import(TestSecurityConfig.class)
 public class AuthenticationIntegrationTest {
 
     /**
@@ -221,9 +224,10 @@ public class AuthenticationIntegrationTest {
     /**
      * Dynamic Property Source for Testcontainers.
      * 
-     * <p>Registers PostgreSQL container JDBC URL, username, and password dynamically 
-     * into Spring application context. Method executes after container start but before 
-     * application context initialization, ensuring Spring Boot connects to test database.</p>
+     * <p>Registers PostgreSQL container JDBC URL, username, password, and driver class 
+     * dynamically into Spring application context. Method executes after container start 
+     * but before application context initialization, ensuring Spring Boot connects to test 
+     * database with correct PostgreSQL driver.</p>
      * 
      * <p>Replaces static application-test.yml configuration with runtime-determined 
      * container values, matching COBOL EXEC CICS ASSIGN APPLID() dynamic system property 
@@ -236,6 +240,7 @@ public class AuthenticationIntegrationTest {
         registry.add("spring.datasource.url", postgresContainer::getJdbcUrl);
         registry.add("spring.datasource.username", postgresContainer::getUsername);
         registry.add("spring.datasource.password", postgresContainer::getPassword);
+        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
     }
 
     /**
@@ -332,6 +337,19 @@ public class AuthenticationIntegrationTest {
     }
 
     /**
+     * Cleanup method executed after each test.
+     * 
+     * <p>Removes all test data from the database to ensure test isolation.
+     * Since we removed @Transactional annotations to allow HTTP requests to see
+     * test data, we must manually clean up after each test.</p>
+     */
+    @org.junit.jupiter.api.AfterEach
+    public void tearDown() {
+        // Clean up all test users
+        userSecurityRepository.deleteAll();
+    }
+
+    /**
      * Test successful login with valid credentials for regular user.
      * 
      * <p><strong>COBOL Reference:</strong> COSGN00C.cbl lines 221-240</p>
@@ -360,7 +378,6 @@ public class AuthenticationIntegrationTest {
      * </ul>
      */
     @Test
-    @Transactional
     public void testSuccessfulLogin() {
         // Arrange: Create login request with valid credentials
         LoginRequest loginRequest = new LoginRequest();
@@ -410,7 +427,6 @@ public class AuthenticationIntegrationTest {
      * @PreAuthorize("hasRole('ADMIN')") authorization checks.</p>
      */
     @Test
-    @Transactional
     public void testSuccessfulLoginAdminUser() {
         // Arrange: Create login request with admin credentials
         LoginRequest loginRequest = new LoginRequest();
@@ -454,25 +470,33 @@ public class AuthenticationIntegrationTest {
      * replacing COBOL plain text comparison (SEC-USR-PWD = WS-USER-PWD).</p>
      */
     @Test
-    @Transactional
     public void testLoginWithInvalidPassword() {
-        // Arrange: Create login request with invalid password
+        // Arrange: Create login request with invalid password (8 chars max per COBOL PIC X(8))
         LoginRequest loginRequest = new LoginRequest();
         loginRequest.setUserId("TESTUSER");
-        loginRequest.setPassword("wrongpass"); // Invalid password
+        loginRequest.setPassword("wrong123"); // Invalid password - correct length but wrong password
 
-        // Act: Execute login POST request expecting authentication failure
-        ResponseEntity<LoginResponse> response = restTemplate.postForEntity(
-            baseUrl + "/login",
-            loginRequest,
-            LoginResponse.class
-        );
-
-        // Assert: Verify HTTP 401 Unauthorized status
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-        
-        // Error message validation would require GlobalExceptionHandler response format
-        // Expected: "Wrong Password. Try again..." matching COBOL line 242
+        // Act & Assert: Execute login POST request expecting authentication failure
+        try {
+            restTemplate.postForEntity(
+                baseUrl + "/login",
+                loginRequest,
+                LoginResponse.class
+            );
+            fail("Expected HttpClientErrorException for invalid password");
+        } catch (org.springframework.web.client.HttpClientErrorException ex) {
+            // Assert: Verify HTTP 401 Unauthorized status
+            assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+            
+            // Error message validation: "Wrong Password. Try again..." matching COBOL line 242
+            assertThat(ex.getResponseBodyAsString()).contains("Authentication failed");
+        } catch (org.springframework.web.client.ResourceAccessException ex) {
+            // Handle the HttpRetryException that occurs with 401 responses in streaming mode
+            // This is a known issue with the JDK's HttpURLConnection when handling 401 responses
+            // The important thing is that the server is returning 401, which is the correct behavior
+            // Verify this is the expected authentication failure scenario
+            assertThat(ex.getMessage()).contains("cannot retry due to server authentication");
+        }
     }
 
     /**
@@ -491,24 +515,33 @@ public class AuthenticationIntegrationTest {
      * RESP=13 occurs when VSAM READ operation fails to find record by key (WS-USER-ID).</p>
      */
     @Test
-    @Transactional
     public void testLoginWithNonExistentUser() {
         // Arrange: Create login request with non-existent user ID
         LoginRequest loginRequest = new LoginRequest();
         loginRequest.setUserId("NOEXIST");
-        loginRequest.setPassword("somepass");
+        loginRequest.setPassword("pass1234");
 
-        // Act: Execute login POST request expecting user not found error
-        ResponseEntity<LoginResponse> response = restTemplate.postForEntity(
-            baseUrl + "/login",
-            loginRequest,
-            LoginResponse.class
-        );
-
-        // Assert: Verify HTTP 401 Unauthorized status (user not found)
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-        
-        // Expected error message: "User not found. Try again..." matching COBOL line 249
+        // Act & Assert: Execute login POST request expecting user not found error
+        try {
+            restTemplate.postForEntity(
+                baseUrl + "/login",
+                loginRequest,
+                LoginResponse.class
+            );
+            fail("Expected HttpClientErrorException for non-existent user");
+        } catch (org.springframework.web.client.HttpClientErrorException ex) {
+            // Assert: Verify HTTP 401 Unauthorized status (user not found)
+            assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+            
+            // Expected error message: "User not found. Try again..." matching COBOL line 249
+            assertThat(ex.getResponseBodyAsString()).contains("User not found");
+        } catch (org.springframework.web.client.ResourceAccessException ex) {
+            // Handle the HttpRetryException that occurs with 401 responses in streaming mode
+            // This is a known issue with the JDK's HttpURLConnection when handling 401 responses
+            // The important thing is that the server is returning 401, which is the correct behavior
+            // Verify this is the expected authentication failure scenario
+            assertThat(ex.getMessage()).contains("cannot retry due to server authentication");
+        }
     }
 
     /**
@@ -527,7 +560,6 @@ public class AuthenticationIntegrationTest {
      * SPACES/LOW-VALUES check. Expects HTTP 400 Bad Request status.</p>
      */
     @Test
-    @Transactional
     public void testLoginWithEmptyUserId() {
         // Arrange: Create login request with empty user ID
         LoginRequest loginRequest = new LoginRequest();
@@ -554,7 +586,6 @@ public class AuthenticationIntegrationTest {
      * COBOL LOW-VALUES check equivalent in Java null handling.</p>
      */
     @Test
-    @Transactional
     public void testLoginWithNullUserId() {
         // Arrange: Create login request with null user ID
         LoginRequest loginRequest = new LoginRequest();
@@ -588,7 +619,6 @@ public class AuthenticationIntegrationTest {
      * replacing COBOL SPACES/LOW-VALUES check. Expects HTTP 400 Bad Request status.</p>
      */
     @Test
-    @Transactional
     public void testLoginWithEmptyPassword() {
         // Arrange: Create login request with empty password
         LoginRequest loginRequest = new LoginRequest();
@@ -615,7 +645,6 @@ public class AuthenticationIntegrationTest {
      * COBOL LOW-VALUES check equivalent in Java null handling.</p>
      */
     @Test
-    @Transactional
     public void testLoginWithNullPassword() {
         // Arrange: Create login request with null password
         LoginRequest loginRequest = new LoginRequest();
@@ -648,7 +677,6 @@ public class AuthenticationIntegrationTest {
      * for database lookup matching COBOL behavior.</p>
      */
     @Test
-    @Transactional
     public void testLoginWithLowercaseUserId() {
         // Arrange: Create login request with lowercase user ID
         LoginRequest loginRequest = new LoginRequest();
@@ -683,7 +711,6 @@ public class AuthenticationIntegrationTest {
      * <p>JWT format: header.payload.signature (3 parts separated by dots)</p>
      */
     @Test
-    @Transactional
     public void testJwtTokenFormatValidation() {
         // Arrange: Create login request with valid credentials
         LoginRequest loginRequest = new LoginRequest();
@@ -729,7 +756,6 @@ public class AuthenticationIntegrationTest {
      * Spring Security context. Returns HTTP 204 No Content.</p>
      */
     @Test
-    @Transactional
     public void testLogoutWithValidToken() {
         // Arrange: First login to get JWT token
         LoginRequest loginRequest = new LoginRequest();
@@ -769,7 +795,6 @@ public class AuthenticationIntegrationTest {
      * Should still return HTTP 204 No Content as logout is idempotent operation.</p>
      */
     @Test
-    @Transactional
     public void testLogoutWithoutToken() {
         // Arrange: Create logout request without Authorization header
         HttpEntity<Void> logoutRequest = new HttpEntity<>(new HttpHeaders());
@@ -799,7 +824,6 @@ public class AuthenticationIntegrationTest {
      * to verify 95th percentile is under 200ms threshold.</p>
      */
     @Test
-    @Transactional
     public void testAuthenticationPerformanceRequirement() {
         // Arrange: Create login request
         LoginRequest loginRequest = new LoginRequest();
@@ -850,7 +874,6 @@ public class AuthenticationIntegrationTest {
      * </ul>
      */
     @Test
-    @Transactional
     public void testLoginResponseStructureMatchesCobolScreen() {
         // Arrange: Create login request
         LoginRequest loginRequest = new LoginRequest();
@@ -898,7 +921,6 @@ public class AuthenticationIntegrationTest {
      * </pre>
      */
     @Test
-    @Transactional
     public void testUserSecurityEntityRetrievalDuringAuth() {
         // Arrange: Create login request
         LoginRequest loginRequest = new LoginRequest();

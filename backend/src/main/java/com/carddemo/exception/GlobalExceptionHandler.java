@@ -472,15 +472,16 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Handles UserNotFoundException - user lookup failures.
+     * Handles UserNotFoundException - user lookup failures during authentication.
      * <p>
-     * Maps to COBOL USRSEC file-status 23 and DFHRESP(NOTFND).
-     * Returns HTTP 404 NOT_FOUND.
+     * Maps to COBOL USRSEC file-status 23 and DFHRESP(NOTFND) RESP=13.
+     * Returns HTTP 401 UNAUTHORIZED to prevent username enumeration attacks.
+     * Per Agent Action Plan Section 0.2: "User not found (RESP=13): 401 Unauthorized"
      * </p>
      *
      * @param ex UserNotFoundException containing user identifier details
      * @param request WebRequest for extracting request path
-     * @return ResponseEntity with 404 status and error details
+     * @return ResponseEntity with 401 status and error details
      */
     @ExceptionHandler(UserNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleUserNotFoundException(
@@ -489,17 +490,17 @@ public class GlobalExceptionHandler {
         logger.warn("User not found: {}", ex.getUserId());
         
         Map<String, Object> details = new HashMap<>();
-        details.put("userId", ex.getUserId());
+        // Don't include userId in response to prevent username enumeration
         
         ErrorResponse errorResponse = buildErrorResponse(
-            "USER_NOT_FOUND",
+            "AUTHENTICATION_FAILED",
             ex.getMessage(),
-            HttpStatus.NOT_FOUND,
+            HttpStatus.UNAUTHORIZED,
             request,
             details
         );
         
-        return new ResponseEntity<>(errorResponse, HttpStatus.NOT_FOUND);
+        return new ResponseEntity<>(errorResponse, HttpStatus.UNAUTHORIZED);
     }
 
     /**
