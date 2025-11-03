@@ -20,6 +20,7 @@ import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.item.validator.ValidationException;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.dao.TransientDataAccessException;
 import org.springframework.retry.backoff.ExponentialBackOffPolicy;
 import org.springframework.retry.policy.SimpleRetryPolicy;
@@ -241,6 +242,17 @@ public class AccountDataLoadJob {
     private static final Logger logger = LoggerFactory.getLogger(AccountDataLoadJob.class);
 
     /**
+     * Bean name for the account data load job.
+     * Used to avoid bean name conflicts with job name in Spring context.
+     */
+    private static final String JOB_BEAN_NAME = "accountDataLoadJobBean";
+
+    /**
+     * Step name for the account data load step.
+     */
+    private static final String STEP_NAME = "accountDataLoadStep";
+
+    /**
      * Chunk size for batch processing (1000 records per transaction).
      * Matches Section 0.5 specification: "Chunk size: 1000 records"
      */
@@ -275,6 +287,53 @@ public class AccountDataLoadJob {
      * Matches Section 0.5 specification: "Max 10000ms"
      */
     private static final long MAX_BACKOFF_MS = 10000L;
+
+    /**
+     * Job repository for Spring Batch metadata management.
+     */
+    private final JobRepository jobRepository;
+
+    /**
+     * Transaction manager for chunk transaction management.
+     */
+    private final PlatformTransactionManager transactionManager;
+
+    /**
+     * Item reader for account data.
+     */
+    private final AccountItemReader accountItemReader;
+
+    /**
+     * Item processor for account validation and enrichment.
+     */
+    private final AccountDataProcessor accountDataProcessor;
+
+    /**
+     * Item writer for account persistence.
+     */
+    private final AccountItemWriter accountItemWriter;
+
+    /**
+     * Constructor for dependency injection.
+     *
+     * @param jobRepository JobRepository for job execution metadata
+     * @param transactionManager PlatformTransactionManager for transactions
+     * @param accountItemReader ItemReader for reading accounts
+     * @param accountDataProcessor ItemProcessor for account processing
+     * @param accountItemWriter ItemWriter for writing accounts
+     */
+    public AccountDataLoadJob(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            AccountItemReader accountItemReader,
+            AccountDataProcessor accountDataProcessor,
+            AccountItemWriter accountItemWriter) {
+        this.jobRepository = jobRepository;
+        this.transactionManager = transactionManager;
+        this.accountItemReader = accountItemReader;
+        this.accountDataProcessor = accountDataProcessor;
+        this.accountItemWriter = accountItemWriter;
+    }
 
     /**
      * Defines the account data load job with single step execution.
@@ -318,19 +377,15 @@ public class AccountDataLoadJob {
      *   <li>Complete remaining chunks and mark job as COMPLETED</li>
      * </ul>
      * 
-     * @param jobRepository JobRepository for job execution metadata persistence and checkpoint/restart
-     * @param accountDataLoadStep Configured step with reader-processor-writer pipeline
      * @return Job configured with account data load step and restart capability
      */
-    @Bean
-    public Job accountDataLoadJob(
-            JobRepository jobRepository,
-            Step accountDataLoadStep) {
+    @Bean(name = JOB_BEAN_NAME)
+    public Job accountDataLoadJob() {
         
         logger.info("Configuring accountDataLoadJob - COBOL program CBACT01C.cbl equivalent");
         
         return new JobBuilder("accountDataLoadJob", jobRepository)
-                .start(accountDataLoadStep)
+                .start(accountDataLoadStep())
                 .build();
     }
 
@@ -473,20 +528,10 @@ public class AccountDataLoadJob {
      *   <li><strong>Index Usage:</strong> Queries use B-tree index on account_id for fast retrieval</li>
      * </ul>
      * 
-     * @param jobRepository JobRepository for checkpoint/restart state persistence
-     * @param transactionManager PlatformTransactionManager for chunk transaction management
-     * @param accountItemReader ItemReader for sequential account data reading from database
-     * @param accountDataProcessor ItemProcessor for account validation and business logic
-     * @param accountItemWriter ItemWriter for batch account persistence to PostgreSQL
      * @return Step configured with chunk processing, fault tolerance, and execution listener
      */
-    @Bean
-    public Step accountDataLoadStep(
-            JobRepository jobRepository,
-            PlatformTransactionManager transactionManager,
-            AccountItemReader accountItemReader,
-            AccountDataProcessor accountDataProcessor,
-            AccountItemWriter accountItemWriter) {
+    @Bean(name = STEP_NAME)
+    public Step accountDataLoadStep() {
         
         logger.info("Configuring accountDataLoadStep with chunk size: {}, skip limit: {}, retry limit: {}",
                 CHUNK_SIZE, SKIP_LIMIT, MAX_RETRY_ATTEMPTS);
@@ -521,7 +566,7 @@ public class AccountDataLoadJob {
                 // Configure retry policy for transient errors
                 .retryLimit(MAX_RETRY_ATTEMPTS)
                 .retry(TransientDataAccessException.class)
-                .retry(org.springframework.dao.DeadlockLoserDataAccessException.class)
+                .retry(PessimisticLockingFailureException.class)
                 .retry(org.springframework.dao.CannotAcquireLockException.class)
                 .retryPolicy(retryPolicy)
                 .backOffPolicy(backOffPolicy)
