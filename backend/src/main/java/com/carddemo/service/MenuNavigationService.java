@@ -19,6 +19,7 @@ package com.carddemo.service;
 
 import com.carddemo.constants.MessageConstants;
 import com.carddemo.entity.UserSecurity;
+import com.carddemo.repository.UserSecurityRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -83,6 +84,13 @@ public class MenuNavigationService {
     
     private static final Logger logger = LoggerFactory.getLogger(MenuNavigationService.class);
     
+    private final UserSecurityRepository userSecurityRepository;
+    
+    @Autowired
+    public MenuNavigationService(UserSecurityRepository userSecurityRepository) {
+        this.userSecurityRepository = userSecurityRepository;
+    }
+    
     // Menu option constants matching COBOL CDEMO-MENU-OPT structure
     private static final int MAX_MENU_OPTIONS = 12;
     // User type constants matching COBOL COCOM01Y.cpy:
@@ -146,7 +154,23 @@ public class MenuNavigationService {
         
         // Extract UserSecurity principal from authentication
         // Replaces COBOL: CDEMO-USER-ID and CDEMO-USER-TYPE from COMMAREA
-        UserSecurity user = (UserSecurity) authentication.getPrincipal();
+        Object principal = authentication.getPrincipal();
+        UserSecurity user;
+        
+        if (principal instanceof UserSecurity) {
+            user = (UserSecurity) principal;
+        } else if (principal instanceof org.springframework.security.core.userdetails.User) {
+            // Fallback for test scenarios where Spring Security User is used
+            org.springframework.security.core.userdetails.User springUser = 
+                (org.springframework.security.core.userdetails.User) principal;
+            // Load UserSecurity entity from repository
+            user = userSecurityRepository.findByUserId(springUser.getUsername())
+                .orElseThrow(() -> new IllegalStateException(
+                    "UserSecurity entity not found for username: " + springUser.getUsername()));
+        } else {
+            throw new IllegalStateException(
+                "Unexpected principal type: " + principal.getClass().getName());
+        }
         
         logger.info("getMainMenu() - Building menu for user: {} (type: {})", 
                     user.getUserId(), user.getUserType());
@@ -212,7 +236,23 @@ public class MenuNavigationService {
         
         // Get authenticated user for authorization check
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        UserSecurity user = (UserSecurity) authentication.getPrincipal();
+        Object principal = authentication.getPrincipal();
+        UserSecurity user;
+        
+        if (principal instanceof UserSecurity) {
+            user = (UserSecurity) principal;
+        } else if (principal instanceof org.springframework.security.core.userdetails.User) {
+            // Fallback for test scenarios where Spring Security User is used
+            org.springframework.security.core.userdetails.User springUser = 
+                (org.springframework.security.core.userdetails.User) principal;
+            // Load UserSecurity entity from repository
+            user = userSecurityRepository.findByUserId(springUser.getUsername())
+                .orElseThrow(() -> new IllegalStateException(
+                    "UserSecurity entity not found for username: " + springUser.getUsername()));
+        } else {
+            throw new IllegalStateException(
+                "Unexpected principal type: " + principal.getClass().getName());
+        }
         
         // Find the selected menu option
         MenuOption selectedOption = null;
