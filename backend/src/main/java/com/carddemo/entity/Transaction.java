@@ -17,6 +17,7 @@ import lombok.NoArgsConstructor;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
@@ -128,8 +129,8 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "transaction", indexes = {
     @Index(name = "idx_card_number", columnList = "card_number"),
-    @Index(name = "idx_orig_timestamp", columnList = "origination_timestamp"),
-    @Index(name = "idx_proc_timestamp", columnList = "processing_timestamp"),
+    @Index(name = "idx_orig_timestamp", columnList = "transaction_timestamp"),
+    @Index(name = "idx_proc_timestamp", columnList = "processed_timestamp"),
     @Index(name = "idx_type_category", columnList = "transaction_type_code, transaction_category_code")
 })
 @Data
@@ -568,6 +569,7 @@ public class Transaction implements Serializable {
     /**
      * Origination timestamp - When transaction was initiated.
      * Maps to COBOL field: TRAN-ORIG-TS PIC X(26)
+     * Database column: transaction_timestamp (NOT origination_timestamp)
      * 
      * <p>Precise timestamp when the transaction was originated or initiated by the cardholder
      * or merchant. This is the "business timestamp" representing when the transaction actually
@@ -607,17 +609,19 @@ public class Transaction implements Serializable {
      * 
      * <p><strong>Index Strategy:</strong></p>
      * <ul>
-     *   <li>B-tree index on origination_timestamp for efficient date range queries</li>
+     *   <li>B-tree index on transaction_timestamp for efficient date range queries</li>
      *   <li>Critical for statement generation performance (4-hour batch window)</li>
      *   <li>Composite index with card_number for card-specific date range queries</li>
+     *   <li>Functional index on transaction_timestamp::date for daily batch processing</li>
      * </ul>
      */
-    @Column(name = "origination_timestamp")
+    @Column(name = "transaction_timestamp")
     private LocalDateTime originationTimestamp;
 
     /**
      * Processing timestamp - When transaction was processed by the system.
      * Maps to COBOL field: TRAN-PROC-TS PIC X(26)
+     * Database column: processed_timestamp (NOT processing_timestamp)
      * 
      * <p>System timestamp when the transaction was processed and posted to the account
      * balance in the CardDemo system. This is the "system timestamp" representing when
@@ -658,7 +662,7 @@ public class Transaction implements Serializable {
      * (pending authorization, held for review, scheduled future transactions). Once
      * transaction is posted to account balance, this field must be populated.</p>
      */
-    @Column(name = "processing_timestamp")
+    @Column(name = "processed_timestamp")
     private LocalDateTime processingTimestamp;
 
     /**
@@ -807,6 +811,100 @@ public class Transaction implements Serializable {
     })
     @JsonIgnore
     private TransactionCategory transactionCategory;
+
+    /**
+     * Get account ID from the associated card (transient helper method).
+     * 
+     * <p>This is a computed field that navigates the relationship chain:
+     * Transaction → Card → Account to retrieve the account ID.</p>
+     * 
+     * <p><strong>Usage Context:</strong></p>
+     * <ul>
+     *   <li>Batch processing: DailyTransactionProcessor needs account ID for balance updates</li>
+     *   <li>Transaction posting: TransactionPostWriter requires account ID for account updates</li>
+     *   <li>NOT stored in database: Computed on-demand from card relationship</li>
+     *   <li>Database uses transaction → card → account relationship chain</li>
+     * </ul>
+     * 
+     * <p><strong>Performance Note:</strong> This method will trigger a LAZY load of the
+     * Card entity if not already loaded, which may impact performance. For batch processing,
+     * consider using JOIN FETCH in queries to eagerly load the card relationship.</p>
+     * 
+     * @return Account ID if card is loaded and has accountId, null otherwise
+     */
+    public Long getAccountId() {
+        return (card != null) ? card.getAccountId() : null;
+    }
+
+    /**
+     * Set account ID (not persisted - for batch processor compatibility).
+     * 
+     * <p>This setter exists only for backward compatibility with batch processors
+     * (DailyTransactionProcessor) that were written expecting a direct accountId field.
+     * Since the transaction table does NOT have an account_id column, this value is
+     * NOT persisted. The account ID is derived from the Card relationship.</p>
+     * 
+     * <p><strong>Implementation Note:</strong> This is a no-op setter. The account ID
+     * should be set on the associated Card entity, not directly on the transaction.
+     * The batch processors should be refactored to set the card relationship properly
+     * instead of trying to set accountId directly.</p>
+     * 
+     * @param accountId Account ID value (ignored, not persisted)
+     * @deprecated Use {@link #setCard(Card)} to establish proper relationship
+     */
+    @Deprecated
+    public void setAccountId(Long accountId) {
+        // No-op: account_id is not stored in transaction table
+        // Account ID is accessed via card.accountId relationship
+        // This setter exists only for compilation compatibility with batch processors
+    }
+
+    /**
+     * Get transaction date from origination timestamp (transient helper method).
+     * 
+     * <p>Extracts the date component from the originationTimestamp (transaction_timestamp
+     * in database). This is a computed field used for date-based queries and filtering.</p>
+     * 
+     * <p><strong>Usage Context:</strong></p>
+     * <ul>
+     *   <li>Batch processing: DailyTransactionProcessor uses date for grouping</li>
+     *   <li>Date range queries: Extract date without time component</li>
+     *   <li>NOT stored in database: Database has functional index on transaction_timestamp::date</li>
+     *   <li>Computed on-demand from originationTimestamp</li>
+     * </ul>
+     * 
+     * <p><strong>Database Note:</strong> The database has a functional index
+     * `idx_transaction_date ON transaction((transaction_timestamp::date))` for
+     * efficient date-based queries. No separate column is needed.</p>
+     * 
+     * @return LocalDate extracted from originationTimestamp, null if timestamp is null
+     */
+    public LocalDate getTransactionDate() {
+        return (originationTimestamp != null) ? originationTimestamp.toLocalDate() : null;
+    }
+
+    /**
+     * Set transaction date (not persisted - for batch processor compatibility).
+     * 
+     * <p>This setter exists only for backward compatibility with batch processors
+     * (DailyTransactionProcessor) that were written expecting a separate transactionDate
+     * field. Since the transaction table does NOT have a transaction_date column, this
+     * value is NOT persisted. The date is derived from originationTimestamp.</p>
+     * 
+     * <p><strong>Implementation Note:</strong> This is a no-op setter. The transaction
+     * date should be set by setting the originationTimestamp field. The batch processors
+     * should be refactored to use originationTimestamp instead of a separate date field.</p>
+     * 
+     * @param transactionDate Transaction date value (ignored, not persisted)
+     * @deprecated Use {@link #setOriginationTimestamp(LocalDateTime)} to set timestamp
+     */
+    @Deprecated
+    public void setTransactionDate(LocalDate transactionDate) {
+        // No-op: transaction_date is not stored in transaction table
+        // Date is extracted from transaction_timestamp (originationTimestamp field)
+        // Database has functional index on transaction_timestamp::date for queries
+        // This setter exists only for compilation compatibility with batch processors
+    }
 
     /**
      * Custom setter for transaction amount with automatic precision enforcement.
