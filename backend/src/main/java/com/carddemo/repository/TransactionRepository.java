@@ -60,7 +60,8 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * @param accountId the 11-digit account identifier
      * @return List of all transactions for the account
      */
-    List<Transaction> findByAccountId(Long accountId);
+    @Query("SELECT t FROM Transaction t WHERE t.card.account.accountId = :accountId")
+    List<Transaction> findByAccountId(@Param("accountId") Long accountId);
 
     /**
      * Retrieves paginated transactions for a specific account.
@@ -73,7 +74,8 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * @param pageable  pagination information (page number, size, sort)
      * @return Page of transactions for the account
      */
-    Page<Transaction> findByAccountId(Long accountId, Pageable pageable);
+    @Query("SELECT t FROM Transaction t WHERE t.card.account.accountId = :accountId")
+    Page<Transaction> findByAccountId(@Param("accountId") Long accountId, Pageable pageable);
 
     /**
      * Retrieves paginated transactions for a specific card number.
@@ -98,7 +100,8 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * @param endDate   the end date of the range (inclusive)
      * @return List of transactions within the date range
      */
-    List<Transaction> findByTransactionDateBetween(LocalDate startDate, LocalDate endDate);
+    @Query("SELECT t FROM Transaction t WHERE CAST(t.originationTimestamp AS date) BETWEEN :startDate AND :endDate")
+    List<Transaction> findByTransactionDateBetween(@Param("startDate") LocalDate startDate, @Param("endDate") LocalDate endDate);
 
     /**
      * Retrieves paginated transactions for an account within a date range.
@@ -112,10 +115,11 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * @param pageable  pagination information
      * @return Page of transactions matching the criteria
      */
+    @Query("SELECT t FROM Transaction t WHERE t.card.account.accountId = :accountId AND CAST(t.originationTimestamp AS date) BETWEEN :startDate AND :endDate")
     Page<Transaction> findByAccountIdAndTransactionDateBetween(
-            Long accountId,
-            LocalDate startDate,
-            LocalDate endDate,
+            @Param("accountId") Long accountId,
+            @Param("startDate") LocalDate startDate,
+            @Param("endDate") LocalDate endDate,
             Pageable pageable
     );
 
@@ -133,8 +137,8 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      */
     @Query("SELECT t.transactionCategoryCode, SUM(t.transactionAmount) " +
            "FROM Transaction t " +
-           "WHERE t.accountId = :accountId " +
-           "AND t.transactionDate BETWEEN :startDate AND :endDate " +
+           "WHERE t.card.account.accountId = :accountId " +
+           "AND CAST(t.originationTimestamp AS date) BETWEEN :startDate AND :endDate " +
            "GROUP BY t.transactionCategoryCode")
     List<Object[]> aggregateByCategory(
             @Param("accountId") Long accountId,
@@ -153,8 +157,8 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * @return count of transactions for the account on the specified date
      */
     @Query("SELECT COUNT(t) FROM Transaction t " +
-           "WHERE t.accountId = :accountId " +
-           "AND t.transactionDate = :date")
+           "WHERE t.card.account.accountId = :accountId " +
+           "AND CAST(t.originationTimestamp AS date) = :date")
     long countDailyTransactions(
             @Param("accountId") Long accountId,
             @Param("date") LocalDate date
