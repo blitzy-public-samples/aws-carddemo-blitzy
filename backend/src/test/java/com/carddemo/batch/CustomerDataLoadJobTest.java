@@ -6,6 +6,7 @@
 package com.carddemo.batch;
 
 import com.carddemo.batch.job.CustomerDataLoadJob;
+import com.carddemo.config.TestBatchConfig;
 import com.carddemo.entity.Customer;
 import com.carddemo.repository.CustomerRepository;
 import org.junit.jupiter.api.AfterEach;
@@ -24,6 +25,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 
@@ -95,12 +97,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see <a href="Section 0.9">Testing and Reliability Considerations</a>
  * @since 1.0
  */
-@SpringBootTest(properties = {
-    "spring.jpa.hibernate.ddl-auto=create-drop",
-    "spring.jpa.generate-ddl=true",
-    "spring.flyway.enabled=false",
-    "spring.jpa.properties.hibernate.hbm2ddl.auto=create-drop"
-})
+@SpringBootTest(
+    classes = {com.carddemo.CardDemoApplication.class, TestBatchConfig.class},
+    properties = {
+        "spring.jpa.hibernate.ddl-auto=create-drop",
+        "spring.jpa.generate-ddl=true",
+        "spring.flyway.enabled=false",
+        "spring.jpa.properties.hibernate.hbm2ddl.auto=create-drop",
+        "spring.main.allow-bean-definition-overriding=true"
+    }
+)
 @SpringBatchTest
 @ActiveProfiles("test")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.ANY)
