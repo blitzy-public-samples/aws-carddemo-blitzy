@@ -124,7 +124,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * @param customerId Customer identifier
      * @return List of accounts belonging to the customer
      */
-    List<Account> findByCustomerId(Long customerId);
+    List<Account> findByCustomer_CustomerId(Long customerId);
 
     /**
      * Finds all accounts with a specific active status.
@@ -145,7 +145,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * @param groupId Account group identifier
      * @return List of accounts in the group
      */
-    List<Account> findByGroupId(String groupId);
+    List<Account> findByAccountGroupId(String groupId);
 
     /**
      * Finds an account by ID with optional handling.
@@ -172,7 +172,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * @param activeStatus Active status
      * @return List of matching accounts
      */
-    List<Account> findByCustomerIdAndActiveStatus(Long customerId, String activeStatus);
+    List<Account> findByCustomer_CustomerIdAndActiveStatus(Long customerId, String activeStatus);
 
     /**
      * Finds accounts with credit limit greater than specified amount.
