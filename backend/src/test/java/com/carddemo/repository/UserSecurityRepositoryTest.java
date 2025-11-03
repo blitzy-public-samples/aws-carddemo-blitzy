@@ -35,8 +35,10 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.data.domain.Sort;
 import org.springframework.test.context.jdbc.Sql;
 
+import jakarta.persistence.PersistenceException;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -98,6 +100,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @AutoConfigureTestDatabase(replace = Replace.NONE)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Import({BCryptPasswordEncoder.class, CustomUserDetailsService.class})
+@Sql(scripts = {"/db/test-data/users.sql"})
 public class UserSecurityRepositoryTest {
     
     /**
@@ -299,8 +302,8 @@ public class UserSecurityRepositoryTest {
     @Test
     @Order(5)
     public void testFindAll_ReturnsAllUsers() {
-        // When: Retrieve all users (VSAM sequential browse)
-        List<UserSecurity> allUsers = userSecurityRepository.findAll();
+        // When: Retrieve all users (VSAM sequential browse with key ordering)
+        List<UserSecurity> allUsers = userSecurityRepository.findAll(Sort.by("userId"));
         
         // Then: At least 3 users from test data
         assertThat(allUsers).isNotEmpty();
@@ -310,7 +313,7 @@ public class UserSecurityRepositoryTest {
         assertThat(allUsers).extracting(UserSecurity::getUserId)
             .contains("user001", "user002", "admin");
         
-        // Verify sequential order (sorted by user_id)
+        // Verify sequential order (sorted by user_id matching VSAM KSDS key order)
         assertThat(allUsers).isSortedAccordingTo(
             (u1, u2) -> u1.getUserId().compareTo(u2.getUserId())
         );
@@ -380,7 +383,7 @@ public class UserSecurityRepositoryTest {
         // Verify role mapping to ROLE_USER
         Collection<? extends GrantedAuthority> authorities = user.getAuthorities();
         assertThat(authorities).hasSize(1);
-        assertThat(authorities).contains(new SimpleGrantedAuthority("ROLE_USER"));
+        assertThat(authorities).extracting("authority").contains("ROLE_USER");
     }
     
     /**
@@ -427,9 +430,9 @@ public class UserSecurityRepositoryTest {
         // Verify hierarchical role mapping: Admin gets both ROLE_USER and ROLE_ADMIN
         Collection<? extends GrantedAuthority> authorities = user.getAuthorities();
         assertThat(authorities).hasSize(2);
-        assertThat(authorities).contains(
-            new SimpleGrantedAuthority("ROLE_USER"),
-            new SimpleGrantedAuthority("ROLE_ADMIN")
+        assertThat(authorities).extracting("authority").containsExactlyInAnyOrder(
+            "ROLE_USER",
+            "ROLE_ADMIN"
         );
     }
     
@@ -459,11 +462,13 @@ public class UserSecurityRepositoryTest {
         duplicateUser.setPassword(passwordEncoder.encode("password"));
         duplicateUser.setUserType("R");
         
-        // When/Then: Attempting to save throws DataIntegrityViolationException
+        // When/Then: Attempting to persist duplicate throws PersistenceException (JPA) or DataIntegrityViolationException (Spring)
+        // Note: Using persist() instead of save() because save() uses merge() which updates existing entities
+        // testEntityManager.persist() throws JPA PersistenceException, not Spring DataIntegrityViolationException
         assertThatThrownBy(() -> {
-            userSecurityRepository.save(duplicateUser);
+            testEntityManager.persist(duplicateUser);
             testEntityManager.flush();
-        }).isInstanceOf(DataIntegrityViolationException.class);
+        }).isInstanceOfAny(DataIntegrityViolationException.class, PersistenceException.class);
     }
     
     // ===== VSAM Rewrite Tests (save - UPDATE) =====
@@ -586,7 +591,7 @@ public class UserSecurityRepositoryTest {
         assertThat(regularUser.getUserType()).isEqualTo("R");
         Collection<? extends GrantedAuthority> oldAuthorities = regularUser.getAuthorities();
         assertThat(oldAuthorities).hasSize(1);
-        assertThat(oldAuthorities).contains(new SimpleGrantedAuthority("ROLE_USER"));
+        assertThat(oldAuthorities).extracting("authority").contains("ROLE_USER");
         
         // When: Promote to admin
         regularUser.setUserType("A");
@@ -603,9 +608,9 @@ public class UserSecurityRepositoryTest {
         // Verify new authorities include both ROLE_USER and ROLE_ADMIN
         Collection<? extends GrantedAuthority> newAuthorities = promotedUser.getAuthorities();
         assertThat(newAuthorities).hasSize(2);
-        assertThat(newAuthorities).contains(
-            new SimpleGrantedAuthority("ROLE_USER"),
-            new SimpleGrantedAuthority("ROLE_ADMIN")
+        assertThat(newAuthorities).extracting("authority").containsExactlyInAnyOrder(
+            "ROLE_USER",
+            "ROLE_ADMIN"
         );
     }
     
@@ -733,7 +738,7 @@ public class UserSecurityRepositoryTest {
         Collection<? extends GrantedAuthority> authorities = regularUser.getAuthorities();
         assertThat(authorities).isNotNull();
         assertThat(authorities).hasSize(1);
-        assertThat(authorities).contains(new SimpleGrantedAuthority("ROLE_USER"));
+        assertThat(authorities).extracting("authority").contains("ROLE_USER");
         
         // Verify authority string format
         GrantedAuthority authority = authorities.iterator().next();
@@ -766,9 +771,9 @@ public class UserSecurityRepositoryTest {
         Collection<? extends GrantedAuthority> authorities = adminUser.getAuthorities();
         assertThat(authorities).isNotNull();
         assertThat(authorities).hasSize(2);
-        assertThat(authorities).contains(
-            new SimpleGrantedAuthority("ROLE_USER"),
-            new SimpleGrantedAuthority("ROLE_ADMIN")
+        assertThat(authorities).extracting("authority").containsExactlyInAnyOrder(
+            "ROLE_USER",
+            "ROLE_ADMIN"
         );
         
         // Verify both authority strings
@@ -829,7 +834,7 @@ public class UserSecurityRepositoryTest {
         Collection<? extends GrantedAuthority> authorities = userDetails.getAuthorities();
         assertThat(authorities).isNotNull();
         assertThat(authorities).hasSize(1);
-        assertThat(authorities).contains(new SimpleGrantedAuthority("ROLE_USER"));
+        assertThat(authorities).extracting("authority").contains("ROLE_USER");
     }
     
     /**
@@ -985,28 +990,31 @@ public class UserSecurityRepositoryTest {
     public void testUsernameUniqueConstraint() {
         // Given: Two users with same user_id
         UserSecurity user1 = new UserSecurity();
-        user1.setUserId("uniquetest");
+        user1.setUserId("uniqtest");
         user1.setFirstName("First");
         user1.setLastName("User");
         user1.setPassword(passwordEncoder.encode("pass1"));
         user1.setUserType("R");
         
         UserSecurity user2 = new UserSecurity();
-        user2.setUserId("uniquetest"); // Duplicate user_id
+        user2.setUserId("uniqtest"); // Duplicate user_id
         user2.setFirstName("Second");
         user2.setLastName("User");
         user2.setPassword(passwordEncoder.encode("pass2"));
         user2.setUserType("R");
         
-        // When: Save first user successfully
-        userSecurityRepository.save(user1);
+        // When: Persist first user successfully
+        testEntityManager.persist(user1);
         testEntityManager.flush();
+        testEntityManager.clear();
         
-        // Then: Saving second user with same ID throws exception
+        // Then: Persisting second user with same ID throws exception
+        // Note: Using persist() instead of save() to force INSERT operation
+        // testEntityManager.persist() throws JPA PersistenceException, not Spring DataIntegrityViolationException
         assertThatThrownBy(() -> {
-            userSecurityRepository.save(user2);
+            testEntityManager.persist(user2);
             testEntityManager.flush();
-        }).isInstanceOf(DataIntegrityViolationException.class);
+        }).isInstanceOfAny(DataIntegrityViolationException.class, PersistenceException.class);
     }
     
     /**
@@ -1028,7 +1036,7 @@ public class UserSecurityRepositoryTest {
         
         // Regular user type 'R'
         UserSecurity regularUser = new UserSecurity();
-        regularUser.setUserId("typetest1");
+        regularUser.setUserId("typetest");
         regularUser.setFirstName("Type");
         regularUser.setLastName("Test1");
         regularUser.setPassword(passwordEncoder.encode("password"));
@@ -1039,7 +1047,7 @@ public class UserSecurityRepositoryTest {
         
         // Admin user type 'A'
         UserSecurity adminUser = new UserSecurity();
-        adminUser.setUserId("typetest2");
+        adminUser.setUserId("typetes2");
         adminUser.setFirstName("Type");
         adminUser.setLastName("Test2");
         adminUser.setPassword(passwordEncoder.encode("password"));
@@ -1052,8 +1060,8 @@ public class UserSecurityRepositoryTest {
         testEntityManager.clear();
         
         // Verify both saved correctly
-        assertThat(userSecurityRepository.findByUserId("typetest1")).isPresent();
-        assertThat(userSecurityRepository.findByUserId("typetest2")).isPresent();
+        assertThat(userSecurityRepository.findByUserId("typetest")).isPresent();
+        assertThat(userSecurityRepository.findByUserId("typetes2")).isPresent();
     }
     
     // ===== Custom Query Method Tests =====
