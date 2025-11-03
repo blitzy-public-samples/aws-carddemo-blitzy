@@ -248,8 +248,8 @@ public class UserProfileUpdateRequest {
      * <b>Validation Rules:</b>
      * </p>
      * <ul>
-     *   <li>Required field (cannot be null)</li>
-     *   <li>Must be exactly 1 character</li>
+     *   <li>Optional field (can be null for regular user profile updates)</li>
+     *   <li>Must be exactly 1 character when provided</li>
      *   <li>Allowed values: 'R' (Regular User) or 'A' (Administrative User)</li>
      *   <li>Pattern: [RA]</li>
      * </ul>
@@ -264,9 +264,9 @@ public class UserProfileUpdateRequest {
      * <b>Authorization:</b> Changing user type is restricted to ROLE_ADMIN only.
      * Regular users (ROLE_USER) cannot modify their own or others' user type.
      * This is enforced using @PreAuthorize method-level security in the service layer.
+     * When null, the service layer preserves the existing user type value.
      * </p>
      */
-    @NotNull(message = "User type is required")
     @Pattern(
         regexp = "[RA]",
         message = "User type must be 'R' (Regular User) or 'A' (Administrative User)"
