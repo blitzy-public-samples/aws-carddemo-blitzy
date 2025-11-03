@@ -62,7 +62,7 @@
  * @module components/transaction/TransactionListComponent
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -79,8 +79,7 @@ import {
   Box,
   Typography,
   Checkbox,
-  Alert,
-  IconButton
+  Alert
 } from '@mui/material';
 import { format, parseISO, isValid, startOfDay, endOfDay } from 'date-fns';
 import {
@@ -181,7 +180,8 @@ const TransactionListComponent = () => {
         endDate: filters.endDate || null
       }));
     }
-  }, []); // Empty dependency array = run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array = run once on mount (intentionally ignoring pagination/filters)
   
   /**
    * Handle pagination page change event
@@ -219,14 +219,11 @@ const TransactionListComponent = () => {
    * This handler is included for Material-UI TablePagination API compliance but should
    * maintain pageSize = 10 to preserve exact COBOL behavior.
    * 
-   * @param {Event} event - DOM event containing new rows per page value
+   * This is a no-op function since page size is fixed.
    */
-  const handleRowsPerPageChange = (event) => {
+  const handleRowsPerPageChange = () => {
     // Page size is fixed at 10 per COBOL requirements
     // This handler is a no-op to maintain COBOL equivalence
-    // If flexibility is needed in future, uncomment below:
-    // const newPageSize = parseInt(event.target.value, 10);
-    // dispatch(updateFilters({ pageSize: newPageSize }));
   };
   
   /**
