@@ -29,9 +29,8 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React from 'react';
 import PropTypes from 'prop-types';
-import { Box, Container, Typography, Link, Divider, useTheme, useMediaQuery } from '@mui/material';
+import { Box, Container, Typography, Link, Divider, useTheme } from '@mui/material';
 import { APP_CONFIG } from '../../utils/constants';
 
 /**
@@ -47,7 +46,6 @@ import { APP_CONFIG } from '../../utils/constants';
  */
 const Footer = ({ showFunctionKeys = true, variant = 'default' }) => {
   const theme = useTheme();
-  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   
   // Copyright year - dynamic to stay current
   const currentYear = new Date().getFullYear();
