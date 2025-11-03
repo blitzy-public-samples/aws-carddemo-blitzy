@@ -98,16 +98,21 @@ const initialState = {
  * @param {Object} params - Fetch parameters
  * @param {number} params.page - Page number (1-based, default: 1)
  * @param {string} params.accountId - Account ID filter (optional)
- * @param {string} params.cardNumber - Card number search (optional)
- * @param {string} params.status - Status filter: 'all', 'A', 'E', 'B' (optional)
  * @returns {Promise} Promise resolving to paginated card list with metadata
+ * 
+ * Note: cardNumber and status filters are managed in Redux state but not yet
+ * passed to backend API. These can be used for client-side filtering or
+ * integrated with backend API in future enhancements.
  */
 export const fetchCards = createAsyncThunk(
   'card/fetchAll',
-  async ({ page = 1, accountId = '', cardNumber = '', status = 'all' } = {}, { rejectWithValue }) => {
+  async ({ page = 1, accountId = '' } = {}, { rejectWithValue }) => {
     try {
       // Call cardService.getCards with pagination params (pageSize fixed at 7)
       // Maps COBOL COCRDLIC.cbl sequential VSAM browse with 7-record screen limit
+      // Note: cardNumber and status filters are stored in Redux state but not yet
+      // passed to backend API - can be used for client-side filtering or backend
+      // integration in future enhancement
       const response = await cardService.getCards(
         accountId || null,  // Pass null if empty string to match COBOL filter logic
         page,
