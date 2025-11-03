@@ -334,8 +334,8 @@ public class AccountBalanceJob {
      * @param accountBalanceStep The configured step for balance calculation
      * @return Configured Job instance ready for execution
      */
-    @Bean
-    public Job accountBalanceJob(Step accountBalanceStep) {
+    @Bean(name = "accountBalanceJobBean")
+    public Job createAccountBalanceJob(Step accountBalanceStep) {
         logger.info("Building accountBalanceJob with accountBalanceStep");
         
         return new JobBuilder("accountBalanceJob", jobRepository)

@@ -26,6 +26,7 @@
  */
 package com.carddemo.batch.writer;
 
+import com.carddemo.entity.AccountBalance;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.stereotype.Component;
@@ -37,51 +38,7 @@ import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.Query;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
 import java.util.List;
-
-/**
- * Data contract interface for AccountBalance entities processed by this writer.
- * 
- * This interface defines the minimum required properties for balance persistence.
- * Implementations must be JPA entities mapped to the account_balance table.
- * 
- * Note: In a fully integrated system with proper dependency injection, this would
- * import the actual AccountBalance entity. Due to architectural constraints, we
- * define the contract here to ensure type safety while maintaining loose coupling.
- */
-interface AccountBalanceData {
-    /**
-     * Gets the unique identifier for the account balance record.
-     * @return The balance ID (primary key)
-     */
-    Long getBalanceId();
-    
-    /**
-     * Gets the account identifier this balance record belongs to.
-     * @return The account ID (foreign key to account table)
-     */
-    Long getAccountId();
-    
-    /**
-     * Gets the opening balance for the period.
-     * @return Opening balance with scale 2 (COMP-3 equivalent)
-     */
-    BigDecimal getOpeningBalance();
-    
-    /**
-     * Gets the closing balance for the period.
-     * This value is used to update the Account.currentBalance field.
-     * @return Closing balance with scale 2 (COMP-3 equivalent)
-     */
-    BigDecimal getClosingBalance();
-    
-    /**
-     * Gets the balance calculation timestamp.
-     * @return Timestamp when balance was calculated
-     */
-    LocalDateTime getBalanceTimestamp();
-}
 
 /**
  * Spring Batch ItemWriter for persisting AccountBalance entities and updating 
@@ -107,7 +64,7 @@ interface AccountBalanceData {
  *
  */
 @Component
-public class AccountBalanceWriter implements ItemWriter<AccountBalanceData> {
+public class AccountBalanceWriter implements ItemWriter<AccountBalance> {
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -145,19 +102,19 @@ public class AccountBalanceWriter implements ItemWriter<AccountBalanceData> {
         isolation = Isolation.READ_COMMITTED,
         rollbackFor = Exception.class
     )
-    public void write(Chunk<? extends AccountBalanceData> chunk) throws Exception {
+    public void write(Chunk<? extends AccountBalance> chunk) throws Exception {
         // Validate chunk
         if (chunk == null || chunk.isEmpty()) {
             return;
         }
 
-        List<? extends AccountBalanceData> items = chunk.getItems();
+        List<? extends AccountBalance> items = chunk.getItems();
         
         // Process each AccountBalance entity in the chunk
         int processedCount = 0;
         int updatedAccounts = 0;
         
-        for (AccountBalanceData balanceData : items) {
+        for (AccountBalance balanceData : items) {
             if (balanceData == null) {
                 continue;
             }
