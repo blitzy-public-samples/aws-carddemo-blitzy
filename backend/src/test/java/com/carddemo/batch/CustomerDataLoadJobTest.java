@@ -21,7 +21,11 @@ import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.JobRepositoryTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
 
 import java.time.Duration;
 import java.time.LocalDate;
@@ -91,8 +95,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see <a href="Section 0.9">Testing and Reliability Considerations</a>
  * @since 1.0
  */
-@SpringBootTest
+@SpringBootTest(properties = {
+    "spring.jpa.hibernate.ddl-auto=create-drop",
+    "spring.jpa.generate-ddl=true",
+    "spring.flyway.enabled=false",
+    "spring.jpa.properties.hibernate.hbm2ddl.auto=create-drop"
+})
 @SpringBatchTest
+@ActiveProfiles("test")
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.ANY)
 public class CustomerDataLoadJobTest {
 
     @Autowired
@@ -105,6 +116,7 @@ public class CustomerDataLoadJobTest {
     private CustomerRepository customerRepository;
 
     @Autowired
+    @Qualifier("customerDataLoadJobBean")
     private Job customerDataLoadJob;
 
     /**
@@ -281,9 +293,9 @@ public class CustomerDataLoadJobTest {
         // Verify commit count matches chunk size configuration
         // Expected commits = ceil(5000 / 1000) = 5 chunks
         int expectedCommitCount = (int) Math.ceil((double) expectedReadCount / 1000);
-        assertThat(stepExecution.getCommitCount()).isGreaterThan(0);
-        assertThat(stepExecution.getCommitCount()).isCloseTo(expectedCommitCount, 
-                org.assertj.core.data.Offset.offset(2)); // Allow small variance for framework overhead
+        assertThat(stepExecution.getCommitCount()).isGreaterThan(0L);
+        assertThat(stepExecution.getCommitCount()).isCloseTo((long) expectedCommitCount, 
+                org.assertj.core.data.Offset.offset(2L)); // Allow small variance for framework overhead
 
         // Verify no records were skipped in successful processing
         assertThat(stepExecution.getSkipCount()).isEqualTo(0);
@@ -433,7 +445,7 @@ public class CustomerDataLoadJobTest {
         assertThat(stepExecution.getSkipCount()).isLessThanOrEqualTo(100);
 
         // Verify write count = read count - skip count
-        int expectedWriteCount = stepExecution.getReadCount() - stepExecution.getSkipCount();
+        long expectedWriteCount = stepExecution.getReadCount() - stepExecution.getSkipCount();
         assertThat(stepExecution.getWriteCount()).isEqualTo(expectedWriteCount);
     }
 
@@ -602,7 +614,7 @@ public class CustomerDataLoadJobTest {
 
         // Calculate and verify processing rate
         StepExecution stepExecution = jobExecution.getStepExecutions().iterator().next();
-        int recordsProcessed = stepExecution.getReadCount();
+        long recordsProcessed = stepExecution.getReadCount();
         
         if (durationSeconds > 0) {
             double recordsPerSecond = (double) recordsProcessed / durationSeconds;

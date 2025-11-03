@@ -169,6 +169,12 @@ public class CustomerDataLoadJob {
      * Used for job identification in JobRepository and Kubernetes CronJob configuration.
      */
     private static final String JOB_NAME = "customerDataLoadJob";
+    
+    /**
+     * Bean name for the customer data load job bean.
+     * Different from JOB_NAME to avoid conflicts with @Configuration class naming.
+     */
+    private static final String JOB_BEAN_NAME = "customerDataLoadJobBean";
 
     /**
      * Step name constant for customer data loading step.
@@ -268,8 +274,8 @@ public class CustomerDataLoadJob {
      * @see JobRepository
      * @see <a href="Section 0.5">Batch Job Configuration</a>
      */
-    @Bean(name = JOB_NAME)
-    public Job customerDataLoadJob() {
+    @Bean(name = JOB_BEAN_NAME)
+    public Job customerDataLoadJobBean() {
         logger.info("Building {} - Customer data load batch job", JOB_NAME);
         
         return new JobBuilder(JOB_NAME, jobRepository)
