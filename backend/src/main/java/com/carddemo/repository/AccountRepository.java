@@ -171,7 +171,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * // AccountViewService.getAccountDetails() method
      * public AccountViewResponse getAccountDetails(String accountId) {
      *     Account account = accountRepository.findByAccountId(accountId)
-     *         .orElseThrow(() -&gt; new AccountNotFoundException("Account not found: " + accountId));
+     *         .orElseThrow(() -&gt; new AccountNotFoundException(...));
      *     return mapToResponse(account);
      * }
      * </pre>
@@ -183,7 +183,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * @see Account#accountId
      * @see <a href="COACTVWC.cbl lines 776-784">COBOL VSAM READ operation</a>
      */
-    Optional<Account> findByAccountId(String accountId);
+    Optional<Account> findByAccountId(Long accountId);
 
     /**
      * Finds all accounts belonging to a specific customer by customer ID string.
@@ -207,7 +207,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * 
      * Java Equivalent (single query with JOIN):
      *   List&lt;Account&gt; accounts = accountRepository.findByCustomerId(customerId);
-     *   accounts.forEach(account -&gt; { /* process account */ });
+     *   accounts.forEach(account -&gt; process account);
      * </pre>
      * 
      * <p><strong>Key Implementation Details:</strong></p>
@@ -216,8 +216,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      *   <li><strong>Return Type:</strong> List&lt;Account&gt; containing all accounts for the customer 
      *       (may be empty list if customer has no accounts)</li>
      *   <li><strong>Query Generation:</strong> Spring Data JPA generates JOIN query: 
-     *       "SELECT a.* FROM account a INNER JOIN customer c ON a.customer_id = c.customer_id 
-     *        WHERE c.customer_id = ?"</li>
+     *       "SELECT a.* FROM account a INNER JOIN customer c ON a.customer_id = c.customer_id WHERE c.customer_id = ?"</li>
      *   <li><strong>Performance:</strong> Secondary B-tree index on customer_id enables sub-10ms 
      *       retrieval for typical customer account counts (1-5 accounts)</li>
      *   <li><strong>Sort Order:</strong> Results ordered by account_id ascending for consistent display</li>
@@ -241,7 +240,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * @see Account#customer
      * @see <a href="Section 0.9">Cross-Reference Data Relationships Preservation</a>
      */
-    List<Account> findByCustomerId(String customerId);
+    List<Account> findByCustomer_CustomerId(Long customerId);
 
     /**
      * Finds all accounts for a specific customer with pagination support.
@@ -277,7 +276,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * @see org.springframework.data.domain.Page
      * @see org.springframework.data.domain.PageRequest
      */
-    Page<Account> findByCustomerId(String customerId, Pageable pageable);
+    Page<Account> findByCustomer_CustomerId(Long customerId, Pageable pageable);
 
     /**
      * Finds all accounts with a specific active status.
@@ -299,7 +298,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * Java Equivalent:
      *   List&lt;Account&gt; activeAccounts = accountRepository.findByAccountStatus("Y");
      *   // Or using convenience method in Account entity:
-     *   if (account.isActive()) { /* process */ }
+     *   if (account.isActive()) { process...; }
      * </pre>
      * 
      * <p><strong>Status Values:</strong></p>
@@ -318,12 +317,10 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * // AdminService.getActiveAccountsSummary() method
      * public AccountSummaryDTO getActiveAccountsSummary() {
      *     List&lt;Account&gt; activeAccounts = accountRepository.findByAccountStatus("Y");
+     *     BigDecimal totalBalance = calculateTotalBalance(activeAccounts);
      *     return AccountSummaryDTO.builder()
      *         .totalCount(activeAccounts.size())
-     *         .totalBalance(activeAccounts.stream()
-     *             .map(Account::getCurrentBalance)
-     *             .reduce(BigDecimal.ZERO, BigDecimal::add)
-     *             .setScale(2, RoundingMode.HALF_UP))
+     *         .totalBalance(totalBalance)
      *         .build();
      * }
      * </pre>
@@ -335,7 +332,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * @see Account#activeStatus
      * @see Account#isActive()
      */
-    List<Account> findByAccountStatus(String status);
+    List<Account> findByActiveStatus(String status);
 
     /**
      * Finds all accounts with current balance greater than the specified minimum amount.
@@ -358,13 +355,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      *   BigDecimal minBalance = new BigDecimal("1000.00");
      *   List&lt;Account&gt; eligibleAccounts = 
      *       accountRepository.findAccountsWithBalanceGreaterThan(minBalance);
-     *   eligibleAccounts.forEach(account -&gt; {
-     *       BigDecimal interest = account.getCurrentBalance()
-     *           .multiply(interestRate)
-     *           .divide(new BigDecimal("365"), 8, RoundingMode.HALF_UP)
-     *           .setScale(2, RoundingMode.HALF_UP);
-     *       // Apply interest
-     *   });
+     *   eligibleAccounts.forEach(account -&gt; calculateAndApplyInterest(account));
      * </pre>
      * 
      * <p><strong>Performance Optimization:</strong></p>
@@ -390,14 +381,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * public void calculateInterest() {
      *     BigDecimal minBalance = new BigDecimal("1000.00").setScale(2, RoundingMode.HALF_UP);
      *     List&lt;Account&gt; accounts = accountRepository.findAccountsWithBalanceGreaterThan(minBalance);
-     *     
-     *     accounts.forEach(account -&gt; {
-     *         BigDecimal interest = calculateDailyInterest(account);
-     *         account.setCurrentBalance(
-     *             account.getCurrentBalance().add(interest).setScale(2, RoundingMode.HALF_UP)
-     *         );
-     *         accountRepository.save(account);
-     *     });
+     *     accounts.forEach(this::applyInterestToAccount);
      * }
      * </pre>
      * 
@@ -478,14 +462,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * // AccountBalanceJob.recalculateCustomerBalances() method
      * public void recalculateCustomerBalances() {
      *     List&lt;Customer&gt; customers = customerRepository.findAll();
-     *     customers.forEach(customer -&gt; {
-     *         BigDecimal calculatedTotal = 
-     *             accountRepository.calculateTotalBalanceByCustomer(customer.getCustomerId());
-     *         customer.setTotalAccountBalance(
-     *             calculatedTotal != null ? calculatedTotal : BigDecimal.ZERO
-     *         );
-     *         customerRepository.save(customer);
-     *     });
+     *     customers.forEach(this::updateCustomerTotalBalance);
      * }
      * </pre>
      * 
@@ -499,5 +476,37 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * @see <a href="CBACT03C.cbl">COBOL Account Balance Batch Program</a>
      */
     @Query("SELECT SUM(a.currentBalance) FROM Account a WHERE a.customer.customerId = :customerId")
-    BigDecimal calculateTotalBalanceByCustomer(@Param("customerId") String customerId);
+    BigDecimal calculateTotalBalanceByCustomer(@Param("customerId") Long customerId);
+
+    /**
+     * Finds active accounts for statement generation within a specific period.
+     * Used by Spring Batch AccountStatementReader for normal pagination.
+     *
+     * @param periodStart Statement period start date
+     * @param periodEnd Statement period end date
+     * @param pageable Pagination parameters
+     * @return Page of active Account entities
+     */
+    @Query("SELECT a FROM Account a WHERE a.activeStatus = 'Y' AND a.openDate <= :periodEnd ORDER BY a.accountId ASC")
+    Page<Account> findActiveAccountsForStatementPeriod(
+            @Param("periodEnd") java.time.LocalDate periodEnd,
+            Pageable pageable
+    );
+
+    /**
+     * Finds active accounts for statement generation after a specific account ID.
+     * Used by Spring Batch AccountStatementReader for restart scenarios.
+     *
+     * @param periodStart Statement period start date
+     * @param periodEnd Statement period end date
+     * @param lastAccountId Last processed account ID (exclusive)
+     * @param pageable Pagination parameters
+     * @return Page of active Account entities after the specified ID
+     */
+    @Query("SELECT a FROM Account a WHERE a.activeStatus = 'Y' AND a.openDate <= :periodEnd AND a.accountId > :lastAccountId ORDER BY a.accountId ASC")
+    Page<Account> findActiveAccountsForStatementPeriodAfterAccountId(
+            @Param("periodEnd") java.time.LocalDate periodEnd,
+            @Param("lastAccountId") Long lastAccountId,
+            Pageable pageable
+    );
 }
