@@ -55,7 +55,7 @@ import java.util.Optional;
  * @see com.carddemo.service.TransactionCategoryService
  */
 @Repository
-public interface TransactionAggregateRepository extends JpaRepository<TransactionAggregate, Long> {
+public interface TransactionAggregateRepository extends JpaRepository<TransactionAggregate, TransactionAggregate.AggregateId> {
 
     /**
      * Retrieves all transaction aggregations for a specific account.
@@ -69,7 +69,7 @@ public interface TransactionAggregateRepository extends JpaRepository<Transactio
      * @param accountId the unique identifier of the account
      * @return list of all transaction aggregates for the account; empty list if none found
      */
-    List<TransactionAggregate> findByAccountId(Long accountId);
+    List<TransactionAggregate> findById_AccountId(Long accountId);
 
     /**
      * Retrieves all transaction aggregations for a specific transaction type.
@@ -83,7 +83,7 @@ public interface TransactionAggregateRepository extends JpaRepository<Transactio
      * @param typeCode the transaction type code (2-character code)
      * @return list of all transaction aggregates for the type; empty list if none found
      */
-    List<TransactionAggregate> findByTransactionTypeCode(String typeCode);
+    List<TransactionAggregate> findById_TransactionTypeCode(String typeCode);
 
     /**
      * Retrieves all transaction aggregations for a specific transaction category.
@@ -97,7 +97,7 @@ public interface TransactionAggregateRepository extends JpaRepository<Transactio
      * @param categoryCode the transaction category code (4-digit integer code)
      * @return list of all transaction aggregates for the category; empty list if none found
      */
-    List<TransactionAggregate> findByTransactionCategoryCode(Integer categoryCode);
+    List<TransactionAggregate> findById_TransactionCategoryCode(Integer categoryCode);
 
     /**
      * Finds a specific transaction aggregation using the composite business key.
@@ -117,7 +117,7 @@ public interface TransactionAggregateRepository extends JpaRepository<Transactio
      * @param categoryCode the transaction category code (4-digit integer code)
      * @return Optional containing the matching aggregate if found, empty Optional otherwise
      */
-    Optional<TransactionAggregate> findByAccountIdAndTransactionTypeCodeAndTransactionCategoryCode(
+    Optional<TransactionAggregate> findById_AccountIdAndId_TransactionTypeCodeAndId_TransactionCategoryCode(
             Long accountId, 
             String typeCode, 
             Integer categoryCode
@@ -138,7 +138,7 @@ public interface TransactionAggregateRepository extends JpaRepository<Transactio
      * @param accountId the unique identifier of the account
      * @return the sum of all category balances for the account; zero if no records found
      */
-    @Query("SELECT COALESCE(SUM(ta.categoryBalance), 0) FROM TransactionAggregate ta WHERE ta.accountId = :accountId")
+    @Query("SELECT COALESCE(SUM(ta.categoryBalance), 0) FROM TransactionAggregate ta WHERE ta.id.accountId = :accountId")
     BigDecimal getTotalBalanceByAccount(@Param("accountId") Long accountId);
 
     /**
@@ -150,7 +150,7 @@ public interface TransactionAggregateRepository extends JpaRepository<Transactio
      * @param accountIds collection of account identifiers
      * @return list of all transaction aggregates for the specified accounts; empty list if none found
      */
-    List<TransactionAggregate> findByAccountIdIn(List<Long> accountIds);
+    List<TransactionAggregate> findById_AccountIdIn(List<Long> accountIds);
 
     /**
      * Finds all transaction aggregations matching a specific type and category combination.
@@ -162,7 +162,7 @@ public interface TransactionAggregateRepository extends JpaRepository<Transactio
      * @param categoryCode the transaction category code
      * @return list of matching aggregates across all accounts; empty list if none found
      */
-    List<TransactionAggregate> findByTransactionTypeCodeAndTransactionCategoryCode(
+    List<TransactionAggregate> findById_TransactionTypeCodeAndId_TransactionCategoryCode(
             String typeCode,
             Integer categoryCode
     );
@@ -190,5 +190,5 @@ public interface TransactionAggregateRepository extends JpaRepository<Transactio
      * @param accountId the unique identifier of the account
      * @return the count of aggregation records for the account
      */
-    long countByAccountId(Long accountId);
+    long countById_AccountId(Long accountId);
 }
