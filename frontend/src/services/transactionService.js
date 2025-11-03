@@ -423,7 +423,7 @@ const createTransaction = async (transactionData) => {
       
       // 404 Not Found - Account or card not found
       if (status === 404) {
-        if (data.message && data.message.includes('card')) {
+        if (data.message && data.message.toLowerCase().includes('card')) {
           throw new Error('Card not found');
         }
         throw new Error('Account not found');
