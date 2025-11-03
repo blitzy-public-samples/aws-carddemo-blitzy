@@ -262,6 +262,29 @@ EOF
 # Data Loading Functions
 ##############################################################################
 
+load_data_from_sql() {
+    log_info "Using test-data.sql for data loading (text files are in fixed-width format)..."
+    
+    local sql_file="${DATA_DIR}/test-data.sql"
+    
+    if [ ! -f "$sql_file" ]; then
+        log_error "test-data.sql file not found: $sql_file"
+        log_error "Fixed-width format parsing not yet implemented"
+        exit 1
+    fi
+    
+    export PGPASSWORD="${CARDDEMO_PASSWORD}"
+    
+    # Execute the SQL file
+    if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -f "$sql_file" >> "${LOG_FILE}" 2>&1; then
+        log_info "${GREEN}✓${NC} Successfully loaded data from test-data.sql"
+        return 0
+    else
+        log_error "Failed to load data from test-data.sql"
+        exit 1
+    fi
+}
+
 load_customer_data() {
     log_info "Loading customer data..."
     
@@ -279,53 +302,18 @@ load_customer_data() {
     
     export PGPASSWORD="${CARDDEMO_PASSWORD}"
     
-    # Create temporary SQL file for COPY command
-    local temp_sql="${SCRIPT_DIR}/.load_customer_temp.sql"
+    # Use psql's \copy command to load data from client-side file
+    # \copy must be executed as a single command, so we use psql -c instead of -f
+    local copy_cmd="\\copy customer (customer_id, first_name, middle_name, last_name, address_line1, address_line2, address_line3, state_code, country_code, zip_code, phone_number1, phone_number2, ssn, credit_score, fico_score, birth_date, government_id, government_id_type) FROM '${customer_file}' WITH (FORMAT text, DELIMITER E'\\t', NULL '')"
     
-    # Generate COPY command
-    # Customer data format: Fixed-width records from CVCUS01Y copybook
-    # Using COPY FROM STDIN with proper column mapping
-    cat > "$temp_sql" <<EOF
-COPY customer (
-    customer_id,
-    first_name,
-    middle_name,
-    last_name,
-    address_line1,
-    address_line2,
-    address_line3,
-    state_code,
-    country_code,
-    zip_code,
-    phone_number1,
-    phone_number2,
-    ssn,
-    credit_score,
-    fico_score,
-    birth_date,
-    government_id,
-    government_id_type
-)
-FROM '${customer_file}'
-WITH (
-    FORMAT text,
-    DELIMITER E'\\t',
-    NULL ''
-);
-EOF
-    
-    # Execute COPY command
-    if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -f "$temp_sql" >> "${LOG_FILE}" 2>&1; then
+    # Execute \copy command
+    if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -c "$copy_cmd" >> "${LOG_FILE}" 2>&1; then
         local loaded_count
         loaded_count=$(psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -t -c "SELECT COUNT(*) FROM customer;" | tr -d ' ')
         log_info "${GREEN}✓${NC} Loaded $loaded_count customer records"
-        
-        # Cleanup temp file
-        rm -f "$temp_sql"
         return 0
     else
         log_error "Failed to load customer data"
-        rm -f "$temp_sql"
         exit 1
     fi
 }
@@ -346,42 +334,16 @@ load_account_data() {
     
     export PGPASSWORD="${CARDDEMO_PASSWORD}"
     
-    # Create temporary SQL file
-    local temp_sql="${SCRIPT_DIR}/.load_account_temp.sql"
+    # Use psql's \copy command to load data from client-side file
+    local copy_cmd="\\copy account (account_id, customer_id, account_status, credit_limit, current_balance, cash_credit_limit, account_open_date, account_expiration_date, account_reissue_date, current_cycle_credit, current_cycle_debit, account_group_id) FROM '${account_file}' WITH (FORMAT text, DELIMITER E'\\t', NULL '')"
     
-    cat > "$temp_sql" <<EOF
-COPY account (
-    account_id,
-    customer_id,
-    account_status,
-    credit_limit,
-    current_balance,
-    cash_credit_limit,
-    account_open_date,
-    account_expiration_date,
-    account_reissue_date,
-    current_cycle_credit,
-    current_cycle_debit,
-    account_group_id
-)
-FROM '${account_file}'
-WITH (
-    FORMAT text,
-    DELIMITER E'\\t',
-    NULL ''
-);
-EOF
-    
-    if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -f "$temp_sql" >> "${LOG_FILE}" 2>&1; then
+    if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -c "$copy_cmd" >> "${LOG_FILE}" 2>&1; then
         local loaded_count
         loaded_count=$(psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -t -c "SELECT COUNT(*) FROM account;" | tr -d ' ')
         log_info "${GREEN}✓${NC} Loaded $loaded_count account records"
-        
-        rm -f "$temp_sql"
         return 0
     else
         log_error "Failed to load account data"
-        rm -f "$temp_sql"
         exit 1
     fi
 }
@@ -402,35 +364,16 @@ load_card_data() {
     
     export PGPASSWORD="${CARDDEMO_PASSWORD}"
     
-    local temp_sql="${SCRIPT_DIR}/.load_card_temp.sql"
+    # Use psql's \copy command to load data from client-side file
+    local copy_cmd="\\copy card (card_number, account_id, cvv_code, embossed_name, card_expiration_date, card_status) FROM '${card_file}' WITH (FORMAT text, DELIMITER E'\\t', NULL '')"
     
-    cat > "$temp_sql" <<EOF
-COPY card (
-    card_number,
-    account_id,
-    cvv_code,
-    embossed_name,
-    card_expiration_date,
-    card_status
-)
-FROM '${card_file}'
-WITH (
-    FORMAT text,
-    DELIMITER E'\\t',
-    NULL ''
-);
-EOF
-    
-    if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -f "$temp_sql" >> "${LOG_FILE}" 2>&1; then
+    if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -c "$copy_cmd" >> "${LOG_FILE}" 2>&1; then
         local loaded_count
         loaded_count=$(psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -t -c "SELECT COUNT(*) FROM card;" | tr -d ' ')
         log_info "${GREEN}✓${NC} Loaded $loaded_count card records"
-        
-        rm -f "$temp_sql"
         return 0
     else
         log_error "Failed to load card data"
-        rm -f "$temp_sql"
         exit 1
     fi
 }
@@ -452,42 +395,16 @@ load_transaction_data() {
     
     export PGPASSWORD="${CARDDEMO_PASSWORD}"
     
-    local temp_sql="${SCRIPT_DIR}/.load_transaction_temp.sql"
+    # Use psql's \copy command to load data from client-side file
+    local copy_cmd="\\copy transaction (transaction_id, transaction_type_code, transaction_category_code, transaction_source, transaction_description, transaction_amount, merchant_id, merchant_name, merchant_city, merchant_zip, card_number, transaction_timestamp, authorization_code) FROM '${transaction_file}' WITH (FORMAT text, DELIMITER E'\\t', NULL '')"
     
-    cat > "$temp_sql" <<EOF
-COPY transaction (
-    transaction_id,
-    transaction_type_code,
-    transaction_category_code,
-    transaction_source,
-    transaction_description,
-    transaction_amount,
-    merchant_id,
-    merchant_name,
-    merchant_city,
-    merchant_zip,
-    card_number,
-    transaction_timestamp,
-    authorization_code
-)
-FROM '${transaction_file}'
-WITH (
-    FORMAT text,
-    DELIMITER E'\\t',
-    NULL ''
-);
-EOF
-    
-    if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -f "$temp_sql" >> "${LOG_FILE}" 2>&1; then
+    if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -c "$copy_cmd" >> "${LOG_FILE}" 2>&1; then
         local loaded_count
         loaded_count=$(psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -t -c "SELECT COUNT(*) FROM transaction;" | tr -d ' ')
         log_info "${GREEN}✓${NC} Loaded $loaded_count transaction records"
-        
-        rm -f "$temp_sql"
         return 0
     else
         log_error "Failed to load transaction data"
-        rm -f "$temp_sql"
         exit 1
     fi
 }
@@ -512,27 +429,16 @@ load_cross_reference_data() {
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='card_xref';" | tr -d ' ')
         
         if [ "$table_exists" = "1" ]; then
-            local temp_sql="${SCRIPT_DIR}/.load_cardxref_temp.sql"
+            # Use psql's \copy command to load data from client-side file
+            local copy_cmd="\\copy card_xref FROM '${cardxref_file}' WITH (FORMAT text, DELIMITER E'\\t', NULL '')"
             
-            cat > "$temp_sql" <<EOF
-COPY card_xref
-FROM '${cardxref_file}'
-WITH (
-    FORMAT text,
-    DELIMITER E'\\t',
-    NULL ''
-);
-EOF
-            
-            if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -f "$temp_sql" >> "${LOG_FILE}" 2>&1; then
+            if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -c "$copy_cmd" >> "${LOG_FILE}" 2>&1; then
                 local loaded_count
                 loaded_count=$(psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -t -c "SELECT COUNT(*) FROM card_xref;" | tr -d ' ')
                 log_info "${GREEN}✓${NC} Loaded $loaded_count card_xref records"
             else
                 log_warn "Failed to load card_xref data (table may have schema issues)"
             fi
-            
-            rm -f "$temp_sql"
         else
             log_warn "card_xref table does not exist - skipping"
         fi
@@ -555,27 +461,16 @@ EOF
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='transaction_category_balance';" | tr -d ' ')
         
         if [ "$table_exists" = "1" ]; then
-            local temp_sql="${SCRIPT_DIR}/.load_tcatbal_temp.sql"
+            # Use psql's \copy command to load data from client-side file
+            local copy_cmd="\\copy transaction_category_balance FROM '${tcatbal_file}' WITH (FORMAT text, DELIMITER E'\\t', NULL '')"
             
-            cat > "$temp_sql" <<EOF
-COPY transaction_category_balance
-FROM '${tcatbal_file}'
-WITH (
-    FORMAT text,
-    DELIMITER E'\\t',
-    NULL ''
-);
-EOF
-            
-            if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -f "$temp_sql" >> "${LOG_FILE}" 2>&1; then
+            if psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -c "$copy_cmd" >> "${LOG_FILE}" 2>&1; then
                 local loaded_count
                 loaded_count=$(psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${CARDDEMO_USER}" -d "${CARDDEMO_DB}" -t -c "SELECT COUNT(*) FROM transaction_category_balance;" | tr -d ' ')
                 log_info "${GREEN}✓${NC} Loaded $loaded_count transaction_category_balance records"
             else
                 log_warn "Failed to load transaction_category_balance data (table may have schema issues)"
             fi
-            
-            rm -f "$temp_sql"
         else
             log_warn "transaction_category_balance table does not exist - skipping"
         fi
@@ -867,42 +762,51 @@ main() {
     log_section "Step 2: Data Preparation"
     clear_existing_data
     
-    # Step 3: Load customer data (root of FK tree)
-    log_section "Step 3: Loading Customer Data"
-    load_customer_data
+    # Step 3: Check if test-data.sql exists and use it (handles fixed-width format)
+    log_section "Step 3: Data Loading"
+    if [ -f "${DATA_DIR}/test-data.sql" ]; then
+        log_info "Found test-data.sql - using SQL-based data loading"
+        load_data_from_sql
+    else
+        log_info "Using text file-based data loading"
+        
+        # Step 3a: Load customer data (root of FK tree)
+        log_section "Step 3a: Loading Customer Data"
+        load_customer_data
+        
+        # Step 3b: Load account data (depends on customer)
+        log_section "Step 3b: Loading Account Data"
+        load_account_data
+        
+        # Step 3c: Load card data (depends on account)
+        log_section "Step 3c: Loading Card Data"
+        load_card_data
+        
+        # Step 3d: Load transaction data (depends on card)
+        log_section "Step 3d: Loading Transaction Data"
+        load_transaction_data
+        
+        # Step 3e: Load cross-reference data
+        log_section "Step 3e: Loading Cross-Reference Data"
+        load_cross_reference_data
+    fi
     
-    # Step 4: Load account data (depends on customer)
-    log_section "Step 4: Loading Account Data"
-    load_account_data
-    
-    # Step 5: Load card data (depends on account)
-    log_section "Step 5: Loading Card Data"
-    load_card_data
-    
-    # Step 6: Load transaction data (depends on card)
-    log_section "Step 6: Loading Transaction Data"
-    load_transaction_data
-    
-    # Step 7: Load cross-reference data
-    log_section "Step 7: Loading Cross-Reference Data"
-    load_cross_reference_data
-    
-    # Step 8: Validate referential integrity
-    log_section "Step 8: Validating Referential Integrity"
+    # Step 4: Validate referential integrity
+    log_section "Step 4: Validating Referential Integrity"
     validate_referential_integrity
     
-    # Step 9: Validate record counts
-    log_section "Step 9: Validating Record Counts"
+    # Step 5: Validate record counts
+    log_section "Step 5: Validating Record Counts"
     validate_record_counts
     
-    # Step 10: Validate data quality
-    log_section "Step 10: Validating Data Quality"
+    # Step 6: Validate data quality
+    log_section "Step 6: Validating Data Quality"
     validate_data_quality
     
-    # Step 11: Display statistics
+    # Step 7: Display statistics
     display_statistics
     
-    # Step 12: Display summary
+    # Step 8: Display summary
     display_summary
     
     log_info "Test data loading completed successfully!"
