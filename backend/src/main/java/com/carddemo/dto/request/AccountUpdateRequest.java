@@ -4,8 +4,10 @@ import com.carddemo.constants.AccountStatus;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.*;
 import lombok.AllArgsConstructor;
-import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
 import lombok.NoArgsConstructor;
+import lombok.Setter;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -72,9 +74,11 @@ import java.time.LocalDate;
  * @see com.carddemo.entity.Account
  * @see com.carddemo.dto.response.AccountViewResponse
  */
-@Data
+@Getter
+@Setter
 @NoArgsConstructor
 @AllArgsConstructor
+@EqualsAndHashCode
 public class AccountUpdateRequest {
     
     // ==================== Account Identification Fields ====================
@@ -604,18 +608,19 @@ public class AccountUpdateRequest {
     }
     
     /**
-     * Returns string representation for logging and debugging.
+     * Custom toString() method that excludes sensitive fields.
      * 
-     * Note: Sensitive fields (SSN, government ID, EFT account) are masked
-     * to prevent exposure in logs and error messages.
+     * This method overrides Lombok's @Data generated toString() to ensure
+     * sensitive fields (SSN, government ID, EFT account) are not included
+     * in the string representation, preventing exposure in logs and error messages.
      * 
-     * @return String representation with masked sensitive data
+     * @return String representation without sensitive data
      */
     @Override
     public String toString() {
-        return "AccountUpdateRequest{" +
-                "accountId='" + accountId + '\'' +
-                ", accountStatus='" + accountStatus + '\'' +
+        return "AccountUpdateRequest(" +
+                "accountId=" + accountId +
+                ", accountStatus=" + accountStatus +
                 ", openDate=" + openDate +
                 ", expirationDate=" + expirationDate +
                 ", reissueDate=" + reissueDate +
@@ -624,26 +629,23 @@ public class AccountUpdateRequest {
                 ", currentBalance=" + currentBalance +
                 ", cashCycleCredit=" + cashCycleCredit +
                 ", cashCycleDebit=" + cashCycleDebit +
-                ", accountGroupId='" + accountGroupId + '\'' +
-                ", statementNumber='" + statementNumber + '\'' +
-                ", ssn='***MASKED***'" +
+                ", accountGroupId=" + accountGroupId +
+                ", statementNumber=" + statementNumber +
                 ", dateOfBirth=" + dateOfBirth +
                 ", ficoScore=" + ficoScore +
-                ", firstName='" + firstName + '\'' +
-                ", middleName='" + middleName + '\'' +
-                ", lastName='" + lastName + '\'' +
-                ", addressLine1='" + addressLine1 + '\'' +
-                ", addressLine2='" + addressLine2 + '\'' +
-                ", city='" + city + '\'' +
-                ", state='" + state + '\'' +
-                ", zipCode='" + zipCode + '\'' +
-                ", country='" + country + '\'' +
-                ", phoneNumber1='" + phoneNumber1 + '\'' +
-                ", phoneNumber2='" + phoneNumber2 + '\'' +
-                ", governmentId='***MASKED***'" +
-                ", eftAccount='***MASKED***'" +
-                ", profileFlag='" + profileFlag + '\'' +
-                '}';
+                ", firstName=" + firstName +
+                ", middleName=" + middleName +
+                ", lastName=" + lastName +
+                ", addressLine1=" + addressLine1 +
+                ", addressLine2=" + addressLine2 +
+                ", city=" + city +
+                ", state=" + state +
+                ", zipCode=" + zipCode +
+                ", country=" + country +
+                ", phoneNumber1=" + phoneNumber1 +
+                ", phoneNumber2=" + phoneNumber2 +
+                ", profileFlag=" + profileFlag +
+                ")";
     }
 }
 
