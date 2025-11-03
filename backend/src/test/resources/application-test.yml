@@ -1,0 +1,53 @@
+# ============================================================================
+# CardDemo Test Configuration
+# Uses H2 in-memory database for testing
+# ============================================================================
+spring:
+  datasource:
+    url: jdbc:h2:mem:testdb;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: 
+    hikari:
+      auto-commit: false
+  
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        format_sql: true
+        show_sql: false
+  
+  flyway:
+    enabled: false
+  
+  sql:
+    init:
+      mode: never
+  
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: 
+      timeout: 1000
+  
+  batch:
+    jdbc:
+      initialize-schema: always
+  
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.session.SessionAutoConfiguration
+      - org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration
+
+logging:
+  level:
+    root: WARN
+    com.carddemo: DEBUG
+    org.springframework.test: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE

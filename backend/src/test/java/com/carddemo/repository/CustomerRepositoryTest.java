@@ -6,6 +6,7 @@
 package com.carddemo.repository;
 
 import com.carddemo.entity.Customer;
+import org.hibernate.exception.ConstraintViolationException;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -80,13 +82,16 @@ import static org.junit.jupiter.api.Assertions.*;
  * @version 1.0
  */
 @DataJpaTest
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.ANY)
 @Sql(scripts = {"/db/test-data/customers.sql"})
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class CustomerRepositoryTest {
 
     @Autowired
     private CustomerRepository customerRepository;
+    
+    @Autowired
+    private TestEntityManager testEntityManager;
 
     /**
      * Tests findByCustomerId for valid customer ID - VSAM random read equivalent.
@@ -704,6 +709,10 @@ class CustomerRepositoryTest {
         customerRepository.save(customer1);
         customerRepository.flush();
         
+        // Clear the persistence context to detach customer1
+        // This ensures customer2 will be treated as a new entity for INSERT
+        testEntityManager.clear();
+        
         // Create second customer with same customer_id (duplicate primary key)
         Customer customer2 = new Customer();
         customer2.setCustomerId(1000000007L); // DUPLICATE KEY
@@ -725,12 +734,21 @@ class CustomerRepositoryTest {
         customer2.setPrimaryCardHolderIndicator("N");
         customer2.setFicoCreditScore(710);
 
-        // Act & Assert: Attempt to save duplicate customer_id should throw exception
-        assertThrows(DataIntegrityViolationException.class, () -> {
-            customerRepository.save(customer2);
-            customerRepository.flush();
-        }, "Saving customer with duplicate customer_id should throw DataIntegrityViolationException " +
+        // Act & Assert: Attempt to persist duplicate customer_id should throw exception
+        // Using persist() instead of save() to force INSERT operation
+        // Note: TestEntityManager throws Hibernate ConstraintViolationException directly
+        // (Spring Data repositories would translate this to DataIntegrityViolationException)
+        ConstraintViolationException exception = assertThrows(ConstraintViolationException.class, () -> {
+            testEntityManager.persist(customer2);
+            testEntityManager.flush();
+        }, "Persisting customer with duplicate customer_id should throw ConstraintViolationException " +
            "(equivalent to COBOL DFHRESP(DUPREC))");
+        
+        // Verify it's specifically a primary key constraint violation
+        assertTrue(exception.getMessage().contains("PRIMARY KEY") || 
+                   exception.getMessage().contains("primary key") ||
+                   exception.getMessage().contains("Unique index"),
+                   "Exception should indicate primary key constraint violation");
     }
 
     /**
