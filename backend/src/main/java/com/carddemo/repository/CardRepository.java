@@ -301,7 +301,7 @@ public interface CardRepository extends JpaRepository<Card, String> {
      *            [Process active card...]
      *        END-IF
      * 
-     * Java:  List&lt;Card&gt; activeCards = cardRepository.findByCardStatus("Y");
+     * Java:  List&lt;Card&gt; activeCards = cardRepository.findByActiveStatus("Y");
      * </pre>
      * 
      * <p><strong>Valid Status Codes (per CardStatus enum):</strong></p>
@@ -328,7 +328,7 @@ public interface CardRepository extends JpaRepository<Card, String> {
      * @param status Single-character card status code ('Y', 'N', 'B', 'E', 'C', 'P')
      * @return List of cards matching the specified status (may be empty, never null)
      */
-    List<Card> findByCardStatus(String status);
+    List<Card> findByActiveStatus(String status);
     
     /**
      * Find all cards expiring before a given date.
