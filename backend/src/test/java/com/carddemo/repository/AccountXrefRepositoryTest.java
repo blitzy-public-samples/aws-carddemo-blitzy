@@ -5,6 +5,8 @@ import com.carddemo.entity.AccountXref;
 import com.carddemo.entity.AccountXref.AccountXrefId;
 import com.carddemo.entity.Card;
 import com.carddemo.entity.Customer;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.MethodOrderer.OrderAnnotation;
 import org.junit.jupiter.api.Order;
@@ -17,6 +19,7 @@ import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.jdbc.Sql;
 
+import java.io.Serializable;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -118,14 +121,21 @@ class AccountXrefRepositoryTest {
     @Autowired
     private AccountXrefRepository accountXrefRepository;
 
+    @Autowired
+    private EntityManager entityManager;
+
     // Test data constants matching SQL test data files
-    private static final Long VALID_CUSTOMER_ID_1 = 1000000001L;
-    private static final Long VALID_CUSTOMER_ID_2 = 1000000002L;
-    private static final Long VALID_ACCOUNT_ID_1 = 10000000001L;
-    private static final Long VALID_ACCOUNT_ID_2 = 10000000002L;
-    private static final Long VALID_ACCOUNT_ID_3 = 10000000003L;
-    private static final Long INVALID_CUSTOMER_ID = 9999999999L;
-    private static final Long INVALID_ACCOUNT_ID = 99999999999L;
+    // CUST-ID PIC 9(09) → NUMERIC(9,0) → max value 999999999 (9 digits)
+    // ACCT-ID PIC 9(11) → NUMERIC(11,0) → max value 99999999999 (11 digits)
+    // Using spec-compliant 9-digit customer IDs with dedicated account IDs (10000000021-23)
+    // to avoid conflicts with legacy 10-digit customer data used by other tests
+    private static final Long VALID_CUSTOMER_ID_1 = 100000001L;  // 9 digits (valid)
+    private static final Long VALID_CUSTOMER_ID_2 = 100000002L;  // 9 digits (valid)
+    private static final Long VALID_ACCOUNT_ID_1 = 10000000021L;  // 11 digits (valid, linked to 9-digit customer)
+    private static final Long VALID_ACCOUNT_ID_2 = 10000000022L;  // 11 digits (valid, linked to 9-digit customer)
+    private static final Long VALID_ACCOUNT_ID_3 = 10000000023L;  // 11 digits (valid, linked to 9-digit customer)
+    private static final Long INVALID_CUSTOMER_ID = 999999999L;  // 9 digits but non-existent
+    private static final Long INVALID_ACCOUNT_ID = 99999999999L;  // 11 digits but non-existent
     private static final String VALID_CARD_NUM_1 = "4000123456789010";
     private static final String VALID_CARD_NUM_2 = "5000234567890120";
     private static final String INVALID_CARD_NUM = "9999999999999999";
@@ -484,12 +494,14 @@ class AccountXrefRepositoryTest {
         AccountXref duplicateXref = new AccountXref();
         duplicateXref.setId(duplicateId);
         duplicateXref.setCreatedDate(LocalDateTime.now());
+        duplicateXref.setUpdatedDate(LocalDateTime.now());
 
         // Act & Assert: Verify duplicate key constraint violation
-        assertThrows(DataIntegrityViolationException.class, () -> {
-            accountXrefRepository.save(duplicateXref);
-            accountXrefRepository.flush(); // Force immediate constraint check
-        }, "Should throw DataIntegrityViolationException for duplicate composite key");
+        // Use entityManager.persist() to force INSERT operation (repository.save() would do merge/update)
+        assertThrows(PersistenceException.class, () -> {
+            entityManager.persist(duplicateXref);
+            entityManager.flush(); // Force immediate constraint check
+        }, "Should throw PersistenceException for duplicate composite key");
     }
 
     /**
