@@ -71,7 +71,7 @@
  * @module components/common/Header
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -80,10 +80,9 @@ import {
   Typography,
   Box,
   Button,
-  IconButton,
   Grid
 } from '@mui/material';
-import { ExitToApp, Menu as MenuIcon } from '@mui/icons-material';
+import { ExitToApp } from '@mui/icons-material';
 import { format } from 'date-fns';
 import { logout, selectUser } from '../../redux/slices/authSlice';
 
