@@ -144,12 +144,16 @@ public class AccountUpdateService {
     public AccountViewResponse updateAccount(AccountUpdateRequest request) {
         logger.info("Starting account update for accountId: {}", request.getAccountId());
         
+        // Validate required input parameter
+        if (request.getAccountId() == null || request.getAccountId().trim().isEmpty()) {
+            throw new IllegalArgumentException("Account ID must be supplied");
+        }
+        
         try {
             // Step 1: Retrieve and lock account record (COBOL: EXEC CICS READ UPDATE)
             Long accountIdLong = Long.parseLong(request.getAccountId());
             Account account = accountRepository.findByAccountId(accountIdLong)
                 .orElseThrow(() -> new AccountNotFoundException(
-                    "Account not found", 
                     request.getAccountId()
                 ));
 
@@ -161,8 +165,14 @@ public class AccountUpdateService {
 
             // Step 4: Update associated customer if customer data is provided
             // Customer information is linked via account.customer foreign key relationship
-            if (account.getCustomer() != null && 
-                (request.getFirstName() != null || request.getLastName() != null || request.getMiddleName() != null)) {
+            boolean hasCustomerUpdates = request.getFirstName() != null || request.getLastName() != null || 
+                                       request.getMiddleName() != null || request.getAddressLine1() != null ||
+                                       request.getAddressLine2() != null || request.getCity() != null ||
+                                       request.getState() != null || request.getCountry() != null ||
+                                       request.getZipCode() != null || request.getPhoneNumber1() != null ||
+                                       request.getPhoneNumber2() != null;
+            
+            if (account.getCustomer() != null && hasCustomerUpdates) {
                 Customer customer = account.getCustomer();
                 
                 // Verify customer exists (should always be true if foreign key constraint is valid)
@@ -181,15 +191,15 @@ public class AccountUpdateService {
             }
 
             // Step 5: Persist account changes (COBOL: EXEC CICS REWRITE)
-            Account savedAccount = accountRepository.save(account);
+            accountRepository.save(account);
 
             // Step 6: Log audit trail for compliance (COBOL: audit logging)
-            logAccountUpdateAudit(savedAccount, request);
+            logAccountUpdateAudit(account, request);
 
-            logger.info("Account {} updated successfully", savedAccount.getAccountId());
+            logger.info("Account {} updated successfully", account.getAccountId());
 
             // Step 7: Build and return response
-            return buildAccountViewResponse(savedAccount);
+            return buildAccountViewResponse(account);
 
         } catch (NumberFormatException e) {
             // Invalid account ID format
@@ -202,16 +212,15 @@ public class AccountUpdateService {
             // COBOL: DATA-WAS-CHANGED-BEFORE-UPDATE (9700-CHECK-CHANGE-IN-REC)
             logger.error("Optimistic lock failure for account {}: concurrent update detected", 
                 request.getAccountId(), e);
-            throw new AccountUpdateException(
-                "Account was modified by another user. Please refresh and try again.",
-                e,
-                request.getAccountId(),
-                AccountUpdateException.UpdateFailureReason.CONCURRENT_UPDATE_CONFLICT
-            );
+            throw e; // Re-throw as-is to allow caller to handle versioning conflicts
         } catch (AccountNotFoundException e) {
             // COBOL: DID-NOT-FIND-ACCT-IN-ACCTDAT
             logger.error("Account not found: {}", request.getAccountId(), e);
             throw e; // Re-throw as-is
+        } catch (IllegalArgumentException e) {
+            // Validation failure (field length, format, etc.)
+            logger.error("Validation error: {}", e.getMessage(), e);
+            throw e; // Re-throw as-is to preserve validation exception type
         } catch (AccountUpdateException e) {
             // Business rule validation failure
             logger.error("Account update validation failed: {}", e.getMessage(), e);
@@ -272,6 +281,27 @@ public class AccountUpdateService {
     private void validateAccountUpdate(Account account, AccountUpdateRequest request) {
         logger.debug("Validating account update for account {}", account.getAccountId());
 
+        // Validate required fields (COBOL: 1215-EDIT-MANDATORY)
+        // These fields must be supplied in the update request
+        if (request.getFirstName() == null || request.getFirstName().trim().isEmpty()) {
+            throw new IllegalArgumentException("First Name must be supplied");
+        }
+        if (request.getLastName() == null || request.getLastName().trim().isEmpty()) {
+            throw new IllegalArgumentException("Last Name must be supplied");
+        }
+        if (request.getAddressLine1() == null || request.getAddressLine1().trim().isEmpty()) {
+            throw new IllegalArgumentException("Address Line 1 must be supplied");
+        }
+        if (request.getState() == null || request.getState().trim().isEmpty()) {
+            throw new IllegalArgumentException("State must be supplied");
+        }
+        if (request.getZipCode() == null || request.getZipCode().trim().isEmpty()) {
+            throw new IllegalArgumentException("Zip Code must be supplied");
+        }
+        if (request.getCreditLimit() == null) {
+            throw new IllegalArgumentException("Credit Limit must be supplied");
+        }
+
         // Validate account status if provided (COBOL: 1220-EDIT-YESNO for ACCT-STATUS)
         if (request.getAccountStatus() != null) {
             validateAccountStatus(account, request.getAccountStatus());
@@ -306,6 +336,12 @@ public class AccountUpdateService {
                     AccountUpdateException.UpdateFailureReason.VALIDATION_ERROR
                 );
             }
+            // Validate length (COBOL: PIC X(25))
+            if (request.getFirstName().length() > 25) {
+                throw new IllegalArgumentException(
+                    "First Name cannot exceed 25 characters"
+                );
+            }
         }
 
         // Validate last name (COBOL: 1225-EDIT-ALPHA-REQD)
@@ -319,6 +355,51 @@ public class AccountUpdateService {
                     AccountUpdateException.UpdateFailureReason.VALIDATION_ERROR
                 );
             }
+            // Validate length (COBOL: PIC X(25))
+            if (request.getLastName().length() > 25) {
+                throw new IllegalArgumentException(
+                    "Last Name cannot exceed 25 characters"
+                );
+            }
+        }
+
+        // Validate address line 1 length if provided (COBOL: PIC X(50))
+        if (request.getAddressLine1() != null && request.getAddressLine1().length() > 50) {
+            throw new IllegalArgumentException(
+                "Address Line 1 cannot exceed 50 characters"
+            );
+        }
+
+        // Validate address line 2 length if provided (COBOL: PIC X(50))
+        if (request.getAddressLine2() != null && request.getAddressLine2().length() > 50) {
+            throw new IllegalArgumentException(
+                "Address Line 2 cannot exceed 50 characters"
+            );
+        }
+
+        // Validate city length if provided (COBOL: PIC X(50))
+        if (request.getCity() != null && request.getCity().length() > 50) {
+            throw new IllegalArgumentException(
+                "City cannot exceed 50 characters"
+            );
+        }
+
+        // Validate phone numbers if provided (COBOL: lines 2246-2422)
+        if (request.getPhoneNumber1() != null) {
+            validatePhoneNumberFormat(request.getPhoneNumber1());
+        }
+        if (request.getPhoneNumber2() != null) {
+            validatePhoneNumberFormat(request.getPhoneNumber2());
+        }
+
+        // Validate state code if provided (COBOL: state validation)
+        if (request.getState() != null) {
+            validateStateCode(request.getState());
+        }
+
+        // Validate ZIP code if provided (COBOL: lines 1605-1612)
+        if (request.getZipCode() != null) {
+            validateZipCodeFormat(request.getZipCode());
         }
 
         logger.debug("Validation passed for account {}", account.getAccountId());
@@ -457,6 +538,129 @@ public class AccountUpdateService {
     }
 
     /**
+     * Validates phone number format matching COBOL validation rules.
+     * Format: (XXX)XXX-XXXX where X is digit 0-9
+     * 
+     * @param phoneNumber The phone number to validate
+     * @throws IllegalArgumentException If phone format is invalid
+     */
+    private void validatePhoneNumberFormat(String phoneNumber) {
+        if (phoneNumber == null || phoneNumber.trim().isEmpty()) {
+            return; // Empty/null is allowed for optional fields
+        }
+
+        // COBOL format: (XXX)XXX-XXXX
+        String phonePattern = "^\\(\\d{3}\\)\\d{3}-\\d{4}$";
+        if (!phoneNumber.matches(phonePattern)) {
+            throw new IllegalArgumentException(
+                "phone number must be in format (XXX)XXX-XXXX"
+            );
+        }
+
+        // Extract components
+        String areaCode = phoneNumber.substring(1, 4);
+        String prefix = phoneNumber.substring(5, 8);
+        String lineNumber = phoneNumber.substring(9, 13);
+
+        // Validate area code cannot be 000
+        if ("000".equals(areaCode)) {
+            throw new IllegalArgumentException(
+                "Area code cannot be zero"
+            );
+        }
+
+        // Validate prefix cannot be 000
+        if ("000".equals(prefix)) {
+            throw new IllegalArgumentException(
+                "Phone Prefix cannot be zero"
+            );
+        }
+
+        // Validate line number cannot be 0000
+        if ("0000".equals(lineNumber)) {
+            throw new IllegalArgumentException(
+                "Phone line number cannot be all zeros"
+            );
+        }
+    }
+
+    /**
+     * Validates US state code is exactly 2 alphabetic characters.
+     * 
+     * @param stateCode The state code to validate
+     * @throws IllegalArgumentException If state code is invalid
+     */
+    private void validateStateCode(String stateCode) {
+        if (stateCode == null || stateCode.trim().isEmpty()) {
+            return; // Empty/null is allowed for optional fields
+        }
+
+        // Must be exactly 2 characters
+        if (stateCode.length() != 2) {
+            throw new IllegalArgumentException(
+                "State code must be exactly 2 characters"
+            );
+        }
+
+        // Must be alphabetic only
+        if (!stateCode.matches("^[A-Z]{2}$")) {
+            throw new IllegalArgumentException(
+                "State code must be 2 alphabetic characters"
+            );
+        }
+
+        // Validate against list of valid US state codes
+        String[] validStates = {
+            "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+            "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+            "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+            "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+            "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+            "DC" // District of Columbia
+        };
+
+        boolean isValid = false;
+        for (String validState : validStates) {
+            if (validState.equals(stateCode)) {
+                isValid = true;
+                break;
+            }
+        }
+
+        if (!isValid) {
+            throw new IllegalArgumentException(
+                "State code must be a valid US state abbreviation"
+            );
+        }
+    }
+
+    /**
+     * Validates ZIP code is exactly 5 numeric digits.
+     * 
+     * @param zipCode The ZIP code to validate
+     * @throws IllegalArgumentException If ZIP code format is invalid
+     */
+    private void validateZipCodeFormat(String zipCode) {
+        if (zipCode == null || zipCode.trim().isEmpty()) {
+            return; // Empty/null is allowed for optional fields
+        }
+
+        // Must be exactly 5 characters
+        if (zipCode.length() != 5) {
+            throw new IllegalArgumentException(
+                "Zip code must be exactly 5 digits"
+            );
+        }
+
+        // Must be all numeric
+        if (!zipCode.matches("^[0-9]{5}$")) {
+            throw new IllegalArgumentException(
+                "Zip code must be numeric"
+            );
+        }
+    }
+
+    /**
      * Applies update request fields to account entity.
      * 
      * Implements the data movement logic from COBOL paragraphs 9600-WRITE-PROCESSING
@@ -484,6 +688,13 @@ public class AccountUpdateService {
             BigDecimal scaledCreditLimit = request.getCreditLimit().setScale(2, RoundingMode.HALF_UP);
             account.setCreditLimit(scaledCreditLimit);
             logger.debug("Updated credit limit to: {}", scaledCreditLimit);
+        }
+
+        // Update cash credit limit if provided (COBOL: ACCT-UPDATE-CASH-CREDIT-LIMIT)
+        if (request.getCashLimit() != null) {
+            BigDecimal scaledCashLimit = request.getCashLimit().setScale(2, RoundingMode.HALF_UP);
+            account.setCashCreditLimit(scaledCashLimit);
+            logger.debug("Updated cash credit limit to: {}", scaledCashLimit);
         }
 
         // Update current balance if provided (COBOL: ACCT-UPDATE-CURR-BAL)
@@ -536,6 +747,34 @@ public class AccountUpdateService {
             logger.debug("Updated customer last name");
         }
 
+        // Update address fields if provided
+        if (request.getAddressLine1() != null) {
+            customer.setAddressLine1(request.getAddressLine1());
+        }
+        if (request.getAddressLine2() != null) {
+            customer.setAddressLine2(request.getAddressLine2());
+        }
+        if (request.getCity() != null) {
+            customer.setAddressLine3(request.getCity());
+        }
+        if (request.getState() != null) {
+            customer.setStateCode(request.getState());
+        }
+        if (request.getCountry() != null) {
+            customer.setCountryCode(request.getCountry());
+        }
+        if (request.getZipCode() != null) {
+            customer.setZipCode(request.getZipCode());
+        }
+
+        // Update phone numbers if provided
+        if (request.getPhoneNumber1() != null) {
+            customer.setPhoneNumber1(request.getPhoneNumber1());
+        }
+        if (request.getPhoneNumber2() != null) {
+            customer.setPhoneNumber2(request.getPhoneNumber2());
+        }
+
         logger.debug("Customer information updated successfully for customer {}", customer.getCustomerId());
     }
 
@@ -558,10 +797,25 @@ public class AccountUpdateService {
         response.setAccountId(account.getAccountId().toString());
         response.setCurrentBalance(account.getCurrentBalance());
         response.setCreditLimit(account.getCreditLimit());
+        response.setCashLimit(account.getCashCreditLimit());
         response.setAccountStatus(account.getActiveStatus());
         
-        // Note: AccountViewResponse may not have all fields from Account entity
-        // Add additional field mappings as needed based on response DTO structure
+        // Map customer fields to response if customer exists
+        if (account.getCustomer() != null) {
+            Customer customer = account.getCustomer();
+            response.setCustomerNumber(customer.getCustomerId().toString());
+            response.setFirstName(customer.getFirstName());
+            response.setMiddleName(customer.getMiddleName());
+            response.setLastName(customer.getLastName());
+            response.setAddressLine1(customer.getAddressLine1());
+            response.setAddressLine2(customer.getAddressLine2());
+            response.setAddressLine3(customer.getAddressLine3());
+            response.setState(customer.getStateCode());
+            response.setCountry(customer.getCountryCode());
+            response.setZipCode(customer.getZipCode());
+            response.setPhone1(customer.getPhoneNumber1());
+            response.setPhone2(customer.getPhoneNumber2());
+        }
 
         logger.debug("Response built successfully for account {}", account.getAccountId());
         
