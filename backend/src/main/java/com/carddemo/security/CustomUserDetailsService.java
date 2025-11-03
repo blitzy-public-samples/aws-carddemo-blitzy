@@ -361,22 +361,10 @@ public class CustomUserDetailsService implements UserDetailsService {
                 // Maps to COBOL: WHEN 13 MOVE 'User not found. Try again ...' TO WS-MESSAGE
                 "User not found with username: " + username));
         
-        // Transform COBOL user type to Spring Security authorities
-        // Maps to COBOL: MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE
-        //                IF CDEMO-USRTYP-ADMIN ... (line 230)
-        List<GrantedAuthority> authorities = getAuthorities(user.getUserType());
-        
-        // Construct Spring Security User object (implements UserDetails interface)
-        // Contains username, BCrypt password hash, and granted authorities
-        return new User(
-            user.getUserId(),           // Username (8 chars, maps to SEC-USR-ID)
-            user.getPassword(),         // BCrypt hash (60 chars, replaces SEC-USR-PWD plain text)
-            true,                       // enabled (no disable logic in COBOL, all users active)
-            true,                       // accountNonExpired (no expiration logic in COBOL)
-            true,                       // credentialsNonExpired (no password expiration in COBOL)
-            true,                       // accountNonLocked (no account locking in COBOL)
-            authorities                 // Roles based on user type ('A' → ADMIN, 'U'/'R' → USER)
-        );
+        // Return UserSecurity entity directly since it implements UserDetails interface
+        // This allows services to access additional user properties (firstName, lastName, userType)
+        // beyond the standard UserDetails interface methods
+        return user;
     }
     
     /**
