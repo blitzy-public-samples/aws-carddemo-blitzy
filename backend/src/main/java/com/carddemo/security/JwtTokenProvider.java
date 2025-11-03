@@ -231,12 +231,13 @@ public class JwtTokenProvider {
         
         try {
             // Build JWT with claims (replaces COMMAREA fields)
+            // Using non-deprecated JJWT 0.12.x API
             String token = Jwts.builder()
-                    .setSubject(username)                           // Maps to CDEMO-USER-ID
+                    .subject(username)                              // Maps to CDEMO-USER-ID
                     .claim(SecurityConstants.ROLES_CLAIM, roles)    // Maps to CDEMO-USER-TYPE
-                    .setIssuedAt(now)                               // Token creation timestamp
-                    .setExpiration(expiryDate)                      // 24-hour expiration
-                    .signWith(key, SignatureAlgorithm.HS512)       // HMAC SHA-512 signature
+                    .issuedAt(now)                                  // Token creation timestamp
+                    .expiration(expiryDate)                         // 24-hour expiration
+                    .signWith(key)                                  // HMAC signature (algorithm auto-detected from key)
                     .compact();                                     // Serialize to string
             
             logger.info("Successfully generated JWT token for user: {}", username);
