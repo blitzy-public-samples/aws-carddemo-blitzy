@@ -13,8 +13,6 @@ import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Isolation;
-import org.springframework.transaction.annotation.Transactional;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
@@ -31,7 +29,7 @@ import java.util.List;
  * <p>Key Features:
  * <ul>
  *   <li>Batch persistence using JPA repository saveAll() method</li>
- *   <li>Transaction management with READ_COMMITTED isolation level</li>
+ *   <li>Transaction management handled by Spring Batch step configuration</li>
  *   <li>EntityManager flush/clear for memory optimization</li>
  *   <li>Comprehensive error handling for data integrity violations</li>
  *   <li>Operational monitoring via SLF4J logging</li>
@@ -39,9 +37,9 @@ import java.util.List;
  * 
  * <p>Transaction Configuration:
  * <ul>
- *   <li>Isolation: READ_COMMITTED (per Section 0.3 requirements)</li>
+ *   <li>Transactions managed at Spring Batch step level (not at writer level)</li>
  *   <li>Chunk size: 1000 records per transaction (per Section 0.5)</li>
- *   <li>Automatic rollback on exception</li>
+ *   <li>Automatic rollback on exception handled by Spring Batch</li>
  * </ul>
  * 
  * <p>Performance Optimization:
@@ -93,9 +91,9 @@ public class CustomerItemWriter implements ItemWriter<Customer> {
      * 
      * <p>Transaction Semantics:
      * <ul>
-     *   <li>Entire chunk commits or rolls back as atomic unit</li>
-     *   <li>READ_COMMITTED isolation prevents dirty reads</li>
-     *   <li>Automatic rollback on any exception</li>
+     *   <li>Entire chunk commits or rolls back as atomic unit (managed by Spring Batch)</li>
+     *   <li>Transaction isolation level configured at batch step level</li>
+     *   <li>Automatic rollback on any exception handled by Spring Batch</li>
      * </ul>
      * 
      * <p>Error Handling:
@@ -113,7 +111,6 @@ public class CustomerItemWriter implements ItemWriter<Customer> {
      * @throws Exception for any other unexpected errors
      */
     @Override
-    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public void write(Chunk<? extends Customer> chunk) throws Exception {
         // Validate input
         if (chunk == null || chunk.isEmpty()) {
