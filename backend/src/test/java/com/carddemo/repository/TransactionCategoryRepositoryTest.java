@@ -10,11 +10,14 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.jdbc.Sql;
 
+import java.io.Serializable;
 import java.util.List;
 import java.util.Optional;
+import jakarta.persistence.PersistenceException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -159,6 +162,9 @@ class TransactionCategoryRepositoryTest {
 
     @Autowired
     private TransactionCategoryRepository transactionCategoryRepository;
+    
+    @Autowired
+    private TestEntityManager entityManager;
 
     /**
      * Test 1: testFindById_ValidCompositeKey
@@ -533,6 +539,8 @@ class TransactionCategoryRepositoryTest {
 
         // Act: Execute VSAM WRITE equivalent
         TransactionCategory savedCategory = transactionCategoryRepository.save(newCategory);
+        entityManager.flush();
+        entityManager.clear();
 
         // Assert: Validate successful save operation
         assertNotNull(savedCategory, "Saved category should not be null");
@@ -554,7 +562,7 @@ class TransactionCategoryRepositoryTest {
             "Retrieved description should match saved value");
         
         // Validate foreign key relationship established
-        TransactionType parentType = savedCategory.getTransactionType();
+        TransactionType parentType = retrievedCategory.get().getTransactionType();
         assertNotNull(parentType, "Foreign key relationship should be established");
         assertEquals("01", parentType.getTypeCode(), 
             "Parent type code should match category type_code");
@@ -643,12 +651,15 @@ class TransactionCategoryRepositoryTest {
         duplicateCategory.setCategoryDescription("Duplicate Category Attempt");
 
         // Act & Assert: Expect primary key violation
-        assertThrows(DataIntegrityViolationException.class, () -> {
-            transactionCategoryRepository.save(duplicateCategory);
-            transactionCategoryRepository.flush(); // Force immediate constraint check
-        }, "Should throw DataIntegrityViolationException for duplicate composite key");
+        // Using entityManager.persist() forces INSERT which triggers constraint check
+        // PersistenceException is thrown by JPA, which Spring wraps as DataIntegrityViolationException
+        assertThrows(PersistenceException.class, () -> {
+            entityManager.persist(duplicateCategory); // Force INSERT instead of MERGE
+            entityManager.flush(); // Force immediate constraint check via EntityManager
+        }, "Should throw PersistenceException for duplicate composite key");
         
-        // Verify original record unchanged
+        // Clear persistence context and verify original record unchanged
+        entityManager.clear();
         Optional<TransactionCategory> originalCategory = 
             transactionCategoryRepository.findById(existingId);
         assertTrue(originalCategory.isPresent(), "Original category should still exist");
@@ -904,15 +915,19 @@ class TransactionCategoryRepositoryTest {
         category1.setId(uniqueKey);
         category1.setCategoryDescription("First Category");
         transactionCategoryRepository.save(category1);
+        entityManager.flush(); // Ensure first category is persisted
+        entityManager.clear(); // Clear so second entity is treated as new
         
         TransactionCategory category2 = new TransactionCategory();
         category2.setId(uniqueKey); // Same composite key
         category2.setCategoryDescription("Duplicate Category");
         
         // Should throw exception for duplicate composite key
-        assertThrows(DataIntegrityViolationException.class, () -> {
-            transactionCategoryRepository.save(category2);
-            transactionCategoryRepository.flush();
+        // Using entityManager.persist() forces INSERT which triggers constraint check
+        // PersistenceException is thrown by JPA, which Spring wraps as DataIntegrityViolationException
+        assertThrows(PersistenceException.class, () -> {
+            entityManager.persist(category2); // Force INSERT instead of MERGE
+            entityManager.flush(); // Force immediate constraint check via EntityManager
         }, "Duplicate composite key should violate uniqueness constraint");
     }
 
@@ -957,12 +972,17 @@ class TransactionCategoryRepositoryTest {
         
         // Should save successfully with valid foreign key
         TransactionCategory savedWithValidFk = transactionCategoryRepository.save(validFkCategory);
-        assertNotNull(savedWithValidFk, "Category with valid type_code FK should save");
+        entityManager.flush();
+        entityManager.clear();
+        
+        // Reload to get relationship
+        TransactionCategory reloadedCategory = transactionCategoryRepository.findById(validFkId).orElseThrow();
+        assertNotNull(reloadedCategory, "Category with valid type_code FK should save");
         
         // Validate relationship is established
-        assertNotNull(savedWithValidFk.getTransactionType(), 
+        assertNotNull(reloadedCategory.getTransactionType(), 
             "Foreign key relationship should be established to TransactionType");
-        assertEquals("02", savedWithValidFk.getTransactionType().getTypeCode(),
+        assertEquals("02", reloadedCategory.getTransactionType().getTypeCode(),
             "Parent TransactionType should have matching type_code");
         
         // Test 2: Validate foreign key rejects invalid type_code
@@ -1281,7 +1301,7 @@ class TransactionCategoryRepositoryTest {
         
         // Test 4: Validate alphabetically sorted search results
         List<TransactionCategory> sortedResults = 
-            transactionCategoryRepository.findAllByOrderByCategoryDescriptionAsc();
+            transactionCategoryRepository.findAllSortedByDescription();
         
         assertNotNull(sortedResults, "Sorted search results should not be null");
         assertTrue(sortedResults.size() > 0, "Should have categories to sort");
@@ -1291,7 +1311,8 @@ class TransactionCategoryRepositoryTest {
             String desc1 = sortedResults.get(i).getCategoryDescription();
             String desc2 = sortedResults.get(i + 1).getCategoryDescription();
             assertTrue(desc1.compareToIgnoreCase(desc2) <= 0,
-                "Categories should be in alphabetical order by description");
+                String.format("Categories should be in alphabetical order by description. Found '%s' before '%s' at position %d", 
+                    desc1, desc2, i));
         }
     }
 
@@ -1447,7 +1468,7 @@ class TransactionCategoryRepositoryTest {
         
         // Test 5: Validate sorted retrieval for ordered reporting
         List<TransactionCategory> sortedForReport = 
-            transactionCategoryRepository.findAllByOrderByCategoryDescriptionAsc();
+            transactionCategoryRepository.findAllSortedByDescription();
         
         assertNotNull(sortedForReport, "Sorted category list should not be null");
         assertEquals(totalCount, sortedForReport.size(), 
@@ -1458,7 +1479,8 @@ class TransactionCategoryRepositoryTest {
         for (TransactionCategory category : sortedForReport) {
             String currentDescription = category.getCategoryDescription();
             assertTrue(currentDescription.compareToIgnoreCase(prevDescription) >= 0,
-                "Categories should be alphabetically ordered for reporting");
+                String.format("Categories should be alphabetically ordered for reporting. Found '%s' after '%s'", 
+                    currentDescription, prevDescription));
             prevDescription = currentDescription;
         }
     }

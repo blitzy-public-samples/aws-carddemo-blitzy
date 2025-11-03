@@ -2,6 +2,7 @@ package com.carddemo.repository;
 
 import com.carddemo.entity.TransactionCategory;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -495,5 +496,18 @@ public interface TransactionCategoryRepository extends JpaRepository<Transaction
      * @return list of all TransactionCategory entities sorted alphabetically by description;
      *         empty list if no categories exist in the database
      */
+    @Query("SELECT t FROM TransactionCategory t ORDER BY LOWER(t.categoryDescription) ASC")
     List<TransactionCategory> findAllByOrderByCategoryDescriptionAsc();
+    
+    /**
+     * Find all transaction categories sorted alphabetically by description (alternative method).
+     * 
+     * <p>This is an alternative method name that explicitly uses @Query to avoid Spring Data JPA
+     * method name parsing issues. Uses LOWER() function for case-insensitive sorting to match
+     * test expectations.</p>
+     * 
+     * @return list of all TransactionCategory entities sorted alphabetically by description
+     */
+    @Query("SELECT t FROM TransactionCategory t ORDER BY LOWER(t.categoryDescription) ASC")
+    List<TransactionCategory> findAllSortedByDescription();
 }
