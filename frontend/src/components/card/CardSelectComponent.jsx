@@ -32,7 +32,7 @@
  * @module components/card/CardSelectComponent
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -251,11 +251,15 @@ const CardSelectComponent = () => {
     setError('');
     setInfoMessage('');
 
+    // Trim inputs before validation for better user experience
+    const trimmedAccountSearch = accountSearch.trim();
+    const trimmedCardSearch = cardSearch.trim();
+
     // Map COBOL lines 630-631: Validate account number (optional)
-    const accountError = accountSearch ? validateAccountNumber(accountSearch) : null;
+    const accountError = trimmedAccountSearch ? validateAccountNumber(trimmedAccountSearch) : null;
     
     // Map COBOL lines 633-634: Validate card number (required)
-    const cardError = validateCardNumber(cardSearch);
+    const cardError = validateCardNumber(trimmedCardSearch);
 
     // Display account validation error if present
     if (accountError) {
@@ -270,7 +274,7 @@ const CardSelectComponent = () => {
     }
 
     // Map COBOL lines 365-369: Perform data read after successful validation
-    fetchCardDetails(cardSearch);
+    fetchCardDetails(trimmedCardSearch);
   };
 
   /**
