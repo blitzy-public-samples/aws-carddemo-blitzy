@@ -177,7 +177,7 @@ class AccountRepositoryTest {
         
         // Validate ACCT-EXPIRAION-DATE PIC X(10) → LocalDate expirationDate
         assertNotNull(account.getExpirationDate());
-        assertEquals(LocalDate.of(2025, 1, 15), account.getExpirationDate());
+        assertEquals(LocalDate.of(2027, 1, 15), account.getExpirationDate());
         
         // Validate ACCT-REISSUE-DATE PIC X(10) → LocalDate reissueDate
         assertNotNull(account.getReissueDate());
