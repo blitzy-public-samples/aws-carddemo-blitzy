@@ -43,7 +43,7 @@
  * @module components/card/CardUpdateComponent
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Formik, Form, Field } from 'formik';
 import * as Yup from 'yup';
@@ -146,14 +146,12 @@ const CardUpdateComponent = () => {
    * - saving → WS-CICS-PROCESSING-VARS update in progress
    * - error → WS-RETURN-MSG display field
    * - infoMessage → WS-INFO-MSG display field
-   * - originalCardData → Original CARDDAT record for comparison
    * - initialValues → COMMAREA input fields
    */
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [infoMessage, setInfoMessage] = useState('');
-  const [originalCardData, setOriginalCardData] = useState(null);
   const [initialValues, setInitialValues] = useState({
     embossedName: '',
     cardStatus: 'Y',
@@ -192,7 +190,6 @@ const CardUpdateComponent = () => {
         // Execute card retrieval
         // Maps COBOL: EXEC CICS READ DATASET('CARDDAT')
         const card = await cardService.getCard(cardNumber);
-        setOriginalCardData(card);
         
         // Parse expiration date from YYYY-MM-DD format
         // Maps COBOL date fields: CARD-EXPIRY-MONTH, CARD-EXPIRY-YEAR
