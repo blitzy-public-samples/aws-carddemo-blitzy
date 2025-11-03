@@ -53,7 +53,7 @@
  * navigate('/cards', { state: { accountId: '00000000001' } });
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Box,
@@ -214,10 +214,14 @@ const CardListComponent = () => {
   const handleSearch = () => {
     // Reset to first page on new search
     // Maps COBOL: SET CA-FIRST-PAGE TO TRUE (line 324 COCRDLIC.cbl)
-    setCurrentPage(0);
-    
-    // fetchCards will be triggered by useEffect dependency on currentPage
-    // This implements COBOL PERFORM 9000-READ-FORWARD (line 433 COCRDLIC.cbl)
+    if (currentPage === 0) {
+      // If already on first page, manually trigger fetch
+      // This implements COBOL PERFORM 9000-READ-FORWARD (line 433 COCRDLIC.cbl)
+      fetchCards();
+    } else {
+      // Setting page to 0 will trigger useEffect which calls fetchCards
+      setCurrentPage(0);
+    }
   };
 
   /**
@@ -272,22 +276,6 @@ const CardListComponent = () => {
     // Navigate to card update view
     // Maps COBOL EXEC CICS XCTL PROGRAM(LIT-CARDUPDPGM) (line 566-569)
     navigate(`/cards/${cardNumber}/edit`);
-  };
-
-  /**
-   * Page Change Handler
-   * 
-   * Maps COBOL screen number tracking (WS-CA-SCREEN-NUM, line 237 COCRDLIC.cbl).
-   * Called by Material-UI TablePagination component.
-   * 
-   * @param {Event} event - Change event
-   * @param {number} newPage - New page number (0-based)
-   */
-  const handlePageChange = (event, newPage) => {
-    // Update current page - maps WS-CA-SCREEN-NUM
-    setCurrentPage(newPage);
-    
-    // fetchCards will be triggered by useEffect
   };
 
   /**
