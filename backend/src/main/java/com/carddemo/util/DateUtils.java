@@ -16,6 +16,8 @@
  */
 package com.carddemo.util;
 
+import org.springframework.stereotype.Component;
+
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -43,11 +45,15 @@ import java.time.format.DateTimeFormatter;
  * <p>This utility class uses the application's default timezone without implicit conversions,
  * maintaining exact equivalence with COBOL ACCEPT FROM DATE/TIME behavior.</p>
  * 
+ * <p><strong>Spring Bean Configuration:</strong> This class is annotated with @Component to enable
+ * dependency injection into Spring Batch processors and service classes that require date operations.</p>
+ * 
  * @see DateConverter for format conversion methods
  * @see java.time.LocalDate
  * @see java.time.LocalTime
  * @see java.time.LocalDateTime
  */
+@Component
 public class DateUtils {
 
     /**
@@ -58,11 +64,11 @@ public class DateUtils {
     private static final LocalDate LILLIAN_EPOCH = LocalDate.of(1582, 10, 15);
 
     /**
-     * Private constructor to prevent instantiation of utility class.
-     * All methods are static and should be accessed via class name.
+     * Public constructor for Spring dependency injection.
+     * This class is managed as a Spring Bean for use in batch processors and services.
      */
-    private DateUtils() {
-        throw new UnsupportedOperationException("DateUtils is a utility class and cannot be instantiated");
+    public DateUtils() {
+        // Spring-managed bean constructor
     }
 
     /**

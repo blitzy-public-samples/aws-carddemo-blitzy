@@ -17,6 +17,8 @@
 
 package com.carddemo.util;
 
+import org.springframework.stereotype.Component;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -34,16 +36,21 @@ import java.util.List;
  * 
  * All methods preserve COBOL's trailing space handling and fixed-length field behavior.
  * 
+ * <p><strong>Spring Bean Configuration:</strong> This class is annotated with @Component to enable
+ * dependency injection into Spring Batch processors and service classes that require string operations.</p>
+ * 
  * @version 1.0
  * @since 2024-01-01
  */
+@Component
 public final class StringUtils {
 
     /**
-     * Private constructor to prevent instantiation of utility class.
+     * Public constructor for Spring dependency injection.
+     * This class is managed as a Spring Bean for use in batch processors and services.
      */
-    private StringUtils() {
-        throw new UnsupportedOperationException("StringUtils is a utility class and cannot be instantiated");
+    public StringUtils() {
+        // Spring-managed bean constructor
     }
 
     /**

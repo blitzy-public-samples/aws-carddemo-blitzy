@@ -1,5 +1,7 @@
 package com.carddemo.util;
 
+import org.springframework.stereotype.Component;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.text.NumberFormat;
@@ -23,11 +25,13 @@ import java.util.Locale;
  * <p><strong>Rounding Mode:</strong> All arithmetic operations use RoundingMode.HALF_UP
  * to match COBOL ROUNDED clause behavior (round to nearest neighbor, ties round up).</p>
  * 
- * <p>All methods are static and the class cannot be instantiated.</p>
+ * <p><strong>Spring Bean Configuration:</strong> This class is annotated with @Component to enable
+ * dependency injection into Spring Batch processors and service classes that require decimal operations.</p>
  * 
  * @version 1.0
  * @since 1.0
  */
+@Component
 public final class DecimalUtils {
     
     /**
@@ -75,10 +79,11 @@ public final class DecimalUtils {
     private static final int INTEREST_RATE_PRECISION = 8;
     
     /**
-     * Private constructor to prevent instantiation of utility class.
+     * Public constructor for Spring dependency injection.
+     * This class is managed as a Spring Bean for use in batch processors and services.
      */
-    private DecimalUtils() {
-        throw new AssertionError("DecimalUtils is a utility class and should not be instantiated");
+    public DecimalUtils() {
+        // Spring-managed bean constructor
     }
     
     /**
