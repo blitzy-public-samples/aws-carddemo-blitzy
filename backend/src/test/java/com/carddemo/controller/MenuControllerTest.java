@@ -178,6 +178,9 @@ public class MenuControllerTest {
 
     @MockBean
     private JwtTokenProvider jwtTokenProvider;
+    
+    @MockBean
+    private com.carddemo.security.CustomUserDetailsService customUserDetailsService;
 
     private MenuResponse regularUserMenuResponse;
     private MenuResponse adminUserMenuResponse;
@@ -245,7 +248,7 @@ public class MenuControllerTest {
                 .contentType(MediaType.APPLICATION_JSON))
                 .andDo(print())
                 .andExpect(status().isOk())
-                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 
                 // Validate user context fields (CDEMO-USER-ID, CDEMO-USER-TYPE from COMMAREA)
                 .andExpect(jsonPath("$.userId").value("USER0001"))
@@ -330,7 +333,7 @@ public class MenuControllerTest {
                 .contentType(MediaType.APPLICATION_JSON))
                 .andDo(print())
                 .andExpect(status().isOk())
-                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 
                 // Validate admin user context
                 .andExpect(jsonPath("$.userId").value("ADMIN001"))
@@ -605,30 +608,31 @@ public class MenuControllerTest {
         
         // Build user-level menu options (requiredUserType = 'U')
         // Matching CDEMO-MENU-OPTIONS from COMEN02Y copybook
-        options.add(new MenuOptionDTO(1, "Account View", "COACTVWC", "U"));
-        options.add(new MenuOptionDTO(2, "Account Update", "COACTUPC", "U"));
-        options.add(new MenuOptionDTO(3, "Credit Card List", "COCRDLIC", "U"));
-        options.add(new MenuOptionDTO(4, "Credit Card View", "COCRDSLC", "U"));
-        options.add(new MenuOptionDTO(5, "Credit Card Update", "COCRDUPC", "U"));
-        options.add(new MenuOptionDTO(6, "Transaction List", "COTRN00C", "U"));
-        options.add(new MenuOptionDTO(7, "Transaction View", "COTRN01C", "U"));
-        options.add(new MenuOptionDTO(8, "Transaction Add", "COTRN02C", "U"));
-        options.add(new MenuOptionDTO(9, "Transaction Reports", "CORPT00C", "U"));
-        options.add(new MenuOptionDTO(10, "Bill Payment", "COBIL00C", "U"));
+        options.add(createMenuOption(1, "Account View", "COACTVWC", "U"));
+        options.add(createMenuOption(2, "Account Update", "COACTUPC", "U"));
+        options.add(createMenuOption(3, "Credit Card List", "COCRDLIC", "U"));
+        options.add(createMenuOption(4, "Credit Card View", "COCRDSLC", "U"));
+        options.add(createMenuOption(5, "Credit Card Update", "COCRDUPC", "U"));
+        options.add(createMenuOption(6, "Transaction List", "COTRN00C", "U"));
+        options.add(createMenuOption(7, "Transaction View", "COTRN01C", "U"));
+        options.add(createMenuOption(8, "Transaction Add", "COTRN02C", "U"));
+        options.add(createMenuOption(9, "Transaction Reports", "CORPT00C", "U"));
+        options.add(createMenuOption(10, "Bill Payment", "COBIL00C", "U"));
 
         // Build complete menu response
-        return new MenuResponse(
-                "USER0001",                    // userId (CDEMO-USER-ID)
-                "John Smith",                  // userName (concatenated name)
-                "U",                           // userType (CDEMO-USER-TYPE = 'R' → 'U')
-                "CardDemo Main Menu",          // title (CCDA-TITLE01)
-                "CM00",                        // transactionId (WS-TRANID)
-                "COMEN01C",                    // programName (WS-PGMNAME)
-                getCurrentDate(),              // currentDate (CURDATEO)
-                getCurrentTime(),              // currentTime (CURTIMEO)
-                options,                       // menuOptions array
-                "Please select an option:"     // promptMessage (WS-MESSAGE)
-        );
+        MenuResponse response = new MenuResponse();
+        response.setUserId("USER0001");
+        response.setUserName("John Smith");
+        response.setUserType("U");
+        response.setTitle("CardDemo Main Menu");
+        response.setTransactionId("CM00");
+        response.setProgramName("COMEN01C");
+        response.setCurrentDate(getCurrentDate());
+        response.setCurrentTime(getCurrentTime());
+        response.setMenuOptions(options);
+        response.setPromptMessage("Please select an option:");
+        
+        return response;
     }
 
     /**
@@ -643,34 +647,53 @@ public class MenuControllerTest {
         List<MenuOptionDTO> options = new ArrayList<>();
         
         // Add all user-level options
-        options.add(new MenuOptionDTO(1, "Account View", "COACTVWC", "U"));
-        options.add(new MenuOptionDTO(2, "Account Update", "COACTUPC", "U"));
-        options.add(new MenuOptionDTO(3, "Credit Card List", "COCRDLIC", "U"));
-        options.add(new MenuOptionDTO(4, "Credit Card View", "COCRDSLC", "U"));
-        options.add(new MenuOptionDTO(5, "Credit Card Update", "COCRDUPC", "U"));
-        options.add(new MenuOptionDTO(6, "Transaction List", "COTRN00C", "U"));
-        options.add(new MenuOptionDTO(7, "Transaction View", "COTRN01C", "U"));
-        options.add(new MenuOptionDTO(8, "Transaction Add", "COTRN02C", "U"));
-        options.add(new MenuOptionDTO(9, "Transaction Reports", "CORPT00C", "U"));
-        options.add(new MenuOptionDTO(10, "Bill Payment", "COBIL00C", "U"));
+        options.add(createMenuOption(1, "Account View", "COACTVWC", "U"));
+        options.add(createMenuOption(2, "Account Update", "COACTUPC", "U"));
+        options.add(createMenuOption(3, "Credit Card List", "COCRDLIC", "U"));
+        options.add(createMenuOption(4, "Credit Card View", "COCRDSLC", "U"));
+        options.add(createMenuOption(5, "Credit Card Update", "COCRDUPC", "U"));
+        options.add(createMenuOption(6, "Transaction List", "COTRN00C", "U"));
+        options.add(createMenuOption(7, "Transaction View", "COTRN01C", "U"));
+        options.add(createMenuOption(8, "Transaction Add", "COTRN02C", "U"));
+        options.add(createMenuOption(9, "Transaction Reports", "CORPT00C", "U"));
+        options.add(createMenuOption(10, "Bill Payment", "COBIL00C", "U"));
         
         // Add admin-only options (requiredUserType = 'A')
-        options.add(new MenuOptionDTO(11, "User Management", "COUSR00C", "A"));
-        options.add(new MenuOptionDTO(12, "Admin Functions", "COADM01C", "A"));
+        options.add(createMenuOption(11, "User Management", "COUSR00C", "A"));
+        options.add(createMenuOption(12, "Admin Functions", "COADM01C", "A"));
 
         // Build complete admin menu response
-        return new MenuResponse(
-                "ADMIN001",                    // userId
-                "Admin User",                  // userName
-                "A",                           // userType (CDEMO-USER-TYPE = 'A')
-                "CardDemo Main Menu",          // title
-                "CM00",                        // transactionId
-                "COMEN01C",                    // programName
-                getCurrentDate(),              // currentDate
-                getCurrentTime(),              // currentTime
-                options,                       // menuOptions array
-                "Please select an option:"     // promptMessage
-        );
+        MenuResponse response = new MenuResponse();
+        response.setUserId("ADMIN001");
+        response.setUserName("Admin User");
+        response.setUserType("A");
+        response.setTitle("CardDemo Main Menu");
+        response.setTransactionId("CM00");
+        response.setProgramName("COMEN01C");
+        response.setCurrentDate(getCurrentDate());
+        response.setCurrentTime(getCurrentTime());
+        response.setMenuOptions(options);
+        response.setPromptMessage("Please select an option:");
+        
+        return response;
+    }
+
+    /**
+     * Helper method to create MenuOptionDTO using setter pattern.
+     * 
+     * @param number Option number
+     * @param name Option name
+     * @param programName COBOL program name
+     * @param requiredUserType Required user type ('U' or 'A')
+     * @return Populated MenuOptionDTO instance
+     */
+    private MenuOptionDTO createMenuOption(int number, String name, String programName, String requiredUserType) {
+        MenuOptionDTO option = new MenuOptionDTO();
+        option.setNumber(number);
+        option.setName(name);
+        option.setProgramName(programName);
+        option.setRequiredUserType(requiredUserType);
+        return option;
     }
 
     /**
