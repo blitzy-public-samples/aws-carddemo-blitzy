@@ -554,6 +554,7 @@ export const isCurrencyValid = (value) => {
 /**
  * Validate date is in YYYY-MM-DD format
  * Matches COBOL PIC X(10) date field format
+ * Ensures valid calendar dates (rejects Feb 30, month 13, etc.)
  * @param {string} value - Date string to validate
  * @returns {boolean} Whether date is valid
  */
@@ -562,7 +563,16 @@ export const isDateValid = (value) => {
   const regex = /^\d{4}-\d{2}-\d{2}$/;
   if (!regex.test(value)) return false;
   
-  const date = new Date(value);
-  return date instanceof Date && !isNaN(date.getTime());
+  // Parse the date components
+  const [year, month, day] = value.split('-').map(num => parseInt(num, 10));
+  
+  // Create date and verify components match (catches invalid dates like Feb 30)
+  const date = new Date(year, month - 1, day);
+  
+  return date instanceof Date && 
+         !isNaN(date.getTime()) &&
+         date.getFullYear() === year &&
+         date.getMonth() === month - 1 &&
+         date.getDate() === day;
 };
 
