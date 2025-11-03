@@ -119,12 +119,9 @@ const initialState = {
  * 
  * @param {Object} params - Query parameters for transaction retrieval
  * @param {number} params.page - Page number (1-based, default: 1)
- * @param {string} params.accountId - Account ID for filtering
- * @param {string} params.cardNumber - Card number for filtering (optional)
+ * @param {string} params.accountId - Account ID for filtering (required)
  * @param {string} params.startDate - Start date for filtering (optional, YYYY-MM-DD)
  * @param {string} params.endDate - End date for filtering (optional, YYYY-MM-DD)
- * @param {string} params.transactionType - Transaction type filter (optional)
- * @param {string} params.categoryCode - Category code filter (optional)
  * @returns {Promise<Object>} Promise resolving to paginated transaction data
  * 
  * Response includes:
@@ -132,10 +129,13 @@ const initialState = {
  * - totalTransactions: Total count across all pages
  * - currentPage: Current page number
  * - totalPages: Total number of pages
+ * 
+ * Note: Additional filters (cardNumber, transactionType, categoryCode) are available
+ * in the Redux filters state and can be applied via backend query parameters in future enhancements.
  */
 export const fetchTransactions = createAsyncThunk(
   'transaction/fetchTransactions',
-  async ({ page = 1, accountId, cardNumber, startDate, endDate, transactionType, categoryCode }, { rejectWithValue }) => {
+  async ({ page = 1, accountId, startDate, endDate }, { rejectWithValue }) => {
     try {
       // Call transactionService.getTransactions with pagination and filters
       // Maps COBOL STARTBR + READNEXT loop to REST API GET request
@@ -539,7 +539,7 @@ const transactionSlice = createSlice({
         state.loading = true;
         state.error = null;
       })
-      .addCase(fetchTransactionSummary.fulfilled, (state, action) => {
+      .addCase(fetchTransactionSummary.fulfilled, (state) => {
         // Summary data could be stored in a separate state property if needed
         // For now, it's handled by the component that dispatches this action
         state.loading = false;
