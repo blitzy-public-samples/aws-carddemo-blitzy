@@ -46,7 +46,7 @@ import java.util.List;
  * - SEC-USR-FNAME PIC X(20) → firstName (20 chars)
  * - SEC-USR-LNAME PIC X(20) → lastName (20 chars)
  * - SEC-USR-PWD PIC X(08)   → password (BCrypt hash, 60 chars)
- * - SEC-USR-TYPE PIC X(01)  → userType ('R' or 'A')
+ * - SEC-USR-TYPE PIC X(01)  → userType ('U' for User or 'A' for Admin)
  * - SEC-USR-FILLER PIC X(23) → NOT MAPPED (unused padding)
  * 
  * CRITICAL SECURITY NOTE:
@@ -55,9 +55,9 @@ import java.util.List;
  * - Password field length increased from 8 to 60 for BCrypt hash storage
  * - Use BCryptPasswordEncoder with strength 12 per Section 0.2 security requirements
  * 
- * Role Mapping (per Section 0.2):
- * - 'R' (Regular User) → ROLE_USER
- * - 'A' (Administrative User) → ROLE_USER + ROLE_ADMIN (hierarchical)
+ * Role Mapping (per Section 0.2 and COBOL COCOM01Y.cpy):
+ * - 'U' (Regular User / CDEMO-USRTYP-USER) → ROLE_USER
+ * - 'A' (Administrative User / CDEMO-USRTYP-ADMIN) → ROLE_USER + ROLE_ADMIN (hierarchical)
  * 
  * @author CardDemo Migration Team
  * @version 1.0
@@ -116,9 +116,9 @@ public class UserSecurity implements UserDetails, Serializable {
      * User type - 1 character role indicator.
      * Maps to COBOL SEC-USR-TYPE PIC X(01).
      * 
-     * Valid values:
-     * - 'R': Regular User (ROLE_USER authority)
-     * - 'A': Administrative User (ROLE_USER + ROLE_ADMIN authorities)
+     * Valid values (from COBOL COCOM01Y.cpy):
+     * - 'U': Regular User (ROLE_USER authority) - CDEMO-USRTYP-USER
+     * - 'A': Administrative User (ROLE_USER + ROLE_ADMIN authorities) - CDEMO-USRTYP-ADMIN
      */
     @Column(name = "user_type", length = 1, nullable = false)
     private String userType;
@@ -211,7 +211,7 @@ public class UserSecurity implements UserDetails, Serializable {
     /**
      * Gets the user type (1 character).
      * 
-     * @return user type: 'R' (Regular) or 'A' (Admin)
+     * @return user type: 'U' (Regular User) or 'A' (Admin)
      */
     public String getUserType() {
         return userType;
@@ -220,7 +220,7 @@ public class UserSecurity implements UserDetails, Serializable {
     /**
      * Sets the user type (1 character).
      * 
-     * @param userType user type: 'R' (Regular) or 'A' (Admin)
+     * @param userType user type: 'U' (Regular User) or 'A' (Admin)
      */
     public void setUserType(String userType) {
         this.userType = userType;
@@ -247,8 +247,8 @@ public class UserSecurity implements UserDetails, Serializable {
      * UserDetails interface method implementation.
      * Maps COBOL user type to Spring Security roles per Section 0.2:
      * 
-     * - 'R' (Regular User) → [ROLE_USER]
-     * - 'A' (Administrative User) → [ROLE_USER, ROLE_ADMIN]
+     * - 'U' (Regular User / CDEMO-USRTYP-USER) → [ROLE_USER]
+     * - 'A' (Administrative User / CDEMO-USRTYP-ADMIN) → [ROLE_USER, ROLE_ADMIN]
      * 
      * Admin users inherit regular user privileges (hierarchical roles).
      * 
@@ -264,7 +264,7 @@ public class UserSecurity implements UserDetails, Serializable {
             );
         } else {
             // Regular user has only USER role
-            // Default to ROLE_USER for any other value including 'R'
+            // Default to ROLE_USER for any other value including 'U'
             return List.of(new SimpleGrantedAuthority("ROLE_USER"));
         }
     }
