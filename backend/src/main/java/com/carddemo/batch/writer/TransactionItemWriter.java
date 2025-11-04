@@ -459,7 +459,10 @@ public class TransactionItemWriter implements ItemWriter<Transaction> {
                     }
                 }
 
-                List<Transaction> savedTransactions = transactionRepository.saveAll(transactions);
+                // Cast to concrete type to resolve generic type inference issue
+                @SuppressWarnings("unchecked")
+                List<Transaction> transactionList = (List<Transaction>) transactions;
+                List<Transaction> savedTransactions = transactionRepository.saveAll(transactionList);
                 transactionCount = savedTransactions.size();
                 
                 logger.debug("Successfully persisted {} transactions to database", transactionCount);
