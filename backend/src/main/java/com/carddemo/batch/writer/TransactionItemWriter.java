@@ -92,10 +92,10 @@ import java.util.Optional;
  * <ul>
  *   <li><strong>CICS SYNCPOINT → @Transactional:</strong> COBOL EXEC CICS SYNCPOINT maps to Spring 
  *       transaction commit ensuring atomic completion of transaction inserts and account balance updates</li>
- *   <li><strong>Propagation.REQUIRED:</strong> Method participates in existing transaction or creates 
- *       new one if none exists, maintaining Spring Batch chunk-oriented transaction per item write</li>
- *   <li><strong>Isolation.READ_COMMITTED:</strong> Prevents dirty reads while allowing concurrent batch 
- *       processing, matching CICS default isolation level</li>
+ *   <li><strong>Propagation.REQUIRED:</strong> Method participates in existing transaction (from Spring 
+ *       Batch chunk processing) or creates new one if none exists, maintaining transactional integrity</li>
+ *   <li><strong>Transaction Isolation:</strong> Uses the isolation level configured in the Spring Batch 
+ *       step's transaction manager, avoiding conflicts with chunk-oriented transaction management</li>
  *   <li><strong>Rollback on Exception:</strong> Any exception triggers complete transaction rollback 
  *       (both transaction inserts AND account balance updates) matching CICS SYNCPOINT ROLLBACK behavior</li>
  * </ul>
@@ -357,7 +357,6 @@ public class TransactionItemWriter implements ItemWriter<Transaction> {
     @Override
     @Transactional(
         propagation = Propagation.REQUIRED,
-        isolation = Isolation.READ_COMMITTED,
         rollbackFor = Exception.class
     )
     public void write(Chunk<? extends Transaction> chunk) throws Exception {
