@@ -152,7 +152,6 @@ public class AccountXrefWriter implements ItemWriter<AccountXrefProcessor.XrefEn
     @Override
     @Transactional(
         propagation = Propagation.REQUIRED,
-        isolation = Isolation.READ_COMMITTED,
         rollbackFor = Exception.class
     )
     public void write(Chunk<? extends AccountXrefProcessor.XrefEntry> chunk) throws Exception {
@@ -166,7 +165,9 @@ public class AccountXrefWriter implements ItemWriter<AccountXrefProcessor.XrefEn
         List<? extends AccountXrefProcessor.XrefEntry> items = chunk.getItems();
         logger.info("Writing {} cross-reference entries to database", items.size());
         
-        List<AccountXref> accountXrefs = new ArrayList<>();
+        // Use Maps to deduplicate AccountXref entries by composite key
+        // Multiple cards can share the same account, so we need to avoid duplicate AccountXref entries
+        java.util.Map<AccountXref.AccountXrefId, AccountXref> accountXrefMap = new java.util.LinkedHashMap<>();
         List<CardXref> cardXrefs = new ArrayList<>();
         
         // Extract cross-reference entities from wrapper objects
@@ -180,8 +181,10 @@ public class AccountXrefWriter implements ItemWriter<AccountXrefProcessor.XrefEn
                 AccountXref accountXref = entry.getAccountXref();
                 CardXref cardXref = entry.getCardXref();
                 
-                if (accountXref != null) {
-                    accountXrefs.add(accountXref);
+                // Deduplicate AccountXref entries by composite key (customerId, accountId)
+                // This handles the case where multiple cards belong to the same account
+                if (accountXref != null && accountXref.getId() != null) {
+                    accountXrefMap.put(accountXref.getId(), accountXref);
                 }
                 
                 if (cardXref != null) {
@@ -193,6 +196,11 @@ public class AccountXrefWriter implements ItemWriter<AccountXrefProcessor.XrefEn
                 // Continue processing remaining entries rather than failing entire chunk
             }
         }
+        
+        // Convert deduplicated map back to list
+        List<AccountXref> accountXrefs = new ArrayList<>(accountXrefMap.values());
+        logger.debug("Deduplicated {} AccountXref entries from {} total items", 
+            accountXrefs.size(), items.size());
         
         int totalPersisted = 0;
         
