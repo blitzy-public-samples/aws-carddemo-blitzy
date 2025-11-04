@@ -307,7 +307,7 @@ public class CardUpdateServiceTest {
         testAccount.setAccountId(12345678901L);
         testAccount.setCreditLimit(new BigDecimal("10000.00"));
         testAccount.setCurrentBalance(new BigDecimal("2500.00"));
-        testAccount.setAccountStatus("A");
+        testAccount.setActiveStatus("A");
 
         // Initialize update request matching BMS screen input (COCRDUP.bms)
         updateRequest = new CardUpdateRequest();
@@ -756,18 +756,18 @@ public class CardUpdateServiceTest {
     @Test
     @DisplayName("validateExpirationDate() - Validates month/year boundaries and future date")
     void validateExpirationDate_ChecksBoundaries() {
-        // Test valid dates
-        assertDoesNotThrow(() -> cardUpdateService.validateExpirationDate("01", "2025"),
-                          "January 2025 should be valid");
+        // Test valid dates (must be future dates)
+        assertDoesNotThrow(() -> cardUpdateService.validateExpirationDate("01", "2026"),
+                          "January 2026 should be valid");
         assertDoesNotThrow(() -> cardUpdateService.validateExpirationDate("12", "2099"),
                           "December 2099 should be valid");
 
         // Test invalid month
         assertThrows(CardUpdateException.class, 
-            () -> cardUpdateService.validateExpirationDate("00", "2025"),
+            () -> cardUpdateService.validateExpirationDate("00", "2026"),
             "Month 0 should be invalid");
         assertThrows(CardUpdateException.class, 
-            () -> cardUpdateService.validateExpirationDate("13", "2025"),
+            () -> cardUpdateService.validateExpirationDate("13", "2026"),
             "Month 13 should be invalid");
 
         // Test invalid year
