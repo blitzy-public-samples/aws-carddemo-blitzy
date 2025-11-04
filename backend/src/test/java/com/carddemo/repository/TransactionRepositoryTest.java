@@ -657,10 +657,11 @@ class TransactionRepositoryTest {
                 "Transaction ID should not exceed 16 characters"),
             () -> assertTrue(transaction.getTransactionTypeCode().length() <= 2, 
                 "Type code should not exceed 2 characters"),
-            () -> assertEquals(11, transaction.getTransactionAmount().precision(), 
-                "Amount precision should be 11"),
             () -> assertEquals(2, transaction.getTransactionAmount().scale(), 
-                "Amount scale should be 2")
+                "Amount scale should be 2 (matches COBOL PIC S9(09)V99)"),
+            () -> assertTrue(transaction.getTransactionAmount().compareTo(new BigDecimal("-999999999.99")) >= 0 
+                && transaction.getTransactionAmount().compareTo(new BigDecimal("999999999.99")) <= 0,
+                "Amount should be within valid range for NUMERIC(11,2)")
         );
     }
 
