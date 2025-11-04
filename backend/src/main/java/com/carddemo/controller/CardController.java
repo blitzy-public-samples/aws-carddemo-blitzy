@@ -35,6 +35,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -69,13 +71,13 @@ import org.springframework.web.bind.annotation.RestController;
  *   <tr>
  *     <td>COCRDSLC.cbl (Card Detail)</td>
  *     <td>CCDL</td>
- *     <td>GET /api/cards/{id}</td>
+ *     <td>GET /api/cards/{cardNumber}</td>
  *     <td>GET</td>
  *   </tr>
  *   <tr>
  *     <td>COCRDUPC.cbl (Card Update)</td>
  *     <td>CCUP</td>
- *     <td>PUT /api/cards/{id}</td>
+ *     <td>PUT /api/cards/{cardNumber}</td>
  *     <td>PUT</td>
  *   </tr>
  * </table>
@@ -214,14 +216,13 @@ import org.springframework.web.bind.annotation.RestController;
  * }
  * 
  * // Get individual card details
- * GET /api/cards/1
+ * GET /api/cards/4532123456789012
  * Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
  * 
  * Response 200 OK:
  * {
- *   "cardId": 1,
+ *   "cardNumber": "**** **** **** 9012",
  *   "accountId": "00012345678",
- *   "cardNumber": "**** **** **** 1234",
  *   "cardholderName": "JOHN DOE",
  *   "expirationDate": "2027-12-31",
  *   "cardStatus": "A",
@@ -230,7 +231,7 @@ import org.springframework.web.bind.annotation.RestController;
  * }
  * 
  * // Update card information
- * PUT /api/cards/1
+ * PUT /api/cards/4532123456789012
  * Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
  * Content-Type: application/json
  * 
@@ -246,7 +247,7 @@ import org.springframework.web.bind.annotation.RestController;
  * 
  * Response 200 OK:
  * {
- *   "cardId": 1,
+ *   "cardNumber": "**** **** **** 9012",
  *   "cardStatus": "B",
  *   "message": "Card successfully updated"
  * }
@@ -259,8 +260,8 @@ import org.springframework.web.bind.annotation.RestController;
  *   "timestamp": "2024-01-15T10:30:45.123Z",
  *   "status": 404,
  *   "error": "Not Found",
- *   "message": "Card not found with ID: 999",
- *   "path": "/api/cards/999"
+ *   "message": "Card not found with card number: 9999999999999999",
+ *   "path": "/api/cards/9999999999999999"
  * }
  * 
  * // Validation error (400)
@@ -276,7 +277,7 @@ import org.springframework.web.bind.annotation.RestController;
  *       "message": "Card status code must be one of: A, E, B, S"
  *     }
  *   ],
- *   "path": "/api/cards/1"
+ *   "path": "/api/cards/4532123456789012"
  * }
  * </pre>
  * 
@@ -494,9 +495,8 @@ public class CardController {
      * 
      * <p><strong>Response Structure:</strong></p>
      * <ul>
-     *   <li><strong>cardId:</strong> Internal card identifier (primary key)</li>
+     *   <li><strong>cardNumber:</strong> 16-digit card number (primary key, masked to show only last 4 digits for PCI-DSS compliance)</li>
      *   <li><strong>accountId:</strong> Associated 11-digit account number</li>
-     *   <li><strong>cardNumber:</strong> Masked card number showing only last 4 digits (PCI-DSS compliance)</li>
      *   <li><strong>cardholderName:</strong> Embossed cardholder name (up to 50 characters)</li>
      *   <li><strong>expirationDate:</strong> Card expiration date (YYYY-MM-DD format)</li>
      *   <li><strong>cardStatus:</strong> Current card status (A=Active, E=Expired, B=Blocked, S=Stolen)</li>
@@ -539,25 +539,25 @@ public class CardController {
      *   <li>Caching: Card details may be cached for frequent access patterns</li>
      * </ul>
      * 
-     * @param id Card identifier (primary key) for the card to retrieve
+     * @param cardNumber 16-digit card number (primary key) for the card to retrieve
      * @return ResponseEntity containing comprehensive card detail information
-     * @throws CardNotFoundException if card with specified ID does not exist (maps to HTTP 404)
+     * @throws CardNotFoundException if card with specified card number does not exist (maps to HTTP 404)
      */
-    @GetMapping("/{id}")
+    @GetMapping("/{cardNumber}")
     @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
-    public ResponseEntity<?> getCardDetail(@PathVariable Long id) {
-        log.info("GET /api/cards/{} - Retrieving card detail", id);
+    public ResponseEntity<?> getCardDetail(@PathVariable String cardNumber) {
+        log.info("GET /api/cards/{} - Retrieving card detail", maskCardNumber(cardNumber));
 
         // Delegate to CardDetailService for business logic
         // Service method getCardDetail() performs:
-        // 1. Card lookup by ID with CardRepository.findById()
+        // 1. Card lookup by card number with CardRepository.findByCardNumber()
         // 2. Authorization check (user can only view own cards unless ROLE_ADMIN)
         // 3. Card number masking for PCI-DSS compliance
         // 4. Related entity navigation (account, customer, transactions)
         // 5. Response DTO construction with comprehensive card information
-        Object cardDetail = cardDetailService.getCardDetail(id);
+        Object cardDetail = cardDetailService.getCardDetail(cardNumber);
 
-        log.info("GET /api/cards/{} completed successfully", id);
+        log.info("GET /api/cards/{} completed successfully", maskCardNumber(cardNumber));
         return ResponseEntity.ok(cardDetail);
     }
 
@@ -676,24 +676,28 @@ public class CardController {
      *   <li>Failed update attempts logged with failure reason for security analysis</li>
      * </ul>
      * 
-     * @param id Card identifier (primary key) for the card to update
+     * @param cardNumber 16-digit card number (primary key) for the card to update
      * @param request CardUpdateRequest containing validated update data
      * @return ResponseEntity containing updated card information
-     * @throws CardNotFoundException if card with specified ID does not exist (maps to HTTP 404)
+     * @throws CardNotFoundException if card with specified card number does not exist (maps to HTTP 404)
      * @throws jakarta.validation.ValidationException if request validation fails (maps to HTTP 400)
      */
-    @PutMapping("/{id}")
+    @PutMapping("/{cardNumber}")
     @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
     public ResponseEntity<?> updateCard(
-            @PathVariable Long id,
+            @PathVariable String cardNumber,
             @Valid @RequestBody CardUpdateRequest request) {
         
         log.info("PUT /api/cards/{} - Updating card with masked number ending in {}", 
-            id, maskCardNumber(request.getCardNumber()));
+            maskCardNumber(cardNumber), maskCardNumber(request.getCardNumber()));
+
+        // Extract userId from Spring Security context for authorization
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        String userId = authentication.getName();
 
         // Delegate to CardUpdateService for business logic
         // Service method updateCard() performs:
-        // 1. Card lookup by ID with CardRepository.findById()
+        // 1. Card lookup by card number with CardRepository.findByCardNumber()
         // 2. Authorization check (user can only update own cards unless ROLE_ADMIN)
         // 3. Status transition validation per COBOL 88-level business rules
         // 4. Expiration date validation (future date, valid month/year)
@@ -702,9 +706,9 @@ public class CardController {
         // 7. COMP-3 precision preservation using BigDecimal.setScale(2, HALF_UP)
         // 8. Transactional update with optimistic locking
         // 9. Audit trail logging with masked card number
-        Object updatedCard = cardUpdateService.updateCard(id, request);
+        Object updatedCard = cardUpdateService.updateCard(request, userId);
 
-        log.info("PUT /api/cards/{} completed successfully - card status updated", id);
+        log.info("PUT /api/cards/{} completed successfully - card status updated", maskCardNumber(cardNumber));
         return ResponseEntity.ok(updatedCard);
     }
 
