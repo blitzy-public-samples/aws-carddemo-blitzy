@@ -13,6 +13,7 @@ spring:
     password: 
     hikari:
       auto-commit: false
+      transaction-isolation: TRANSACTION_READ_COMMITTED
   
   jpa:
     hibernate:
