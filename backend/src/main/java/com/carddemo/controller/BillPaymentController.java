@@ -390,6 +390,12 @@ public class BillPaymentController {
             // GlobalExceptionHandler converts to HTTP 400 BAD REQUEST
             throw e;
 
+        } catch (SecurityException e) {
+            // Authorization validation failure - user not authorized for account
+            log.error("Security violation during bill payment: {}", e.getMessage(), e);
+            // GlobalExceptionHandler converts to HTTP 403 FORBIDDEN
+            throw e;
+
         } catch (Exception e) {
             // Catch-all for unexpected errors
             // Maps to COBOL general error handling at line 366
