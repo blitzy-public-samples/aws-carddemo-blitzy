@@ -487,7 +487,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * @param pageable Pagination parameters
      * @return Page of active Account entities
      */
-    @Query("SELECT a FROM Account a WHERE a.activeStatus = 'Y' AND a.openDate <= :periodEnd ORDER BY a.accountId ASC")
+    @Query("SELECT a FROM Account a JOIN FETCH a.customer WHERE a.activeStatus = 'Y' AND a.openDate <= :periodEnd ORDER BY a.accountId ASC")
     Page<Account> findActiveAccountsForStatementPeriod(
             @Param("periodEnd") java.time.LocalDate periodEnd,
             Pageable pageable
@@ -503,7 +503,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * @param pageable Pagination parameters
      * @return Page of active Account entities after the specified ID
      */
-    @Query("SELECT a FROM Account a WHERE a.activeStatus = 'Y' AND a.openDate <= :periodEnd AND a.accountId > :lastAccountId ORDER BY a.accountId ASC")
+    @Query("SELECT a FROM Account a JOIN FETCH a.customer WHERE a.activeStatus = 'Y' AND a.openDate <= :periodEnd AND a.accountId > :lastAccountId ORDER BY a.accountId ASC")
     Page<Account> findActiveAccountsForStatementPeriodAfterAccountId(
             @Param("periodEnd") java.time.LocalDate periodEnd,
             @Param("lastAccountId") Long lastAccountId,
