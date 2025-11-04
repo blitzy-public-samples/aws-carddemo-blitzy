@@ -254,17 +254,20 @@ public class StatementFormattingJob {
      *   <li>afterJob(): Log file generation statistics (count, size, duration)</li>
      * </ul>
      * 
+     * @param textFormatStep Step for text format generation
+     * @param htmlFormatStep Step for HTML format generation
+     * @param pdfFormatStep Step for PDF format generation
      * @return Configured Job instance for statement formatting
      */
-    @Bean
-    public Job statementFormattingJob() {
+    @Bean(name = "statementFormattingJobBean")
+    public Job createStatementFormattingJob(Step textFormatStep, Step htmlFormatStep, Step pdfFormatStep) {
         log.info("Configuring statementFormattingJob with chunk size {} and skip limit {}", CHUNK_SIZE, SKIP_LIMIT);
         
         return new JobBuilder("statementFormattingJob", jobRepository)
             .listener(new StatementFormattingJobListener())
-            .start(textFormatStep())
-            .next(htmlFormatStep())
-            .next(pdfFormatStep())
+            .start(textFormatStep)
+            .next(htmlFormatStep)
+            .next(pdfFormatStep)
             .build();
     }
 
@@ -560,7 +563,7 @@ public class StatementFormattingJob {
                 
                 FormattedStatement formatted = new FormattedStatement();
                 formatted.setAccountId(statement.getAccountId());
-                formatted.setStatementMonth(statement.getStatementMonth());
+                formatted.setStatementMonth(statement.getStatementDate());
                 formatted.setFormat("text");
                 formatted.setContent(textContent);
                 formatted.setFilePath(buildFilePath(statement, "text", "txt"));
@@ -617,7 +620,7 @@ public class StatementFormattingJob {
                 
                 FormattedStatement formatted = new FormattedStatement();
                 formatted.setAccountId(statement.getAccountId());
-                formatted.setStatementMonth(statement.getStatementMonth());
+                formatted.setStatementMonth(statement.getStatementDate());
                 formatted.setFormat("html");
                 formatted.setContent(htmlContent);
                 formatted.setFilePath(buildFilePath(statement, "html", "html"));
@@ -678,7 +681,7 @@ public class StatementFormattingJob {
                 
                 FormattedStatement formatted = new FormattedStatement();
                 formatted.setAccountId(statement.getAccountId());
-                formatted.setStatementMonth(statement.getStatementMonth());
+                formatted.setStatementMonth(statement.getStatementDate());
                 formatted.setFormat("pdf");
                 formatted.setContent(pdfContent);
                 formatted.setFilePath(buildFilePath(statement, "pdf", "pdf"));
