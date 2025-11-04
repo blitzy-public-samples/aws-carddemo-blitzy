@@ -127,3 +127,35 @@ Investigate authentication service for circular dependencies or infinite recursi
 This is a **source code bug**, not an infrastructure/configuration issue. The setup environment is 
 fully operational. Unit tests pass, which suggests the issue is specific to the full Spring Boot 
 application context in integration tests (possibly circular bean dependencies or request handling).
+
+## Test Failures in Out-of-Scope Files (Discovered During Validation)
+
+### TransactionDataLoadJobTest - Multiple Test Failures
+
+**File**: `backend/src/test/java/com/carddemo/batch/TransactionDataLoadJobTest.java`
+
+**Status**: Out of Scope (not assigned file)
+
+**Issues**:
+
+1. **testTransactionDataLoadJob_ChunkProcessing** - Assertion failure
+   - Expected: >= 2500L
+   - Actual: 1500L
+   - Appears to be a test data or logic issue in the test itself
+
+2. **testTransactionDataLoadJob_CheckpointRestart** - JobInstanceAlreadyComplete exception
+   - Error: "A job instance already exists and is complete"
+   - Indicates test is not properly cleaning up between runs or using non-unique job parameters
+
+3. **testTransactionDataLoadJob_DataIntegrity** - LazyInitialization exception
+   - Error: "could not initialize proxy [com.carddemo.entity.Card#4532123456789000] - no Session"
+   - Indicates missing @Transactional annotation or session management issue
+
+4. **testTransactionDataLoadJob_ForeignKeyValidation** - DataIntegrityViolation
+   - Error: Foreign key constraint violation for card_number '9999999999999999'
+   - Test is trying to create transactions with non-existent card reference
+
+**Impact**: These test failures are pre-existing and unrelated to StatementFormattingJobTest validation work.
+
+**Recommendation**: TransactionDataLoadJobTest needs comprehensive review and fixes for proper test isolation, data setup, and transaction management.
+
