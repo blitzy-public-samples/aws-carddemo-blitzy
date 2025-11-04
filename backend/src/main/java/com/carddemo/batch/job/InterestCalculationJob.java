@@ -575,7 +575,7 @@ public class InterestCalculationJob {
      * <pre>
      * SELECT ta FROM TransactionAggregate ta
      * WHERE ta.categoryBalance > 0
-     * ORDER BY ta.accountId, ta.transactionTypeCode, ta.transactionCategoryCode
+     * ORDER BY ta.id.accountId, ta.id.transactionTypeCode, ta.id.transactionCategoryCode
      * </pre>
      * 
      * <p><strong>Query Optimization:</strong></p>
@@ -598,7 +598,7 @@ public class InterestCalculationJob {
      * SELECT ta FROM TransactionAggregate ta
      * WHERE ta.categoryBalance > 0
      *   AND ta.effectiveDate = :statementDate
-     * ORDER BY ta.accountId, ta.transactionTypeCode, ta.transactionCategoryCode
+     * ORDER BY ta.id.accountId, ta.id.transactionTypeCode, ta.id.transactionCategoryCode
      * </pre>
      * 
      * <p><strong>Pagination Mechanics:</strong></p>
@@ -628,9 +628,10 @@ public class InterestCalculationJob {
         // JPQL query to retrieve transaction aggregates with positive balances
         // Equivalent to COBOL TCATBAL-FILE sequential read (lines 326-348)
         // ORDER BY ensures consistent pagination and matches COBOL sequential read order
+        // Note: accountId, transactionTypeCode, transactionCategoryCode are part of @EmbeddedId
         String jpqlQuery = "SELECT ta FROM TransactionAggregate ta " +
                           "WHERE ta.categoryBalance > 0 " +
-                          "ORDER BY ta.accountId, ta.transactionTypeCode, ta.transactionCategoryCode";
+                          "ORDER BY ta.id.accountId, ta.id.transactionTypeCode, ta.id.transactionCategoryCode";
         
         return new JpaPagingItemReaderBuilder<TransactionAggregate>()
                 .name("transactionAggregateReader")
