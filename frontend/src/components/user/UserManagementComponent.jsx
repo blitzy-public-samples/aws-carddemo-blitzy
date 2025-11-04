@@ -263,10 +263,12 @@ const UserManagementComponent = () => {
    * Snackbar State for Toast Notifications
    * Displays success/error messages after operations complete.
    * Maps COUSR00/01/02/03 BMS ERRMSG field (POS=(23,1) COLOR=RED LENGTH=78).
+   * Note: Currently using react-toastify for notifications, but keeping Snackbar
+   * for potential future use or alternative notification pattern.
    */
   const [snackbarOpen, setSnackbarOpen] = useState(false);
-  const [snackbarMessage, setSnackbarMessage] = useState('');
-  const [snackbarSeverity, setSnackbarSeverity] = useState('success');
+  const [snackbarMessage] = useState('');
+  const [snackbarSeverity] = useState('success');
 
   // ============================================================================
   // Hooks
