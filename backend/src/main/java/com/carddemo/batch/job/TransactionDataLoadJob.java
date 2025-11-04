@@ -11,11 +11,11 @@ import com.carddemo.batch.reader.TransactionItemReader;
 import com.carddemo.batch.writer.TransactionItemWriter;
 import com.carddemo.batch.processor.TransactionLoadProcessor;
 
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.StepExecutionListener;
-import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
@@ -28,6 +28,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.time.temporal.ChronoUnit;
 
 /**
  * Spring Batch job configuration class for transaction data loading with duplicate detection.
@@ -237,7 +239,6 @@ import org.slf4j.LoggerFactory;
  * @since 1.0.0
  */
 @Configuration
-@EnableBatchProcessing
 public class TransactionDataLoadJob {
     
     private static final Logger logger = LoggerFactory.getLogger(TransactionDataLoadJob.class);
@@ -254,6 +255,40 @@ public class TransactionDataLoadJob {
     
     // Retry limit configuration (3 attempts with exponential backoff per Section 0.5)
     private static final int RETRY_LIMIT = 3;
+    
+    // Spring Batch infrastructure dependencies (constructor-injected)
+    private final JobRepository jobRepository;
+    private final PlatformTransactionManager transactionManager;
+    
+    // Reader, processor, writer components (constructor-injected)
+    private final TransactionItemReader transactionItemReader;
+    private final TransactionLoadProcessor transactionLoadProcessor;
+    private final TransactionItemWriter transactionItemWriter;
+    
+    /**
+     * Constructor with dependency injection for all required Spring Batch components.
+     * 
+     * @param jobRepository Repository for job execution metadata and checkpoint/restart capability
+     * @param transactionManager Platform transaction manager for chunk-level transaction management
+     * @param transactionItemReader Reader component for transaction retrieval
+     * @param transactionLoadProcessor Processor component for validation and duplicate detection
+     * @param transactionItemWriter Writer component for transaction persistence
+     */
+    public TransactionDataLoadJob(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            TransactionItemReader transactionItemReader,
+            TransactionLoadProcessor transactionLoadProcessor,
+            TransactionItemWriter transactionItemWriter) {
+        this.jobRepository = jobRepository;
+        this.transactionManager = transactionManager;
+        this.transactionItemReader = transactionItemReader;
+        this.transactionLoadProcessor = transactionLoadProcessor;
+        this.transactionItemWriter = transactionItemWriter;
+        
+        logger.info("TransactionDataLoadJob configuration initialized with chunk size: {}, skip limit: {}, retry limit: {}",
+                   CHUNK_SIZE, SKIP_LIMIT, RETRY_LIMIT);
+    }
     
     /**
      * Creates the main transaction data load job with single step execution.
@@ -361,11 +396,13 @@ public class TransactionDataLoadJob {
      * @param transactionLoadStep The configured step bean that performs transaction loading
      *                            with chunk-oriented processing (defined by transactionLoadStep method)
      * @return Configured Job instance ready for execution by JobLauncher
+     * 
+     * Note: Bean name "transactionDataLoadJobBean" differs from Job internal name "transactionDataLoadJob"
+     * to avoid Spring Boot factory-bean naming conflicts. The bean method name is also different
+     * from the Job name to prevent Spring from misidentifying this as a factory-bean reference.
      */
-    @Bean(name = JOB_NAME)
-    public Job transactionDataLoadJob(
-            JobRepository jobRepository,
-            Step transactionLoadStep) {
+    @Bean(name = "transactionDataLoadJobBean")
+    public Job createTransactionDataLoadJob(Step transactionLoadStep) {
         
         logger.info("Configuring transaction data load job: {}", JOB_NAME);
         
@@ -581,15 +618,11 @@ public class TransactionDataLoadJob {
      * @param transactionItemReader ItemReader bean for reading transaction records sequentially
      * @param transactionLoadProcessor ItemProcessor bean for validation and duplicate detection
      * @param transactionItemWriter ItemWriter bean for batch persistence to PostgreSQL
+     * @param transactionLoadStepListener StepExecutionListener bean for tracking step execution metrics
      * @return Configured Step instance with chunk processing, fault tolerance, and transaction management
      */
-    @Bean(name = STEP_NAME)
-    public Step transactionLoadStep(
-            JobRepository jobRepository,
-            PlatformTransactionManager transactionManager,
-            TransactionItemReader transactionItemReader,
-            TransactionLoadProcessor transactionLoadProcessor,
-            TransactionItemWriter transactionItemWriter) {
+    @Bean
+    public Step transactionLoadStep(StepExecutionListener transactionLoadStepListener) {
         
         logger.info("Configuring transaction load step: {} with chunk size {}", STEP_NAME, CHUNK_SIZE);
         
@@ -604,7 +637,7 @@ public class TransactionDataLoadJob {
                 .skip(DataIntegrityViolationException.class)
                 .retryLimit(RETRY_LIMIT)
                 .retry(TransientDataAccessException.class)
-                .listener(transactionLoadStepListener())
+                .listener(transactionLoadStepListener)
                 .build();
     }
     
@@ -802,20 +835,24 @@ public class TransactionDataLoadJob {
             /**
              * Called after step execution completes (success or failure).
              * Logs comprehensive execution metrics for audit trail and performance analysis.
+             * 
+             * @return ExitStatus to indicate step completion status (COMPLETED, FAILED, etc.)
              */
             @Override
-            public void afterStep(StepExecution stepExecution) {
+            public ExitStatus afterStep(StepExecution stepExecution) {
                 long readCount = stepExecution.getReadCount();
                 long writeCount = stepExecution.getWriteCount();
                 long skipCount = stepExecution.getSkipCount();
                 long processSkipCount = stepExecution.getProcessSkipCount();
                 long writeSkipCount = stepExecution.getWriteSkipCount();
                 
-                // Calculate processing time and throughput
-                long processingTimeMillis = stepExecution.getEndTime().getTime() 
-                                          - stepExecution.getStartTime().getTime();
+                // Calculate processing time and throughput using java.time API
+                long processingTimeMillis = ChronoUnit.MILLIS.between(
+                    stepExecution.getStartTime(),
+                    stepExecution.getEndTime()
+                );
                 double processingTimeSeconds = processingTimeMillis / 1000.0;
-                double throughput = writeCount / processingTimeSeconds;
+                double throughput = (processingTimeSeconds > 0) ? (writeCount / processingTimeSeconds) : 0;
                 
                 // Calculate skip rate for data quality analysis
                 double skipRate = (readCount > 0) ? ((double) skipCount / readCount) * 100.0 : 0.0;
@@ -852,6 +889,9 @@ public class TransactionDataLoadJob {
                 
                 logger.info("===================================");
                 logger.info("========================================");
+                
+                // Return the current exit status to maintain step execution flow
+                return stepExecution.getExitStatus();
             }
         };
     }
