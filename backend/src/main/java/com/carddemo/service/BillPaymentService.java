@@ -15,7 +15,6 @@ import com.carddemo.exception.TransactionException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.util.DecimalUtils;
-import com.carddemo.util.ValidationUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -196,7 +195,6 @@ public class BillPaymentService {
     private final AccountRepository accountRepository;
     private final TransactionRepository transactionRepository;
     private final DecimalUtils decimalUtils;
-    private final ValidationUtils validationUtils;
 
     /**
      * Constructor for dependency injection.
@@ -204,17 +202,14 @@ public class BillPaymentService {
      * @param accountRepository Repository for account data access
      * @param transactionRepository Repository for transaction data access
      * @param decimalUtils Utility for BigDecimal precision operations
-     * @param validationUtils Utility for field validation
      */
     public BillPaymentService(
             AccountRepository accountRepository,
             TransactionRepository transactionRepository,
-            DecimalUtils decimalUtils,
-            ValidationUtils validationUtils) {
+            DecimalUtils decimalUtils) {
         this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
         this.decimalUtils = decimalUtils;
-        this.validationUtils = validationUtils;
     }
 
     /**
@@ -277,10 +272,10 @@ public class BillPaymentService {
             rollbackFor = Exception.class
     )
     public BillPaymentResponse processBillPayment(BillPaymentRequest request) {
-        logger.info("Processing bill payment for account: {}", request.getAccountId());
-
         // Validation Step 1: Validate request fields
         validateRequest(request);
+        
+        logger.info("Processing bill payment for account: {}", request.getAccountId());
 
         // Validation Step 2: Check confirmation flag
         if (!request.isConfirmed()) {
@@ -488,7 +483,7 @@ public class BillPaymentService {
         // Set timestamps (COBOL lines 230-232: PERFORM GET-CURRENT-TIMESTAMP)
         LocalDateTime currentTimestamp = LocalDateTime.now();
         transaction.setOriginationTimestamp(currentTimestamp);
-        transaction.setProcessedTimestamp(currentTimestamp);
+        transaction.setProcessingTimestamp(currentTimestamp);
 
         // Note: Card number would be set from cross-reference file in COBOL (line 225)
         // In this implementation, the card number can be null as it's not required for bill payment
