@@ -388,6 +388,70 @@ public class TransactionListService {
     }
 
     /**
+     * Retrieves paginated transaction list for all accounts (admin only).
+     * 
+     * <p><strong>Admin Use Case:</strong> Allows administrative users to view all
+     * transactions across all accounts for monitoring, auditing, and reporting purposes.
+     * This method does not filter by account or card and is intended for privileged access only.</p>
+     * 
+     * <p><strong>Security Note:</strong> This method should only be called after verifying
+     * the user has ROLE_ADMIN privileges. The controller layer enforces this authorization.</p>
+     * 
+     * <p><strong>Performance Consideration:</strong> Without account filtering, this query
+     * may retrieve a large number of transactions. Pagination is critical to prevent
+     * memory exhaustion and maintain response times within SLA requirements.</p>
+     * 
+     * <p><strong>Date Filtering:</strong></p>
+     * <ul>
+     *   <li>If both dates provided: Returns transactions within date range (inclusive)</li>
+     *   <li>If dates null: Returns all transactions (use with caution)</li>
+     *   <li>Date validation: Enforces 90-day maximum range per business rules</li>
+     * </ul>
+     * 
+     * @param pageNumber zero-based page number (0 = first page)
+     * @param startDate optional start date for filtering (inclusive), null = no start filter
+     * @param endDate optional end date for filtering (inclusive), null = no end filter
+     * @return TransactionListResponse containing up to 10 transactions and pagination metadata
+     * @throws IllegalArgumentException if pageNumber < 0 or date range invalid
+     */
+    @Transactional(readOnly = true)
+    public TransactionListResponse getAllTransactions(int pageNumber,
+                                                      LocalDate startDate, LocalDate endDate) {
+        // Validate page number
+        if (pageNumber < 0) {
+            throw new IllegalArgumentException("Page number must be non-negative");
+        }
+
+        // Validate date range if provided
+        if (startDate != null && endDate != null) {
+            validateDateRange(startDate, endDate);
+        }
+
+        // Create Pageable with fixed page size of 10 and descending timestamp sort
+        // Sort DESC ensures most recent transactions appear first
+        Pageable pageable = PageRequest.of(
+            pageNumber,
+            PAGE_SIZE,
+            Sort.by(Sort.Direction.DESC, "originationTimestamp")
+        );
+
+        // Query all transactions with pagination
+        Page<Transaction> transactionPage;
+        if (startDate != null && endDate != null) {
+            // Date range filtering
+            transactionPage = transactionRepository.findByTransactionDateBetween(
+                startDate, endDate, pageable
+            );
+        } else {
+            // No filtering - retrieve all transactions (admin view)
+            transactionPage = transactionRepository.findAll(pageable);
+        }
+
+        // Build and return response DTO
+        return buildTransactionListResponse(transactionPage);
+    }
+
+    /**
      * Validates date range parameters for transaction queries.
      * 
      * <p><strong>COBOL Validation Logic:</strong> Matches COTRN00C.cbl date validation
