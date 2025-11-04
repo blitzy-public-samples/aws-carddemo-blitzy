@@ -127,55 +127,31 @@ public class BatchConfig {
     public static final int CONCURRENT_THREADS = 4;
 
     /**
-     * JobRepository Bean - Database-backed Spring Batch metadata repository.
+     * JobRepository Auto-Configuration Note
      * 
-     * Stores job execution metadata in PostgreSQL tables:
-     * - BATCH_JOB_INSTANCE: Job instances with parameters
-     * - BATCH_JOB_EXECUTION: Job execution history and status
-     * - BATCH_STEP_EXECUTION: Step execution details
-     * - BATCH_JOB_EXECUTION_CONTEXT: Job-level execution context for restart
-     * - BATCH_STEP_EXECUTION_CONTEXT: Step-level execution context for restart
-     * - BATCH_JOB_EXECUTION_PARAMS: Job parameter values
+     * JobRepository is now auto-configured by Spring Boot 3.x BatchAutoConfiguration.
      * 
-     * Configuration:
-     * - Table prefix: "BATCH_" matching Spring Batch schema
-     * - Isolation level: SERIALIZABLE for job metadata consistency
-     * - Transaction manager: JPA transaction manager from DatabaseConfig
-     * - Max varchar length: 2500 characters for long parameter values
+     * Configuration is provided via application.yml:
+     * - spring.batch.jdbc.table-prefix: BATCH_
+     * - spring.batch.jdbc.isolation-level-for-create: SERIALIZABLE
+     * - spring.batch.jdbc.max-varchar-length: 2500
+     * 
+     * The auto-configured JobRepository:
+     * - Uses the DataSource from DatabaseConfig (HikariCP connection pool)
+     * - Uses the PlatformTransactionManager from DatabaseConfig
+     * - Stores job execution metadata in PostgreSQL tables:
+     *   * BATCH_JOB_INSTANCE: Job instances with parameters
+     *   * BATCH_JOB_EXECUTION: Job execution history and status
+     *   * BATCH_STEP_EXECUTION: Step execution details
+     *   * BATCH_JOB_EXECUTION_CONTEXT: Job-level execution context for restart
+     *   * BATCH_STEP_EXECUTION_CONTEXT: Step-level execution context for restart
+     *   * BATCH_JOB_EXECUTION_PARAMS: Job parameter values
      * 
      * Provides checkpoint/restart capability equivalent to COBOL batch restart logic.
      * 
-     * @param dataSource DataSource from DatabaseConfig (HikariCP connection pool)
-     * @param transactionManager PlatformTransactionManager from DatabaseConfig
-     * @return JobRepository instance for batch job metadata persistence
-     * @throws Exception if JobRepository initialization fails
+     * Manual bean definition removed to prevent BeanDefinitionOverrideException
+     * with Spring Boot's auto-configured jobRepository bean.
      */
-    @Bean
-    public JobRepository jobRepository(
-            DataSource dataSource,
-            PlatformTransactionManager transactionManager) throws Exception {
-        
-        JobRepositoryFactoryBean factory = new JobRepositoryFactoryBean();
-        factory.setDataSource(dataSource);
-        factory.setTransactionManager(transactionManager);
-        
-        // Table prefix for Spring Batch metadata tables
-        factory.setTablePrefix("BATCH_");
-        
-        // SERIALIZABLE isolation for job metadata to prevent concurrent job conflicts
-        // Equivalent to COBOL batch job serialization on mainframe
-        factory.setIsolationLevelForCreate("SERIALIZABLE");
-        
-        // Maximum varchar length for long parameter values (e.g., file paths, descriptions)
-        factory.setMaxVarCharLength(2500);
-        
-        // Validate repository on startup to ensure schema exists
-        factory.setValidateTransactionState(true);
-        
-        factory.afterPropertiesSet();
-        
-        return factory.getObject();
-    }
 
     /**
      * JobLauncher Bean - Asynchronous job launcher for batch execution.

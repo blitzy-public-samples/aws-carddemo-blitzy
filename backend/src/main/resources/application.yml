@@ -151,7 +151,11 @@ spring:
     jdbc:
       initialize-schema: always
       table-prefix: BATCH_
-      isolation-level-for-create: READ_COMMITTED
+      # SERIALIZABLE isolation for job metadata to prevent concurrent job conflicts
+      # Equivalent to COBOL batch job serialization on mainframe
+      isolation-level-for-create: SERIALIZABLE
+      # Maximum varchar length for long parameter values (e.g., file paths, descriptions)
+      max-varchar-length: 2500
 
   # ==========================================================================
   # Internationalization / Message Sources
