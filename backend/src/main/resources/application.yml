@@ -151,7 +151,7 @@ spring:
     jdbc:
       initialize-schema: always
       table-prefix: BATCH_
-      isolation-level-for-create: ISOLATION_READ_COMMITTED
+      isolation-level-for-create: READ_COMMITTED
 
   # ==========================================================================
   # Internationalization / Message Sources
