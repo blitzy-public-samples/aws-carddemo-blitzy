@@ -517,8 +517,9 @@ public class AccountItemReader extends AbstractItemCountingItemStreamItemReader<
         // Fetch page from database using repository
         Page<Account> page = accountRepository.findAll(pageRequest);
         
-        // Extract content from Page object
-        this.currentPageContent = page.getContent();
+        // Extract content from Page object and wrap in mutable list
+        // page.getContent() returns unmodifiable list, so we wrap it in ArrayList
+        this.currentPageContent = new ArrayList<>(page.getContent());
         
         // Reset position within page to start
         this.currentPositionInPage = 0;
