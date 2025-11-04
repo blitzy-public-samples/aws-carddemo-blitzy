@@ -389,11 +389,20 @@ public class BatchConfig {
                 String jobName = stepExecution.getJobExecution().getJobInstance().getJobName();
                 
                 // Log step completion with comprehensive metrics
-                // Calculate duration in milliseconds
-                long durationMs = java.time.Duration.between(
-                    stepExecution.getStartTime(), 
-                    stepExecution.getEndTime()
-                ).toMillis();
+                // Calculate duration in milliseconds - handle null endTime
+                long durationMs = 0;
+                if (stepExecution.getEndTime() != null && stepExecution.getStartTime() != null) {
+                    durationMs = java.time.Duration.between(
+                        stepExecution.getStartTime(), 
+                        stepExecution.getEndTime()
+                    ).toMillis();
+                } else if (stepExecution.getStartTime() != null) {
+                    // If endTime is null, calculate duration to now
+                    durationMs = java.time.Duration.between(
+                        stepExecution.getStartTime(),
+                        java.time.LocalDateTime.now()
+                    ).toMillis();
+                }
                 
                 logger.info(
                     "Completed batch step: {} in job: {} - " +
