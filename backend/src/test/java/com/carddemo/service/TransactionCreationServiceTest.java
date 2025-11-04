@@ -133,11 +133,11 @@ public class TransactionCreationServiceTest {
     private DecimalUtils decimalUtils;
 
     // Test data constants
-    private static final Long TEST_ACCOUNT_ID = 123456789L;
+    private static final Long TEST_ACCOUNT_ID = 123456L;  // Parsed value of TEST_ACCOUNT_ID_STRING without leading zeros
     private static final String TEST_ACCOUNT_ID_STRING = "00000123456";
     private static final String TEST_CARD_NUMBER = "4111111111111111";
     private static final String TEST_TRANSACTION_TYPE = "01";  // Purchase
-    private static final Integer TEST_TRANSACTION_CATEGORY = 5000;  // Retail
+    private static final String TEST_TRANSACTION_CATEGORY = "5000";  // Retail
     private static final String TEST_TRANSACTION_SOURCE = "POS";
     private static final BigDecimal TEST_CREDIT_LIMIT = new BigDecimal("10000.00");
     private static final BigDecimal TEST_INITIAL_BALANCE = new BigDecimal("2500.00");
@@ -156,7 +156,7 @@ public class TransactionCreationServiceTest {
     void setUp() {
         // Initialize test account with COMP-3 precision BigDecimal balances
         testAccount = new Account();
-        testAccount.setAccountId(TEST_ACCOUNT_ID_STRING);
+        testAccount.setAccountId(TEST_ACCOUNT_ID);
         testAccount.setCurrentBalance(TEST_INITIAL_BALANCE.setScale(2, RoundingMode.HALF_UP));
         testAccount.setCreditLimit(TEST_CREDIT_LIMIT.setScale(2, RoundingMode.HALF_UP));
         testAccount.setActiveStatus("Y");
@@ -166,23 +166,21 @@ public class TransactionCreationServiceTest {
         // Initialize test card with active status and valid expiration
         testCard = new Card();
         testCard.setCardNumber(TEST_CARD_NUMBER);
-        testCard.setAccountId(TEST_ACCOUNT_ID_STRING);
-        testCard.setCardStatus("A");  // Active
-        testCard.setExpirationDate("2025-12");
+        testCard.setAccountId(TEST_ACCOUNT_ID);
+        testCard.setActiveStatus("Y");  // Active status must be 'Y'
+        testCard.setExpirationDate(LocalDate.of(2025, 12, 31));
 
         // Initialize test transaction request with valid purchase data
         testRequest = new TransactionRequest();
-        testRequest.setAccountId(TEST_ACCOUNT_ID);
+        testRequest.setAccountId(TEST_ACCOUNT_ID_STRING);
         testRequest.setCardNumber(TEST_CARD_NUMBER);
         testRequest.setTransactionTypeCode(TEST_TRANSACTION_TYPE);
         testRequest.setTransactionCategoryCode(TEST_TRANSACTION_CATEGORY);
         testRequest.setTransactionAmount(TEST_PURCHASE_AMOUNT.setScale(2, RoundingMode.HALF_UP));
         testRequest.setTransactionSource(TEST_TRANSACTION_SOURCE);
         testRequest.setTransactionDescription("Test purchase transaction");
-        testRequest.setMerchantId(987654321L);
+        testRequest.setMerchantId("987654321");
         testRequest.setMerchantName("Test Merchant");
-        testRequest.setMerchantCity("Test City");
-        testRequest.setMerchantZip("12345");
         testRequest.setOriginDate(LocalDate.now());
         testRequest.setProcessDate(LocalDate.now());
     }
@@ -207,7 +205,7 @@ public class TransactionCreationServiceTest {
     @DisplayName("createTransaction - Valid Purchase - Updates Balance Atomically")
     void createTransaction_ValidPurchase_UpdatesBalance() {
         // Arrange: Set up mock repository responses
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -274,7 +272,7 @@ public class TransactionCreationServiceTest {
         BigDecimal excessiveAmount = new BigDecimal("-200.00").setScale(2, RoundingMode.HALF_UP);
         testRequest.setTransactionAmount(excessiveAmount);
 
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -316,7 +314,7 @@ public class TransactionCreationServiceTest {
         testRequest.setTransactionTypeCode("02");  // Payment type
         testRequest.setTransactionAmount(new BigDecimal("-100.00"));  // Invalid: payments should be positive
 
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -352,7 +350,7 @@ public class TransactionCreationServiceTest {
     @DisplayName("createTransaction - Within Transaction Boundary - Commits Atomically")
     void createTransaction_WithinTransactionBoundary_CommitsAtomically() {
         // Arrange
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -378,7 +376,7 @@ public class TransactionCreationServiceTest {
         verify(accountRepository, times(1)).save(any(Account.class));
 
         // Verify account was retrieved before updates
-        verify(accountRepository, times(1)).findByAccountId(TEST_ACCOUNT_ID_STRING);
+        verify(accountRepository, times(1)).findByAccountId(TEST_ACCOUNT_ID);
         verify(cardRepository, times(1)).findByCardNumber(TEST_CARD_NUMBER);
     }
 
@@ -400,7 +398,7 @@ public class TransactionCreationServiceTest {
     @DisplayName("createTransaction - Database Error - Rolls Back All Operations")
     void createTransaction_DatabaseError_RollsBackAll() {
         // Arrange: Simulate database error on account save
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -450,7 +448,7 @@ public class TransactionCreationServiceTest {
         testAccount.setCurrentBalance(new BigDecimal("1234.56").setScale(2, RoundingMode.HALF_UP));
         testRequest.setTransactionAmount(new BigDecimal("-123.45").setScale(2, RoundingMode.HALF_UP));
 
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -508,7 +506,7 @@ public class TransactionCreationServiceTest {
         testRequest.setOriginDate(originDate);
         testRequest.setProcessDate(processDate);
 
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -556,7 +554,7 @@ public class TransactionCreationServiceTest {
         // Arrange: Valid transaction type
         testRequest.setTransactionTypeCode("01");  // Valid purchase type
 
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -606,7 +604,7 @@ public class TransactionCreationServiceTest {
     @DisplayName("createTransaction - Updates Account And Card - Both Tables Atomically")
     void createTransaction_UpdatesAccountAndCard_BothTables() {
         // Arrange
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -668,7 +666,7 @@ public class TransactionCreationServiceTest {
         // Transaction that would exceed limit: 9500 + (-600) = 10100 > 10000
         testRequest.setTransactionAmount(new BigDecimal("-600.00").setScale(2, RoundingMode.HALF_UP));
 
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -710,7 +708,7 @@ public class TransactionCreationServiceTest {
         testRequest.setTransactionTypeCode("02");  // Payment type
         testRequest.setTransactionAmount(TEST_PAYMENT_AMOUNT.setScale(2, RoundingMode.HALF_UP));
 
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -762,7 +760,7 @@ public class TransactionCreationServiceTest {
     @DisplayName("createTransaction - Invalid Card Number - Throws CardNotFoundException")
     void createTransaction_InvalidCardNumber_ThrowsNotFoundException() {
         // Arrange: Card not found in database
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.empty());  // Card not found
@@ -801,7 +799,7 @@ public class TransactionCreationServiceTest {
     @DisplayName("createTransaction - Account Not Found - Throws AccountNotFoundException")
     void createTransaction_AccountNotFound_ThrowsException() {
         // Arrange: Account not found in database
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.empty());  // Account not found
 
         // Act & Assert: Verify exception thrown
@@ -838,7 +836,7 @@ public class TransactionCreationServiceTest {
     @DisplayName("testAtomicity - Balance Update Fails - Transaction Not Created")
     void testAtomicity_BalanceUpdateFails_TransactionNotCreated() {
         // Arrange: Account save will fail after transaction save succeeds
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -891,7 +889,7 @@ public class TransactionCreationServiceTest {
     @DisplayName("createTransaction - Concurrent Transactions - Handles Locking Correctly")
     void createTransaction_ConcurrentTransactions_HandlesLocking() {
         // Arrange: Simulate concurrent transaction scenario
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -943,7 +941,7 @@ public class TransactionCreationServiceTest {
         // Arrange: Transaction with zero amount
         testRequest.setTransactionAmount(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
 
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
@@ -982,9 +980,10 @@ public class TransactionCreationServiceTest {
         // Arrange: Account with inactive status
         testAccount.setActiveStatus("N");  // Inactive
 
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
-        when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
+        // Card stubbing not needed since account validation fails first, but keeping for clarity
+        lenient().when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));
 
         // Act & Assert: Verify exception thrown for inactive account
@@ -1016,9 +1015,9 @@ public class TransactionCreationServiceTest {
     @DisplayName("createTransaction - Card Account Mismatch - Throws Exception")
     void createTransaction_CardAccountMismatch_ThrowsException() {
         // Arrange: Card belongs to different account
-        testCard.setAccountId("99999999999");  // Different account
+        testCard.setAccountId(99999999999L);  // Different account
 
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_STRING))
+        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
             .thenReturn(Optional.of(testAccount));
         when(cardRepository.findByCardNumber(TEST_CARD_NUMBER))
             .thenReturn(Optional.of(testCard));

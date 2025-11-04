@@ -17,12 +17,14 @@
 
 package com.carddemo.service;
 
+import com.carddemo.constants.TransactionTypes;
 import com.carddemo.dto.request.TransactionRequest;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
 import com.carddemo.entity.Transaction;
 import com.carddemo.exception.AccountNotFoundException;
 import com.carddemo.exception.CardNotFoundException;
+import com.carddemo.exception.InsufficientBalanceException;
 import com.carddemo.exception.TransactionException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
@@ -363,6 +365,14 @@ public class TransactionCreationService {
         // Maps to COBOL lines 340-351: TRNAMTI validation with numeric format check
         BigDecimal transactionAmount = validateTransactionAmount(request.getTransactionAmount());
         
+        // Step 3a: Validate transaction type code
+        // Maps to COBOL transaction type validation using 88-level condition names
+        validateTransactionType(request.getTransactionTypeCode());
+        
+        // Step 3b: Validate amount sign matches transaction type
+        // Purchases should be negative, payments should be positive
+        validateAmountSignForTransactionType(transactionAmount, request.getTransactionTypeCode());
+        
         // Step 4: Check credit limit for purchase transactions (debit transactions)
         // Enhancement over COBOL - credit limit check not in original but required by spec
         if (isPurchaseTransaction(request.getTransactionTypeCode())) {
@@ -484,7 +494,7 @@ public class TransactionCreationService {
         Optional<Card> cardOpt = cardRepository.findByCardNumber(cardNumber);
         Card card = cardOpt.orElseThrow(() -> {
             log.error("Card not found: {}", maskCardNumber(cardNumber));
-            return new CardNotFoundException("Card Number NOT found", cardNumber);
+            return new CardNotFoundException(cardNumber);
         });
         
         // Verify card belongs to the specified account (cross-reference validation)
@@ -560,6 +570,76 @@ public class TransactionCreationService {
     }
 
     /**
+     * Validates that the transaction type code is valid.
+     * 
+     * <p>Maps to COBOL transaction type validation using 88-level condition names
+     * for transaction type codes. Validates against the TransactionTypes enum.</p>
+     * 
+     * @param transactionTypeCode 2-character transaction type code from request
+     * @throws TransactionException if transaction type code is invalid
+     */
+    private void validateTransactionType(String transactionTypeCode) {
+        log.debug("Validating transaction type: {}", transactionTypeCode);
+        
+        if (transactionTypeCode == null || transactionTypeCode.trim().isEmpty()) {
+            throw new TransactionException("Transaction type code cannot be null or empty", "NULL_TYPE");
+        }
+        
+        if (!TransactionTypes.isValid(transactionTypeCode)) {
+            log.error("Invalid transaction type code: {}", transactionTypeCode);
+            throw new TransactionException(
+                String.format("Invalid transaction type code: '%s'. Valid codes are: %s",
+                    transactionTypeCode,
+                    String.join(", ", TransactionTypes.getAllCodes())),
+                "INVALID_TYPE");
+        }
+        
+        log.debug("Transaction type validated successfully: {}", transactionTypeCode);
+    }
+
+    /**
+     * Validates that the transaction amount sign is correct for the transaction type.
+     * 
+     * <p>Business rules:</p>
+     * <ul>
+     *   <li>Purchase/Debit transactions (01, 04) should have NEGATIVE amounts</li>
+     *   <li>Payment/Credit transactions (02, 03, 05) should have POSITIVE amounts</li>
+     *   <li>Adjustment/Reversal transactions (06, 07) can have either sign</li>
+     * </ul>
+     * 
+     * @param amount Transaction amount
+     * @param transactionTypeCode Transaction type code
+     * @throws TransactionException if amount sign is invalid for transaction type
+     */
+    private void validateAmountSignForTransactionType(BigDecimal amount, String transactionTypeCode) {
+        TransactionTypes transactionType = TransactionTypes.getByCode(transactionTypeCode).orElse(null);
+        if (transactionType == null) {
+            return; // Already validated in validateTransactionType
+        }
+        
+        boolean isNegative = amount.compareTo(BigDecimal.ZERO) < 0;
+        boolean isPositive = amount.compareTo(BigDecimal.ZERO) > 0;
+        
+        // Debit transactions (purchases) should be negative
+        if (transactionType.isDebit() && !isNegative) {
+            throw new TransactionException(
+                String.format("Purchase/debit transactions must have negative amounts. Type: %s, Amount: %s",
+                    transactionTypeCode, amount),
+                "INVALID_AMOUNT_SIGN");
+        }
+        
+        // Credit transactions (payments, refunds) should be positive
+        if (transactionType.isCredit() && !isPositive) {
+            throw new TransactionException(
+                String.format("Payment/credit transactions must have positive amounts. Type: %s, Amount: %s",
+                    transactionTypeCode, amount),
+                "INVALID_AMOUNT_SIGN");
+        }
+        
+        log.debug("Amount sign validated for transaction type: {} with amount: {}", transactionTypeCode, amount);
+    }
+
+    /**
      * Validates that transaction does not exceed account credit limit for purchase transactions.
      * 
      * <p>This is an enhancement over the original COBOL program COTRN02C, which does not
@@ -589,20 +669,26 @@ public class TransactionCreationService {
         BigDecimal currentBalance = account.getCurrentBalance();
         BigDecimal creditLimit = account.getCreditLimit();
         
+        // Purchase transactions are represented as negative amounts
+        // Convert to positive for balance calculation (debt increases with purchases)
+        BigDecimal amountToAdd = transactionAmount.abs();
+        
         // Calculate new balance after transaction (maintain COMP-3 precision)
         BigDecimal newBalance = currentBalance
-            .add(transactionAmount)
+            .add(amountToAdd)
             .setScale(2, RoundingMode.HALF_UP);
         
         // Check if new balance exceeds credit limit
         if (newBalance.compareTo(creditLimit) > 0) {
             BigDecimal availableCredit = creditLimit.subtract(currentBalance);
             log.warn("Credit limit exceeded - Limit: {}, Current: {}, Transaction: {}, Would be: {}", 
-                     creditLimit, currentBalance, transactionAmount, newBalance);
-            throw new TransactionException(
+                     creditLimit, currentBalance, amountToAdd, newBalance);
+            throw new InsufficientBalanceException(
                 String.format("Credit limit exceeded. Available credit: %s, Transaction amount: %s",
-                              availableCredit, transactionAmount),
-                "CREDIT_LIMIT_EXCEEDED");
+                              availableCredit, amountToAdd),
+                amountToAdd,
+                availableCredit,
+                account.getAccountId());
         }
         
         log.debug("Credit limit check passed - New balance: {} is within limit: {}", 
@@ -618,19 +704,19 @@ public class TransactionCreationService {
      * 
      * <p><strong>Transaction Type Categories:</strong></p>
      * <ul>
-     *   <li>Purchase types: "PU" (Purchase), "CA" (Cash Advance), "FE" (Fee), "IN" (Interest)</li>
-     *   <li>Credit types: "PM" (Payment), "RF" (Refund) - these reduce balance, no limit check</li>
+     *   <li>Debit types: "01" (Purchase), "04" (Authorization) - increase balance, require limit check</li>
+     *   <li>Credit types: "02" (Payment), "03" (Credit), "05" (Refund) - reduce balance, no limit check</li>
+     *   <li>Adjustment types: "06" (Reversal), "07" (Adjustment) - special processing</li>
      * </ul>
      * 
      * @param transactionTypeCode 2-character transaction type code from request
      * @return true if purchase transaction requiring credit limit check, false otherwise
      */
     private boolean isPurchaseTransaction(String transactionTypeCode) {
-        // Purchase, Cash Advance, Fee, and Interest transactions are debits
-        return "PU".equals(transactionTypeCode) || 
-               "CA".equals(transactionTypeCode) ||
-               "FE".equals(transactionTypeCode) ||
-               "IN".equals(transactionTypeCode);
+        // Use TransactionTypes enum to determine if this is a debit transaction
+        return TransactionTypes.getByCode(transactionTypeCode)
+            .map(TransactionTypes::isDebit)
+            .orElse(false);
     }
 
     /**
