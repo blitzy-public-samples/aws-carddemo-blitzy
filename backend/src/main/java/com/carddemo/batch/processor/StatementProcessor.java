@@ -16,6 +16,7 @@
  */
 package com.carddemo.batch.processor;
 
+import com.carddemo.batch.writer.StatementItemWriter;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
@@ -30,6 +31,7 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -85,7 +87,7 @@ import java.util.List;
  * @see <a href="Section 0.9">Numeric Precision Requirements</a>
  */
 @Component
-public class StatementProcessor implements ItemProcessor<StatementProcessor.StatementInput, StatementProcessor.Statement> {
+public class StatementProcessor implements ItemProcessor<StatementProcessor.StatementInput, StatementItemWriter.Statement> {
 
     private static final Logger log = LoggerFactory.getLogger(StatementProcessor.class);
 
@@ -141,7 +143,7 @@ public class StatementProcessor implements ItemProcessor<StatementProcessor.Stat
      * @throws Exception if error occurs during statement generation processing
      */
     @Override
-    public Statement process(StatementInput item) throws Exception {
+    public StatementItemWriter.Statement process(StatementInput item) throws Exception {
         if (item == null) {
             log.warn("Received null StatementInput, skipping processing");
             return null;
@@ -172,31 +174,15 @@ public class StatementProcessor implements ItemProcessor<StatementProcessor.Stat
         List<Transaction> sortedTransactions = new ArrayList<>(transactions);
         sortedTransactions.sort(Comparator.comparing(Transaction::getOriginationTimestamp));
 
-        // Generate plain text statement content (80-column format)
-        String plainTextContent = generatePlainTextStatement(account, customer, sortedTransactions, item);
+        // Calculate due date - typically 21 days after statement date
+        LocalDateTime statementDateTime = item.getStatementDate().atStartOfDay();
+        LocalDateTime dueDate = statementDateTime.plusDays(21);
 
-        // Generate HTML statement content with embedded CSS
-        String htmlContent = generateHtmlStatement(account, customer, sortedTransactions, item);
+        log.info("Successfully processed statement for account ID: {}, transaction count: {}",
+                account.getAccountId(), sortedTransactions.size());
 
-        // Create and return Statement entity
-        Statement statement = new Statement();
-        statement.setAccountId(account.getAccountId());
-        statement.setCustomerId(customer.getCustomerId());
-        statement.setStatementDate(item.getStatementDate());
-        statement.setPeriodStartDate(item.getPeriodStartDate());
-        statement.setPeriodEndDate(item.getPeriodEndDate());
-        statement.setPlainTextContent(plainTextContent);
-        statement.setHtmlContent(htmlContent);
-        statement.setTransactionCount(sortedTransactions.size());
-
-        // Calculate total transaction amount using DecimalUtils for COMP-3 precision
-        BigDecimal totalAmount = calculateTotalAmount(sortedTransactions);
-        statement.setTotalAmount(totalAmount);
-
-        log.info("Successfully generated statement for account ID: {}, total amount: {}",
-                account.getAccountId(), DecimalUtils.toFormattedCurrency(totalAmount));
-
-        return statement;
+        // Return StatementItemWriter.Statement with raw data for the writer to format
+        return new StatementItemWriter.Statement(customer, account, sortedTransactions, statementDateTime, dueDate);
     }
 
     /**
