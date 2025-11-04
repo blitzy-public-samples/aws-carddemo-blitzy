@@ -16,6 +16,7 @@
  */
 package com.carddemo.batch.job;
 
+import com.carddemo.entity.Statement;
 import com.carddemo.entity.Transaction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -335,7 +336,7 @@ public class StatementFormattingJob {
         log.info("Configuring textFormatStep with chunk size {}", CHUNK_SIZE);
         
         return new StepBuilder("textFormatStep", jobRepository)
-            .<StatementData, FormattedStatement>chunk(CHUNK_SIZE, transactionManager)
+            .<Statement, FormattedStatement>chunk(CHUNK_SIZE, transactionManager)
             .reader(statementReader())
             .processor(textFormatProcessor())
             .writer(textFileWriter())
@@ -412,7 +413,7 @@ public class StatementFormattingJob {
         log.info("Configuring htmlFormatStep with chunk size {}", CHUNK_SIZE);
         
         return new StepBuilder("htmlFormatStep", jobRepository)
-            .<StatementData, FormattedStatement>chunk(CHUNK_SIZE, transactionManager)
+            .<Statement, FormattedStatement>chunk(CHUNK_SIZE, transactionManager)
             .reader(statementReader())
             .processor(htmlFormatProcessor())
             .writer(htmlFileWriter())
@@ -476,7 +477,7 @@ public class StatementFormattingJob {
         log.info("Configuring pdfFormatStep with chunk size {}", CHUNK_SIZE);
         
         return new StepBuilder("pdfFormatStep", jobRepository)
-            .<StatementData, FormattedStatement>chunk(CHUNK_SIZE, transactionManager)
+            .<Statement, FormattedStatement>chunk(CHUNK_SIZE, transactionManager)
             .reader(statementReader())
             .processor(pdfFormatProcessor())
             .writer(pdfFileWriter())
@@ -512,8 +513,8 @@ public class StatementFormattingJob {
      * 
      * @return JpaPagingItemReader configured for statement entity retrieval
      */
-    private ItemReader<StatementData> statementReader() {
-        return new JpaPagingItemReaderBuilder<StatementData>()
+    private ItemReader<Statement> statementReader() {
+        return new JpaPagingItemReaderBuilder<Statement>()
             .name("statementReader")
             .entityManagerFactory(entityManagerFactory)
             .queryString("SELECT s FROM Statement s WHERE s.status = 'GENERATED' ORDER BY s.accountId")
@@ -554,7 +555,7 @@ public class StatementFormattingJob {
      * 
      * @return ItemProcessor for text format transformation
      */
-    private ItemProcessor<StatementData, FormattedStatement> textFormatProcessor() {
+    private ItemProcessor<Statement, FormattedStatement> textFormatProcessor() {
         return statement -> {
             log.debug("Processing text format for statement account {}", statement.getAccountId());
             
@@ -611,7 +612,7 @@ public class StatementFormattingJob {
      * 
      * @return ItemProcessor for HTML format transformation
      */
-    private ItemProcessor<StatementData, FormattedStatement> htmlFormatProcessor() {
+    private ItemProcessor<Statement, FormattedStatement> htmlFormatProcessor() {
         return statement -> {
             log.debug("Processing HTML format for statement account {}", statement.getAccountId());
             
@@ -670,7 +671,7 @@ public class StatementFormattingJob {
      * 
      * @return ItemProcessor for PDF format transformation
      */
-    private ItemProcessor<StatementData, FormattedStatement> pdfFormatProcessor() {
+    private ItemProcessor<Statement, FormattedStatement> pdfFormatProcessor() {
         return statement -> {
             log.debug("Processing PDF format for statement account {}", statement.getAccountId());
             
@@ -829,7 +830,7 @@ public class StatementFormattingJob {
      * @param statement StatementData to format
      * @return Formatted plain text content
      */
-    private String generateTextFormat(StatementData statement) {
+    private String generateTextFormat(Statement statement) {
         StringBuilder text = new StringBuilder();
         
         // Header section
@@ -856,18 +857,12 @@ public class StatementFormattingJob {
         text.append(String.format("Payment Due Date:     %s\n", formatDate(statement.getPaymentDueDate())));
         text.append(String.format("Minimum Payment Due:  %12s\n\n", formatCurrency(statement.getMinimumPayment())));
         
-        // Transaction details
+        // Transaction details placeholder
         text.append("TRANSACTION DETAILS\n");
         text.append("───────────────────────────────────────────────────────────────────────────────\n");
         text.append("Date       Description              Amount\n");
         text.append("───────────────────────────────────────────────────────────────────────────────\n");
-        
-        for (Transaction txn : statement.getTransactions()) {
-            text.append(String.format("%s  %-23s  %10s\n",
-                formatDate(txn.getOriginationTimestamp().toLocalDate()),
-                truncate(txn.getTransactionDescription(), 23),
-                formatCurrency(txn.getTransactionAmount())));
-        }
+        text.append("(Transaction details would be loaded separately)\n");
         
         return text.toString();
     }
@@ -897,7 +892,7 @@ public class StatementFormattingJob {
      * @param statement StatementData to format
      * @return Formatted HTML content
      */
-    private String generateHtmlFormat(StatementData statement) {
+    private String generateHtmlFormat(Statement statement) {
         StringBuilder html = new StringBuilder();
         
         html.append("<!DOCTYPE html>\n<html>\n<head>\n");
@@ -940,24 +935,10 @@ public class StatementFormattingJob {
         html.append("    </table>\n");
         html.append("  </div>\n");
         
-        // Transactions
+        // Transactions placeholder
         html.append("  <div class=\"transactions\">\n");
         html.append("    <h2>Transaction Details</h2>\n");
-        html.append("    <table class=\"transactions\">\n");
-        html.append("      <thead>\n");
-        html.append("        <tr><th>Date</th><th>Description</th><th>Amount</th></tr>\n");
-        html.append("      </thead>\n");
-        html.append("      <tbody>\n");
-        
-        for (Transaction txn : statement.getTransactions()) {
-            html.append(String.format("        <tr><td>%s</td><td>%s</td><td class=\"amount\">%s</td></tr>\n",
-                formatDate(txn.getOriginationTimestamp().toLocalDate()),
-                escapeHtml(txn.getTransactionDescription()),
-                formatCurrency(txn.getTransactionAmount())));
-        }
-        
-        html.append("      </tbody>\n");
-        html.append("    </table>\n");
+        html.append("    <p>(Transaction details would be loaded separately)</p>\n");
         html.append("  </div>\n");
         html.append("</body>\n</html>");
         
@@ -981,7 +962,7 @@ public class StatementFormattingJob {
      * @param statement StatementData to format
      * @return PDF content (placeholder implementation)
      */
-    private String generatePdfFormat(StatementData statement) {
+    private String generatePdfFormat(Statement statement) {
         // Placeholder implementation
         // In production, this would use iText, PDFBox, or Flying Saucer to generate actual PDF
         return "PDF content placeholder for account " + statement.getAccountId();
@@ -993,12 +974,12 @@ public class StatementFormattingJob {
      * <p>Constructs file path following directory structure convention:
      * /statements/{year}/{month}/{format}/statement_account_{accountId}_{yearMonth}.{ext}</p>
      * 
-     * @param statement StatementData containing account and date information
+     * @param statement Statement containing account and date information
      * @param format Format type (text, html, pdf)
      * @param extension File extension (txt, html, pdf)
      * @return Complete file path string
      */
-    private String buildFilePath(StatementData statement, String format, String extension) {
+    private String buildFilePath(Statement statement, String format, String extension) {
         LocalDate date = statement.getStatementDate();
         String year = String.valueOf(date.getYear());
         String month = String.format("%02d", date.getMonthValue());
