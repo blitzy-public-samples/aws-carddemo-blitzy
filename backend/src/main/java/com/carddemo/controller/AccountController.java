@@ -8,6 +8,7 @@ package com.carddemo.controller;
 import com.carddemo.dto.request.AccountAddRequest;
 import com.carddemo.dto.request.AccountUpdateRequest;
 import com.carddemo.dto.response.AccountViewResponse;
+import com.carddemo.entity.Account;
 import com.carddemo.exception.AccountNotFoundException;
 import com.carddemo.service.AccountCreationService;
 import com.carddemo.service.AccountUpdateService;
@@ -211,7 +212,7 @@ public class AccountController {
             
             // Delegate to service layer for account retrieval with authorization checks
             // Service layer validates user ownership if ROLE_USER, bypasses check if ROLE_ADMIN
-            AccountViewResponse accountView = accountViewService.getAccountView(id);
+            AccountViewResponse accountView = accountViewService.getAccountDetails(id.toString());
             
             log.info("Successfully retrieved account details for account ID: {}", id);
             return ResponseEntity.ok(accountView);
@@ -459,14 +460,17 @@ public class AccountController {
             // Delegate to service layer for account creation with all validations
             // Service validates customer existence, generates account number, creates account entity,
             // creates cross-reference entry, all within single atomic transaction
-            AccountViewResponse createdAccount = accountCreationService.createAccount(request);
+            Account createdAccount = accountCreationService.createAccount(request);
+            
+            // Convert Account entity to AccountViewResponse DTO for consistent API response format
+            AccountViewResponse accountViewResponse = accountViewService.formatAccountViewResponse(createdAccount);
             
             log.info("Successfully created new account ID: {} for customer: {} by admin: {}", 
-                createdAccount.getAccountId(), request.getCustomerId(), currentUsername);
+                accountViewResponse.getAccountId(), request.getCustomerId(), currentUsername);
             
             // Return 201 CREATED with created account details
             // Location header could be added for REST best practices but not required by spec
-            return ResponseEntity.status(HttpStatus.CREATED).body(createdAccount);
+            return ResponseEntity.status(HttpStatus.CREATED).body(accountViewResponse);
             
         } catch (AccountNotFoundException ex) {
             // Customer ID does not exist - maps to COBOL file-status 23 on CUSTDAT read
