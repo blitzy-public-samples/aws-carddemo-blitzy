@@ -428,7 +428,7 @@ public class AccountStatementReader extends AbstractItemCountingItemStreamItemRe
             Pageable pageable = PageRequest.of(
                     currentPage,
                     fetchSize,
-                    Sort.by(Sort.Direction.ASC, "id")
+                    Sort.by(Sort.Direction.ASC, "accountId")
             );
             
             Page<Account> accountPage;
