@@ -30,6 +30,8 @@ import org.springframework.dao.TransientDataAccessException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Isolation;
 
+import java.time.Duration;
+
 /**
  * Spring Batch job configuration class for daily transaction processing and posting.
  * 
@@ -538,7 +540,7 @@ public class DailyTransactionProcessingJob {
                 logger.info("Exit Status: {}", jobExecution.getExitStatus().getExitCode());
                 logger.info("End Time: {}", jobExecution.getEndTime());
                 logger.info("Duration: {} ms", 
-                        jobExecution.getEndTime().getTime() - jobExecution.getStartTime().getTime());
+                        Duration.between(jobExecution.getStartTime(), jobExecution.getEndTime()).toMillis());
                 logger.info("END OF EXECUTION OF PROGRAM CBTRN02C");
                 logger.info("========================================");
             }
