@@ -129,6 +129,9 @@ public class AccountXrefBuildJobTest {
     @Autowired
     private AccountXrefRepository accountXrefRepository;
 
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
     // Test data collections for cleanup
     private List<Long> testCustomerIds;
     private List<Long> testAccountIds;
@@ -183,7 +186,7 @@ public class AccountXrefBuildJobTest {
                 Account account = new Account();
                 Long accountId = Long.valueOf(String.format("%d%02d", 1000000000L + i, j));
                 account.setAccountId(accountId);
-                account.setCustomerId(customer.getCustomerId());
+                account.setCustomer(customer);
                 
                 // Set BigDecimal balance with COMP-3 precision preservation (Section 0.9)
                 BigDecimal balance = new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP);
@@ -191,6 +194,15 @@ public class AccountXrefBuildJobTest {
                 
                 BigDecimal creditLimit = new BigDecimal("10000.00").setScale(2, RoundingMode.HALF_UP);
                 account.setCreditLimit(creditLimit);
+                
+                BigDecimal cashCreditLimit = new BigDecimal("2000.00").setScale(2, RoundingMode.HALF_UP);
+                account.setCashCreditLimit(cashCreditLimit);
+                
+                BigDecimal cycleCredit = new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP);
+                account.setCurrentCycleCredit(cycleCredit);
+                
+                BigDecimal cycleDebit = new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP);
+                account.setCurrentCycleDebit(cycleDebit);
                 
                 account.setActiveStatus("Y");
                 account = accountRepository.save(account);
@@ -202,6 +214,12 @@ public class AccountXrefBuildJobTest {
                     String cardNumber = String.format("4%03d%04d%04d%02d", i, j, (i * 10 + j), k);
                     card.setCardNumber(cardNumber);
                     card.setAccountId(account.getAccountId());
+                    
+                    // Set CVV code (3-digit security code) - PCI-DSS Level 1 PII field (Section 0.9)
+                    // Format: 3-digit string with leading zeros preserved (e.g., "007", "123")
+                    String cvvCode = String.format("%03d", (i * 100 + j * 10 + k) % 1000);
+                    card.setCvvCode(cvvCode);
+                    
                     card.setActiveStatus("Y");
                     card.setExpirationDate(LocalDate.now().plusYears(3));
                     card.setEmbossedName(customer.getFirstName() + " " + customer.getLastName());
@@ -244,7 +262,16 @@ public class AccountXrefBuildJobTest {
      */
     @AfterEach
     public void tearDown() {
-        // Delete all cross-reference entries (must be first due to FK constraints)
+        // Delete CardXref entries first (references both cards and accounts)
+        // CardXrefRepository doesn't exist yet, so we use JdbcTemplate
+        try {
+            jdbcTemplate.execute("DELETE FROM card_xref");
+        } catch (Exception e) {
+            // CardXref table may not exist in all test scenarios, log and continue
+            System.out.println("Warning: Could not delete card_xref entries: " + e.getMessage());
+        }
+        
+        // Delete AccountXref entries (must be before accounts due to FK constraints)
         accountXrefRepository.deleteAll();
 
         // Delete cards (references accounts)
@@ -541,9 +568,10 @@ public class AccountXrefBuildJobTest {
             assertThat(testAccountIds).contains(xref.getId().getAccountId());
 
             // Validate customer-account relationship consistency
-            Account account = accountRepository.findByAccountId(xref.getId().getAccountId());
+            Account account = accountRepository.findByAccountId(xref.getId().getAccountId())
+                    .orElse(null);
             assertThat(account).isNotNull();
-            assertThat(account.getCustomerId()).isEqualTo(xref.getId().getCustomerId());
+            assertThat(account.getCustomer().getCustomerId()).isEqualTo(xref.getId().getCustomerId());
         }
 
         // Assert: Composite key uniqueness (no duplicate customer-account pairs)
@@ -649,13 +677,14 @@ public class AccountXrefBuildJobTest {
             Long accountId = xref.getId().getAccountId();
             
             // Validate account exists (foreign key integrity)
-            Account account = accountRepository.findByAccountId(accountId);
+            Account account = accountRepository.findByAccountId(accountId)
+                    .orElse(null);
             
             assertThat(account).isNotNull();
             assertThat(account.getAccountId()).isEqualTo(accountId);
 
             // Validate account.customer_id matches xref.customer_id (relationship consistency)
-            assertThat(account.getCustomerId()).isEqualTo(xref.getId().getCustomerId());
+            assertThat(account.getCustomer().getCustomerId()).isEqualTo(xref.getId().getCustomerId());
         }
 
         // Assert: No orphaned cross-references (all references valid)
@@ -664,16 +693,26 @@ public class AccountXrefBuildJobTest {
 
         // Validate all xrefs can be joined with customer and account tables
         for (AccountXref xref : allXrefs) {
-            // Test bidirectional navigation
+            // Test bidirectional navigation by customer ID
             List<AccountXref> customerXrefs = accountXrefRepository
                     .findByIdCustomerId(xref.getId().getCustomerId());
             assertThat(customerXrefs).isNotEmpty();
-            assertThat(customerXrefs).contains(xref);
+            
+            // Verify this xref exists in the customer's xref list by comparing IDs
+            // (avoid direct entity comparison which triggers lazy loading)
+            boolean foundInCustomerXrefs = customerXrefs.stream()
+                    .anyMatch(x -> x.getId().equals(xref.getId()));
+            assertThat(foundInCustomerXrefs).isTrue();
 
+            // Test bidirectional navigation by account ID
             List<AccountXref> accountXrefs = accountXrefRepository
                     .findByIdAccountId(xref.getId().getAccountId());
             assertThat(accountXrefs).isNotEmpty();
-            assertThat(accountXrefs).contains(xref);
+            
+            // Verify this xref exists in the account's xref list by comparing IDs
+            boolean foundInAccountXrefs = accountXrefs.stream()
+                    .anyMatch(x -> x.getId().equals(xref.getId()));
+            assertThat(foundInAccountXrefs).isTrue();
         }
     }
 
@@ -842,7 +881,8 @@ public class AccountXrefBuildJobTest {
 
         // Validate error handling infrastructure is configured
         // (Skip limit enforced even though not triggered in this test)
-        assertThat(stepExecution.getSummary()).contains("skipCount=0");
+        // StepExecution summary format: "readSkipCount=0, writeSkipCount=0, processSkipCount=0"
+        assertThat(stepExecution.getSummary()).contains("readSkipCount=0");
         
         // Validate all expected cross-references created (no skips)
         long xrefCount = accountXrefRepository.count();
@@ -945,8 +985,10 @@ public class AccountXrefBuildJobTest {
 
             // Validate all accounts belong to correct customer
             for (AccountXref xref : customerXrefs) {
-                Account account = accountRepository.findByAccountId(xref.getId().getAccountId());
-                assertThat(account.getCustomerId()).isEqualTo(customerId);
+                Account account = accountRepository.findByAccountId(xref.getId().getAccountId())
+                        .orElse(null);
+                assertThat(account).isNotNull();
+                assertThat(account.getCustomer().getCustomerId()).isEqualTo(customerId);
             }
         }
 
