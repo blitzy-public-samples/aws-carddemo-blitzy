@@ -277,7 +277,7 @@ class TransactionRepositoryTest {
     @Order(5)
     void testFindByAccountId_WithPagination() {
         // Arrange: Account ID from test data
-        String accountId = "00000000001";
+        Long accountId = 1L;
         Pageable pageable = PageRequest.of(0, 10, Sort.by("originationTimestamp").descending());
 
         // Act: Execute account query with JOIN
@@ -340,7 +340,7 @@ class TransactionRepositoryTest {
     @Order(7)
     void testFindByAccountIdAndTransactionDateBetween() {
         // Arrange
-        String accountId = "00000000001";
+        Long accountId = 1L;
         LocalDate startDate = LocalDate.of(2024, 1, 1);
         LocalDate endDate = LocalDate.of(2024, 1, 31);
         Pageable pageable = PageRequest.of(0, 10);
@@ -773,7 +773,7 @@ class TransactionRepositoryTest {
     @Order(21)
     void testComplexQueryWithMultipleConditions() {
         // Arrange
-        String accountId = "00000000001";
+        Long accountId = 1L;
         LocalDate startDate = LocalDate.of(2024, 1, 1);
         LocalDate endDate = LocalDate.of(2024, 12, 31);
         Pageable pageable = PageRequest.of(0, 10, 

@@ -1,11 +1,11 @@
 package com.carddemo.entity;
 
 import com.carddemo.constants.BalanceType;
+import com.carddemo.constants.BalanceTypeConverter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -133,8 +133,10 @@ public class AccountBalance implements Serializable {
      * 
      * <p>Stored as single character in database ('C', 'A', 'P', 'H') for
      * compact storage and VSAM file compatibility.</p>
+     * 
+     * <p>Uses BalanceTypeConverter to map enum values to single-character codes.</p>
      */
-    @Enumerated(EnumType.STRING)
+    @Convert(converter = BalanceTypeConverter.class)
     @Column(name = "balance_type", length = 1, nullable = false)
     private BalanceType balanceType;
     

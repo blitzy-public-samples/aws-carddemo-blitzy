@@ -255,7 +255,7 @@ public class AccountBalanceReader implements ItemReader<Account> {
      * 
      * <p><b>Query Details:</b></p>
      * <ul>
-     *   <li>Query: SELECT a FROM Account a ORDER BY a.id ASC</li>
+     *   <li>Query: SELECT a FROM Account a ORDER BY a.accountId ASC</li>
      *   <li>Page Size: 1000 records</li>
      *   <li>Sort Order: Account ID ascending (for deterministic ordering)</li>
      *   <li>Fetch Type: Lazy (only requested page is loaded)</li>
@@ -268,7 +268,7 @@ public class AccountBalanceReader implements ItemReader<Account> {
      *   READ XREFFILE-FILE INTO CARD-XREF-RECORD  (reads next record)
      * 
      * Java explicitly manages pagination:
-     *   PageRequest pageRequest = PageRequest.of(currentPage, PAGE_SIZE, Sort.by("id"))
+     *   PageRequest pageRequest = PageRequest.of(currentPage, PAGE_SIZE, Sort.by("accountId"))
      *   Page<Account> page = repository.findAll(pageRequest)
      * </pre>
      * 
@@ -293,7 +293,7 @@ public class AccountBalanceReader implements ItemReader<Account> {
         logger.debug("Fetching page {} of accounts (page size: {})", currentPage, PAGE_SIZE);
 
         // Create pageable request with page number, size, and sort order
-        Pageable pageable = PageRequest.of(currentPage, PAGE_SIZE, Sort.by(Sort.Direction.ASC, "id"));
+        Pageable pageable = PageRequest.of(currentPage, PAGE_SIZE, Sort.by(Sort.Direction.ASC, "accountId"));
 
         // Execute paginated query through repository
         Page<Account> accountPage = accountRepository.findAll(pageable);

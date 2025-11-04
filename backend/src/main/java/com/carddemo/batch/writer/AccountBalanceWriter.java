@@ -30,8 +30,6 @@ import com.carddemo.entity.AccountBalance;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Isolation;
-import org.springframework.transaction.annotation.Transactional;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
@@ -52,9 +50,9 @@ import java.util.List;
  * with explicit flush/clear operations for memory management during large batch processing.
  *
  * Transaction Configuration:
- * - Isolation Level: READ_COMMITTED (prevents dirty reads, allows concurrent processing)
- * - Propagation: REQUIRED (participates in existing transaction or creates new)
- * - Rollback: On any RuntimeException to ensure atomicity
+ * - Transaction management is handled by Spring Batch Step transaction manager
+ * - Writer operations participate in the chunk-level transaction boundary
+ * - Rollback occurs automatically on any Exception per Spring Batch configuration
  *
  * Performance Optimizations:
  * - Batch INSERT operations for AccountBalance entities
@@ -98,10 +96,6 @@ public class AccountBalanceWriter implements ItemWriter<AccountBalance> {
      * @throws Exception if any database operation fails or validation error occurs
      */
     @Override
-    @Transactional(
-        isolation = Isolation.READ_COMMITTED,
-        rollbackFor = Exception.class
-    )
     public void write(Chunk<? extends AccountBalance> chunk) throws Exception {
         // Validate chunk
         if (chunk == null || chunk.isEmpty()) {

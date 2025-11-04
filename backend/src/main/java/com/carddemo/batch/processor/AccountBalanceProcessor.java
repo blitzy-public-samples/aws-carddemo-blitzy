@@ -16,6 +16,7 @@
  */
 package com.carddemo.batch.processor;
 
+import com.carddemo.constants.BalanceType;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.AccountBalance;
 import com.carddemo.entity.Transaction;
@@ -28,6 +29,7 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -128,8 +130,7 @@ public class AccountBalanceProcessor implements ItemProcessor<Account, AccountBa
             logger.debug("Account {} opening balance: {}", accountId, openingBalance);
 
             // Step 2: Query all transactions for this account
-            // Convert Long accountId to String for TransactionRepository query
-            List<Transaction> transactions = transactionRepository.findByAccountId(String.valueOf(accountId));
+            List<Transaction> transactions = transactionRepository.findByAccountId(accountId);
 
             if (transactions == null || transactions.isEmpty()) {
                 logger.info("No transactions found for account {}, skipping balance calculation", accountId);
@@ -182,11 +183,13 @@ public class AccountBalanceProcessor implements ItemProcessor<Account, AccountBa
             // Step 6: Create and populate AccountBalance entity
             AccountBalance accountBalance = new AccountBalance();
             accountBalance.setAccountId(accountId);
+            accountBalance.setBalanceType(BalanceType.HISTORICAL); // CBACT03C creates historical snapshots
             accountBalance.setOpeningBalance(openingBalance);
             accountBalance.setCreditAmount(totalCredits);
             accountBalance.setDebitAmount(totalDebits);
             accountBalance.setBalanceAmount(closingBalance);
             accountBalance.setEffectiveDate(LocalDate.now());
+            accountBalance.setCreatedDate(LocalDateTime.now()); // Set audit timestamp for record creation
             
             // Calculate and set closing balance using the entity's calculation method
             accountBalance.calculateClosingBalance();
@@ -254,6 +257,7 @@ public class AccountBalanceProcessor implements ItemProcessor<Account, AccountBa
             case "06": // Interest Charge
             case "DEBIT":
             case "DR":
+            case "DB": // Debit abbreviation used in test data
             case "FEE":
             case "CHARGE":
             case "WITHDRAWAL":

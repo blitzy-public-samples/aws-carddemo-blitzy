@@ -156,16 +156,16 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * <p><strong>Custom JPQL Query:</strong> Joins through Card entity to access account:</p>
      * <pre>
      * SELECT t FROM Transaction t 
-     * WHERE t.card.account.accountId = :accountId
+     * WHERE t.card.accountId = :accountId
      * ORDER BY t.originationTimestamp DESC
      * </pre>
      * 
      * <p><strong>Relationship Navigation:</strong></p>
      * <ul>
      *   <li>Transaction entity does NOT have direct accountId field</li>
-     *   <li>Query navigates: Transaction → Card (via cardNumber) → Account (via accountId)</li>
+     *   <li>Query navigates: Transaction → Card (via cardNumber) → accountId field</li>
      *   <li>JPA handles JOIN automatically: transaction INNER JOIN card ON transaction.card_number = card.card_number 
-     *       INNER JOIN account ON card.account_id = account.account_id</li>
+     *       WHERE card.account_id = :accountId</li>
      * </ul>
      * 
      * <p><strong>Usage Scenarios:</strong></p>
@@ -184,11 +184,11 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *   <li>For large result sets, consider using @Query with stream or pagination</li>
      * </ul>
      * 
-     * @param accountId the 11-digit account identifier as String (e.g., "00000000001")
+     * @param accountId the 11-digit account identifier as Long (e.g., 100000000001L)
      * @return List of all transactions for the account, ordered by originationTimestamp DESC
      */
-    @Query("SELECT t FROM Transaction t JOIN t.card c JOIN c.account a WHERE a.accountId = :accountId ORDER BY t.originationTimestamp DESC")
-    List<Transaction> findByAccountId(@Param("accountId") String accountId);
+    @Query("SELECT t FROM Transaction t JOIN Card c ON t.cardNumber = c.cardNumber WHERE c.accountId = :accountId ORDER BY t.originationTimestamp DESC")
+    List<Transaction> findByAccountId(@Param("accountId") Long accountId);
 
     /**
      * Retrieves paginated transactions for a specific account with sorting support.
@@ -233,9 +233,9 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * <p><strong>Relationship Navigation (No Direct accountId):</strong></p>
      * <ul>
      *   <li>Transaction entity does NOT store accountId directly</li>
-     *   <li>Query path: Transaction.card → Card.account → Account.accountId</li>
+     *   <li>Query path: Transaction.card → Card.accountId field</li>
      *   <li>Database JOIN: transaction t INNER JOIN card c ON t.card_number = c.card_number 
-     *       INNER JOIN account a ON c.account_id = a.account_id</li>
+     *       WHERE c.account_id = :accountId</li>
      *   <li>Performance: Uses compound index on (card.account_id, transaction_timestamp)</li>
      * </ul>
      * 
@@ -260,12 +260,12 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *   <li>Lazy loading: Related Card, TransactionType, TransactionCategory not fetched unless accessed</li>
      * </ul>
      * 
-     * @param accountId the 11-digit account identifier as String (e.g., "00000000001")
+     * @param accountId the 11-digit account identifier as Long (e.g., 100000000001L)
      * @param pageable  pagination information (page number, size, sort order)
      * @return Page object containing transactions for the account and pagination metadata
      */
-    @Query("SELECT t FROM Transaction t JOIN t.card c JOIN c.account a WHERE a.accountId = :accountId")
-    Page<Transaction> findByAccountId(@Param("accountId") String accountId, Pageable pageable);
+    @Query("SELECT t FROM Transaction t JOIN Card c ON t.cardNumber = c.cardNumber WHERE c.accountId = :accountId")
+    Page<Transaction> findByAccountId(@Param("accountId") Long accountId, Pageable pageable);
 
     /**
      * Retrieves paginated transactions for a specific card number with sorting support.
@@ -405,7 +405,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * <p><strong>Custom JPQL Query with Combined Filters:</strong></p>
      * <pre>
      * SELECT t FROM Transaction t 
-     * WHERE t.card.account.accountId = :accountId 
+     * WHERE t.card.accountId = :accountId 
      *   AND CAST(t.originationTimestamp AS date) BETWEEN :startDate AND :endDate
      * ORDER BY t.originationTimestamp DESC
      * LIMIT :pageSize OFFSET :pageNumber * :pageSize
@@ -465,15 +465,15 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *   <li>Return Page object with results and pagination metadata</li>
      * </ol>
      * 
-     * @param accountId the 11-digit account identifier as String (e.g., "00000000001")
+     * @param accountId the 11-digit account identifier as Long (e.g., 100000000001L)
      * @param startDate the start date of the range (inclusive)
      * @param endDate   the end date of the range (inclusive)
      * @param pageable  pagination information (page number, size, sort order)
      * @return Page object containing transactions matching criteria and pagination metadata
      */
-    @Query("SELECT t FROM Transaction t JOIN t.card c JOIN c.account a WHERE a.accountId = :accountId AND CAST(t.originationTimestamp AS date) BETWEEN :startDate AND :endDate")
+    @Query("SELECT t FROM Transaction t JOIN Card c ON t.cardNumber = c.cardNumber WHERE c.accountId = :accountId AND CAST(t.originationTimestamp AS date) BETWEEN :startDate AND :endDate")
     Page<Transaction> findByAccountIdAndTransactionDateBetween(
-            @Param("accountId") String accountId,
+            @Param("accountId") Long accountId,
             @Param("startDate") LocalDate startDate,
             @Param("endDate") LocalDate endDate,
             Pageable pageable
@@ -517,7 +517,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * <pre>
      * SELECT t.transactionCategoryCode, SUM(t.transactionAmount)
      * FROM Transaction t
-     * WHERE t.card.account.accountId = :accountId
+     * WHERE t.card.accountId = :accountId
      *   AND CAST(t.originationTimestamp AS date) BETWEEN :startDate AND :endDate
      * GROUP BY t.transactionCategoryCode
      * </pre>
@@ -592,8 +592,8 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * @return List of Object arrays where [0] = categoryCode (Integer), [1] = SUM amount (BigDecimal)
      */
     @Query("SELECT t.transactionCategoryCode, SUM(t.transactionAmount) " +
-           "FROM Transaction t JOIN t.card c JOIN c.account a " +
-           "WHERE a.accountId = :accountId " +
+           "FROM Transaction t JOIN Card c ON t.cardNumber = c.cardNumber " +
+           "WHERE c.accountId = :accountId " +
            "AND CAST(t.originationTimestamp AS date) BETWEEN :startDate AND :endDate " +
            "GROUP BY t.transactionCategoryCode " +
            "ORDER BY t.transactionCategoryCode")
@@ -637,7 +637,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * <pre>
      * SELECT COUNT(t)
      * FROM Transaction t
-     * WHERE t.card.account.accountId = :accountId
+     * WHERE t.card.accountId = :accountId
      *   AND CAST(t.originationTimestamp AS date) = :date
      * </pre>
      * 
@@ -707,8 +707,8 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * @param date      the transaction date to count (e.g., "2024-12-15")
      * @return count of transactions for the account on the specified date (0 if none)
      */
-    @Query("SELECT COUNT(t) FROM Transaction t JOIN t.card c JOIN c.account a " +
-           "WHERE a.accountId = :accountId " +
+    @Query("SELECT COUNT(t) FROM Transaction t JOIN Card c ON t.cardNumber = c.cardNumber " +
+           "WHERE c.accountId = :accountId " +
            "AND CAST(t.originationTimestamp AS date) = :date")
     long countDailyTransactions(
             @Param("accountId") String accountId,
