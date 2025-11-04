@@ -22,14 +22,13 @@ import com.carddemo.entity.AccountXref;
 import com.carddemo.entity.Transaction;
 import com.carddemo.entity.TransactionAggregate;
 import com.carddemo.repository.AccountRepository;
-import com.carddemo.repository.AccountXrefRepository;
+import com.carddemo.repository.AccountGroupRepository;
 import com.carddemo.util.DateUtils;
 import com.carddemo.util.DecimalUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -137,9 +136,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p><strong>Dependency Injection:</strong></p>
  * <ul>
  *   <li>AccountRepository: Retrieve account master data for accountGroupId extraction</li>
- *   <li>AccountXrefRepository: Lookup card number via XREF cross-reference file equivalent</li>
- *   <li>DateUtils: Generate DB2-format timestamps for transaction origination and processing</li>
- *   <li>DecimalUtils: Ensure COBOL COMP-3 precision preservation for all arithmetic operations</li>
+ *   <li>CardRepository: Lookup card number via Card entity (normalized database design)</li>
+ *   <li>AccountGroupRepository: Retrieve interest rate configuration by account group</li>
  * </ul>
  * 
  * <p><strong>Spring Batch Integration:</strong></p>
@@ -234,11 +232,13 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionAg
     private final AccountRepository accountRepository;
 
     /**
-     * Spring Data JPA repository for AccountXref cross-reference lookups.
+     * Spring Data JPA repository for Card entity operations.
      * Used to retrieve card number for interest transaction record population.
      * Maps to COBOL lines 204-205, 1110-GET-XREF-DATA paragraph (lines 394-398).
+     * Note: In the normalized database design, card numbers are retrieved via Card entity
+     * rather than through XREF cross-reference file.
      */
-    private final AccountXrefRepository accountXrefRepository;
+    private final com.carddemo.repository.CardRepository cardRepository;
 
     /**
      * Spring Data JPA repository for AccountGroup discount group lookups.
@@ -262,10 +262,10 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionAg
     @Autowired
     public InterestCalculationProcessor(
             AccountRepository accountRepository,
-            AccountXrefRepository accountXrefRepository,
+            com.carddemo.repository.CardRepository cardRepository,
             AccountGroupRepository accountGroupRepository) {
         this.accountRepository = accountRepository;
-        this.accountXrefRepository = accountXrefRepository;
+        this.cardRepository = cardRepository;
         this.accountGroupRepository = accountGroupRepository;
         
         logger.info("InterestCalculationProcessor initialized - COBOL CBACT04C.cbl interest calculator equivalent");
@@ -369,7 +369,7 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionAg
         }
 
         // Step 1: Retrieve Account entity to extract accountGroupId (COBOL lines 202-203, 1100-GET-ACCT-DATA)
-        Account account = accountRepository.findByAccountId(String.valueOf(accountId))
+        Account account = accountRepository.findByAccountId(accountId)
                 .orElseThrow(() -> new IllegalStateException(
                         "Account not found for accountId: " + accountId + " - Data integrity issue"));
 
@@ -423,15 +423,24 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionAg
                     MONTHLY_DIVISOR);
         }
 
-        // Step 5: Lookup AccountXref to retrieve card number (COBOL lines 204-205, 1110-GET-XREF-DATA)
-        AccountXref accountXref = accountXrefRepository.findByAccountId(String.valueOf(accountId))
-                .orElseThrow(() -> new IllegalStateException(
-                        "AccountXref not found for accountId: " + accountId + " - Missing cross-reference"));
-
-        String cardNumber = accountXref.getCardNumber();
+        // Step 5: Lookup Card to retrieve card number (COBOL lines 204-205, 1110-GET-XREF-DATA)
+        // In the normalized database design, card information is retrieved via Card entity
+        // rather than through XREF cross-reference file
+        java.util.List<com.carddemo.entity.Card> cards = cardRepository.findByAccountId(accountId);
+        
+        if (cards == null || cards.isEmpty()) {
+            throw new IllegalStateException(
+                    "No cards found for accountId: " + accountId + " - Missing card association");
+        }
+        
+        // Get the first card associated with this account
+        // In production scenarios, there may be multiple cards per account;
+        // COBOL logic retrieves the first card from XREF file sequential read
+        String cardNumber = cards.get(0).getCardNumber();
 
         if (logger.isDebugEnabled()) {
-            logger.debug("Retrieved card number from XREF for account {}", accountId);
+            logger.debug("Retrieved card number from Card entity for account {}: {} card(s) found", 
+                    accountId, cards.size());
         }
 
         // Step 6: Generate transaction ID (COBOL lines 474-480)
@@ -531,23 +540,4 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionAg
         return "****" + cardNumber.substring(cardNumber.length() - 4);
     }
 
-    /**
-     * Local Spring Data JPA repository interface for AccountGroup entity.
-     * 
-     * <p>This interface is defined locally because AccountGroupRepository is not included in the
-     * depends_on_files list, but the AccountGroup entity is available. Spring Data JPA automatically
-     * provides the implementation at runtime for standard CRUD operations and composite key lookups.</p>
-     * 
-     * <p>Enables interest rate lookup by composite key (accountGroupId, transactionTypeCode, transactionCategoryCode)
-     * matching COBOL DISCGRP-FILE random read operations (lines 210-213, 416-420, 1200-GET-INTEREST-RATE paragraph).</p>
-     * 
-     * @see AccountGroup
-     * @see AccountGroup.GroupId
-     */
-    public interface AccountGroupRepository extends JpaRepository<AccountGroup, AccountGroup.GroupId> {
-        // Spring Data JPA provides automatic implementation for:
-        // - findById(AccountGroup.GroupId id) -> Random read by composite key
-        // - Standard CRUD operations
-        // Maps to COBOL: READ DISCGRP-FILE KEY IS FD-DISCGRP-KEY
-    }
 }
