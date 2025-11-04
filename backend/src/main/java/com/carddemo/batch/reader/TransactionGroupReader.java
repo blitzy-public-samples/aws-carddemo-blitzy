@@ -81,22 +81,24 @@ public class TransactionGroupReader implements ItemStreamReader<TransactionGroup
     private static final String END_DATE_KEY = "transaction.group.end.date";
 
     // SQL query for transaction aggregation matching COBOL grouping logic
+    // Note: Transaction table has card_number, not account_id. Need to join with card table to get account_id.
     private static final String AGGREGATION_QUERY =
             "SELECT " +
-            "    t.account_id, " +
+            "    c.account_id, " +
             "    t.transaction_type_code, " +
             "    t.transaction_category_code, " +
             "    COUNT(*) as transaction_count, " +
             "    SUM(t.transaction_amount) as total_amount, " +
             "    AVG(t.transaction_amount) as average_amount, " +
-            "    MIN(t.origination_timestamp) as first_transaction_date, " +
-            "    MAX(t.origination_timestamp) as last_transaction_date, " +
+            "    MIN(t.transaction_timestamp) as first_transaction_date, " +
+            "    MAX(t.transaction_timestamp) as last_transaction_date, " +
             "    MIN(t.card_number) as primary_card_number " +
             "FROM transaction t " +
-            "WHERE t.origination_timestamp >= ? " +
-            "AND t.origination_timestamp < ? " +
-            "GROUP BY t.account_id, t.transaction_type_code, t.transaction_category_code " +
-            "ORDER BY t.account_id, t.transaction_type_code, t.transaction_category_code";
+            "INNER JOIN card c ON t.card_number = c.card_number " +
+            "WHERE t.transaction_timestamp >= ? " +
+            "AND t.transaction_timestamp < ? " +
+            "GROUP BY c.account_id, t.transaction_type_code, t.transaction_category_code " +
+            "ORDER BY c.account_id, t.transaction_type_code, t.transaction_category_code";
 
     private final JdbcTemplate jdbcTemplate;
     private List<TransactionGroup> transactionGroups;

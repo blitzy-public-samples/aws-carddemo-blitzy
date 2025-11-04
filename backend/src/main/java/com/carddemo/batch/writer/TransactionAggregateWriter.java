@@ -24,9 +24,6 @@ import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Isolation;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -109,13 +106,11 @@ public class TransactionAggregateWriter implements ItemWriter<TransactionAggrega
      * 
      * @param chunk the chunk of TransactionAggregate items to write (not null)
      * @throws Exception if a non-recoverable error occurs during write operation
+     * 
+     * Note: Transaction management is handled by Spring Batch framework at the chunk level.
+     * No explicit @Transactional annotation needed here to avoid isolation level conflicts.
      */
     @Override
-    @Transactional(
-        isolation = Isolation.READ_COMMITTED,
-        propagation = Propagation.REQUIRED,
-        rollbackFor = Exception.class
-    )
     public void write(Chunk<? extends TransactionAggregate> chunk) throws Exception {
         List<? extends TransactionAggregate> aggregates = chunk.getItems();
         

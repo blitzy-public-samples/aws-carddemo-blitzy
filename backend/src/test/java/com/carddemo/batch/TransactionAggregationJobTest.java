@@ -32,14 +32,18 @@ package com.carddemo.batch;
 
 import com.carddemo.batch.job.TransactionAggregationJob;
 import com.carddemo.batch.processor.TransactionAggregationProcessor;
+import org.springframework.batch.core.Job;
+import com.carddemo.constants.CardStatus;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
+import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
 import com.carddemo.entity.TransactionAggregate;
 import com.carddemo.entity.TransactionCategory;
 import com.carddemo.entity.TransactionType;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionAggregateRepository;
 import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
@@ -57,6 +61,8 @@ import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -105,6 +111,13 @@ import java.util.stream.Collectors;
  */
 @SpringBootTest
 @SpringBatchTest
+@ActiveProfiles("test")
+@TestPropertySource(properties = {
+    "spring.batch.job.enabled=false",
+    "spring.datasource.url=jdbc:h2:mem:testdb;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
+    "spring.jpa.hibernate.ddl-auto=create-drop",
+    "spring.main.allow-bean-definition-overriding=true"
+})
 public class TransactionAggregationJobTest {
 
     /**
@@ -113,6 +126,13 @@ public class TransactionAggregationJobTest {
      */
     @Autowired
     private JobLauncherTestUtils jobLauncherTestUtils;
+
+    /**
+     * The Transaction Aggregation Job bean instance to be tested.
+     * Configured by TransactionAggregationJob configuration class.
+     */
+    @Autowired
+    private Job transactionAggregationJobBean;
 
     /**
      * Repository for Transaction entity - CRUD operations and custom queries.
@@ -127,6 +147,13 @@ public class TransactionAggregationJobTest {
      */
     @Autowired
     private TransactionAggregateRepository transactionAggregateRepository;
+
+    /**
+     * Repository for Customer entity - customer master data.
+     * Used for creating prerequisite test customer data to satisfy foreign key constraints.
+     */
+    @Autowired
+    private CustomerRepository customerRepository;
 
     /**
      * Repository for Account entity - account master data.
@@ -155,6 +182,12 @@ public class TransactionAggregationJobTest {
      */
     @Autowired
     private TransactionCategoryRepository transactionCategoryRepository;
+
+    /**
+     * Test data: List of created customer records.
+     * Maintained for cleanup in @AfterEach method.
+     */
+    private List<Customer> testCustomers;
 
     /**
      * Test data: List of created account records.
@@ -214,7 +247,11 @@ public class TransactionAggregationJobTest {
      */
     @BeforeEach
     public void setUp() {
+        // Configure JobLauncherTestUtils with the job under test
+        jobLauncherTestUtils.setJob(transactionAggregationJobBean);
+
         // Initialize test data lists for cleanup tracking
+        testCustomers = new ArrayList<>();
         testAccounts = new ArrayList<>();
         testCards = new ArrayList<>();
         testTransactionTypes = new ArrayList<>();
@@ -240,50 +277,58 @@ public class TransactionAggregationJobTest {
         // Create test transaction categories - matches COBOL TRANCATG-FILE reference data
         // Categories for Debit transactions
         TransactionCategory retailCategory = new TransactionCategory();
-        retailCategory.setTypeCode("DB");
-        retailCategory.setCategoryCode(1001);
+        retailCategory.setId(new TransactionCategory.CategoryId("DB", 1001));
         retailCategory.setCategoryDescription("Retail Purchase");
         testTransactionCategories.add(transactionCategoryRepository.save(retailCategory));
 
         TransactionCategory gasCategory = new TransactionCategory();
-        gasCategory.setTypeCode("DB");
-        gasCategory.setCategoryCode(2001);
+        gasCategory.setId(new TransactionCategory.CategoryId("DB", 2001));
         gasCategory.setCategoryDescription("Gas Station");
         testTransactionCategories.add(transactionCategoryRepository.save(gasCategory));
 
         // Categories for Credit transactions
         TransactionCategory refundCategory = new TransactionCategory();
-        refundCategory.setTypeCode("CR");
-        refundCategory.setCategoryCode(3001);
+        refundCategory.setId(new TransactionCategory.CategoryId("CR", 3001));
         refundCategory.setCategoryDescription("Refund");
         testTransactionCategories.add(transactionCategoryRepository.save(refundCategory));
 
         TransactionCategory adjustmentCategory = new TransactionCategory();
-        adjustmentCategory.setTypeCode("CR");
-        adjustmentCategory.setCategoryCode(4001);
+        adjustmentCategory.setId(new TransactionCategory.CategoryId("CR", 4001));
         adjustmentCategory.setCategoryDescription("Credit Adjustment");
         testTransactionCategories.add(transactionCategoryRepository.save(adjustmentCategory));
 
         // Categories for Payment transactions
         TransactionCategory billPayCategory = new TransactionCategory();
-        billPayCategory.setTypeCode("PM");
-        billPayCategory.setCategoryCode(5001);
+        billPayCategory.setId(new TransactionCategory.CategoryId("PM", 5001));
         billPayCategory.setCategoryDescription("Bill Payment");
         testTransactionCategories.add(transactionCategoryRepository.save(billPayCategory));
 
         TransactionCategory loanPayCategory = new TransactionCategory();
-        loanPayCategory.setTypeCode("PM");
-        loanPayCategory.setCategoryCode(6001);
+        loanPayCategory.setId(new TransactionCategory.CategoryId("PM", 6001));
         loanPayCategory.setCategoryDescription("Loan Payment");
         testTransactionCategories.add(transactionCategoryRepository.save(loanPayCategory));
 
-        // Create test accounts - matches COBOL ACCTDAT VSAM file structure
+        // Create test customers - prerequisite for accounts
         for (int i = 1; i <= 3; i++) {
+            Customer customer = new Customer();
+            customer.setCustomerId(1000000000L + i); // 10-digit customer ID
+            customer.setFirstName("Test");
+            customer.setLastName("Customer" + i);
+            customer.setSsn(String.format("999%06d", i)); // Test SSN
+            testCustomers.add(customerRepository.save(customer));
+        }
+
+        // Create test accounts - matches COBOL ACCTDAT VSAM file structure
+        for (int i = 0; i < testCustomers.size(); i++) {
             Account account = new Account();
-            account.setAccountId(10000000000L + i); // 11-digit account ID
-            account.setCustomerId(1000000000L + i); // 10-digit customer ID
-            account.setAccountBalance(new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP));
-            account.setAccountStatus("A"); // Active status
+            account.setAccountId(10000000000L + (i + 1)); // 11-digit account ID
+            account.setCustomer(testCustomers.get(i)); // Set customer relationship
+            account.setCurrentBalance(new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP));
+            account.setActiveStatus("Y"); // Active status
+            account.setCreditLimit(new BigDecimal("10000.00").setScale(2, RoundingMode.HALF_UP));
+            account.setCashCreditLimit(new BigDecimal("2000.00").setScale(2, RoundingMode.HALF_UP));
+            account.setCurrentCycleCredit(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
+            account.setCurrentCycleDebit(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
             testAccounts.add(accountRepository.save(account));
         }
 
@@ -292,7 +337,10 @@ public class TransactionAggregationJobTest {
             Card card = new Card();
             card.setCardNumber(String.format("4000123456789%03d", i)); // 16-character card number
             card.setAccountId(testAccounts.get(i).getAccountId());
-            card.setCardStatus("A"); // Active status
+            card.setCardStatus(CardStatus.ACTIVE); // Active status using enum
+            card.setCvvCode("123"); // Test CVV code
+            card.setEmbossedName("TEST CARDHOLDER " + (i + 1)); // Test embossed name
+            card.setExpirationDate(LocalDate.now().plusYears(3)); // Expiration date 3 years from now
             testCards.add(cardRepository.save(card));
         }
 
@@ -314,10 +362,10 @@ public class TransactionAggregationJobTest {
      * 
      * <p><strong>Test Transaction Distribution:</strong></p>
      * <ul>
-     *   <li>Account 1: 20 transactions (mix of DB, CR, PM types)</li>
-     *   <li>Account 2: 18 transactions (mix of DB, CR, PM types)</li>
-     *   <li>Account 3: 16 transactions (mix of DB, CR, PM types)</li>
-     *   <li>Total: 54 transactions across 6 categories</li>
+     *   <li>Account 1: 20 transactions (DB+1001, DB+2001, CR+3001, PM+5001)</li>
+     *   <li>Account 2: 18 transactions (DB+1001, CR+4001, PM+6001)</li>
+     *   <li>Account 3: 16 transactions (DB+2001, CR+3001, PM+5001)</li>
+     *   <li>Total: 54 transactions across 6 categories in 10 unique account/type/category combinations</li>
      * </ul>
      */
     private void createTestTransactions() {
@@ -328,7 +376,7 @@ public class TransactionAggregationJobTest {
         for (int i = 0; i < 5; i++) {
             Transaction txn = new Transaction();
             txn.setTransactionId(String.format("TXN%012d", transactionIdCounter++));
-            txn.setAccountId(testAccounts.get(0).getAccountId());
+            txn.setCard(testCards.get(0)); // Set Card relationship so getAccountId() works
             txn.setCardNumber(testCards.get(0).getCardNumber());
             txn.setTransactionTypeCode("DB");
             txn.setTransactionCategoryCode(1001);
@@ -343,7 +391,7 @@ public class TransactionAggregationJobTest {
         for (int i = 0; i < 5; i++) {
             Transaction txn = new Transaction();
             txn.setTransactionId(String.format("TXN%012d", transactionIdCounter++));
-            txn.setAccountId(testAccounts.get(0).getAccountId());
+            txn.setCard(testCards.get(0)); // Set Card relationship so getAccountId() works
             txn.setCardNumber(testCards.get(0).getCardNumber());
             txn.setTransactionTypeCode("DB");
             txn.setTransactionCategoryCode(2001);
@@ -358,7 +406,7 @@ public class TransactionAggregationJobTest {
         for (int i = 0; i < 3; i++) {
             Transaction txn = new Transaction();
             txn.setTransactionId(String.format("TXN%012d", transactionIdCounter++));
-            txn.setAccountId(testAccounts.get(0).getAccountId());
+            txn.setCard(testCards.get(0)); // Set Card relationship so getAccountId() works
             txn.setCardNumber(testCards.get(0).getCardNumber());
             txn.setTransactionTypeCode("CR");
             txn.setTransactionCategoryCode(3001);
@@ -373,7 +421,7 @@ public class TransactionAggregationJobTest {
         for (int i = 0; i < 7; i++) {
             Transaction txn = new Transaction();
             txn.setTransactionId(String.format("TXN%012d", transactionIdCounter++));
-            txn.setAccountId(testAccounts.get(0).getAccountId());
+            txn.setCard(testCards.get(0)); // Set Card relationship so getAccountId() works
             txn.setCardNumber(testCards.get(0).getCardNumber());
             txn.setTransactionTypeCode("PM");
             txn.setTransactionCategoryCode(5001);
@@ -388,7 +436,7 @@ public class TransactionAggregationJobTest {
         for (int i = 0; i < 6; i++) {
             Transaction txn = new Transaction();
             txn.setTransactionId(String.format("TXN%012d", transactionIdCounter++));
-            txn.setAccountId(testAccounts.get(1).getAccountId());
+            txn.setCard(testCards.get(1)); // Set Card relationship so getAccountId() works
             txn.setCardNumber(testCards.get(1).getCardNumber());
             txn.setTransactionTypeCode("DB");
             txn.setTransactionCategoryCode(1001);
@@ -403,7 +451,7 @@ public class TransactionAggregationJobTest {
         for (int i = 0; i < 4; i++) {
             Transaction txn = new Transaction();
             txn.setTransactionId(String.format("TXN%012d", transactionIdCounter++));
-            txn.setAccountId(testAccounts.get(1).getAccountId());
+            txn.setCard(testCards.get(1)); // Set Card relationship so getAccountId() works
             txn.setCardNumber(testCards.get(1).getCardNumber());
             txn.setTransactionTypeCode("CR");
             txn.setTransactionCategoryCode(4001);
@@ -418,7 +466,7 @@ public class TransactionAggregationJobTest {
         for (int i = 0; i < 8; i++) {
             Transaction txn = new Transaction();
             txn.setTransactionId(String.format("TXN%012d", transactionIdCounter++));
-            txn.setAccountId(testAccounts.get(1).getAccountId());
+            txn.setCard(testCards.get(1)); // Set Card relationship so getAccountId() works
             txn.setCardNumber(testCards.get(1).getCardNumber());
             txn.setTransactionTypeCode("PM");
             txn.setTransactionCategoryCode(6001);
@@ -433,7 +481,7 @@ public class TransactionAggregationJobTest {
         for (int i = 0; i < 6; i++) {
             Transaction txn = new Transaction();
             txn.setTransactionId(String.format("TXN%012d", transactionIdCounter++));
-            txn.setAccountId(testAccounts.get(2).getAccountId());
+            txn.setCard(testCards.get(2)); // Set Card relationship so getAccountId() works
             txn.setCardNumber(testCards.get(2).getCardNumber());
             txn.setTransactionTypeCode("DB");
             txn.setTransactionCategoryCode(2001);
@@ -448,7 +496,7 @@ public class TransactionAggregationJobTest {
         for (int i = 0; i < 5; i++) {
             Transaction txn = new Transaction();
             txn.setTransactionId(String.format("TXN%012d", transactionIdCounter++));
-            txn.setAccountId(testAccounts.get(2).getAccountId());
+            txn.setCard(testCards.get(2)); // Set Card relationship so getAccountId() works
             txn.setCardNumber(testCards.get(2).getCardNumber());
             txn.setTransactionTypeCode("CR");
             txn.setTransactionCategoryCode(3001);
@@ -463,7 +511,7 @@ public class TransactionAggregationJobTest {
         for (int i = 0; i < 5; i++) {
             Transaction txn = new Transaction();
             txn.setTransactionId(String.format("TXN%012d", transactionIdCounter++));
-            txn.setAccountId(testAccounts.get(2).getAccountId());
+            txn.setCard(testCards.get(2)); // Set Card relationship so getAccountId() works
             txn.setCardNumber(testCards.get(2).getCardNumber());
             txn.setTransactionTypeCode("PM");
             txn.setTransactionCategoryCode(5001);
@@ -507,6 +555,10 @@ public class TransactionAggregationJobTest {
         
         if (testAccounts != null && !testAccounts.isEmpty()) {
             accountRepository.deleteAll(testAccounts);
+        }
+        
+        if (testCustomers != null && !testCustomers.isEmpty()) {
+            customerRepository.deleteAll(testCustomers);
         }
         
         if (testTransactionCategories != null && !testTransactionCategories.isEmpty()) {
@@ -610,9 +662,9 @@ public class TransactionAggregationJobTest {
         Assertions.assertEquals(BatchStatus.COMPLETED, jobExecution.getStatus());
         
         StepExecution stepExecution = jobExecution.getStepExecutions().iterator().next();
-        int readCount = stepExecution.getReadCount();
-        int writeCount = stepExecution.getWriteCount();
-        int commitCount = stepExecution.getCommitCount();
+        long readCount = stepExecution.getReadCount();
+        long writeCount = stepExecution.getWriteCount();
+        long commitCount = stepExecution.getCommitCount();
 
         // Verify chunk processing - commits should occur at chunk boundaries
         Assertions.assertTrue(commitCount >= 1, "At least one commit should occur");
@@ -733,9 +785,19 @@ public class TransactionAggregationJobTest {
         List<TransactionAggregate> aggregates = transactionAggregateRepository.findAll();
         
         for (TransactionAggregate aggregate : aggregates) {
-            // Calculate expected sum from original transactions
-            List<Transaction> matchingTransactions = testTransactions.stream()
-                    .filter(t -> t.getAccountId().equals(aggregate.getAccountId())
+            // Calculate expected sum from original transactions by querying database
+            // Use aggregate's accountId to find matching card numbers
+            List<Card> matchingCards = cardRepository.findAll().stream()
+                    .filter(c -> c.getAccountId().equals(aggregate.getAccountId()))
+                    .collect(Collectors.toList());
+            
+            List<String> cardNumbers = matchingCards.stream()
+                    .map(Card::getCardNumber)
+                    .collect(Collectors.toList());
+            
+            // Find all transactions for these cards with matching type and category
+            List<Transaction> matchingTransactions = transactionRepository.findAll().stream()
+                    .filter(t -> cardNumbers.contains(t.getCardNumber())
                             && t.getTransactionTypeCode().equals(aggregate.getTransactionTypeCode())
                             && t.getTransactionCategoryCode().equals(aggregate.getTransactionCategoryCode()))
                     .collect(Collectors.toList());
@@ -1010,17 +1072,27 @@ public class TransactionAggregationJobTest {
      */
     @Test
     public void testTransactionAggregationJob_DataIntegrity() throws Exception {
-        // Arrange: Calculate expected aggregates before job execution
+        // Arrange: Calculate expected aggregates from test transactions before job execution
+        // Build a map of cardNumber -> accountId to avoid lazy loading issues
+        Map<String, Long> cardToAccountMap = new java.util.HashMap<>();
+        for (Card card : testCards) {
+            cardToAccountMap.put(card.getCardNumber(), card.getAccountId());
+        }
+        
+        // Calculate expected aggregates using the map
         Map<String, BigDecimal> expectedAggregates = new java.util.HashMap<>();
         Map<String, Integer> expectedCounts = new java.util.HashMap<>();
         
         for (Transaction txn : testTransactions) {
-            String key = txn.getAccountId() + "|" + txn.getTransactionTypeCode() + "|" 
-                    + txn.getTransactionCategoryCode();
-            
-            expectedAggregates.merge(key, txn.getTransactionAmount(), 
-                    (a, b) -> a.add(b).setScale(2, RoundingMode.HALF_UP));
-            expectedCounts.merge(key, 1, Integer::sum);
+            Long accountId = cardToAccountMap.get(txn.getCardNumber());
+            if (accountId != null) {
+                String key = accountId + "|" + txn.getTransactionTypeCode() + "|" 
+                        + txn.getTransactionCategoryCode();
+                
+                expectedAggregates.merge(key, txn.getTransactionAmount(), 
+                        (a, b) -> a.add(b).setScale(2, RoundingMode.HALF_UP));
+                expectedCounts.merge(key, 1, Integer::sum);
+            }
         }
 
         // Act: Execute job
@@ -1139,7 +1211,7 @@ public class TransactionAggregationJobTest {
         
         // Calculate processing rate
         StepExecution stepExecution = jobExecution.getStepExecutions().iterator().next();
-        int transactionsProcessed = stepExecution.getReadCount();
+        long transactionsProcessed = stepExecution.getReadCount();
         double executionTimeSec = executionTimeMs / 1000.0;
         double transactionsPerSecond = transactionsProcessed / executionTimeSec;
         

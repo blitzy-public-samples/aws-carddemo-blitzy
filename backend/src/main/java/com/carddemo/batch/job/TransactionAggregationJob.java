@@ -42,9 +42,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.dao.TransientDataAccessException;
@@ -491,7 +493,7 @@ public class TransactionAggregationJob {
      *         tolerance and restart capability.
      */
     @Bean(name = "transactionAggregationStep")
-    public Step transactionAggregationStep() {
+    public Step transactionAggregationStep(TransactionGroupReader transactionGroupReader) {
         
         logger.info("Configuring transactionAggregationStep with chunk size: {}", DEFAULT_CHUNK_SIZE);
         logger.info("Fault tolerance: skip limit={}, retry limit={}", SKIP_LIMIT, RETRY_LIMIT);
@@ -502,7 +504,7 @@ public class TransactionAggregationJob {
         
         return new StepBuilder("transactionAggregationStep", jobRepository)
                 .<TransactionGroupReader.TransactionGroup, TransactionAggregate>chunk(DEFAULT_CHUNK_SIZE, transactionManager)
-                .reader(transactionGroupReader())
+                .reader(transactionGroupReader)
                 .processor(transactionAggregationProcessor)
                 .writer(transactionAggregateWriter)
                 .faultTolerant()
@@ -565,23 +567,31 @@ public class TransactionAggregationJob {
      * @param dataSource JDBC DataSource for database connectivity. Configured with HikariCP
      *                   connection pooling for optimal performance. Injected by Spring Boot
      *                   auto-configuration from application.yml database settings.
+     * @param startDateStr job parameter for aggregation start date (format: yyyy-MM-dd)
+     * @param endDateStr job parameter for aggregation end date (format: yyyy-MM-dd)
      * @return Configured TransactionGroupReader instance ready for use in
      *         transactionAggregationStep. Reader supports restart capability via ExecutionContext
      *         and efficient SQL GROUP BY aggregation for transaction processing.
      */
     @Bean
-    public TransactionGroupReader transactionGroupReader() {
+    @StepScope
+    public TransactionGroupReader transactionGroupReader(
+            @Value("#{jobParameters['start.date']}") String startDateStr,
+            @Value("#{jobParameters['end.date']}") String endDateStr) {
         logger.info("Creating TransactionGroupReader bean with SQL GROUP BY aggregation");
-        logger.info("Default date range: Previous day (incremental mode)");
+        logger.info("Job parameters: start.date={}, end.date={}", startDateStr, endDateStr);
         logger.info("Supports restart via ExecutionContext position tracking");
         
         TransactionGroupReader reader = new TransactionGroupReader(dataSource);
         
-        // Default to previous day for incremental processing
-        // Job parameters can override these values at runtime
-        reader.setStartDate(LocalDate.now().minusDays(1));
-        reader.setEndDate(LocalDate.now());
+        // Use job parameters for date range, with fallback to previous day
+        LocalDate startDate = (startDateStr != null) ? LocalDate.parse(startDateStr) : LocalDate.now().minusDays(1);
+        LocalDate endDate = (endDateStr != null) ? LocalDate.parse(endDateStr) : LocalDate.now();
         
+        reader.setStartDate(startDate);
+        reader.setEndDate(endDate);
+        
+        logger.info("TransactionGroupReader configured with date range: {} to {}", startDate, endDate);
         logger.debug("TransactionGroupReader configured successfully");
         return reader;
     }

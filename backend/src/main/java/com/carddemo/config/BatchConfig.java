@@ -216,6 +216,35 @@ public class BatchConfig {
     }
 
     /**
+     * JobLauncher Bean - Synchronous job launcher for test execution.
+     * 
+     * Provides synchronous job execution for Spring Batch tests to ensure
+     * JobExecution is fully completed before assertions are evaluated.
+     * 
+     * Configuration:
+     * - Task executor: null (synchronous execution on calling thread)
+     * - Job repository: Database-backed repository for execution tracking
+     * 
+     * @param jobRepository JobRepository for tracking job execution
+     * @return JobLauncher configured for synchronous execution in tests
+     * @throws Exception if JobLauncher initialization fails
+     */
+    @Bean("jobLauncher")
+    @Profile("test")
+    public JobLauncher testJobLauncher(JobRepository jobRepository) throws Exception {
+        TaskExecutorJobLauncher jobLauncher = new TaskExecutorJobLauncher();
+        jobLauncher.setJobRepository(jobRepository);
+        
+        // No task executor means synchronous execution on calling thread
+        // This ensures JobExecution is complete when launchJob() returns
+        // jobLauncher.setTaskExecutor(null); // null is default, so commented out
+        
+        jobLauncher.afterPropertiesSet();
+        
+        return jobLauncher;
+    }
+
+    /**
      * Batch Task Executor - Thread pool for parallel batch step execution.
      * 
      * Provides concurrent execution capability for batch job steps.
