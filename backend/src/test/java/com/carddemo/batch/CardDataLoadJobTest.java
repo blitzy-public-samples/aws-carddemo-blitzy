@@ -1,5 +1,6 @@
 package com.carddemo.batch;
 
+import com.carddemo.config.TestBatchConfig;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
 import com.carddemo.entity.Customer;
@@ -19,13 +20,16 @@ import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.JobRepositoryTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -99,12 +103,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see <a href="Section 0.6">JCL to Spring Batch Transformation Plan</a>
  * @see <a href="Section 0.9">Business Logic Preservation Requirements</a>
  */
-@SpringBootTest
+@SpringBootTest(
+    classes = {com.carddemo.CardDemoApplication.class, TestBatchConfig.class},
+    properties = {
+        "spring.jpa.hibernate.ddl-auto=create-drop",
+        "spring.jpa.generate-ddl=true",
+        "spring.flyway.enabled=false",
+        "spring.jpa.properties.hibernate.hbm2ddl.auto=create-drop",
+        "spring.main.allow-bean-definition-overriding=true"
+    }
+)
 @SpringBatchTest
-@TestPropertySource(properties = {
-    "spring.batch.job.enabled=false",
-    "spring.jpa.show-sql=false"
-})
+@ActiveProfiles("test")
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.ANY)
 public class CardDataLoadJobTest {
 
     /**
@@ -113,6 +124,15 @@ public class CardDataLoadJobTest {
      */
     @Autowired
     private JobLauncherTestUtils jobLauncherTestUtils;
+
+    /**
+     * The Card Data Load Job bean to be tested.
+     * Qualified with specific bean name to ensure correct job is configured in JobLauncherTestUtils
+     * when multiple batch jobs exist in the application context.
+     */
+    @Autowired
+    @Qualifier("cardDataLoadJobBean")
+    private Job cardDataLoadJob;
 
     /**
      * JobRepositoryTestUtils manages job repository state during testing.
@@ -166,6 +186,9 @@ public class CardDataLoadJobTest {
      */
     @BeforeEach
     public void setUp() {
+        // Configure JobLauncherTestUtils with the card data load job
+        jobLauncherTestUtils.setJob(cardDataLoadJob);
+
         // Initialize test data collections
         testCustomers = new ArrayList<>();
         testAccounts = new ArrayList<>();
@@ -177,18 +200,18 @@ public class CardDataLoadJobTest {
         customer1.setFirstName("John");
         customer1.setLastName("Smith");
         customer1.setMiddleName("A");
-        customer1.setAddress1("123 Main Street");
-        customer1.setAddress2("Apt 4B");
-        customer1.setCity("Springfield");
-        customer1.setState("IL");
+        customer1.setAddressLine1("123 Main Street");
+        customer1.setAddressLine2("Apt 4B");
+        customer1.setAddressLine3("Springfield");
+        customer1.setStateCode("IL");
         customer1.setZipCode("62701");
         customer1.setCountryCode("US");
         customer1.setPhoneNumber1("217-555-0101");
         customer1.setPhoneNumber2("217-555-0102");
-        customer1.setGovtId("123-45-6789");
-        customer1.setGovtIdType("SSN");
+        customer1.setSsn("123456789");
+        customer1.setGovernmentIssuedId("IL-DL-12345678");
         customer1.setDateOfBirth(LocalDate.of(1980, 5, 15));
-        customer1.setFicoScore(750);
+        customer1.setFicoCreditScore(750);
         testCustomers.add(customer1);
 
         Customer customer2 = new Customer();
@@ -196,18 +219,18 @@ public class CardDataLoadJobTest {
         customer2.setFirstName("Jane");
         customer2.setLastName("Doe");
         customer2.setMiddleName("B");
-        customer2.setAddress1("456 Oak Avenue");
-        customer2.setAddress2("");
-        customer2.setCity("Chicago");
-        customer2.setState("IL");
+        customer2.setAddressLine1("456 Oak Avenue");
+        customer2.setAddressLine2("");
+        customer2.setAddressLine3("Chicago");
+        customer2.setStateCode("IL");
         customer2.setZipCode("60601");
         customer2.setCountryCode("US");
         customer2.setPhoneNumber1("312-555-0201");
         customer2.setPhoneNumber2("312-555-0202");
-        customer2.setGovtId("987-65-4321");
-        customer2.setGovtIdType("SSN");
+        customer2.setSsn("987654321");
+        customer2.setGovernmentIssuedId("IL-DL-98765432");
         customer2.setDateOfBirth(LocalDate.of(1975, 8, 22));
-        customer2.setFicoScore(720);
+        customer2.setFicoCreditScore(720);
         testCustomers.add(customer2);
 
         // Persist test customers
@@ -216,7 +239,7 @@ public class CardDataLoadJobTest {
         // Create test accounts with customer FK references and COMP-3 precision
         Account account1 = new Account();
         account1.setAccountId(10000000001L);
-        account1.setCustomerId(customer1.getCustomerId());
+        account1.setCustomer(customer1);
         account1.setActiveStatus("Y");
         account1.setCurrentBalance(new BigDecimal("2500.00").setScale(2, RoundingMode.HALF_UP));
         account1.setCreditLimit(new BigDecimal("10000.00").setScale(2, RoundingMode.HALF_UP));
@@ -231,7 +254,7 @@ public class CardDataLoadJobTest {
 
         Account account2 = new Account();
         account2.setAccountId(10000000002L);
-        account2.setCustomerId(customer2.getCustomerId());
+        account2.setCustomer(customer2);
         account2.setActiveStatus("Y");
         account2.setCurrentBalance(new BigDecimal("1250.50").setScale(2, RoundingMode.HALF_UP));
         account2.setCreditLimit(new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP));
@@ -776,8 +799,8 @@ public class CardDataLoadJobTest {
 
         // Calculate duration using job execution times
         Duration duration = Duration.between(
-            jobExecution.getStartTime().toInstant(),
-            jobExecution.getEndTime().toInstant()
+            jobExecution.getStartTime().atOffset(ZoneOffset.UTC).toInstant(),
+            jobExecution.getEndTime().atOffset(ZoneOffset.UTC).toInstant()
         );
         
         // Validate execution within 4-hour window (14,400 seconds = 4 hours)
