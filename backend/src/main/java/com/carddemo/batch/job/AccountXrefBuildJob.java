@@ -247,15 +247,16 @@ public class AccountXrefBuildJob {
      *   <li>Job status (COMPLETED, FAILED, STOPPED)</li>
      * </ul>
      * 
+     * @param accountXrefBuildStep the accountXrefBuildStep bean injected by Spring
      * @return Configured Job bean ready for execution
      */
     @Bean(name = JOB_BEAN_NAME)
-    public Job accountXrefBuildJob() {
+    public Job accountXrefBuildJob(Step accountXrefBuildStep) {
         
         logger.info("Configuring AccountXrefBuildJob (COBOL program CBACT02C transformation)");
         
         return new JobBuilder("accountXrefBuildJob", jobRepository)
-                .start(accountXrefBuildStep())
+                .start(accountXrefBuildStep)
                 .listener(new JobExecutionListener() {
                     @Override
                     public void beforeJob(JobExecution jobExecution) {

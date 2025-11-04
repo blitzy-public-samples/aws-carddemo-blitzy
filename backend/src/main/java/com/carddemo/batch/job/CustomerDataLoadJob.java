@@ -269,17 +269,18 @@ public class CustomerDataLoadJob {
      *   <li>Equivalent to COBOL batch checkpoint/restart mechanism</li>
      * </ul>
      * 
+     * @param customerDataLoadStep the customerDataLoadStep bean injected by Spring
      * @return Job instance configured for customer data loading
      * @see JobBuilder
      * @see JobRepository
      * @see <a href="Section 0.5">Batch Job Configuration</a>
      */
     @Bean(name = JOB_BEAN_NAME)
-    public Job customerDataLoadJobBean() {
+    public Job customerDataLoadJobBean(Step customerDataLoadStep) {
         logger.info("Building {} - Customer data load batch job", JOB_NAME);
         
         return new JobBuilder(JOB_NAME, jobRepository)
-                .start(customerDataLoadStep())
+                .start(customerDataLoadStep)
                 .listener(new CustomerDataLoadJobExecutionListener())
                 .build();
     }

@@ -377,15 +377,16 @@ public class AccountDataLoadJob {
      *   <li>Complete remaining chunks and mark job as COMPLETED</li>
      * </ul>
      * 
+     * @param accountDataLoadStep the accountDataLoadStep bean injected by Spring
      * @return Job configured with account data load step and restart capability
      */
     @Bean(name = JOB_BEAN_NAME)
-    public Job accountDataLoadJob() {
+    public Job accountDataLoadJob(Step accountDataLoadStep) {
         
         logger.info("Configuring accountDataLoadJob - COBOL program CBACT01C.cbl equivalent");
         
         return new JobBuilder("accountDataLoadJob", jobRepository)
-                .start(accountDataLoadStep())
+                .start(accountDataLoadStep)
                 .build();
     }
 

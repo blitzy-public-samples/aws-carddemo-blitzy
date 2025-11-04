@@ -184,17 +184,18 @@ public class CardDataLoadJob {
      *   <li>Equivalent to COBOL batch checkpoint/restart mechanism</li>
      * </ul>
      * 
+     * @param cardDataLoadStep the cardDataLoadStep bean injected by Spring
      * @return Job instance configured for card data loading
      * @see JobBuilder
      * @see JobRepository
      * @see <a href="Section 0.5">Batch Job Configuration</a>
      */
     @Bean(name = JOB_BEAN_NAME)
-    public Job cardDataLoadJobBean() {
+    public Job cardDataLoadJobBean(Step cardDataLoadStep) {
         logger.info("Building {} - Card data load batch job", JOB_NAME);
         
         return new JobBuilder(JOB_NAME, jobRepository)
-                .start(cardDataLoadStep())
+                .start(cardDataLoadStep)
                 .listener(new CardDataLoadJobExecutionListener())
                 .build();
     }
