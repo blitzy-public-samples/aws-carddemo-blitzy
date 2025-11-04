@@ -118,8 +118,12 @@ public class AccountCreationService {
      *   <li>Validates initial credit limit against business rules (minimum, maximum thresholds)</li>
      *   <li>Creates Account entity with initial balance zero, credit limit, open date, status ACTIVE</li>
      *   <li>Creates AccountXref cross-reference record linking account to customer</li>
-     *   <li>Creates initial transaction record for account opening</li>
      * </ol>
+     * 
+     * <p><strong>Note on Initial Transaction:</strong> An initial transaction record for account opening
+     * is NOT created during account creation because the Transaction entity requires a card_number
+     * (non-nullable field), and accounts are created before any cards are issued. The first transaction
+     * will be created when the first card is issued for this account.</p>
      * 
      * <p><strong>COBOL Mapping:</strong></p>
      * <pre>
@@ -179,7 +183,7 @@ public class AccountCreationService {
             
             // Step 4: Calculate cash credit limit (typically 30% of credit limit)
             BigDecimal cashCreditLimit = calculateCashCreditLimit(
-                request.getCashCreditLimit(), 
+                request.getCashLimit(), 
                 creditLimit
             );
             logger.debug("Cash credit limit calculated: {}", cashCreditLimit);
@@ -188,7 +192,7 @@ public class AccountCreationService {
             // Maps to COBOL: INITIALIZE ACCOUNT-RECORD
             Account account = createAccountEntity(
                 accountNumber,
-                request.getCustomerId(),
+                customer,
                 creditLimit,
                 cashCreditLimit,
                 request.getOpenDate(),
@@ -210,15 +214,12 @@ public class AccountCreationService {
             logger.info("AccountXref record created for customer {} and account {}", 
                 request.getCustomerId(), savedAccount.getAccountId());
             
-            // Step 8: Create initial transaction record for account opening
-            // Maps to COBOL: EXEC CICS WRITE DATASET('TRANSACT') FROM(TRANSACTION-RECORD) END-EXEC
-            Transaction initialTransaction = createInitialTransaction(savedAccount);
-            transactionRepository.save(initialTransaction);
-            logger.info("Initial transaction record created for account opening: {}", 
-                savedAccount.getAccountId());
-            
-            // Step 9: All operations successful - return created account
+            // Step 8: All operations successful - return created account
             // Transaction will auto-commit at method exit (CICS SYNCPOINT equivalent)
+            // Note: Initial transaction record for account opening is NOT created here because
+            // Transaction entity requires a card_number (nullable=false), and accounts are created
+            // before cards are issued. The first transaction will be created when the first card
+            // is issued for this account.
             logger.info("Account creation completed successfully for customer {} - Account ID: {}", 
                 request.getCustomerId(), savedAccount.getAccountId());
             
@@ -328,31 +329,44 @@ public class AccountCreationService {
         logger.debug("Generating unique account number");
         
         // Generate account number using timestamp + random component
-        // Format: YYMMDDHHMMS where S is a random digit
-        // This ensures uniqueness for accounts created in different seconds
+        // Format: YMDDHHMMSS where Y is last digit of year, S is random digit
+        // This ensures 11-digit format matching COBOL PIC 9(11) requirement
         LocalDateTime now = LocalDateTime.now();
         
-        long baseNumber = (now.getYear() % 100) * 100000000L  // YY * 10^8
-                        + now.getMonthValue() * 1000000L       // MM * 10^6
-                        + now.getDayOfMonth() * 10000L         // DD * 10^4
-                        + now.getHour() * 100L                 // HH * 10^2
-                        + now.getMinute();                      // MM
+        // Use only last digit of year to keep within 11 digits
+        long baseNumber = (now.getYear() % 10) * 1000000000L  // Y * 10^9
+                        + now.getMonthValue() * 10000000L      // MM * 10^7
+                        + now.getDayOfMonth() * 100000L        // DD * 10^5
+                        + now.getHour() * 1000L                // HH * 10^3
+                        + now.getMinute() * 10L;               // MM * 10
         
-        // Add random component (0-99) for uniqueness within same minute
-        long randomComponent = (long) (Math.random() * 100);
-        long accountNumber = baseNumber * 100 + randomComponent;
+        // Add random component (0-9) for uniqueness within same minute
+        long randomComponent = (long) (Math.random() * 10);
+        long accountNumber = baseNumber + randomComponent;
         
         // Ensure it's an 11-digit number (pad if necessary)
+        // 11 digits: range from 10000000000 to 99999999999
         while (accountNumber < 10000000000L) {
-            accountNumber *= 10;
+            accountNumber = accountNumber * 10 + (long) (Math.random() * 10);
+        }
+        
+        // Ensure it doesn't exceed 11 digits
+        if (accountNumber > 99999999999L) {
+            // Scale down to 11 digits by taking modulo
+            accountNumber = 10000000000L + (accountNumber % 90000000000L);
         }
         
         // Verify uniqueness by checking database (defensive programming)
         int retryCount = 0;
         while (accountRepository.findById(accountNumber).isPresent() && retryCount < 10) {
             logger.warn("Account number collision detected: {}. Regenerating...", accountNumber);
-            randomComponent = (long) (Math.random() * 100);
-            accountNumber = baseNumber * 100 + randomComponent;
+            randomComponent = (long) (Math.random() * 10);
+            accountNumber = baseNumber + randomComponent;
+            
+            // Ensure still within 11-digit range after retry
+            if (accountNumber > 99999999999L) {
+                accountNumber = 10000000000L + (accountNumber % 90000000000L);
+            }
             retryCount++;
         }
         
@@ -522,7 +536,7 @@ public class AccountCreationService {
      * </pre>
      * 
      * @param accountNumber Generated unique account number
-     * @param customerId Customer ID for foreign key relationship
+     * @param customer Customer entity for foreign key relationship
      * @param creditLimit Validated credit limit
      * @param cashCreditLimit Calculated cash credit limit
      * @param openDate Account opening date (null defaults to current date)
@@ -531,7 +545,7 @@ public class AccountCreationService {
      */
     private Account createAccountEntity(
             Long accountNumber,
-            Long customerId,
+            Customer customer,
             BigDecimal creditLimit,
             BigDecimal cashCreditLimit,
             LocalDate openDate,
@@ -544,9 +558,9 @@ public class AccountCreationService {
         // Set account ID (primary key)
         account.setAccountId(accountNumber);
         
-        // Set customer ID (foreign key) - this was missing the setter call
-        // Based on the dependencies, Account should have a customerId field
-        account.setCustomerId(customerId);
+        // Set customer entity (foreign key relationship)
+        // Account has a @ManyToOne relationship with Customer via @JoinColumn(name = "customer_id")
+        account.setCustomer(customer);
         
         // Initialize balance to zero for new account
         // Maps to COBOL: MOVE ZEROS TO ACCT-CURR-BAL
@@ -575,7 +589,7 @@ public class AccountCreationService {
         
         logger.debug("Account entity created: AccountId={}, CustomerId={}, CreditLimit={}, Status={}", 
             account.getAccountId(), 
-            customerId,
+            customer.getCustomerId(),
             account.getCreditLimit(), 
             account.getActiveStatus());
         
@@ -608,9 +622,10 @@ public class AccountCreationService {
         
         AccountXref accountXref = new AccountXref();
         
-        // Set customer and account IDs for cross-reference
-        accountXref.setCustomerId(customerId);
-        accountXref.setAccountId(accountId);
+        // Set composite primary key with customer and account IDs
+        // AccountXref uses @EmbeddedId with AccountXrefId composite key
+        AccountXref.AccountXrefId xrefId = new AccountXref.AccountXrefId(customerId, accountId);
+        accountXref.setId(xrefId);
         
         // Set creation timestamp for audit trail
         accountXref.setCreatedDate(LocalDateTime.now());
@@ -657,8 +672,9 @@ public class AccountCreationService {
         
         Transaction transaction = new Transaction();
         
-        // Link transaction to account
-        transaction.setAccountId(account.getAccountId());
+        // NOTE: Transaction.setAccountId() is deprecated and is a no-op
+        // Account ID is accessed via Transaction -> Card -> Account relationship chain
+        // This transaction is incomplete without a card_number which is required (non-nullable)
         
         // Set transaction type code for account opening
         // Maps to COBOL: MOVE '01' TO TRAN-TYPE-CD
