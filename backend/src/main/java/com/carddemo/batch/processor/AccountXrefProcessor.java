@@ -6,7 +6,9 @@
 package com.carddemo.batch.processor;
 
 import com.carddemo.entity.Account;
+import com.carddemo.entity.AccountXref;
 import com.carddemo.entity.Card;
+import com.carddemo.entity.CardXref;
 import com.carddemo.entity.Customer;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.stereotype.Component;
@@ -141,16 +143,16 @@ public class AccountXrefProcessor implements ItemProcessor<Card, AccountXrefProc
         Long accountId = account.getAccountId();
         String cardNumber = card.getCardNumber();
         
-        // Create AccountXref entry (customer-to-account mapping)
+        // Create AccountXref entry (customer-to-account mapping) with composite key
+        AccountXref.AccountXrefId accountXrefId = new AccountXref.AccountXrefId(customerId, accountId);
         AccountXref accountXref = new AccountXref();
-        accountXref.setCustomerId(customerId);
-        accountXref.setAccountId(accountId);
+        accountXref.setId(accountXrefId);
+        accountXref.setCreatedDate(java.time.LocalDateTime.now());
         
-        // Create CardXref entry (card-to-account-to-customer mapping)
+        // Create CardXref entry (card-to-account-to-customer mapping) with composite key
+        CardXref.CardXrefId cardXrefId = new CardXref.CardXrefId(cardNumber, customerId, accountId);
         CardXref cardXref = new CardXref();
-        cardXref.setCardNumber(cardNumber);
-        cardXref.setCustomerId(customerId);
-        cardXref.setAccountId(accountId);
+        cardXref.setId(cardXrefId);
         
         logger.debug("Created cross-reference entries for card {} -> account {} -> customer {}",
             maskCardNumber(cardNumber), accountId, customerId);
@@ -233,143 +235,7 @@ public class AccountXrefProcessor implements ItemProcessor<Card, AccountXrefProc
         }
     }
     
-    /**
-     * AccountXref entity representing customer-to-account cross-reference relationship.
-     * 
-     * <p>Replaces VSAM XREF alternate index file with explicit PostgreSQL table entry.
-     * This entity establishes the normalized relationship between customers and their accounts,
-     * enabling efficient lookup of accounts by customer ID.</p>
-     * 
-     * <p><strong>VSAM Source:</strong> XREF alternate index on ACCTDAT</p>
-     * <p><strong>PostgreSQL Target:</strong> account_xref table with composite key (customerId, accountId)</p>
-     */
-    public static class AccountXref {
-        private Long customerId;
-        private Long accountId;
-        
-        /**
-         * Default constructor.
-         */
-        public AccountXref() {
-        }
-        
-        /**
-         * Constructor with customer and account identifiers.
-         * 
-         * @param customerId Customer unique identifier (9-digit)
-         * @param accountId Account unique identifier (11-digit)
-         */
-        public AccountXref(Long customerId, Long accountId) {
-            this.customerId = customerId;
-            this.accountId = accountId;
-        }
-        
-        public Long getCustomerId() {
-            return customerId;
-        }
-        
-        public void setCustomerId(Long customerId) {
-            this.customerId = customerId;
-        }
-        
-        public Long getAccountId() {
-            return accountId;
-        }
-        
-        public void setAccountId(Long accountId) {
-            this.accountId = accountId;
-        }
-        
-        @Override
-        public String toString() {
-            return "AccountXref{" +
-                    "customerId=" + customerId +
-                    ", accountId=" + accountId +
-                    '}';
-        }
-    }
-    
-    /**
-     * CardXref entity representing card-to-account-to-customer cross-reference relationship.
-     * 
-     * <p>Replaces VSAM CXACAIX alternate index file with explicit PostgreSQL table entry.
-     * This entity establishes the normalized relationship between cards, accounts, and customers,
-     * enabling efficient lookup of cards by account or customer.</p>
-     * 
-     * <p><strong>VSAM Source:</strong> CXACAIX alternate index on CARDDAT</p>
-     * <p><strong>PostgreSQL Target:</strong> card_xref table with composite key (cardNumber, customerId, accountId)</p>
-     */
-    public static class CardXref {
-        private String cardNumber;
-        private Long customerId;
-        private Long accountId;
-        
-        /**
-         * Default constructor.
-         */
-        public CardXref() {
-        }
-        
-        /**
-         * Constructor with card, customer, and account identifiers.
-         * 
-         * @param cardNumber 16-character credit card number
-         * @param customerId Customer unique identifier (9-digit)
-         * @param accountId Account unique identifier (11-digit)
-         */
-        public CardXref(String cardNumber, Long customerId, Long accountId) {
-            this.cardNumber = cardNumber;
-            this.customerId = customerId;
-            this.accountId = accountId;
-        }
-        
-        public String getCardNumber() {
-            return cardNumber;
-        }
-        
-        public void setCardNumber(String cardNumber) {
-            this.cardNumber = cardNumber;
-        }
-        
-        public Long getCustomerId() {
-            return customerId;
-        }
-        
-        public void setCustomerId(Long customerId) {
-            this.customerId = customerId;
-        }
-        
-        public Long getAccountId() {
-            return accountId;
-        }
-        
-        public void setAccountId(Long accountId) {
-            this.accountId = accountId;
-        }
-        
-        @Override
-        public String toString() {
-            return "CardXref{" +
-                    "cardNumber='" + maskCardNumberForLogging(cardNumber) + '\'' +
-                    ", customerId=" + customerId +
-                    ", accountId=" + accountId +
-                    '}';
-        }
-        
-        /**
-         * Masks card number in toString() for secure logging.
-         * 
-         * @param cardNumber Card number to mask
-         * @return Masked card number showing only last 4 digits
-         */
-        private String maskCardNumberForLogging(String cardNumber) {
-            if (cardNumber == null || cardNumber.length() < 4) {
-                return "****";
-            }
-            return "**** **** **** " + cardNumber.substring(cardNumber.length() - 4);
-        }
-    }
-    
+
     /**
      * Custom validation exception for cross-reference relationship validation failures.
      * 
