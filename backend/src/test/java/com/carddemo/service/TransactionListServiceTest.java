@@ -187,6 +187,10 @@ public class TransactionListServiceTest {
      * Sets up test fixtures before each test method execution.
      * Creates test account entity and configures default mock behavior
      * for account repository to simulate existing account scenario.
+     * 
+     * <p>Uses lenient stubbing to avoid UnnecessaryStubbingException in tests
+     * that don't use the account repository stub (e.g., card-based queries or
+     * validation failures that occur before account lookup).</p>
      */
     @BeforeEach
     public void setUp() {
@@ -195,7 +199,9 @@ public class TransactionListServiceTest {
         testAccount.setAccountId(TEST_ACCOUNT_ID_LONG);
         
         // Default mock: Account exists (DFHRESP(NORMAL) equivalent)
-        when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_LONG))
+        // Using lenient() to allow unused stubs in some tests
+        org.mockito.Mockito.lenient()
+            .when(accountRepository.findByAccountId(TEST_ACCOUNT_ID_LONG))
             .thenReturn(Optional.of(testAccount));
     }
 
