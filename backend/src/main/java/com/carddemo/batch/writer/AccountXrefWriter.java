@@ -5,6 +5,9 @@
 
 package com.carddemo.batch.writer;
 
+import com.carddemo.batch.processor.AccountXrefProcessor;
+import com.carddemo.entity.AccountXref;
+import com.carddemo.entity.CardXref;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.Chunk;
@@ -90,7 +93,7 @@ import java.util.List;
  * @see com.carddemo.entity.CardXref
  */
 @Component
-public class AccountXrefWriter implements ItemWriter<XrefEntry> {
+public class AccountXrefWriter implements ItemWriter<AccountXrefProcessor.XrefEntry> {
 
     private static final Logger logger = LoggerFactory.getLogger(AccountXrefWriter.class);
 
@@ -152,7 +155,7 @@ public class AccountXrefWriter implements ItemWriter<XrefEntry> {
         isolation = Isolation.READ_COMMITTED,
         rollbackFor = Exception.class
     )
-    public void write(Chunk<? extends XrefEntry> chunk) throws Exception {
+    public void write(Chunk<? extends AccountXrefProcessor.XrefEntry> chunk) throws Exception {
         long startTime = System.currentTimeMillis();
         
         if (chunk == null || chunk.isEmpty()) {
@@ -160,22 +163,22 @@ public class AccountXrefWriter implements ItemWriter<XrefEntry> {
             return;
         }
         
-        List<? extends XrefEntry> items = chunk.getItems();
+        List<? extends AccountXrefProcessor.XrefEntry> items = chunk.getItems();
         logger.info("Writing {} cross-reference entries to database", items.size());
         
-        List<Object> accountXrefs = new ArrayList<>();
-        List<Object> cardXrefs = new ArrayList<>();
+        List<AccountXref> accountXrefs = new ArrayList<>();
+        List<CardXref> cardXrefs = new ArrayList<>();
         
         // Extract cross-reference entities from wrapper objects
-        for (XrefEntry entry : items) {
+        for (AccountXrefProcessor.XrefEntry entry : items) {
             if (entry == null) {
                 logger.warn("Null XrefEntry encountered in chunk, skipping");
                 continue;
             }
             
             try {
-                Object accountXref = entry.getAccountXref();
-                Object cardXref = entry.getCardXref();
+                AccountXref accountXref = entry.getAccountXref();
+                CardXref cardXref = entry.getCardXref();
                 
                 if (accountXref != null) {
                     accountXrefs.add(accountXref);
@@ -197,7 +200,7 @@ public class AccountXrefWriter implements ItemWriter<XrefEntry> {
         if (!accountXrefs.isEmpty()) {
             try {
                 logger.debug("Persisting {} AccountXref entities", accountXrefs.size());
-                for (Object accountXref : accountXrefs) {
+                for (AccountXref accountXref : accountXrefs) {
                     entityManager.persist(accountXref);
                     totalPersisted++;
                 }
@@ -217,7 +220,7 @@ public class AccountXrefWriter implements ItemWriter<XrefEntry> {
         if (!cardXrefs.isEmpty()) {
             try {
                 logger.debug("Persisting {} CardXref entities", cardXrefs.size());
-                for (Object cardXref : cardXrefs) {
+                for (CardXref cardXref : cardXrefs) {
                     entityManager.persist(cardXref);
                     totalPersisted++;
                 }
@@ -244,73 +247,5 @@ public class AccountXrefWriter implements ItemWriter<XrefEntry> {
         long duration = System.currentTimeMillis() - startTime;
         logger.info("Completed writing {} cross-reference entries in {} ms (AccountXref: {}, CardXref: {})",
             totalPersisted, duration, accountXrefs.size(), cardXrefs.size());
-    }
-}
-
-/**
- * Data Transfer Object encapsulating both AccountXref and CardXref entities for batch processing.
- * 
- * <p>This wrapper class allows the ItemProcessor to return both cross-reference entities
- * in a single object, which the AccountXrefWriter can then decompose and persist separately.
- * This design maintains clean separation of concerns while enabling efficient batch processing
- * of related entities.</p>
- * 
- * <p><b>Usage Pattern:</b></p>
- * <pre>
- * {@code
- * // In ItemProcessor
- * public XrefEntry process(CardRecord cardRecord) {
- *     AccountXref accountXref = buildAccountXref(cardRecord);
- *     CardXref cardXref = buildCardXref(cardRecord);
- *     return new XrefEntry(accountXref, cardXref);
- * }
- * 
- * // In ItemWriter
- * for (XrefEntry entry : items) {
- *     accountXrefs.add(entry.getAccountXref());
- *     cardXrefs.add(entry.getCardXref());
- * }
- * }
- * </pre>
- * 
- * <p><b>Design Rationale:</b></p>
- * <ul>
- *   <li>Maintains type safety for ItemWriter generic parameter</li>
- *   <li>Allows processor to create both cross-references in single pass</li>
- *   <li>Enables atomic persistence of related entities</li>
- *   <li>Simplifies error handling with consistent wrapper type</li>
- * </ul>
- */
-class XrefEntry {
-    private final Object accountXref;
-    private final Object cardXref;
-    
-    /**
-     * Constructs a new XrefEntry with both cross-reference entities.
-     * 
-     * @param accountXref the AccountXref entity (account-to-card mapping)
-     * @param cardXref the CardXref entity (card-to-account-to-customer mapping)
-     */
-    public XrefEntry(Object accountXref, Object cardXref) {
-        this.accountXref = accountXref;
-        this.cardXref = cardXref;
-    }
-    
-    /**
-     * Returns the AccountXref entity.
-     * 
-     * @return AccountXref entity for account-to-card cross-reference
-     */
-    public Object getAccountXref() {
-        return accountXref;
-    }
-    
-    /**
-     * Returns the CardXref entity.
-     * 
-     * @return CardXref entity for card-to-account-to-customer cross-reference
-     */
-    public Object getCardXref() {
-        return cardXref;
     }
 }
