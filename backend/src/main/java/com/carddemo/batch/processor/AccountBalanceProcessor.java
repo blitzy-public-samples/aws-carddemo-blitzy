@@ -128,7 +128,8 @@ public class AccountBalanceProcessor implements ItemProcessor<Account, AccountBa
             logger.debug("Account {} opening balance: {}", accountId, openingBalance);
 
             // Step 2: Query all transactions for this account
-            List<Transaction> transactions = transactionRepository.findByAccountId(accountId);
+            // Convert Long accountId to String for TransactionRepository query
+            List<Transaction> transactions = transactionRepository.findByAccountId(String.valueOf(accountId));
 
             if (transactions == null || transactions.isEmpty()) {
                 logger.info("No transactions found for account {}, skipping balance calculation", accountId);
