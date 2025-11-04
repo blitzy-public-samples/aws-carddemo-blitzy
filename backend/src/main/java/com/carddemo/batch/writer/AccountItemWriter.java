@@ -15,8 +15,6 @@ import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Isolation;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -329,10 +327,6 @@ public class AccountItemWriter implements ItemWriter<Account> {
      * @see Account#getCurrentBalance()
      */
     @Override
-    @Transactional(
-        isolation = Isolation.READ_COMMITTED,
-        rollbackFor = Exception.class
-    )
     public void write(Chunk<? extends Account> chunk) throws Exception {
         if (chunk == null || chunk.isEmpty()) {
             logger.warn("Received null or empty chunk, skipping write operation");
