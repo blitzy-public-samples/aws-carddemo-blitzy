@@ -5,6 +5,7 @@ import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStream;
 import org.springframework.batch.item.ItemStreamException;
@@ -13,6 +14,7 @@ import org.springframework.batch.item.file.FlatFileItemWriter;
 import org.springframework.batch.item.file.transform.LineAggregator;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.core.io.Resource;
+import org.springframework.core.io.WritableResource;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -114,7 +116,7 @@ public class StatementItemWriter implements ItemWriter<StatementItemWriter.State
     private static final String LINE_SEPARATOR = System.lineSeparator();
     
     // Output file resources
-    private Resource textFileResource;
+    private WritableResource textFileResource;
     private Resource htmlFileResource;
     
     // Plain-text writer using Spring Batch FlatFileItemWriter
@@ -173,9 +175,9 @@ public class StatementItemWriter implements ItemWriter<StatementItemWriter.State
      * Sets the output resource for plain-text statement file.
      * Path should be configurable via application properties with date-based naming.
      * 
-     * @param textFileResource Resource pointing to plain-text output file (STMT-YYYYMM.txt)
+     * @param textFileResource WritableResource pointing to plain-text output file (STMT-YYYYMM.txt)
      */
-    public void setTextFileResource(Resource textFileResource) {
+    public void setTextFileResource(WritableResource textFileResource) {
         this.textFileResource = textFileResource;
     }
     
@@ -196,23 +198,24 @@ public class StatementItemWriter implements ItemWriter<StatementItemWriter.State
      * <p>This method transforms COBOL WRITE FD-STMTFILE-REC and WRITE FD-HTMLFILE-REC operations
      * to dual-format output generation with atomic transaction boundaries.</p>
      * 
-     * @param statements List of Statement objects to write (chunk size typically 1000)
+     * @param chunk Chunk of Statement objects to write (chunk size typically 1000)
      * @throws Exception if file I/O errors occur during statement generation
      */
     @Override
-    public void write(List<? extends Statement> statements) throws Exception {
-        if (statements == null || statements.isEmpty()) {
+    public void write(Chunk<? extends Statement> chunk) throws Exception {
+        if (chunk == null || chunk.isEmpty()) {
             logger.debug("No statements to write in current chunk");
             return;
         }
         
+        List<? extends Statement> statements = chunk.getItems();
         logger.info("Writing {} statements to plain-text and HTML formats", statements.size());
         
         try {
             // Write each statement to both plain-text and HTML formats
             for (Statement statement : statements) {
                 // Write plain-text statement via FlatFileItemWriter
-                textWriter.write(List.of(statement));
+                textWriter.write(Chunk.of(statement));
                 
                 // Write HTML statement via custom HTML writer
                 writeHtmlStatement(statement);
