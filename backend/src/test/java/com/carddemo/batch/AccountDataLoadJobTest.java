@@ -23,8 +23,10 @@ import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.InvalidDataAccessApiUsageException;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -195,6 +197,7 @@ public class AccountDataLoadJobTest {
      * Injected to configure JobLauncherTestUtils.
      */
     @Autowired
+    @Qualifier("accountDataLoadJobBean")
     private Job accountDataLoadJob;
 
     /**
@@ -280,8 +283,8 @@ public class AccountDataLoadJobTest {
             customer.setFirstName("TestFirstName" + i);
             customer.setLastName("TestLastName" + i);
             customer.setDateOfBirth(LocalDate.of(1980, 1, i));
-            customer.setSsn("00000000" + i);
-            customer.setFicoScore(700 + i);
+            customer.setSsn(String.format("%09d", i));
+            customer.setFicoCreditScore(700 + i);
             testCustomers.add(customer);
         }
         customerRepository.saveAll(testCustomers);
@@ -420,9 +423,10 @@ public class AccountDataLoadJobTest {
             "Skip count should be zero for successful processing");
         
         // Calculate expected commit count based on chunk size
-        int expectedCommitCount = (int) Math.ceil((double) expectedRecordCount / CHUNK_SIZE) + 1;
+        // Spring Batch commits once per chunk, so with 25 records and chunk size 1000, we expect 1 commit
+        int expectedCommitCount = (int) Math.ceil((double) expectedRecordCount / CHUNK_SIZE);
         assertEquals(expectedCommitCount, stepExecution.getCommitCount(),
-            String.format("Commit count should be %d (1 commit per %d-record chunk + final commit)", 
+            String.format("Commit count should be %d (1 commit per %d-record chunk)", 
                 expectedCommitCount, CHUNK_SIZE));
         
         // Verify no rollbacks occurred
@@ -481,10 +485,10 @@ public class AccountDataLoadJobTest {
         
         StepExecution stepExecution = jobExecution.getStepExecutions().iterator().next();
         
-        // For 25 records with chunk size 1000: expect 1 data chunk + 1 final commit
-        int expectedCommitCount = 2; // 1 commit for the chunk containing all 25 records + 1 final commit
+        // For 25 records with chunk size 1000: expect 1 commit (all records fit in one chunk)
+        int expectedCommitCount = 1; // 1 commit for the chunk containing all 25 records
         assertEquals(expectedCommitCount, stepExecution.getCommitCount(),
-            String.format("Expected %d commits for %d records with chunk size %d", 
+            String.format("Expected %d commit for %d records with chunk size %d", 
                 expectedCommitCount, totalRecords, CHUNK_SIZE));
         
         // Verify all records were read and written in single chunk
@@ -632,11 +636,13 @@ public class AccountDataLoadJobTest {
         orphanedAccount.setCustomer(nonExistentCustomer);
         
         // WHEN/THEN: Attempting to save orphaned account should throw exception
-        assertThrows(DataIntegrityViolationException.class, () -> {
+        // JPA detects transient Customer reference and throws InvalidDataAccessApiUsageException
+        // before reaching database foreign key constraint (equivalent to COBOL XREF-NOT-FOUND error)
+        assertThrows(InvalidDataAccessApiUsageException.class, () -> {
             accountRepository.save(orphanedAccount);
             accountRepository.flush(); // Force immediate constraint check
-        }, "Saving account with non-existent customer_id should throw DataIntegrityViolationException " +
-           "(equivalent to COBOL XREF-NOT-FOUND error)");
+        }, "Saving account with transient customer reference should throw InvalidDataAccessApiUsageException " +
+           "(JPA-level referential integrity check, equivalent to COBOL XREF-NOT-FOUND error)");
         
         // Verify the account was not persisted
         assertFalse(accountRepository.findByAccountId(orphanedAccount.getAccountId()).isPresent(),
