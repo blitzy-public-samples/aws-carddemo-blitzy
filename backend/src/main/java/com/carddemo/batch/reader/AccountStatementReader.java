@@ -5,8 +5,13 @@
 
 package com.carddemo.batch.reader;
 
+import com.carddemo.batch.processor.StatementProcessor;
 import com.carddemo.entity.Account;
+import com.carddemo.entity.Customer;
+import com.carddemo.entity.Transaction;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CustomerRepository;
+import com.carddemo.repository.TransactionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.ExecutionContext;
@@ -15,6 +20,7 @@ import org.springframework.batch.item.support.AbstractItemCountingItemStreamItem
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Scope;
+import org.springframework.context.annotation.ScopedProxyMode;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -23,6 +29,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
 import java.util.Iterator;
+import java.util.List;
 
 /**
  * Spring Batch ItemReader for reading accounts requiring statement generation.
@@ -59,8 +66,8 @@ import java.util.Iterator;
  * @since 2024-01-01
  */
 @Component("accountStatementReader")
-@Scope("step")
-public class AccountStatementReader extends AbstractItemCountingItemStreamItemReader<Account> {
+@Scope(value = "step", proxyMode = ScopedProxyMode.TARGET_CLASS)
+public class AccountStatementReader extends AbstractItemCountingItemStreamItemReader<StatementProcessor.StatementInput> {
 
     private static final Logger logger = LoggerFactory.getLogger(AccountStatementReader.class);
     
@@ -85,6 +92,8 @@ public class AccountStatementReader extends AbstractItemCountingItemStreamItemRe
     private static final String TOTAL_ACCOUNTS_KEY = "total.accounts.read";
     
     private final AccountRepository accountRepository;
+    private final CustomerRepository customerRepository;
+    private final TransactionRepository transactionRepository;
     private final LocalDate statementPeriodStart;
     private final LocalDate statementPeriodEnd;
     private final int fetchSize;
@@ -121,15 +130,19 @@ public class AccountStatementReader extends AbstractItemCountingItemStreamItemRe
      * AccountRepository and job parameters for the statement period.</p>
      * 
      * @param accountRepository Repository for account data access
+     * @param customerRepository Repository for customer data access
+     * @param transactionRepository Repository for transaction data access
      * @param statementPeriodStart Start date of statement period (from job parameters)
      * @param statementPeriodEnd End date of statement period (from job parameters)
      */
     @Autowired
     public AccountStatementReader(
             AccountRepository accountRepository,
+            CustomerRepository customerRepository,
+            TransactionRepository transactionRepository,
             @Value("#{jobParameters['statementPeriodStart']}") LocalDate statementPeriodStart,
             @Value("#{jobParameters['statementPeriodEnd']}") LocalDate statementPeriodEnd) {
-        this(accountRepository, statementPeriodStart, statementPeriodEnd, DEFAULT_FETCH_SIZE);
+        this(accountRepository, customerRepository, transactionRepository, statementPeriodStart, statementPeriodEnd, DEFAULT_FETCH_SIZE);
     }
     
     /**
@@ -139,17 +152,23 @@ public class AccountStatementReader extends AbstractItemCountingItemStreamItemRe
      * useful for performance tuning based on database characteristics.</p>
      * 
      * @param accountRepository Repository for account data access
+     * @param customerRepository Repository for customer data access
+     * @param transactionRepository Repository for transaction data access
      * @param statementPeriodStart Start date of statement period
      * @param statementPeriodEnd End date of statement period
      * @param fetchSize Number of records to fetch per page
      */
     public AccountStatementReader(
             AccountRepository accountRepository,
+            CustomerRepository customerRepository,
+            TransactionRepository transactionRepository,
             LocalDate statementPeriodStart,
             LocalDate statementPeriodEnd,
             int fetchSize) {
         super();
         this.accountRepository = accountRepository;
+        this.customerRepository = customerRepository;
+        this.transactionRepository = transactionRepository;
         this.statementPeriodStart = statementPeriodStart;
         this.statementPeriodEnd = statementPeriodEnd;
         this.fetchSize = fetchSize;
@@ -225,7 +244,7 @@ public class AccountStatementReader extends AbstractItemCountingItemStreamItemRe
      * @throws Exception if database access fails
      */
     @Override
-    protected Account doRead() throws Exception {
+    protected StatementProcessor.StatementInput doRead() throws Exception {
         // Check if current iterator has more items
         if (accountIterator != null && accountIterator.hasNext()) {
             Account account = accountIterator.next();
@@ -237,7 +256,35 @@ public class AccountStatementReader extends AbstractItemCountingItemStreamItemRe
                         account.getAccountId(), totalAccountsRead);
             }
             
-            return account;
+            // Get customer from account relationship
+            Customer customer = account.getCustomer();
+            if (customer == null) {
+                throw new RuntimeException(
+                        "Customer not found for account " + account.getAccountId());
+            }
+            
+            // Fetch transactions for statement period
+            // Use unpaged query to get all transactions for the statement period
+            Pageable unpaged = Pageable.unpaged();
+            Page<Transaction> transactionPage = transactionRepository
+                    .findByAccountIdAndTransactionDateBetween(
+                            account.getAccountId(),
+                            statementPeriodStart,
+                            statementPeriodEnd,
+                            unpaged);
+            List<Transaction> transactions = transactionPage.getContent();
+            
+            // Statement date is typically the end date of the period
+            LocalDate statementDate = statementPeriodEnd;
+            
+            // Construct and return StatementInput with all 6 required parameters
+            return new StatementProcessor.StatementInput(
+                    account,
+                    customer,
+                    transactions,
+                    statementDate,
+                    statementPeriodStart,
+                    statementPeriodEnd);
         }
         
         // Current page exhausted - try to load next page if available
