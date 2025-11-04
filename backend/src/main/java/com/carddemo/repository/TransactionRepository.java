@@ -396,6 +396,41 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
     List<Transaction> findByTransactionDateBetween(@Param("startDate") LocalDate startDate, @Param("endDate") LocalDate endDate);
 
     /**
+     * Retrieves paginated transactions within a date range (all accounts).
+     * 
+     * <p><strong>Admin Use Case:</strong> Allows administrative users to view all
+     * transactions across all accounts within a specific date range for monitoring,
+     * auditing, and reporting purposes. This method provides pagination support to
+     * handle large result sets efficiently.</p>
+     * 
+     * <p><strong>Custom JPQL Query with Date Filter:</strong></p>
+     * <pre>
+     * SELECT t FROM Transaction t 
+     * WHERE CAST(t.originationTimestamp AS date) BETWEEN :startDate AND :endDate
+     * ORDER BY t.originationTimestamp DESC
+     * LIMIT :pageSize OFFSET :pageNumber * :pageSize
+     * </pre>
+     * 
+     * <p><strong>Security Note:</strong> This method should only be called after verifying
+     * the user has ROLE_ADMIN privileges. The controller/service layer enforces this authorization.</p>
+     * 
+     * <p><strong>Performance Consideration:</strong> Without account filtering, this query
+     * may retrieve a large number of transactions. The date range filter and pagination
+     * help maintain performance within acceptable limits.</p>
+     * 
+     * @param startDate the start date of the range (inclusive)
+     * @param endDate   the end date of the range (inclusive)
+     * @param pageable  pagination information (page number, size, sort order)
+     * @return Page object containing transactions matching date range and pagination metadata
+     */
+    @Query("SELECT t FROM Transaction t WHERE CAST(t.originationTimestamp AS date) BETWEEN :startDate AND :endDate")
+    Page<Transaction> findByTransactionDateBetween(
+            @Param("startDate") LocalDate startDate,
+            @Param("endDate") LocalDate endDate,
+            Pageable pageable
+    );
+
+    /**
      * Retrieves paginated transactions for an account within a date range.
      * 
      * <p><strong>COBOL Replacement:</strong> Combines account filtering (COTRN00C browsing) 
