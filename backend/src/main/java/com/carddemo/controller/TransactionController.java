@@ -380,7 +380,7 @@ public class TransactionController {
                 // Filter by card number
                 // Maps to COBOL COTRN02C lines 210-223 (card number validation)
                 log.debug("Filtering transactions by cardNumber={}", maskCardNumber(cardNumber));
-                response = transactionListService.getTransactionsByCardNumber(
+                response = transactionListService.getTransactionListByCard(
                         cardNumber, page, startDate, endDate);
             } else if (isAdmin) {
                 // Admin can view all transactions without account filter
@@ -406,7 +406,7 @@ public class TransactionController {
             throw e; // Re-throw for GlobalExceptionHandler to process
         } catch (Exception e) {
             log.error("Unexpected error retrieving transactions", e);
-            throw new TransactionException("Error retrieving transaction list", e);
+            throw new TransactionException("Error retrieving transaction list", "TXN_RETRIEVAL_ERROR", e);
         }
     }
 
@@ -498,7 +498,7 @@ public class TransactionController {
      */
     @GetMapping("/categories")
     @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
-    public ResponseEntity<TransactionCategoryResponse> getTransactionCategories(
+    public ResponseEntity<TransactionCategoryService.AggregationResult> getTransactionCategories(
             @RequestParam(required = false) String accountId,
             @RequestParam(required = false) 
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
@@ -524,23 +524,23 @@ public class TransactionController {
         }
         
         try {
-            TransactionCategoryResponse response;
+            TransactionCategoryService.AggregationResult response;
             
-            if (accountId != null && !accountId.isBlank()) {
-                // Aggregate by specific account
-                // Maps to COBOL COTRN01C lines 144-193 with category accumulation
-                log.debug("Aggregating transaction categories for accountId={}", accountId);
-                response = transactionCategoryService.getCategorySummaryByAccountId(
-                        accountId, startDate, endDate);
-            } else {
-                // Admin aggregating across all accounts
-                log.debug("Admin user aggregating categories across all accounts");
-                response = transactionCategoryService.getCategorySummaryByDateRange(
-                        startDate, endDate);
+            // Both admin and regular users need to provide accountId for now
+            // The service method requires accountId for category aggregation
+            if (accountId == null || accountId.isBlank()) {
+                log.warn("Admin attempted to aggregate categories without account ID");
+                throw new IllegalArgumentException("Account ID is required for category aggregation");
             }
             
+            // Aggregate by specific account
+            // Maps to COBOL COTRN01C lines 144-193 with category accumulation
+            log.debug("Aggregating transaction categories for accountId={}", accountId);
+            response = transactionCategoryService.getTransactionCategorySummary(
+                    accountId, startDate, endDate);
+            
             log.info("Successfully aggregated {} categories with grand total {}", 
-                    response.getCategories().size(), 
+                    response.getCategorySummaries().size(), 
                     response.getGrandTotal());
             
             return ResponseEntity.ok(response);
@@ -550,7 +550,7 @@ public class TransactionController {
             throw e; // Re-throw for GlobalExceptionHandler to process
         } catch (Exception e) {
             log.error("Unexpected error aggregating categories", e);
-            throw new TransactionException("Error aggregating transaction categories", e);
+            throw new TransactionException("Error aggregating transaction categories", "TXN_CATEGORY_ERROR", e);
         }
     }
 
@@ -724,7 +724,7 @@ public class TransactionController {
             log.warn("Insufficient balance for transaction: accountId={}, amount={}, available={}", 
                     transactionRequest.getAccountId(),
                     transactionRequest.getTransactionAmount(),
-                    e.getAvailableBalance());
+                    e.getAvailableCredit());
             throw e; // Re-throw for GlobalExceptionHandler to return 422
             
         } catch (IllegalArgumentException e) {
@@ -742,7 +742,7 @@ public class TransactionController {
         } catch (Exception e) {
             // Unexpected system error
             log.error("Unexpected error creating transaction", e);
-            throw new TransactionException("Unexpected error processing transaction", e);
+            throw new TransactionException("Unexpected error processing transaction", "TXN_CREATION_ERROR", e);
         }
     }
 
