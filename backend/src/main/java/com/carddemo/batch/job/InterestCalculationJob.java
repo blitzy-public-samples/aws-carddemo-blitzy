@@ -22,7 +22,6 @@ import com.carddemo.entity.Transaction;
 import com.carddemo.entity.TransactionAggregate;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.TransactionRepository;
-import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.Job;
@@ -271,7 +270,6 @@ import java.util.Map;
  * @since 2024-01-01
  */
 @Configuration
-@RequiredArgsConstructor
 public class InterestCalculationJob {
 
     /**
@@ -374,6 +372,40 @@ public class InterestCalculationJob {
     private final TransactionRepository transactionRepository;
 
     /**
+     * Constructs InterestCalculationJob with all required dependencies for interest calculation processing.
+     * 
+     * <p>This constructor enables Spring Framework dependency injection of all batch processing components,
+     * repositories, and infrastructure beans required for monthly interest calculation execution.</p>
+     * 
+     * @param jobRepository Spring Batch JobRepository for job execution metadata persistence
+     * @param transactionManager PlatformTransactionManager for chunk-level transaction management
+     * @param interestCalculationProcessor ItemProcessor implementing interest calculation formula
+     * @param transactionItemWriter ItemWriter for transaction persistence and balance updates
+     * @param entityManagerFactory EntityManagerFactory for JPA ItemReader configuration
+     * @param accountRepository Spring Data JPA repository for Account entity operations
+     * @param transactionRepository Spring Data JPA repository for Transaction entity operations
+     */
+    public InterestCalculationJob(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            InterestCalculationProcessor interestCalculationProcessor,
+            TransactionItemWriter transactionItemWriter,
+            EntityManagerFactory entityManagerFactory,
+            AccountRepository accountRepository,
+            TransactionRepository transactionRepository) {
+        this.jobRepository = jobRepository;
+        this.transactionManager = transactionManager;
+        this.interestCalculationProcessor = interestCalculationProcessor;
+        this.transactionItemWriter = transactionItemWriter;
+        this.entityManagerFactory = entityManagerFactory;
+        this.accountRepository = accountRepository;
+        this.transactionRepository = transactionRepository;
+        
+        logger.info("InterestCalculationJob configuration initialized with chunk size: {}, skip limit: {}, retry limit: {}",
+                   CHUNK_SIZE, SKIP_LIMIT, RETRY_LIMIT);
+    }
+
+    /**
      * Defines the Spring Batch Job bean for monthly interest calculation processing.
      * 
      * <p><strong>Job Configuration:</strong></p>
@@ -413,8 +445,8 @@ public class InterestCalculationJob {
      * 
      * @return fully configured Spring Batch Job for monthly interest calculation processing
      */
-    @Bean
-    public Job interestCalculationJob() {
+    @Bean(name = "interestCalculationJobBean")
+    public Job createInterestCalculationJob() {
         logger.info("Configuring Interest Calculation Job - COBOL CBACT04C.cbl equivalent");
         
         return new JobBuilder(JOB_NAME, jobRepository)
