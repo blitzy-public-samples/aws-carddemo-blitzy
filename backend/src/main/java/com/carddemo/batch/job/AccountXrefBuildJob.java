@@ -164,6 +164,46 @@ public class AccountXrefBuildJob {
     private static final int RETRY_LIMIT = 3;
     
     /**
+     * Bean name for the account cross-reference build job.
+     * Used to avoid bean name conflicts with job name in Spring context.
+     */
+    private static final String JOB_BEAN_NAME = "accountXrefBuildJobBean";
+    
+    /**
+     * Step name for the account cross-reference build step.
+     */
+    private static final String STEP_NAME = "accountXrefBuildStep";
+    
+    // Dependencies injected via constructor
+    private final JobRepository jobRepository;
+    private final PlatformTransactionManager transactionManager;
+    private final CardAccountReader reader;
+    private final AccountXrefProcessor processor;
+    private final AccountXrefWriter writer;
+    
+    /**
+     * Constructor for dependency injection.
+     * 
+     * @param jobRepository Spring Batch JobRepository for metadata tracking
+     * @param transactionManager Platform transaction manager for chunk transactions
+     * @param reader CardAccountReader for reading Card entities with relationships
+     * @param processor AccountXrefProcessor for validation and cross-reference building
+     * @param writer AccountXrefWriter for persisting cross-reference entries
+     */
+    public AccountXrefBuildJob(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            CardAccountReader reader,
+            AccountXrefProcessor processor,
+            AccountXrefWriter writer) {
+        this.jobRepository = jobRepository;
+        this.transactionManager = transactionManager;
+        this.reader = reader;
+        this.processor = processor;
+        this.writer = writer;
+    }
+    
+    /**
      * Defines the Spring Batch Job for building account cross-reference relationships.
      * 
      * <p>This method creates the main Job bean that orchestrates the cross-reference build process.
@@ -207,25 +247,15 @@ public class AccountXrefBuildJob {
      *   <li>Job status (COMPLETED, FAILED, STOPPED)</li>
      * </ul>
      * 
-     * @param jobRepository Spring Batch JobRepository for metadata and checkpoint persistence
-     * @param transactionManager Platform transaction manager for chunk-level transaction control
-     * @param reader CardAccountReader for reading Card entities with relationships
-     * @param processor AccountXrefProcessor for validation and cross-reference building
-     * @param writer AccountXrefWriter for persisting cross-reference entries
      * @return Configured Job bean ready for execution
      */
-    @Bean
-    public Job accountXrefBuildJob(
-            JobRepository jobRepository,
-            PlatformTransactionManager transactionManager,
-            CardAccountReader reader,
-            AccountXrefProcessor processor,
-            AccountXrefWriter writer) {
+    @Bean(name = JOB_BEAN_NAME)
+    public Job accountXrefBuildJob() {
         
         logger.info("Configuring AccountXrefBuildJob (COBOL program CBACT02C transformation)");
         
         return new JobBuilder("accountXrefBuildJob", jobRepository)
-                .start(accountXrefBuildStep(jobRepository, transactionManager, reader, processor, writer))
+                .start(accountXrefBuildStep())
                 .listener(new JobExecutionListener() {
                     @Override
                     public void beforeJob(JobExecution jobExecution) {
@@ -362,20 +392,10 @@ public class AccountXrefBuildJob {
      *   <li>All metrics exposed via Spring Boot Actuator and Prometheus</li>
      * </ul>
      * 
-     * @param jobRepository Spring Batch JobRepository for step execution metadata
-     * @param transactionManager Platform transaction manager for chunk transactions
-     * @param reader CardAccountReader for reading Card entities with eager-loaded relationships
-     * @param processor AccountXrefProcessor for validating and building cross-reference entries
-     * @param writer AccountXrefWriter for batch persistence to account_xref and card_xref tables
      * @return Configured Step bean with chunk processing, skip, and retry policies
      */
-    @Bean
-    public Step accountXrefBuildStep(
-            JobRepository jobRepository,
-            PlatformTransactionManager transactionManager,
-            CardAccountReader reader,
-            AccountXrefProcessor processor,
-            AccountXrefWriter writer) {
+    @Bean(name = STEP_NAME)
+    public Step accountXrefBuildStep() {
         
         logger.info("Configuring accountXrefBuildStep with chunk size: {}, skip limit: {}, retry limit: {}",
                 CHUNK_SIZE, SKIP_LIMIT, RETRY_LIMIT);
