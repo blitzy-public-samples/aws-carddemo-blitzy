@@ -708,6 +708,27 @@ public class Transaction implements Serializable {
     private Card card;
 
     /**
+     * Transient account ID field for batch processing compatibility.
+     * 
+     * <p>This field is NOT persisted to the database (marked as @Transient). It exists
+     * solely to support batch processors (DailyTransactionProcessor) that need to set
+     * and retrieve the account ID directly without loading the Card entity.</p>
+     * 
+     * <p><strong>Usage Context:</strong></p>
+     * <ul>
+     *   <li>Batch processing: DailyTransactionProcessor sets this after validation</li>
+     *   <li>Transaction posting: TransactionPostWriter reads this for balance updates</li>
+     *   <li>NOT persisted: Database uses transaction → card → account relationship</li>
+     *   <li>Temporary storage: Only exists during batch job execution lifecycle</li>
+     * </ul>
+     * 
+     * <p><strong>Priority:</strong> If this transient field is set, getAccountId() returns
+     * it. Otherwise, falls back to card.getAccountId() if card relationship is loaded.</p>
+     */
+    @jakarta.persistence.Transient
+    private Long transientAccountId;
+
+    /**
      * Transaction type relationship (many-to-one).
      * 
      * <p>Establishes foreign key relationship from Transaction to TransactionType entity
@@ -813,50 +834,59 @@ public class Transaction implements Serializable {
     private TransactionCategory transactionCategory;
 
     /**
-     * Get account ID from the associated card (transient helper method).
+     * Get account ID from transient field or associated card.
      * 
-     * <p>This is a computed field that navigates the relationship chain:
-     * Transaction → Card → Account to retrieve the account ID.</p>
+     * <p>Returns the account ID with the following priority:</p>
+     * <ol>
+     *   <li>If transientAccountId is set (batch processing), return it</li>
+     *   <li>Otherwise, navigate relationship chain: Transaction → Card → Account</li>
+     * </ol>
      * 
      * <p><strong>Usage Context:</strong></p>
      * <ul>
-     *   <li>Batch processing: DailyTransactionProcessor needs account ID for balance updates</li>
-     *   <li>Transaction posting: TransactionPostWriter requires account ID for account updates</li>
-     *   <li>NOT stored in database: Computed on-demand from card relationship</li>
-     *   <li>Database uses transaction → card → account relationship chain</li>
+     *   <li>Batch processing: DailyTransactionProcessor sets transientAccountId after validation</li>
+     *   <li>Transaction posting: TransactionPostWriter reads this for balance updates</li>
+     *   <li>Normal operations: Computed from card relationship if transient not set</li>
      * </ul>
      * 
-     * <p><strong>Performance Note:</strong> This method will trigger a LAZY load of the
-     * Card entity if not already loaded, which may impact performance. For batch processing,
-     * consider using JOIN FETCH in queries to eagerly load the card relationship.</p>
+     * <p><strong>Performance Note:</strong> When transientAccountId is null, this method
+     * will trigger a LAZY load of the Card entity if not already loaded, which may impact
+     * performance. For batch processing, always use transientAccountId.</p>
      * 
-     * @return Account ID if card is loaded and has accountId, null otherwise
+     * @return Account ID from transient field, or from card relationship, or null
      */
     public Long getAccountId() {
+        // Priority 1: Return transient field if set (batch processing)
+        if (transientAccountId != null) {
+            return transientAccountId;
+        }
+        // Priority 2: Navigate relationship chain if card is loaded
         return (card != null) ? card.getAccountId() : null;
     }
 
     /**
-     * Set account ID (not persisted - for batch processor compatibility).
+     * Set account ID (stored in transient field - for batch processor compatibility).
      * 
-     * <p>This setter exists only for backward compatibility with batch processors
-     * (DailyTransactionProcessor) that were written expecting a direct accountId field.
-     * Since the transaction table does NOT have an account_id column, this value is
-     * NOT persisted. The account ID is derived from the Card relationship.</p>
+     * <p>This setter is used by batch processors (DailyTransactionProcessor) to set the
+     * account ID directly after validation, without needing to load the Card entity.
+     * The value is stored in a @Transient field and is NOT persisted to the database.</p>
      * 
-     * <p><strong>Implementation Note:</strong> This is a no-op setter. The account ID
-     * should be set on the associated Card entity, not directly on the transaction.
-     * The batch processors should be refactored to set the card relationship properly
-     * instead of trying to set accountId directly.</p>
+     * <p><strong>Implementation Note:</strong> This sets the transientAccountId field.
+     * The account ID is NOT stored in the transaction table - the database uses the
+     * transaction → card → account relationship chain. This transient field exists only
+     * for batch processing efficiency.</p>
      * 
-     * @param accountId Account ID value (ignored, not persisted)
-     * @deprecated Use {@link #setCard(Card)} to establish proper relationship
+     * <p><strong>Usage Context:</strong></p>
+     * <ul>
+     *   <li>Batch processing: DailyTransactionProcessor calls this after account validation</li>
+     *   <li>Transaction posting: TransactionPostWriter reads via getAccountId() for balance updates</li>
+     *   <li>Value cleared on entity reload from database (transient fields not persisted)</li>
+     * </ul>
+     * 
+     * @param accountId Account ID value (stored in transient field, not persisted)
      */
-    @Deprecated
     public void setAccountId(Long accountId) {
-        // No-op: account_id is not stored in transaction table
-        // Account ID is accessed via card.accountId relationship
-        // This setter exists only for compilation compatibility with batch processors
+        this.transientAccountId = accountId;
     }
 
     /**

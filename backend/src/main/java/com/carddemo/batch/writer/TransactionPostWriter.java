@@ -104,10 +104,7 @@ public class TransactionPostWriter implements ItemWriter<Transaction> {
      * @throws Exception if any database operation fails (triggers rollback of entire chunk)
      */
     @Override
-    @Transactional(
-            isolation = Isolation.READ_COMMITTED,
-            rollbackFor = Exception.class
-    )
+    @Transactional(rollbackFor = Exception.class)
     public void write(Chunk<? extends Transaction> chunk) throws Exception {
         logger.info("Starting transaction post writer for {} transactions", chunk.size());
 

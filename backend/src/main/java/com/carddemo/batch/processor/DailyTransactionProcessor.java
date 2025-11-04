@@ -169,11 +169,23 @@ public class DailyTransactionProcessor implements ItemProcessor<DailyTransaction
         String validationFailureDescription = "";
 
         
-        // Validation Step 1: Validate transaction amount > 0
-        // Business requirement - ensure positive transaction amounts
-        if (item.getAmount() == null || item.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
+        // Validation Step 1: Validate transaction amount is not null
+        // Business requirement - allow both positive (debits) and negative (credits) amounts
+        // Positive amounts: purchases, fees, interest charges (increase balance)
+        // Negative amounts: payments, refunds, adjustments (decrease balance)
+        if (item.getAmount() == null) {
             validationFailureReason = INVALID_AMOUNT;
-            validationFailureDescription = "TRANSACTION AMOUNT MUST BE GREATER THAN ZERO";
+            validationFailureDescription = "TRANSACTION AMOUNT CANNOT BE NULL";
+            logger.warn("Validation failed - Transaction ID: {}, Reason: {}",
+                    item.getTransactionId(), validationFailureDescription);
+            updateItemAsRejected(item, validationFailureReason, validationFailureDescription);
+            return null;
+        }
+        
+        // Reject zero-amount transactions (neither debit nor credit)
+        if (item.getAmount().compareTo(BigDecimal.ZERO) == 0) {
+            validationFailureReason = INVALID_AMOUNT;
+            validationFailureDescription = "TRANSACTION AMOUNT CANNOT BE ZERO";
             logger.warn("Validation failed - Transaction ID: {}, Reason: {}",
                     item.getTransactionId(), validationFailureDescription);
             updateItemAsRejected(item, validationFailureReason, validationFailureDescription);

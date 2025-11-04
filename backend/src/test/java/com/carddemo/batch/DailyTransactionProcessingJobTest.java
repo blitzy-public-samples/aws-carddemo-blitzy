@@ -7,9 +7,19 @@ package com.carddemo.batch;
 
 import com.carddemo.batch.job.DailyTransactionProcessingJob;
 import com.carddemo.entity.Account;
+import com.carddemo.entity.Card;
+import com.carddemo.entity.Customer;
+import com.carddemo.entity.DailyTransactionStaging;
 import com.carddemo.entity.Transaction;
+import com.carddemo.entity.TransactionCategory;
+import com.carddemo.entity.TransactionType;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CustomerRepository;
+import com.carddemo.repository.DailyTransactionStagingRepository;
+import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionTypeRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,6 +34,7 @@ import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
@@ -93,6 +104,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest
 @SpringBatchTest
 @ActiveProfiles("test")
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
 public class DailyTransactionProcessingJobTest {
 
     @Autowired
@@ -111,14 +123,34 @@ public class DailyTransactionProcessingJobTest {
     @Autowired
     private AccountRepository accountRepository;
 
+    @Autowired
+    private CardRepository cardRepository;
+
+    @Autowired
+    private CustomerRepository customerRepository;
+
+    @Autowired
+    private TransactionTypeRepository transactionTypeRepository;
+
+    @Autowired
+    private TransactionCategoryRepository transactionCategoryRepository;
+
+    @Autowired
+    private DailyTransactionStagingRepository dailyTransactionStagingRepository;
+
     // Test data constants
+    private static final Long TEST_CUSTOMER_ID_1 = 100000001L;
+    private static final Long TEST_CUSTOMER_ID_2 = 100000002L;
+    private static final Long TEST_CUSTOMER_ID_3 = 100000003L;
+    
     private static final Long TEST_ACCOUNT_ID_1 = 12345678901L;
     private static final Long TEST_ACCOUNT_ID_2 = 23456789012L;
     private static final Long TEST_ACCOUNT_ID_3 = 34567890123L;
     
-    private static final String TEST_CARD_NUMBER_1 = "4000123456789010";
-    private static final String TEST_CARD_NUMBER_2 = "5000234567890120";
-    private static final String TEST_CARD_NUMBER_3 = "6000345678901230";
+    // Card numbers encode account IDs in first 11 digits (COBOL mainframe pattern)
+    private static final String TEST_CARD_NUMBER_1 = "1234567890100001";  // Account 12345678901
+    private static final String TEST_CARD_NUMBER_2 = "2345678901200002";  // Account 23456789012
+    private static final String TEST_CARD_NUMBER_3 = "3456789012300003";  // Account 34567890123
     
     private static final BigDecimal INITIAL_BALANCE_1000 = new BigDecimal("1000.00").setScale(2, RoundingMode.HALF_UP);
     private static final BigDecimal INITIAL_BALANCE_5000 = new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP);
@@ -151,14 +183,39 @@ public class DailyTransactionProcessingJobTest {
      */
     @BeforeEach
     public void setUp() {
-        // Clean up any existing test data
+        // Clean up any existing test data (in reverse FK dependency order)
         transactionRepository.deleteAll();
+        cardRepository.deleteAll();
         accountRepository.deleteAll();
+        customerRepository.deleteAll();
+        
+        // Create test customers (parent entities required for foreign key constraint)
+        Customer customer1 = new Customer();
+        customer1.setCustomerId(TEST_CUSTOMER_ID_1);
+        customer1.setFirstName("John");
+        customer1.setLastName("Doe");
+        customer1.setZipCode("10001");
+        customerRepository.save(customer1);
+        
+        Customer customer2 = new Customer();
+        customer2.setCustomerId(TEST_CUSTOMER_ID_2);
+        customer2.setFirstName("Jane");
+        customer2.setLastName("Smith");
+        customer2.setZipCode("20002");
+        customerRepository.save(customer2);
+        
+        Customer customer3 = new Customer();
+        customer3.setCustomerId(TEST_CUSTOMER_ID_3);
+        customer3.setFirstName("Bob");
+        customer3.setLastName("Johnson");
+        customer3.setZipCode("30003");
+        customerRepository.save(customer3);
         
         // Create test accounts with initial balances
         Account account1 = new Account();
         account1.setAccountId(TEST_ACCOUNT_ID_1);
-        account1.setActiveStatus("Y");
+        account1.setCustomer(customer1);
+        account1.setActiveStatus("A");  // ACTIVE_STATUS required by DailyTransactionProcessor
         account1.setCurrentBalance(INITIAL_BALANCE_1000);
         account1.setCreditLimit(CREDIT_LIMIT_15000);
         account1.setCashCreditLimit(new BigDecimal("3000.00").setScale(2, RoundingMode.HALF_UP));
@@ -172,7 +229,8 @@ public class DailyTransactionProcessingJobTest {
         
         Account account2 = new Account();
         account2.setAccountId(TEST_ACCOUNT_ID_2);
-        account2.setActiveStatus("Y");
+        account2.setCustomer(customer2);
+        account2.setActiveStatus("A");  // ACTIVE_STATUS required by DailyTransactionProcessor
         account2.setCurrentBalance(INITIAL_BALANCE_5000);
         account2.setCreditLimit(CREDIT_LIMIT_20000);
         account2.setCashCreditLimit(new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP));
@@ -186,7 +244,8 @@ public class DailyTransactionProcessingJobTest {
         
         Account account3 = new Account();
         account3.setAccountId(TEST_ACCOUNT_ID_3);
-        account3.setActiveStatus("Y");
+        account3.setCustomer(customer3);
+        account3.setActiveStatus("A");  // ACTIVE_STATUS required by DailyTransactionProcessor
         account3.setCurrentBalance(INITIAL_BALANCE_10000);
         account3.setCreditLimit(CREDIT_LIMIT_20000);
         account3.setCashCreditLimit(new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP));
@@ -197,6 +256,70 @@ public class DailyTransactionProcessingJobTest {
         account3.setAddressZip("30003");
         account3.setAccountGroupId("GROUP003");
         accountRepository.save(account3);
+        
+        // Create test cards (required for Transaction foreign key constraint)
+        Card card1 = new Card();
+        card1.setCardNumber(TEST_CARD_NUMBER_1);
+        card1.setAccountId(TEST_ACCOUNT_ID_1);
+        card1.setCvvCode("123");
+        card1.setEmbossedName("JOHN DOE");
+        card1.setExpirationDate(LocalDate.now().plusYears(3));
+        card1.setActiveStatus("Y");
+        cardRepository.save(card1);
+        
+        Card card2 = new Card();
+        card2.setCardNumber(TEST_CARD_NUMBER_2);
+        card2.setAccountId(TEST_ACCOUNT_ID_2);
+        card2.setCvvCode("456");
+        card2.setEmbossedName("JANE SMITH");
+        card2.setExpirationDate(LocalDate.now().plusYears(3));
+        card2.setActiveStatus("Y");
+        cardRepository.save(card2);
+        
+        Card card3 = new Card();
+        card3.setCardNumber(TEST_CARD_NUMBER_3);
+        card3.setAccountId(TEST_ACCOUNT_ID_3);
+        card3.setCvvCode("789");
+        card3.setEmbossedName("BOB JOHNSON");
+        card3.setExpirationDate(LocalDate.now().plusYears(3));
+        card3.setActiveStatus("Y");
+        cardRepository.save(card3);
+        
+        // Create test transaction types (required for TransactionCategory foreign key constraint)
+        TransactionType purchaseType = new TransactionType();
+        purchaseType.setTypeCode("PU");
+        purchaseType.setTypeDescription("Purchase");
+        transactionTypeRepository.save(purchaseType);
+        
+        TransactionType paymentType = new TransactionType();
+        paymentType.setTypeCode("PM");
+        paymentType.setTypeDescription("Payment");
+        transactionTypeRepository.save(paymentType);
+        
+        // Create test transaction categories (required for Transaction foreign key constraint)
+        TransactionCategory.CategoryId categoryId1 = new TransactionCategory.CategoryId("PU", 1001);
+        TransactionCategory transactionCategory1 = new TransactionCategory();
+        transactionCategory1.setId(categoryId1);
+        transactionCategory1.setCategoryDescription("Groceries");
+        transactionCategoryRepository.save(transactionCategory1);
+        
+        TransactionCategory.CategoryId categoryId2 = new TransactionCategory.CategoryId("PU", 1002);
+        TransactionCategory transactionCategory2 = new TransactionCategory();
+        transactionCategory2.setId(categoryId2);
+        transactionCategory2.setCategoryDescription("Gas");
+        transactionCategoryRepository.save(transactionCategory2);
+        
+        TransactionCategory.CategoryId categoryId3 = new TransactionCategory.CategoryId("PU", 1003);
+        TransactionCategory transactionCategory3 = new TransactionCategory();
+        transactionCategory3.setId(categoryId3);
+        transactionCategory3.setCategoryDescription("Dining");
+        transactionCategoryRepository.save(transactionCategory3);
+        
+        TransactionCategory.CategoryId categoryId4 = new TransactionCategory.CategoryId("PM", 3001);
+        TransactionCategory transactionCategory4 = new TransactionCategory();
+        transactionCategory4.setId(categoryId4);
+        transactionCategory4.setCategoryDescription("Online Payment");
+        transactionCategoryRepository.save(transactionCategory4);
     }
     
     /**
@@ -208,13 +331,19 @@ public class DailyTransactionProcessingJobTest {
      * <p><strong>Cleanup Order:</strong> Delete in reverse foreign key dependency order:</p>
      * <ol>
      *   <li>Transactions (child of Account via card_number → card → account)</li>
-     *   <li>Accounts (referenced by transactions)</li>
+     *   <li>Accounts (referenced by transactions, parent is Customer)</li>
+     *   <li>Customers (parent of Account entities)</li>
      * </ol>
      */
     @AfterEach
     public void tearDown() {
+        dailyTransactionStagingRepository.deleteAll();
         transactionRepository.deleteAll();
+        cardRepository.deleteAll();
         accountRepository.deleteAll();
+        customerRepository.deleteAll();
+        transactionCategoryRepository.deleteAll();
+        transactionTypeRepository.deleteAll();
     }
     
     /**
@@ -249,17 +378,18 @@ public class DailyTransactionProcessingJobTest {
      */
     @Test
     public void testDailyTransactionProcessingJob_Success() throws Exception {
-        // Arrange: Create test transactions for posting
-        Transaction transaction1 = new Transaction();
+        // Arrange: Create test transactions in staging table for posting
+        DailyTransactionStaging transaction1 = new DailyTransactionStaging();
         transaction1.setTransactionId(TEST_TRAN_ID_1);
-        transaction1.setTransactionTypeCode("PU");
-        transaction1.setTransactionCategoryCode(1001);
-        transaction1.setTransactionSource("POS");
-        transaction1.setTransactionDescription("Test Purchase Transaction");
-        transaction1.setTransactionAmount(new BigDecimal("100.50").setScale(2, RoundingMode.HALF_UP));
+        transaction1.setTypeCode("PU");
+        transaction1.setCategoryCode(1001);
+        transaction1.setSource("POS");
+        transaction1.setDescription("Test Purchase Transaction");
+        transaction1.setAmount(new BigDecimal("100.50").setScale(2, RoundingMode.HALF_UP));
         transaction1.setCardNumber(TEST_CARD_NUMBER_1);
-        transaction1.setOriginationTimestamp(LocalDateTime.now());
-        transactionRepository.save(transaction1);
+        transaction1.setOriginalTimestamp(LocalDateTime.now());
+        transaction1.setStatus("PENDING");
+        dailyTransactionStagingRepository.save(transaction1);
         
         // Configure JobLauncherTestUtils with the job under test
         jobLauncherTestUtils.setJob(dailyTransactionProcessingJob);
@@ -317,23 +447,29 @@ public class DailyTransactionProcessingJobTest {
      */
     @Test
     public void testDailyTransactionProcessingJob_ChunkProcessing() throws Exception {
+        // Arrange: Increase credit limit to handle all 2500 transactions ($10 each = $25,000 total)
+        Account account = accountRepository.findById(TEST_ACCOUNT_ID_1).orElseThrow();
+        account.setCreditLimit(new BigDecimal("30000.00").setScale(2, RoundingMode.HALF_UP));
+        accountRepository.save(account);
+        
         // Arrange: Create 2500 test transactions to validate chunk processing
         int totalTransactions = 2500;
-        List<Transaction> transactions = new ArrayList<>();
+        List<DailyTransactionStaging> transactions = new ArrayList<>();
         
         for (int i = 1; i <= totalTransactions; i++) {
-            Transaction transaction = new Transaction();
+            DailyTransactionStaging transaction = new DailyTransactionStaging();
             transaction.setTransactionId(String.format("202401010000%04d", i));
-            transaction.setTransactionTypeCode("PU");
-            transaction.setTransactionCategoryCode(1001);
-            transaction.setTransactionSource("ONLINE");
-            transaction.setTransactionDescription("Chunk Processing Test Transaction " + i);
-            transaction.setTransactionAmount(new BigDecimal("10.00").setScale(2, RoundingMode.HALF_UP));
+            transaction.setTypeCode("PU");
+            transaction.setCategoryCode(1001);
+            transaction.setSource("ONLINE");
+            transaction.setDescription("Chunk Processing Test Transaction " + i);
+            transaction.setAmount(new BigDecimal("10.00").setScale(2, RoundingMode.HALF_UP));
             transaction.setCardNumber(TEST_CARD_NUMBER_1);
-            transaction.setOriginationTimestamp(LocalDateTime.now());
+            transaction.setOriginalTimestamp(LocalDateTime.now());
+            transaction.setStatus("PENDING");
             transactions.add(transaction);
         }
-        transactionRepository.saveAll(transactions);
+        dailyTransactionStagingRepository.saveAll(transactions);
         
         // Configure JobLauncherTestUtils
         jobLauncherTestUtils.setJob(dailyTransactionProcessingJob);
@@ -414,16 +550,17 @@ public class DailyTransactionProcessingJobTest {
         // Arrange: Create transaction with specific amount for balance verification
         BigDecimal transactionAmount = new BigDecimal("250.75").setScale(2, RoundingMode.HALF_UP);
         
-        Transaction transaction = new Transaction();
+        DailyTransactionStaging transaction = new DailyTransactionStaging();
         transaction.setTransactionId(TEST_TRAN_ID_1);
-        transaction.setTransactionTypeCode("PU");
-        transaction.setTransactionCategoryCode(1001);
-        transaction.setTransactionSource("POS");
-        transaction.setTransactionDescription("Balance Update Test Transaction");
-        transaction.setTransactionAmount(transactionAmount);
+        transaction.setTypeCode("PU");
+        transaction.setCategoryCode(1001);
+        transaction.setSource("POS");
+        transaction.setDescription("Balance Update Test Transaction");
+        transaction.setAmount(transactionAmount);
         transaction.setCardNumber(TEST_CARD_NUMBER_1);
-        transaction.setOriginationTimestamp(LocalDateTime.now());
-        transactionRepository.save(transaction);
+        transaction.setOriginalTimestamp(LocalDateTime.now());
+        transaction.setStatus("PENDING");
+        dailyTransactionStagingRepository.save(transaction);
         
         // Record initial account balance
         Account accountBefore = accountRepository.findByAccountId(TEST_ACCOUNT_ID_1).orElseThrow();
@@ -507,37 +644,40 @@ public class DailyTransactionProcessingJobTest {
         BigDecimal amount2 = new BigDecimal("200.00").setScale(2, RoundingMode.HALF_UP);
         BigDecimal amount3 = new BigDecimal("300.00").setScale(2, RoundingMode.HALF_UP);
         
-        Transaction transaction1 = new Transaction();
+        DailyTransactionStaging transaction1 = new DailyTransactionStaging();
         transaction1.setTransactionId(TEST_TRAN_ID_1);
-        transaction1.setTransactionTypeCode("PU");
-        transaction1.setTransactionCategoryCode(1001);
-        transaction1.setTransactionSource("POS");
-        transaction1.setTransactionDescription("Transaction Boundary Test 1");
-        transaction1.setTransactionAmount(amount1);
+        transaction1.setTypeCode("PU");
+        transaction1.setCategoryCode(1001);
+        transaction1.setSource("POS");
+        transaction1.setDescription("Transaction Boundary Test 1");
+        transaction1.setAmount(amount1);
         transaction1.setCardNumber(TEST_CARD_NUMBER_1);
-        transaction1.setOriginationTimestamp(LocalDateTime.now());
+        transaction1.setOriginalTimestamp(LocalDateTime.now());
+        transaction1.setStatus("PENDING");
         
-        Transaction transaction2 = new Transaction();
+        DailyTransactionStaging transaction2 = new DailyTransactionStaging();
         transaction2.setTransactionId(TEST_TRAN_ID_2);
-        transaction2.setTransactionTypeCode("PU");
-        transaction2.setTransactionCategoryCode(1002);
-        transaction2.setTransactionSource("ONLINE");
-        transaction2.setTransactionDescription("Transaction Boundary Test 2");
-        transaction2.setTransactionAmount(amount2);
+        transaction2.setTypeCode("PU");
+        transaction2.setCategoryCode(1002);
+        transaction2.setSource("ONLINE");
+        transaction2.setDescription("Transaction Boundary Test 2");
+        transaction2.setAmount(amount2);
         transaction2.setCardNumber(TEST_CARD_NUMBER_1);
-        transaction2.setOriginationTimestamp(LocalDateTime.now());
+        transaction2.setOriginalTimestamp(LocalDateTime.now());
+        transaction2.setStatus("PENDING");
         
-        Transaction transaction3 = new Transaction();
+        DailyTransactionStaging transaction3 = new DailyTransactionStaging();
         transaction3.setTransactionId(TEST_TRAN_ID_3);
-        transaction3.setTransactionTypeCode("PU");
-        transaction3.setTransactionCategoryCode(1003);
-        transaction3.setTransactionSource("MOBILE");
-        transaction3.setTransactionDescription("Transaction Boundary Test 3");
-        transaction3.setTransactionAmount(amount3);
+        transaction3.setTypeCode("PU");
+        transaction3.setCategoryCode(1003);
+        transaction3.setSource("MOBILE");
+        transaction3.setDescription("Transaction Boundary Test 3");
+        transaction3.setAmount(amount3);
         transaction3.setCardNumber(TEST_CARD_NUMBER_1);
-        transaction3.setOriginationTimestamp(LocalDateTime.now());
+        transaction3.setOriginalTimestamp(LocalDateTime.now());
+        transaction3.setStatus("PENDING");
         
-        transactionRepository.saveAll(List.of(transaction1, transaction2, transaction3));
+        dailyTransactionStagingRepository.saveAll(List.of(transaction1, transaction2, transaction3));
         
         // Record initial balance
         Account accountBefore = accountRepository.findByAccountId(TEST_ACCOUNT_ID_1).orElseThrow();
@@ -592,32 +732,32 @@ public class DailyTransactionProcessingJobTest {
      *     END-IF
      * </pre>
      * 
-     * <p><strong>Transaction Type Interpretation:</strong></p>
+     * <p><strong>Transaction Type Interpretation (Per COBOL Logic):</strong></p>
      * <ul>
-     *   <li><strong>Debit (Positive Amount):</strong> Charges to cardholder
+     *   <li><strong>Positive Amount (Charges):</strong> Charges to cardholder
      *       <ul>
      *         <li>Purchases (PU): +$100.00</li>
      *         <li>Fees (FE): +$25.00</li>
      *         <li>Interest (IN): +$15.50</li>
-     *         <li>Effect: Increases balance, increases cycle debit counter</li>
+     *         <li>Effect: Increases balance, added to CYCLE-CREDIT counter (per COBOL line 549)</li>
      *       </ul>
      *   </li>
-     *   <li><strong>Credit (Negative Amount):</strong> Credits to cardholder
+     *   <li><strong>Negative Amount (Payments/Refunds):</strong> Credits to cardholder
      *       <ul>
      *         <li>Payments (PM): -$500.00</li>
      *         <li>Refunds (RF): -$50.00</li>
      *         <li>Adjustments (AJ): -$10.00</li>
-     *         <li>Effect: Decreases balance, increases cycle credit counter</li>
+     *         <li>Effect: Decreases balance, added to CYCLE-DEBIT counter (per COBOL line 551)</li>
      *       </ul>
      *   </li>
      * </ul>
      * 
-     * <p><strong>Assertions:</strong></p>
+     * <p><strong>Assertions (Per COBOL Logic Lines 548-552):</strong></p>
      * <ul>
-     *   <li>Debit transaction: balance increases, cycle debit increases</li>
-     *   <li>Credit transaction: balance decreases, cycle credit increases</li>
+     *   <li>Positive amount (+$150): balance increases, CYCLE-CREDIT increases (line 549)</li>
+     *   <li>Negative amount (-$75): balance decreases, CYCLE-DEBIT decreases (line 551)</li>
      *   <li>Both counters updated correctly per COBOL conditional logic</li>
-     *   <li>Final balance = initial + debit - credit</li>
+     *   <li>Final balance = initial + positive_amount + negative_amount</li>
      * </ul>
      */
     @Test
@@ -626,27 +766,29 @@ public class DailyTransactionProcessingJobTest {
         BigDecimal debitAmount = new BigDecimal("150.00").setScale(2, RoundingMode.HALF_UP);
         BigDecimal creditAmount = new BigDecimal("-75.00").setScale(2, RoundingMode.HALF_UP);
         
-        Transaction debitTransaction = new Transaction();
+        DailyTransactionStaging debitTransaction = new DailyTransactionStaging();
         debitTransaction.setTransactionId(TEST_TRAN_ID_1);
-        debitTransaction.setTransactionTypeCode("PU");
-        debitTransaction.setTransactionCategoryCode(1001);
-        debitTransaction.setTransactionSource("POS");
-        debitTransaction.setTransactionDescription("Debit Transaction - Purchase");
-        debitTransaction.setTransactionAmount(debitAmount);
+        debitTransaction.setTypeCode("PU");
+        debitTransaction.setCategoryCode(1001);
+        debitTransaction.setSource("POS");
+        debitTransaction.setDescription("Debit Transaction - Purchase");
+        debitTransaction.setAmount(debitAmount);
         debitTransaction.setCardNumber(TEST_CARD_NUMBER_1);
-        debitTransaction.setOriginationTimestamp(LocalDateTime.now());
+        debitTransaction.setOriginalTimestamp(LocalDateTime.now());
+        debitTransaction.setStatus("PENDING");
         
-        Transaction creditTransaction = new Transaction();
+        DailyTransactionStaging creditTransaction = new DailyTransactionStaging();
         creditTransaction.setTransactionId(TEST_TRAN_ID_2);
-        creditTransaction.setTransactionTypeCode("PM");
-        creditTransaction.setTransactionCategoryCode(3001);
-        creditTransaction.setTransactionSource("ONLINE");
-        creditTransaction.setTransactionDescription("Credit Transaction - Payment");
-        creditTransaction.setTransactionAmount(creditAmount);
+        creditTransaction.setTypeCode("PM");
+        creditTransaction.setCategoryCode(3001);
+        creditTransaction.setSource("ONLINE");
+        creditTransaction.setDescription("Credit Transaction - Payment");
+        creditTransaction.setAmount(creditAmount);
         creditTransaction.setCardNumber(TEST_CARD_NUMBER_1);
-        creditTransaction.setOriginationTimestamp(LocalDateTime.now());
+        creditTransaction.setOriginalTimestamp(LocalDateTime.now());
+        creditTransaction.setStatus("PENDING");
         
-        transactionRepository.saveAll(List.of(debitTransaction, creditTransaction));
+        dailyTransactionStagingRepository.saveAll(List.of(debitTransaction, creditTransaction));
         
         // Record initial account state
         Account accountBefore = accountRepository.findByAccountId(TEST_ACCOUNT_ID_1).orElseThrow();
@@ -676,17 +818,19 @@ public class DailyTransactionProcessingJobTest {
                 .setScale(2, RoundingMode.HALF_UP);
         assertThat(accountAfter.getCurrentBalance()).isEqualTo(expectedBalance);
         
-        // Validate cycle debit counter increased by positive amount (per COBOL line 549)
-        BigDecimal expectedCycleDebit = initialCycleDebit
-                .add(debitAmount)
-                .setScale(2, RoundingMode.HALF_UP);
-        assertThat(accountAfter.getCurrentCycleDebit()).isEqualTo(expectedCycleDebit);
-        
-        // Validate cycle credit counter increased by negative amount (per COBOL line 551)
+        // Validate cycle CREDIT counter increased by POSITIVE amount (per COBOL line 549)
+        // COBOL: IF DALYTRAN-AMT >= 0 THEN ADD DALYTRAN-AMT TO ACCT-CURR-CYC-CREDIT
         BigDecimal expectedCycleCredit = initialCycleCredit
-                .add(creditAmount)
+                .add(debitAmount)  // debitAmount is +150.00, goes to CREDIT per COBOL
                 .setScale(2, RoundingMode.HALF_UP);
         assertThat(accountAfter.getCurrentCycleCredit()).isEqualTo(expectedCycleCredit);
+        
+        // Validate cycle DEBIT counter increased by NEGATIVE amount (per COBOL line 551)
+        // COBOL: IF DALYTRAN-AMT < 0 THEN ADD DALYTRAN-AMT TO ACCT-CURR-CYC-DEBIT
+        BigDecimal expectedCycleDebit = initialCycleDebit
+                .add(creditAmount)  // creditAmount is -75.00, goes to DEBIT per COBOL
+                .setScale(2, RoundingMode.HALF_UP);
+        assertThat(accountAfter.getCurrentCycleDebit()).isEqualTo(expectedCycleDebit);
     }
     
     /**
@@ -733,21 +877,22 @@ public class DailyTransactionProcessingJobTest {
     public void testDailyTransactionProcessingJob_CheckpointRestart() throws Exception {
         // Arrange: Create test transactions
         int totalTransactions = 100;
-        List<Transaction> transactions = new ArrayList<>();
+        List<DailyTransactionStaging> transactions = new ArrayList<>();
         
         for (int i = 1; i <= totalTransactions; i++) {
-            Transaction transaction = new Transaction();
+            DailyTransactionStaging transaction = new DailyTransactionStaging();
             transaction.setTransactionId(String.format("202401010000%04d", i));
-            transaction.setTransactionTypeCode("PU");
-            transaction.setTransactionCategoryCode(1001);
-            transaction.setTransactionSource("POS");
-            transaction.setTransactionDescription("Checkpoint Test Transaction " + i);
-            transaction.setTransactionAmount(new BigDecimal("10.00").setScale(2, RoundingMode.HALF_UP));
+            transaction.setTypeCode("PU");
+            transaction.setCategoryCode(1001);
+            transaction.setSource("POS");
+            transaction.setDescription("Checkpoint Test Transaction " + i);
+            transaction.setAmount(new BigDecimal("10.00").setScale(2, RoundingMode.HALF_UP));
             transaction.setCardNumber(TEST_CARD_NUMBER_1);
-            transaction.setOriginationTimestamp(LocalDateTime.now());
+            transaction.setOriginalTimestamp(LocalDateTime.now());
+            transaction.setStatus("PENDING");
             transactions.add(transaction);
         }
-        transactionRepository.saveAll(transactions);
+        dailyTransactionStagingRepository.saveAll(transactions);
         
         // Configure job
         jobLauncherTestUtils.setJob(dailyTransactionProcessingJob);
@@ -833,32 +978,34 @@ public class DailyTransactionProcessingJobTest {
     public void testDailyTransactionProcessingJob_ErrorHandling() throws Exception {
         // Arrange: Create mix of valid and invalid transactions
         // Valid transaction 1
-        Transaction validTransaction1 = new Transaction();
+        DailyTransactionStaging validTransaction1 = new DailyTransactionStaging();
         validTransaction1.setTransactionId(TEST_TRAN_ID_1);
-        validTransaction1.setTransactionTypeCode("PU");
-        validTransaction1.setTransactionCategoryCode(1001);
-        validTransaction1.setTransactionSource("POS");
-        validTransaction1.setTransactionDescription("Valid Transaction 1");
-        validTransaction1.setTransactionAmount(new BigDecimal("50.00").setScale(2, RoundingMode.HALF_UP));
+        validTransaction1.setTypeCode("PU");
+        validTransaction1.setCategoryCode(1001);
+        validTransaction1.setSource("POS");
+        validTransaction1.setDescription("Valid Transaction 1");
+        validTransaction1.setAmount(new BigDecimal("50.00").setScale(2, RoundingMode.HALF_UP));
         validTransaction1.setCardNumber(TEST_CARD_NUMBER_1);
-        validTransaction1.setOriginationTimestamp(LocalDateTime.now());
+        validTransaction1.setOriginalTimestamp(LocalDateTime.now());
+        validTransaction1.setStatus("PENDING");
         
         // Valid transaction 2
-        Transaction validTransaction2 = new Transaction();
+        DailyTransactionStaging validTransaction2 = new DailyTransactionStaging();
         validTransaction2.setTransactionId(TEST_TRAN_ID_2);
-        validTransaction2.setTransactionTypeCode("PU");
-        validTransaction2.setTransactionCategoryCode(1002);
-        validTransaction2.setTransactionSource("ONLINE");
-        validTransaction2.setTransactionDescription("Valid Transaction 2");
-        validTransaction2.setTransactionAmount(new BigDecimal("75.00").setScale(2, RoundingMode.HALF_UP));
+        validTransaction2.setTypeCode("PU");
+        validTransaction2.setCategoryCode(1002);
+        validTransaction2.setSource("ONLINE");
+        validTransaction2.setDescription("Valid Transaction 2");
+        validTransaction2.setAmount(new BigDecimal("75.00").setScale(2, RoundingMode.HALF_UP));
         validTransaction2.setCardNumber(TEST_CARD_NUMBER_1);
-        validTransaction2.setOriginationTimestamp(LocalDateTime.now());
+        validTransaction2.setOriginalTimestamp(LocalDateTime.now());
+        validTransaction2.setStatus("PENDING");
         
         // Note: Invalid transactions would be created with invalid card numbers or
         // amounts exceeding credit limits, which would trigger ValidationException
         // For this test, we validate the skip mechanism is configured correctly
         
-        transactionRepository.saveAll(List.of(validTransaction1, validTransaction2));
+        dailyTransactionStagingRepository.saveAll(List.of(validTransaction1, validTransaction2));
         
         // Configure and launch job
         jobLauncherTestUtils.setJob(dailyTransactionProcessingJob);
@@ -944,28 +1091,30 @@ public class DailyTransactionProcessingJobTest {
         
         BigDecimal overlimitAmount = new BigDecimal("20000.00").setScale(2, RoundingMode.HALF_UP);
         
-        Transaction overlimitTransaction = new Transaction();
+        DailyTransactionStaging overlimitTransaction = new DailyTransactionStaging();
         overlimitTransaction.setTransactionId(TEST_TRAN_ID_1);
-        overlimitTransaction.setTransactionTypeCode("PU");
-        overlimitTransaction.setTransactionCategoryCode(1001);
-        overlimitTransaction.setTransactionSource("POS");
-        overlimitTransaction.setTransactionDescription("Overlimit Transaction Test");
-        overlimitTransaction.setTransactionAmount(overlimitAmount);
+        overlimitTransaction.setTypeCode("PU");
+        overlimitTransaction.setCategoryCode(1001);
+        overlimitTransaction.setSource("POS");
+        overlimitTransaction.setDescription("Overlimit Transaction Test");
+        overlimitTransaction.setAmount(overlimitAmount);
         overlimitTransaction.setCardNumber(TEST_CARD_NUMBER_1);
-        overlimitTransaction.setOriginationTimestamp(LocalDateTime.now());
+        overlimitTransaction.setOriginalTimestamp(LocalDateTime.now());
+        overlimitTransaction.setStatus("PENDING");
         
         // Also create a valid transaction to ensure job doesn't fail completely
-        Transaction validTransaction = new Transaction();
+        DailyTransactionStaging validTransaction = new DailyTransactionStaging();
         validTransaction.setTransactionId(TEST_TRAN_ID_2);
-        validTransaction.setTransactionTypeCode("PU");
-        validTransaction.setTransactionCategoryCode(1002);
-        validTransaction.setTransactionSource("ONLINE");
-        validTransaction.setTransactionDescription("Valid Transaction");
-        validTransaction.setTransactionAmount(new BigDecimal("50.00").setScale(2, RoundingMode.HALF_UP));
+        validTransaction.setTypeCode("PU");
+        validTransaction.setCategoryCode(1002);
+        validTransaction.setSource("ONLINE");
+        validTransaction.setDescription("Valid Transaction");
+        validTransaction.setAmount(new BigDecimal("50.00").setScale(2, RoundingMode.HALF_UP));
         validTransaction.setCardNumber(TEST_CARD_NUMBER_1);
-        validTransaction.setOriginationTimestamp(LocalDateTime.now());
+        validTransaction.setOriginalTimestamp(LocalDateTime.now());
+        validTransaction.setStatus("PENDING");
         
-        transactionRepository.saveAll(List.of(overlimitTransaction, validTransaction));
+        dailyTransactionStagingRepository.saveAll(List.of(overlimitTransaction, validTransaction));
         
         // Record initial balance
         Account accountBefore = accountRepository.findByAccountId(TEST_ACCOUNT_ID_1).orElseThrow();
@@ -991,7 +1140,10 @@ public class DailyTransactionProcessingJobTest {
         BigDecimal expectedBalance = initialBalance.add(validTransactionAmount).setScale(2, RoundingMode.HALF_UP);
         assertThat(accountAfter.getCurrentBalance()).isEqualTo(expectedBalance);
         
-        // Validate skip count indicates rejected transaction
+        // Validate filter count indicates rejected transaction
+        // Note: When processor returns null (filtered), Spring Batch doesn't count it as "skip"
+        // Skip count is for exceptions caught by skip policy
+        // Filter count = read count - write count (processor returned null)
         jobExecution.getStepExecutions().forEach(stepExecution -> {
             // Should have read 2 transactions
             assertThat(stepExecution.getReadCount()).isEqualTo(2);
@@ -999,8 +1151,9 @@ public class DailyTransactionProcessingJobTest {
             // Should have written 1 valid transaction
             assertThat(stepExecution.getWriteCount()).isEqualTo(1);
             
-            // Should have skipped 1 overlimit transaction
-            assertThat(stepExecution.getSkipCount()).isEqualTo(1);
+            // Should have filtered 1 overlimit transaction (processor returned null)
+            long filterCount = stepExecution.getReadCount() - stepExecution.getWriteCount();
+            assertThat(filterCount).isEqualTo(1L);
         });
     }
     
@@ -1063,16 +1216,17 @@ public class DailyTransactionProcessingJobTest {
         String expectedCardNumber = TEST_CARD_NUMBER_1;
         LocalDateTime expectedOriginationTimestamp = LocalDateTime.now().withNano(0); // Remove nanoseconds for comparison
         
-        Transaction inputTransaction = new Transaction();
+        DailyTransactionStaging inputTransaction = new DailyTransactionStaging();
         inputTransaction.setTransactionId(expectedTransactionId);
-        inputTransaction.setTransactionTypeCode(expectedTypeCode);
-        inputTransaction.setTransactionCategoryCode(expectedCategoryCode);
-        inputTransaction.setTransactionSource(expectedSource);
-        inputTransaction.setTransactionDescription(expectedDescription);
-        inputTransaction.setTransactionAmount(expectedAmount);
+        inputTransaction.setTypeCode(expectedTypeCode);
+        inputTransaction.setCategoryCode(expectedCategoryCode);
+        inputTransaction.setSource(expectedSource);
+        inputTransaction.setDescription(expectedDescription);
+        inputTransaction.setAmount(expectedAmount);
         inputTransaction.setCardNumber(expectedCardNumber);
-        inputTransaction.setOriginationTimestamp(expectedOriginationTimestamp);
-        transactionRepository.save(inputTransaction);
+        inputTransaction.setOriginalTimestamp(expectedOriginationTimestamp);
+        inputTransaction.setStatus("PENDING");
+        dailyTransactionStagingRepository.save(inputTransaction);
         
         // Configure and launch job
         jobLauncherTestUtils.setJob(dailyTransactionProcessingJob);
@@ -1154,21 +1308,22 @@ public class DailyTransactionProcessingJobTest {
         // Arrange: Create representative transaction volume
         // Note: Using 1000 transactions for test speed (production would be 10,000+)
         int transactionCount = 1000;
-        List<Transaction> transactions = new ArrayList<>();
+        List<DailyTransactionStaging> transactions = new ArrayList<>();
         
         for (int i = 1; i <= transactionCount; i++) {
-            Transaction transaction = new Transaction();
+            DailyTransactionStaging transaction = new DailyTransactionStaging();
             transaction.setTransactionId(String.format("202401010000%04d", i));
-            transaction.setTransactionTypeCode("PU");
-            transaction.setTransactionCategoryCode(1001);
-            transaction.setTransactionSource("BATCH");
-            transaction.setTransactionDescription("Performance Test Transaction " + i);
-            transaction.setTransactionAmount(new BigDecimal("25.00").setScale(2, RoundingMode.HALF_UP));
+            transaction.setTypeCode("PU");
+            transaction.setCategoryCode(1001);
+            transaction.setSource("BATCH");
+            transaction.setDescription("Performance Test Transaction " + i);
+            transaction.setAmount(new BigDecimal("25.00").setScale(2, RoundingMode.HALF_UP));
             transaction.setCardNumber(TEST_CARD_NUMBER_1);
-            transaction.setOriginationTimestamp(LocalDateTime.now());
+            transaction.setOriginalTimestamp(LocalDateTime.now());
+            transaction.setStatus("PENDING");
             transactions.add(transaction);
         }
-        transactionRepository.saveAll(transactions);
+        dailyTransactionStagingRepository.saveAll(transactions);
         
         // Configure job
         jobLauncherTestUtils.setJob(dailyTransactionProcessingJob);
