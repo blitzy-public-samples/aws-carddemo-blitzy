@@ -20,10 +20,12 @@ import com.carddemo.batch.job.InterestCalculationJob;
 import com.carddemo.batch.processor.InterestCalculationProcessor;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.AccountXref;
+import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
 import com.carddemo.entity.TransactionAggregate;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.AccountXrefRepository;
+import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.util.DecimalUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -40,6 +42,8 @@ import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.annotation.Commit;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -151,6 +155,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBatchTest
 @SpringBootTest
 @ActiveProfiles("test")
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
 public class InterestCalculationJobTest {
 
     /**
@@ -189,6 +194,48 @@ public class InterestCalculationJobTest {
     private AccountXrefRepository accountXrefRepository;
 
     /**
+     * Card repository for test data setup.
+     * Used to create card records associated with accounts.
+     */
+    @Autowired
+    private com.carddemo.repository.CardRepository cardRepository;
+
+    /**
+     * Customer repository for test data setup.
+     * Used to create customer records required for account foreign key relationships.
+     */
+    @Autowired
+    private CustomerRepository customerRepository;
+
+    /**
+     * Transaction aggregate repository for test data setup.
+     * Used to create transaction category balance records for interest calculation.
+     */
+    @Autowired
+    private com.carddemo.repository.TransactionAggregateRepository transactionAggregateRepository;
+
+    /**
+     * Transaction type repository for reference data setup.
+     * Used to create transaction type records required for foreign key relationships.
+     */
+    @Autowired
+    private com.carddemo.repository.TransactionTypeRepository transactionTypeRepository;
+
+    /**
+     * Transaction category repository for reference data setup.
+     * Used to create transaction category records required for foreign key relationships.
+     */
+    @Autowired
+    private com.carddemo.repository.TransactionCategoryRepository transactionCategoryRepository;
+
+    /**
+     * Account group repository for reference data setup.
+     * Used to create account group records with interest rates for calculation.
+     */
+    @Autowired
+    private com.carddemo.repository.AccountGroupRepository accountGroupRepository;
+
+    /**
      * DecimalUtils utility for COMP-3 precision operations.
      * Used in test assertions to validate BigDecimal calculation results with exact precision.
      */
@@ -220,6 +267,11 @@ public class InterestCalculationJobTest {
     private static final String STATEMENT_DATE = "2024-01-01";
 
     /**
+     * Test customer entity shared across all test accounts.
+     */
+    private Customer testCustomer;
+
+    /**
      * Sets up test data before each test method execution.
      * 
      * <p>Creates comprehensive test data including:</p>
@@ -231,20 +283,37 @@ public class InterestCalculationJobTest {
      * 
      * <p>All test data uses EXACT COMP-3 precision with BigDecimal scale 2 and RoundingMode.HALF_UP
      * to match COBOL numeric field definitions.</p>
+     * 
+     * <p><strong>Transaction Management:</strong> @Transactional with @Commit ensures test data is 
+     * committed to the database before the batch job runs, preventing transaction isolation conflicts 
+     * with the job's @Transactional writer configuration (READ_COMMITTED isolation level).</p>
      */
     @BeforeEach
+    @Transactional
+    @Commit
     public void setUp() {
         // Clean up any existing test data to ensure clean state
         cleanUpTestData();
 
+        // Create reference data required for foreign key relationships
+        createTestTransactionTypes();
+        createTestTransactionCategories();
+        createTestAccountGroups();
+
+        // Create test customer required for account foreign key
+        createTestCustomer();
+
         // Create test account records with known balances and interest rates
         createTestAccounts();
+
+        // Create test card records associated with accounts
+        createTestCards();
 
         // Create cross-reference records linking cards to accounts
         createTestAccountXrefs();
 
-        // Note: TransactionAggregate test data would be created here if repository was available
-        // For this implementation, we assume processor can handle account-based interest calculation
+        // Create transaction aggregate records with category balances for interest calculation
+        createTestTransactionAggregates();
     }
 
     /**
@@ -258,11 +327,141 @@ public class InterestCalculationJobTest {
         // Delete all test transactions
         transactionRepository.deleteAll();
 
+        // Delete all test transaction aggregates
+        transactionAggregateRepository.deleteAll();
+
         // Delete all test cross-references
         accountXrefRepository.deleteAll();
 
+        // Delete all test cards
+        cardRepository.deleteAll();
+
         // Delete all test accounts
         accountRepository.deleteAll();
+
+        // Delete all test customers
+        customerRepository.deleteAll();
+
+        // Delete all test account groups
+        accountGroupRepository.deleteAll();
+
+        // Delete all test transaction categories
+        transactionCategoryRepository.deleteAll();
+
+        // Delete all test transaction types
+        transactionTypeRepository.deleteAll();
+    }
+
+    /**
+     * Creates test transaction type reference data.
+     * 
+     * <p>Transaction types are required for foreign key relationships in transaction categories and aggregates.</p>
+     */
+    private void createTestTransactionTypes() {
+        com.carddemo.entity.TransactionType type01 = new com.carddemo.entity.TransactionType();
+        type01.setTypeCode("01");
+        type01.setTypeDescription("Interest Charge");
+        transactionTypeRepository.save(type01);
+    }
+
+    /**
+     * Creates test transaction category reference data.
+     * 
+     * <p>Transaction categories are required for foreign key relationships in transaction aggregates
+     * and interest transactions. The processor uses category_code=5 for interest transactions.</p>
+     */
+    private void createTestTransactionCategories() {
+        // Category 5: Interest transactions (used by InterestCalculationProcessor.INTEREST_TRANSACTION_CATEGORY_CODE)
+        com.carddemo.entity.TransactionCategory category5 = new com.carddemo.entity.TransactionCategory();
+        com.carddemo.entity.TransactionCategory.CategoryId categoryId5 = 
+            new com.carddemo.entity.TransactionCategory.CategoryId();
+        categoryId5.setTypeCode("01");
+        categoryId5.setCategoryCode(5);
+        category5.setId(categoryId5);
+        category5.setCategoryDescription("Interest Charge");
+        transactionCategoryRepository.save(category5);
+        
+        // Category 5001: Purchase balance interest (used by TransactionAggregate test data)
+        com.carddemo.entity.TransactionCategory category5001 = new com.carddemo.entity.TransactionCategory();
+        com.carddemo.entity.TransactionCategory.CategoryId categoryId5001 = 
+            new com.carddemo.entity.TransactionCategory.CategoryId();
+        categoryId5001.setTypeCode("01");
+        categoryId5001.setCategoryCode(5001);
+        category5001.setId(categoryId5001);
+        category5001.setCategoryDescription("Interest on Purchase Balance");
+        transactionCategoryRepository.save(category5001);
+    }
+
+    /**
+     * Creates test account group reference data with interest rates.
+     * 
+     * <p>Account groups define the interest rates applied to different account/transaction type/category combinations.
+     * Required by InterestCalculationProcessor to look up applicable interest rates.</p>
+     */
+    private void createTestAccountGroups() {
+        List<com.carddemo.entity.AccountGroup> accountGroups = new ArrayList<>();
+
+        // Create DEFAULT account group with interest rate for type 01, category 5001
+        // Interest rate stored as percentage (18.5 for 18.5% APR) per COBOL CBACT04C.cbl formula
+        com.carddemo.entity.AccountGroup defaultGroup = new com.carddemo.entity.AccountGroup();
+        com.carddemo.entity.AccountGroup.GroupId defaultGroupId = 
+            new com.carddemo.entity.AccountGroup.GroupId();
+        defaultGroupId.setAccountGroupId("DEFAULT");
+        defaultGroupId.setTransactionTypeCode("01");
+        defaultGroupId.setTransactionCategoryCode(5001);
+        defaultGroup.setId(defaultGroupId);
+        defaultGroup.setInterestRate(new java.math.BigDecimal("18.50").setScale(2, java.math.RoundingMode.HALF_UP));
+        accountGroups.add(defaultGroup);
+
+        // Create GOLD account group with interest rate for type 01, category 5001
+        // Interest rate stored as percentage (12.0 for 12% APR) per COBOL CBACT04C.cbl formula
+        com.carddemo.entity.AccountGroup goldGroup = new com.carddemo.entity.AccountGroup();
+        com.carddemo.entity.AccountGroup.GroupId goldGroupId = 
+            new com.carddemo.entity.AccountGroup.GroupId();
+        goldGroupId.setAccountGroupId("GOLD");
+        goldGroupId.setTransactionTypeCode("01");
+        goldGroupId.setTransactionCategoryCode(5001);
+        goldGroup.setId(goldGroupId);
+        goldGroup.setInterestRate(new java.math.BigDecimal("12.00").setScale(2, java.math.RoundingMode.HALF_UP));
+        accountGroups.add(goldGroup);
+
+        // Create PLATINUM account group with interest rate for type 01, category 5001
+        // Interest rate stored as percentage (24.0 for 24% APR) per COBOL CBACT04C.cbl formula
+        com.carddemo.entity.AccountGroup platinumGroup = new com.carddemo.entity.AccountGroup();
+        com.carddemo.entity.AccountGroup.GroupId platinumGroupId = 
+            new com.carddemo.entity.AccountGroup.GroupId();
+        platinumGroupId.setAccountGroupId("PLATINUM");
+        platinumGroupId.setTransactionTypeCode("01");
+        platinumGroupId.setTransactionCategoryCode(5001);
+        platinumGroup.setId(platinumGroupId);
+        platinumGroup.setInterestRate(new java.math.BigDecimal("24.00").setScale(2, java.math.RoundingMode.HALF_UP));
+        accountGroups.add(platinumGroup);
+
+        accountGroupRepository.saveAll(accountGroups);
+    }
+
+    /**
+     * Creates test customer required for account foreign key relationships.
+     * 
+     * <p>All test accounts will reference this shared customer entity.</p>
+     */
+    private void createTestCustomer() {
+        testCustomer = new Customer();
+        testCustomer.setCustomerId(TEST_CUSTOMER_ID);
+        testCustomer.setFirstName("John");
+        testCustomer.setLastName("Doe");
+        testCustomer.setDateOfBirth(LocalDate.of(1980, 1, 1));
+        testCustomer.setSsn("123456789");
+        testCustomer.setFicoCreditScore(750);
+        testCustomer.setPhoneNumber1("555-1234");
+        testCustomer.setPhoneNumber2("555-5678");
+        testCustomer.setAddressLine1("123 Main St");
+        testCustomer.setAddressLine2("Apt 4B");
+        testCustomer.setStateCode("NY");
+        testCustomer.setZipCode("10001");
+        testCustomer.setCountryCode("USA");
+        
+        testCustomer = customerRepository.save(testCustomer);
     }
 
     /**
@@ -282,6 +481,7 @@ public class InterestCalculationJobTest {
         // Expected monthly interest: (1000.00 * 18.5) / 1200 = 15.41667 → $15.42
         Account account1 = new Account();
         account1.setAccountId(TEST_ACCOUNT_ID_1);
+        account1.setCustomer(testCustomer);
         account1.setActiveStatus("Y");
         account1.setCurrentBalance(DecimalUtils.createMoneyAmount("1000.00"));
         account1.setCreditLimit(DecimalUtils.createMoneyAmount("5000.00"));
@@ -298,6 +498,7 @@ public class InterestCalculationJobTest {
         // Expected monthly interest: (5000.00 * 12.0) / 1200 = 50.00
         Account account2 = new Account();
         account2.setAccountId(TEST_ACCOUNT_ID_2);
+        account2.setCustomer(testCustomer);
         account2.setActiveStatus("Y");
         account2.setCurrentBalance(DecimalUtils.createMoneyAmount("5000.00"));
         account2.setCreditLimit(DecimalUtils.createMoneyAmount("10000.00"));
@@ -314,6 +515,7 @@ public class InterestCalculationJobTest {
         // Expected monthly interest: (10000.00 * 24.0) / 1200 = 200.00
         Account account3 = new Account();
         account3.setAccountId(TEST_ACCOUNT_ID_3);
+        account3.setCustomer(testCustomer);
         account3.setActiveStatus("Y");
         account3.setCurrentBalance(DecimalUtils.createMoneyAmount("10000.00"));
         account3.setCreditLimit(DecimalUtils.createMoneyAmount("20000.00"));
@@ -330,6 +532,47 @@ public class InterestCalculationJobTest {
     }
 
     /**
+     * Creates test card records associated with accounts.
+     * 
+     * <p>Cards are required for interest calculation processor to find card associations with accounts.</p>
+     */
+    private void createTestCards() {
+        List<com.carddemo.entity.Card> cards = new ArrayList<>();
+
+        // Card 1 for Account 1
+        com.carddemo.entity.Card card1 = new com.carddemo.entity.Card();
+        card1.setCardNumber(TEST_CARD_NUMBER_1);
+        card1.setAccountId(TEST_ACCOUNT_ID_1);
+        card1.setCvvCode("123");
+        card1.setEmbossedName("JOHN DOE");
+        card1.setExpirationDate(LocalDate.of(2027, 12, 31));
+        card1.setActiveStatus("Y");
+        cards.add(card1);
+
+        // Card 2 for Account 2
+        com.carddemo.entity.Card card2 = new com.carddemo.entity.Card();
+        card2.setCardNumber(TEST_CARD_NUMBER_2);
+        card2.setAccountId(TEST_ACCOUNT_ID_2);
+        card2.setCvvCode("456");
+        card2.setEmbossedName("JOHN DOE");
+        card2.setExpirationDate(LocalDate.of(2028, 5, 31));
+        card2.setActiveStatus("Y");
+        cards.add(card2);
+
+        // Card 3 for Account 3
+        com.carddemo.entity.Card card3 = new com.carddemo.entity.Card();
+        card3.setCardNumber(TEST_CARD_NUMBER_3);
+        card3.setAccountId(TEST_ACCOUNT_ID_3);
+        card3.setCvvCode("789");
+        card3.setEmbossedName("JOHN DOE");
+        card3.setExpirationDate(LocalDate.of(2027, 3, 14));
+        card3.setActiveStatus("Y");
+        cards.add(card3);
+
+        cardRepository.saveAll(cards);
+    }
+
+    /**
      * Creates test account cross-reference records linking cards to accounts.
      * 
      * <p>Cross-references enable transaction card number population matching COBOL logic
@@ -339,24 +582,81 @@ public class InterestCalculationJobTest {
         List<AccountXref> xrefs = new ArrayList<>();
 
         AccountXref xref1 = new AccountXref();
-        xref1.setCardNumber(TEST_CARD_NUMBER_1);
-        xref1.setCustomerId(TEST_CUSTOMER_ID);
-        xref1.setAccountId(TEST_ACCOUNT_ID_1);
+        AccountXref.AccountXrefId id1 = new AccountXref.AccountXrefId();
+        id1.setCustomerId(TEST_CUSTOMER_ID);
+        id1.setAccountId(TEST_ACCOUNT_ID_1);
+        xref1.setId(id1);
+        xref1.setCreatedDate(LocalDateTime.now());
         xrefs.add(xref1);
 
         AccountXref xref2 = new AccountXref();
-        xref2.setCardNumber(TEST_CARD_NUMBER_2);
-        xref2.setCustomerId(TEST_CUSTOMER_ID);
-        xref2.setAccountId(TEST_ACCOUNT_ID_2);
+        AccountXref.AccountXrefId id2 = new AccountXref.AccountXrefId();
+        id2.setCustomerId(TEST_CUSTOMER_ID);
+        id2.setAccountId(TEST_ACCOUNT_ID_2);
+        xref2.setId(id2);
+        xref2.setCreatedDate(LocalDateTime.now());
         xrefs.add(xref2);
 
         AccountXref xref3 = new AccountXref();
-        xref3.setCardNumber(TEST_CARD_NUMBER_3);
-        xref3.setCustomerId(TEST_CUSTOMER_ID);
-        xref3.setAccountId(TEST_ACCOUNT_ID_3);
+        AccountXref.AccountXrefId id3 = new AccountXref.AccountXrefId();
+        id3.setCustomerId(TEST_CUSTOMER_ID);
+        id3.setAccountId(TEST_ACCOUNT_ID_3);
+        xref3.setId(id3);
+        xref3.setCreatedDate(LocalDateTime.now());
         xrefs.add(xref3);
 
         accountXrefRepository.saveAll(xrefs);
+    }
+
+    /**
+     * Creates test transaction aggregate records with category balances for interest calculation.
+     * 
+     * <p>Transaction aggregates represent pre-calculated category balances that are inputs to
+     * the interest calculation job, matching COBOL CBACT04C.cbl's TCATBAL-FILE sequential read.</p>
+     */
+    private void createTestTransactionAggregates() {
+        List<TransactionAggregate> aggregates = new ArrayList<>();
+
+        // Aggregate for Account 1: Transaction type "01" (interest), category 5001, balance $1,000.00
+        TransactionAggregate aggregate1 = new TransactionAggregate();
+        TransactionAggregate.AggregateId id1 = new TransactionAggregate.AggregateId();
+        id1.setAccountId(TEST_ACCOUNT_ID_1);
+        id1.setTransactionTypeCode("01");
+        id1.setTransactionCategoryCode(5001);
+        aggregate1.setId(id1);
+        aggregate1.setCategoryBalance(DecimalUtils.createMoneyAmount("1000.00"));
+        aggregate1.setTransactionCount(10);
+        aggregate1.setCreatedAt(LocalDateTime.now());
+        aggregate1.setLastUpdated(LocalDateTime.now());
+        aggregates.add(aggregate1);
+
+        // Aggregate for Account 2: Transaction type "01" (interest), category 5001, balance $5,000.00
+        TransactionAggregate aggregate2 = new TransactionAggregate();
+        TransactionAggregate.AggregateId id2 = new TransactionAggregate.AggregateId();
+        id2.setAccountId(TEST_ACCOUNT_ID_2);
+        id2.setTransactionTypeCode("01");
+        id2.setTransactionCategoryCode(5001);
+        aggregate2.setId(id2);
+        aggregate2.setCategoryBalance(DecimalUtils.createMoneyAmount("5000.00"));
+        aggregate2.setTransactionCount(25);
+        aggregate2.setCreatedAt(LocalDateTime.now());
+        aggregate2.setLastUpdated(LocalDateTime.now());
+        aggregates.add(aggregate2);
+
+        // Aggregate for Account 3: Transaction type "01" (interest), category 5001, balance $10,000.00
+        TransactionAggregate aggregate3 = new TransactionAggregate();
+        TransactionAggregate.AggregateId id3 = new TransactionAggregate.AggregateId();
+        id3.setAccountId(TEST_ACCOUNT_ID_3);
+        id3.setTransactionTypeCode("01");
+        id3.setTransactionCategoryCode(5001);
+        aggregate3.setId(id3);
+        aggregate3.setCategoryBalance(DecimalUtils.createMoneyAmount("10000.00"));
+        aggregate3.setTransactionCount(50);
+        aggregate3.setCreatedAt(LocalDateTime.now());
+        aggregate3.setLastUpdated(LocalDateTime.now());
+        aggregates.add(aggregate3);
+
+        transactionAggregateRepository.saveAll(aggregates);
     }
 
     /**
@@ -487,7 +787,10 @@ public class InterestCalculationJobTest {
         assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
         // Verify interest transactions created for test accounts
-        List<Transaction> interestTransactions = transactionRepository.findByTransactionTypeCode("01");
+        List<Transaction> allTransactions = transactionRepository.findAll();
+        List<Transaction> interestTransactions = allTransactions.stream()
+                .filter(t -> "01".equals(t.getTransactionTypeCode()))
+                .toList();
         
         assertThat(interestTransactions).isNotEmpty();
         
@@ -507,7 +810,7 @@ public class InterestCalculationJobTest {
             
             assertThat(txn.getTransactionAmount()).isEqualTo(expectedInterest);
             assertThat(txn.getTransactionTypeCode()).isEqualTo("01");
-            assertThat(txn.getTransactionCategoryCode()).isEqualTo("05");
+            assertThat(txn.getTransactionCategoryCode()).isEqualTo(5); // Integer type per InterestCalculationProcessor
         }
     }
 
@@ -632,6 +935,7 @@ public class InterestCalculationJobTest {
         // Create account with precise balance requiring rounding
         Account precisionAccount = new Account();
         precisionAccount.setAccountId(10001000099L);
+        precisionAccount.setCustomer(testCustomer);
         precisionAccount.setActiveStatus("Y");
         precisionAccount.setCurrentBalance(DecimalUtils.createMoneyAmount("1234.567")); // Will round to 1234.57
         precisionAccount.setCreditLimit(DecimalUtils.createMoneyAmount("5000.00"));
@@ -645,9 +949,11 @@ public class InterestCalculationJobTest {
         accountRepository.save(precisionAccount);
 
         AccountXref xref = new AccountXref();
-        xref.setCardNumber("4000000000000099");
-        xref.setCustomerId(TEST_CUSTOMER_ID);
-        xref.setAccountId(10001000099L);
+        AccountXref.AccountXrefId xrefId = new AccountXref.AccountXrefId();
+        xrefId.setCustomerId(TEST_CUSTOMER_ID);
+        xrefId.setAccountId(10001000099L);
+        xref.setId(xrefId);
+        xref.setCreatedDate(LocalDateTime.now());
         accountXrefRepository.save(xref);
 
         JobParameters jobParameters = new JobParametersBuilder()
@@ -715,7 +1021,7 @@ public class InterestCalculationJobTest {
             
             // Transaction type and category (system-generated)
             assertThat(txn.getTransactionTypeCode()).isEqualTo("01");
-            assertThat(txn.getTransactionCategoryCode()).isEqualTo("05");
+            assertThat(txn.getTransactionCategoryCode()).isEqualTo(5); // Integer type per InterestCalculationProcessor.INTEREST_TRANSACTION_CATEGORY_CODE
             
             // Transaction source
             assertThat(txn.getTransactionDescription()).contains("Int. for a/c");
@@ -746,10 +1052,13 @@ public class InterestCalculationJobTest {
      */
     @Test
     public void testInterestCalculationJob_CheckpointRestart() throws Exception {
-        // Arrange
+        // Arrange - Use unique statement date to avoid conflicts with other tests
+        String uniqueStatementDate = "2024-02-01"; // Different from other tests
+        long uniqueRunId = System.currentTimeMillis();
+        
         JobParameters jobParameters = new JobParametersBuilder()
-                .addString("statementDate", STATEMENT_DATE)
-                .addLong("run.id", System.currentTimeMillis())
+                .addString("statementDate", uniqueStatementDate)
+                .addLong("run.id", uniqueRunId)
                 .toJobParameters();
 
         jobLauncherTestUtils.setJob(interestCalculationJobBean);
@@ -762,12 +1071,17 @@ public class InterestCalculationJobTest {
         
         long firstTransactionCount = transactionRepository.count();
 
-        // Act - Attempt restart with same parameters (should be rejected or create new job instance)
-        JobExecution secondExecution = jobLauncherTestUtils.launchJob(jobParameters);
-
-        // Assert restart behavior
-        // Spring Batch may throw exception or return same job instance depending on configuration
-        assertThat(secondExecution).isNotNull();
+        // Act - Attempt restart with same parameters (should recognize job already complete)
+        // Spring Batch should throw JobInstanceAlreadyCompleteException or return completed instance
+        try {
+            JobExecution secondExecution = jobLauncherTestUtils.launchJob(jobParameters);
+            // If no exception, verify it returns the same completed instance
+            assertThat(secondExecution.getJobId()).isEqualTo(firstExecution.getJobId());
+            assertThat(secondExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        } catch (org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException e) {
+            // Expected behavior - job instance already complete
+            assertThat(e.getMessage()).contains("already exists and is complete");
+        }
         
         // Verify no duplicate transactions created
         long secondTransactionCount = transactionRepository.count();
@@ -801,6 +1115,7 @@ public class InterestCalculationJobTest {
         // Create account without cross-reference to trigger potential error
         Account errorAccount = new Account();
         errorAccount.setAccountId(10001000098L);
+        errorAccount.setCustomer(testCustomer);
         errorAccount.setActiveStatus("Y");
         errorAccount.setCurrentBalance(DecimalUtils.createMoneyAmount("500.00"));
         errorAccount.setCreditLimit(DecimalUtils.createMoneyAmount("5000.00"));
@@ -994,7 +1309,7 @@ public class InterestCalculationJobTest {
             
             // Verify transaction metadata
             assertThat(txn.getTransactionTypeCode()).isEqualTo("01");
-            assertThat(txn.getTransactionCategoryCode()).isEqualTo("05");
+            assertThat(txn.getTransactionCategoryCode()).isEqualTo(5); // Integer type per InterestCalculationProcessor
             assertThat(txn.getTransactionDescription()).contains("Int. for a/c");
             assertThat(txn.getTransactionDescription()).contains(accountId.toString());
         }
