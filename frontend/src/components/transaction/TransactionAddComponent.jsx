@@ -140,11 +140,10 @@ import {
 import { toast } from 'react-toastify';
 
 // Internal imports from depends_on_files
-import transactionService from '../../services/transactionService';
 import { createTransaction } from '../../redux/slices/transactionSlice';
 import Header from '../common/Header';
-import { formatCurrency, formatDateForAPI, parseCurrency, formatDateDisplay } from '../../utils/formatters';
-import { TRANSACTION_TYPES, FIELD_LENGTHS, ERROR_CODES, SUCCESS_MESSAGES } from '../../utils/constants';
+import { formatCurrency, formatDateForAPI, formatDateDisplay } from '../../utils/formatters';
+import { TRANSACTION_TYPES, FIELD_LENGTHS, SUCCESS_MESSAGES } from '../../utils/constants';
 
 /**
  * TransactionAddComponent
@@ -182,7 +181,7 @@ const TransactionAddComponent = () => {
   const dispatch = useDispatch();
   
   // Redux state selectors
-  const { loading, error, successMessage } = useSelector((state) => state.transaction);
+  const { loading, error } = useSelector((state) => state.transaction);
   
   // Local state for reference data and confirmation dialog
   const [transactionTypes, setTransactionTypes] = useState([]);
@@ -405,7 +404,7 @@ const TransactionAddComponent = () => {
       
       // Dispatch Redux async thunk for transaction creation
       // Maps COBOL: EXEC CICS WRITE FILE('TRANSACT') + SYNCPOINT
-      const result = await dispatch(createTransaction(transactionData)).unwrap();
+      await dispatch(createTransaction(transactionData)).unwrap();
       
       // Show success message and navigate to transaction list
       // Maps COBOL success message display and return to menu
