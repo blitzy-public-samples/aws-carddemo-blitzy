@@ -19,6 +19,7 @@ package com.carddemo.service;
 
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
+import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
 import com.carddemo.exception.CardNotFoundException;
 import com.carddemo.repository.CardRepository;
@@ -388,9 +389,15 @@ public class CardDetailService {
                 return false;
             }
 
-            // In a real implementation, this would compare userId with account.getCustomerId()
+            // Navigate through the customer relationship to get customer ID
             // For this transformation, we assume userId maps to customer ID
-            Long customerId = account.getCustomerId();
+            Customer customer = account.getCustomer();
+            if (customer == null) {
+                logger.error("Account {} has no associated customer", account.getAccountId());
+                return false;
+            }
+            
+            Long customerId = customer.getCustomerId();
             boolean hasAccess = customerId != null && 
                     customerId.toString().equals(userId);
 
@@ -581,10 +588,14 @@ public class CardDetailService {
             response.put("accountStatus", account.getActiveStatus());
             
             // Include customer ID for ownership validation
-            if (account.getCustomer() != null) {
-                response.put("customerId", account.getCustomer().getCustomerId());
+            // Navigate through the customer relationship to get customer ID
+            Customer customer = account.getCustomer();
+            if (customer != null) {
+                response.put("customerId", customer.getCustomerId());
             } else {
-                response.put("customerId", account.getCustomerId());
+                // If customer relationship is not loaded, log warning and omit customer ID
+                logger.warn("Account {} has no associated customer loaded", account.getAccountId());
+                response.put("customerId", null);
             }
         } else {
             logger.warn("Card {} has no associated account", maskCardNumber(card.getCardNumber()));
