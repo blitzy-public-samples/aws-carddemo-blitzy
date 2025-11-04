@@ -217,9 +217,8 @@ class TransactionCategoryServiceTest {
         LocalDate customStartDate = LocalDate.of(2024, 2, 1);
         LocalDate customEndDate = LocalDate.of(2024, 2, 29);
         
-        List<Object[]> mockResults = Arrays.asList(
-            new Object[]{CATEGORY_GROCERIES, new BigDecimal("200.00")}
-        );
+        List<Object[]> mockResults = new ArrayList<>();
+        mockResults.add(new Object[]{CATEGORY_GROCERIES, new BigDecimal("200.00")});
         
         when(transactionRepository.aggregateByCategory(
             eq(TEST_ACCOUNT_ID), 
