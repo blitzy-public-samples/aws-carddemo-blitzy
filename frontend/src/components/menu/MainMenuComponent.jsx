@@ -70,7 +70,7 @@
  * @module components/menu/MainMenuComponent
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useSelector } from 'react-redux';
 import { useNavigate, Link } from 'react-router-dom';
 import {
@@ -513,26 +513,7 @@ const MainMenuComponent = () => {
     }
   };
 
-  /**
-   * Handle Logout
-   * 
-   * Handles user logout action from menu screen. Navigates to login screen,
-   * allowing Header component's logout action to clear authentication state.
-   * 
-   * COBOL Equivalent (COMEN01C.cbl lines 96-98):
-   * ```cobol
-   * WHEN DFHPF3
-   *     MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM
-   *     PERFORM RETURN-TO-SIGNON-SCREEN
-   * ```
-   * 
-   * @returns {void}
-   */
-  const handleLogout = () => {
-    // Navigate to login screen
-    // Maps COBOL: EXEC CICS XCTL PROGRAM('COSGN00C')
-    navigate('/login');
-  };
+
 
   // ===========================================================================
   // Render Guards
