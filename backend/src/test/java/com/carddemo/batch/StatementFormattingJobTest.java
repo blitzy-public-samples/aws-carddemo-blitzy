@@ -20,11 +20,19 @@ import com.carddemo.batch.job.StatementFormattingJob;
 import com.carddemo.batch.processor.StatementProcessor;
 import com.carddemo.batch.writer.StatementItemWriter;
 import com.carddemo.entity.Account;
+import com.carddemo.entity.Card;
 import com.carddemo.entity.Customer;
+import com.carddemo.entity.Statement;
 import com.carddemo.entity.Transaction;
+import com.carddemo.entity.TransactionCategory;
+import com.carddemo.entity.TransactionType;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.CustomerRepository;
+import com.carddemo.repository.StatementRepository;
+import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionTypeRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,6 +46,7 @@ import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.JobRepositoryTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 
 import java.io.BufferedReader;
@@ -46,6 +55,7 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -136,6 +146,14 @@ public class StatementFormattingJobTest {
     private JobRepositoryTestUtils jobRepositoryTestUtils;
 
     /**
+     * The statement formatting job bean to be tested.
+     * Must be explicitly set on jobLauncherTestUtils when multiple jobs exist in context.
+     */
+    @Autowired
+    @Qualifier("statementFormattingJobBean")
+    private Job statementFormattingJob;
+
+    /**
      * CustomerRepository for test customer data setup and cleanup.
      */
     @Autowired
@@ -148,10 +166,34 @@ public class StatementFormattingJobTest {
     private AccountRepository accountRepository;
 
     /**
+     * CardRepository for test card data setup and cleanup.
+     */
+    @Autowired
+    private CardRepository cardRepository;
+
+    /**
+     * TransactionTypeRepository for test transaction type data setup and cleanup.
+     */
+    @Autowired
+    private TransactionTypeRepository transactionTypeRepository;
+
+    /**
+     * TransactionCategoryRepository for test transaction category data setup and cleanup.
+     */
+    @Autowired
+    private TransactionCategoryRepository transactionCategoryRepository;
+
+    /**
      * TransactionRepository for test transaction data setup and cleanup.
      */
     @Autowired
     private TransactionRepository transactionRepository;
+
+    /**
+     * StatementRepository for test statement data setup and cleanup.
+     */
+    @Autowired
+    private StatementRepository statementRepository;
 
     /**
      * Test customer instances created during setup.
@@ -164,9 +206,29 @@ public class StatementFormattingJobTest {
     private List<Account> testAccounts;
 
     /**
+     * Test card instances created during setup.
+     */
+    private List<Card> testCards;
+
+    /**
+     * Test transaction type instances created during setup.
+     */
+    private List<TransactionType> testTransactionTypes;
+
+    /**
+     * Test transaction category instances created during setup.
+     */
+    private List<TransactionCategory> testTransactionCategories;
+
+    /**
      * Test transaction instances created during setup.
      */
     private List<Transaction> testTransactions;
+
+    /**
+     * Test statement instances created during setup.
+     */
+    private List<Statement> testStatements;
 
     /**
      * Output directory for generated statement files during testing.
@@ -194,13 +256,43 @@ public class StatementFormattingJobTest {
      */
     @BeforeEach
     public void setUp() {
+        // Set the job to be tested (required when multiple jobs exist in context)
+        jobLauncherTestUtils.setJob(statementFormattingJob);
+
         // Clean up any existing test data
         cleanUpTestData();
 
         // Initialize test data lists
         testCustomers = new ArrayList<>();
         testAccounts = new ArrayList<>();
+        testCards = new ArrayList<>();
+        testTransactionTypes = new ArrayList<>();
+        testTransactionCategories = new ArrayList<>();
         testTransactions = new ArrayList<>();
+
+        // Create test transaction types (required for transaction category foreign key)
+        TransactionType type1 = new TransactionType();
+        type1.setTypeCode("01");
+        type1.setTypeDescription("Purchase");
+        testTransactionTypes.add(transactionTypeRepository.save(type1));
+
+        TransactionType type2 = new TransactionType();
+        type2.setTypeCode("02");
+        type2.setTypeDescription("Payment");
+        testTransactionTypes.add(transactionTypeRepository.save(type2));
+
+        // Create test transaction categories (required for transaction foreign key)
+        TransactionCategory.CategoryId categoryId1 = new TransactionCategory.CategoryId("01", 1);
+        TransactionCategory category1 = new TransactionCategory();
+        category1.setId(categoryId1);
+        category1.setCategoryDescription("Purchase Transaction");
+        testTransactionCategories.add(transactionCategoryRepository.save(category1));
+
+        TransactionCategory.CategoryId categoryId2 = new TransactionCategory.CategoryId("02", 1);
+        TransactionCategory category2 = new TransactionCategory();
+        category2.setId(categoryId2);
+        category2.setCategoryDescription("Payment Transaction");
+        testTransactionCategories.add(transactionCategoryRepository.save(category2));
 
         // Create test customers
         Customer customer1 = createTestCustomer(1000000001L, "John", "Doe", 
@@ -213,30 +305,39 @@ public class StatementFormattingJobTest {
 
         // Create test accounts
         Account account1 = createTestAccount(10000000001L, 1000000001L,
-            new BigDecimal("1234.56"), new BigDecimal("5000.00"), "Active");
+            new BigDecimal("1234.56"), new BigDecimal("5000.00"), "Y");
         Account account2 = createTestAccount(10000000002L, 1000000002L,
-            new BigDecimal("2500.00"), new BigDecimal("10000.00"), "Active");
+            new BigDecimal("2500.00"), new BigDecimal("10000.00"), "Y");
 
         testAccounts.add(accountRepository.save(account1));
         testAccounts.add(accountRepository.save(account2));
 
+        // Create test cards (required for transaction foreign key constraint)
+        Card card1 = createTestCard("4111111111111111", 10000000001L, "JOHN DOE",
+            "123", LocalDate.now().plusYears(3), "Y");
+        Card card2 = createTestCard("4111111111111112", 10000000002L, "JANE SMITH",
+            "456", LocalDate.now().plusYears(3), "Y");
+
+        testCards.add(cardRepository.save(card1));
+        testCards.add(cardRepository.save(card2));
+
         // Create test transactions for account 1
         Transaction txn1 = createTestTransaction("TXN0000000000001", "10000000001",
-            "4111111111111111", new BigDecimal("45.67"), "PURCHASE", "Grocery Store",
+            "4111111111111111", new BigDecimal("45.67"), "01", "Grocery Store",
             LocalDateTime.now().minusDays(20));
         Transaction txn2 = createTestTransaction("TXN0000000000002", "10000000001",
-            "4111111111111111", new BigDecimal("-500.00"), "PAYMENT", "Online Payment",
+            "4111111111111111", new BigDecimal("-500.00"), "02", "Online Payment",
             LocalDateTime.now().minusDays(15));
         Transaction txn3 = createTestTransaction("TXN0000000000003", "10000000001",
-            "4111111111111111", new BigDecimal("123.45"), "PURCHASE", "Gas Station",
+            "4111111111111111", new BigDecimal("123.45"), "01", "Gas Station",
             LocalDateTime.now().minusDays(10));
 
         // Create test transactions for account 2
         Transaction txn4 = createTestTransaction("TXN0000000000004", "10000000002",
-            "4111111111111112", new BigDecimal("789.01"), "PURCHASE", "Electronics Store",
+            "4111111111111112", new BigDecimal("789.01"), "01", "Electronics Store",
             LocalDateTime.now().minusDays(18));
         Transaction txn5 = createTestTransaction("TXN0000000000005", "10000000002",
-            "4111111111111112", new BigDecimal("56.78"), "PURCHASE", "Restaurant",
+            "4111111111111112", new BigDecimal("56.78"), "01", "Restaurant",
             LocalDateTime.now().minusDays(12));
 
         testTransactions.add(transactionRepository.save(txn1));
@@ -244,6 +345,18 @@ public class StatementFormattingJobTest {
         testTransactions.add(transactionRepository.save(txn3));
         testTransactions.add(transactionRepository.save(txn4));
         testTransactions.add(transactionRepository.save(txn5));
+
+        // Initialize test statements list
+        testStatements = new ArrayList<>();
+
+        // Create test statements for the accounts
+        Statement statement1 = createTestStatement(10000000001L, LocalDate.now().minusMonths(1),
+            new BigDecimal("1000.00"), new BigDecimal("500.00"), new BigDecimal("330.88"));
+        Statement statement2 = createTestStatement(10000000002L, LocalDate.now().minusMonths(1),
+            new BigDecimal("2000.00"), new BigDecimal("0.00"), new BigDecimal("845.79"));
+
+        testStatements.add(statementRepository.save(statement1));
+        testStatements.add(statementRepository.save(statement2));
     }
 
     /**
@@ -348,9 +461,9 @@ public class StatementFormattingJobTest {
 
         for (StepExecution stepExecution : stepExecutions) {
             // Verify chunk processing statistics
-            int readCount = stepExecution.getReadCount();
-            int writeCount = stepExecution.getWriteCount();
-            int commitCount = stepExecution.getCommitCount();
+            long readCount = stepExecution.getReadCount();
+            long writeCount = stepExecution.getWriteCount();
+            long commitCount = stepExecution.getCommitCount();
 
             assertTrue(readCount >= 0, "Read count should be non-negative");
             assertEquals(readCount, writeCount, 
@@ -758,7 +871,7 @@ public class StatementFormattingJobTest {
         // For successful test data, expect no skipped items
         Collection<StepExecution> stepExecutions = jobExecution.getStepExecutions();
         for (StepExecution stepExecution : stepExecutions) {
-            int skipCount = stepExecution.getSkipCount();
+            long skipCount = stepExecution.getSkipCount();
             
             // Verify skip count is within acceptable range
             assertTrue(skipCount >= 0, "Skip count should be non-negative");
@@ -936,7 +1049,7 @@ public class StatementFormattingJobTest {
             System.out.println("  Write count: " + stepExecution.getWriteCount());
             System.out.println("  Commit count: " + stepExecution.getCommitCount());
             System.out.println("  Duration: " + 
-                (stepExecution.getEndTime().getTime() - stepExecution.getStartTime().getTime()) + " ms");
+                Duration.between(stepExecution.getStartTime(), stepExecution.getEndTime()).toMillis() + " ms");
         }
 
         // Validate against 4-hour window requirement
@@ -994,10 +1107,18 @@ public class StatementFormattingJobTest {
                                      String status) {
         Account account = new Account();
         account.setAccountId(accountId);
-        // Set customer relationship if needed
+        // Set customer relationship
+        Customer customer = testCustomers.stream()
+            .filter(c -> c.getCustomerId().equals(customerId))
+            .findFirst()
+            .orElse(null);
+        account.setCustomer(customer);
         account.setCurrentBalance(currentBalance.setScale(2, RoundingMode.HALF_UP));
         account.setCreditLimit(creditLimit.setScale(2, RoundingMode.HALF_UP));
-        account.setAccountStatus(status);
+        account.setCashCreditLimit(creditLimit.multiply(new BigDecimal("0.5")).setScale(2, RoundingMode.HALF_UP));
+        account.setCurrentCycleCredit(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+        account.setCurrentCycleDebit(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+        account.setActiveStatus(status);
         return account;
     }
 
@@ -1019,12 +1140,65 @@ public class StatementFormattingJobTest {
                                              LocalDateTime timestamp) {
         Transaction transaction = new Transaction();
         transaction.setTransactionId(transactionId);
+        transaction.setCardNumber(cardNumber);
         // Set account and card relationships if needed
         transaction.setTransactionAmount(amount.setScale(2, RoundingMode.HALF_UP));
         transaction.setTransactionTypeCode(typeCode);
+        transaction.setTransactionCategoryCode(1); // Default category code
         // Set transaction description and merchant details
         transaction.setOriginationTimestamp(timestamp);
         return transaction;
+    }
+
+    /**
+     * Create test card instance with specified properties.
+     * 
+     * @param cardNumber 16-digit card number
+     * @param accountId Associated account ID
+     * @param embossedName Cardholder name
+     * @param cvvCode 3-digit CVV code
+     * @param expirationDate Card expiration date
+     * @param activeStatus Card active status ('Y', 'N', 'B', etc.)
+     * @return Configured Card instance (not persisted)
+     */
+    private Card createTestCard(String cardNumber, Long accountId, String embossedName,
+                                String cvvCode, LocalDate expirationDate, String activeStatus) {
+        Card card = new Card();
+        card.setCardNumber(cardNumber);
+        card.setAccountId(accountId);
+        card.setEmbossedName(embossedName);
+        card.setCvvCode(cvvCode);
+        card.setExpirationDate(expirationDate);
+        card.setActiveStatus(activeStatus);
+        return card;
+    }
+
+    /**
+     * Helper method to create test Statement instances.
+     *
+     * @param accountId Account ID for the statement
+     * @param statementDate Date of the statement
+     * @param previousBalance Previous balance amount
+     * @param totalCredits Total credits amount
+     * @param totalDebits Total debits amount
+     * @return Configured Statement instance
+     */
+    private Statement createTestStatement(Long accountId, LocalDate statementDate,
+                                          BigDecimal previousBalance, BigDecimal totalCredits, BigDecimal totalDebits) {
+        Statement statement = new Statement();
+        statement.setAccountId(accountId);
+        statement.setStatementDate(statementDate);
+        statement.setPeriodStart(statementDate.withDayOfMonth(1));
+        statement.setPeriodEnd(statementDate.withDayOfMonth(statementDate.lengthOfMonth()));
+        statement.setPreviousBalance(previousBalance);
+        statement.setTotalCredits(totalCredits);
+        statement.setTotalDebits(totalDebits);
+        statement.setInterestCharged(new BigDecimal("12.34"));
+        statement.setNewBalance(previousBalance.add(totalDebits).subtract(totalCredits).add(new BigDecimal("12.34")));
+        statement.setPaymentDueDate(statementDate.plusDays(25));
+        statement.setMinimumPayment(new BigDecimal("35.00"));
+        statement.setStatus("GENERATED");
+        return statement;
     }
 
     /**
@@ -1032,9 +1206,17 @@ public class StatementFormattingJobTest {
      * Deletes in reverse order of creation to maintain referential integrity.
      */
     private void cleanUpTestData() {
+        if (testStatements != null && !testStatements.isEmpty()) {
+            statementRepository.deleteAll(testStatements);
+            testStatements.clear();
+        }
         if (testTransactions != null && !testTransactions.isEmpty()) {
             transactionRepository.deleteAll(testTransactions);
             testTransactions.clear();
+        }
+        if (testCards != null && !testCards.isEmpty()) {
+            cardRepository.deleteAll(testCards);
+            testCards.clear();
         }
         if (testAccounts != null && !testAccounts.isEmpty()) {
             accountRepository.deleteAll(testAccounts);
@@ -1043,6 +1225,14 @@ public class StatementFormattingJobTest {
         if (testCustomers != null && !testCustomers.isEmpty()) {
             customerRepository.deleteAll(testCustomers);
             testCustomers.clear();
+        }
+        if (testTransactionCategories != null && !testTransactionCategories.isEmpty()) {
+            transactionCategoryRepository.deleteAll(testTransactionCategories);
+            testTransactionCategories.clear();
+        }
+        if (testTransactionTypes != null && !testTransactionTypes.isEmpty()) {
+            transactionTypeRepository.deleteAll(testTransactionTypes);
+            testTransactionTypes.clear();
         }
     }
 
