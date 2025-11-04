@@ -60,9 +60,14 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Isolation;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.WritableResource;
 
+import java.io.File;
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 
 /**
  * StatementGenerationJob - Spring Batch Job Configuration
@@ -162,9 +167,9 @@ public class StatementGenerationJob {
     private final PlatformTransactionManager transactionManager;
     private final AccountStatementReader accountStatementReader;
     private final StatementProcessor statementProcessor;
-    private final StatementItemWriter statementItemWriter;
     private final AccountRepository accountRepository;
     private final TransactionRepository transactionRepository;
+    private final BatchConfig batchConfig;
 
     /**
      * Constructor-based dependency injection for Spring Batch components.
@@ -175,10 +180,14 @@ public class StatementGenerationJob {
      *   <li>PlatformTransactionManager: Manages transaction boundaries with READ_COMMITTED isolation</li>
      *   <li>AccountStatementReader: Reads accounts requiring statement generation</li>
      *   <li>StatementProcessor: Processes account data into formatted statements</li>
-     *   <li>StatementItemWriter: Writes statement files in plain-text and HTML formats</li>
      *   <li>AccountRepository: Account data access for validation and updates</li>
      *   <li>TransactionRepository: Transaction data retrieval for statement content</li>
+     *   <li>BatchConfig: Shared batch processing configuration</li>
      * </ul>
+     * 
+     * <p>Note: StatementItemWriter is created programmatically within the step bean 
+     * as it requires runtime configuration (output file paths) that cannot be 
+     * determined at application startup time.</p>
      * 
      * @param jobRepository Spring Batch JobRepository for execution tracking
      * @param transactionManager Platform transaction manager for ACID properties
@@ -187,6 +196,7 @@ public class StatementGenerationJob {
      * @param statementItemWriter Writer component for file generation
      * @param accountRepository JPA repository for account data access
      * @param transactionRepository JPA repository for transaction data access
+     * @param batchConfig Shared batch configuration bean
      */
     @Autowired
     public StatementGenerationJob(
@@ -194,16 +204,16 @@ public class StatementGenerationJob {
             PlatformTransactionManager transactionManager,
             AccountStatementReader accountStatementReader,
             StatementProcessor statementProcessor,
-            StatementItemWriter statementItemWriter,
             AccountRepository accountRepository,
-            TransactionRepository transactionRepository) {
+            TransactionRepository transactionRepository,
+            BatchConfig batchConfig) {
         this.jobRepository = jobRepository;
         this.transactionManager = transactionManager;
         this.accountStatementReader = accountStatementReader;
         this.statementProcessor = statementProcessor;
-        this.statementItemWriter = statementItemWriter;
         this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
+        this.batchConfig = batchConfig;
     }
 
     /**
@@ -247,12 +257,12 @@ public class StatementGenerationJob {
      * 
      * @return Configured Job instance for statement generation
      */
-    @Bean(name = "statementGenerationJob")
-    public Job statementGenerationJob() {
-        logger.info("Configuring statementGenerationJob bean - monthly account statement generation");
+    @Bean(name = "statementGenerationJobBean")
+    public Job createStatementGenerationJob() throws Exception {
+        logger.info("Configuring statementGenerationJobBean - monthly account statement generation");
         
         return new JobBuilder("statementGenerationJob", jobRepository)
-                .start(statementGenerationStep())
+                .start(createStatementGenerationStep())
                 .build();
     }
 
@@ -330,16 +340,20 @@ public class StatementGenerationJob {
      * 
      * @return Configured Step instance for statement generation processing
      */
-    @Bean(name = "statementGenerationStep")
-    public Step statementGenerationStep() {
-        logger.info("Configuring statementGenerationStep bean - chunk size: {}, skip limit: {}, retry limit: {}",
+    @Bean(name = "statementGenerationStepBean")
+    public Step createStatementGenerationStep() throws Exception {
+        logger.info("Configuring statementGenerationStepBean - chunk size: {}, skip limit: {}, retry limit: {}",
                 CHUNK_SIZE, SKIP_LIMIT, RETRY_LIMIT);
         
+        // Create and configure StatementItemWriter programmatically
+        // Cannot be a singleton bean as it requires runtime configuration (output file paths)
+        StatementItemWriter writer = createStatementItemWriter();
+        
         return new StepBuilder("statementGenerationStep", jobRepository)
-                .<Account, StatementProcessor.Statement>chunk(CHUNK_SIZE, transactionManager)
+                .<StatementProcessor.StatementInput, StatementItemWriter.Statement>chunk(CHUNK_SIZE, transactionManager)
                 .reader(accountStatementReader)
                 .processor(statementProcessor)
-                .writer(statementItemWriter)
+                .writer(writer)
                 // Fault tolerance configuration per Section 0.5
                 .faultTolerant()
                 .skipLimit(SKIP_LIMIT)
@@ -352,8 +366,54 @@ public class StatementGenerationJob {
                 // Transaction configuration per Section 0.3
                 .transactionAttribute(transactionAttribute())
                 // Monitoring and logging
-                .listener(batchConfig().defaultStepExecutionListener())
+                .listener(batchConfig.defaultStepExecutionListener())
                 .build();
+    }
+    
+    /**
+     * Creates and configures StatementItemWriter with output file resources.
+     * 
+     * <p>This method programmatically creates the writer bean as it requires runtime
+     * configuration (output file paths) that cannot be determined at application startup.
+     * The writer is not a singleton component to allow for dynamic file path configuration
+     * based on job parameters or statement period.</p>
+     * 
+     * <p>Default output directory: ./output/statements/
+     * File naming convention: STMT-YYYYMM.{txt,html}</p>
+     * 
+     * @return Configured StatementItemWriter instance
+     * @throws Exception if writer initialization fails
+     */
+    private StatementItemWriter createStatementItemWriter() throws Exception {
+        // Determine output directory (configurable via system property or default)
+        String outputDir = System.getProperty("batch.output.dir", "./output/statements");
+        File outputDirectory = new File(outputDir);
+        
+        // Create output directory if it doesn't exist
+        if (!outputDirectory.exists()) {
+            boolean created = outputDirectory.mkdirs();
+            if (created) {
+                logger.info("Created statement output directory: {}", outputDirectory.getAbsolutePath());
+            }
+        }
+        
+        // Generate file names based on current date (YYYYMM format)
+        String yearMonth = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMM"));
+        File textFile = new File(outputDirectory, "STMT-" + yearMonth + ".txt");
+        File htmlFile = new File(outputDirectory, "STMT-" + yearMonth + ".html");
+        
+        logger.info("Configuring StatementItemWriter with output files - Text: {}, HTML: {}",
+                   textFile.getAbsolutePath(), htmlFile.getAbsolutePath());
+        
+        // Create and configure the writer
+        StatementItemWriter writer = new StatementItemWriter();
+        writer.setTextFileResource(new FileSystemResource(textFile));
+        writer.setHtmlFileResource(new FileSystemResource(htmlFile));
+        
+        // Initialize the writer (calls afterPropertiesSet)
+        writer.afterPropertiesSet();
+        
+        return writer;
     }
 
     /**
@@ -401,23 +461,9 @@ public class StatementGenerationJob {
         
         // Propagation REQUIRED - join existing transaction or create new
         attribute.setPropagationBehavior(
-                org.springframework.transaction.interceptor.TransactionDefinition.PROPAGATION_REQUIRED);
+                org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRED);
         
         return attribute;
     }
 
-    /**
-     * Batch Configuration Accessor.
-     * 
-     * <p>Provides access to BatchConfig bean for shared batch processing configuration
-     * including skip policy, retry policy, backoff policy, and step execution listener.</p>
-     * 
-     * <p>This method enables access to BatchConfig.defaultStepExecutionListener() for
-     * step monitoring and logging integration.</p>
-     * 
-     * @return BatchConfig instance with shared batch processing policies
-     */
-    private BatchConfig batchConfig() {
-        return new BatchConfig();
-    }
 }
