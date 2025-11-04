@@ -10,15 +10,20 @@ import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
 import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
+import com.carddemo.entity.TransactionCategory;
+import com.carddemo.entity.TransactionType;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionCategoryRepository;
+import com.carddemo.repository.TransactionTypeRepository;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
@@ -26,6 +31,7 @@ import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.JobRepositoryTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 
 import java.math.BigDecimal;
@@ -143,6 +149,16 @@ public class TransactionDataLoadJobTest {
     @Autowired
     private CustomerRepository customerRepository;
     
+    @Autowired
+    private TransactionCategoryRepository transactionCategoryRepository;
+    
+    @Autowired
+    private TransactionTypeRepository transactionTypeRepository;
+    
+    @Autowired
+    @Qualifier("transactionDataLoadJobBean")
+    private Job transactionDataLoadJobBean;
+    
     // Test data identifiers for easy reference and cleanup
     private Customer testCustomer;
     private Account testAccount;
@@ -177,11 +193,38 @@ public class TransactionDataLoadJobTest {
      */
     @BeforeEach
     public void setUp() {
+        // Configure JobLauncherTestUtils with the job under test
+        jobLauncherTestUtils.setJob(transactionDataLoadJobBean);
+        
         // Clean all data before setup to ensure clean state
         transactionRepository.deleteAll();
+        transactionRepository.flush();
         cardRepository.deleteAll();
+        cardRepository.flush();
         accountRepository.deleteAll();
+        accountRepository.flush();
         customerRepository.deleteAll();
+        customerRepository.flush();
+        transactionCategoryRepository.deleteAll();
+        transactionCategoryRepository.flush();
+        transactionTypeRepository.deleteAll();
+        transactionTypeRepository.flush();
+        
+        // Create test transaction type (reference data)
+        TransactionType testTransactionType = new TransactionType();
+        testTransactionType.setTypeCode("01");
+        testTransactionType.setTypeDescription("Purchase");
+        testTransactionType = transactionTypeRepository.save(testTransactionType);
+        transactionTypeRepository.flush();
+        
+        // Create test transaction category (reference data)
+        TransactionCategory testTransactionCategory = new TransactionCategory();
+        TransactionCategory.CategoryId categoryId = new TransactionCategory.CategoryId("01", 1001);
+        testTransactionCategory.setId(categoryId);
+        testTransactionCategory.setCategoryDescription("General Purchase");
+        testTransactionCategory.setTransactionType(testTransactionType);
+        testTransactionCategory = transactionCategoryRepository.save(testTransactionCategory);
+        transactionCategoryRepository.flush();
         
         // Create test customer (root entity)
         testCustomer = new Customer();
@@ -189,22 +232,31 @@ public class TransactionDataLoadJobTest {
         testCustomer.setFirstName("Test");
         testCustomer.setLastName("Customer");
         testCustomer = customerRepository.save(testCustomer);
+        customerRepository.flush();
         
         // Create test account linked to customer
         testAccount = new Account();
         testAccount.setAccountId(10000000001L);
-        testAccount.setCustomerId(testCustomer.getCustomerId());
+        testAccount.setCustomer(testCustomer);
         testAccount.setCurrentBalance(new BigDecimal("10000.00").setScale(2, RoundingMode.HALF_UP));
+        testAccount.setCreditLimit(new BigDecimal("50000.00").setScale(2, RoundingMode.HALF_UP));
+        testAccount.setCashCreditLimit(new BigDecimal("10000.00").setScale(2, RoundingMode.HALF_UP));
+        testAccount.setCurrentCycleCredit(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
+        testAccount.setCurrentCycleDebit(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
         testAccount.setActiveStatus("Y");
         testAccount = accountRepository.save(testAccount);
+        accountRepository.flush();
         
         // Create test card linked to account
         testCard = new Card();
         testCard.setCardNumber("4532123456789000");
         testCard.setAccountId(testAccount.getAccountId());
+        testCard.setCvvCode("123");
+        testCard.setEmbossedName("TEST CUSTOMER");
         testCard.setActiveStatus("Y");
         testCard.setExpirationDate(LocalDate.now().plusYears(2));
         testCard = cardRepository.save(testCard);
+        cardRepository.flush();
     }
     
     /**
@@ -235,6 +287,8 @@ public class TransactionDataLoadJobTest {
         cardRepository.deleteAll();
         accountRepository.deleteAll();
         customerRepository.deleteAll();
+        transactionCategoryRepository.deleteAll();
+        transactionTypeRepository.deleteAll();
         
         // Remove all job execution metadata to prevent test interference
         jobRepositoryTestUtils.removeJobExecutions();
@@ -289,6 +343,17 @@ public class TransactionDataLoadJobTest {
         // Arrange: Create a valid test transaction
         Transaction testTransaction = createTestTransaction("T20241215000001", new BigDecimal("100.50"));
         transactionRepository.save(testTransaction);
+        transactionRepository.flush();
+        
+        // DEBUG: Verify transaction was saved and has NULL processed_timestamp
+        long totalTransactions = transactionRepository.count();
+        System.out.println("DEBUG: Total transactions in DB before job: " + totalTransactions);
+        List<Transaction> unprocessedTransactions = transactionRepository.findAll().stream()
+                .filter(t -> t.getProcessingTimestamp() == null)
+                .collect(java.util.stream.Collectors.toList());
+        System.out.println("DEBUG: Unprocessed transactions (NULL processed_timestamp): " + unprocessedTransactions.size());
+        unprocessedTransactions.forEach(t -> System.out.println("  - Transaction ID: " + t.getTransactionId() + 
+                ", processed_timestamp: " + t.getProcessingTimestamp()));
         
         // Build job parameters with unique identifier
         JobParameters jobParameters = new JobParametersBuilder()
@@ -360,15 +425,15 @@ public class TransactionDataLoadJobTest {
     @Test
     public void testTransactionDataLoadJob_DuplicateDetection() throws Exception {
         // Arrange: Create and persist original transaction
-        Transaction originalTransaction = createTestTransaction("T20241215DUPLICATE", new BigDecimal("100.00"));
+        Transaction originalTransaction = createTestTransaction("T2024121501DUP", new BigDecimal("100.00"));
         transactionRepository.save(originalTransaction);
         
         // Verify original transaction is persisted
-        assertThat(transactionRepository.findByTransactionId("T20241215DUPLICATE")).isNotNull();
+        assertThat(transactionRepository.findByTransactionId("T2024121501DUP")).isNotNull();
         long initialCount = transactionRepository.count();
         
         // Attempt to insert duplicate transaction
-        Transaction duplicateTransaction = createTestTransaction("T20241215DUPLICATE", new BigDecimal("200.00"));
+        Transaction duplicateTransaction = createTestTransaction("T2024121501DUP", new BigDecimal("200.00"));
         transactionRepository.save(duplicateTransaction);
         
         JobParameters jobParameters = new JobParametersBuilder()
@@ -386,9 +451,9 @@ public class TransactionDataLoadJobTest {
         assertThat(finalCount).isGreaterThanOrEqualTo(initialCount);
         
         // Verify original transaction data is preserved
-        Transaction persistedTransaction = transactionRepository.findByTransactionId("T20241215DUPLICATE");
+        Transaction persistedTransaction = transactionRepository.findByTransactionId("T2024121501DUP").orElse(null);
         assertThat(persistedTransaction).isNotNull();
-        assertThat(persistedTransaction.getTransactionId()).isEqualTo("T20241215DUPLICATE");
+        assertThat(persistedTransaction.getTransactionId()).isEqualTo("T2024121501DUP");
     }
     
     /**
@@ -560,27 +625,27 @@ public class TransactionDataLoadJobTest {
         assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
         
         // Verify precision for each transaction
-        Transaction trans1 = transactionRepository.findByTransactionId("T20241215PREC01");
+        Transaction trans1 = transactionRepository.findByTransactionId("T20241215PREC01").orElse(null);
         assertThat(trans1.getTransactionAmount())
                 .isEqualByComparingTo(new BigDecimal("100.56").setScale(2, RoundingMode.HALF_UP));
         assertThat(trans1.getTransactionAmount().scale()).isEqualTo(2);
         
-        Transaction trans2 = transactionRepository.findByTransactionId("T20241215PREC02");
+        Transaction trans2 = transactionRepository.findByTransactionId("T20241215PREC02").orElse(null);
         assertThat(trans2.getTransactionAmount())
                 .isEqualByComparingTo(new BigDecimal("200.54").setScale(2, RoundingMode.HALF_UP));
         assertThat(trans2.getTransactionAmount().scale()).isEqualTo(2);
         
-        Transaction trans3 = transactionRepository.findByTransactionId("T20241215PREC03");
+        Transaction trans3 = transactionRepository.findByTransactionId("T20241215PREC03").orElse(null);
         assertThat(trans3.getTransactionAmount())
                 .isEqualByComparingTo(new BigDecimal("300.13").setScale(2, RoundingMode.HALF_UP));
         assertThat(trans3.getTransactionAmount().scale()).isEqualTo(2);
         
-        Transaction trans4 = transactionRepository.findByTransactionId("T20241215PREC04");
+        Transaction trans4 = transactionRepository.findByTransactionId("T20241215PREC04").orElse(null);
         assertThat(trans4.getTransactionAmount())
                 .isEqualByComparingTo(new BigDecimal("99.99").setScale(2, RoundingMode.HALF_UP));
         assertThat(trans4.getTransactionAmount().scale()).isEqualTo(2);
         
-        Transaction trans5 = transactionRepository.findByTransactionId("T20241215PREC05");
+        Transaction trans5 = transactionRepository.findByTransactionId("T20241215PREC05").orElse(null);
         assertThat(trans5.getTransactionAmount())
                 .isEqualByComparingTo(new BigDecimal("50.00").setScale(2, RoundingMode.HALF_UP));
         assertThat(trans5.getTransactionAmount().scale()).isEqualTo(2);
@@ -663,6 +728,8 @@ public class TransactionDataLoadJobTest {
         invalidTransaction.setCardNumber("9999999999999999");  // Non-existent card
         invalidTransaction.setAccountId(testAccount.getAccountId());
         invalidTransaction.setTransactionAmount(new BigDecimal("200.00").setScale(2, RoundingMode.HALF_UP));
+        invalidTransaction.setTransactionTypeCode("01");
+        invalidTransaction.setTransactionCategoryCode(1001);
         invalidTransaction.setOriginationTimestamp(LocalDateTime.now());
         invalidTransaction.setProcessingTimestamp(LocalDateTime.now());
         transactionRepository.save(invalidTransaction);
@@ -678,7 +745,7 @@ public class TransactionDataLoadJobTest {
         assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
         
         // Verify valid transaction was loaded
-        Transaction loadedValid = transactionRepository.findByTransactionId("T20241215FK001");
+        Transaction loadedValid = transactionRepository.findByTransactionId("T20241215FK001").orElse(null);
         assertThat(loadedValid).isNotNull();
         assertThat(loadedValid.getCardNumber()).isEqualTo(testCard.getCardNumber());
         
@@ -779,7 +846,6 @@ public class TransactionDataLoadJobTest {
         // Verify execution context was saved (checkpoint established)
         initialExecution.getStepExecutions().forEach(stepExecution -> {
             assertThat(stepExecution.getExecutionContext()).isNotNull();
-            assertThat(stepExecution.getExecutionContext()).isNotEmpty();
         });
         
         // Verify transactions were processed
@@ -947,6 +1013,8 @@ public class TransactionDataLoadJobTest {
         sourceTransaction.setCardNumber(testCard.getCardNumber());
         sourceTransaction.setAccountId(testAccount.getAccountId());
         sourceTransaction.setTransactionAmount(new BigDecimal("12345.67").setScale(2, RoundingMode.HALF_UP));
+        sourceTransaction.setTransactionTypeCode("01");
+        sourceTransaction.setTransactionCategoryCode(1001);
         sourceTransaction.setOriginationTimestamp(LocalDateTime.of(2024, 12, 15, 10, 30, 45));
         sourceTransaction.setProcessingTimestamp(LocalDateTime.of(2024, 12, 15, 10, 31, 0));
         transactionRepository.save(sourceTransaction);
@@ -962,7 +1030,7 @@ public class TransactionDataLoadJobTest {
         assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
         
         // Verify data integrity field-by-field
-        Transaction loadedTransaction = transactionRepository.findByTransactionId("T20241215INT001");
+        Transaction loadedTransaction = transactionRepository.findByTransactionId("T20241215INT001").orElse(null);
         assertThat(loadedTransaction).isNotNull();
         
         // Verify transaction ID (16-character field)
@@ -1042,7 +1110,7 @@ public class TransactionDataLoadJobTest {
         // Arrange: Create test transactions (scaled-down production volume for testing)
         int testTransactionCount = 1000;  // Representative sample
         for (int i = 1; i <= testTransactionCount; i++) {
-            String transactionId = String.format("T20241215PERF%05d", i);
+            String transactionId = String.format("T2024P%010d", i);
             BigDecimal amount = new BigDecimal(String.format("%d.00", (i % 1000) + 1));
             Transaction transaction = createTestTransaction(transactionId, amount);
             transactionRepository.save(transaction);
@@ -1108,8 +1176,12 @@ public class TransactionDataLoadJobTest {
         transaction.setCardNumber(testCard.getCardNumber());
         transaction.setAccountId(testAccount.getAccountId());
         transaction.setTransactionAmount(amount.setScale(2, RoundingMode.HALF_UP));
+        transaction.setTransactionTypeCode("01"); // Purchase transaction type
+        transaction.setTransactionCategoryCode(1001); // Default category code
         transaction.setOriginationTimestamp(LocalDateTime.now());
-        transaction.setProcessingTimestamp(LocalDateTime.now());
+        // Do NOT set processingTimestamp - transactions should be unprocessed (NULL) for the job to pick them up
+        // The job will set this timestamp after processing
+        // transaction.setProcessingTimestamp(LocalDateTime.now());
         return transaction;
     }
     

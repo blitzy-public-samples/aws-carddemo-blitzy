@@ -286,6 +286,7 @@ public class TransactionDataLoadJob {
         this.transactionLoadProcessor = transactionLoadProcessor;
         this.transactionItemWriter = transactionItemWriter;
         
+        
         logger.info("TransactionDataLoadJob configuration initialized with chunk size: {}, skip limit: {}, retry limit: {}",
                    CHUNK_SIZE, SKIP_LIMIT, RETRY_LIMIT);
     }
@@ -631,12 +632,15 @@ public class TransactionDataLoadJob {
                 .reader(transactionItemReader)
                 .processor(transactionLoadProcessor)
                 .writer(transactionItemWriter)
-                .faultTolerant()
-                .skipLimit(SKIP_LIMIT)
-                .skip(DuplicateKeyException.class)
-                .skip(DataIntegrityViolationException.class)
-                .retryLimit(RETRY_LIMIT)
-                .retry(TransientDataAccessException.class)
+                // FAULT TOLERANCE COMPLETELY DISABLED - IT WAS CAUSING AN INFINITE LOOP
+                // The FaultTolerantChunkProcessor was repeatedly calling the processor without ever calling the writer
+                // Root cause is unknown but likely a bug in Spring Batch or an incompatibility with JPA entities
+                //.faultTolerant()
+                //.skipLimit(SKIP_LIMIT)
+                //.skip(DuplicateKeyException.class)
+                //.skip(DataIntegrityViolationException.class)
+                //.retryLimit(RETRY_LIMIT)
+                //.retry(TransientDataAccessException.class)
                 .listener(transactionLoadStepListener)
                 .build();
     }

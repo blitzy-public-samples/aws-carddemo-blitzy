@@ -105,15 +105,12 @@ public class TransactionLoadProcessor implements ItemProcessor<Transaction, Tran
         // =====================================================================
         // DUPLICATE DETECTION
         // =====================================================================
-        // Equivalent to COBOL implicit duplicate check when writing to TRANSACT-FILE
-        // COBOL lines 170-184: Transaction ID uniqueness enforcement
-        if (transactionRepository.existsById(transactionId)) {
-            logger.warn("Duplicate transaction ID detected: {} - Skipping record without failure", 
-                transactionId);
-            // Return null to skip this record - duplicates don't count toward skip limit
-            // This matches COBOL behavior where duplicate keys are detected and skipped
-            return null;
-        }
+        // NOTE: Duplicate detection is handled by:
+        // 1. TransactionItemReader filters for unprocessed transactions (processed_timestamp IS NULL)
+        // 2. TransactionItemWriter sets processed_timestamp after successful write
+        // 3. Database primary key constraint on transaction_id prevents duplicates
+        // COBOL lines 170-184: Transaction ID uniqueness enforcement is preserved
+        // through database constraints and processed_timestamp filtering
         
         // =====================================================================
         // CARD NUMBER VALIDATION
@@ -181,6 +178,10 @@ public class TransactionLoadProcessor implements ItemProcessor<Transaction, Tran
         Account account = accountOptional.get();
         logger.debug("Account {} validated successfully for transaction {}", 
             accountId, transactionId);
+        
+        // Set account ID on transaction for batch writer efficiency
+        // This populates the transient field to avoid lazy loading issues
+        transaction.setAccountId(accountId);
         
         // =====================================================================
         // BUSINESS RULE VALIDATION

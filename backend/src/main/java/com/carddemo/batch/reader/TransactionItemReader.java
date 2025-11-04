@@ -625,8 +625,10 @@ public class TransactionItemReader extends AbstractItemCountingItemStreamItemRea
         
         try {
             // Create JPA query with pagination
+            // CRITICAL: Only select unprocessed transactions (processed_timestamp IS NULL)
+            // This ensures the job only processes new transactions, not already-processed ones
             TypedQuery<Transaction> query = entityManager.createQuery(
-                "SELECT t FROM Transaction t ORDER BY t.transactionId",
+                "SELECT t FROM Transaction t WHERE t.processingTimestamp IS NULL ORDER BY t.transactionId",
                 Transaction.class
             );
             
@@ -640,11 +642,11 @@ public class TransactionItemReader extends AbstractItemCountingItemStreamItemRea
             // Create iterator for sequential access
             if (currentPageData != null && !currentPageData.isEmpty()) {
                 currentIterator = currentPageData.iterator();
-                logger.debug("Fetched page {} with {} transaction records", 
+                logger.debug("Fetched page {} with {} unprocessed transaction records", 
                            currentPage, currentPageData.size());
             } else {
                 currentIterator = null;
-                logger.debug("Page {} is empty - no more transaction records", currentPage);
+                logger.debug("Page {} is empty - no more unprocessed transaction records", currentPage);
             }
             
         } catch (Exception e) {

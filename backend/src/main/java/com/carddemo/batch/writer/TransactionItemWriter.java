@@ -440,6 +440,7 @@ public class TransactionItemWriter implements ItemWriter<Transaction> {
                     logger.warn("Optimistic lock exception for account {}, will retry", accountId);
                     throw ole; // Propagate to trigger Spring Batch retry policy
                 } catch (Exception e) {
+                    e.printStackTrace();
                     logger.error("Failed to update account balance for account {}: {}", 
                                 accountId, e.getMessage(), e);
                     exceptionCount++;
