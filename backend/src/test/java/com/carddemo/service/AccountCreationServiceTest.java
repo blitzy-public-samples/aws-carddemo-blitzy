@@ -4,6 +4,7 @@ import com.carddemo.dto.request.AccountAddRequest;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.AccountXref;
 import com.carddemo.entity.Customer;
+import com.carddemo.exception.AccountCreationException;
 import com.carddemo.exception.AccountNotFoundException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.AccountXrefRepository;
@@ -20,6 +21,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
@@ -44,9 +46,6 @@ public class AccountCreationServiceTest {
 
     @Mock
     private AccountXrefRepository accountXrefRepository;
-
-    @Mock
-    private DecimalUtils decimalUtils;
 
     @InjectMocks
     private AccountCreationService accountCreationService;
@@ -73,15 +72,15 @@ public class AccountCreationServiceTest {
         // Initialize test account - mimics COBOL ACCOUNT-RECORD from CVACT01Y.cpy
         testAccount = new Account();
         testAccount.setAccountId(10000000001L);
-        testAccount.setCustomerId(100000001L);
+        testAccount.setCustomer(testCustomer); // Use setCustomer instead of setCustomerId
         testAccount.setCreditLimit(new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP));
         testAccount.setCurrentBalance(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
         testAccount.setActiveStatus("Y");
 
         // Initialize test account cross-reference - replaces VSAM XREF file
         testAccountXref = new AccountXref();
-        testAccountXref.setCustomerId(100000001L);
-        testAccountXref.setAccountId(10000000001L);
+        AccountXref.AccountXrefId xrefId = new AccountXref.AccountXrefId(100000001L, 10000000001L);
+        testAccountXref.setId(xrefId);
     }
 
     /**
@@ -95,16 +94,11 @@ public class AccountCreationServiceTest {
         Mockito.when(customerRepository.findById(100000001L))
                 .thenReturn(Optional.of(testCustomer));
 
-        // Mock DecimalUtils to maintain COMP-3 precision
-        Mockito.when(decimalUtils.createMoneyAmount())
-                .thenReturn(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
-
         // Mock account save with generated ID
         Mockito.when(accountRepository.save(Mockito.any(Account.class)))
                 .thenAnswer(invocation -> {
                     Account account = invocation.getArgument(0);
                     account.setAccountId(10000000001L);
-                    account.setCreatedAt(LocalDateTime.now());
                     return account;
                 });
 
@@ -118,7 +112,7 @@ public class AccountCreationServiceTest {
         // Assert - Verify all operations executed
         Assertions.assertNotNull(createdAccount, "Created account should not be null");
         Assertions.assertNotNull(createdAccount.getAccountId(), "Account ID should be generated");
-        Assertions.assertEquals(100000001L, createdAccount.getCustomerId(), 
+        Assertions.assertEquals(100000001L, createdAccount.getCustomer().getCustomerId(), 
                 "Customer ID should match request");
         
         // Verify COMP-3 precision maintained - scale=2, HALF_UP rounding
@@ -150,14 +144,10 @@ public class AccountCreationServiceTest {
         Mockito.when(customerRepository.findById(100000001L))
                 .thenReturn(Optional.of(testCustomer));
         
-        Mockito.when(decimalUtils.createMoneyAmount())
-                .thenReturn(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
-        
         Mockito.when(accountRepository.save(Mockito.any(Account.class)))
                 .thenAnswer(invocation -> {
                     Account account = invocation.getArgument(0);
                     account.setAccountId(10000000001L); // 11-digit account number
-                    account.setCreatedAt(LocalDateTime.now());
                     return account;
                 });
         
@@ -194,14 +184,10 @@ public class AccountCreationServiceTest {
         Mockito.when(customerRepository.findById(100000001L))
                 .thenReturn(Optional.of(testCustomer));
         
-        Mockito.when(decimalUtils.createMoneyAmount())
-                .thenReturn(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
-        
         Mockito.when(accountRepository.save(Mockito.any(Account.class)))
                 .thenAnswer(invocation -> {
                     Account account = invocation.getArgument(0);
                     account.setAccountId(10000000001L);
-                    account.setCreatedAt(LocalDateTime.now());
                     return account;
                 });
         
@@ -212,7 +198,7 @@ public class AccountCreationServiceTest {
         Account createdAccount = accountCreationService.createAccount(validRequest);
 
         // Assert - Verify foreign key relationship established
-        Assertions.assertEquals(testCustomer.getCustomerId(), createdAccount.getCustomerId(), 
+        Assertions.assertEquals(testCustomer.getCustomerId(), createdAccount.getCustomer().getCustomerId(), 
                 "Account must link to valid customer via FK");
         
         // Verify customer lookup was performed before account creation
@@ -220,7 +206,7 @@ public class AccountCreationServiceTest {
         
         // Verify the account saved has the correct customer reference
         Mockito.verify(accountRepository).save(Mockito.argThat(account -> 
-                account.getCustomerId().equals(testCustomer.getCustomerId())));
+                account.getCustomer().getCustomerId().equals(testCustomer.getCustomerId())));
     }
 
     /**
@@ -234,14 +220,10 @@ public class AccountCreationServiceTest {
         Mockito.when(customerRepository.findById(100000001L))
                 .thenReturn(Optional.of(testCustomer));
         
-        Mockito.when(decimalUtils.createMoneyAmount())
-                .thenReturn(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
-        
         Mockito.when(accountRepository.save(Mockito.any(Account.class)))
                 .thenAnswer(invocation -> {
                     Account account = invocation.getArgument(0);
                     account.setAccountId(10000000001L);
-                    account.setCreatedAt(LocalDateTime.now());
                     return account;
                 });
         
@@ -257,8 +239,8 @@ public class AccountCreationServiceTest {
         
         // Verify xref contains correct bidirectional references
         Mockito.verify(accountXrefRepository).save(Mockito.argThat(xref -> 
-                xref.getCustomerId().equals(testCustomer.getCustomerId()) &&
-                xref.getAccountId().equals(createdAccount.getAccountId())));
+                xref.getId().getCustomerId().equals(testCustomer.getCustomerId()) &&
+                xref.getId().getAccountId().equals(createdAccount.getAccountId())));
     }
 
     /**
@@ -274,14 +256,10 @@ public class AccountCreationServiceTest {
         Mockito.when(customerRepository.findById(100000001L))
                 .thenReturn(Optional.of(testCustomer));
         
-        Mockito.when(decimalUtils.createMoneyAmount())
-                .thenReturn(initialBalance);
-        
         Mockito.when(accountRepository.save(Mockito.any(Account.class)))
                 .thenAnswer(invocation -> {
                     Account account = invocation.getArgument(0);
                     account.setAccountId(10000000001L);
-                    account.setCreatedAt(LocalDateTime.now());
                     return account;
                 });
         
@@ -298,9 +276,6 @@ public class AccountCreationServiceTest {
                 "Balance must be exactly 0.00 with scale=2");
         Assertions.assertEquals(2, createdAccount.getCurrentBalance().scale(), 
                 "Balance scale must be 2 (COBOL V99)");
-        
-        // Verify DecimalUtils was used to create money amount
-        Mockito.verify(decimalUtils, Mockito.atLeastOnce()).createMoneyAmount();
         
         // Verify balance is exactly zero
         Assertions.assertTrue(createdAccount.getCurrentBalance().compareTo(BigDecimal.ZERO) == 0, 
@@ -321,14 +296,10 @@ public class AccountCreationServiceTest {
         Mockito.when(customerRepository.findById(100000001L))
                 .thenReturn(Optional.of(testCustomer));
         
-        Mockito.when(decimalUtils.createMoneyAmount())
-                .thenReturn(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
-        
         Mockito.when(accountRepository.save(Mockito.any(Account.class)))
                 .thenAnswer(invocation -> {
                     Account account = invocation.getArgument(0);
                     account.setAccountId(10000000001L);
-                    account.setCreatedAt(LocalDateTime.now());
                     return account;
                 });
         
@@ -364,14 +335,10 @@ public class AccountCreationServiceTest {
         Mockito.when(customerRepository.findById(100000001L))
                 .thenReturn(Optional.of(testCustomer));
         
-        Mockito.when(decimalUtils.createMoneyAmount())
-                .thenReturn(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
-        
         Mockito.when(accountRepository.save(Mockito.any(Account.class)))
                 .thenAnswer(invocation -> {
                     Account account = invocation.getArgument(0);
                     account.setAccountId(10000000001L);
-                    account.setCreatedAt(LocalDateTime.now());
                     return account;
                 });
         
@@ -408,14 +375,10 @@ public class AccountCreationServiceTest {
         Mockito.when(customerRepository.findById(100000001L))
                 .thenReturn(Optional.of(testCustomer));
         
-        Mockito.when(decimalUtils.createMoneyAmount())
-                .thenReturn(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
-        
         Mockito.when(accountRepository.save(Mockito.any(Account.class)))
                 .thenAnswer(invocation -> {
                     Account account = invocation.getArgument(0);
                     account.setAccountId(10000000001L);
-                    account.setCreatedAt(LocalDateTime.now());
                     return account;
                 });
         
@@ -424,12 +387,13 @@ public class AccountCreationServiceTest {
                 .thenThrow(new RuntimeException("Database constraint violation"));
 
         // Act & Assert - Expect exception propagation for rollback
-        Exception exception = Assertions.assertThrows(RuntimeException.class, () -> {
+        AccountCreationException exception = Assertions.assertThrows(AccountCreationException.class, () -> {
             accountCreationService.createAccount(validRequest);
         });
         
-        Assertions.assertEquals("Database constraint violation", exception.getMessage(), 
-                "Exception message should propagate");
+        Assertions.assertEquals("Account creation failed due to unexpected error: Database constraint violation", 
+                exception.getMessage(), 
+                "Exception message should contain wrapped error");
         
         // Verify customer lookup occurred
         Mockito.verify(customerRepository).findById(100000001L);
@@ -454,9 +418,6 @@ public class AccountCreationServiceTest {
         // Arrange
         Mockito.when(customerRepository.findById(100000001L))
                 .thenReturn(Optional.of(testCustomer));
-        
-        Mockito.when(decimalUtils.createMoneyAmount())
-                .thenReturn(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
         
         // Simulate duplicate key violation
         Mockito.when(accountRepository.save(Mockito.any(Account.class)))
@@ -523,7 +484,7 @@ public class AccountCreationServiceTest {
                 .thenReturn(Optional.of(testCustomer));
 
         // Act & Assert
-        Exception exception = Assertions.assertThrows(IllegalArgumentException.class, () -> {
+        AccountCreationException exception = Assertions.assertThrows(AccountCreationException.class, () -> {
             accountCreationService.createAccount(invalidRequest);
         });
         
@@ -549,14 +510,10 @@ public class AccountCreationServiceTest {
         Mockito.when(customerRepository.findById(100000001L))
                 .thenReturn(Optional.of(testCustomer));
         
-        Mockito.when(decimalUtils.createMoneyAmount())
-                .thenReturn(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
-        
         Mockito.when(accountRepository.save(Mockito.any(Account.class)))
                 .thenAnswer(invocation -> {
                     Account account = invocation.getArgument(0);
                     account.setAccountId(10000000001L);
-                    account.setCreatedAt(LocalDateTime.now());
                     return account;
                 });
         
@@ -578,26 +535,22 @@ public class AccountCreationServiceTest {
     }
 
     /**
-     * Test creation timestamp recorded at account creation.
-     * Validates: audit trail with current date/time matching COBOL CURRENT-DATE.
-     * Ensures timestamp not null and reasonably recent (within last minute).
+     * Test open date is set correctly at account creation.
+     * Validates: account open date matches COBOL CURRENT-DATE logic.
+     * Ensures open date is set to current date when not explicitly provided.
      */
     @Test
     public void createAccount_RecordsCreationTimestamp_CurrentDateTime() {
         // Arrange
-        LocalDateTime beforeCreation = LocalDateTime.now().minusSeconds(1);
+        LocalDate today = LocalDate.now();
         
         Mockito.when(customerRepository.findById(100000001L))
                 .thenReturn(Optional.of(testCustomer));
-        
-        Mockito.when(decimalUtils.createMoneyAmount())
-                .thenReturn(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
         
         Mockito.when(accountRepository.save(Mockito.any(Account.class)))
                 .thenAnswer(invocation -> {
                     Account account = invocation.getArgument(0);
                     account.setAccountId(10000000001L);
-                    account.setCreatedAt(LocalDateTime.now());
                     return account;
                 });
         
@@ -606,20 +559,14 @@ public class AccountCreationServiceTest {
 
         // Act
         Account createdAccount = accountCreationService.createAccount(validRequest);
-        
-        LocalDateTime afterCreation = LocalDateTime.now().plusSeconds(1);
 
-        // Assert - Verify timestamp set
-        Assertions.assertNotNull(createdAccount.getCreatedAt(), 
-                "Creation timestamp must be recorded");
+        // Assert - Verify open date is set
+        Assertions.assertNotNull(createdAccount.getOpenDate(), 
+                "Open date must be recorded");
         
-        // Verify timestamp is recent (between before and after markers)
-        Assertions.assertTrue(createdAccount.getCreatedAt().isAfter(beforeCreation) || 
-                              createdAccount.getCreatedAt().isEqual(beforeCreation), 
-                "Creation timestamp should be after test start");
-        Assertions.assertTrue(createdAccount.getCreatedAt().isBefore(afterCreation) || 
-                              createdAccount.getCreatedAt().isEqual(afterCreation), 
-                "Creation timestamp should be before test end");
+        // Verify open date is today (since not explicitly provided in request)
+        Assertions.assertEquals(today, createdAccount.getOpenDate(), 
+                "Open date should be set to current date when not provided");
     }
 
     /**
@@ -643,9 +590,6 @@ public class AccountCreationServiceTest {
         Mockito.when(customerRepository.findById(100000001L))
                 .thenReturn(Optional.of(testCustomer));
         
-        Mockito.when(decimalUtils.createMoneyAmount())
-                .thenReturn(new BigDecimal("0.00").setScale(2, RoundingMode.HALF_UP));
-        
         // Mock different account IDs for each creation
         Mockito.when(accountRepository.save(Mockito.any(Account.class)))
                 .thenAnswer(invocation -> {
@@ -653,7 +597,6 @@ public class AccountCreationServiceTest {
                     // Simulate different account IDs
                     long accountId = 10000000001L + (long)(Math.random() * 1000);
                     account.setAccountId(accountId);
-                    account.setCreatedAt(LocalDateTime.now());
                     return account;
                 });
         
@@ -669,9 +612,9 @@ public class AccountCreationServiceTest {
         Assertions.assertNotNull(secondAccount, "Second account should be created");
         
         // Both link to same customer
-        Assertions.assertEquals(100000001L, firstAccount.getCustomerId(), 
+        Assertions.assertEquals(100000001L, firstAccount.getCustomer().getCustomerId(), 
                 "First account links to customer");
-        Assertions.assertEquals(100000001L, secondAccount.getCustomerId(), 
+        Assertions.assertEquals(100000001L, secondAccount.getCustomer().getCustomerId(), 
                 "Second account links to customer");
         
         // Different account IDs
