@@ -556,8 +556,9 @@ public class BillPaymentServiceTest {
         assertThat(savedTransaction.getTransactionId()).hasSize(16); // UUID truncated to 16 chars
         assertThat(savedTransaction.getTransactionId()).matches("[A-Z0-9]+"); // Alphanumeric uppercase
 
+        // Assert - Response contains the generated confirmation number (not the mocked return)
         assertThat(response.getErrorMessage()).contains("Transaction ID");
-        assertThat(response.getErrorMessage()).contains(testTransaction.getTransactionId());
+        assertThat(response.getErrorMessage()).contains(savedTransaction.getTransactionId());
     }
 
     /**
