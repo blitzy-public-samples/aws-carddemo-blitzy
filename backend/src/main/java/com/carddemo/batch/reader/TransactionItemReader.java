@@ -121,7 +121,6 @@ import java.util.List;
  * @see <a href="Section 0.9">Numeric Precision and Transaction Boundary Requirements</a>
  */
 @Component
-@Scope("step")
 public class TransactionItemReader extends AbstractItemCountingItemStreamItemReader<Transaction> {
 
     /**
