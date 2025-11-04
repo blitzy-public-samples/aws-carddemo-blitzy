@@ -52,7 +52,7 @@
  * @module components/transaction/TransactionCategoryComponent
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   Box,
@@ -84,7 +84,7 @@ import {
   Cell,
   ResponsiveContainer
 } from 'recharts';
-import { format, parseISO, subDays, startOfMonth, endOfMonth } from 'date-fns';
+import { format, subDays, startOfMonth, endOfMonth } from 'date-fns';
 import {
   fetchTransactionCategories,
   selectCategoryAggregations,
@@ -96,10 +96,8 @@ import Header from '../common/Header.jsx';
 import { 
   formatCurrency, 
   formatDateDisplay, 
-  formatDateForAPI, 
   formatPercentage 
 } from '../../utils/formatters.js';
-import { getTransactionsByCategory, formatTransactionAmount } from '../../services/transactionService.js';
 
 /**
  * Color palette for category charts
@@ -273,11 +271,12 @@ const TransactionCategoryComponent = () => {
         newStartDate = format(startOfMonth(today), 'yyyy-MM-dd');
         newEndDate = format(endOfMonth(today), 'yyyy-MM-dd');
         break;
-      case 'lastMonth':
+      case 'lastMonth': {
         const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
         newStartDate = format(startOfMonth(lastMonth), 'yyyy-MM-dd');
         newEndDate = format(endOfMonth(lastMonth), 'yyyy-MM-dd');
         break;
+      }
       default:
         return;
     }
