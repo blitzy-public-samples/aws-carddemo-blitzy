@@ -369,10 +369,18 @@ public class Card implements Serializable {
      *   <li>Customer service alert for follow-up</li>
      * </ul>
      * 
-     * @return true if card expires within next 60 days, false otherwise
+     * <p><strong>Business Logic:</strong> Returns false for cards that are already expired.
+     * An expired card is not "expiring soon" - it's already expired. Only cards with
+     * future expiration dates within the next 60 days are considered "expiring soon".</p>
+     * 
+     * @return true if card expires within next 60 days (but not already expired), false otherwise
      */
     public boolean isExpiringSoon() {
         if (expirationDate == null) {
+            return false;
+        }
+        // Card is not "expiring soon" if already expired
+        if (isExpired()) {
             return false;
         }
         LocalDate sixtyDaysFromNow = LocalDate.now().plusDays(60);
