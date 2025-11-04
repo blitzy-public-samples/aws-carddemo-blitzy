@@ -32,11 +32,17 @@ package com.carddemo.batch;
 import com.carddemo.batch.job.StatementGenerationJob;
 import com.carddemo.batch.processor.StatementProcessor;
 import com.carddemo.entity.Account;
+import com.carddemo.entity.Card;
 import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
+import com.carddemo.entity.TransactionType;
+import com.carddemo.entity.TransactionCategory;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionTypeRepository;
+import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.util.DateUtils;
 import com.carddemo.util.DecimalUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -52,7 +58,16 @@ import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -131,14 +146,30 @@ public class StatementGenerationJobTest {
     private CustomerRepository customerRepository;
 
     @Autowired
+    private CardRepository cardRepository;
+
+    @Autowired
+    private TransactionTypeRepository transactionTypeRepository;
+
+    @Autowired
+    private TransactionCategoryRepository transactionCategoryRepository;
+
+    @Autowired
     private DateUtils dateUtils;
 
     @Autowired
     private DecimalUtils decimalUtils;
 
+    @PersistenceContext
+    private EntityManager entityManager;
+
+    @Autowired
+    private TransactionTemplate transactionTemplate;
+
     // Test data collections for cleanup
     private List<Customer> testCustomers = new ArrayList<>();
     private List<Account> testAccounts = new ArrayList<>();
+    private List<Card> testCards = new ArrayList<>();
     private List<Transaction> testTransactions = new ArrayList<>();
 
     // Statement period for testing (previous month)
@@ -179,84 +210,121 @@ public class StatementGenerationJobTest {
         // Configure JobLauncherTestUtils with the job to test
         jobLauncherTestUtils.setJob(statementGenerationJobBean);
 
-        // Clear any existing test data
-        testCustomers.clear();
-        testAccounts.clear();
-        testTransactions.clear();
+        // Execute setup in a transaction that commits
+        transactionTemplate.execute(status -> {
+            try {
+                // Clear any existing test data
+                testCustomers.clear();
+                testAccounts.clear();
+                testTransactions.clear();
 
-        // Calculate statement period for previous month (COBOL equivalent logic)
-        // COBOL uses monthly statement cycles with cycle date = last day of month
-        LocalDate today = LocalDate.now();
-        YearMonth previousMonth = YearMonth.from(today).minusMonths(1);
-        statementPeriodStart = previousMonth.atDay(1);
-        statementPeriodEnd = previousMonth.atEndOfMonth();
-        statementCycleDate = statementPeriodEnd; // Cycle date = last day of period
+                // Calculate statement period for previous month (COBOL equivalent logic)
+                // COBOL uses monthly statement cycles with cycle date = last day of month
+                LocalDate today = LocalDate.now();
+                YearMonth previousMonth = YearMonth.from(today).minusMonths(1);
+                statementPeriodStart = previousMonth.atDay(1);
+                statementPeriodEnd = previousMonth.atEndOfMonth();
+                statementCycleDate = statementPeriodEnd; // Cycle date = last day of period
 
-        // Create test customers with complete information
-        Customer customer1 = createTestCustomer(100000001L, "John", "A", "Doe", 
-            "123 Main St", "Apt 4B", "Seattle", "WA", "98101", "USA", 750);
-        Customer customer2 = createTestCustomer(100000002L, "Jane", "B", "Smith",
-            "456 Oak Ave", "", "Portland", "OR", "97201", "USA", 680);
-        Customer customer3 = createTestCustomer(100000003L, "Robert", "C", "Johnson",
-            "789 Pine Rd", "Suite 100", "San Francisco", "CA", "94102", "USA", 720);
+                // Create reference data for transaction types and categories
+                // This data would normally be loaded from SQL files but must be created manually in tests
+                createTransactionReferenceData();
 
-        testCustomers.add(customer1);
-        testCustomers.add(customer2);
-        testCustomers.add(customer3);
+                // Create test customers with complete information
+                Customer customer1 = createTestCustomer(100000001L, "John", "A", "Doe", 
+                    "123 Main St", "Apt 4B", "WA", "98101", "USA", 750);
+                Customer customer2 = createTestCustomer(100000002L, "Jane", "B", "Smith",
+                    "456 Oak Ave", "", "OR", "97201", "USA", 680);
+                Customer customer3 = createTestCustomer(100000003L, "Robert", "C", "Johnson",
+                    "789 Pine Rd", "Suite 100", "CA", "94102", "USA", 720);
 
-        // Persist customers
-        customerRepository.saveAll(testCustomers);
+                testCustomers.add(customer1);
+                testCustomers.add(customer2);
+                testCustomers.add(customer3);
 
-        // Create test accounts with various balance scenarios
-        // Account 1: Positive balance with transactions
-        Account account1 = createTestAccount(10000000001L, customer1.getCustomerId(),
-            "Y", DecimalUtils.createMoneyAmount("1500.75"), 
-            DecimalUtils.createMoneyAmount("5000.00"),
-            DecimalUtils.createMoneyAmount("1000.00"));
-        
-        // Account 2: High balance with many transactions
-        Account account2 = createTestAccount(10000000002L, customer1.getCustomerId(),
-            "Y", DecimalUtils.createMoneyAmount("3250.50"),
-            DecimalUtils.createMoneyAmount("10000.00"),
-            DecimalUtils.createMoneyAmount("2000.00"));
-        
-        // Account 3: Low balance account
-        Account account3 = createTestAccount(10000000003L, customer2.getCustomerId(),
-            "Y", DecimalUtils.createMoneyAmount("125.25"),
-            DecimalUtils.createMoneyAmount("2000.00"),
-            DecimalUtils.createMoneyAmount("500.00"));
-        
-        // Account 4: Zero balance account (edge case)
-        Account account4 = createTestAccount(10000000004L, customer2.getCustomerId(),
-            "Y", DecimalUtils.createMoneyAmount("0.00"),
-            DecimalUtils.createMoneyAmount("3000.00"),
-            DecimalUtils.createMoneyAmount("1000.00"));
-        
-        // Account 5: Inactive account (should not generate statement)
-        Account account5 = createTestAccount(10000000005L, customer3.getCustomerId(),
-            "N", DecimalUtils.createMoneyAmount("500.00"),
-            DecimalUtils.createMoneyAmount("5000.00"),
-            DecimalUtils.createMoneyAmount("1000.00"));
+                // Persist customers and flush to assign IDs
+                customerRepository.saveAll(testCustomers);
+                entityManager.flush();
 
-        testAccounts.add(account1);
-        testAccounts.add(account2);
-        testAccounts.add(account3);
-        testAccounts.add(account4);
-        testAccounts.add(account5);
+                // Create test accounts with various balance scenarios
+                // Account 1: Positive balance with transactions
+                Account account1 = createTestAccount(10000000001L, customer1,
+                    "Y", DecimalUtils.createMoneyAmount("1500.75"), 
+                    DecimalUtils.createMoneyAmount("5000.00"),
+                    DecimalUtils.createMoneyAmount("1000.00"));
+                
+                // Account 2: High balance with many transactions
+                Account account2 = createTestAccount(10000000002L, customer1,
+                    "Y", DecimalUtils.createMoneyAmount("3250.50"),
+                    DecimalUtils.createMoneyAmount("10000.00"),
+                    DecimalUtils.createMoneyAmount("2000.00"));
+                
+                // Account 3: Low balance account
+                Account account3 = createTestAccount(10000000003L, customer2,
+                    "Y", DecimalUtils.createMoneyAmount("125.25"),
+                    DecimalUtils.createMoneyAmount("2000.00"),
+                    DecimalUtils.createMoneyAmount("500.00"));
+                
+                // Account 4: Zero balance account (edge case)
+                Account account4 = createTestAccount(10000000004L, customer2,
+                    "Y", DecimalUtils.createMoneyAmount("0.00"),
+                    DecimalUtils.createMoneyAmount("3000.00"),
+                    DecimalUtils.createMoneyAmount("1000.00"));
+                
+                // Account 5: Inactive account (should not generate statement)
+                Account account5 = createTestAccount(10000000005L, customer3,
+                    "N", DecimalUtils.createMoneyAmount("500.00"),
+                    DecimalUtils.createMoneyAmount("5000.00"),
+                    DecimalUtils.createMoneyAmount("1000.00"));
 
-        // Persist accounts
-        accountRepository.saveAll(testAccounts);
+                testAccounts.add(account1);
+                testAccounts.add(account2);
+                testAccounts.add(account3);
+                testAccounts.add(account4);
+                testAccounts.add(account5);
 
-        // Create transactions within statement period for each active account
-        // COBOL: Lines 416-456 process transactions for each account
-        createTransactionsForAccount(account1, 5);
-        createTransactionsForAccount(account2, 7);
-        createTransactionsForAccount(account3, 3);
-        createTransactionsForAccount(account4, 2);
-        // No transactions for inactive account5
+                // Persist accounts and flush to assign IDs
+                accountRepository.saveAll(testAccounts);
+                entityManager.flush();
 
-        // Persist all transactions
-        transactionRepository.saveAll(testTransactions);
+                // Create cards for each account (required for transactions)
+                Card card1 = createTestCard("4532000000000001", account1.getAccountId(), "JOHN DOE");
+                Card card2 = createTestCard("4532000000000002", account2.getAccountId(), "JOHN DOE");
+                Card card3 = createTestCard("4532000000000003", account3.getAccountId(), "JANE SMITH");
+                Card card4 = createTestCard("4532000000000004", account4.getAccountId(), "JANE SMITH");
+                Card card5 = createTestCard("4532000000000005", account5.getAccountId(), "ROBERT JOHNSON");
+
+                testCards.add(card1);
+                testCards.add(card2);
+                testCards.add(card3);
+                testCards.add(card4);
+                testCards.add(card5);
+
+                // Persist cards and flush to assign IDs
+                cardRepository.saveAll(testCards);
+                entityManager.flush();
+
+                // Create transactions within statement period for each active account
+                // COBOL: Lines 416-456 process transactions for each account
+                createTransactionsForAccount(account1, card1, 5);
+                createTransactionsForAccount(account2, card2, 7);
+                createTransactionsForAccount(account3, card3, 3);
+                createTransactionsForAccount(account4, card4, 2);
+                // No transactions for inactive account5
+
+                // Persist all transactions
+                transactionRepository.saveAll(testTransactions);
+                
+                // Flush and clear persistence context to ensure data is committed
+                entityManager.flush();
+                entityManager.clear();
+                
+                return null;
+            } catch (Exception e) {
+                status.setRollbackOnly();
+                throw new RuntimeException("Failed to set up test data", e);
+            }
+        });
     }
 
     /**
@@ -278,6 +346,9 @@ public class StatementGenerationJobTest {
         // Delete in order of foreign key dependencies
         if (!testTransactions.isEmpty()) {
             transactionRepository.deleteAll(testTransactions);
+        }
+        if (!testCards.isEmpty()) {
+            cardRepository.deleteAll(testCards);
         }
         if (!testAccounts.isEmpty()) {
             accountRepository.deleteAll(testAccounts);
@@ -320,6 +391,7 @@ public class StatementGenerationJobTest {
      * @throws Exception if job execution fails
      */
     @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void testStatementGenerationJob_Success() throws Exception {
         // Arrange: Build job parameters with statement period
         JobParameters jobParameters = new JobParametersBuilder()
@@ -401,24 +473,54 @@ public class StatementGenerationJobTest {
         // Need at least 1500 accounts to validate multiple chunks
         List<Account> bulkAccounts = new ArrayList<>();
         Customer bulkCustomer = createTestCustomer(100000099L, "Bulk", "Test", "Customer",
-            "999 Bulk St", "", "Test City", "TS", "99999", "USA", 700);
+            "999 Bulk St", "", "TS", "99999", "USA", 700);
         customerRepository.save(bulkCustomer);
         testCustomers.add(bulkCustomer);
 
         // Create 1500 test accounts for chunk processing validation
+        // Also create cards and transactions for each account (required for statement generation)
+        List<Card> bulkCards = new ArrayList<>();
+        List<Transaction> bulkTransactions = new ArrayList<>();
+        
         for (int i = 0; i < 1500; i++) {
             Account account = createTestAccount(
                 20000000000L + i,
-                bulkCustomer.getCustomerId(),
+                bulkCustomer,
                 "Y",
                 DecimalUtils.createMoneyAmount("100.00"),
                 DecimalUtils.createMoneyAmount("5000.00"),
                 DecimalUtils.createMoneyAmount("1000.00")
             );
             bulkAccounts.add(account);
+            
+            // Create card for this account
+            Card card = createTestCard(
+                String.format("5432%012d", i),
+                account.getAccountId(),
+                "BULK CUSTOMER"
+            );
+            bulkCards.add(card);
+            
+            // Create one transaction per account (minimum for statement generation)
+            Transaction transaction = createTransaction(
+                30000000000L + i,
+                card.getCardNumber(),
+                statementPeriodStart.plusDays(15), // Mid-period transaction
+                DecimalUtils.createMoneyAmount("50.00"),
+                "Bulk test transaction"
+            );
+            bulkTransactions.add(transaction);
         }
+        
+        // Persist all bulk data
         accountRepository.saveAll(bulkAccounts);
         testAccounts.addAll(bulkAccounts);
+        
+        cardRepository.saveAll(bulkCards);
+        testCards.addAll(bulkCards);
+        
+        transactionRepository.saveAll(bulkTransactions);
+        testTransactions.addAll(bulkTransactions);
 
         JobParameters jobParameters = new JobParametersBuilder()
                 .addLocalDate("statementPeriodStart", statementPeriodStart)
@@ -554,9 +656,10 @@ public class StatementGenerationJobTest {
     public void testStatementGenerationJob_TransactionSelection() throws Exception {
         // Arrange: Create transactions outside statement period for testing
         Account testAccount = testAccounts.get(0);
+        Card testCard = testCards.get(0);  // Get the card for this account
         
         // Transaction before period (should be excluded)
-        Transaction beforePeriod = createTransaction(99999991L, testAccount,
+        Transaction beforePeriod = createTransaction(99999991L, testCard.getCardNumber(),
             statementPeriodStart.minusDays(1), 
             DecimalUtils.createMoneyAmount("50.00"),
             "Transaction before statement period");
@@ -564,7 +667,7 @@ public class StatementGenerationJobTest {
         testTransactions.add(beforePeriod);
 
         // Transaction after period (should be excluded)
-        Transaction afterPeriod = createTransaction(99999992L, testAccount,
+        Transaction afterPeriod = createTransaction(99999992L, testCard.getCardNumber(),
             statementPeriodEnd.plusDays(1),
             DecimalUtils.createMoneyAmount("75.00"),
             "Transaction after statement period");
@@ -572,7 +675,7 @@ public class StatementGenerationJobTest {
         testTransactions.add(afterPeriod);
 
         // Transaction on period start boundary (should be included)
-        Transaction onStartBoundary = createTransaction(99999993L, testAccount,
+        Transaction onStartBoundary = createTransaction(99999993L, testCard.getCardNumber(),
             statementPeriodStart,
             DecimalUtils.createMoneyAmount("25.00"),
             "Transaction on period start");
@@ -580,7 +683,7 @@ public class StatementGenerationJobTest {
         testTransactions.add(onStartBoundary);
 
         // Transaction on period end boundary (should be included)
-        Transaction onEndBoundary = createTransaction(99999994L, testAccount,
+        Transaction onEndBoundary = createTransaction(99999994L, testCard.getCardNumber(),
             statementPeriodEnd,
             DecimalUtils.createMoneyAmount("35.00"),
             "Transaction on period end");
@@ -588,12 +691,14 @@ public class StatementGenerationJobTest {
         testTransactions.add(onEndBoundary);
 
         // Verify transaction selection before job execution
+        Pageable pageable = PageRequest.of(0, 1000);
         List<Transaction> periodTransactions = transactionRepository
             .findByAccountIdAndTransactionDateBetween(
                 testAccount.getAccountId(),
                 statementPeriodStart,
-                statementPeriodEnd
-            );
+                statementPeriodEnd,
+                pageable
+            ).getContent();
 
         // Should find transactions within period + boundary transactions
         // Original 5 transactions + 2 boundary transactions = 7 total
@@ -674,17 +779,22 @@ public class StatementGenerationJobTest {
     public void testStatementGenerationJob_BalanceCalculations() throws Exception {
         // Arrange: Create account with known balance and transactions
         Customer calcCustomer = createTestCustomer(100000100L, "Balance", "Test", "Customer",
-            "100 Calc St", "", "Test", "TS", "99999", "USA", 700);
+            "100 Calc St", "", "TS", "99999", "USA", 700);
         customerRepository.save(calcCustomer);
         testCustomers.add(calcCustomer);
 
         BigDecimal previousBalance = DecimalUtils.createMoneyAmount("1000.00");
-        Account calcAccount = createTestAccount(30000000001L, calcCustomer.getCustomerId(),
+        Account calcAccount = createTestAccount(30000000001L, calcCustomer,
             "Y", previousBalance, 
             DecimalUtils.createMoneyAmount("5000.00"),
             DecimalUtils.createMoneyAmount("1000.00"));
         accountRepository.save(calcAccount);
         testAccounts.add(calcAccount);
+
+        // Create card for calculation test account
+        Card calcCard = createTestCard("4532000000000100", calcAccount.getAccountId(), "BALANCE TEST CUSTOMER");
+        cardRepository.save(calcCard);
+        testCards.add(calcCard);
 
         // Create transactions with known amounts for balance calculation
         BigDecimal charge1 = DecimalUtils.createMoneyAmount("123.45"); // Purchase
@@ -693,15 +803,15 @@ public class StatementGenerationJobTest {
         BigDecimal payment2 = DecimalUtils.createMoneyAmount("-50.50");  // Payment (negative)
         BigDecimal credit = DecimalUtils.createMoneyAmount("-25.25");    // Credit (negative)
 
-        Transaction trans1 = createTransaction(90000001L, calcAccount,
+        Transaction trans1 = createTransaction(90000001L, calcCard.getCardNumber(),
             statementPeriodStart.plusDays(1), charge1, "Charge 1");
-        Transaction trans2 = createTransaction(90000002L, calcAccount,
+        Transaction trans2 = createTransaction(90000002L, calcCard.getCardNumber(),
             statementPeriodStart.plusDays(3), charge2, "Charge 2");
-        Transaction trans3 = createTransaction(90000003L, calcAccount,
+        Transaction trans3 = createTransaction(90000003L, calcCard.getCardNumber(),
             statementPeriodStart.plusDays(5), payment1, "Payment 1");
-        Transaction trans4 = createTransaction(90000004L, calcAccount,
+        Transaction trans4 = createTransaction(90000004L, calcCard.getCardNumber(),
             statementPeriodStart.plusDays(7), payment2, "Payment 2");
-        Transaction trans5 = createTransaction(90000005L, calcAccount,
+        Transaction trans5 = createTransaction(90000005L, calcCard.getCardNumber(),
             statementPeriodStart.plusDays(10), credit, "Credit adjustment");
 
         testTransactions.add(trans1);
@@ -1068,17 +1178,19 @@ public class StatementGenerationJobTest {
         // Arrange: Use first test account with known data
         Account testAccount = testAccounts.get(0);
         Customer testCustomer = testCustomers.stream()
-            .filter(c -> c.getCustomerId().equals(testAccount.getCustomerId()))
+            .filter(c -> c.getCustomerId().equals(testAccount.getCustomer().getCustomerId()))
             .findFirst()
             .orElseThrow();
 
         // Retrieve transactions for this account
+        Pageable pageable = PageRequest.of(0, 1000);
         List<Transaction> accountTransactions = transactionRepository
             .findByAccountIdAndTransactionDateBetween(
                 testAccount.getAccountId(),
                 statementPeriodStart,
-                statementPeriodEnd
-            );
+                statementPeriodEnd,
+                pageable
+            ).getContent();
 
         // Calculate expected transaction total (COBOL WS-TOTAL-AMT)
         BigDecimal expectedTotal = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
@@ -1120,7 +1232,7 @@ public class StatementGenerationJobTest {
 
         // Verify statement data components exist
         assertNotNull(testAccount.getAccountId(), "Account ID should exist");
-        assertNotNull(testCustomer.getFicoScore(), "FICO score should exist");
+        assertNotNull(testCustomer.getFicoCreditScore(), "FICO score should exist");
         assertTrue(accountTransactions.size() > 0,
             "Should have transactions for statement");
     }
@@ -1182,7 +1294,7 @@ public class StatementGenerationJobTest {
             "Job should complete successfully for performance measurement");
 
         StepExecution stepExecution = jobExecution.getStepExecutions().iterator().next();
-        int accountsProcessed = stepExecution.getWriteCount();
+        long accountsProcessed = stepExecution.getWriteCount();
 
         // Calculate per-account processing time
         double msPerAccount = (double) executionTimeMs / accountsProcessed;
@@ -1218,6 +1330,36 @@ public class StatementGenerationJobTest {
     // ==================== Helper Methods ====================
 
     /**
+     * Creates transaction reference data (types and categories).
+     * 
+     * <p>This method creates the required TransactionType and TransactionCategory reference
+     * data that would normally be loaded from SQL files (transaction-types.sql and 
+     * transaction-categories.sql). Since the test configuration doesn't auto-load these
+     * files, we create them manually here.</p>
+     * 
+     * <p>Creates the following reference data:</p>
+     * <ul>
+     *   <li>Transaction Type '01' - Purchase</li>
+     *   <li>Transaction Category 5010 - Retail Merchandise (for type '01')</li>
+     * </ul>
+     */
+    private void createTransactionReferenceData() {
+        // Create Transaction Type '01' - Purchase
+        TransactionType purchaseType = new TransactionType();
+        purchaseType.setTypeCode("01");
+        purchaseType.setTypeDescription("Point of Sale Purchase Transaction");
+        transactionTypeRepository.save(purchaseType);
+
+        // Create Transaction Category 5010 - Retail Merchandise (for type '01')
+        // TransactionCategory uses a composite key (CategoryId)
+        TransactionCategory.CategoryId categoryId = new TransactionCategory.CategoryId("01", 5010);
+        TransactionCategory retailCategory = new TransactionCategory();
+        retailCategory.setId(categoryId);
+        retailCategory.setCategoryDescription("General retail merchandise purchases");
+        transactionCategoryRepository.save(retailCategory);
+    }
+
+    /**
      * Creates a test Customer entity with complete information.
      * 
      * @param customerId Unique customer identifier
@@ -1226,17 +1368,16 @@ public class StatementGenerationJobTest {
      * @param lastName Customer last name
      * @param address1 Address line 1
      * @param address2 Address line 2
-     * @param city City name
-     * @param state State code (2 characters)
-     * @param zip ZIP code
-     * @param country Country code
-     * @param ficoScore FICO credit score
+     * @param stateCode State code (2 characters)
+     * @param zipCode ZIP code
+     * @param countryCode Country code
+     * @param ficoCreditScore FICO credit score
      * @return Configured Customer entity (not persisted)
      */
     private Customer createTestCustomer(Long customerId, String firstName, String middleName,
                                        String lastName, String address1, String address2,
-                                       String city, String state, String zip, String country,
-                                       int ficoScore) {
+                                       String stateCode, String zipCode, String countryCode,
+                                       Integer ficoCreditScore) {
         Customer customer = new Customer();
         customer.setCustomerId(customerId);
         customer.setFirstName(firstName);
@@ -1244,11 +1385,10 @@ public class StatementGenerationJobTest {
         customer.setLastName(lastName);
         customer.setAddressLine1(address1);
         customer.setAddressLine2(address2);
-        customer.setCity(city);
-        customer.setState(state);
-        customer.setZip(zip);
-        customer.setCountry(country);
-        customer.setFicoScore(ficoScore);
+        customer.setStateCode(stateCode);
+        customer.setZipCode(zipCode);
+        customer.setCountryCode(countryCode);
+        customer.setFicoCreditScore(ficoCreditScore);
         return customer;
     }
 
@@ -1256,19 +1396,19 @@ public class StatementGenerationJobTest {
      * Creates a test Account entity with specified balance and limits.
      * 
      * @param accountId Unique account identifier (11 digits)
-     * @param customerId Foreign key to customer
+     * @param customer Customer entity to associate with this account
      * @param activeStatus Active status ('Y' or 'N')
      * @param currentBalance Current account balance
      * @param creditLimit Credit limit for purchases
      * @param cashCreditLimit Cash advance limit
      * @return Configured Account entity (not persisted)
      */
-    private Account createTestAccount(Long accountId, Long customerId, String activeStatus,
+    private Account createTestAccount(Long accountId, Customer customer, String activeStatus,
                                      BigDecimal currentBalance, BigDecimal creditLimit,
                                      BigDecimal cashCreditLimit) {
         Account account = new Account();
         account.setAccountId(accountId);
-        account.setCustomerId(customerId);
+        account.setCustomer(customer);
         account.setActiveStatus(activeStatus);
         account.setCurrentBalance(currentBalance);
         account.setCreditLimit(creditLimit);
@@ -1281,12 +1421,13 @@ public class StatementGenerationJobTest {
     }
 
     /**
-     * Creates multiple test transactions for a given account within the statement period.
+     * Creates multiple test transactions for a given card and account within the statement period.
      * 
      * @param account Account to create transactions for
+     * @param card Card to associate transactions with
      * @param transactionCount Number of transactions to create
      */
-    private void createTransactionsForAccount(Account account, int transactionCount) {
+    private void createTransactionsForAccount(Account account, Card card, int transactionCount) {
         long baseTransactionId = account.getAccountId() * 1000;
         
         for (int i = 0; i < transactionCount; i++) {
@@ -1305,7 +1446,7 @@ public class StatementGenerationJobTest {
             
             Transaction transaction = createTransaction(
                 baseTransactionId + i,
-                account,
+                card.getCardNumber(),
                 transactionDate,
                 amount,
                 description
@@ -1325,17 +1466,39 @@ public class StatementGenerationJobTest {
      * @param description Transaction description
      * @return Configured Transaction entity (not persisted)
      */
-    private Transaction createTransaction(Long transactionId, Account account,
+    private Transaction createTransaction(Long transactionId, String cardNumber,
                                          LocalDate transactionDate, BigDecimal amount,
                                          String description) {
         Transaction transaction = new Transaction();
-        transaction.setTransactionId(transactionId);
-        transaction.setAccountId(account.getAccountId());
-        transaction.setTransactionDate(transactionDate);
+        transaction.setTransactionId(transactionId.toString());
+        transaction.setCardNumber(cardNumber);
+        // Set originationTimestamp - this is what's actually persisted and queried
+        // setTransactionDate() is a no-op for backward compatibility
+        transaction.setOriginationTimestamp(transactionDate.atStartOfDay());
         transaction.setTransactionAmount(amount.setScale(2, RoundingMode.HALF_UP));
         transaction.setTransactionDescription(description);
-        transaction.setTransactionType("PURCHASE");
-        transaction.setTransactionCategory("GENERAL");
+        transaction.setTransactionTypeCode("01");  // Purchase transaction type
+        transaction.setTransactionCategoryCode(5010); // Retail Merchandise category
+        transaction.setTransactionSource("TEST");
         return transaction;
+    }
+
+    /**
+     * Creates a test Card entity associated with an account.
+     * 
+     * @param cardNumber 16-digit card number (primary key)
+     * @param accountId Associated account ID
+     * @param embossedName Cardholder name on card
+     * @return Configured Card entity (not persisted)
+     */
+    private Card createTestCard(String cardNumber, Long accountId, String embossedName) {
+        Card card = new Card();
+        card.setCardNumber(cardNumber);
+        card.setAccountId(accountId);
+        card.setCvvCode("123");
+        card.setEmbossedName(embossedName);
+        card.setExpirationDate(LocalDate.now().plusYears(3));
+        card.setCardStatus(com.carddemo.constants.CardStatus.ACTIVE);
+        return card;
     }
 }
