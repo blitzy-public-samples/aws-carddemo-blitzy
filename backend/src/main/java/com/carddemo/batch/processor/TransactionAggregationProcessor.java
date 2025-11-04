@@ -1,6 +1,6 @@
 package com.carddemo.batch.processor;
 
-import com.carddemo.entity.Transaction;
+import com.carddemo.batch.reader.TransactionGroupReader;
 import com.carddemo.entity.TransactionAggregate;
 import com.carddemo.exception.TransactionException;
 import com.carddemo.repository.TransactionCategoryRepository;
@@ -20,12 +20,11 @@ import java.util.Map;
 /**
  * Spring Batch ItemProcessor implementation for transaction category aggregation processing.
  * 
- * <p>This processor transforms individual Transaction records read by TransactionItemReader into
- * TransactionAggregate records containing category-based grouping and summing operations. It
- * implements the ItemProcessor&lt;Transaction, TransactionAggregate&gt; interface with a process()
- * method that accepts Transaction input and returns TransactionAggregate output containing
- * category-level summaries including page totals, account totals, and grand totals per Section 0.5
- * batch processing patterns.</p>
+ * <p>This processor transforms pre-aggregated TransactionGroup records read by TransactionGroupReader into
+ * TransactionAggregate records containing validated category-based aggregations. It
+ * implements the ItemProcessor&lt;TransactionGroupReader.TransactionGroup, TransactionAggregate&gt; interface with a process()
+ * method that accepts TransactionGroup input and returns TransactionAggregate output containing
+ * validated and transformed aggregation data per Section 0.5 batch processing patterns.</p>
  * 
  * <p><strong>COBOL Source Transformation:</strong></p>
  * <p>This processor is migrated from COBOL batch program CBTRN03C.cbl which performs transaction
@@ -159,7 +158,7 @@ import java.util.Map;
  * @see <a href="Section 0.9">Numeric Precision Requirements</a>
  */
 @Component
-public class TransactionAggregationProcessor implements ItemProcessor<Transaction, TransactionAggregate> {
+public class TransactionAggregationProcessor implements ItemProcessor<TransactionGroupReader.TransactionGroup, TransactionAggregate> {
 
     /**
      * SLF4J logger for transaction aggregation processing events, validation failures, and errors.
@@ -272,24 +271,22 @@ public class TransactionAggregationProcessor implements ItemProcessor<Transactio
     }
 
     /**
-     * Processes a single Transaction record and aggregates it into category-level summaries.
+     * Processes a pre-aggregated TransactionGroup and transforms it into a TransactionAggregate entity.
      * 
-     * <p>This method implements the core transformation logic from COBOL CBTRN03C.cbl transaction
-     * aggregation. It validates the transaction, accumulates amounts into category balances, and
-     * returns null for invalid transactions to trigger Spring Batch skip logic.</p>
+     * <p>This method implements validation and transformation logic for pre-aggregated transaction groups
+     * from the TransactionGroupReader. It validates reference data and transforms the group into a
+     * persitable TransactionAggregate entity, returning null for invalid groups to trigger Spring Batch skip logic.</p>
      * 
      * <p><strong>Processing Flow:</strong></p>
      * <ol>
-     *   <li>Validate transaction is not null and has required fields (id, amount, type, category)</li>
+     *   <li>Validate transactionGroup is not null and has required fields (accountId, typeCode, categoryCode)</li>
      *   <li>Validate transaction type code exists in reference data (TransactionTypeRepository)</li>
      *   <li>Validate transaction category code exists in reference data (TransactionCategoryRepository)</li>
-     *   <li>Extract or derive account ID from transaction (via card relationship)</li>
-     *   <li>Build composite aggregation key: "accountId|typeCode|categoryCode"</li>
-     *   <li>Lookup or create TransactionAggregate in aggregationMap</li>
-     *   <li>Accumulate transaction amount into categoryBalance with COMP-3 precision</li>
-     *   <li>Increment transaction count for aggregation</li>
-     *   <li>Update lastUpdated timestamp to current time</li>
-     *   <li>Return null (transaction consumed into aggregation, not passed to writer)</li>
+     *   <li>Create TransactionAggregate entity with composite key from group</li>
+     *   <li>Set aggregated amounts (totalAmount) with COMP-3 precision preservation</li>
+     *   <li>Set transaction count from pre-aggregated group</li>
+     *   <li>Set timestamps to current time</li>
+     *   <li>Return TransactionAggregate entity for persistence by ItemWriter</li>
      * </ol>
      * 
      * <p><strong>COBOL Equivalence:</strong></p>
@@ -396,141 +393,105 @@ public class TransactionAggregationProcessor implements ItemProcessor<Transactio
      *   <li>HashMap lookup/update: O(1) constant time for aggregation accumulation</li>
      * </ul>
      * 
-     * @param transaction The transaction record to process and aggregate. Must not be null, and must
-     *                    contain valid transaction ID, amount, type code, category code, and account
-     *                    association. Typically provided by TransactionItemReader from database query.
-     * @return null in all cases. Transactions are consumed into the stateful aggregationMap and not
-     *         passed to the ItemWriter. The writer will retrieve aggregated results from
-     *         aggregationMap after chunk processing. Returning null for invalid transactions triggers
+     * @param transactionGroup The pre-aggregated transaction group to process. Must not be null, and must
+     *                        contain valid accountId, typeCode, categoryCode, and aggregated metrics.
+     *                        Typically provided by TransactionGroupReader from SQL GROUP BY query.
+     * @return TransactionAggregate entity ready for persistence, or null if validation fails to trigger
      *         Spring Batch skip logic without failing the chunk.
-     * @throws TransactionException if unexpected errors occur during aggregation processing (e.g.,
-     *                              database connection failures, arithmetic exceptions). These exceptions
-     *                              trigger Spring Batch retry/skip logic based on step configuration.
+     * @throws TransactionException if unexpected errors occur during transformation (e.g.,
+     *                              database connection failures). These exceptions trigger Spring Batch
+     *                              retry/skip logic based on step configuration.
      */
     @Override
-    public TransactionAggregate process(Transaction transaction) throws Exception {
-        // Validation: Null transaction check
-        if (transaction == null) {
-            logger.warn("Null transaction encountered, skipping");
+    public TransactionAggregate process(TransactionGroupReader.TransactionGroup transactionGroup) throws Exception {
+        // Validation: Null group check
+        if (transactionGroup == null) {
+            logger.warn("Null transaction group encountered, skipping");
             return null;
         }
+
+        // Extract group attributes
+        Long accountId = transactionGroup.getAccountId();
+        String transactionTypeCode = transactionGroup.getTransactionTypeCode();
+        Integer transactionCategoryCode = transactionGroup.getTransactionCategoryCode();
+        BigDecimal totalAmount = transactionGroup.getTotalAmount();
+        Integer transactionCount = transactionGroup.getTransactionCount();
 
         // Validation: Required field presence checks
-        if (transaction.getTransactionId() == null || transaction.getTransactionId().trim().isEmpty()) {
-            logger.warn("Transaction with null or empty ID encountered, skipping");
+        if (accountId == null) {
+            logger.warn("Transaction group with null account ID encountered, skipping");
             return null;
         }
 
-        if (transaction.getTransactionAmount() == null) {
-            logger.warn("Transaction {} has null amount, skipping", transaction.getTransactionId());
+        if (transactionTypeCode == null || transactionTypeCode.trim().isEmpty()) {
+            logger.warn("Transaction group for account {} has null or empty type code, skipping", accountId);
             return null;
         }
 
-        if (transaction.getTransactionTypeCode() == null || transaction.getTransactionTypeCode().trim().isEmpty()) {
-            logger.warn("Transaction {} has null or empty type code, skipping", transaction.getTransactionId());
+        if (transactionCategoryCode == null) {
+            logger.warn("Transaction group for account {} has null category code, skipping", accountId);
             return null;
         }
 
-        if (transaction.getTransactionCategoryCode() == null) {
-            logger.warn("Transaction {} has null category code, skipping", transaction.getTransactionId());
+        if (totalAmount == null) {
+            logger.warn("Transaction group for account {}/{}/{} has null total amount, skipping",
+                    accountId, transactionTypeCode, transactionCategoryCode);
             return null;
         }
-
-        // Extract transaction attributes for aggregation
-        String transactionId = transaction.getTransactionId();
-        String transactionTypeCode = transaction.getTransactionTypeCode();
-        Integer transactionCategoryCode = transaction.getTransactionCategoryCode();
-        BigDecimal transactionAmount = transaction.getTransactionAmount();
 
         try {
             // Validation: Transaction type code existence check
             // Replaces COBOL 1500-B-LOOKUP-TRANTYPE paragraph (CBTRN03C.cbl lines 494-502)
             boolean typeExists = transactionTypeRepository.existsById(transactionTypeCode);
             if (!typeExists) {
-                logger.warn("Transaction {} has invalid type code '{}', skipping",
-                        transactionId, transactionTypeCode);
+                logger.warn("Transaction group for account {} has invalid type code '{}', skipping",
+                        accountId, transactionTypeCode);
                 return null;
             }
 
             // Validation: Transaction category code existence check
             // Replaces COBOL 1500-C-LOOKUP-TRANCATG paragraph (CBTRN03C.cbl lines 504-512)
-            // Note: TransactionCategory uses composite key, need to validate existence
+            // Note: TransactionCategory uses composite key
             boolean categoryExists = transactionCategoryRepository.existsById(
                     new com.carddemo.entity.TransactionCategory.CategoryId(
                             transactionTypeCode, transactionCategoryCode));
             if (!categoryExists) {
-                logger.warn("Transaction {} has invalid category code '{}' for type '{}', skipping",
-                        transactionId, transactionCategoryCode, transactionTypeCode);
+                logger.warn("Transaction group for account {} has invalid category code '{}' for type '{}', skipping",
+                        accountId, transactionCategoryCode, transactionTypeCode);
                 return null;
             }
 
-            // Extract account ID for aggregation grouping
-            // Replaces COBOL card number grouping (CBTRN03C.cbl lines 181-186)
-            Long accountId = transaction.getAccountId();
-            if (accountId == null) {
-                logger.warn("Transaction {} has no account ID (no card association), skipping", transactionId);
-                return null;
-            }
+            // Create TransactionAggregate entity from validated group
+            TransactionAggregate.AggregateId aggregateId =
+                    new TransactionAggregate.AggregateId(accountId, transactionTypeCode, transactionCategoryCode);
 
-            // Build composite aggregation key: accountId|typeCode|categoryCode
-            String aggregationKey = buildAggregationKey(accountId, transactionTypeCode, transactionCategoryCode);
+            TransactionAggregate aggregate = new TransactionAggregate();
+            aggregate.setId(aggregateId);
 
-            // Retrieve or create TransactionAggregate for this key
-            TransactionAggregate aggregate = aggregationMap.get(aggregationKey);
+            // Set aggregated amount with COMP-3 precision (scale 2, HALF_UP rounding)
+            // Replaces COBOL WS-ACCOUNT-TOTAL accumulation with pre-computed SQL SUM
+            BigDecimal categoryBalance = totalAmount.setScale(2, RoundingMode.HALF_UP);
+            aggregate.setCategoryBalance(categoryBalance);
 
-            if (aggregate == null) {
-                // Create new aggregation for this account/type/category combination
-                TransactionAggregate.AggregateId aggregateId =
-                        new TransactionAggregate.AggregateId(accountId, transactionTypeCode, transactionCategoryCode);
+            // Set transaction count from pre-aggregated group
+            aggregate.setTransactionCount(transactionCount != null ? transactionCount : 0);
 
-                aggregate = new TransactionAggregate();
-                aggregate.setId(aggregateId);
+            // Set timestamps
+            LocalDateTime now = LocalDateTime.now();
+            aggregate.setCreatedAt(now);
+            aggregate.setLastUpdated(now);
 
-                // Initialize categoryBalance with transaction amount (COMP-3 precision)
-                // Replaces COBOL: MOVE TRAN-AMT TO WS-PAGE-TOTAL (first occurrence)
-                BigDecimal initialBalance = transactionAmount.setScale(2, RoundingMode.HALF_UP);
-                aggregate.setCategoryBalance(initialBalance);
+            logger.debug("Transformed transaction group for account {}/{}/{}: balance={}, count={}",
+                    accountId, transactionTypeCode, transactionCategoryCode,
+                    categoryBalance, transactionCount);
 
-                // Initialize transaction count
-                aggregate.setTransactionCount(1);
-
-                // Set timestamps
-                LocalDateTime now = LocalDateTime.now();
-                aggregate.setCreatedAt(now);
-                aggregate.setLastUpdated(now);
-
-                // Store in aggregation map
-                aggregationMap.put(aggregationKey, aggregate);
-
-                logger.debug("Created new aggregation for key {}: balance={}, count=1",
-                        aggregationKey, initialBalance);
-
-            } else {
-                // Accumulate into existing aggregation
-                // Replaces COBOL: ADD TRAN-AMT TO WS-PAGE-TOTAL, WS-ACCOUNT-TOTAL (lines 287-288)
-                BigDecimal currentBalance = aggregate.getCategoryBalance();
-                BigDecimal newBalance = DecimalUtils.safeAdd(currentBalance, transactionAmount);
-                aggregate.setCategoryBalance(newBalance);
-
-                // Increment transaction count
-                Integer currentCount = aggregate.getTransactionCount();
-                aggregate.setTransactionCount(currentCount != null ? currentCount + 1 : 1);
-
-                // Update timestamp
-                aggregate.setLastUpdated(LocalDateTime.now());
-
-                logger.debug("Updated aggregation for key {}: oldBalance={}, newBalance={}, count={}",
-                        aggregationKey, currentBalance, newBalance, aggregate.getTransactionCount());
-            }
-
-            // Return null to indicate transaction consumed into aggregation
-            // Spring Batch will not pass anything to ItemWriter for this transaction
-            return null;
+            return aggregate;
 
         } catch (Exception e) {
-            logger.error("Unexpected error processing transaction {}: {}", transactionId, e.getMessage(), e);
+            logger.error("Unexpected error processing transaction group for account {}/{}/{}: {}",
+                    accountId, transactionTypeCode, transactionCategoryCode, e.getMessage(), e);
             throw new TransactionException(
-                    "Error processing transaction " + transactionId + " for aggregation",
+                    "Error processing transaction group for aggregation",
                     "AGGREGATION_ERROR",
                     e);
         }

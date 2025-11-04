@@ -181,6 +181,62 @@ public class TransactionAggregationJob {
     private static final Logger logger = LoggerFactory.getLogger(TransactionAggregationJob.class);
 
     /**
+     * JobRepository for persisting batch job execution metadata.
+     * Injected via constructor for use across all bean methods.
+     */
+    private final JobRepository jobRepository;
+
+    /**
+     * PlatformTransactionManager for managing database transactions.
+     * Configured with READ_COMMITTED isolation level per Section 0.3.
+     */
+    private final PlatformTransactionManager transactionManager;
+
+    /**
+     * TransactionAggregationProcessor for validation and accumulation.
+     * Injected via constructor to avoid circular bean references.
+     */
+    private final TransactionAggregationProcessor transactionAggregationProcessor;
+
+    /**
+     * TransactionAggregateWriter for persisting aggregated results.
+     * Injected via constructor to avoid circular bean references.
+     */
+    private final TransactionAggregateWriter transactionAggregateWriter;
+
+    /**
+     * DataSource for database connectivity in reader configuration.
+     * Injected via constructor for creating TransactionGroupReader bean.
+     */
+    private final DataSource dataSource;
+
+    /**
+     * Constructor for TransactionAggregationJob configuration.
+     * Uses constructor injection for all dependencies to avoid circular references.
+     * 
+     * @param jobRepository Spring Batch metadata repository
+     * @param transactionManager Transaction manager for chunk-level transactions
+     * @param transactionAggregationProcessor Processor for validation and accumulation
+     * @param transactionAggregateWriter Writer for persisting aggregates
+     * @param dataSource JDBC DataSource for database connectivity
+     */
+    public TransactionAggregationJob(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            TransactionAggregationProcessor transactionAggregationProcessor,
+            TransactionAggregateWriter transactionAggregateWriter,
+            DataSource dataSource) {
+        this.jobRepository = jobRepository;
+        this.transactionManager = transactionManager;
+        this.transactionAggregationProcessor = transactionAggregationProcessor;
+        this.transactionAggregateWriter = transactionAggregateWriter;
+        this.dataSource = dataSource;
+        
+        logger.info("TransactionAggregationJob configuration initialized with chunk size: {}, skip limit: {}, retry limit: {}",
+                DEFAULT_CHUNK_SIZE, SKIP_LIMIT, RETRY_LIMIT);
+    }
+
+    /**
      * Default chunk size for transaction aggregation processing.
      * Configured per Section 0.5 requirements for optimal performance and restart granularity.
      * 
@@ -299,10 +355,8 @@ public class TransactionAggregationJob {
      * @return Configured Job instance ready for execution by Spring Batch framework. Job can be
      *         launched programmatically via JobLauncher or automatically via Kubernetes CronJob.
      */
-    @Bean(name = "transactionAggregationJob")
-    public Job transactionAggregationJob(
-            JobRepository jobRepository,
-            Step transactionAggregationStep) {
+    @Bean(name = "transactionAggregationJobBean")
+    public Job createTransactionAggregationJob(Step transactionAggregationStep) {
         
         logger.info("Configuring transactionAggregationJob - Transaction Category Aggregation Batch Job");
         logger.info("COBOL Source: CBTRN03C.cbl - Transaction Detail Report Generation");
@@ -437,12 +491,7 @@ public class TransactionAggregationJob {
      *         tolerance and restart capability.
      */
     @Bean(name = "transactionAggregationStep")
-    public Step transactionAggregationStep(
-            JobRepository jobRepository,
-            PlatformTransactionManager platformTransactionManager,
-            TransactionGroupReader transactionGroupReader,
-            TransactionAggregationProcessor transactionAggregationProcessor,
-            TransactionAggregateWriter transactionAggregateWriter) {
+    public Step transactionAggregationStep() {
         
         logger.info("Configuring transactionAggregationStep with chunk size: {}", DEFAULT_CHUNK_SIZE);
         logger.info("Fault tolerance: skip limit={}, retry limit={}", SKIP_LIMIT, RETRY_LIMIT);
@@ -452,8 +501,8 @@ public class TransactionAggregationJob {
         logger.info("Writer: TransactionAggregateWriter (UPSERT to transaction_aggregate table)");
         
         return new StepBuilder("transactionAggregationStep", jobRepository)
-                .<TransactionGroupReader.TransactionGroup, TransactionAggregate>chunk(DEFAULT_CHUNK_SIZE, platformTransactionManager)
-                .reader(transactionGroupReader)
+                .<TransactionGroupReader.TransactionGroup, TransactionAggregate>chunk(DEFAULT_CHUNK_SIZE, transactionManager)
+                .reader(transactionGroupReader())
                 .processor(transactionAggregationProcessor)
                 .writer(transactionAggregateWriter)
                 .faultTolerant()
@@ -521,7 +570,7 @@ public class TransactionAggregationJob {
      *         and efficient SQL GROUP BY aggregation for transaction processing.
      */
     @Bean
-    public TransactionGroupReader transactionGroupReader(DataSource dataSource) {
+    public TransactionGroupReader transactionGroupReader() {
         logger.info("Creating TransactionGroupReader bean with SQL GROUP BY aggregation");
         logger.info("Default date range: Previous day (incremental mode)");
         logger.info("Supports restart via ExecutionContext position tracking");
