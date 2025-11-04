@@ -251,16 +251,17 @@ public class DailyTransactionProcessingJob {
      *   <li>Job fails if skip limit exceeded or critical exception thrown</li>
      * </ul>
      * 
+     * @param processingStep the validateAndPostTransactionsStep bean injected by Spring
      * @return Job bean for daily transaction processing
      */
-    @Bean
-    public Job dailyTransactionProcessingJob() {
+    @Bean(name = "dailyTransactionProcessingJobBean")
+    public Job dailyTransactionProcessingJob(Step validateAndPostTransactionsStep) {
         logger.info("Configuring dailyTransactionProcessingJob");
         
         return new JobBuilder("dailyTransactionProcessingJob", jobRepository)
                 .incrementer(new RunIdIncrementer())
                 .listener(jobExecutionListener())
-                .start(validateAndPostTransactionsStep())
+                .start(validateAndPostTransactionsStep)
                 .build();
     }
 
