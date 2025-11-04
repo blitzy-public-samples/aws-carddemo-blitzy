@@ -28,7 +28,6 @@
  */
 package com.carddemo.config;
 
-import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
 import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
@@ -85,7 +84,6 @@ import java.util.Map;
  * - All errors logged with full context for troubleshooting
  */
 @Configuration
-@EnableBatchProcessing
 public class BatchConfig {
 
     /**
@@ -166,7 +164,7 @@ public class BatchConfig {
         
         // SERIALIZABLE isolation for job metadata to prevent concurrent job conflicts
         // Equivalent to COBOL batch job serialization on mainframe
-        factory.setIsolationLevelForCreate("ISOLATION_SERIALIZABLE");
+        factory.setIsolationLevelForCreate("SERIALIZABLE");
         
         // Maximum varchar length for long parameter values (e.g., file paths, descriptions)
         factory.setMaxVarCharLength(2500);
