@@ -1,4 +1,10 @@
-import React, { forwardRef, memo, ButtonHTMLAttributes, ReactNode, MouseEvent } from 'react';
+import React, {
+  type ButtonHTMLAttributes,
+  forwardRef,
+  memo,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 import { Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -22,7 +28,7 @@ export type ButtonSize = 'sm' | 'md' | 'lg';
 /**
  * Props interface for the Button component
  * Extends native HTML button attributes while adding custom functionality
- * 
+ *
  * @interface ButtonProps
  * @extends {ButtonHTMLAttributes<HTMLButtonElement>}
  */
@@ -103,35 +109,35 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 /**
  * Button component - Versatile, accessible button for user interactions
- * 
+ *
  * A production-ready button component that serves as the foundational interactive
  * element throughout the OCR Processing Application. Implements comprehensive
  * accessibility features per WCAG 2.1 AA standards, multiple visual variants,
  * loading states, and icon support.
- * 
+ *
  * @component
  * @example
  * // Primary button with default styling
  * <Button onClick={handleClick}>Click Me</Button>
- * 
+ *
  * @example
  * // Secondary button with left icon
  * <Button variant="secondary" leftIcon={<Download />}>
  *   Download
  * </Button>
- * 
+ *
  * @example
  * // Large danger button in loading state
  * <Button variant="danger" size="lg" loading>
  *   Deleting...
  * </Button>
- * 
+ *
  * @example
  * // Full-width ghost button with custom styles
  * <Button variant="ghost" fullWidth className="mt-4">
  *   Cancel
  * </Button>
- * 
+ *
  * Features:
  * - Multiple variants: primary, secondary, danger, ghost
  * - Three sizes: sm (32px), md (40px), lg (48px)
@@ -143,7 +149,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
  * - Focus visible styles per WCAG guidelines
  * - Minimum 44x44px touch targets on mobile (lg size)
  * - Smooth transitions and hover effects
- * 
+ *
  * @param {ButtonProps} props - Component props
  * @param {React.Ref<HTMLButtonElement>} ref - Forwarded ref to button element
  * @returns {React.ReactElement} Rendered button component
@@ -176,15 +182,15 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       'inline-flex items-center justify-center gap-2',
       'font-medium rounded-lg',
       'transition-all duration-200 ease-in-out',
-      
+
       // Focus styles for keyboard navigation (WCAG 2.1 AA)
       'focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2',
       'focus-visible:ring-blue-500',
-      
+
       // Disabled cursor
       (disabled || loading) && 'cursor-not-allowed',
       !disabled && !loading && 'cursor-pointer',
-      
+
       // Full width option
       fullWidth && 'w-full'
     );
@@ -252,10 +258,10 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     /**
      * Handle click events with loading and disabled state checks
      * Prevents event propagation when button should not be interactive
-     * 
+     *
      * @param {MouseEvent<HTMLButtonElement>} event - Click event
      */
-    const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
+    const handleClick = (event: MouseEvent<HTMLButtonElement>): void => {
       if (disabled || loading) {
         event.preventDefault();
         return;
@@ -270,12 +276,16 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
      * Render loading spinner or left icon
      * When loading, spinner replaces left icon if present
      */
-    const renderLeftContent = () => {
+    const renderLeftContent = (): ReactNode => {
       if (loading) {
         return <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />;
       }
       if (leftIcon) {
-        return <span className="inline-flex" aria-hidden="true">{leftIcon}</span>;
+        return (
+          <span className="inline-flex" aria-hidden="true">
+            {leftIcon}
+          </span>
+        );
       }
       return null;
     };
@@ -284,9 +294,13 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
      * Render right icon
      * Not affected by loading state
      */
-    const renderRightContent = () => {
+    const renderRightContent = (): ReactNode => {
       if (rightIcon && !loading) {
-        return <span className="inline-flex" aria-hidden="true">{rightIcon}</span>;
+        return (
+          <span className="inline-flex" aria-hidden="true">
+            {rightIcon}
+          </span>
+        );
       }
       return null;
     };
@@ -318,14 +332,25 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
 Button.displayName = 'Button';
 
 /**
- * Export memoized Button component for performance optimization
+ * Create memoized version of Button component for performance optimization
  * Prevents unnecessary re-renders when props haven't changed
  * Critical for performance in lists and frequently updating UIs
  */
-export default memo(Button);
+const MemoizedButton = memo(Button);
+
+/**
+ * Set displayName on memoized component as well
+ * Ensures proper display in React DevTools
+ */
+MemoizedButton.displayName = 'Button';
+
+/**
+ * Export memoized Button component as default
+ */
+export default MemoizedButton;
 
 /**
  * Named export for direct import
  * Allows: import { Button } from './Button'
  */
-export { Button };
+export { MemoizedButton as Button };
