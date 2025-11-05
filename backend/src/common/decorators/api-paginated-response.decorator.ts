@@ -78,7 +78,7 @@ export class PaginationMeta {
     type: Number,
     required: true,
   })
-  total: number;
+  total!: number;
 
   /**
    * Current page number (1-indexed)
@@ -92,7 +92,7 @@ export class PaginationMeta {
     required: true,
     minimum: 1,
   })
-  page: number;
+  page!: number;
 
   /**
    * Number of items per page
@@ -107,7 +107,7 @@ export class PaginationMeta {
     minimum: 1,
     maximum: MAX_PAGE_SIZE,
   })
-  page_size: number;
+  page_size!: number;
 
   /**
    * Total number of pages available
@@ -121,7 +121,7 @@ export class PaginationMeta {
     required: true,
     minimum: 0,
   })
-  total_pages: number;
+  total_pages!: number;
 
   /**
    * Indicates whether there is a next page available
@@ -133,7 +133,7 @@ export class PaginationMeta {
     type: Boolean,
     required: true,
   })
-  has_next: boolean;
+  has_next!: boolean;
 
   /**
    * Cursor for cursor-based pagination
@@ -199,7 +199,7 @@ export class PaginationMeta {
  * @see PaginationMeta for pagination metadata structure
  * @see Section 0.7.4 for pagination standards
  */
-export function ApiPaginatedResponse<TModel extends Type<any>>(
+export function ApiPaginatedResponse<TModel extends Type<unknown>>(
   model: TModel,
 ): MethodDecorator {
   return applyDecorators(
