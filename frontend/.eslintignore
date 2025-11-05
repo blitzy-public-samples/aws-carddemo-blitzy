@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+.next/
+out/
+dist/
+build/
+
+# Test files (ad-hoc tests should not block build)
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+**/blitzy_adhoc_test_*.ts
+**/blitzy_adhoc_test_*.tsx
+
+# Coverage
+coverage/
+.nyc_output/
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+*.log
+.DS_Store
