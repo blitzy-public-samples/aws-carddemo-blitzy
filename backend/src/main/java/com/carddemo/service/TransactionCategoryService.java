@@ -296,7 +296,16 @@ public class TransactionCategoryService {
         // Transform raw results to CategorySummary objects
         List<CategorySummary> categorySummaries = rawResults.stream()
             .map(row -> {
-                Integer categoryCode = (Integer) row[0];
+                // Category code is String in Transaction entity (matching COBOL PIC X(04))
+                String categoryCodeStr = (String) row[0];
+                Integer categoryCode = null;
+                try {
+                    categoryCode = Integer.parseInt(categoryCodeStr);
+                } catch (NumberFormatException e) {
+                    logger.warn("Invalid category code format: {}", categoryCodeStr);
+                    categoryCode = 0; // Default for invalid codes
+                }
+                
                 BigDecimal totalAmount = (BigDecimal) row[1];
                 
                 // Ensure proper scale and rounding for COMP-3 equivalence

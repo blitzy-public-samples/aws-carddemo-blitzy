@@ -150,28 +150,27 @@ public class TransactionRequest {
     /**
      * Transaction category code.
      * 
-     * <p>Maps to COBOL field TCATCDI PIC X(4) from COTRN02.CPY line 78.
-     * Four-character code for detailed transaction categorization.</p>
+     * <p>Maps to COBOL field TCATCDI from COTRN02.CPY, now stored as 6-character composite key
+     * combining transaction type (2 chars) + category number (4 digits) to match refactored
+     * TransactionCategory entity structure.</p>
      * 
      * <p><b>Validation Rules:</b></p>
      * <ul>
      *   <li>Required field - must not be blank</li>
-     *   <li>Maximum length: 4 characters</li>
+     *   <li>Maximum length: 6 characters (composite key format)</li>
      *   <li>Must exist in reference data table transaction_category</li>
      * </ul>
      * 
-     * <p><b>Common Transaction Categories:</b></p>
+     * <p><b>Common Transaction Category Format Examples:</b></p>
      * <ul>
-     *   <li>FOOD - Food and Dining</li>
-     *   <li>GAS - Gasoline and Fuel</li>
-     *   <li>TRVL - Travel and Lodging</li>
-     *   <li>ENTR - Entertainment</li>
-     *   <li>RETL - Retail Merchandise</li>
-     *   <li>UTIL - Utilities and Services</li>
+     *   <li>010001 - Purchase: Food and Dining</li>
+     *   <li>010002 - Purchase: Gasoline and Fuel</li>
+     *   <li>020001 - Cash Advance: ATM Withdrawal</li>
+     *   <li>030001 - Payment: Online Payment</li>
      * </ul>
      */
     @NotBlank(message = "Transaction category code is required and cannot be blank")
-    @Size(max = 4, message = "Transaction category code must not exceed 4 characters")
+    @Size(max = 6, message = "Transaction category code must not exceed 6 characters")
     @JsonProperty("transactionCategoryCode")
     private String transactionCategoryCode;
 
@@ -238,28 +237,31 @@ public class TransactionRequest {
      * <p><b>Validation Rules:</b></p>
      * <ul>
      *   <li>Required field - must not be null</li>
-     *   <li>Minimum value: 0.01 (transactions must be at least one cent)</li>
+     *   <li>Absolute value must be at least 0.01 (transactions must be at least one cent)</li>
      *   <li>Maximum integer digits: 10</li>
      *   <li>Exact fractional digits: 2 (cents precision)</li>
      *   <li>Rounding mode: HALF_UP (consistent with COBOL rounding)</li>
+     *   <li>Sign validation performed by service layer based on transaction type</li>
      * </ul>
      * 
      * <p><b>Business Rules:</b></p>
      * <ul>
-     *   <li>Positive amounts represent debits (charges) to the account</li>
-     *   <li>For credits (payments, refunds), transaction type code determines sign</li>
-     *   <li>Amount precision must exactly match COBOL COMP-3 PIC S9(10)V99</li>
+     *   <li>Negative amounts represent debits (purchases, charges) to the account per COBOL convention</li>
+     *   <li>Positive amounts represent credits (payments, refunds) to the account</li>
+     *   <li>Transaction type code determines expected sign (validated in service layer)</li>
+     *   <li>Amount precision must exactly match COBOL COMP-3 PIC S9(10)V99 (signed)</li>
      * </ul>
      * 
      * <p><b>Example Values:</b></p>
      * <ul>
-     *   <li>125.50 - One hundred twenty-five dollars and fifty cents</li>
-     *   <li>0.99 - Ninety-nine cents</li>
+     *   <li>-125.50 - Purchase transaction (debit)</li>
+     *   <li>125.50 - Payment transaction (credit)</li>
+     *   <li>-0.99 - Ninety-nine cent purchase</li>
      *   <li>9999999999.99 - Maximum allowed amount</li>
+     *   <li>-9999999999.99 - Maximum allowed debit</li>
      * </ul>
      */
     @NotNull(message = "Transaction amount is required and cannot be null")
-    @DecimalMin(value = "0.01", message = "Transaction amount must be at least 0.01")
     @Digits(integer = 10, fraction = 2, message = "Transaction amount must have at most 10 integer digits and exactly 2 decimal places")
     @JsonProperty("transactionAmount")
     private BigDecimal transactionAmount;
