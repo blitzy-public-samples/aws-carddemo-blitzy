@@ -895,11 +895,13 @@ public class BatchProcessingIntegrationTest {
                                              String description) {
         Transaction transaction = new Transaction();
         transaction.setTransactionId(transactionId);
-        transaction.setAccount(account);
+        transaction.setAccountId(account.getAccountId()); // Use transient account ID field
         transaction.setTransactionAmount(amount.setScale(2, RoundingMode.HALF_UP));
-        transaction.setTransactionDate(transactionDate);
-        transaction.setTransactionTimestamp(LocalDateTime.now());
+        transaction.setTransactionDate(transactionDate); // Deprecated but maintains compatibility
+        transaction.setOriginationTimestamp(transactionDate.atStartOfDay()); // Correct method for timestamp
         transaction.setTransactionTypeCode("PU"); // Purchase
+        transaction.setTransactionCategoryCode(1001); // Set required category code (e.g., Groceries)
+        transaction.setTransactionDescription(description); // Set the description parameter
         // Set other required fields with default test values
         return transaction;
     }
