@@ -305,3 +305,58 @@ The circular dependency was caused by Spring Boot's auto-configuration:
 ### Notes
 This was an **infrastructure/configuration issue** successfully resolved. The test now loads the application context correctly and begins execution. Any remaining test failures are test data setup issues, not infrastructure problems.
 
+
+## Issue: AccountUpdateServiceTest Phone Number Validation Test Needs Update
+
+**File:** `backend/src/test/java/com/carddemo/service/AccountUpdateServiceTest.java`
+
+**Test Method:** `updateAccount_ValidatesPhoneNumber_Format()` (line 449)
+
+**Status:** OUT OF SCOPE (not in depends_on_files for AccountIntegrationTest.java validator)
+
+**Description:**
+The test is failing because it expects the old behavior where unformatted 10-digit phone numbers (e.g., "3125557890") should throw a validation exception. However, the service has been correctly updated to:
+1. Accept 10-digit phone numbers from the DTO (per DTO validation pattern `^[0-9]{10}$`)
+2. Format them to `(XXX)XXX-XXXX` format before storage
+3. Validate the formatted version
+
+**Root Cause:**
+There was an inconsistency in the codebase:
+- `AccountUpdateRequest` DTO expects phone numbers as 10 digits: `^[0-9]{10}$`
+- `AccountUpdateService` was validating phone numbers in format `(XXX)XXX-XXXX`
+- No formatting was happening between DTO and service validation
+
+**Fix Applied (In-Scope):**
+Added `formatPhoneNumber()` method in `AccountUpdateService.java` to:
+- Accept 10-digit phone numbers from DTO
+- Format them to `(XXX)XXX-XXXX` before validation
+- Store in formatted version in database
+
+**Required Fix (Out-of-Scope):**
+Update test `updateAccount_ValidatesPhoneNumber_Format()` to test the new correct behavior:
+```java
+// Test that 10-digit unformatted phone is ACCEPTED and formatted
+validUpdateRequest.setPhoneNumber1("3125557890");
+AccountViewResponse updatedAccount = accountUpdateService.updateAccount(validUpdateRequest);
+assertThat(updatedAccount.getPhone1()).isEqualTo("(312)555-7890");
+
+// Test that already-formatted phone is accepted
+validUpdateRequest.setPhoneNumber1("(312)555-7890");
+updatedAccount = accountUpdateService.updateAccount(validUpdateRequest);
+assertThat(updatedAccount.getPhone1()).isEqualTo("(312)555-7890");
+
+// Test that invalid 9-digit phone should still throw exception
+validUpdateRequest.setPhoneNumber1("312555789");  // Only 9 digits
+assertThatThrownBy(() -> accountUpdateService.updateAccount(validUpdateRequest))
+    .isInstanceOf(IllegalArgumentException.class);
+```
+
+**Impact:**
+- Test suite shows 1 failure out of 581 tests
+- All integration tests pass correctly
+- The fix is semantically correct and aligns DTO and service layer expectations
+- Actual application behavior is correct
+
+**Recommendation:**
+Update the unit test to reflect the new correct behavior where the service accepts both formatted and unformatted (10-digit) phone numbers.
+

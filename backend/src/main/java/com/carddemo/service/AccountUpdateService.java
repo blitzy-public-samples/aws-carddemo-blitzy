@@ -385,11 +385,14 @@ public class AccountUpdateService {
         }
 
         // Validate phone numbers if provided (COBOL: lines 2246-2422)
+        // Format from 10-digit DTO format to (XXX)XXX-XXXX before validation
         if (request.getPhoneNumber1() != null) {
-            validatePhoneNumberFormat(request.getPhoneNumber1());
+            String formattedPhone1 = formatPhoneNumber(request.getPhoneNumber1());
+            validatePhoneNumberFormat(formattedPhone1);
         }
         if (request.getPhoneNumber2() != null) {
-            validatePhoneNumberFormat(request.getPhoneNumber2());
+            String formattedPhone2 = formatPhoneNumber(request.getPhoneNumber2());
+            validatePhoneNumberFormat(formattedPhone2);
         }
 
         // Validate state code if provided (COBOL: state validation)
@@ -535,6 +538,38 @@ public class AccountUpdateService {
                 AccountUpdateException.UpdateFailureReason.INVALID_STATUS_TRANSITION
             );
         }
+    }
+
+    /**
+     * Formats a 10-digit phone number string into COBOL display format (XXX)XXX-XXXX.
+     * If already formatted, returns as-is. If null or empty, returns unchanged.
+     * 
+     * @param phoneNumber 10-digit phone number from DTO or formatted phone number
+     * @return Formatted phone number in (XXX)XXX-XXXX format
+     */
+    private String formatPhoneNumber(String phoneNumber) {
+        if (phoneNumber == null || phoneNumber.trim().isEmpty()) {
+            return phoneNumber;
+        }
+        
+        // If already in correct format, return as-is
+        if (phoneNumber.matches("^\\(\\d{3}\\)\\d{3}-\\d{4}$")) {
+            return phoneNumber;
+        }
+        
+        // Strip all non-digit characters
+        String digits = phoneNumber.replaceAll("[^0-9]", "");
+        
+        // Format 10 digits into (XXX)XXX-XXXX
+        if (digits.length() == 10) {
+            return String.format("(%s)%s-%s", 
+                digits.substring(0, 3),
+                digits.substring(3, 6),
+                digits.substring(6, 10));
+        }
+        
+        // Return original if can't format (will fail validation)
+        return phoneNumber;
     }
 
     /**
@@ -767,12 +802,12 @@ public class AccountUpdateService {
             customer.setZipCode(request.getZipCode());
         }
 
-        // Update phone numbers if provided
+        // Update phone numbers if provided - format from 10 digits to (XXX)XXX-XXXX
         if (request.getPhoneNumber1() != null) {
-            customer.setPhoneNumber1(request.getPhoneNumber1());
+            customer.setPhoneNumber1(formatPhoneNumber(request.getPhoneNumber1()));
         }
         if (request.getPhoneNumber2() != null) {
-            customer.setPhoneNumber2(request.getPhoneNumber2());
+            customer.setPhoneNumber2(formatPhoneNumber(request.getPhoneNumber2()));
         }
 
         logger.debug("Customer information updated successfully for customer {}", customer.getCustomerId());

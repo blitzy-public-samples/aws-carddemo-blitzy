@@ -5,23 +5,32 @@
 
 package com.carddemo.integration;
 
+import com.carddemo.config.TestSecurityConfig;
 import com.carddemo.controller.AccountController;
 import com.carddemo.dto.request.AccountUpdateRequest;
 import com.carddemo.dto.response.AccountViewResponse;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Customer;
+import com.carddemo.entity.UserSecurity;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CustomerRepository;
+import com.carddemo.repository.UserSecurityRepository;
+import com.carddemo.security.JwtTokenProvider;
 import com.carddemo.service.AccountUpdateService;
 import com.carddemo.service.AccountViewService;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.util.StopWatch;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -130,9 +139,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @version 1.0
  * @since 2024-01-01
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+    webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+    properties = {
+        "spring.security.enabled=false",
+        "management.security.enabled=false"
+    }
+)
 @Testcontainers
-@Transactional
+@Import(TestSecurityConfig.class)
 public class AccountIntegrationTest {
 
     /**
@@ -153,6 +168,15 @@ public class AccountIntegrationTest {
 
     @Autowired
     private CustomerRepository customerRepository;
+    
+    @Autowired
+    private UserSecurityRepository userSecurityRepository;
+    
+    @Autowired
+    private BCryptPasswordEncoder passwordEncoder;
+    
+    @Autowired
+    private JwtTokenProvider jwtTokenProvider;
 
     @Autowired
     private AccountViewService accountViewService;
@@ -165,6 +189,8 @@ public class AccountIntegrationTest {
     private Account testAccount;
     private Long testAccountId;
     private Long testCustomerId;
+    private UserSecurity testUser;
+    private String userToken;
 
     /**
      * Set up test data before each test execution.
@@ -187,6 +213,19 @@ public class AccountIntegrationTest {
         // Clean up any existing test data
         accountRepository.deleteAll();
         customerRepository.deleteAll();
+        userSecurityRepository.deleteAll();
+        
+        // Create test user for authentication (required for REST endpoint access)
+        testUser = new UserSecurity();
+        testUser.setUserId("TESTUSER");
+        testUser.setPassword(passwordEncoder.encode("pass1234"));
+        testUser.setFirstName("Test");
+        testUser.setLastName("User");
+        testUser.setUserType("R");  // Regular user with ROLE_USER
+        testUser = userSecurityRepository.save(testUser);
+        
+        // Generate JWT token for authenticated REST requests
+        userToken = generateToken(testUser);
 
         // Create test customer matching COBOL CUSTOMER-RECORD structure
         testCustomerId = 1000000001L;
@@ -203,14 +242,15 @@ public class AccountIntegrationTest {
         testCustomer.setZipCode("75001");
         testCustomer.setPhoneNumber1("(214)555-0100");
         testCustomer.setPhoneNumber2("(214)555-0101");
-        testCustomer.setSsn(123456789L);
+        testCustomer.setSsn("123456789");  // SSN is String type, not Long
         testCustomer.setGovernmentIssuedId("TX12345678");
         testCustomer.setDateOfBirth(LocalDate.of(1980, 5, 15));
         testCustomer.setEftAccountId("EFT1234567");
         testCustomer.setPrimaryCardHolderIndicator("Y");
         testCustomer.setFicoCreditScore(750);
         
-        customerRepository.save(testCustomer);
+        // Save customer and capture managed entity for relationship
+        testCustomer = customerRepository.save(testCustomer);
 
         // Create test account matching COBOL ACCOUNT-RECORD structure
         testAccountId = 10000000001L;
@@ -239,7 +279,139 @@ public class AccountIntegrationTest {
         testAccount.setAddressZip("75001");
         testAccount.setAccountGroupId("GROUP001");
         
-        accountRepository.save(testAccount);
+        // Set customer relationship - required for foreign key constraint
+        testAccount.setCustomer(testCustomer);
+        
+        // Save account and capture managed entity
+        testAccount = accountRepository.save(testAccount);
+    }
+    
+    /**
+     * Clean up test data after each test execution.
+     * 
+     * <p>Since @Transactional is removed to allow REST endpoints to see committed data,
+     * we must manually clean up the database after each test to ensure test isolation.</p>
+     */
+    @AfterEach
+    public void tearDown() {
+        // Clean up test data in correct order (respecting foreign key constraints)
+        if (accountRepository != null) {
+            accountRepository.deleteAll();
+        }
+        if (customerRepository != null) {
+            customerRepository.deleteAll();
+        }
+        if (userSecurityRepository != null) {
+            userSecurityRepository.deleteAll();
+        }
+    }
+    
+    /**
+     * Strip phone number formatting to get 10 digits only for DTO.
+     * DTO expects unformatted 10-digit phone numbers, service will format them.
+     * 
+     * @param phoneNumber input phone number (may be formatted or unformatted)
+     * @return 10-digit phone number string or null if input is null
+     */
+    private String stripPhoneFormatting(String phoneNumber) {
+        if (phoneNumber == null || phoneNumber.trim().isEmpty()) {
+            return phoneNumber;
+        }
+        
+        // Strip all non-digit characters
+        String digits = phoneNumber.replaceAll("[^0-9]", "");
+        
+        // Return digits if we have exactly 10
+        if (digits.length() == 10) {
+            return digits;
+        }
+        
+        // Return original if unexpected format
+        return phoneNumber;
+    }
+
+    /**
+     * Generates JWT token for a given user.
+     * 
+     * <p>Creates an Authentication object from UserSecurity entity and uses JwtTokenProvider
+     * to generate a valid JWT token for API authentication. This replaces CICS session
+     * management with stateless JWT authentication per Section 0.9 security transformation.</p>
+     * 
+     * @param user UserSecurity entity to generate token for
+     * @return JWT token string for Authorization header
+     */
+    private String generateToken(UserSecurity user) {
+        org.springframework.security.core.userdetails.User principal = 
+            new org.springframework.security.core.userdetails.User(
+                user.getUserId(),
+                user.getPassword(),
+                user.getAuthorities()
+            );
+        
+        org.springframework.security.authentication.UsernamePasswordAuthenticationToken authentication =
+            new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+                principal,
+                null,
+                user.getAuthorities()
+            );
+        
+        return jwtTokenProvider.generateToken(authentication);
+    }
+    
+    /**
+     * Creates a complete AccountUpdateRequest from the test account and customer.
+     * Helper method to populate all required fields for update operations.
+     * 
+     * @return AccountUpdateRequest with all fields populated from testAccount and testCustomer
+     */
+    private AccountUpdateRequest createUpdateRequest() {
+        AccountUpdateRequest request = new AccountUpdateRequest();
+        request.setAccountId(String.format("%011d", testAccount.getAccountId()));
+        
+        // Map activeStatus 'Y'/'N' to valid status codes 'A'=Active, 'I'=Inactive
+        String status = "Y".equals(testAccount.getActiveStatus()) ? "A" : "I";
+        request.setAccountStatus(status);
+        
+        request.setOpenDate(testAccount.getOpenDate());
+        
+        // Set future expiration date
+        request.setExpirationDate(LocalDate.now().plusYears(2));
+        
+        request.setReissueDate(testAccount.getReissueDate());
+        request.setCreditLimit(testAccount.getCreditLimit());
+        request.setCashLimit(testAccount.getCashCreditLimit());
+        request.setCurrentBalance(testAccount.getCurrentBalance());
+        request.setCashCycleCredit(testAccount.getCurrentCycleCredit());
+        request.setCashCycleDebit(testAccount.getCurrentCycleDebit());
+        request.setAccountGroupId(testAccount.getAccountGroupId());
+        
+        // Add customer-related fields from testCustomer
+        request.setSsn(testCustomer.getSsn());
+        request.setDateOfBirth(testCustomer.getDateOfBirth());
+        request.setFicoScore(testCustomer.getFicoCreditScore());
+        request.setFirstName(testCustomer.getFirstName());
+        request.setMiddleName(testCustomer.getMiddleName());
+        request.setLastName(testCustomer.getLastName());
+        request.setAddressLine1(testCustomer.getAddressLine1());
+        request.setAddressLine2(testCustomer.getAddressLine2());
+        
+        // Set city - use a default if addressLine3 is empty
+        String city = testCustomer.getAddressLine3();
+        if (city == null || city.trim().isEmpty()) {
+            city = "Dallas";  // Default city
+        }
+        request.setCity(city);
+        
+        request.setState(testCustomer.getStateCode());
+        request.setCountry(testCustomer.getCountryCode());
+        request.setZipCode(testCustomer.getZipCode());
+        
+        // Convert phone numbers to 10-digit format (DTO expects unformatted)
+        // Service will format them to (XXX)XXX-XXXX before storage
+        request.setPhoneNumber1(stripPhoneFormatting(testCustomer.getPhoneNumber1()));
+        request.setPhoneNumber2(stripPhoneFormatting(testCustomer.getPhoneNumber2()));
+        
+        return request;
     }
 
     /**
@@ -274,9 +446,13 @@ public class AccountIntegrationTest {
         StopWatch stopWatch = new StopWatch();
         stopWatch.start();
 
-        // Execute GET request to retrieve account details
+        // Execute GET request to retrieve account details with JWT authentication
         String url = "/api/accounts/" + testAccountId;
-        ResponseEntity<AccountViewResponse> response = restTemplate.getForEntity(url, AccountViewResponse.class);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", "Bearer " + userToken);
+        HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
+        ResponseEntity<AccountViewResponse> response = restTemplate
+                .exchange(url, HttpMethod.GET, requestEntity, AccountViewResponse.class);
 
         stopWatch.stop();
         long responseTime = stopWatch.getTotalTimeMillis();
@@ -302,9 +478,9 @@ public class AccountIntegrationTest {
                 .isEqualByComparingTo(expectedAvailableCredit);
 
         // Verify customer name populated from foreign key relationship
-        assertThat(accountView.getCustomerName()).isNotNull();
-        assertThat(accountView.getCustomerName()).contains("John");
-        assertThat(accountView.getCustomerName()).contains("Doe");
+        assertThat(accountView.getFirstName()).isNotNull();
+        assertThat(accountView.getFirstName()).contains("John");
+        assertThat(accountView.getLastName()).contains("Doe");
 
         // Verify performance requirement: response time under 200ms
         assertThat(responseTime)
@@ -340,11 +516,15 @@ public class AccountIntegrationTest {
      */
     @Test
     public void testGetAccountById_NotFound() {
-        // Attempt to retrieve non-existent account
+        // Attempt to retrieve non-existent account with JWT authentication
         Long nonExistentAccountId = 99999999999L;
         String url = "/api/accounts/" + nonExistentAccountId;
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", "Bearer " + userToken);
+        HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
         
-        ResponseEntity<String> response = restTemplate.getForEntity(url, String.class);
+        ResponseEntity<String> response = restTemplate
+                .exchange(url, HttpMethod.GET, requestEntity, String.class);
 
         // Verify HTTP 404 NOT_FOUND status (maps to COBOL file-status 23)
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
@@ -390,11 +570,18 @@ public class AccountIntegrationTest {
         precisionAccount.setAddressZip("75001");
         precisionAccount.setAccountGroupId("GROUP001");
         
+        // Set customer relationship - required for foreign key constraint
+        precisionAccount.setCustomer(testCustomer);
+        
         accountRepository.save(precisionAccount);
 
-        // Retrieve and verify precision
+        // Retrieve and verify precision with JWT authentication
         String url = "/api/accounts/" + precisionAccount.getAccountId();
-        ResponseEntity<AccountViewResponse> response = restTemplate.getForEntity(url, AccountViewResponse.class);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", "Bearer " + userToken);
+        HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
+        ResponseEntity<AccountViewResponse> response = restTemplate
+                .exchange(url, HttpMethod.GET, requestEntity, AccountViewResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         AccountViewResponse accountView = response.getBody();
@@ -457,24 +644,28 @@ public class AccountIntegrationTest {
         StopWatch stopWatch = new StopWatch();
         stopWatch.start();
 
-        // Create update request with new credit limit
-        AccountUpdateRequest updateRequest = new AccountUpdateRequest();
-        updateRequest.setAccountId(String.format("%011d", testAccountId));
+        // Create complete update request from test account
+        AccountUpdateRequest updateRequest = createUpdateRequest();
         
         // Update credit limit with COMP-3 precision (scale 2, HALF_UP)
         BigDecimal newCreditLimit = new BigDecimal("15000.00").setScale(2, RoundingMode.HALF_UP);
         updateRequest.setCreditLimit(newCreditLimit);
-        
-        // Keep other fields unchanged
-        updateRequest.setAccountStatus("Y");
 
-        // Execute PUT request to update account
+        // Execute PUT request to update account with JWT authentication
         String url = "/api/accounts/" + testAccountId;
-        restTemplate.put(url, updateRequest);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", "Bearer " + userToken);
+        HttpEntity<AccountUpdateRequest> requestEntity = new HttpEntity<>(updateRequest, headers);
+        
+        ResponseEntity<AccountViewResponse> response = restTemplate.exchange(
+                url, HttpMethod.PUT, requestEntity, AccountViewResponse.class);
 
         stopWatch.stop();
         long responseTime = stopWatch.getTotalTimeMillis();
 
+        // Verify successful response
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        
         // Verify account was updated in database
         Account updatedAccount = accountRepository.findById(testAccountId).orElse(null);
         assertThat(updatedAccount).isNotNull();
@@ -501,16 +692,28 @@ public class AccountIntegrationTest {
      */
     @Test
     public void testUpdateAccount_StatusChange_Success() {
-        // Create update request to change account status
-        AccountUpdateRequest updateRequest = new AccountUpdateRequest();
-        updateRequest.setAccountId(String.format("%011d", testAccountId));
-        updateRequest.setAccountStatus("N");  // Change from 'Y' to 'N'
-        updateRequest.setCreditLimit(testAccount.getCreditLimit());
+        // Create complete update request and change account status
+        AccountUpdateRequest updateRequest = createUpdateRequest();
+        updateRequest.setAccountStatus("I");  // Change from 'A' (Active) to 'I' (Inactive)
 
-        // Execute update
+        // Execute update with JWT authentication
         String url = "/api/accounts/" + testAccountId;
-        restTemplate.put(url, updateRequest);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", "Bearer " + userToken);
+        HttpEntity<AccountUpdateRequest> requestEntity = new HttpEntity<>(updateRequest, headers);
+        ResponseEntity<AccountViewResponse> response = restTemplate.exchange(
+                url, HttpMethod.PUT, requestEntity, AccountViewResponse.class);
 
+        // Verify successful response
+        if (response.getStatusCode() != HttpStatus.OK) {
+            // Get error details
+            ResponseEntity<String> errorResponse = restTemplate.exchange(
+                    url, HttpMethod.PUT, requestEntity, String.class);
+            org.junit.jupiter.api.Assertions.fail("Status change failed with " + response.getStatusCode() + 
+                ": " + errorResponse.getBody());
+        }
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        
         // Verify status change persisted
         Account updatedAccount = accountRepository.findById(testAccountId).orElse(null);
         assertThat(updatedAccount).isNotNull();
@@ -552,10 +755,19 @@ public class AccountIntegrationTest {
         assertThat(customer).isNotNull();
         assertThat(customer.getCustomerId()).isEqualTo(testCustomerId);
 
-        // Verify customer details match through relationship
-        AccountViewResponse accountView = accountViewService.getAccountDetails(String.format("%011d", testAccountId));
-        assertThat(accountView.getCustomerName()).contains("John");
-        assertThat(accountView.getCustomerName()).contains("Doe");
+        // Verify customer details match through relationship via REST endpoint
+        String url = "/api/accounts/" + testAccountId;
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", "Bearer " + userToken);
+        HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
+        ResponseEntity<AccountViewResponse> response = restTemplate
+                .exchange(url, HttpMethod.GET, requestEntity, AccountViewResponse.class);
+        
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        AccountViewResponse accountView = response.getBody();
+        assertThat(accountView).isNotNull();
+        assertThat(accountView.getFirstName()).contains("John");
+        assertThat(accountView.getLastName()).contains("Doe");
     }
 
     /**
@@ -578,16 +790,17 @@ public class AccountIntegrationTest {
         // Store original credit limit before update attempt
         BigDecimal originalCreditLimit = testAccount.getCreditLimit();
 
-        // Create update request with invalid credit limit (negative value)
-        AccountUpdateRequest updateRequest = new AccountUpdateRequest();
-        updateRequest.setAccountId(String.format("%011d", testAccountId));
+        // Create complete update request with invalid credit limit (negative value)
+        AccountUpdateRequest updateRequest = createUpdateRequest();
         updateRequest.setCreditLimit(new BigDecimal("-1000.00"));  // Invalid: negative credit limit
-        updateRequest.setAccountStatus("Y");
 
-        // Attempt update (should fail validation)
+        // Attempt update (should fail validation) with JWT authentication
         String url = "/api/accounts/" + testAccountId;
         try {
-            restTemplate.put(url, updateRequest);
+            HttpHeaders headers = new HttpHeaders();
+            headers.set("Authorization", "Bearer " + userToken);
+            HttpEntity<AccountUpdateRequest> requestEntity = new HttpEntity<>(updateRequest, headers);
+            restTemplate.exchange(url, HttpMethod.PUT, requestEntity, AccountViewResponse.class);
         } catch (Exception e) {
             // Expected validation exception
         }
@@ -638,6 +851,10 @@ public class AccountIntegrationTest {
             account.setCurrentCycleDebit(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
             account.setAddressZip("75001");
             account.setAccountGroupId("GROUP001");
+            
+            // Set customer relationship - required for foreign key constraint
+            account.setCustomer(testCustomer);
+            
             accountRepository.save(account);
         }
 
@@ -703,13 +920,18 @@ public class AccountIntegrationTest {
         int iterations = 100;
         long[] responseTimes = new long[iterations];
 
-        // Execute multiple account lookups
+        // Execute multiple account lookups with JWT authentication
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", "Bearer " + userToken);
+        HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
+        
         for (int i = 0; i < iterations; i++) {
             StopWatch stopWatch = new StopWatch();
             stopWatch.start();
 
             String url = "/api/accounts/" + testAccountId;
-            ResponseEntity<AccountViewResponse> response = restTemplate.getForEntity(url, AccountViewResponse.class);
+            ResponseEntity<AccountViewResponse> response = restTemplate
+                    .exchange(url, HttpMethod.GET, requestEntity, AccountViewResponse.class);
 
             stopWatch.stop();
             responseTimes[i] = stopWatch.getTotalTimeMillis();
@@ -759,11 +981,15 @@ public class AccountIntegrationTest {
      */
     @Test
     public void testErrorMessages_COBOLEquivalence() {
-        // Test NOT_FOUND error message
+        // Test NOT_FOUND error message with JWT authentication
         Long nonExistentId = 99999999999L;
         String url = "/api/accounts/" + nonExistentId;
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", "Bearer " + userToken);
+        HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
         
-        ResponseEntity<String> response = restTemplate.getForEntity(url, String.class);
+        ResponseEntity<String> response = restTemplate
+                .exchange(url, HttpMethod.GET, requestEntity, String.class);
         
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         // Error message should indicate account not found (COBOL DFHRESP(NOTFND))
@@ -789,9 +1015,13 @@ public class AccountIntegrationTest {
         testAccount.setCreditLimit(new BigDecimal("10000.00").setScale(2, RoundingMode.HALF_UP));
         accountRepository.save(testAccount);
 
-        // Retrieve account and verify available credit calculation
+        // Retrieve account and verify available credit calculation with JWT authentication
         String url = "/api/accounts/" + testAccountId;
-        ResponseEntity<AccountViewResponse> response = restTemplate.getForEntity(url, AccountViewResponse.class);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", "Bearer " + userToken);
+        HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
+        ResponseEntity<AccountViewResponse> response = restTemplate
+                .exchange(url, HttpMethod.GET, requestEntity, AccountViewResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         AccountViewResponse accountView = response.getBody();
