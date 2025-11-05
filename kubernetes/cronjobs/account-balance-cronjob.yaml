@@ -1,0 +1,292 @@
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
+
+# ==============================================================================
+# Kubernetes CronJob: Account Balance Calculation
+# ==============================================================================
+# Source Migration:
+#   - FROM: app/jcl/READXREF.jcl (JCL script executing CBACT03C)
+#   - FROM: app/cbl/CBACT03C.cbl (COBOL batch program for account balance calculation)
+#   - TO: Kubernetes CronJob triggering Spring Batch AccountBalanceJob
+#
+# Business Function:
+#   Executes Spring Batch AccountBalanceJob to calculate and update account balances
+#   daily by reading account records from PostgreSQL and calculating current balances
+#   from transaction history. Maintains COMP-3 decimal precision using BigDecimal.
+#
+# Original COBOL Logic:
+#   CBACT03C reads cross-reference VSAM file (CARDXREF.VSAM.KSDS) sequentially,
+#   processes account relationships, and calculates balances with packed decimal
+#   (COMP-3) precision. The Java equivalent uses Spring Batch chunk-oriented
+#   processing with 1000 records per commit.
+#
+# Schedule: Daily at 2:00 AM UTC (after daily transaction processing, before reports)
+# Runtime Constraint: Maximum 4 hours (14400 seconds) per Agent Action Plan Section 0.1
+# Concurrency: Forbid overlapping executions to prevent data corruption
+# ==============================================================================
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: account-balance-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: account-balance
+    migration-source: CBACT03C
+    jcl-source: READXREF
+  annotations:
+    description: "Daily account balance calculation batch job"
+    original-cobol-program: "CBACT03C.cbl"
+    original-jcl-script: "READXREF.jcl"
+    migration-date: "2024"
+    business-function: "Calculate and update account balances from transaction history"
+spec:
+  # Daily execution at 2:00 AM UTC
+  # Rationale: Run after daily transaction processing (CBTRN02C at midnight),
+  # before report generation jobs, ensuring all transactions are posted
+  schedule: "0 2 * * *"
+  
+  # Concurrency Policy: Forbid
+  # Critical: Prevents overlapping executions to avoid concurrent updates to account
+  # balances, which could cause data corruption or race conditions. If previous job
+  # is still running past scheduled time, skip this execution.
+  concurrencyPolicy: Forbid
+  
+  # Starting Deadline: 300 seconds (5 minutes)
+  # If job cannot start within 5 minutes of scheduled time (e.g., due to resource
+  # constraints), mark as missed execution. Prevents queue buildup.
+  startingDeadlineSeconds: 300
+  
+  # Job History Limits
+  # Keep last 3 successful job executions for audit trail and debugging
+  successfulJobsHistoryLimit: 3
+  # Keep only last failed job to investigate issues
+  failedJobsHistoryLimit: 1
+  
+  # Job Template Specification
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: account-balance
+    spec:
+      # Backoff Limit: Retry up to 2 times on failure
+      # Rationale: Transient database connection issues or resource contention
+      # may resolve on retry. After 2 failures, require manual intervention.
+      backoffLimit: 2
+      
+      # Active Deadline: 14400 seconds (4 hours)
+      # CRITICAL REQUIREMENT from Agent Action Plan Section 0.1:
+      # "Maintain batch processing window requirement of 4 hours"
+      # Job will be terminated if exceeds this duration, ensuring batch window compliance
+      activeDeadlineSeconds: 14400
+      
+      # TTL After Finished: 86400 seconds (24 hours)
+      # Automatically clean up completed job resources after 24 hours to prevent
+      # cluster resource accumulation
+      ttlSecondsAfterFinished: 86400
+      
+      # Pod Template
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: account-balance
+        spec:
+          # Restart Policy: OnFailure
+          # If container fails (non-zero exit code), Kubernetes will restart the pod
+          # up to backoffLimit times before marking job as failed
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: account-balance-job
+            # Container Image: Spring Boot application containing AccountBalanceJob
+            # Image should be built from backend/src/main/java/com/carddemo/batch/job/AccountBalanceJob.java
+            image: carddemo-backend:latest
+            imagePullPolicy: Always
+            
+            # Command: Execute Spring Boot JAR with specific batch job
+            command:
+              - java
+              - -jar
+              - /app/carddemo-backend.jar
+            
+            # Arguments: Spring Boot configuration for batch job execution
+            # --spring.batch.job.names=AccountBalanceJob: Run only AccountBalanceJob (not all jobs)
+            # --spring.profiles.active=prod: Use production configuration profile
+            args:
+              - --spring.batch.job.names=AccountBalanceJob
+              - --spring.profiles.active=prod
+            
+            # Environment Variables from ConfigMap and Secrets
+            envFrom:
+              # ConfigMap Reference: Non-sensitive configuration (database URLs, etc.)
+              - configMapRef:
+                  name: carddemo-config
+              # Secret Reference: Sensitive credentials (database passwords, API keys)
+              - secretRef:
+                  name: carddemo-secrets
+            
+            # Additional Environment Variables
+            env:
+              # JAVA_OPTS: JVM configuration for memory management and GC
+              # -Xms512m: Initial heap size 512MB
+              # -Xmx1024m: Maximum heap size 1GB (matches resource limit)
+              # -XX:+UseG1GC: Use G1 garbage collector for better throughput
+              - name: JAVA_OPTS
+                value: "-Xms512m -Xmx1024m -XX:+UseG1GC"
+              
+              # Timezone: UTC for consistent timestamp handling across environments
+              - name: TZ
+                value: "UTC"
+              
+              # Spring Batch Configuration
+              # Chunk size: 1000 records per transaction commit
+              # Matches COBOL sequential processing pattern while providing transaction safety
+              - name: SPRING_BATCH_CHUNK_SIZE
+                value: "1000"
+              
+              # Database Connection Pool Configuration
+              # Maximum pool size for batch processing: 10 connections
+              # Ensures sufficient connections for parallel chunk processing
+              - name: SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE
+                value: "10"
+              
+              # Spring Batch Job Parameters
+              # Enable job restart capability (checkpoint/restart from Spring Batch JobRepository)
+              - name: SPRING_BATCH_JOB_ENABLED
+                value: "true"
+              
+              # Logging Configuration
+              # INFO level for batch job execution, DEBUG for troubleshooting if needed
+              - name: LOGGING_LEVEL_COM_CARDDEMO_BATCH
+                value: "INFO"
+            
+            # Resource Limits and Requests
+            # CRITICAL: Balance between performance and cluster resource availability
+            resources:
+              # Requests: Guaranteed resources allocated to pod
+              requests:
+                # Memory: 512Mi minimum for JVM heap and Spring Batch framework
+                memory: "512Mi"
+                # CPU: 250m (0.25 cores) minimum for processing
+                cpu: "250m"
+              
+              # Limits: Maximum resources pod can consume
+              limits:
+                # Memory: 1Gi maximum (matches -Xmx1024m JVM heap)
+                # Prevents OOM while allowing headroom for non-heap memory
+                memory: "1Gi"
+                # CPU: 1000m (1 core) maximum for chunk processing parallelism
+                cpu: "1000m"
+            
+            # Liveness Probe: Check if container is alive (not deadlocked)
+            # Not typically needed for batch jobs (finite execution), but included for completeness
+            livenessProbe:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - "ps aux | grep java | grep -v grep"
+              initialDelaySeconds: 60
+              periodSeconds: 60
+              timeoutSeconds: 10
+              failureThreshold: 3
+          
+          # Image Pull Secrets (if using private container registry)
+          # Uncomment if carddemo-backend image is in private registry
+          # imagePullSecrets:
+          #   - name: carddemo-registry-secret
+
+---
+# ==============================================================================
+# Notes for Operations Team
+# ==============================================================================
+#
+# Deployment:
+#   kubectl apply -f kubernetes/cronjobs/account-balance-cronjob.yaml
+#
+# Verify CronJob:
+#   kubectl get cronjob account-balance-cronjob
+#   kubectl describe cronjob account-balance-cronjob
+#
+# View Job Executions:
+#   kubectl get jobs --selector=job=account-balance
+#
+# View Pod Logs:
+#   kubectl logs -l job=account-balance --tail=100
+#
+# Manual Job Execution (for testing):
+#   kubectl create job --from=cronjob/account-balance-cronjob account-balance-manual-$(date +%s)
+#
+# Suspend CronJob (disable scheduled executions):
+#   kubectl patch cronjob account-balance-cronjob -p '{"spec":{"suspend":true}}'
+#
+# Resume CronJob:
+#   kubectl patch cronjob account-balance-cronjob -p '{"spec":{"suspend":false}}'
+#
+# Delete CronJob:
+#   kubectl delete cronjob account-balance-cronjob
+#
+# Dependencies:
+#   - ConfigMap: carddemo-config (database URLs, application settings)
+#   - Secret: carddemo-secrets (database credentials, API keys)
+#   - PostgreSQL: account, transaction, account_xref tables must exist
+#   - Spring Batch: JobRepository tables (BATCH_JOB_INSTANCE, BATCH_JOB_EXECUTION, etc.)
+#
+# Related Resources:
+#   - Spring Batch Job: backend/src/main/java/com/carddemo/batch/job/AccountBalanceJob.java
+#   - Database Schema: backend/src/main/resources/db/migration/V2__create_account_table.sql
+#   - ConfigMap: kubernetes/configmap.yaml
+#   - Secret: kubernetes/secrets.yaml
+#
+# Monitoring:
+#   - Prometheus metrics: spring_batch_job_* (job execution metrics)
+#   - Grafana dashboard: CardDemo Batch Jobs
+#   - Alerts: Job failure, execution time exceeding threshold
+#
+# Business Logic:
+#   AccountBalanceJob processes account records in chunks of 1000:
+#   1. ItemReader: Reads account records from PostgreSQL account table
+#   2. ItemProcessor: Calculates current balance from transaction history
+#      - Queries transaction table for sum of debits and credits
+#      - Uses BigDecimal with scale 2, RoundingMode.HALF_UP for COMP-3 precision
+#      - Validates balance integrity (no negative balances for non-overdraft accounts)
+#   3. ItemWriter: Updates account balance field in account table
+#   4. Commit: Transaction committed every 1000 records (chunk size)
+#
+# Error Handling:
+#   - Database connection failures: Retry with exponential backoff (Spring Batch)
+#   - Data validation errors: Skip record, log to error table, continue processing
+#   - Fatal errors: Job fails, manual intervention required
+#   - Checkpoint/Restart: Spring Batch JobRepository tracks progress, can restart from last commit
+#
+# Performance Characteristics:
+#   - Expected runtime: 30-60 minutes for typical account volume (100,000 accounts)
+#   - Memory usage: 512-800 MB (within resource limits)
+#   - CPU usage: 20-40% of allocated (250m-400m)
+#   - Database load: Moderate (chunk commits reduce transaction overhead)
+#
+# Maintenance:
+#   - Review failed job logs weekly
+#   - Monitor execution time trends (growing data volume)
+#   - Adjust chunk size if performance degrades
+#   - Verify balance accuracy via audit queries monthly
+#
+# ==============================================================================

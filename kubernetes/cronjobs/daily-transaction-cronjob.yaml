@@ -1,0 +1,363 @@
+# ******************************************************************
+# Kubernetes CronJob: Daily Transaction Processing
+# ******************************************************************
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+# ******************************************************************
+#
+# Migration Source:
+#   - COBOL Program: app/cbl/CBTRN02C.cbl
+#   - JCL Job: app/jcl/POSTTRAN.jcl
+#
+# Business Function:
+#   Processes daily transaction file, validates transactions, posts
+#   to transaction table, updates account balances, and updates
+#   transaction category balances. Invalid transactions are written
+#   to reject file with reason codes.
+#
+# Processing Logic:
+#   1. Reads daily transaction input file sequentially
+#   2. Validates each transaction:
+#      - Card number exists in cross-reference table
+#      - Account exists and is valid
+#      - Transaction doesn't exceed credit limit
+#      - Transaction date is before account expiration
+#   3. For valid transactions:
+#      - Posts to transaction table (PostgreSQL)
+#      - Updates account current balance (COMP-3 precision)
+#      - Updates account cycle credit/debit amounts
+#      - Updates transaction category balance
+#   4. For invalid transactions:
+#      - Writes to reject file with validation reason code
+#   5. Maintains transaction count and reject count
+#   6. Returns error status if rejects found
+#
+# Schedule:
+#   Daily at 2:00 AM UTC - processes transactions after data loads,
+#   within 4-hour batch processing window per Section 0.1
+#
+# Spring Batch Job:
+#   DailyTransactionProcessingJob
+#   - Chunk-oriented processing maintaining transaction atomicity
+#   - BigDecimal precision for all monetary calculations
+#   - Comprehensive error handling with reject file generation
+#
+# ******************************************************************
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-transaction-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: daily-transaction
+    tier: backend
+  annotations:
+    description: "Daily transaction processing batch job migrated from COBOL CBTRN02C"
+    source.cobol.program: "CBTRN02C.cbl"
+    source.jcl.job: "POSTTRAN.jcl"
+    migration.version: "1.0"
+spec:
+  # Schedule: Daily at 2:00 AM UTC
+  # Cron format: minute hour day-of-month month day-of-week
+  # This timing ensures processing after data loads complete
+  schedule: "0 2 * * *"
+  
+  # Timezone for schedule (optional - defaults to UTC)
+  # timeZone: "America/New_York"
+  
+  # Concurrency policy: Forbid prevents overlapping job executions
+  # Critical for maintaining data integrity during transaction posting
+  concurrencyPolicy: Forbid
+  
+  # Speculative execution: Do not start new job if previous is still running
+  startingDeadlineSeconds: 300
+  
+  # Job history limits
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  
+  # Suspend flag: Set to true to temporarily disable the CronJob
+  suspend: false
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: daily-transaction
+    spec:
+      # Backoff limit: Retry failed job up to 2 times
+      # Matches COBOL error handling with limited retry attempts
+      backoffLimit: 2
+      
+      # Active deadline: 4-hour maximum execution time (14400 seconds)
+      # Per Section 0.1: batch processing window requirement
+      activeDeadlineSeconds: 14400
+      
+      # TTL for completed jobs: 24 hours (86400 seconds)
+      # Allows review of job logs before cleanup
+      ttlSecondsAfterFinished: 86400
+      
+      # Parallelism: 1 (single job instance at a time)
+      parallelism: 1
+      
+      # Completions: 1 (job succeeds after 1 successful pod)
+      completions: 1
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: daily-transaction
+          annotations:
+            # Prometheus scraping annotations for metrics collection
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8080"
+            prometheus.io/path: "/actuator/prometheus"
+        spec:
+          # Restart policy: OnFailure allows retry within backoffLimit
+          restartPolicy: OnFailure
+          
+          # Service account for pod security and RBAC
+          serviceAccountName: carddemo-batch-sa
+          
+          # Security context for the pod
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          
+          containers:
+          - name: daily-transaction-processor
+            # Backend application image containing Spring Batch jobs
+            image: carddemo-backend:latest
+            imagePullPolicy: Always
+            
+            # Command: Execute Java application JAR
+            command:
+              - java
+            
+            # Arguments: Specify Spring Batch job name to execute
+            args:
+              - -jar
+              - /app/carddemo-backend.jar
+              - --spring.batch.job.names=DailyTransactionProcessingJob
+              - --spring.profiles.active=prod
+              - --logging.level.com.carddemo.batch=DEBUG
+            
+            # Environment variables
+            env:
+            # Database connection configuration
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: database.url
+            
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.username
+            
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.password
+            
+            # Batch processing configuration
+            - name: SPRING_BATCH_JOB_ENABLED
+              value: "true"
+            
+            - name: SPRING_BATCH_INITIALIZE_SCHEMA
+              value: "never"
+            
+            # Chunk size for processing (matches COBOL sequential processing)
+            - name: BATCH_CHUNK_SIZE
+              value: "1000"
+            
+            # Transaction timeout (seconds)
+            - name: TRANSACTION_TIMEOUT
+              value: "300"
+            
+            # Maximum retry attempts for failed chunks
+            - name: BATCH_MAX_RETRY_ATTEMPTS
+              value: "3"
+            
+            # Skip limit: maximum number of skippable exceptions
+            - name: BATCH_SKIP_LIMIT
+              value: "100"
+            
+            # Enable reject file generation for invalid transactions
+            - name: BATCH_GENERATE_REJECT_FILE
+              value: "true"
+            
+            # Reject file output path
+            - name: BATCH_REJECT_FILE_PATH
+              value: "/app/data/output/daily-rejects"
+            
+            # Daily transaction input file path
+            - name: BATCH_INPUT_FILE_PATH
+              value: "/app/data/input/daily-transactions"
+            
+            # Java heap size configuration
+            - name: JAVA_OPTS
+              value: "-Xms512m -Xmx1536m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+            
+            # Timezone setting
+            - name: TZ
+              value: "UTC"
+            
+            # Resource requests and limits
+            resources:
+              requests:
+                # Initial resource allocation
+                memory: "1Gi"
+                cpu: "500m"
+                ephemeral-storage: "2Gi"
+              limits:
+                # Maximum resource allocation
+                memory: "2Gi"
+                cpu: "2000m"
+                ephemeral-storage: "5Gi"
+            
+            # Volume mounts for data files
+            volumeMounts:
+            # Input data volume (daily transaction file)
+            - name: input-data
+              mountPath: /app/data/input
+              readOnly: true
+            
+            # Output data volume (reject file, reports)
+            - name: output-data
+              mountPath: /app/data/output
+              readOnly: false
+            
+            # Temporary processing volume
+            - name: temp-data
+              mountPath: /app/data/temp
+              readOnly: false
+            
+            # Application configuration volume
+            - name: config-volume
+              mountPath: /app/config
+              readOnly: true
+            
+            # Liveness probe: Check if container is alive
+            livenessProbe:
+              httpGet:
+                path: /actuator/health/liveness
+                port: 8080
+              initialDelaySeconds: 60
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 3
+            
+            # Readiness probe: Check if container is ready to accept traffic
+            readinessProbe:
+              httpGet:
+                path: /actuator/health/readiness
+                port: 8080
+              initialDelaySeconds: 30
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+            
+            # Container security context
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
+              runAsUser: 1000
+              capabilities:
+                drop:
+                  - ALL
+          
+          # Volumes
+          volumes:
+          # Input data volume: Persistent volume for daily transaction files
+          - name: input-data
+            persistentVolumeClaim:
+              claimName: carddemo-batch-input-pvc
+          
+          # Output data volume: Persistent volume for reject files and reports
+          - name: output-data
+            persistentVolumeClaim:
+              claimName: carddemo-batch-output-pvc
+          
+          # Temporary data volume: EmptyDir for processing workspace
+          - name: temp-data
+            emptyDir:
+              sizeLimit: 1Gi
+          
+          # Configuration volume: ConfigMap for application settings
+          - name: config-volume
+            configMap:
+              name: carddemo-batch-config
+              optional: false
+          
+          # Image pull secrets for private container registry
+          imagePullSecrets:
+          - name: carddemo-registry-secret
+          
+          # DNS policy
+          dnsPolicy: ClusterFirst
+          
+          # Host network: false for pod network isolation
+          hostNetwork: false
+          
+          # Node selector for workload placement
+          nodeSelector:
+            workload-type: batch
+          
+          # Tolerations for node taints
+          tolerations:
+          - key: "batch-workload"
+            operator: "Equal"
+            value: "true"
+            effect: "NoSchedule"
+          
+          # Affinity rules for pod scheduling
+          affinity:
+            # Node affinity: prefer nodes with SSD storage
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                  - key: storage-type
+                    operator: In
+                    values:
+                    - ssd
+            
+            # Pod anti-affinity: avoid scheduling on nodes with other batch jobs
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 50
+                podAffinityTerm:
+                  labelSelector:
+                    matchExpressions:
+                    - key: component
+                      operator: In
+                      values:
+                      - batch
+                  topologyKey: kubernetes.io/hostname

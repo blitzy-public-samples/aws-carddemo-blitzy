@@ -1,0 +1,322 @@
+# ******************************************************************
+# Kubernetes CronJob: Customer Data Load
+# ******************************************************************
+# Migrated from: app/jcl/READCUST.jcl + app/cbl/CBCUS01C.cbl
+# Original Function: Read and load customer master data from VSAM CUSTDAT file
+# Target Function: Execute Spring Batch CustomerDataLoadJob to load customer
+#                  data from external sources into PostgreSQL customer table
+#
+# Migration Notes:
+# - COBOL CBCUS01C sequential VSAM read → Spring Batch chunk processing
+# - JCL CUSTFILE DD → External data source (file/API/database)
+# - VSAM KSDS CUSTDATA → PostgreSQL customer table
+# - COBOL error handling → Spring Batch skip/retry logic
+#
+# Business Logic Preserved:
+# - Sequential customer record processing
+# - Validation of customer data structure
+# - Error handling and abort on critical failures
+# - Complete data load with status reporting
+# ******************************************************************
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: customer-data-load-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: customer-data-load
+    tier: backend
+    migration-source: CBCUS01C
+  annotations:
+    description: "Daily customer master data load from external sources"
+    original-cobol-program: "CBCUS01C.cbl"
+    original-jcl-job: "READCUST.jcl"
+    migration-date: "2024"
+    business-function: "Customer data synchronization and validation"
+spec:
+  # Schedule: Daily at midnight UTC
+  # Rationale: Customer data should be loaded first before dependent batch jobs
+  # (accounts, cards) to maintain referential integrity
+  schedule: "0 0 * * *"
+  
+  # Timezone for schedule interpretation (optional, defaults to UTC)
+  # timeZone: "UTC"
+  
+  # Concurrency Policy: Forbid prevents overlapping job executions
+  # Critical for data integrity - no concurrent customer data loads allowed
+  concurrencyPolicy: Forbid
+  
+  # History Limits: Keep last 3 successful and 1 failed job for audit trail
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  
+  # Starting Deadline: 300 seconds (5 minutes)
+  # If job doesn't start within 5 minutes of scheduled time, mark as missed
+  startingDeadlineSeconds: 300
+  
+  # Suspend: Set to true to temporarily disable the CronJob without deleting it
+  suspend: false
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: customer-data-load
+        tier: backend
+      annotations:
+        batch-job-name: "CustomerDataLoadJob"
+        execution-order: "1"
+        depends-on: "none"
+    spec:
+      # Backoff Limit: Retry failed job 2 times before marking as failed
+      # Equivalent to JCL COND parameter retry logic
+      backoffLimit: 2
+      
+      # Active Deadline: 7200 seconds (2 hours)
+      # Job must complete within 2 hours or will be terminated
+      # Maintains 4-hour batch window requirement with buffer for other jobs
+      activeDeadlineSeconds: 7200
+      
+      # TTL After Finished: 86400 seconds (24 hours)
+      # Automatically clean up completed jobs after 24 hours
+      ttlSecondsAfterFinished: 86400
+      
+      # Completions: 1 (job must complete successfully once)
+      completions: 1
+      
+      # Parallelism: 1 (single pod execution for data consistency)
+      parallelism: 1
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: customer-data-load
+            tier: backend
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8080"
+            prometheus.io/path: "/actuator/prometheus"
+        spec:
+          # Restart Policy: Never - let job controller handle retries
+          # Spring Batch handles internal restarts via execution context
+          restartPolicy: Never
+          
+          # Service Account for database and secret access
+          serviceAccountName: carddemo-batch
+          
+          containers:
+          - name: customer-data-load
+            # Container image: Spring Boot application with batch jobs
+            image: carddemo-backend:latest
+            imagePullPolicy: IfNotPresent
+            
+            # Command: Execute Spring Boot JAR
+            command:
+              - java
+            
+            # Arguments: Spring Boot with specific batch job enabled
+            # Only CustomerDataLoadJob will execute (not all batch jobs)
+            args:
+              - -jar
+              - /app/carddemo-backend.jar
+              - --spring.batch.job.names=CustomerDataLoadJob
+              - --spring.profiles.active=prod
+              - --logging.level.com.carddemo.batch=INFO
+              - --spring.batch.job.enabled=true
+            
+            # Environment Variables: Database and application configuration
+            env:
+            # Database Connection
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: database-url
+            
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database-username
+            
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database-password
+            
+            # Spring Batch Configuration
+            - name: SPRING_BATCH_JDBC_INITIALIZE_SCHEMA
+              value: "never"
+            
+            - name: SPRING_BATCH_JOB_ENABLED
+              value: "true"
+            
+            # Chunk Size: Process 1000 records per transaction
+            # Equivalent to COBOL sequential read with commit logic
+            - name: BATCH_CHUNK_SIZE
+              value: "1000"
+            
+            # Skip Limit: Allow up to 100 record failures before job fails
+            # Preserves COBOL error tolerance behavior
+            - name: BATCH_SKIP_LIMIT
+              value: "100"
+            
+            # Data Source Configuration
+            - name: CUSTOMER_DATA_SOURCE_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-batch-config
+                  key: customer-data-source-path
+            
+            # JVM Configuration for batch processing
+            - name: JAVA_OPTS
+              value: "-Xms512m -Xmx1024m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+            
+            # Timezone for date/time processing
+            - name: TZ
+              value: "UTC"
+            
+            # Application Monitoring
+            - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+              value: "health,info,metrics,prometheus"
+            
+            # Resource Requests: Guaranteed resources
+            # Memory: 512Mi minimum for JVM and Spring Batch processing
+            # CPU: 250m (0.25 cores) minimum for steady-state processing
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+                ephemeral-storage: "1Gi"
+              
+              # Resource Limits: Maximum resources allowed
+              # Memory: 1Gi maximum to prevent OOM in high-volume scenarios
+              # CPU: 1000m (1 core) maximum for peak processing
+              limits:
+                memory: "1Gi"
+                cpu: "1000m"
+                ephemeral-storage: "2Gi"
+            
+            # Volume Mounts: Persistent storage for batch processing
+            volumeMounts:
+            # Temporary directory for batch file processing
+            - name: batch-temp
+              mountPath: /tmp/batch
+            
+            # Batch data input directory
+            - name: batch-data
+              mountPath: /data/input
+              readOnly: true
+            
+            # Application logs directory
+            - name: batch-logs
+              mountPath: /var/log/carddemo
+            
+            # Liveness Probe: Check if application is running
+            # Disabled during batch execution to prevent false positives
+            # Spring Batch jobs may have long-running steps
+            livenessProbe:
+              httpGet:
+                path: /actuator/health/liveness
+                port: 8080
+              initialDelaySeconds: 60
+              periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 3
+            
+            # Readiness Probe: Check if application is ready to process
+            readinessProbe:
+              httpGet:
+                path: /actuator/health/readiness
+                port: 8080
+              initialDelaySeconds: 30
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+            
+            # Security Context: Run as non-root user
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 1000
+              runAsGroup: 1000
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+          
+          # Volumes: Storage for batch processing
+          volumes:
+          # Temporary storage for batch processing
+          - name: batch-temp
+            emptyDir:
+              sizeLimit: 2Gi
+          
+          # Batch data input from ConfigMap or PVC
+          - name: batch-data
+            persistentVolumeClaim:
+              claimName: batch-data-pvc
+              readOnly: true
+          
+          # Logs directory
+          - name: batch-logs
+            emptyDir:
+              sizeLimit: 1Gi
+          
+          # Image Pull Secrets for private registry
+          imagePullSecrets:
+          - name: carddemo-registry-secret
+          
+          # DNS Policy for Kubernetes service discovery
+          dnsPolicy: ClusterFirst
+          
+          # Termination Grace Period: 60 seconds
+          # Allow Spring Batch to complete current chunk and cleanup
+          terminationGracePeriodSeconds: 60
+          
+          # Node Selector: Schedule on nodes with batch workload label
+          nodeSelector:
+            workload-type: batch
+          
+          # Tolerations: Allow scheduling on tainted batch nodes
+          tolerations:
+          - key: "batch-workload"
+            operator: "Equal"
+            value: "true"
+            effect: "NoSchedule"
+          
+          # Affinity: Prefer nodes in specific availability zone
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                  - key: topology.kubernetes.io/zone
+                    operator: In
+                    values:
+                    - us-east-1a
+            
+            # Pod Anti-Affinity: Don't schedule with other batch jobs
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 50
+                podAffinityTerm:
+                  labelSelector:
+                    matchExpressions:
+                    - key: component
+                      operator: In
+                      values:
+                      - batch
+                  topologyKey: kubernetes.io/hostname
+
+# ******************************************************************
+# End of Customer Data Load CronJob Configuration
+# ******************************************************************

@@ -1,0 +1,108 @@
+# Kubernetes Service resource for PostgreSQL 15 database
+# Exposes PostgreSQL database within the cluster for backend application connectivity
+# Part of CardDemo COBOL-to-Java migration - Database Layer per Agent Action Plan Section 0.5
+#
+# Purpose: Provides stable DNS endpoint (postgres-service) for backend pods to connect to PostgreSQL
+# Security: ClusterIP type ensures database is only accessible from within the Kubernetes cluster
+# Related Resources:
+#   - Backed by: postgres-deployment.yaml (PostgreSQL pod replicas)
+#   - Persistent data: postgres-pvc.yaml (10Gi persistent volume)
+#   - Consumed by: backend-deployment.yaml (via SPRING_DATASOURCE_URL environment variable)
+#   - Configuration: configmap.yaml (SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-service:5432/carddemo)
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: default
+  labels:
+    app: carddemo
+    component: database
+    service: postgres
+    # Labels enable resource grouping and selection for monitoring, backup, and management
+spec:
+  # Service Type: ClusterIP (internal-only access)
+  # Rationale: PostgreSQL should only be accessible from backend pods within cluster
+  # No external LoadBalancer or NodePort (security best practice per Section 0.9)
+  type: ClusterIP
+  
+  # Pod Selector - matches labels from postgres-deployment.yaml pod template
+  # Service routes traffic to pods with these exact label matches
+  selector:
+    app: carddemo
+    component: database
+    service: postgres
+  
+  # Port Configuration
+  ports:
+    # PostgreSQL standard port 5432
+    - name: postgres
+      protocol: TCP
+      port: 5432          # Service port (what clients connect to)
+      targetPort: 5432    # Container port (where PostgreSQL listens)
+  
+  # Session Affinity: None
+  # PostgreSQL connections are stateful; connection pooling handled by HikariCP in backend
+  # Backend connection pool manages persistent connections; no need for session affinity
+  sessionAffinity: None
+
+---
+# Service DNS Resolution Information (for reference, not part of manifest)
+#
+# Internal DNS Names:
+#   - Fully Qualified: postgres-service.default.svc.cluster.local
+#   - Namespace Short Form: postgres-service (within default namespace)
+#
+# Backend Connection Configuration:
+#   SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-service:5432/carddemo
+#   SPRING_DATASOURCE_USERNAME: <from secrets.yaml>
+#   SPRING_DATASOURCE_PASSWORD: <from secrets.yaml>
+#
+# Connection Flow:
+#   Backend Pod → DNS Resolution (postgres-service) → ClusterIP → PostgreSQL Pod (5432)
+#
+# Load Balancing:
+#   - Default: Round-robin across PostgreSQL pods (typically single pod for initial deployment)
+#   - For HA: Consider StatefulSet with read replicas using separate read/write services
+#
+# HikariCP Connection Pool (configured in backend):
+#   - Maximum Pool Size: 50 connections (per Section 0.5)
+#   - Minimum Idle: 20 connections
+#   - Connection Timeout: 30 seconds
+#   - Supports 10,000 TPS requirement per Section 0.1
+#
+# VSAM to PostgreSQL Migration:
+#   CUSTDAT VSAM → customer table
+#   ACCTDAT VSAM → account table
+#   CARDDAT VSAM → card table
+#   TRANSACT VSAM → transaction table
+#   USRSEC VSAM → user_security table
+#   XREF files → account_xref, card_xref tables with foreign key constraints
+#
+# Database Schema Management:
+#   - Flyway migrations: backend/src/main/resources/db/migration/V*.sql
+#   - Executed by backend application on startup
+#   - V1__create_customer_table.sql through V9__load_reference_data.sql
+#
+# Security Characteristics:
+#   - No external exposure (ClusterIP only)
+#   - Network isolation for database tier
+#   - TLS encryption optional via PostgreSQL pg_hba.conf configuration
+#   - Authentication credentials stored in secrets.yaml
+#
+# Performance Tuning:
+#   - Connection pooling reduces connection overhead
+#   - Persistent connections via HikariCP
+#   - B-tree indexes on primary keys and foreign keys per Section 0.3
+#   - Query optimization via PostgreSQL EXPLAIN ANALYZE
+#
+# Monitoring Integration:
+#   - Optional: Deploy postgres_exporter sidecar for Prometheus metrics
+#   - Metrics: connection count, query performance, cache hit ratio
+#   - Health checks: pg_isready command in postgres-deployment.yaml
+#
+# Backup Strategy:
+#   - Volume snapshots via Kubernetes storage provider
+#   - Optional: pg_dump scheduled via Kubernetes CronJob
+#   - Point-in-time recovery with Write-Ahead Logging (WAL)
+#   - Persistent storage via postgres-pvc.yaml (10Gi)

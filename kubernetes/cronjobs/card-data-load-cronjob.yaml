@@ -1,0 +1,334 @@
+###################################################################################
+# Kubernetes CronJob: Card Data Load Batch Job
+###################################################################################
+# Purpose: Scheduled execution of Spring Batch CardDataLoadJob
+#
+# Business Function:
+#   - Loads card data from external sources into PostgreSQL card table
+#   - Replaces legacy VSAM CARDDAT file load operations
+#   - Validates card-account relationships via foreign key constraints
+#   - Performs data quality checks and validation
+#
+# Migration Context:
+#   - Source: VSAM CARDDAT KSDS file batch load (CBCRD01C)
+#   - Target: PostgreSQL card table with referential integrity
+#   - Technology: Spring Batch chunk-oriented processing
+#
+# Schedule: Daily at 1:15 AM UTC
+# Concurrency: Forbid (prevent overlapping executions)
+###################################################################################
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: card-data-load-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: card-data-load
+    version: "1.0"
+    managed-by: kubernetes
+  annotations:
+    description: "Daily card data load batch job - replaces VSAM CARDDAT load"
+    migration-source: "app/jcl/CBCRD01C.jcl"
+    spring-batch-job: "CardDataLoadJob"
+    business-owner: "card-operations"
+spec:
+  # Schedule: Daily at 1:15 AM UTC
+  # Staggered 15 minutes after account data load to ensure account records exist
+  schedule: "15 1 * * *"
+  
+  # Concurrency Policy: Forbid prevents multiple instances running simultaneously
+  # Critical for maintaining data integrity during card-account relationship validation
+  concurrencyPolicy: Forbid
+  
+  # Job History: Keep 3 successful runs for audit trail, 1 failed for troubleshooting
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  
+  # Suspend: Set to true to temporarily disable without deleting the CronJob
+  suspend: false
+  
+  # Starting Deadline: 300 seconds (5 minutes) to start if missed schedule
+  startingDeadlineSeconds: 300
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: card-data-load
+    spec:
+      # Backoff Limit: Retry up to 2 times on failure
+      # Spring Batch handles internal retries; Kubernetes handles pod-level failures
+      backoffLimit: 2
+      
+      # Active Deadline: 7200 seconds (2 hours) maximum execution time
+      # Ensures job doesn't run indefinitely; sufficient for typical card data volumes
+      activeDeadlineSeconds: 7200
+      
+      # TTL: Clean up completed jobs after 86400 seconds (24 hours)
+      # Allows time for log analysis before automatic cleanup
+      ttlSecondsAfterFinished: 86400
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: card-data-load
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8080"
+            prometheus.io/path: "/actuator/prometheus"
+        spec:
+          # Restart Policy: Never - let Kubernetes backoff handle retries
+          # Spring Batch manages job-level restart internally
+          restartPolicy: Never
+          
+          # Service Account: Use dedicated service account with RBAC permissions
+          serviceAccountName: carddemo-batch-sa
+          
+          containers:
+          - name: card-data-load
+            # Container Image: Backend Spring Boot application with batch jobs
+            image: carddemo-backend:latest
+            imagePullPolicy: IfNotPresent
+            
+            # Command: Java runtime execution
+            command:
+              - java
+            
+            # Args: Spring Boot application with specific batch job execution
+            args:
+              - -jar
+              - /app/carddemo-backend.jar
+              - --spring.batch.job.names=CardDataLoadJob
+              - --spring.profiles.active=production
+              - --logging.level.com.carddemo.batch=INFO
+            
+            # Environment Variables
+            env:
+            # Database Configuration
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: database.url
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.username
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.password
+            
+            # Spring Batch Configuration
+            - name: SPRING_BATCH_JOB_ENABLED
+              value: "true"
+            - name: SPRING_BATCH_INITIALIZE_SCHEMA
+              value: "never"
+            
+            # Application Configuration
+            - name: CARDDEMO_BATCH_CHUNK_SIZE
+              value: "1000"
+            - name: CARDDEMO_BATCH_SKIP_LIMIT
+              value: "100"
+            - name: CARDDEMO_BATCH_RETRY_LIMIT
+              value: "3"
+            
+            # Card Data Load Specific Configuration
+            - name: CARDDEMO_CARD_DATA_SOURCE_PATH
+              value: "/data/input/card-data.csv"
+            - name: CARDDEMO_CARD_DATA_VALIDATE_ACCOUNTS
+              value: "true"
+            - name: CARDDEMO_CARD_DATA_UPDATE_EXISTING
+              value: "true"
+            
+            # JVM Configuration for batch processing
+            - name: JAVA_OPTS
+              value: "-Xms512m -Xmx1024m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Djava.security.egd=file:/dev/./urandom"
+            
+            # Resource Limits and Requests
+            resources:
+              requests:
+                # Requests: Minimum resources guaranteed for the pod
+                memory: "512Mi"
+                cpu: "250m"
+              limits:
+                # Limits: Maximum resources the pod can consume
+                memory: "1Gi"
+                cpu: "1000m"
+            
+            # Volume Mounts
+            volumeMounts:
+            - name: card-data-input
+              mountPath: /data/input
+              readOnly: true
+            - name: batch-logs
+              mountPath: /var/log/batch
+            - name: tmp
+              mountPath: /tmp
+            
+            # Liveness Probe: Check if container is alive
+            # Not typically used for batch jobs, but included for completeness
+            livenessProbe:
+              exec:
+                command:
+                - /bin/sh
+                - -c
+                - ps aux | grep 'carddemo-backend.jar' | grep -v grep
+              initialDelaySeconds: 30
+              periodSeconds: 60
+              timeoutSeconds: 10
+              failureThreshold: 3
+            
+            # Security Context: Run as non-root user
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 1000
+              runAsGroup: 1000
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                - ALL
+          
+          # Volumes
+          volumes:
+          - name: card-data-input
+            # Persistent Volume Claim for input data
+            persistentVolumeClaim:
+              claimName: carddemo-batch-data-pvc
+          - name: batch-logs
+            # EmptyDir for temporary batch logs
+            emptyDir:
+              sizeLimit: 1Gi
+          - name: tmp
+            # EmptyDir for temporary files
+            emptyDir:
+              sizeLimit: 500Mi
+          
+          # Image Pull Secrets: For private container registry
+          imagePullSecrets:
+          - name: carddemo-registry-secret
+          
+          # Pod Security Context
+          securityContext:
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          
+          # Node Selector: Schedule on batch-optimized nodes
+          nodeSelector:
+            workload-type: batch
+          
+          # Tolerations: Allow scheduling on tainted nodes
+          tolerations:
+          - key: "batch-workload"
+            operator: "Equal"
+            value: "true"
+            effect: "NoSchedule"
+          
+          # Affinity: Prefer nodes with batch workloads
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                  - key: workload-type
+                    operator: In
+                    values:
+                    - batch
+
+###################################################################################
+# Operational Notes:
+###################################################################################
+# 
+# Deployment:
+#   kubectl apply -f kubernetes/cronjobs/card-data-load-cronjob.yaml
+#
+# Manual Execution:
+#   kubectl create job card-data-load-manual-$(date +%Y%m%d%H%M%S) \
+#     --from=cronjob/card-data-load-cronjob
+#
+# View Job History:
+#   kubectl get jobs -l job=card-data-load
+#
+# View Job Logs:
+#   kubectl logs -l job=card-data-load --tail=100 -f
+#
+# Suspend CronJob (temporarily disable):
+#   kubectl patch cronjob card-data-load-cronjob -p '{"spec":{"suspend":true}}'
+#
+# Resume CronJob:
+#   kubectl patch cronjob card-data-load-cronjob -p '{"spec":{"suspend":false}}'
+#
+# Delete CronJob:
+#   kubectl delete cronjob card-data-load-cronjob
+#
+###################################################################################
+# Business Logic Details:
+###################################################################################
+#
+# Card Data Load Process:
+# 1. Read card data from external source (CSV file, API, or database export)
+# 2. Validate card number format (Luhn algorithm check)
+# 3. Verify account_id exists in account table (foreign key validation)
+# 4. Check card expiration date format and future date validation
+# 5. Validate card status codes (ACTIVE, EXPIRED, BLOCKED)
+# 6. Perform duplicate card number checks
+# 7. Insert new card records or update existing records
+# 8. Log skipped/rejected records for manual review
+# 9. Update card_xref table for cross-reference relationships
+# 10. Generate batch execution summary report
+#
+# Data Validation Rules:
+# - Card Number: 16 digits, passes Luhn check
+# - Card Status: Must be 'A' (Active), 'E' (Expired), or 'B' (Blocked)
+# - Expiration Date: Must be future date in MMYY format
+# - Account ID: Must exist in account table (foreign key constraint)
+# - CVV: 3 or 4 digits (stored encrypted)
+# - Credit Limit: Positive decimal, max precision 15,2
+#
+# Error Handling:
+# - Skip individual card records with validation errors (up to skip limit)
+# - Retry transient database errors (connection timeouts, deadlocks)
+# - Write rejected records to error file with reason codes
+# - Send alert notifications on job failure or excessive skip count
+#
+# Performance Considerations:
+# - Chunk size: 1000 records per transaction (configurable)
+# - Commit interval: Per chunk to enable restart from last committed chunk
+# - Thread safety: Single-threaded to maintain data integrity
+# - Execution time: Typically 15-30 minutes for 100K card records
+#
+###################################################################################
+# Monitoring and Alerting:
+###################################################################################
+#
+# Prometheus Metrics:
+# - spring_batch_job_duration_seconds{job="CardDataLoadJob"}
+# - spring_batch_job_status{job="CardDataLoadJob",status="COMPLETED|FAILED"}
+# - spring_batch_step_duration_seconds{step="cardDataLoadStep"}
+# - carddemo_card_records_processed_total
+# - carddemo_card_records_skipped_total
+#
+# Alert Conditions:
+# - Job failure: spring_batch_job_status{status="FAILED"} == 1
+# - Excessive duration: spring_batch_job_duration_seconds > 7200
+# - High skip rate: carddemo_card_records_skipped_total / carddemo_card_records_processed_total > 0.05
+# - Missed execution: time() - spring_batch_job_last_execution_timestamp > 90000
+#
+# Log Analysis:
+# - ELK Stack integration via stdout/stderr
+# - Structured JSON logging for automated parsing
+# - Log retention: 30 days for batch execution logs
+# - Error logs: Searchable by job execution ID and timestamp
+#
+###################################################################################

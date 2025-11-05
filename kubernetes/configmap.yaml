@@ -1,0 +1,456 @@
+# Kubernetes ConfigMap for CardDemo Application
+# Non-sensitive configuration shared across backend pods
+# Referenced by backend-deployment.yaml via envFrom configMapRef
+# 
+# Migration Context: Replaces mainframe z/OS system parameters
+# Preserves COBOL application configuration requirements in cloud-native format
+# Supports COBOL-to-Java Spring Boot 3.x technology stack migration
+#
+# Configuration Management Strategy per Agent Action Plan Section 0.5:
+# - Environment-specific overrides via application-{profile}.yml in backend
+# - Centralized non-sensitive configuration for all pods
+# - Kubernetes-native configuration management
+# - Supports 10,000 TPS transaction processing requirement
+# - Maintains sub-200ms transaction response time SLA
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carddemo-config
+  namespace: default
+  labels:
+    app: carddemo
+    component: config
+    tier: configuration
+    version: v1
+
+data:
+  # ============================================================================
+  # DATABASE CONFIGURATION
+  # PostgreSQL 15+ connection settings (replaces VSAM KSDS file access)
+  # ============================================================================
+  
+  # JDBC Connection URL - PostgreSQL Service DNS
+  # Migrated from: VSAM catalog allocation and dataset connection
+  # Service: postgres-service (ClusterIP) on port 5432
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres-service:5432/carddemo"
+  
+  # PostgreSQL JDBC Driver
+  SPRING_DATASOURCE_DRIVER_CLASS_NAME: "org.postgresql.Driver"
+  
+  # Hibernate Dialect for PostgreSQL
+  # Ensures optimal SQL generation for PostgreSQL 15+
+  SPRING_JPA_DATABASE_PLATFORM: "org.hibernate.dialect.PostgreSQLDialect"
+  
+  # DDL Auto Mode: validate
+  # Flyway handles schema migrations; Hibernate validates schema only
+  # Prevents accidental schema modifications in production
+  SPRING_JPA_HIBERNATE_DDL_AUTO: "validate"
+  
+  # SQL Logging: Disabled for production performance
+  # Enable in dev/test for debugging via application-dev.yml override
+  SPRING_JPA_SHOW_SQL: "false"
+  
+  # Format SQL output when logging enabled
+  SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: "true"
+  
+  # JDBC Batch Size: 20 statements per batch
+  # Optimizes INSERT/UPDATE performance for batch jobs
+  SPRING_JPA_PROPERTIES_HIBERNATE_JDBC_BATCH_SIZE: "20"
+  
+  # Order Inserts/Updates: Improves batch processing efficiency
+  SPRING_JPA_PROPERTIES_HIBERNATE_ORDER_INSERTS: "true"
+  SPRING_JPA_PROPERTIES_HIBERNATE_ORDER_UPDATES: "true"
+  
+  # ============================================================================
+  # HIKARICP CONNECTION POOL CONFIGURATION
+  # High-performance JDBC connection pool (per Section 0.5)
+  # Replaces CICS MRO (Multi-Region Operation) connection management
+  # ============================================================================
+  
+  # Maximum Pool Size: 50 connections
+  # Supports peak load of 10,000 TPS with efficient connection reuse
+  # Balances resource usage vs. throughput requirements
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "50"
+  
+  # Minimum Idle Connections: 20
+  # Maintains ready pool for immediate transaction processing
+  # Reduces connection establishment latency
+  SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "20"
+  
+  # Connection Timeout: 30 seconds (30000 ms)
+  # Maximum wait time for connection from pool
+  # Aligns with sub-200ms transaction response SLA
+  SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT: "30000"
+  
+  # Idle Timeout: 10 minutes (600000 ms)
+  # Closes idle connections above minimum pool size
+  # Optimizes resource utilization during low traffic
+  SPRING_DATASOURCE_HIKARI_IDLE_TIMEOUT: "600000"
+  
+  # Max Lifetime: 30 minutes (1800000 ms)
+  # Forces connection recycling to prevent stale connections
+  # Ensures connection health and prevents network issues
+  SPRING_DATASOURCE_HIKARI_MAX_LIFETIME: "1800000"
+  
+  # Connection Test Query: Implicit via PostgreSQL driver
+  # HikariCP uses JDBC4 isValid() method for connection validation
+  
+  # ============================================================================
+  # REDIS CACHE CONFIGURATION
+  # Session management and application caching (per Section 0.5)
+  # Replaces CICS COMMAREA state preservation pattern
+  # ============================================================================
+  
+  # Redis Service DNS Name
+  # ClusterIP service for internal cluster communication
+  SPRING_REDIS_HOST: "redis-service"
+  
+  # Redis Port: Standard 6379
+  SPRING_REDIS_PORT: "6379"
+  
+  # Redis Database Index: 0 (default)
+  SPRING_REDIS_DATABASE: "0"
+  
+  # Session Store Type: Redis
+  # Enables stateless backend pod scaling with shared session state
+  # Supports Spring Session Redis integration
+  SPRING_SESSION_STORE_TYPE: "redis"
+  
+  # Session Namespace: Prefix for all session keys
+  # Prevents key collisions if Redis shared across applications
+  SPRING_SESSION_REDIS_NAMESPACE: "carddemo:session"
+  
+  # Redis Connection Timeout: 2 seconds (2000 ms)
+  SPRING_REDIS_TIMEOUT: "2000"
+  
+  # ============================================================================
+  # APPLICATION CONFIGURATION
+  # Core Spring Boot application settings
+  # ============================================================================
+  
+  # Application Name: carddemo
+  # Used for service identification in logs and monitoring
+  SPRING_APPLICATION_NAME: "carddemo"
+  
+  # Active Profile: prod
+  # Loads application-prod.yml for production-specific overrides
+  # Alternative profiles: dev, test, staging
+  SPRING_PROFILES_ACTIVE: "prod"
+  
+  # Server Port: 8080
+  # Standard Spring Boot embedded Tomcat port
+  # Exposed via backend-service ClusterIP
+  SERVER_PORT: "8080"
+  
+  # Servlet Context Path: Root
+  # API endpoints accessible at /api/* directly
+  SERVER_SERVLET_CONTEXT_PATH: "/"
+  
+  # Tomcat Max Threads: 200
+  # Supports concurrent request processing for 10,000 TPS
+  SERVER_TOMCAT_THREADS_MAX: "200"
+  
+  # Tomcat Min Spare Threads: 10
+  SERVER_TOMCAT_THREADS_MIN_SPARE: "10"
+  
+  # Connection Timeout: 20 seconds (20000 ms)
+  # Maximum time to wait for client connection
+  SERVER_TOMCAT_CONNECTION_TIMEOUT: "20000"
+  
+  # Max Connections: 8192
+  # Maximum concurrent connections Tomcat will accept
+  SERVER_TOMCAT_MAX_CONNECTIONS: "8192"
+  
+  # Accept Count: 100
+  # Queue length for incoming connections when all threads busy
+  SERVER_TOMCAT_ACCEPT_COUNT: "100"
+  
+  # ============================================================================
+  # LOGGING CONFIGURATION
+  # Application logging levels and patterns
+  # Supports audit trail requirements per Section 0.9
+  # ============================================================================
+  
+  # Root Logger Level: INFO
+  # Default level for all loggers
+  LOGGING_LEVEL_ROOT: "INFO"
+  
+  # CardDemo Application Logger: DEBUG
+  # Detailed logging for business logic and service operations
+  # Supports troubleshooting and audit trail requirements
+  LOGGING_LEVEL_COM_CARDDEMO: "DEBUG"
+  
+  # Spring Framework Logger: INFO
+  # Reduced verbosity for Spring internal operations
+  LOGGING_LEVEL_ORG_SPRINGFRAMEWORK: "INFO"
+  
+  # Spring Web Logger: DEBUG (API request/response logging)
+  LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_WEB: "DEBUG"
+  
+  # Spring Security Logger: INFO
+  # Authentication and authorization audit trail
+  LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY: "INFO"
+  
+  # Hibernate Logger: WARN
+  # Suppress verbose SQL logging in production
+  LOGGING_LEVEL_ORG_HIBERNATE: "WARN"
+  
+  # Hibernate SQL Logger: ERROR (disable SQL statement logging)
+  LOGGING_LEVEL_ORG_HIBERNATE_SQL: "ERROR"
+  
+  # HikariCP Logger: INFO
+  # Connection pool health and performance metrics
+  LOGGING_LEVEL_COM_ZAXXER_HIKARI: "INFO"
+  
+  # Console Logging Pattern
+  # Timestamp + Log Message format
+  # Compatible with ELK stack log aggregation
+  LOGGING_PATTERN_CONSOLE: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+  
+  # File Logging Pattern (if file appender configured)
+  LOGGING_PATTERN_FILE: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  
+  # ============================================================================
+  # JWT TOKEN CONFIGURATION (Non-Sensitive)
+  # Authentication token settings (replaces RACF/USRSEC file authentication)
+  # Sensitive JWT_SECRET_KEY stored in secrets.yaml
+  # ============================================================================
+  
+  # JWT Token Expiration: 24 hours (86400000 ms)
+  # Aligns with CICS session timeout behavior
+  # Requires re-authentication after expiration
+  JWT_EXPIRATION_MS: "86400000"
+  
+  # JWT Issuer: CardDemo Application
+  JWT_ISSUER: "carddemo-backend"
+  
+  # JWT Audience: CardDemo Frontend
+  JWT_AUDIENCE: "carddemo-frontend"
+  
+  # ============================================================================
+  # SPRING BATCH CONFIGURATION
+  # Batch job execution settings (replaces JCL batch processing)
+  # 11 Spring Batch jobs migrated from COBOL batch programs
+  # ============================================================================
+  
+  # Auto-Run Jobs: false
+  # Disable automatic job execution on application startup
+  # Jobs triggered via Kubernetes CronJobs instead
+  SPRING_BATCH_JOB_ENABLED: "false"
+  
+  # Job Repository Schema: Always initialize
+  # Creates/updates Spring Batch metadata tables
+  # Stores job execution history and status
+  SPRING_BATCH_JDBC_INITIALIZE_SCHEMA: "always"
+  
+  # Chunk Size: 1000 records
+  # Optimal balance for memory usage vs. performance
+  # Batch transaction commit after every 1000 records processed
+  SPRING_BATCH_CHUNK_SIZE: "1000"
+  
+  # Skip Limit: 100 errors
+  # Maximum skippable errors before job failure
+  # Preserves JCL error tolerance behavior
+  SPRING_BATCH_SKIP_LIMIT: "100"
+  
+  # Retry Attempts: 3
+  # Transient error retry count (network, deadlock, timeout)
+  SPRING_BATCH_RETRY_ATTEMPTS: "3"
+  
+  # ============================================================================
+  # SPRING ACTUATOR CONFIGURATION
+  # Monitoring and management endpoints
+  # Supports Prometheus metrics collection per Section 0.5
+  # ============================================================================
+  
+  # Exposed Endpoints: health, info, metrics, prometheus
+  # Limited exposure for security; full metrics for monitoring
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,metrics,prometheus"
+  
+  # Health Endpoint Detail Level: when_authorized
+  # Show detailed health info only to authenticated users
+  # Prevents information disclosure to unauthorized users
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "when_authorized"
+  
+  # Health Check Components: Include all
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_COMPONENTS: "when_authorized"
+  
+  # Prometheus Metrics Export: Enabled
+  # Exposes /actuator/prometheus endpoint for Prometheus scraping
+  MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED: "true"
+  
+  # Metrics Tags: Application identification
+  MANAGEMENT_METRICS_TAGS_APPLICATION: "carddemo"
+  MANAGEMENT_METRICS_TAGS_ENVIRONMENT: "production"
+  
+  # ============================================================================
+  # FLYWAY DATABASE MIGRATION CONFIGURATION
+  # Schema versioning and evolution management
+  # Replaces VSAM dataset allocation scripts
+  # ============================================================================
+  
+  # Flyway Enabled: true
+  # Automatic database schema migrations on application startup
+  SPRING_FLYWAY_ENABLED: "true"
+  
+  # Migration Scripts Location
+  SPRING_FLYWAY_LOCATIONS: "classpath:db/migration"
+  
+  # Baseline on Migrate: true
+  # Creates baseline version for existing database
+  SPRING_FLYWAY_BASELINE_ON_MIGRATE: "true"
+  
+  # Baseline Version: 0
+  SPRING_FLYWAY_BASELINE_VERSION: "0"
+  
+  # Validate on Migrate: true
+  # Ensures migration scripts haven't been modified
+  SPRING_FLYWAY_VALIDATE_ON_MIGRATE: "true"
+  
+  # ============================================================================
+  # JACKSON JSON SERIALIZATION CONFIGURATION
+  # REST API request/response formatting (replaces COMMAREA structures)
+  # ============================================================================
+  
+  # Date Format: ISO-8601
+  # Standardized date/time format for API responses
+  SPRING_JACKSON_DATE_FORMAT: "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
+  
+  # Time Zone: UTC
+  # Consistent timezone for all date operations
+  # Replaces COBOL CEEDAYS Lillian date handling
+  SPRING_JACKSON_TIME_ZONE: "UTC"
+  
+  # Serialization Features
+  SPRING_JACKSON_SERIALIZATION_WRITE_DATES_AS_TIMESTAMPS: "false"
+  SPRING_JACKSON_SERIALIZATION_INDENT_OUTPUT: "false"
+  
+  # Deserialization Features
+  SPRING_JACKSON_DESERIALIZATION_FAIL_ON_UNKNOWN_PROPERTIES: "false"
+  
+  # ============================================================================
+  # TRANSACTION MANAGEMENT CONFIGURATION
+  # Replaces CICS SYNCPOINT transaction boundaries
+  # ============================================================================
+  
+  # Default Transaction Timeout: 30 seconds
+  # Prevents long-running transactions from blocking resources
+  SPRING_TRANSACTION_DEFAULT_TIMEOUT: "30"
+  
+  # Rollback on Commit Failure: true
+  SPRING_TRANSACTION_ROLLBACK_ON_COMMIT_FAILURE: "true"
+  
+  # ============================================================================
+  # CORS CONFIGURATION
+  # Cross-Origin Resource Sharing for frontend-backend communication
+  # ============================================================================
+  
+  # Allowed Origins: Frontend service URL
+  # Production: Replace with actual domain
+  # Development: http://localhost:3000
+  CORS_ALLOWED_ORIGINS: "https://carddemo.example.com"
+  
+  # Allowed Methods
+  CORS_ALLOWED_METHODS: "GET,POST,PUT,DELETE,OPTIONS"
+  
+  # Allowed Headers
+  CORS_ALLOWED_HEADERS: "Authorization,Content-Type,X-Requested-With"
+  
+  # Allow Credentials: true (supports JWT token in Authorization header)
+  CORS_ALLOW_CREDENTIALS: "true"
+  
+  # Max Age: 1 hour (3600 seconds)
+  CORS_MAX_AGE: "3600"
+  
+  # ============================================================================
+  # DECIMAL PRECISION CONFIGURATION
+  # Critical for COBOL COMP-3 to Java BigDecimal conversion
+  # Maintains financial calculation accuracy per Section 0.9
+  # ============================================================================
+  
+  # Default Decimal Scale: 2 (for currency amounts)
+  # Matches COBOL PIC S9(13)V99 COMP-3 precision
+  DECIMAL_DEFAULT_SCALE: "2"
+  
+  # Default Rounding Mode: HALF_UP
+  # Matches COBOL rounding behavior for financial calculations
+  DECIMAL_DEFAULT_ROUNDING_MODE: "HALF_UP"
+  
+  # Interest Rate Scale: 5 (for percentage calculations)
+  # Matches COBOL PIC S9(3)V9(5) COMP-3 precision
+  DECIMAL_INTEREST_SCALE: "5"
+  
+  # ============================================================================
+  # APPLICATION-SPECIFIC BUSINESS RULES
+  # CardDemo domain configuration
+  # ============================================================================
+  
+  # Pagination: Cards per page (from COBOL COCRDLIC)
+  PAGINATION_CARDS_PER_PAGE: "7"
+  
+  # Pagination: Transactions per page (from COBOL COTRN00C)
+  PAGINATION_TRANSACTIONS_PER_PAGE: "10"
+  
+  # Transaction Processing: Minimum transaction amount
+  TRANSACTION_MIN_AMOUNT: "0.01"
+  
+  # Transaction Processing: Maximum transaction amount
+  TRANSACTION_MAX_AMOUNT: "999999.99"
+  
+  # Account: Minimum balance
+  ACCOUNT_MIN_BALANCE: "0.00"
+  
+  # Account: Maximum balance
+  ACCOUNT_MAX_BALANCE: "9999999999.99"
+  
+  # Interest Calculation: Annual rate scale
+  INTEREST_RATE_ANNUAL_SCALE: "5"
+  
+  # Interest Calculation: Days in year
+  INTEREST_DAYS_IN_YEAR: "365"
+  
+  # ============================================================================
+  # PERFORMANCE TUNING CONFIGURATION
+  # Maintains sub-200ms transaction response time per Section 0.2
+  # ============================================================================
+  
+  # HTTP/2 Support: Enabled
+  SERVER_HTTP2_ENABLED: "true"
+  
+  # Compression: Enabled for responses over 2KB
+  SERVER_COMPRESSION_ENABLED: "true"
+  SERVER_COMPRESSION_MIN_RESPONSE_SIZE: "2048"
+  
+  # Compression MIME Types
+  SERVER_COMPRESSION_MIME_TYPES: "text/html,text/xml,text/plain,text/css,application/json,application/javascript"
+  
+  # ============================================================================
+  # TIMEZONE CONFIGURATION
+  # Standardized timezone for date operations
+  # Replaces COBOL CEEDAYS date arithmetic
+  # ============================================================================
+  
+  # Application Timezone: UTC
+  # Consistent timezone across all services
+  # Convert to user timezone in frontend only
+  TZ: "UTC"
+  SPRING_JPA_PROPERTIES_HIBERNATE_JDBC_TIME_ZONE: "UTC"
+
+# ============================================================================
+# END OF CONFIGMAP
+# ============================================================================
+# 
+# Usage in backend-deployment.yaml:
+#   envFrom:
+#     - configMapRef:
+#         name: carddemo-config
+#
+# All keys become environment variables in backend pods
+# Sensitive values (passwords, secrets) stored in secrets.yaml
+# 
+# To update configuration:
+#   kubectl apply -f kubernetes/configmap.yaml
+#   kubectl rollout restart deployment/backend-deployment
+#
+# ============================================================================

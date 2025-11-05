@@ -1,0 +1,619 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates.
+  ~ All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~    http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing,
+  ~ software distributed under the License is distributed on an
+  ~ "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  ~ either express or implied. See the License for the specific
+  ~ language governing permissions and limitations under the License
+  -->
+
+<!--
+  Spring Batch Job Configuration: Monthly Credit Card Statement Generation
+  
+  Migrated from:
+  - JCL Job: CREASTMT.JCL
+  - COBOL Programs: CBSTM03A.CBL (main statement generation) and CBSTM03B.CBL (file I/O subroutine)
+  
+  Business Function:
+  Generates monthly credit card statements for all active card accounts in both text and HTML formats.
+  Processes transactions grouped by card number, retrieves customer and account information, 
+  calculates totals, and produces formatted statement output files.
+  
+  Execution Schedule:
+  Runs on the first day of each month via Kubernetes CronJob replacing JCL TIME parameter.
+  
+  VSAM to PostgreSQL File Mapping:
+  - TRNXFILE (VSAM KSDS) → transaction table with ORDER BY card_number, transaction_id
+  - XREFFILE (VSAM KSDS) → card_xref table
+  - CUSTFILE (VSAM KSDS) → customer table (random access by customer_id)
+  - ACCTFILE (VSAM KSDS) → account table (random access by account_id)
+  - STMTFILE (Sequential) → text file output
+  - HTMLFILE (Sequential) → HTML file output
+  
+  JCL SORT Operation Transformation:
+  Original: SORT FIELDS=(263,16,CH,A,1,16,CH,A) - Sort by card number (pos 263, len 16) then transaction ID (pos 1, len 16)
+  Target: SQL ORDER BY card_number ASC, transaction_id ASC in ItemReader query
+  
+  Performance Requirements:
+  - Must complete within 4-hour batch processing window
+  - Chunk size: 1000 records (derived from VSAM BUFSIZE/CISIZE in JCL)
+  - Skip limit: 100 error records before job failure
+  - Retry limit: 3 attempts with exponential backoff
+  
+  COMP-3 Precision Preservation:
+  COBOL WS-TOTAL-AMT PIC S9(9)V99 COMP-3 → BigDecimal with scale 2, RoundingMode.HALF_UP
+  
+  Checkpoint/Restart:
+  Spring Batch JobRepository provides equivalent functionality to mainframe GDG backup strategy
+-->
+
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:batch="http://www.springframework.org/schema/batch"
+       xsi:schemaLocation="
+           http://www.springframework.org/schema/beans 
+           https://www.springframework.org/schema/beans/spring-beans.xsd
+           http://www.springframework.org/schema/batch 
+           https://www.springframework.org/schema/batch/spring-batch.xsd">
+
+    <!-- ================================================================= -->
+    <!-- Job Definition: Statement Generation Job                          -->
+    <!-- ================================================================= -->
+    <batch:job id="statementGenerationJob" restartable="true">
+        
+        <!-- Job-level listeners for audit logging and monitoring -->
+        <batch:listeners>
+            <batch:listener ref="jobExecutionListener"/>
+        </batch:listeners>
+        
+        <!-- Step 1: Sort and Load Transactions into Memory Table -->
+        <!-- Equivalent to JCL STEP010 SORT and STEP020 REPRO -->
+        <batch:step id="sortTransactionsStep" next="generateStatementsStep">
+            <batch:tasklet>
+                <batch:chunk 
+                    reader="transactionItemReader" 
+                    processor="transactionSortProcessor"
+                    writer="transactionMemoryWriter"
+                    commit-interval="1000"
+                    skip-limit="100"
+                    retry-limit="3">
+                    
+                    <!-- Skippable exceptions for data quality issues -->
+                    <batch:skippable-exception-classes>
+                        <batch:include class="org.springframework.dao.DataIntegrityViolationException"/>
+                        <batch:include class="org.springframework.dao.DeadlockLoserDataAccessException"/>
+                        <batch:include class="java.sql.SQLException"/>
+                    </batch:skippable-exception-classes>
+                    
+                    <!-- Retryable exceptions for transient failures -->
+                    <batch:retryable-exception-classes>
+                        <batch:include class="org.springframework.dao.OptimisticLockingFailureException"/>
+                        <batch:include class="org.springframework.dao.PessimisticLockingFailureException"/>
+                        <batch:include class="org.springframework.dao.DeadlockLoserDataAccessException"/>
+                    </batch:retryable-exception-classes>
+                    
+                    <!-- Exponential backoff retry policy (matching CICS retry patterns) -->
+                    <batch:retry-policy>
+                        <bean class="org.springframework.retry.policy.SimpleRetryPolicy">
+                            <property name="maxAttempts" value="3"/>
+                        </bean>
+                    </batch:retry-policy>
+                    
+                    <batch:listeners>
+                        <batch:listener ref="skipListener"/>
+                        <batch:listener ref="retryListener"/>
+                        <batch:listener ref="chunkListener"/>
+                    </batch:listeners>
+                </batch:chunk>
+            </batch:tasklet>
+        </batch:step>
+        
+        <!-- Step 2: Generate Statements for Each Card -->
+        <!-- Equivalent to JCL STEP040 EXEC PGM=CBSTM03A -->
+        <batch:step id="generateStatementsStep">
+            <batch:tasklet>
+                <batch:chunk 
+                    reader="cardXrefItemReader" 
+                    processor="statementProcessor"
+                    writer="statementMultiFormatWriter"
+                    commit-interval="1000"
+                    skip-limit="100"
+                    retry-limit="3">
+                    
+                    <!-- Skippable exceptions -->
+                    <batch:skippable-exception-classes>
+                        <batch:include class="com.carddemo.exception.CustomerNotFoundException"/>
+                        <batch:include class="com.carddemo.exception.AccountNotFoundException"/>
+                        <batch:include class="org.springframework.dao.DataIntegrityViolationException"/>
+                    </batch:skippable-exception-classes>
+                    
+                    <!-- Retryable exceptions -->
+                    <batch:retryable-exception-classes>
+                        <batch:include class="org.springframework.dao.OptimisticLockingFailureException"/>
+                        <batch:include class="org.springframework.dao.PessimisticLockingFailureException"/>
+                        <batch:include class="org.springframework.dao.TransientDataAccessResourceException"/>
+                    </batch:retryable-exception-classes>
+                    
+                    <!-- Exponential backoff retry policy -->
+                    <batch:retry-policy>
+                        <bean class="org.springframework.retry.backoff.ExponentialBackOffPolicy">
+                            <property name="initialInterval" value="1000"/>
+                            <property name="multiplier" value="2.0"/>
+                            <property name="maxInterval" value="10000"/>
+                        </bean>
+                    </batch:retry-policy>
+                    
+                    <batch:listeners>
+                        <batch:listener ref="skipListener"/>
+                        <batch:listener ref="retryListener"/>
+                        <batch:listener ref="chunkListener"/>
+                        <batch:listener ref="statementGenerationListener"/>
+                    </batch:listeners>
+                </batch:chunk>
+            </batch:tasklet>
+        </batch:step>
+        
+    </batch:job>
+
+    <!-- ================================================================= -->
+    <!-- Item Readers: Data Source Configuration                          -->
+    <!-- ================================================================= -->
+    
+    <!-- 
+      Transaction Item Reader
+      Replaces: JCL STEP010 SORT and STEP020 REPRO operations
+      VSAM File: TRNXFILE (AWS.M2.CARDDEMO.TRXFL.VSAM.KSDS)
+      Sort Order: SORT FIELDS=(263,16,CH,A,1,16,CH,A) → ORDER BY card_number, transaction_id
+      
+      COBOL Record Layout (CBSTM03B.CBL):
+      FD-TRNXS-ID (32 bytes): FD-TRNX-CARD (16 bytes) + FD-TRNX-ID (16 bytes)
+      FD-ACCT-DATA (318 bytes): Transaction detail fields
+      Total record size: 350 bytes (matches JCL RECORDSIZE(350 350))
+    -->
+    <bean id="transactionItemReader" class="org.springframework.batch.item.database.JdbcCursorItemReader" scope="step">
+        <property name="dataSource" ref="dataSource"/>
+        <property name="sql">
+            <value>
+                <![CDATA[
+                SELECT 
+                    t.card_number,
+                    t.transaction_id,
+                    t.transaction_type_cd,
+                    t.transaction_cat_cd,
+                    t.transaction_source,
+                    t.transaction_desc,
+                    t.transaction_amt,
+                    t.transaction_dt,
+                    t.orig_trans_id,
+                    t.orig_trans_amt
+                FROM transaction t
+                WHERE t.transaction_dt >= :statementStartDate
+                  AND t.transaction_dt < :statementEndDate
+                ORDER BY t.card_number ASC, t.transaction_id ASC
+                ]]>
+            </value>
+        </property>
+        <property name="rowMapper" ref="transactionRowMapper"/>
+        <property name="fetchSize" value="1000"/>
+        <property name="maxRows" value="0"/>
+        <property name="queryTimeout" value="30"/>
+        <property name="verifyCursorPosition" value="true"/>
+        <property name="driverSupportsAbsolute" value="true"/>
+        <property name="useSharedExtendedConnection" value="false"/>
+        <property name="preparedStatementSetter">
+            <bean class="org.springframework.batch.core.resource.ListPreparedStatementSetter">
+                <property name="parameters">
+                    <list>
+                        <value>#{jobParameters['statementStartDate']}</value>
+                        <value>#{jobParameters['statementEndDate']}</value>
+                    </list>
+                </property>
+            </bean>
+        </property>
+    </bean>
+    
+    <!--
+      Card Cross-Reference Item Reader
+      Replaces: CBSTM03A XREFFILE sequential reads (1000-XREFFILE-GET-NEXT)
+      VSAM File: XREFFILE (AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS)
+      
+      COBOL Record Layout (CBSTM03B.CBL):
+      FD-XREF-CARD-NUM (16 bytes): Card number primary key
+      FD-XREF-DATA (34 bytes): Customer ID (9 bytes) + Account ID (11 bytes) + other fields
+      Total record size: 50 bytes
+      
+      Processing Flow:
+      For each card in XREF file:
+        1. Read customer data by CUST-ID (2000-CUSTFILE-GET)
+        2. Read account data by ACCT-ID (3000-ACCTFILE-GET)
+        3. Retrieve transactions for card from memory table (4000-TRNXFILE-GET)
+        4. Generate statement (5000-CREATE-STATEMENT)
+    -->
+    <bean id="cardXrefItemReader" class="org.springframework.batch.item.database.JdbcCursorItemReader" scope="step">
+        <property name="dataSource" ref="dataSource"/>
+        <property name="sql">
+            <value>
+                <![CDATA[
+                SELECT 
+                    cx.card_number,
+                    cx.customer_id,
+                    cx.account_id
+                FROM card_xref cx
+                WHERE cx.card_status = 'A'
+                ORDER BY cx.card_number ASC
+                ]]>
+            </value>
+        </property>
+        <property name="rowMapper" ref="cardXrefRowMapper"/>
+        <property name="fetchSize" value="1000"/>
+        <property name="maxRows" value="0"/>
+        <property name="queryTimeout" value="30"/>
+        <property name="verifyCursorPosition" value="true"/>
+        <property name="driverSupportsAbsolute" value="true"/>
+    </bean>
+
+    <!-- ================================================================= -->
+    <!-- Item Processors: Business Logic Implementation                    -->
+    <!-- ================================================================= -->
+    
+    <!--
+      Transaction Sort Processor
+      Loads transactions into memory table structure equivalent to COBOL WS-TRNX-TABLE
+      
+      COBOL Memory Structure (CBSTM03A.CBL lines 225-233):
+      01  WS-TRNX-TABLE.
+          05  WS-CARD-TBL OCCURS 51 TIMES.
+              10  WS-CARD-NUM                          PIC X(16).
+              10  WS-TRAN-TBL OCCURS 10 TIMES.
+                  15  WS-TRAN-NUM                      PIC X(16).
+                  15  WS-TRAN-REST                     PIC X(318).
+      
+      Java equivalent: Map<String, List<Transaction>> grouping transactions by card number
+    -->
+    <bean id="transactionSortProcessor" class="com.carddemo.batch.processor.TransactionSortProcessor">
+        <property name="transactionCacheService" ref="transactionCacheService"/>
+    </bean>
+    
+    <!--
+      Statement Processor
+      Core business logic migrated from CBSTM03A.CBL PROCEDURE DIVISION
+      
+      Processing Steps (matching COBOL 1000-MAINLINE):
+      1. Retrieve customer record (2000-CUSTFILE-GET)
+      2. Retrieve account record (3000-ACCTFILE-GET)
+      3. Retrieve transactions for card from cache (4000-TRNXFILE-GET)
+      4. Generate statement header (5000-CREATE-STATEMENT)
+      5. Write transaction details (6000-WRITE-TRANS)
+      6. Calculate total amount with COMP-3 precision (WS-TOTAL-AMT PIC S9(9)V99)
+      7. Format output in text and HTML
+      
+      COMP-3 Decimal Precision:
+      COBOL: 01 WS-TOTAL-AMT PIC S9(9)V99 COMP-3.
+      Java: BigDecimal with scale(2, RoundingMode.HALF_UP)
+      
+      Error Handling:
+      COBOL: PERFORM 9999-ABEND-PROGRAM on file errors
+      Java: Throw business exceptions caught by skip/retry policies
+    -->
+    <bean id="statementProcessor" class="com.carddemo.batch.processor.StatementProcessor">
+        <property name="customerRepository" ref="customerRepository"/>
+        <property name="accountRepository" ref="accountRepository"/>
+        <property name="transactionCacheService" ref="transactionCacheService"/>
+        <property name="statementFormattingService" ref="statementFormattingService"/>
+        <property name="decimalScale" value="2"/>
+        <property name="roundingMode" value="HALF_UP"/>
+    </bean>
+
+    <!-- ================================================================= -->
+    <!-- Item Writers: Output File Generation                              -->
+    <!-- ================================================================= -->
+    
+    <!--
+      Transaction Memory Writer
+      Writes transactions to in-memory cache for grouping by card number
+      Equivalent to COBOL 8500-READTRNX-READ paragraph building WS-TRNX-TABLE
+    -->
+    <bean id="transactionMemoryWriter" class="com.carddemo.batch.writer.TransactionMemoryWriter">
+        <property name="transactionCacheService" ref="transactionCacheService"/>
+    </bean>
+    
+    <!--
+      Multi-Format Statement Writer
+      Generates both text and HTML output files simultaneously
+      
+      Replaces JCL output files (CREASTMT.JCL):
+      - STMTFILE DD: DSN=AWS.M2.CARDDEMO.STATEMNT.PS
+        DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB)
+      - HTMLFILE DD: DSN=AWS.M2.CARDDEMO.STATEMNT.HTML
+        DCB=(LRECL=100,BLKSIZE=800,RECFM=FB)
+      
+      COBOL Output Operations:
+      - Text: WRITE FD-STMTFILE-REC FROM ST-LINE* (5000-CREATE-STATEMENT, 6000-WRITE-TRANS)
+      - HTML: WRITE FD-HTMLFILE-REC FROM HTML-* (5100-WRITE-HTML-HEADER, 5200-WRITE-HTML-NMADBS)
+    -->
+    <bean id="statementMultiFormatWriter" class="com.carddemo.batch.writer.StatementMultiFormatWriter">
+        <property name="delegates">
+            <list>
+                <ref bean="statementTextWriter"/>
+                <ref bean="statementHtmlWriter"/>
+            </list>
+        </property>
+    </bean>
+    
+    <!--
+      Statement Text File Writer
+      Generates plain text statements with 80-character line format
+      
+      COBOL Statement Lines (CBSTM03A.CBL lines 85-146):
+      - ST-LINE0: Header with asterisks "***START OF STATEMENT***"
+      - ST-LINE1-4: Customer name and address
+      - ST-LINE5-13: Account details and transaction header
+      - ST-LINE14: Transaction detail lines
+      - ST-LINE14A: Total expenses line
+      - ST-LINE15: Footer with asterisks "***END OF STATEMENT***"
+    -->
+    <bean id="statementTextWriter" class="org.springframework.batch.item.file.FlatFileItemWriter" scope="step">
+        <property name="resource" value="file:#{jobParameters['outputDir']}/statements_#{jobParameters['runDate']}.txt"/>
+        <property name="lineAggregator">
+            <bean class="org.springframework.batch.item.file.transform.PassThroughLineAggregator"/>
+        </property>
+        <property name="appendAllowed" value="false"/>
+        <property name="shouldDeleteIfExists" value="true"/>
+        <property name="transactional" value="true"/>
+        <property name="encoding" value="UTF-8"/>
+    </bean>
+    
+    <!--
+      Statement HTML File Writer
+      Generates HTML formatted statements with table layout
+      
+      COBOL HTML Lines (CBSTM03A.CBL lines 148-224):
+      - HTML-L01-L08: HTML document structure and header
+      - HTML-L10-L18: Bank header information
+      - HTML-L22-L35: Customer name and address section
+      - HTML-L30-L42: Basic account details section
+      - HTML-L43-L54: Transaction summary header
+      - HTML-L58-L64: Transaction detail rows
+      - HTML-L75-L80: Footer and document close
+    -->
+    <bean id="statementHtmlWriter" class="org.springframework.batch.item.file.FlatFileItemWriter" scope="step">
+        <property name="resource" value="file:#{jobParameters['outputDir']}/statements_#{jobParameters['runDate']}.html"/>
+        <property name="lineAggregator">
+            <bean class="org.springframework.batch.item.file.transform.PassThroughLineAggregator"/>
+        </property>
+        <property name="appendAllowed" value="false"/>
+        <property name="shouldDeleteIfExists" value="true"/>
+        <property name="transactional" value="true"/>
+        <property name="encoding" value="UTF-8"/>
+    </bean>
+
+    <!-- ================================================================= -->
+    <!-- Row Mappers: JDBC ResultSet to Domain Object Conversion          -->
+    <!-- ================================================================= -->
+    
+    <!--
+      Transaction Row Mapper
+      Maps database columns to Transaction entity
+      Preserves COMP-3 decimal precision from COBOL
+    -->
+    <bean id="transactionRowMapper" class="com.carddemo.batch.mapper.TransactionRowMapper"/>
+    
+    <!--
+      Card Cross-Reference Row Mapper
+      Maps database columns to CardXref entity
+    -->
+    <bean id="cardXrefRowMapper" class="com.carddemo.batch.mapper.CardXrefRowMapper"/>
+
+    <!-- ================================================================= -->
+    <!-- Batch Listeners: Monitoring and Audit Trail                      -->
+    <!-- ================================================================= -->
+    
+    <!--
+      Job Execution Listener
+      Logs job start/end events equivalent to COBOL DISPLAY statements
+      CBSTM03A line 270: DISPLAY 'Running JCL : ' TIOTNJOB ' Step ' TIOTJSTP
+    -->
+    <bean id="jobExecutionListener" class="com.carddemo.batch.listener.StatementJobExecutionListener">
+        <property name="auditService" ref="auditService"/>
+        <property name="notificationService" ref="notificationService"/>
+    </bean>
+    
+    <!--
+      Skip Listener
+      Handles skipped records due to data quality issues
+      Equivalent to COBOL error handling with DISPLAY and continue
+    -->
+    <bean id="skipListener" class="com.carddemo.batch.listener.StatementSkipListener">
+        <property name="errorLogService" ref="errorLogService"/>
+        <property name="maxSkipCount" value="100"/>
+    </bean>
+    
+    <!--
+      Retry Listener
+      Logs retry attempts for transient failures
+      Equivalent to CICS retry logic
+    -->
+    <bean id="retryListener" class="com.carddemo.batch.listener.StatementRetryListener">
+        <property name="retryLogService" ref="retryLogService"/>
+    </bean>
+    
+    <!--
+      Chunk Listener
+      Monitors chunk processing performance
+      Ensures 4-hour batch window requirement is maintained
+    -->
+    <bean id="chunkListener" class="com.carddemo.batch.listener.StatementChunkListener">
+        <property name="metricsService" ref="metricsService"/>
+        <property name="chunkSize" value="1000"/>
+    </bean>
+    
+    <!--
+      Statement Generation Listener
+      Specific listener for statement generation step
+      Tracks statement count and processing statistics
+    -->
+    <bean id="statementGenerationListener" class="com.carddemo.batch.listener.StatementGenerationListener">
+        <property name="statementCountService" ref="statementCountService"/>
+    </bean>
+
+    <!-- ================================================================= -->
+    <!-- Service Dependencies: Business Logic Components                  -->
+    <!-- ================================================================= -->
+    
+    <!--
+      Transaction Cache Service
+      In-memory storage for transactions grouped by card number
+      Equivalent to COBOL WS-TRNX-TABLE and WS-TRN-TBL-CNTR
+    -->
+    <bean id="transactionCacheService" class="com.carddemo.batch.service.TransactionCacheService" scope="job"/>
+    
+    <!--
+      Statement Formatting Service
+      Generates formatted statement text and HTML output
+      Implements COBOL logic from 5000-CREATE-STATEMENT, 5100-WRITE-HTML-HEADER, 
+      5200-WRITE-HTML-NMADBS, and 6000-WRITE-TRANS paragraphs
+    -->
+    <bean id="statementFormattingService" class="com.carddemo.batch.service.StatementFormattingService">
+        <property name="bankName" value="Bank of XYZ"/>
+        <property name="bankAddress1" value="410 Terry Ave N"/>
+        <property name="bankAddress2" value="Seattle WA 99999"/>
+        <property name="textLineLength" value="80"/>
+        <property name="htmlLineLength" value="100"/>
+    </bean>
+    
+    <!--
+      Audit Service
+      Comprehensive audit trail logging for regulatory compliance
+      Matches mainframe audit capabilities
+    -->
+    <bean id="auditService" class="com.carddemo.service.AuditService"/>
+    
+    <!--
+      Notification Service
+      Sends job completion notifications
+    -->
+    <bean id="notificationService" class="com.carddemo.service.NotificationService"/>
+    
+    <!--
+      Error Log Service
+      Logs skipped records for analysis and correction
+    -->
+    <bean id="errorLogService" class="com.carddemo.batch.service.ErrorLogService"/>
+    
+    <!--
+      Retry Log Service
+      Tracks retry attempts for monitoring
+    -->
+    <bean id="retryLogService" class="com.carddemo.batch.service.RetryLogService"/>
+    
+    <!--
+      Metrics Service
+      Collects performance metrics for Prometheus monitoring
+    -->
+    <bean id="metricsService" class="com.carddemo.service.MetricsService"/>
+    
+    <!--
+      Statement Count Service
+      Tracks number of statements generated
+    -->
+    <bean id="statementCountService" class="com.carddemo.batch.service.StatementCountService"/>
+
+    <!-- ================================================================= -->
+    <!-- Repository Dependencies: Data Access Layer                        -->
+    <!-- ================================================================= -->
+    
+    <!--
+      Customer Repository
+      Replaces COBOL CUSTFILE reads (2000-CUSTFILE-GET)
+      VSAM File: CUSTFILE (AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS)
+      Access Mode: RANDOM by customer_id
+    -->
+    <bean id="customerRepository" class="com.carddemo.repository.CustomerRepository"/>
+    
+    <!--
+      Account Repository
+      Replaces COBOL ACCTFILE reads (3000-ACCTFILE-GET)
+      VSAM File: ACCTFILE (AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS)
+      Access Mode: RANDOM by account_id
+    -->
+    <bean id="accountRepository" class="com.carddemo.repository.AccountRepository"/>
+
+    <!-- ================================================================= -->
+    <!-- Data Source Configuration                                         -->
+    <!-- ================================================================= -->
+    
+    <!--
+      PostgreSQL Data Source
+      Replaces VSAM KSDS files with relational database access
+      Connection pooling via HikariCP for equivalent VSAM performance
+    -->
+    <bean id="dataSource" class="com.zaxxer.hikari.HikariDataSource" destroy-method="close">
+        <property name="driverClassName" value="${spring.datasource.driver-class-name}"/>
+        <property name="jdbcUrl" value="${spring.datasource.url}"/>
+        <property name="username" value="${spring.datasource.username}"/>
+        <property name="password" value="${spring.datasource.password}"/>
+        <property name="maximumPoolSize" value="20"/>
+        <property name="minimumIdle" value="5"/>
+        <property name="connectionTimeout" value="30000"/>
+        <property name="idleTimeout" value="600000"/>
+        <property name="maxLifetime" value="1800000"/>
+        <property name="autoCommit" value="false"/>
+    </bean>
+
+    <!-- ================================================================= -->
+    <!-- Transaction Manager Configuration                                 -->
+    <!-- ================================================================= -->
+    
+    <!--
+      Transaction Manager
+      Manages database transactions with READ_COMMITTED isolation
+      Equivalent to CICS SYNCPOINT transaction boundaries
+    -->
+    <bean id="transactionManager" class="org.springframework.jdbc.datasource.DataSourceTransactionManager">
+        <property name="dataSource" ref="dataSource"/>
+        <property name="defaultTimeout" value="30"/>
+    </bean>
+
+    <!-- ================================================================= -->
+    <!-- Job Repository Configuration                                      -->
+    <!-- ================================================================= -->
+    
+    <!--
+      Job Repository
+      Provides checkpoint/restart capability replacing GDG backup strategy
+      Stores job execution state for recovery and monitoring
+    -->
+    <bean id="jobRepository" class="org.springframework.batch.core.repository.support.JobRepositoryFactoryBean">
+        <property name="dataSource" ref="dataSource"/>
+        <property name="transactionManager" ref="transactionManager"/>
+        <property name="isolationLevelForCreate" value="READ_COMMITTED"/>
+        <property name="tablePrefix" value="BATCH_"/>
+        <property name="maxVarCharLength" value="1000"/>
+    </bean>
+
+    <!-- ================================================================= -->
+    <!-- Job Launcher Configuration                                        -->
+    <!-- ================================================================= -->
+    
+    <!--
+      Job Launcher
+      Executes batch job with parameters
+      Called by Kubernetes CronJob replacing JCL scheduler
+    -->
+    <bean id="jobLauncher" class="org.springframework.batch.core.launch.support.SimpleJobLauncher">
+        <property name="jobRepository" ref="jobRepository"/>
+        <property name="taskExecutor">
+            <bean class="org.springframework.core.task.SyncTaskExecutor"/>
+        </property>
+    </bean>
+
+</beans>

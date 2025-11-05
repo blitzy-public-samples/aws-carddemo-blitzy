@@ -1,0 +1,525 @@
+# ******************************************************************
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+# ******************************************************************
+#
+# Transaction Aggregation CronJob
+# 
+# Purpose: Kubernetes CronJob resource for scheduled transaction aggregation batch job
+#          Executes Spring Batch TransactionAggregationJob migrated from COBOL CBTRN03C
+#          program to aggregate transactions by category and type, generating summary
+#          reports for analysis and reporting purposes with chunk-oriented processing.
+#
+# Source Mapping:
+#   - JCL: app/jcl/TRANREPT.jcl → Kubernetes CronJob YAML
+#   - COBOL: app/cbl/CBTRN03C.cbl → Spring Batch TransactionAggregationJob.java
+#
+# Business Logic:
+#   - Reads all transactions from transaction table
+#   - Groups by transaction category (CVTRA03Y copybook mapping)
+#   - Sums amounts by category with BigDecimal precision per Section 0.9
+#   - Groups by transaction type (CVTRA02Y copybook mapping)
+#   - Calculates transaction counts per category
+#   - Writes aggregated results to transaction_aggregate table (CVTRA04Y)
+#   - Chunk-oriented processing: 1000 records per chunk
+#   - Preserve calculation precision per Section 0.9
+#
+# Schedule: Daily at 4:00 AM (runs after daily-transaction-cronjob at 2:00 AM)
+# Execution Window: Maximum 2 hours
+# Concurrency: Forbid overlapping executions
+#
+# Migration Notes:
+#   - Original JCL job TRANREPT executed CBTRN03C COBOL program
+#   - COBOL program read transactions sequentially and generated formatted reports
+#   - Modern implementation uses Spring Batch for chunk-oriented processing
+#   - Database-driven aggregation replaces sequential file processing
+#   - BigDecimal precision maintained for financial calculations
+#
+# ******************************************************************
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: transaction-aggregation-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: transaction-aggregation
+    tier: backend
+    migration-source: CBTRN03C
+    migration-jcl: TRANREPT
+  annotations:
+    description: "Transaction aggregation batch job - migrated from COBOL CBTRN03C"
+    original-jcl: "app/jcl/TRANREPT.jcl"
+    original-cobol: "app/cbl/CBTRN03C.cbl"
+    batch-window: "2-hours"
+    execution-order: "post-daily-transaction-processing"
+spec:
+  # Schedule: Daily at 4:00 AM UTC
+  # Runs after daily-transaction-cronjob (2:00 AM) completes
+  # Allows 2-hour gap for daily transaction processing to finish
+  schedule: "0 4 * * *"
+  
+  # Timezone for schedule (optional, defaults to UTC)
+  # Uncomment and set if specific timezone required
+  # timeZone: "America/New_York"
+  
+  # Concurrency Policy: Forbid
+  # Prevents overlapping executions - critical for data consistency
+  # If previous job still running, skip the new scheduled execution
+  concurrencyPolicy: Forbid
+  
+  # Job History Limits
+  # Retain last 7 successful job executions for audit trail
+  # Retain last 3 failed job executions for troubleshooting
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  
+  # Starting Deadline Seconds
+  # If job misses scheduled time by more than 300 seconds (5 minutes),
+  # count it as failed and don't start execution
+  startingDeadlineSeconds: 300
+  
+  # Suspend flag - set to true to temporarily disable job execution
+  # Useful for maintenance windows or troubleshooting
+  suspend: false
+  
+  # Job Template - defines the Job that will be created on each schedule
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: transaction-aggregation
+        tier: backend
+    spec:
+      # Backoff Limit: 2 retries on failure
+      # Spring Batch provides internal retry mechanisms, so limit pod-level retries
+      backoffLimit: 2
+      
+      # Active Deadline: 7200 seconds (2 hours)
+      # Maximum time allowed for job execution before forced termination
+      # Aligned with 4-hour batch window requirement (this job uses half the window)
+      activeDeadlineSeconds: 7200
+      
+      # TTL (Time To Live) After Finished: 86400 seconds (24 hours)
+      # Automatically clean up completed job pods after 24 hours
+      # Balances audit trail retention with resource cleanup
+      ttlSecondsAfterFinished: 86400
+      
+      # Pod Template - defines the pod specification for the batch job
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: transaction-aggregation
+            tier: backend
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8080"
+            prometheus.io/path: "/actuator/prometheus"
+        spec:
+          # Restart Policy: Never
+          # Spring Batch manages job execution state and restart logic
+          # Let Kubernetes backoffLimit handle pod-level failures
+          restartPolicy: Never
+          
+          # Service Account (optional)
+          # Uncomment if specific RBAC permissions required
+          # serviceAccountName: carddemo-batch-sa
+          
+          # Init Containers (optional)
+          # Uncomment to add database connectivity checks before job execution
+          # initContainers:
+          # - name: wait-for-postgres
+          #   image: busybox:1.36
+          #   command:
+          #   - sh
+          #   - -c
+          #   - |
+          #     until nc -z postgres-service 5432; do
+          #       echo "Waiting for PostgreSQL to be ready..."
+          #       sleep 5
+          #     done
+          #     echo "PostgreSQL is ready"
+          
+          containers:
+          - name: transaction-aggregation-job
+            # Container image - should be updated to match your registry and version
+            # Format: <registry>/<repository>/<image>:<tag>
+            image: carddemo-backend:latest
+            imagePullPolicy: Always
+            
+            # Command and Arguments
+            # Execute Spring Boot application with specific Spring Batch job name
+            command:
+            - java
+            args:
+            - -jar
+            - /app/carddemo-backend.jar
+            - --spring.batch.job.names=TransactionAggregationJob
+            - --spring.profiles.active=batch
+            - --logging.level.com.carddemo.batch=DEBUG
+            
+            # Environment Variables
+            # Spring configuration for batch execution mode
+            env:
+            # Spring Profile - activates batch-specific configuration
+            - name: SPRING_PROFILES_ACTIVE
+              value: "batch"
+            
+            # Database Connection Configuration
+            # PostgreSQL connection string for transaction data access
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: database.url
+            
+            # Database Username - stored in Kubernetes Secret
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.username
+            
+            # Database Password - stored in Kubernetes Secret
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.password
+            
+            # Database Driver Class
+            - name: SPRING_DATASOURCE_DRIVER_CLASS_NAME
+              value: "org.postgresql.Driver"
+            
+            # JPA/Hibernate Configuration
+            - name: SPRING_JPA_DATABASE_PLATFORM
+              value: "org.hibernate.dialect.PostgreSQLDialect"
+            
+            - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+              value: "none"
+            
+            - name: SPRING_JPA_SHOW_SQL
+              value: "false"
+            
+            # Spring Batch Job Configuration
+            # Chunk size for batch processing - 1000 records per chunk
+            - name: SPRING_BATCH_JOB_CHUNK_SIZE
+              value: "1000"
+            
+            # Job repository configuration - uses same database
+            - name: SPRING_BATCH_JDBC_INITIALIZE_SCHEMA
+              value: "never"
+            
+            # Transaction isolation level - READ_COMMITTED per Section 0.9
+            - name: SPRING_BATCH_ISOLATION_LEVEL
+              value: "ISOLATION_READ_COMMITTED"
+            
+            # Logging Configuration
+            - name: LOGGING_LEVEL_ROOT
+              value: "INFO"
+            
+            - name: LOGGING_LEVEL_COM_CARDDEMO
+              value: "DEBUG"
+            
+            - name: LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_BATCH
+              value: "INFO"
+            
+            # Job-Specific Parameters
+            # Date range for transaction aggregation (optional - defaults to all dates)
+            # Can be overridden per execution via Kubernetes Job patch
+            # - name: JOB_START_DATE
+            #   value: "2024-01-01"
+            # - name: JOB_END_DATE
+            #   value: "2024-12-31"
+            
+            # Aggregation Configuration
+            # Enable grouping by transaction category
+            - name: JOB_AGGREGATION_GROUP_BY_CATEGORY
+              value: "true"
+            
+            # Enable grouping by transaction type
+            - name: JOB_AGGREGATION_GROUP_BY_TYPE
+              value: "true"
+            
+            # Calculate transaction counts in addition to amounts
+            - name: JOB_AGGREGATION_CALCULATE_COUNTS
+              value: "true"
+            
+            # BigDecimal precision for amount calculations per Section 0.9
+            # COBOL COMP-3 PIC S9(7)V99 equivalent
+            - name: JOB_AGGREGATION_AMOUNT_PRECISION
+              value: "9"
+            
+            - name: JOB_AGGREGATION_AMOUNT_SCALE
+              value: "2"
+            
+            # Rounding mode: HALF_UP matches COBOL rounding behavior
+            - name: JOB_AGGREGATION_ROUNDING_MODE
+              value: "HALF_UP"
+            
+            # Java Virtual Machine Configuration
+            # Memory settings aligned with resource limits
+            - name: JAVA_OPTS
+              value: >-
+                -Xms512m
+                -Xmx1536m
+                -XX:+UseG1GC
+                -XX:MaxGCPauseMillis=200
+                -XX:+HeapDumpOnOutOfMemoryError
+                -XX:HeapDumpPath=/tmp/heapdump.hprof
+                -Djava.security.egd=file:/dev/./urandom
+            
+            # Spring Boot Actuator endpoints for monitoring
+            - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+              value: "health,info,metrics,prometheus"
+            
+            - name: MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS
+              value: "always"
+            
+            # Resource Limits and Requests
+            # Defines compute resource allocation for the container
+            resources:
+              # Requests: Minimum guaranteed resources
+              # Memory: 1Gi for loading transaction data and processing chunks
+              # CPU: 500m (0.5 cores) for steady-state processing
+              requests:
+                memory: "1Gi"
+                cpu: "500m"
+              
+              # Limits: Maximum resources container can consume
+              # Memory: 2Gi to handle peak aggregation operations
+              # CPU: 1000m (1 core) for parallel processing within chunks
+              # Aligned with 4-hour batch window requirement per Section 0.2
+              limits:
+                memory: "2Gi"
+                cpu: "1000m"
+            
+            # Volume Mounts (optional)
+            # Uncomment if persistent storage needed for logs or temporary files
+            # volumeMounts:
+            # - name: batch-logs
+            #   mountPath: /var/log/batch
+            # - name: temp-storage
+            #   mountPath: /tmp
+            
+            # Liveness Probe
+            # Checks if container is running and healthy
+            # Spring Boot Actuator health endpoint used for health checks
+            livenessProbe:
+              httpGet:
+                path: /actuator/health/liveness
+                port: 8080
+                scheme: HTTP
+              initialDelaySeconds: 60
+              periodSeconds: 30
+              timeoutSeconds: 10
+              successThreshold: 1
+              failureThreshold: 3
+            
+            # Readiness Probe
+            # Checks if container is ready to process requests
+            # Not critical for batch jobs but useful for monitoring
+            readinessProbe:
+              httpGet:
+                path: /actuator/health/readiness
+                port: 8080
+                scheme: HTTP
+              initialDelaySeconds: 30
+              periodSeconds: 20
+              timeoutSeconds: 5
+              successThreshold: 1
+              failureThreshold: 3
+            
+            # Security Context (optional)
+            # Uncomment to enforce security constraints
+            # securityContext:
+            #   runAsNonRoot: true
+            #   runAsUser: 1000
+            #   allowPrivilegeEscalation: false
+            #   readOnlyRootFilesystem: false
+            #   capabilities:
+            #     drop:
+            #     - ALL
+          
+          # Image Pull Secrets (if using private registry)
+          # imagePullSecrets:
+          # - name: carddemo-registry-secret
+          
+          # Volumes (optional)
+          # Uncomment if persistent storage needed
+          # volumes:
+          # - name: batch-logs
+          #   persistentVolumeClaim:
+          #     claimName: batch-logs-pvc
+          # - name: temp-storage
+          #   emptyDir:
+          #     sizeLimit: 1Gi
+          
+          # Node Selector (optional)
+          # Uncomment to schedule on specific nodes
+          # nodeSelector:
+          #   workload-type: batch
+          #   node-size: large
+          
+          # Affinity (optional)
+          # Uncomment to control pod placement
+          # affinity:
+          #   podAntiAffinity:
+          #     preferredDuringSchedulingIgnoredDuringExecution:
+          #     - weight: 100
+          #       podAffinityTerm:
+          #         labelSelector:
+          #           matchExpressions:
+          #           - key: job
+          #             operator: In
+          #             values:
+          #             - transaction-aggregation
+          #         topologyKey: kubernetes.io/hostname
+          
+          # Tolerations (optional)
+          # Uncomment to allow scheduling on tainted nodes
+          # tolerations:
+          # - key: "batch-workload"
+          #   operator: "Equal"
+          #   value: "true"
+          #   effect: "NoSchedule"
+          
+          # DNS Policy
+          dnsPolicy: ClusterFirst
+          
+          # Termination Grace Period
+          # Allow 60 seconds for graceful shutdown and Spring Batch state persistence
+          terminationGracePeriodSeconds: 60
+
+# ******************************************************************
+# Deployment Instructions:
+# ******************************************************************
+#
+# 1. Create required ConfigMap and Secret resources:
+#    kubectl create configmap carddemo-config \
+#      --from-literal=database.url=jdbc:postgresql://postgres-service:5432/carddemo
+#
+#    kubectl create secret generic carddemo-secrets \
+#      --from-literal=database.username=carddemo_user \
+#      --from-literal=database.password=<your-password>
+#
+# 2. Apply this CronJob manifest:
+#    kubectl apply -f transaction-aggregation-cronjob.yaml
+#
+# 3. Verify CronJob creation:
+#    kubectl get cronjob transaction-aggregation-cronjob
+#
+# 4. View CronJob schedule and status:
+#    kubectl describe cronjob transaction-aggregation-cronjob
+#
+# 5. Manually trigger job execution (for testing):
+#    kubectl create job transaction-aggregation-manual \
+#      --from=cronjob/transaction-aggregation-cronjob
+#
+# 6. Monitor job execution:
+#    kubectl get jobs -l job=transaction-aggregation
+#    kubectl logs -l job=transaction-aggregation -f
+#
+# 7. Check job history:
+#    kubectl get jobs -l job=transaction-aggregation --sort-by=.metadata.creationTimestamp
+#
+# 8. Delete specific job execution:
+#    kubectl delete job <job-name>
+#
+# 9. Suspend CronJob (prevent scheduled executions):
+#    kubectl patch cronjob transaction-aggregation-cronjob -p '{"spec":{"suspend":true}}'
+#
+# 10. Resume CronJob:
+#     kubectl patch cronjob transaction-aggregation-cronjob -p '{"spec":{"suspend":false}}'
+#
+# ******************************************************************
+# Troubleshooting:
+# ******************************************************************
+#
+# 1. Job not executing on schedule:
+#    - Check CronJob status: kubectl describe cronjob transaction-aggregation-cronjob
+#    - Verify suspend field is false
+#    - Check for startingDeadlineSeconds violations
+#
+# 2. Job failing with database connection errors:
+#    - Verify ConfigMap and Secret values
+#    - Check PostgreSQL service is running: kubectl get svc postgres-service
+#    - Test database connectivity from a debug pod
+#
+# 3. Job exceeding activeDeadlineSeconds:
+#    - Review logs for performance issues: kubectl logs <pod-name>
+#    - Check database query performance
+#    - Consider increasing activeDeadlineSeconds or optimizing queries
+#
+# 4. Out of memory errors:
+#    - Review heap dumps at /tmp/heapdump.hprof
+#    - Increase memory limits in resources section
+#    - Reduce SPRING_BATCH_JOB_CHUNK_SIZE to lower memory footprint
+#
+# 5. Concurrent execution violations:
+#    - Check for long-running previous executions
+#    - Review job duration patterns
+#    - Consider adjusting schedule or activeDeadlineSeconds
+#
+# ******************************************************************
+# Monitoring and Metrics:
+# ******************************************************************
+#
+# Prometheus Metrics Available:
+#   - spring_batch_job_duration_seconds
+#   - spring_batch_job_active_count
+#   - spring_batch_step_duration_seconds
+#   - spring_batch_item_read_count
+#   - spring_batch_item_process_count
+#   - spring_batch_item_write_count
+#
+# Access metrics endpoint:
+#   kubectl port-forward <pod-name> 8080:8080
+#   curl http://localhost:8080/actuator/prometheus
+#
+# ******************************************************************
+# Performance Tuning:
+# ******************************************************************
+#
+# 1. Chunk Size Optimization:
+#    - Default: 1000 records per chunk
+#    - Increase for better throughput (max 5000)
+#    - Decrease for lower memory usage (min 100)
+#
+# 2. Resource Allocation:
+#    - CPU: Increase for faster processing
+#    - Memory: Increase if processing large transaction volumes
+#
+# 3. Database Connection Pool:
+#    - Configured in application-batch.yml
+#    - Default: 10 connections
+#    - Increase for parallel chunk processing
+#
+# 4. Parallel Processing:
+#    - Enable partition processing in Spring Batch configuration
+#    - Requires coordination with database locking strategy
+#
+# ******************************************************************
+# Ver: CardDemo Migration v1.0
+# Migration Date: 2024
+# Target Platform: Kubernetes 1.28+
+# Spring Boot Version: 3.2.1
+# Java Version: 21 LTS
+# ******************************************************************

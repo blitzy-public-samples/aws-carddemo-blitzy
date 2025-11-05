@@ -1,0 +1,308 @@
+# ==============================================================================
+# PostgreSQL Deployment for CardDemo Application
+# ==============================================================================
+# Purpose: Kubernetes Deployment resource for PostgreSQL 15 database server
+# 
+# Overview:
+# This deployment manages the PostgreSQL database that replaces the legacy
+# VSAM KSDS files from the mainframe CardDemo application. It provides
+# persistent storage for customer, account, card, transaction, and user
+# security data migrated from COBOL/CICS/VSAM to Java/Spring Boot/PostgreSQL.
+#
+# VSAM to PostgreSQL Table Mapping:
+# - CUSTDAT VSAM  → customer table
+# - ACCTDAT VSAM  → account table  
+# - CARDDAT VSAM  → card table
+# - TRANSACT VSAM → transaction table
+# - USRSEC VSAM   → user_security table
+# - XREF files    → account_xref, card_xref tables
+#
+# Performance Requirements (per Section 0.5):
+# - Support 10,000 TPS transaction throughput
+# - Handle 50-connection pool from backend HikariCP
+# - Maintain sub-200ms transaction response times
+# - Support 4-hour batch processing window
+#
+# Database Schema Management:
+# - Flyway migrations executed by backend application on startup
+# - Schema files: backend/src/main/resources/db/migration/V*.sql
+# - Initial schema: V1 through V9 migration scripts
+#
+# Related Resources:
+# - Service: postgres-service.yaml (ClusterIP service on port 5432)
+# - PVC: postgres-pvc.yaml (persistent volume claim for data storage)
+# - Secrets: secrets.yaml (POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD)
+# - Consumer: backend-deployment.yaml (Spring Boot application pods)
+# ==============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-deployment
+  namespace: default
+  labels:
+    app: carddemo
+    component: database
+    service: postgres
+    version: "15.5"
+    managed-by: blitzy
+  annotations:
+    description: "PostgreSQL 15 database server for CardDemo application"
+    migration-source: "VSAM KSDS files from mainframe"
+    backup-strategy: "Volume snapshots and pg_dump CronJob"
+
+spec:
+  # Single replica for initial deployment
+  # NOTE: For production HA, consider StatefulSet with PostgreSQL replication
+  replicas: 1
+  
+  # Recreate strategy ensures clean shutdown before new pod starts
+  # Critical for single-writer database to prevent data corruption
+  strategy:
+    type: Recreate
+  
+  selector:
+    matchLabels:
+      app: carddemo
+      component: database
+      service: postgres
+  
+  template:
+    metadata:
+      labels:
+        app: carddemo
+        component: database
+        service: postgres
+        version: "15.5"
+      annotations:
+        prometheus.io/scrape: "false"
+        prometheus.io/port: "5432"
+    
+    spec:
+      # Security context for the pod
+      securityContext:
+        fsGroup: 999  # postgres group
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      
+      containers:
+      - name: postgres
+        # PostgreSQL 15.5 Alpine Linux image (per Section 0.7 dependency inventory)
+        image: postgres:15.5-alpine
+        imagePullPolicy: IfNotPresent
+        
+        # Environment variables from secrets
+        env:
+        # Database name for CardDemo application
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: carddemo-secrets
+              key: POSTGRES_DB
+        
+        # PostgreSQL superuser name
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: carddemo-secrets
+              key: POSTGRES_USER
+        
+        # PostgreSQL superuser password
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: carddemo-secrets
+              key: POSTGRES_PASSWORD
+        
+        # Custom data directory within volume to prevent conflicts
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        
+        # PostgreSQL connection parameters for performance tuning
+        - name: POSTGRES_INITDB_ARGS
+          value: "--encoding=UTF8 --locale=en_US.UTF-8 --data-checksums"
+        
+        # PostgreSQL port
+        ports:
+        - name: postgres
+          containerPort: 5432
+          protocol: TCP
+        
+        # Volume mount for persistent data storage
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+          # subPath prevents data directory conflicts on volume reuse
+          subPath: postgres
+        
+        # Resource allocation (per Section 0.5 performance requirements)
+        # Sized for 10,000 TPS workload with 50-connection pool
+        resources:
+          requests:
+            # Minimum guaranteed resources
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            # Maximum allowed resources
+            memory: "2Gi"
+            cpu: "1000m"
+        
+        # Liveness probe checks if PostgreSQL is responsive
+        # Failure triggers pod restart
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - $(POSTGRES_USER)
+            - -d
+            - $(POSTGRES_DB)
+          # Wait 30s for PostgreSQL initialization
+          initialDelaySeconds: 30
+          # Check every 10 seconds
+          periodSeconds: 10
+          # Timeout after 5 seconds
+          timeoutSeconds: 5
+          # Restart after 6 consecutive failures (60 seconds)
+          failureThreshold: 6
+          successThreshold: 1
+        
+        # Readiness probe checks if PostgreSQL can accept connections
+        # Failure removes pod from service load balancing
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - $(POSTGRES_USER)
+            - -d
+            - $(POSTGRES_DB)
+          # Quick initial check after 5 seconds
+          initialDelaySeconds: 5
+          # Check every 5 seconds
+          periodSeconds: 5
+          # Timeout after 3 seconds
+          timeoutSeconds: 3
+          # Mark not ready after 3 consecutive failures
+          failureThreshold: 3
+          # Mark ready after 1 successful check
+          successThreshold: 1
+        
+        # Container security context
+        securityContext:
+          # Run as postgres user (UID 999)
+          runAsUser: 999
+          runAsGroup: 999
+          # Prevent privilege escalation
+          allowPrivilegeEscalation: false
+          # Drop all capabilities
+          capabilities:
+            drop:
+            - ALL
+          # Read-only root filesystem not possible for PostgreSQL
+          readOnlyRootFilesystem: false
+      
+      # Persistent volume for database data
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          # Reference to postgres-pvc.yaml
+          claimName: postgres-pvc
+      
+      # Pod scheduling and affinity (optional, for production)
+      # Uncomment for production deployment with node affinity
+      # affinity:
+      #   podAntiAffinity:
+      #     preferredDuringSchedulingIgnoredDuringExecution:
+      #     - weight: 100
+      #       podAffinityTerm:
+      #         labelSelector:
+      #           matchExpressions:
+      #           - key: component
+      #             operator: In
+      #             values:
+      #             - database
+      #         topologyKey: kubernetes.io/hostname
+      
+      # Restart policy for database pod
+      restartPolicy: Always
+      
+      # DNS policy for service discovery
+      dnsPolicy: ClusterFirst
+      
+      # Termination grace period (allow clean shutdown)
+      terminationGracePeriodSeconds: 60
+
+---
+# ==============================================================================
+# Configuration Notes and Production Considerations
+# ==============================================================================
+#
+# DATABASE SCHEMA INITIALIZATION:
+# --------------------------------
+# The database schema is NOT initialized by this deployment. Schema creation
+# is handled by Flyway migrations executed by the backend Spring Boot
+# application on first startup. Migration files are located at:
+# backend/src/main/resources/db/migration/V1__*.sql through V9__*.sql
+#
+# PERFORMANCE TUNING:
+# -------------------
+# Default PostgreSQL 15 configuration is suitable for initial deployment.
+# For production, consider tuning these parameters via ConfigMap:
+# - shared_buffers: 25% of available memory (default: 128MB)
+# - effective_cache_size: 50% of available memory (default: 4GB)
+# - max_connections: Match backend connection pool (default: 100)
+# - work_mem: For sorting/hashing operations (default: 4MB)
+# - maintenance_work_mem: For VACUUM, CREATE INDEX (default: 64MB)
+# - checkpoint_completion_target: 0.9 (default: 0.5)
+# - wal_buffers: 16MB (default: -1, auto-tuned)
+# - random_page_cost: 1.1 for SSD storage (default: 4.0)
+#
+# HIGH AVAILABILITY:
+# ------------------
+# For production HA requirements, consider:
+# 1. Convert to StatefulSet with multiple replicas
+# 2. Implement PostgreSQL streaming replication
+# 3. Use PgBouncer for connection pooling
+# 4. Implement automated failover with Patroni or Stolon
+# 5. Configure read replicas for read-heavy workloads
+#
+# BACKUP STRATEGY:
+# ----------------
+# Implement comprehensive backup strategy:
+# 1. Volume snapshots via Kubernetes storage provider
+# 2. Scheduled pg_dump via Kubernetes CronJob
+# 3. Point-in-time recovery (PITR) with Write-Ahead Logging (WAL)
+# 4. Off-cluster backup storage for disaster recovery
+# 5. Regular backup restoration testing
+#
+# MONITORING:
+# -----------
+# Integrate with monitoring stack:
+# 1. PostgreSQL Exporter for Prometheus metrics
+# 2. Log forwarding to ELK stack
+# 3. Query performance monitoring with pg_stat_statements
+# 4. Connection pool monitoring
+# 5. Disk space and I/O monitoring
+#
+# SECURITY HARDENING:
+# -------------------
+# Additional security measures for production:
+# 1. Enable SSL/TLS for client connections
+# 2. Implement network policies to restrict access
+# 3. Use secrets management system (Vault, Sealed Secrets)
+# 4. Regular security patching and updates
+# 5. Audit logging for compliance requirements
+#
+# MIGRATION VALIDATION:
+# ---------------------
+# After deployment, validate VSAM to PostgreSQL data migration:
+# 1. Record count verification: VSAM count = PostgreSQL row count
+# 2. Field-by-field comparison for sample records
+# 3. Checksum validation for critical fields (balances, amounts)
+# 4. Foreign key constraint validation
+# 5. Index performance verification
+# 6. Query performance benchmarking against VSAM access patterns
+#
+# ==============================================================================

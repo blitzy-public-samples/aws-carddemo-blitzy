@@ -1,0 +1,440 @@
+# ******************************************************************
+# Kubernetes CronJob: Transaction Data Load Batch Job
+# Application: CardDemo - Cloud-Native Microservices Migration
+# Migration Source: app/jcl/CBTRN01C.jcl + app/cbl/CBTRN01C.cbl
+# ******************************************************************
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+# ******************************************************************
+#
+# COBOL Program Migration Details:
+# ---------------------------------
+# Source Program: CBTRN01C.cbl
+# Function: Post records from daily transaction file
+# Business Logic:
+#   1. Read daily transaction file (DALYTRAN) sequentially
+#   2. Validate card number against XREF cross-reference file
+#   3. Validate account ID from cross-reference
+#   4. Load valid transactions into TRANSACT file
+#   5. Skip invalid cards/accounts with error logging
+#
+# Spring Batch Transformation:
+#   - Sequential file read → ItemReader (chunk-oriented processing)
+#   - XREF/ACCOUNT validation → ItemProcessor with repository lookups
+#   - TRANSACT file write → ItemWriter with JPA repository
+#   - COBOL file status checking → Spring Batch exception handling
+#   - DISPLAY statements → SLF4J logging
+#
+# Data Validation (preserving COBOL logic):
+#   - Card number must exist in card_xref table (XREF-FILE)
+#   - Account ID must exist in account table (ACCOUNT-FILE)
+#   - Transaction ID must be unique (duplicate detection)
+#   - Amount precision: COMP-3 → BigDecimal(12,2) with HALF_UP rounding
+#   - Date validation: CEEDAYS format → LocalDate conversion
+#   - EBCDIC encoding → UTF-8 conversion for text fields
+#
+# Performance Requirements (per Agent Action Plan Section 0.2):
+#   - Batch processing window: Must complete within 4-hour window
+#   - Chunk size: 1000 records per transaction
+#   - Skip limit: 100 errors before job failure
+#   - Memory: 1-2 GB heap allocation
+#
+# Scheduling:
+#   - Runs daily at 1:00 AM
+#   - Dependency: Runs after card-data-load-cronjob (12:30 AM)
+#   - Required for: daily-transaction-cronjob (2:00 AM)
+#
+# ******************************************************************
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: transaction-data-load-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: transaction-data-load
+    tier: backend
+    migration-source: CBTRN01C
+    business-function: transaction-data-load
+  annotations:
+    description: "Daily transaction data load batch job - migrated from COBOL CBTRN01C"
+    cobol-source: "app/cbl/CBTRN01C.cbl"
+    jcl-source: "app/jcl/CBTRN01C.jcl"
+    spring-batch-job: "TransactionDataLoadJob"
+    business-owner: "Card Operations Team"
+    data-classification: "confidential"
+    compliance-requirement: "PCI-DSS, SOX"
+spec:
+  # Daily execution at 1:00 AM
+  schedule: "0 1 * * *"
+  
+  # Timezone for schedule (uses cluster default if not specified)
+  timeZone: "America/New_York"
+  
+  # Prevent concurrent executions - preserve sequential batch processing semantics
+  # Equivalent to COBOL/JCL single-threaded execution model
+  concurrencyPolicy: Forbid
+  
+  # Retain history for 7 successful jobs (1 week of audit trail)
+  successfulJobsHistoryLimit: 7
+  
+  # Retain history for 3 failed jobs for troubleshooting
+  failedJobsHistoryLimit: 3
+  
+  # Job can be temporarily suspended without deleting the CronJob
+  suspend: false
+  
+  # Starting deadline in seconds for job execution if missed
+  # 300 seconds (5 minutes) grace period for scheduler delays
+  startingDeadlineSeconds: 300
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: transaction-data-load
+        tier: backend
+    spec:
+      # Number of retries before marking job as failed
+      # COBOL abend handling: 2 retries match mainframe restart capabilities
+      backoffLimit: 2
+      
+      # Maximum job execution time: 2 hours (7200 seconds)
+      # Ensures completion within 4-hour batch window requirement
+      activeDeadlineSeconds: 7200
+      
+      # Time to keep completed job pods: 24 hours (86400 seconds)
+      # Allows log analysis before cleanup
+      ttlSecondsAfterFinished: 86400
+      
+      # Parallelism: 1 (sequential execution matching COBOL behavior)
+      parallelism: 1
+      
+      # Completions: 1 (single successful execution required)
+      completions: 1
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: transaction-data-load
+            tier: backend
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8080"
+            prometheus.io/path: "/actuator/prometheus"
+        spec:
+          # Restart policy: Never restart failed pods (let backoffLimit handle retries)
+          restartPolicy: Never
+          
+          # Service account for database access and secrets
+          serviceAccountName: carddemo-batch-sa
+          
+          containers:
+          - name: transaction-data-load-job
+            # Backend application image with Spring Batch jobs
+            image: carddemo-backend:latest
+            imagePullPolicy: Always
+            
+            # Execute Spring Batch TransactionDataLoadJob
+            # Equivalent to JCL: //STEP01 EXEC PGM=CBTRN01C
+            command:
+              - java
+            args:
+              - -Xms1g
+              - -Xmx2g
+              - -XX:+UseG1GC
+              - -XX:MaxGCPauseMillis=200
+              - -Dspring.profiles.active=batch
+              - -Dspring.batch.job.names=TransactionDataLoadJob
+              - -jar
+              - /app/carddemo-backend.jar
+            
+            # Environment variables for Spring Boot configuration
+            env:
+            # Spring profile activation
+            - name: SPRING_PROFILES_ACTIVE
+              value: "batch"
+            
+            # PostgreSQL database connection (replaces VSAM file access)
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: database.url
+            
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.username
+            
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.password
+            
+            # HikariCP connection pool configuration
+            # Optimized for batch processing (larger pool than online transactions)
+            - name: SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE
+              value: "20"
+            
+            - name: SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE
+              value: "5"
+            
+            - name: SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT
+              value: "30000"
+            
+            # Spring Batch configuration
+            # Chunk size: 1000 records (per Agent Action Plan Section 0.9)
+            - name: SPRING_BATCH_CHUNK_SIZE
+              value: "1000"
+            
+            # Skip limit: 100 errors before job failure
+            - name: SPRING_BATCH_SKIP_LIMIT
+              value: "100"
+            
+            # Retry attempts for transient errors (database deadlocks, network issues)
+            - name: SPRING_BATCH_RETRY_LIMIT
+              value: "3"
+            
+            # JPA/Hibernate configuration
+            - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+              value: "validate"
+            
+            - name: SPRING_JPA_SHOW_SQL
+              value: "false"
+            
+            - name: SPRING_JPA_PROPERTIES_HIBERNATE_JDBC_BATCH_SIZE
+              value: "1000"
+            
+            # Logging configuration
+            - name: LOGGING_LEVEL_COM_CARDDEMO_BATCH
+              value: "INFO"
+            
+            - name: LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_BATCH
+              value: "INFO"
+            
+            # Transaction data load specific configuration
+            # Input file path (replaces COBOL: SELECT DALYTRAN-FILE ASSIGN TO DALYTRAN)
+            - name: TRANSACTION_DATA_INPUT_PATH
+              value: "/data/input/daily-transactions"
+            
+            # Error file path for rejected records
+            - name: TRANSACTION_DATA_ERROR_PATH
+              value: "/data/errors/transaction-load-errors"
+            
+            # Archive path for processed files
+            - name: TRANSACTION_DATA_ARCHIVE_PATH
+              value: "/data/archive/transaction-load"
+            
+            # Encoding conversion: EBCDIC to UTF-8 (per Section 0.1)
+            - name: TRANSACTION_DATA_INPUT_ENCODING
+              value: "IBM037"
+            
+            - name: TRANSACTION_DATA_OUTPUT_ENCODING
+              value: "UTF-8"
+            
+            # Duplicate detection configuration
+            - name: TRANSACTION_DATA_DUPLICATE_CHECK_ENABLED
+              value: "true"
+            
+            - name: TRANSACTION_DATA_DUPLICATE_CHECK_WINDOW_DAYS
+              value: "90"
+            
+            # BigDecimal precision configuration (COMP-3 equivalence)
+            # Preserves COBOL packed decimal precision per Section 0.9
+            - name: TRANSACTION_AMOUNT_PRECISION
+              value: "12"
+            
+            - name: TRANSACTION_AMOUNT_SCALE
+              value: "2"
+            
+            - name: TRANSACTION_AMOUNT_ROUNDING_MODE
+              value: "HALF_UP"
+            
+            # Date format configuration (CEEDAYS Lillian date conversion)
+            - name: TRANSACTION_DATE_FORMAT
+              value: "yyyyMMdd"
+            
+            - name: TRANSACTION_TIME_FORMAT
+              value: "HHmmss"
+            
+            # Business validation configuration
+            # Card validation: must exist in card_xref table (COBOL: XREF-FILE)
+            - name: TRANSACTION_VALIDATE_CARD_ENABLED
+              value: "true"
+            
+            # Account validation: must exist in account table (COBOL: ACCOUNT-FILE)
+            - name: TRANSACTION_VALIDATE_ACCOUNT_ENABLED
+              value: "true"
+            
+            # Transaction type validation: must exist in reference data
+            - name: TRANSACTION_VALIDATE_TYPE_ENABLED
+              value: "true"
+            
+            # Resource limits and requests
+            # Memory allocation sized for batch processing with large datasets
+            resources:
+              requests:
+                # Minimum guaranteed resources
+                memory: "1Gi"
+                cpu: "500m"
+              limits:
+                # Maximum allowed resources
+                memory: "2Gi"
+                cpu: "1000m"
+            
+            # Volume mounts for file-based I/O
+            volumeMounts:
+            - name: transaction-data-input
+              mountPath: /data/input
+              readOnly: true
+            
+            - name: transaction-data-errors
+              mountPath: /data/errors
+              readOnly: false
+            
+            - name: transaction-data-archive
+              mountPath: /data/archive
+              readOnly: false
+            
+            - name: batch-logs
+              mountPath: /var/log/carddemo
+              readOnly: false
+            
+            # Health checks for job execution monitoring
+            # Liveness probe: ensure container hasn't hung
+            livenessProbe:
+              httpGet:
+                path: /actuator/health/liveness
+                port: 8080
+              initialDelaySeconds: 60
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 3
+            
+            # Readiness probe: ensure Spring Boot application is ready
+            readinessProbe:
+              httpGet:
+                path: /actuator/health/readiness
+                port: 8080
+              initialDelaySeconds: 30
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+          
+          # Volumes for persistent data and logs
+          volumes:
+          - name: transaction-data-input
+            persistentVolumeClaim:
+              claimName: carddemo-batch-input-pvc
+          
+          - name: transaction-data-errors
+            persistentVolumeClaim:
+              claimName: carddemo-batch-errors-pvc
+          
+          - name: transaction-data-archive
+            persistentVolumeClaim:
+              claimName: carddemo-batch-archive-pvc
+          
+          - name: batch-logs
+            persistentVolumeClaim:
+              claimName: carddemo-batch-logs-pvc
+          
+          # Image pull secrets for private container registry
+          imagePullSecrets:
+          - name: carddemo-registry-secret
+          
+          # Security context for pod
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          
+          # Node affinity: prefer batch processing nodes
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                  - key: workload-type
+                    operator: In
+                    values:
+                    - batch
+          
+          # Tolerations for batch node taints
+          tolerations:
+          - key: "batch-workload"
+            operator: "Equal"
+            value: "true"
+            effect: "NoSchedule"
+
+# ******************************************************************
+# Business Logic Preservation Notes:
+# ******************************************************************
+# 
+# COBOL Program Flow → Spring Batch Mapping:
+# ------------------------------------------
+# CBTRN01C MAIN-PARA → TransactionDataLoadJob configuration
+# 0000-DALYTRAN-OPEN → FlatFileItemReader initialization
+# 1000-DALYTRAN-GET-NEXT → ItemReader.read() method
+# 2000-LOOKUP-XREF → ItemProcessor card validation
+# 3000-READ-ACCOUNT → ItemProcessor account validation
+# TRANSACT-FILE write → JpaItemWriter to transaction table
+# 9000-DALYTRAN-CLOSE → ItemReader cleanup/close
+#
+# Data Validation (COBOL logic preserved):
+# ----------------------------------------
+# IF XREFFILE-STATUS = '00' → Optional<CardXref> validation
+# IF ACCTFILE-STATUS = '00' → Optional<Account> validation
+# INVALID KEY handling → ItemProcessor skip with logging
+# FILE STATUS checking → Exception handling with retry
+#
+# Error Handling (COBOL ABEND equivalent):
+# ---------------------------------------
+# Z-ABEND-PROGRAM → JobExecutionException with FAILED status
+# Z-DISPLAY-IO-STATUS → Detailed exception logging with file status
+# APPL-RESULT codes → Spring Batch ExitStatus codes
+#
+# Numeric Precision (COMP-3 preservation):
+# ---------------------------------------
+# All monetary amounts use BigDecimal with:
+#   - Precision: 12 digits total
+#   - Scale: 2 decimal places
+#   - Rounding: HALF_UP (standard banking rounding)
+#
+# Transaction Semantics:
+# ---------------------
+# - Chunk-oriented processing: 1000 records per transaction
+# - Skip policy: Skip up to 100 invalid records, then fail
+# - Retry policy: Retry 3 times for transient errors
+# - Isolation: READ_COMMITTED (default Spring Batch)
+#
+# Audit Trail:
+# -----------
+# - Job execution metadata stored in Spring Batch JobRepository
+# - Skip/retry events logged with transaction details
+# - Error records written to error file with reason codes
+# - Successful executions archived with timestamp
+#
+# ******************************************************************

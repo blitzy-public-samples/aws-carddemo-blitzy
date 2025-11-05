@@ -1,0 +1,360 @@
+# ==============================================================================
+# Kubernetes CronJob: Account Report Generation
+# ==============================================================================
+# Purpose: Scheduled execution of Spring Batch job to generate account reports
+# for management review and compliance reporting.
+#
+# Migration Context:
+#   - Replaces mainframe JCL batch job for account report generation
+#   - Executes Spring Batch AccountReportJob from backend application
+#   - Queries PostgreSQL database for account data and aggregations
+#   - Generates formatted report files for management consumption
+#
+# Schedule: Weekly on Monday at 6:00 AM UTC
+# Business Logic: Account report generation with balance summaries, account
+#                 status breakdown, and compliance metrics
+# ==============================================================================
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: account-report-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: account-report
+    tier: backend
+  annotations:
+    description: "Weekly account report generation for management and compliance"
+    migration.source: "app/jcl/CACCTRPT.jcl"
+    batch.job.name: "AccountReportJob"
+    report.type: "account-summary"
+spec:
+  # ==============================================================================
+  # Schedule Configuration
+  # ==============================================================================
+  # Cron expression: "0 6 * * 1" = Every Monday at 6:00 AM UTC
+  # This timing ensures reports are available for Monday morning management review
+  schedule: "0 6 * * 1"
+  
+  # ==============================================================================
+  # Concurrency Policy
+  # ==============================================================================
+  # Forbid: Prevents overlapping job executions
+  # Critical for report generation to avoid duplicate reports and resource contention
+  concurrencyPolicy: Forbid
+  
+  # ==============================================================================
+  # Job History Management
+  # ==============================================================================
+  # Retain last 5 successful jobs for audit trail and troubleshooting
+  successfulJobsHistoryLimit: 5
+  
+  # Retain last 2 failed jobs for debugging and incident analysis
+  failedJobsHistoryLimit: 2
+  
+  # ==============================================================================
+  # Timezone Configuration (optional, defaults to UTC)
+  # ==============================================================================
+  # Uncomment to use specific timezone (requires Kubernetes 1.25+)
+  # timeZone: "America/New_York"
+  
+  # ==============================================================================
+  # Job Template Specification
+  # ==============================================================================
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: account-report
+        batch-job: "true"
+    spec:
+      # ==============================================================================
+      # Job Execution Policy
+      # ==============================================================================
+      # Retry failed job once before marking as failed
+      backoffLimit: 1
+      
+      # Maximum 1 hour (3600 seconds) for job completion
+      # Account report generation should complete well within this timeframe
+      # Timeout prevents indefinite hanging jobs
+      activeDeadlineSeconds: 3600
+      
+      # ==============================================================================
+      # Job Cleanup Policy
+      # ==============================================================================
+      # Automatically delete completed job after 48 hours (172800 seconds)
+      # Balances resource cleanup with audit trail retention
+      ttlSecondsAfterFinished: 172800
+      
+      # ==============================================================================
+      # Pod Template Specification
+      # ==============================================================================
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: account-report
+            batch-execution: "account-report"
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8080"
+            prometheus.io/path: "/actuator/prometheus"
+        spec:
+          # ==============================================================================
+          # Pod Restart Policy
+          # ==============================================================================
+          # OnFailure: Restart container on failure, but not on successful completion
+          # Appropriate for batch jobs that should run once and complete
+          restartPolicy: OnFailure
+          
+          # ==============================================================================
+          # Service Account
+          # ==============================================================================
+          # Use dedicated service account for batch jobs with limited permissions
+          serviceAccountName: carddemo-batch-sa
+          
+          # ==============================================================================
+          # Container Specification
+          # ==============================================================================
+          containers:
+          - name: account-report-job
+            # ==============================================================================
+            # Container Image
+            # ==============================================================================
+            # Spring Boot backend application containing Spring Batch jobs
+            # Update image tag for production deployments
+            image: carddemo-backend:latest
+            imagePullPolicy: Always
+            
+            # ==============================================================================
+            # Job Execution Command
+            # ==============================================================================
+            # Execute Spring Boot application with Spring Batch job parameter
+            command:
+              - java
+            args:
+              - -jar
+              - /app/carddemo-backend.jar
+              - --spring.batch.job.names=AccountReportJob
+              - --spring.profiles.active=batch
+              - --logging.level.com.carddemo.batch=DEBUG
+            
+            # ==============================================================================
+            # Resource Allocation
+            # ==============================================================================
+            # Resource requests: Guaranteed allocation
+            # Resource limits: Maximum allowed consumption
+            resources:
+              requests:
+                # 512 MiB memory requested for stable execution
+                memory: "512Mi"
+                # 250 millicores CPU for adequate processing power
+                cpu: "250m"
+              limits:
+                # 1 GiB memory limit to prevent memory leaks from affecting cluster
+                memory: "1Gi"
+                # 500 millicores CPU limit to prevent CPU starvation of other pods
+                cpu: "500m"
+            
+            # ==============================================================================
+            # Environment Variables
+            # ==============================================================================
+            env:
+              # Spring Boot profile for batch execution
+              - name: SPRING_PROFILES_ACTIVE
+                value: "batch"
+              
+              # PostgreSQL database connection
+              - name: SPRING_DATASOURCE_URL
+                valueFrom:
+                  configMapKeyRef:
+                    name: carddemo-config
+                    key: database.url
+              
+              - name: SPRING_DATASOURCE_USERNAME
+                valueFrom:
+                  secretKeyRef:
+                    name: carddemo-secrets
+                    key: database.username
+              
+              - name: SPRING_DATASOURCE_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: carddemo-secrets
+                    key: database.password
+              
+              # Batch job configuration
+              - name: SPRING_BATCH_JOB_ENABLED
+                value: "true"
+              
+              - name: SPRING_BATCH_INITIALIZE_SCHEMA
+                value: "never"
+              
+              # Report output configuration
+              - name: REPORT_OUTPUT_PATH
+                value: "/app/reports"
+              
+              - name: REPORT_FORMAT
+                value: "PDF"
+              
+              # Java memory settings (aligned with container limits)
+              - name: JAVA_OPTS
+                value: "-Xms512m -Xmx896m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+              
+              # Timezone for report timestamps
+              - name: TZ
+                value: "UTC"
+            
+            # ==============================================================================
+            # Volume Mounts
+            # ==============================================================================
+            volumeMounts:
+              # Mount for report output files
+              - name: report-output
+                mountPath: /app/reports
+              
+              # Mount for application configuration overrides
+              - name: batch-config
+                mountPath: /app/config
+                readOnly: true
+            
+            # ==============================================================================
+            # Security Context (Container Level)
+            # ==============================================================================
+            securityContext:
+              # Run as non-root user for security
+              runAsNonRoot: true
+              runAsUser: 1000
+              runAsGroup: 1000
+              
+              # Read-only root filesystem for security
+              readOnlyRootFilesystem: false  # Set to false due to temp file needs
+              
+              # Drop all capabilities except required ones
+              capabilities:
+                drop:
+                  - ALL
+              
+              # Prevent privilege escalation
+              allowPrivilegeEscalation: false
+          
+          # ==============================================================================
+          # Volumes
+          # ==============================================================================
+          volumes:
+            # Persistent volume for report output
+            - name: report-output
+              persistentVolumeClaim:
+                claimName: carddemo-reports-pvc
+            
+            # ConfigMap for batch job configuration
+            - name: batch-config
+              configMap:
+                name: carddemo-batch-config
+                optional: true
+          
+          # ==============================================================================
+          # Security Context (Pod Level)
+          # ==============================================================================
+          securityContext:
+            # Filesystem group for volume access
+            fsGroup: 1000
+            
+            # Supplemental groups for additional permissions
+            supplementalGroups:
+              - 1000
+          
+          # ==============================================================================
+          # Node Affinity (Optional)
+          # ==============================================================================
+          # Uncomment to schedule batch jobs on specific node pools
+          # affinity:
+          #   nodeAffinity:
+          #     preferredDuringSchedulingIgnoredDuringExecution:
+          #       - weight: 100
+          #         preference:
+          #           matchExpressions:
+          #             - key: workload-type
+          #               operator: In
+          #               values:
+          #                 - batch
+          
+          # ==============================================================================
+          # Tolerations (Optional)
+          # ==============================================================================
+          # Uncomment to allow scheduling on nodes with specific taints
+          # tolerations:
+          #   - key: "batch-workload"
+          #     operator: "Equal"
+          #     value: "true"
+          #     effect: "NoSchedule"
+
+# ==============================================================================
+# Business Logic Implementation Notes
+# ==============================================================================
+# The AccountReportJob Spring Batch job implements the following:
+#
+# 1. Account Data Retrieval:
+#    - Queries PostgreSQL for all active accounts
+#    - Retrieves account balances, status, and customer information
+#    - Applies business rules for account classification
+#
+# 2. Report Generation:
+#    - Aggregates account data by status, customer segment, balance range
+#    - Calculates total outstanding balances and credit limits
+#    - Generates summary statistics for management review
+#    - Formats output as PDF report with charts and tables
+#
+# 3. Report Output:
+#    - Writes report file to persistent volume or object storage
+#    - Names report with timestamp: account_report_YYYYMMDD_HHMMSS.pdf
+#    - Sends notification email to management upon completion
+#    - Archives previous reports for audit trail
+#
+# 4. Error Handling:
+#    - Validates database connectivity before processing
+#    - Handles missing or invalid account data gracefully
+#    - Logs detailed error information for troubleshooting
+#    - Retries transient failures with exponential backoff
+#
+# 5. Performance Considerations:
+#    - Chunk-oriented processing for large account datasets
+#    - Optimized SQL queries with proper indexes
+#    - Memory-efficient streaming for report generation
+#    - Completes within 30-45 minutes for typical dataset
+#
+# ==============================================================================
+# Operational Considerations
+# ==============================================================================
+# Monitoring:
+#   - Check CronJob status: kubectl get cronjob account-report-cronjob
+#   - View recent jobs: kubectl get jobs -l job=account-report
+#   - Check pod logs: kubectl logs -l job=account-report --tail=100
+#   - Monitor via Prometheus metrics exposed on /actuator/prometheus
+#
+# Troubleshooting:
+#   - Failed jobs: kubectl describe job <job-name>
+#   - Pod errors: kubectl logs <pod-name> --previous
+#   - Resource issues: kubectl top pod <pod-name>
+#   - Database connectivity: Check database credentials in secrets
+#
+# Manual Execution:
+#   - Create job from CronJob: kubectl create job --from=cronjob/account-report-cronjob manual-run-$(date +%s)
+#   - Useful for testing or generating ad-hoc reports
+#
+# Scaling Considerations:
+#   - Increase memory/CPU limits if processing large datasets
+#   - Adjust activeDeadlineSeconds if reports take longer to generate
+#   - Consider parallel processing for very large account volumes
+#
+# Security:
+#   - Rotate database credentials regularly via secrets
+#   - Limit service account permissions to minimum required
+#   - Encrypt report files if containing sensitive data
+#   - Implement access controls on report output volume
+#
+# ==============================================================================

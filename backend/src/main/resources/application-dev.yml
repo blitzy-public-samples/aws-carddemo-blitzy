@@ -1,0 +1,386 @@
+# ===================================================================
+# Spring Boot Development Profile Configuration
+# ===================================================================
+# This configuration file provides development-specific settings that
+# override the base application.yml for local development environments.
+# 
+# Based on COBOL JCL development patterns from:
+# - app/jcl/DEFCUST.jcl: Customer data file allocation with clean slate
+# - app/jcl/DUSRSECJ.jcl: User security file allocation with test data
+#
+# Copyright Amazon.com, Inc. or its affiliates.
+# Licensed under the Apache License, Version 2.0
+# ===================================================================
+
+# ===================================================================
+# Server Configuration
+# ===================================================================
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: always
+    include-exception: true
+
+# ===================================================================
+# Spring Framework Configuration
+# ===================================================================
+spring:
+  # ===================================================================
+  # Application Metadata
+  # ===================================================================
+  application:
+    name: carddemo-dev
+  
+  # ===================================================================
+  # Database Configuration - Local PostgreSQL
+  # ===================================================================
+  # Equivalent to VSAM file allocation in JCL with local development access
+  datasource:
+    url: jdbc:postgresql://localhost:5432/carddemo_dev
+    username: carddemo
+    password: carddemo123
+    driver-class-name: org.postgresql.Driver
+    
+    # HikariCP Connection Pool Settings (Development - smaller pool)
+    hikari:
+      pool-name: CardDemo-Dev-Pool
+      minimum-idle: 2
+      maximum-pool-size: 10
+      connection-timeout: 20000
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      auto-commit: false
+      connection-test-query: SELECT 1
+      leak-detection-threshold: 60000
+
+  # ===================================================================
+  # JPA / Hibernate Configuration
+  # ===================================================================
+  jpa:
+    # Enable SQL statement logging for debugging
+    show-sql: true
+    
+    # Hibernate properties
+    properties:
+      hibernate:
+        # Format SQL for readability in logs
+        format_sql: true
+        
+        # Use SQL comments to trace generated queries
+        use_sql_comments: true
+        
+        # Validate schema against entities (don't auto-create in dev)
+        # Flyway handles schema creation
+        ddl-auto: validate
+        
+        # PostgreSQL-specific dialect
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        
+        # JDBC batch settings for performance testing
+        jdbc:
+          batch_size: 20
+          fetch_size: 50
+        
+        # Second-level cache disabled in development
+        cache:
+          use_second_level_cache: false
+          use_query_cache: false
+        
+        # Statistics for performance analysis
+        generate_statistics: true
+        
+        # Enhanced logging (note: format_sql already set above at line 71)
+        show_sql: true
+    
+    # Disable open-in-view to catch lazy loading issues early
+    open-in-view: false
+
+  # ===================================================================
+  # Flyway Database Migration Configuration
+  # ===================================================================
+  # Clean slate approach matching JCL pattern of deleting and recreating files
+  flyway:
+    enabled: true
+    # DEVELOPMENT ONLY: Clean database on startup for fresh schema
+    # Matches JCL pattern of DELETE before DEFINE in DEFCUST.jcl
+    clean-on-validation-error: true
+    baseline-on-migrate: true
+    baseline-version: 0
+    locations: classpath:db/migration
+    sql-migration-prefix: V
+    sql-migration-separator: __
+    sql-migration-suffixes: .sql
+    validate-on-migrate: true
+    # Clean database and reapply migrations (DEVELOPMENT ONLY)
+    clean-disabled: false
+
+  # ===================================================================
+  # Redis Configuration - Session Management
+  # ===================================================================
+  # Replaces CICS COMMAREA state management with Redis-backed sessions
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: 
+      database: 0
+      timeout: 2000ms
+      
+      # Redis connection pool settings
+      lettuce:
+        pool:
+          min-idle: 1
+          max-idle: 5
+          max-active: 10
+          max-wait: 2000ms
+        shutdown-timeout: 100ms
+  
+  # ===================================================================
+  # Spring Session Configuration
+  # ===================================================================
+  session:
+    store-type: redis
+    timeout: 1800s  # 30 minutes (relaxed for development)
+    redis:
+      flush-mode: on_save
+      namespace: spring:session:carddemo:dev
+
+  # ===================================================================
+  # Security Configuration
+  # ===================================================================
+  security:
+    # Development: Relaxed security for easier testing
+    # JWT token validation still enabled but with longer expiration
+    jwt:
+      secret: dev-secret-key-change-in-production-minimum-256-bits-required
+      expiration: 86400000  # 24 hours (1 day) for development convenience
+    
+    # Allow all authentication for H2 console and Actuator endpoints
+    permit-all:
+      - /h2-console/**
+      - /actuator/**
+      - /swagger-ui/**
+      - /v3/api-docs/**
+
+  # ===================================================================
+  # H2 Console Configuration (Optional - for quick in-memory testing)
+  # ===================================================================
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+      settings:
+        web-allow-others: true
+        trace: false
+
+  # ===================================================================
+  # DevTools Configuration
+  # ===================================================================
+  devtools:
+    restart:
+      enabled: true
+      additional-paths: src/main/java
+    livereload:
+      enabled: true
+
+  # ===================================================================
+  # Jackson JSON Configuration
+  # ===================================================================
+  jackson:
+    serialization:
+      indent-output: true
+      write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: false
+    default-property-inclusion: non_null
+    time-zone: UTC
+
+  # ===================================================================
+  # Batch Processing Configuration
+  # ===================================================================
+  # NOTE: Job auto-execution disabled to prevent startup conflicts
+  # Batch jobs should be triggered via scheduled tasks or manual execution
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      initialize-schema: always
+      table-prefix: BATCH_
+
+# ===================================================================
+# Logging Configuration
+# ===================================================================
+# Enhanced logging for development debugging
+logging:
+  level:
+    root: INFO
+    
+    # CardDemo application logging
+    com.carddemo: DEBUG
+    
+    # Spring Framework logging
+    org.springframework.web: DEBUG
+    org.springframework.security: DEBUG
+    org.springframework.data: DEBUG
+    org.springframework.batch: DEBUG
+    org.springframework.transaction: DEBUG
+    
+    # Hibernate logging
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+    org.hibernate.stat: DEBUG
+    org.hibernate.engine.transaction: DEBUG
+    
+    # Connection pool logging
+    com.zaxxer.hikari: DEBUG
+    
+    # Redis logging
+    org.springframework.data.redis: DEBUG
+    
+    # Flyway migration logging
+    org.flywaydb: DEBUG
+  
+  # Log pattern for development
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  
+  # Log file configuration (optional for development)
+  file:
+    name: logs/carddemo-dev.log
+    max-size: 10MB
+    max-history: 3
+
+# ===================================================================
+# Spring Boot Actuator Configuration
+# ===================================================================
+# Expose all actuator endpoints for development monitoring
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+      base-path: /actuator
+  
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+    
+    shutdown:
+      enabled: true
+  
+  health:
+    redis:
+      enabled: true
+    db:
+      enabled: true
+  
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+
+# ===================================================================
+# CORS Configuration
+# ===================================================================
+# Allow all origins for local development and testing
+cors:
+  allowed-origins: "*"
+  allowed-methods: GET,POST,PUT,DELETE,OPTIONS,PATCH
+  allowed-headers: "*"
+  allow-credentials: true
+  max-age: 3600
+
+# ===================================================================
+# Swagger/OpenAPI Configuration
+# ===================================================================
+springdoc:
+  api-docs:
+    enabled: true
+    path: /v3/api-docs
+  
+  swagger-ui:
+    enabled: true
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+    display-request-duration: true
+    show-extensions: true
+  
+  show-actuator: true
+
+# ===================================================================
+# Application-Specific Configuration
+# ===================================================================
+carddemo:
+  # Development mode flag
+  mode: development
+  
+  # Enable debug features
+  debug:
+    enabled: true
+    log-requests: true
+    log-responses: true
+    log-sql: true
+  
+  # Transaction processing settings (relaxed for development)
+  transaction:
+    timeout: 60000  # 60 seconds (longer for debugging)
+    max-retries: 3
+    retry-delay: 1000
+  
+  # Batch processing settings
+  batch:
+    chunk-size: 100  # Smaller chunks for faster feedback during development
+    thread-pool-size: 2
+    max-concurrent-jobs: 2
+  
+  # Security settings (relaxed for development)
+  security:
+    password-encoder: bcrypt
+    bcrypt-strength: 4  # Lower strength for faster development (production uses 12)
+    allow-default-passwords: true  # Allow simple passwords in development
+    require-password-change: false
+  
+  # Pagination defaults
+  pagination:
+    cards-per-page: 7
+    transactions-per-page: 10
+    default-page-size: 20
+  
+  # Date format settings
+  date:
+    format: yyyy-MM-dd
+    time-format: HH:mm:ss
+    datetime-format: yyyy-MM-dd HH:mm:ss
+    timezone: UTC
+  
+  # Decimal precision settings (COBOL COMP-3 equivalence)
+  decimal:
+    balance-scale: 2
+    balance-precision: 15
+    interest-rate-scale: 5
+    interest-rate-precision: 8
+    rounding-mode: HALF_UP
+  
+  # Test data settings
+  test-data:
+    enabled: true
+    load-on-startup: true
+    sample-users:
+      - username: ADMIN001
+        password: PASSWORD
+        type: ADMIN
+      - username: USER0001
+        password: PASSWORD
+        type: USER

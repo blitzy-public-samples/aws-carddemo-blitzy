@@ -1,0 +1,642 @@
+# ============================================================================
+# CardDemo Application - Production Environment Configuration
+# ============================================================================
+# Spring Boot 3.2.1 Production Profile
+# Target: PostgreSQL 15+ with Redis Cluster for Session Management
+# Performance Target: Sub-200ms response time at 10,000 TPS
+# Based on VSAM KSDS performance characteristics from mainframe migration
+# ============================================================================
+
+spring:
+  # ============================================================================
+  # Application Configuration
+  # ============================================================================
+  application:
+    name: carddemo-backend
+  
+  # ============================================================================
+  # Profile Configuration
+  # ============================================================================
+  profiles:
+    active: prod
+  
+  # ============================================================================
+  # Database Configuration - PostgreSQL 15+ Production
+  # ============================================================================
+  datasource:
+    # Production database connection with SSL required
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:carddemo}?ssl=true&sslmode=require&currentSchema=public
+    username: ${DB_USERNAME:carddemo_user}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    
+    # HikariCP Connection Pool Configuration
+    # Optimized for 10,000 TPS with sub-200ms response time requirement
+    # Based on VSAM SHROPTNS(2,3) concurrent access patterns
+    hikari:
+      # Connection pool sizing for high-concurrency production workload
+      minimum-idle: 20
+      maximum-pool-size: 50
+      
+      # Connection timeout and lifecycle settings
+      connection-timeout: 30000  # 30 seconds - matches VSAM BUFSPACE patterns
+      idle-timeout: 600000       # 10 minutes
+      max-lifetime: 1800000      # 30 minutes
+      
+      # Connection validation for reliability
+      connection-test-query: SELECT 1
+      validation-timeout: 5000
+      
+      # Performance tuning
+      auto-commit: false
+      leak-detection-threshold: 60000  # 60 seconds - detect connection leaks
+      
+      # Pool naming for monitoring
+      pool-name: CardDemo-Production-Pool
+      
+      # Connection properties for optimal PostgreSQL performance
+      data-source-properties:
+        cachePrepStmts: true
+        prepStmtCacheSize: 250        # Statement cache matching requirement
+        prepStmtCacheSqlLimit: 2048
+        useServerPrepStmts: true
+        useLocalSessionState: true
+        rewriteBatchedStatements: true
+        cacheResultSetMetadata: true
+        cacheServerConfiguration: true
+        elideSetAutoCommits: true
+        maintainTimeStats: false
+        
+  # ============================================================================
+  # JPA / Hibernate Configuration
+  # ============================================================================
+  jpa:
+    # Hibernate settings for production
+    hibernate:
+      ddl-auto: validate  # Validate schema only, no auto-updates in production
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+        implicit-strategy: org.hibernate.boot.model.naming.ImplicitNamingStrategyJpaCompliantImpl
+    
+    # JPA properties
+    properties:
+      hibernate:
+        # Dialect for PostgreSQL 15+
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        
+        # SQL execution and formatting
+        format_sql: false              # Disable formatting in production
+        show_sql: false                # Disable SQL logging in production
+        use_sql_comments: false
+        
+        # Performance optimization settings
+        jdbc:
+          batch_size: 50               # Batch processing for bulk operations
+          fetch_size: 100              # Fetch size for result sets
+          time_zone: UTC
+        
+        # Query optimization
+        query:
+          plan_cache_max_size: 2048
+          plan_parameter_metadata_max_size: 256
+          fail_on_pagination_over_collection_fetch: true
+          in_clause_parameter_padding: true
+        
+        # Connection handling
+        connection:
+          provider_disables_autocommit: true
+          handling_mode: DELAYED_ACQUISITION_AND_RELEASE_AFTER_TRANSACTION
+        
+        # Cache configuration (second-level cache disabled for strict consistency)
+        cache:
+          use_second_level_cache: false
+          use_query_cache: false
+        
+        # Transaction isolation level - READ_COMMITTED matching VSAM behavior
+        connection:
+          isolation: 2  # READ_COMMITTED (equivalent to CICS default)
+        
+        # Statistics and monitoring
+        generate_statistics: true
+        
+        # Enhanced identifier optimization
+        id:
+          new_generator_mappings: true
+        
+        # JDBC metadata optimization
+        temp:
+          use_jdbc_metadata_defaults: false
+    
+    # Database platform detection
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    
+    # Open-in-view pattern disabled for production
+    open-in-view: false
+    
+  # ============================================================================
+  # Redis Configuration - Cluster Mode for Distributed Session Management
+  # ============================================================================
+  data:
+    redis:
+      # Redis cluster configuration for high availability
+      cluster:
+        nodes:
+          - ${REDIS_NODE_1:redis-node-1:6379}
+          - ${REDIS_NODE_2:redis-node-2:6379}
+          - ${REDIS_NODE_3:redis-node-3:6379}
+        max-redirects: 3
+      
+      # Redis connection settings
+      password: ${REDIS_PASSWORD}
+      ssl:
+        enabled: true  # SSL required for production
+      
+      # Connection timeout
+      timeout: 3000  # 3 seconds
+      
+      # Lettuce client configuration (default for Spring Boot 3.x)
+      lettuce:
+        pool:
+          min-idle: 5
+          max-idle: 20
+          max-active: 50
+          max-wait: 3000ms
+        shutdown-timeout: 2000ms
+      
+      # Repository configuration
+      repositories:
+        enabled: true
+  
+  # ============================================================================
+  # Session Management Configuration
+  # ============================================================================
+  session:
+    store-type: redis
+    redis:
+      namespace: carddemo:session
+      flush-mode: on_save
+      cleanup-cron: "0 */5 * * * *"  # Cleanup every 5 minutes
+    timeout: 24h  # 24-hour session timeout matching JWT expiration
+  
+  # ============================================================================
+  # Flyway Database Migration Configuration
+  # ============================================================================
+  flyway:
+    enabled: true
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    clean-disabled: true  # CRITICAL: Prevent accidental data deletion in production
+    clean-on-validation-error: false
+    locations: classpath:db/migration
+    out-of-order: false
+    placeholder-replacement: true
+    placeholders:
+      environment: production
+    sql-migration-prefix: V
+    sql-migration-separator: __
+    sql-migration-suffixes: .sql
+    baseline-version: 1
+    encoding: UTF-8
+    # Fail fast on validation errors
+    fail-on-missing-locations: true
+  
+  # ============================================================================
+  # Spring MVC Configuration
+  # ============================================================================
+  mvc:
+    throw-exception-if-no-handler-found: true
+    log-resolved-exception: false
+  
+  # ============================================================================
+  # Jackson JSON Configuration
+  # ============================================================================
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+      indent-output: false  # Minimize JSON size in production
+      fail-on-empty-beans: false
+    deserialization:
+      fail-on-unknown-properties: false
+      fail-on-null-for-primitives: true
+    default-property-inclusion: non_null
+    time-zone: UTC
+    date-format: yyyy-MM-dd'T'HH:mm:ss.SSSZ
+  
+  # ============================================================================
+  # Thread Pool Configuration
+  # ============================================================================
+  task:
+    execution:
+      pool:
+        core-size: 8
+        max-size: 16
+        queue-capacity: 100
+        keep-alive: 60s
+      thread-name-prefix: carddemo-exec-
+    scheduling:
+      pool:
+        size: 4
+      thread-name-prefix: carddemo-sched-
+  
+  # ============================================================================
+  # Servlet Configuration
+  # ============================================================================
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+# ============================================================================
+# Server Configuration
+# ============================================================================
+server:
+  port: ${SERVER_PORT:8080}
+  
+  # Compression for better network performance
+  compression:
+    enabled: true
+    mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json,application/xml
+    min-response-size: 1024
+  
+  # HTTP/2 support
+  http2:
+    enabled: true
+  
+  # SSL/TLS Configuration (HTTPS only in production)
+  ssl:
+    enabled: ${SSL_ENABLED:true}
+    key-store: ${SSL_KEYSTORE_PATH:classpath:keystore.p12}
+    key-store-password: ${SSL_KEYSTORE_PASSWORD}
+    key-store-type: PKCS12
+    key-alias: carddemo
+    protocol: TLS
+    enabled-protocols: TLSv1.3,TLSv1.2
+  
+  # Tomcat-specific settings for high throughput
+  tomcat:
+    threads:
+      max: 200                    # Maximum worker threads
+      min-spare: 20              # Minimum spare threads
+    max-connections: 10000        # Maximum concurrent connections (10K TPS requirement)
+    accept-count: 100             # Queue size for incoming connections
+    connection-timeout: 30000     # 30 seconds connection timeout
+    max-http-form-post-size: 10MB
+    max-swallow-size: 10MB
+    
+    # Access log configuration (structured logging for analysis)
+    accesslog:
+      enabled: true
+      directory: /var/log/carddemo
+      prefix: access_log
+      suffix: .log
+      pattern: "%h %l %u %t \"%r\" %s %b %D"
+      rotate: true
+      max-days: 30
+    
+    # Connection pool for servlet container
+    mbeanregistry:
+      enabled: true
+  
+  # Error handling
+  error:
+    include-message: never
+    include-binding-errors: never
+    include-stacktrace: never
+    include-exception: false
+    whitelabel:
+      enabled: false
+  
+  # Shutdown configuration
+  shutdown: graceful
+
+# ============================================================================
+# Security Configuration
+# ============================================================================
+security:
+  # JWT Token Configuration
+  jwt:
+    secret: ${JWT_SECRET}  # Must be set via environment variable
+    expiration: 86400000   # 24 hours (in milliseconds)
+    refresh-expiration: 604800000  # 7 days (in milliseconds)
+    header: Authorization
+    prefix: "Bearer "
+    issuer: carddemo-production
+    audience: carddemo-api
+  
+  # Password encoding configuration
+  password:
+    encoder:
+      strength: 12  # BCrypt strength as specified
+      
+  # CORS Configuration - Strict for production
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:https://carddemo.example.com}
+    allowed-methods: GET,POST,PUT,DELETE,OPTIONS
+    allowed-headers: Authorization,Content-Type,X-Requested-With,Accept,Origin,Access-Control-Request-Method,Access-Control-Request-Headers
+    exposed-headers: Authorization,Content-Disposition
+    allow-credentials: true
+    max-age: 3600
+  
+  # OAuth2/OIDC (if needed for future enhancements)
+  oauth2:
+    enabled: false
+  
+  # Session fixation protection
+  require-ssl: true
+  
+# ============================================================================
+# Logging Configuration - Production Levels
+# ============================================================================
+logging:
+  level:
+    root: WARN                                    # Root level as specified
+    com.carddemo: INFO                           # Application level as specified
+    org.springframework: ERROR                    # Framework level as specified
+    org.springframework.web: ERROR
+    org.springframework.security: ERROR
+    org.springframework.boot: ERROR
+    org.hibernate: ERROR                         # Hibernate level as specified
+    org.hibernate.SQL: ERROR                     # SQL logging disabled
+    org.hibernate.type.descriptor.sql: ERROR     # Parameter logging disabled
+    org.postgresql: ERROR
+    io.lettuce: ERROR                            # Redis client
+    org.apache.tomcat: ERROR
+    com.zaxxer.hikari: WARN                      # Connection pool warnings only
+    org.flywaydb: INFO                           # Migration info important
+  
+  # Log file configuration
+  file:
+    name: /var/log/carddemo/application.log
+    max-size: 100MB
+    max-history: 30
+    total-size-cap: 10GB
+  
+  # Log pattern for production (structured for log aggregation)
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  
+  # Logback configuration
+  logback:
+    rollingpolicy:
+      max-file-size: 100MB
+      max-history: 30
+      total-size-cap: 10GB
+      clean-history-on-start: false
+
+# ============================================================================
+# Spring Batch Configuration
+# ============================================================================
+spring.batch:
+  # Job execution configuration
+  job:
+    enabled: true
+    names: ${BATCH_JOB_NAMES:}  # Comma-separated list of jobs to run
+  
+  # JDBC initialization
+  jdbc:
+    initialize-schema: never  # Schema managed by Flyway
+    isolation-level-for-create: READ_COMMITTED
+    table-prefix: BATCH_
+  
+  # Chunk and thread configuration for 4-hour batch window requirement
+  chunk:
+    size: 1000
+  
+  # Task executor for batch jobs
+  task-executor:
+    core-pool-size: 4      # Core threads as specified
+    max-pool-size: 8       # Max threads as specified
+    queue-capacity: 50
+    thread-name-prefix: batch-
+    keep-alive-seconds: 60
+  
+  # Job repository configuration
+  repository:
+    isolation-level-for-create: READ_COMMITTED
+    table-prefix: BATCH_
+
+# ============================================================================
+# Spring Actuator Configuration - Production Monitoring
+# ============================================================================
+management:
+  # Endpoint configuration - restricted for production
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus,info
+      base-path: /actuator
+      path-mapping:
+        health: health
+        metrics: metrics
+        prometheus: prometheus
+  
+  # Individual endpoint configuration
+  endpoint:
+    health:
+      show-details: when-authorized  # Restrict detailed health info
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: ping,diskSpace
+        readiness:
+          include: ping,db,redis
+    metrics:
+      enabled: true
+    prometheus:
+      enabled: true
+  
+  # Health indicators
+  health:
+    defaults:
+      enabled: true
+    db:
+      enabled: true
+    redis:
+      enabled: true
+    diskspace:
+      enabled: true
+      threshold: 10GB
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  
+  # Metrics configuration
+  metrics:
+    enable:
+      jvm: true
+      system: true
+      tomcat: true
+      process: true
+      hikaricp: true
+      jdbc: true
+      http: true
+    
+    # Prometheus metrics export
+    export:
+      prometheus:
+        enabled: true
+        step: 1m
+        descriptions: true
+    
+    # Performance metrics distribution
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5,0.9,0.95,0.99
+      slo:
+        http.server.requests: 50ms,100ms,200ms,500ms,1s
+    
+    # Tags for metrics
+    tags:
+      application: ${spring.application.name}
+      environment: production
+  
+  # Tracing (if distributed tracing is enabled)
+  tracing:
+    sampling:
+      probability: 0.1  # 10% sampling in production
+  
+  # Info endpoint
+  info:
+    env:
+      enabled: true
+    java:
+      enabled: true
+    os:
+      enabled: true
+
+# ============================================================================
+# Application-Specific Configuration
+# ============================================================================
+carddemo:
+  # Performance tuning settings
+  performance:
+    query-timeout: 30                  # 30 seconds as specified
+    transaction-timeout: 30            # 30 seconds
+    max-page-size: 100
+    default-page-size: 10
+  
+  # Transaction processing settings (sub-200ms target at 10K TPS)
+  transaction:
+    target-response-time-ms: 200
+    max-throughput-tps: 10000
+    enable-async-processing: false     # Synchronous for consistency
+  
+  # Cache configuration (if application-level caching is used)
+  cache:
+    enabled: false                     # Disabled for strict consistency
+  
+  # Pagination settings matching COBOL behavior
+  pagination:
+    cards-per-page: 7                  # As per BMS screen requirements
+    transactions-per-page: 10          # As per BMS screen requirements
+  
+  # Feature flags for production
+  features:
+    enable-batch-processing: true
+    enable-statement-generation: true
+    enable-interest-calculation: true
+    enable-daily-transaction-processing: true
+  
+  # Data validation
+  validation:
+    strict-mode: true
+    enable-cross-reference-checks: true
+  
+  # Audit configuration
+  audit:
+    enabled: true
+    log-all-requests: false            # Log only significant events
+    log-data-changes: true
+    retention-days: 90
+
+# ============================================================================
+# Resilience and Circuit Breaker (if using Resilience4j)
+# ============================================================================
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-size: 100
+        permitted-number-of-calls-in-half-open-state: 10
+        automatic-transition-from-open-to-half-open-enabled: true
+        wait-duration-in-open-state: 60s
+        failure-rate-threshold: 50
+        slow-call-rate-threshold: 100
+        slow-call-duration-threshold: 5s
+  
+  retry:
+    configs:
+      default:
+        max-attempts: 3
+        wait-duration: 1s
+        retry-exceptions:
+          - org.springframework.dao.DataAccessResourceFailureException
+          - org.springframework.dao.TransientDataAccessException
+  
+  bulkhead:
+    configs:
+      default:
+        max-concurrent-calls: 50
+        max-wait-duration: 0
+  
+  timelimiter:
+    configs:
+      default:
+        timeout-duration: 30s
+
+# ============================================================================
+# External Service Configuration (if applicable)
+# ============================================================================
+external:
+  services:
+    timeout: 30000  # 30 seconds default timeout
+    connection-timeout: 10000  # 10 seconds connection timeout
+    read-timeout: 30000  # 30 seconds read timeout
+
+# ============================================================================
+# Async Processing Configuration
+# ============================================================================
+async:
+  core-pool-size: 4
+  max-pool-size: 8
+  queue-capacity: 100
+  thread-name-prefix: async-
+
+# ============================================================================
+# Production Environment Variables Reference
+# ============================================================================
+# The following environment variables must be set for production deployment:
+# 
+# Database:
+#   DB_HOST - PostgreSQL host
+#   DB_PORT - PostgreSQL port (default: 5432)
+#   DB_NAME - Database name (default: carddemo)
+#   DB_USERNAME - Database username
+#   DB_PASSWORD - Database password (REQUIRED)
+#
+# Redis:
+#   REDIS_NODE_1 - Redis cluster node 1 (host:port)
+#   REDIS_NODE_2 - Redis cluster node 2 (host:port)
+#   REDIS_NODE_3 - Redis cluster node 3 (host:port)
+#   REDIS_PASSWORD - Redis authentication password (REQUIRED)
+#
+# Security:
+#   JWT_SECRET - JWT signing secret (REQUIRED, min 256 bits)
+#   SSL_KEYSTORE_PATH - Path to SSL keystore
+#   SSL_KEYSTORE_PASSWORD - SSL keystore password (REQUIRED)
+#   CORS_ALLOWED_ORIGINS - Comma-separated list of allowed CORS origins
+#
+# Server:
+#   SERVER_PORT - Application port (default: 8080)
+#   SSL_ENABLED - Enable SSL/TLS (default: true)
+#
+# Batch:
+#   BATCH_JOB_NAMES - Comma-separated list of batch jobs to enable
+# ============================================================================
+

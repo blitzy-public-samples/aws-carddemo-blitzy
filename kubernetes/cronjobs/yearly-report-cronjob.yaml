@@ -1,0 +1,334 @@
+# Kubernetes CronJob for Yearly Report Generation
+# Migrated from: app/jcl/CYEARRPT.jcl
+# Business Logic: Annual summary report generation per Agent Action Plan Section 0.4
+# Transformation: JCL Batch → Spring Batch + Kubernetes CronJob per Section 0.6
+#
+# Purpose: Generate comprehensive annual summary reports including year-over-year analysis,
+# account statistics, transaction volumes, and financial summaries for strategic planning
+# and regulatory reporting requirements.
+#
+# Schedule: Annually on January 1st at 2:00 AM UTC
+# Concurrency: Forbid overlapping executions
+# Resource Allocation: Extended memory (4Gi) and timeout (4 hours) for full-year data processing
+#
+# Regulatory Compliance:
+# - Maintains identical report formats per Section 0.2
+# - Complete audit trail for annual compliance reporting per Section 0.9
+# - Report archival and retention per regulatory requirements
+# - Supports external audit verification
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: yearly-report-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: yearly-report
+    tier: backend
+    migration-source: CYEARRPT.jcl
+    report-type: annual
+  annotations:
+    description: "Generates comprehensive yearly summary reports for strategic planning and regulatory compliance"
+    migration-notes: "Migrated from mainframe JCL batch to cloud-native Spring Batch with Kubernetes scheduling"
+    compliance-level: "regulatory-required"
+    data-retention: "7-years"
+spec:
+  # Annually on January 1st at 2:00 AM UTC
+  # Provides sufficient time after year-end processing completion
+  schedule: "0 2 1 1 *"
+  
+  # Prevent concurrent executions to avoid report conflicts and resource contention
+  concurrencyPolicy: Forbid
+  
+  # Retain history of last 3 successful runs for audit verification
+  successfulJobsHistoryLimit: 3
+  
+  # Retain history of last 2 failed runs for troubleshooting
+  failedJobsHistoryLimit: 2
+  
+  # Allow manual suspension for maintenance windows (default: active)
+  suspend: false
+  
+  # If a scheduled job is missed (e.g., cluster downtime), start within 1 hour
+  startingDeadlineSeconds: 3600
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: yearly-report
+        tier: backend
+    spec:
+      # Retry once on failure (comprehensive report generation should be reliable)
+      backoffLimit: 1
+      
+      # Maximum 4-hour execution window for comprehensive annual data processing
+      # Maintains parity with mainframe 4-hour batch window per Section 0.1
+      activeDeadlineSeconds: 14400
+      
+      # Retain completed job for 30 days for audit trail verification
+      # 2592000 seconds = 30 days
+      ttlSecondsAfterFinished: 2592000
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: yearly-report
+            tier: backend
+        spec:
+          # Do not restart on failure - let backoffLimit handle retries
+          restartPolicy: Never
+          
+          containers:
+          - name: yearly-report-job
+            # Use latest backend image with Spring Batch jobs
+            image: carddemo-backend:latest
+            imagePullPolicy: Always
+            
+            # Execute Spring Batch YearlyReportJob
+            command:
+              - java
+              - -jar
+              - /app/carddemo-backend.jar
+            
+            # Spring Batch job arguments
+            args:
+              - --spring.batch.job.names=YearlyReportJob
+              - --spring.profiles.active=batch
+              - --report.year=$(date +%Y -d 'last year')  # Process previous calendar year
+              - --report.type=annual
+              - --report.format=pdf,excel
+              - --report.output.path=/reports/annual
+            
+            # Environment variables for database connectivity and configuration
+            env:
+              # Active profile for batch processing
+              - name: SPRING_PROFILES_ACTIVE
+                value: "batch"
+              
+              # Database connection URL
+              - name: SPRING_DATASOURCE_URL
+                valueFrom:
+                  configMapKeyRef:
+                    name: carddemo-config
+                    key: database.url
+              
+              # Database username
+              - name: SPRING_DATASOURCE_USERNAME
+                valueFrom:
+                  secretKeyRef:
+                    name: carddemo-secrets
+                    key: database.username
+              
+              # Database password
+              - name: SPRING_DATASOURCE_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: carddemo-secrets
+                    key: database.password
+              
+              # JVM options for extended memory allocation
+              # -Xmx3g: Maximum heap size 3GB for large dataset aggregations
+              # -Xms2g: Initial heap size 2GB to reduce GC overhead
+              # -XX:+UseG1GC: G1 garbage collector for better throughput
+              # -XX:MaxGCPauseMillis=200: Target max GC pause of 200ms
+              - name: JAVA_OPTS
+                value: "-Xmx3g -Xms2g -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+              
+              # Timezone for date calculations
+              - name: TZ
+                value: "UTC"
+              
+              # Batch processing chunk size (10000 records per chunk for efficiency)
+              - name: BATCH_CHUNK_SIZE
+                value: "10000"
+              
+              # Enable comprehensive logging for audit trail
+              - name: LOGGING_LEVEL_COM_CARDDEMO_BATCH
+                value: "INFO"
+            
+            # Resource requests (minimum guaranteed resources)
+            resources:
+              requests:
+                memory: "2Gi"     # Base memory for application and data processing
+                cpu: "1000m"      # 1 full CPU core for computation
+              
+              # Resource limits (maximum allowed resources)
+              limits:
+                memory: "4Gi"     # Extended memory for full-year data aggregations
+                cpu: "2000m"      # 2 CPU cores for parallel processing
+            
+            # Volume mounts for report output storage
+            volumeMounts:
+              # Mount point for generated reports
+              - name: reports-volume
+                mountPath: /reports
+                subPath: annual
+              
+              # Mount point for temporary processing files
+              - name: temp-volume
+                mountPath: /tmp
+            
+            # Liveness probe (check if application is running)
+            livenessProbe:
+              httpGet:
+                path: /actuator/health/liveness
+                port: 8080
+              initialDelaySeconds: 60    # Wait 60s for application startup
+              periodSeconds: 30          # Check every 30 seconds
+              timeoutSeconds: 5          # 5-second timeout for probe
+              failureThreshold: 3        # Fail after 3 consecutive failures
+            
+            # Readiness probe (check if application is ready to process)
+            readinessProbe:
+              httpGet:
+                path: /actuator/health/readiness
+                port: 8080
+              initialDelaySeconds: 30    # Check readiness after 30s
+              periodSeconds: 10          # Check every 10 seconds
+              timeoutSeconds: 5          # 5-second timeout for probe
+              failureThreshold: 3        # Fail after 3 consecutive failures
+          
+          # Volumes for report storage and temporary files
+          volumes:
+            # Persistent volume for report output
+            # Reports must be retained for regulatory compliance (7 years)
+            - name: reports-volume
+              persistentVolumeClaim:
+                claimName: carddemo-reports-pvc
+            
+            # Temporary volume for intermediate processing files
+            # Uses emptyDir for ephemeral storage (cleaned up after job completion)
+            - name: temp-volume
+              emptyDir:
+                sizeLimit: "10Gi"  # Limit temp storage to 10GB
+          
+          # Image pull secrets for private container registry (if needed)
+          # imagePullSecrets:
+          #   - name: carddemo-registry-secret
+          
+          # Service account for Kubernetes RBAC permissions
+          serviceAccountName: carddemo-batch-sa
+          
+          # Security context for pod-level security settings
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          
+          # Node affinity to run on specific node pool (optional)
+          # affinity:
+          #   nodeAffinity:
+          #     requiredDuringSchedulingIgnoredDuringExecution:
+          #       nodeSelectorTerms:
+          #       - matchExpressions:
+          #         - key: workload-type
+          #           operator: In
+          #           values:
+          #           - batch
+
+---
+# Business Logic Implementation (Reference for Spring Batch Job)
+# The following describes the comprehensive annual report generation logic
+# migrated from mainframe COBOL/JCL to Java Spring Batch:
+#
+# Data Sources (reads full year's data from all tables):
+# - customer: Customer master data with demographics
+# - account: Account data with balances and status
+# - card: Card data with activation and expiration dates
+# - transaction: Full year's transaction history
+# - transaction_aggregate: Pre-aggregated monthly summaries
+#
+# Annual Summary Statistics Generated:
+# 1. Customer Metrics:
+#    - Total customers at year end
+#    - New customers acquired during year
+#    - Customer retention rate
+#    - Customer demographic distribution
+#
+# 2. Account Metrics:
+#    - Total accounts at year end
+#    - New accounts opened during year
+#    - Closed accounts during year
+#    - Account status distribution (active/dormant/closed)
+#    - Average account balance
+#    - Total outstanding balances
+#
+# 3. Card Metrics:
+#    - Total cards issued at year end
+#    - New cards issued during year
+#    - Card activation rate
+#    - Card expiration tracking
+#    - Card status distribution (active/blocked/expired)
+#
+# 4. Transaction Metrics:
+#    - Total transaction volume (count)
+#    - Total transaction value (sum of amounts)
+#    - Transaction counts by category (purchases, cash advances, payments, fees)
+#    - Transaction counts by type (debit, credit, adjustment)
+#    - Average transaction size
+#    - Peak transaction day/month
+#
+# 5. Financial Summaries:
+#    - Total interest calculated and charged
+#    - Total fees collected
+#    - Total revenue (interest + fees)
+#    - Outstanding balances by account type
+#    - Delinquency rates and amounts
+#    - Write-offs and charge-backs
+#
+# 6. Year-over-Year Comparison:
+#    - Customer growth rate (%)
+#    - Account growth rate (%)
+#    - Transaction volume growth rate (%)
+#    - Transaction value growth rate (%)
+#    - Revenue growth rate (%)
+#    - Category distribution changes
+#
+# Data Precision Requirements (per Section 0.9):
+# - All financial calculations use BigDecimal with precision matching COBOL COMP-3
+# - Interest amounts: NUMERIC(15,2) with RoundingMode.HALF_UP
+# - Balance amounts: NUMERIC(15,2) with RoundingMode.HALF_UP
+# - Fee amounts: NUMERIC(12,2) with RoundingMode.HALF_UP
+# - Percentage calculations: NUMERIC(5,2) with RoundingMode.HALF_UP
+#
+# Report Output Formats:
+# - PDF: Formatted annual report with charts and tables
+# - Excel: Detailed data export for further analysis
+# - CSV: Raw data export for regulatory submissions
+# - HTML: Web-viewable dashboard format
+#
+# Performance Optimization:
+# - Chunk-oriented processing: 10000 records per chunk
+# - Database indexes on date, account_id, transaction_type for efficient queries
+# - Parallel processing for independent report sections
+# - Result caching for repeated aggregations
+# - Connection pooling for database access
+#
+# Error Handling:
+# - Skip policy: Skip individual record errors, continue processing
+# - Skip limit: 100 errors before job failure
+# - Error logging: All skipped records logged with reason
+# - Retry logic: Retry transient database errors (3 attempts with exponential backoff)
+# - Rollback: Transaction rollback on critical errors
+#
+# Audit Trail (per Section 0.9):
+# - Job execution start/end timestamps
+# - Record counts processed
+# - Errors encountered and resolution
+# - Report generation completion status
+# - Report file locations and checksums
+# - User actions logged for compliance
+#
+# Regulatory Compliance (per Section 0.2 and 0.9):
+# - Report format maintains identical structure to mainframe reports
+# - All required regulatory fields present and accurate
+# - Report retention: 7 years minimum per compliance requirements
+# - Audit trail completeness for external audit verification
+# - Data integrity validation: checksums and row counts
+# - Access logging: All report access logged with user ID and timestamp

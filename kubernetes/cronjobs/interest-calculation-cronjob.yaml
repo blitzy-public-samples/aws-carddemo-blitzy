@@ -1,0 +1,275 @@
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
+
+# Kubernetes CronJob for Interest Calculation Batch Processing
+# Migrated from: app/jcl/INTCALC.jcl and app/cbl/CBACT04C.cbl
+#
+# Business Function:
+#   - Reads transaction category balance data
+#   - Retrieves account and cross-reference information
+#   - Calculates monthly interest based on discount group rates
+#   - Computes fees (to be implemented)
+#   - Creates system transaction records for interest charges
+#   - Updates account balances with accumulated interest
+#
+# Original COBOL Logic:
+#   - Sequential read of transaction balance file (TCATBALF)
+#   - Random access to account file (ACCTDAT) for balance updates
+#   - Random access to cross-reference file (CARDXREF) for card data
+#   - Random access to discount group file (DISCGRP) for interest rates
+#   - Interest formula: MONTHLY_INT = (BALANCE * INTEREST_RATE) / 1200
+#   - Maintains COMP-3 decimal precision (S9(09)V99) → BigDecimal(11,2)
+#
+# Schedule: Monthly on 1st day at 1:00 AM UTC
+# Execution: Spring Batch InterestCalculationJob
+# Timeout: 4 hours maximum processing window
+# Precision: BigDecimal with RoundingMode.HALF_UP for financial calculations
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: interest-calculation-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: interest-calculation
+    tier: backend
+    managed-by: kubernetes
+  annotations:
+    description: "Monthly interest calculation batch job migrated from CBACT04C.cbl"
+    source.cobol.program: "CBACT04C"
+    source.jcl.script: "INTCALC.jcl"
+    business.function: "Calculate monthly interest and fees on account balances"
+    migration.version: "1.0"
+spec:
+  # Schedule: Run monthly on the 1st day at 1:00 AM UTC
+  # Cron format: minute hour day-of-month month day-of-week
+  schedule: "0 1 1 * *"
+  
+  # Timezone for schedule (optional, defaults to UTC)
+  # timeZone: "America/New_York"
+  
+  # Concurrency policy: Forbid prevents overlapping executions
+  # If previous job is still running, skip the new scheduled execution
+  concurrencyPolicy: Forbid
+  
+  # Number of successful finished jobs to retain (12 = yearly history)
+  successfulJobsHistoryLimit: 12
+  
+  # Number of failed finished jobs to retain
+  failedJobsHistoryLimit: 3
+  
+  # Deadline for starting the job if it misses scheduled time (in seconds)
+  # 3600 = 1 hour grace period
+  startingDeadlineSeconds: 3600
+  
+  # Job template specification
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: interest-calculation
+    spec:
+      # Number of retries before considering job as failed
+      backoffLimit: 2
+      
+      # Maximum time for job completion (4 hours = 14400 seconds)
+      # Maintains the same 4-hour batch processing window as mainframe
+      activeDeadlineSeconds: 14400
+      
+      # Time to live for finished jobs (30 days = 2592000 seconds)
+      ttlSecondsAfterFinished: 2592000
+      
+      # Pod template
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: interest-calculation
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "8080"
+            prometheus.io/path: "/actuator/prometheus"
+        spec:
+          # Restart policy for pod (OnFailure allows retry within backoffLimit)
+          restartPolicy: OnFailure
+          
+          # Service account for database access
+          serviceAccountName: carddemo-batch-sa
+          
+          # Container specification
+          containers:
+          - name: interest-calculation-job
+            # Docker image for CardDemo backend Spring Boot application
+            image: carddemo-backend:latest
+            imagePullPolicy: IfNotPresent
+            
+            # Command to execute Spring Batch job
+            command:
+            - java
+            - -jar
+            - /app/carddemo-backend.jar
+            
+            # Arguments to trigger specific Spring Batch job
+            # --spring.batch.job.names: Specifies which job to execute
+            # --calculation.date: Pass current date in YYYYMMDDHH format (matching COBOL PARM)
+            args:
+            - --spring.batch.job.names=InterestCalculationJob
+            - --calculation.date=$(date -u +%Y%m%d%H)
+            - --spring.batch.job.enabled=true
+            - --logging.level.com.carddemo.batch=DEBUG
+            
+            # Resource requests (guaranteed resources)
+            resources:
+              requests:
+                memory: "1Gi"
+                cpu: "500m"
+              limits:
+                memory: "2Gi"
+                cpu: "2000m"
+            
+            # Environment variables for Spring Boot application
+            env:
+            # Spring Profile
+            - name: SPRING_PROFILES_ACTIVE
+              value: "production"
+            
+            # Database connection settings
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: database.url
+            
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.username
+            
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.password
+            
+            # Database connection pool settings (equivalent to VSAM buffer pool)
+            - name: SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE
+              value: "20"
+            
+            - name: SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE
+              value: "5"
+            
+            - name: SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT
+              value: "30000"
+            
+            # Spring Batch configuration
+            - name: SPRING_BATCH_JOB_ENABLED
+              value: "true"
+            
+            - name: SPRING_BATCH_JDBC_INITIALIZE_SCHEMA
+              value: "never"
+            
+            # Interest calculation specific parameters
+            # Maintains COMP-3 decimal precision requirements
+            - name: INTEREST_CALCULATION_PRECISION
+              value: "2"
+            
+            - name: INTEREST_CALCULATION_ROUNDING_MODE
+              value: "HALF_UP"
+            
+            # Chunk size for batch processing (equivalent to COBOL commit frequency)
+            - name: INTEREST_BATCH_CHUNK_SIZE
+              value: "1000"
+            
+            # Skip limit before job failure
+            - name: INTEREST_BATCH_SKIP_LIMIT
+              value: "100"
+            
+            # Retry attempts for transient failures
+            - name: INTEREST_BATCH_RETRY_LIMIT
+              value: "3"
+            
+            # JVM settings for batch processing
+            - name: JAVA_OPTS
+              value: >-
+                -Xms1024m
+                -Xmx1536m
+                -XX:+UseG1GC
+                -XX:MaxGCPauseMillis=200
+                -XX:+HeapDumpOnOutOfMemoryError
+                -XX:HeapDumpPath=/tmp/heapdump.hprof
+                -Djava.security.egd=file:/dev/./urandom
+            
+            # Logging configuration
+            - name: LOGGING_LEVEL_ROOT
+              value: "INFO"
+            
+            - name: LOGGING_LEVEL_COM_CARDDEMO
+              value: "DEBUG"
+            
+            - name: LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_BATCH
+              value: "INFO"
+            
+            # File paths for output (equivalent to COBOL TRANSACT file)
+            - name: INTEREST_OUTPUT_DIRECTORY
+              value: "/app/output/interest"
+            
+            - name: INTEREST_TRANSACTION_FILE_PREFIX
+              value: "SYSTRAN"
+            
+            # Health check and monitoring
+            livenessProbe:
+              httpGet:
+                path: /actuator/health/liveness
+                port: 8080
+              initialDelaySeconds: 60
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 3
+            
+            readinessProbe:
+              httpGet:
+                path: /actuator/health/readiness
+                port: 8080
+              initialDelaySeconds: 30
+              periodSeconds: 15
+              timeoutSeconds: 5
+              failureThreshold: 3
+            
+            # Volume mounts for persistent output
+            volumeMounts:
+            - name: interest-output
+              mountPath: /app/output/interest
+            
+            - name: temp-storage
+              mountPath: /tmp
+          
+          # Volumes for persistent storage
+          volumes:
+          - name: interest-output
+            persistentVolumeClaim:
+              claimName: carddemo-batch-output-pvc
+          
+          - name: temp-storage
+            emptyDir:
+              sizeLimit: 1Gi
+          
+          # Image pull secrets for private registry
+          imagePullSecrets:
+          - name: carddemo-registry-secret

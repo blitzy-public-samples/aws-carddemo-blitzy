@@ -1,0 +1,284 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+###############################################################################
+# Kubernetes CronJob: Statement Formatting Batch Job
+# 
+# Purpose:
+#   Scheduled execution of StatementFormattingJob Spring Batch job to format
+#   generated statement data into customer-facing HTML and text formats for
+#   distribution.
+#
+# Source Transformation:
+#   FROM: app/cbl/CBSTM03B.CBL (COBOL statement formatting subroutine)
+#   TO:   Kubernetes CronJob triggering StatementFormattingJob
+#
+# Business Logic (from CBSTM03B.CBL):
+#   - Reads raw statement data from transaction, cross-reference, customer,
+#     and account files
+#   - Applies HTML formatting templates to statement records
+#   - Generates text format statements for print delivery
+#   - Outputs formatted STATEMNT.PS and STATEMNT.HTML files
+#   - Preserves statement layout and customer information
+#   - File operations: TRNXFILE, XREFFILE, CUSTFILE, ACCTFILE
+#
+# Schedule:
+#   Monthly on the 1st day at 3:30 AM UTC (after statement-generation-cronjob)
+#
+# Migration Notes:
+#   - COBOL file handling logic migrated to Spring Batch ItemReaders/Writers
+#   - VSAM file access replaced with PostgreSQL database queries
+#   - Original file processing preserved in StatementFormattingJob.java
+#   - Statement formatting templates implemented in Spring service layer
+###############################################################################
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: statement-formatting-cronjob
+  namespace: default
+  labels:
+    app: carddemo
+    component: batch
+    job: statement-formatting
+    tier: backend
+    migrated-from: CBSTM03B
+  annotations:
+    description: "Formats monthly account statements into HTML and text formats"
+    source-program: "app/cbl/CBSTM03B.CBL"
+    migration-date: "2024"
+    schedule-description: "Monthly on 1st at 3:30 AM UTC"
+spec:
+  # Schedule: Monthly on the 1st day at 3:30 AM UTC
+  # Runs 30 minutes after statement-generation-cronjob (3:00 AM) to ensure
+  # raw statement data is available for formatting
+  schedule: "30 3 1 * *"
+  
+  # Concurrency Policy: Forbid
+  # Prevents overlapping executions to avoid data corruption and ensure
+  # sequential processing of statement formatting operations
+  concurrencyPolicy: Forbid
+  
+  # History Limits
+  # Keep 12 months of successful job history for audit trail
+  # Keep 3 failed job attempts for troubleshooting
+  successfulJobsHistoryLimit: 12
+  failedJobsHistoryLimit: 3
+  
+  # Starting deadline: 1 hour
+  # If job doesn't start within 1 hour of scheduled time (e.g., cluster issues),
+  # mark it as failed and wait for next scheduled execution
+  startingDeadlineSeconds: 3600
+  
+  # Job Template
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job: statement-formatting
+        tier: backend
+    spec:
+      # Backoff Limit: 2 retries
+      # Allow up to 2 retry attempts if job fails due to transient errors
+      backoffLimit: 2
+      
+      # Active Deadline: 1 hour (3600 seconds)
+      # Statement formatting must complete within 1 hour to maintain
+      # batch processing window (COBOL processing typically < 30 minutes)
+      activeDeadlineSeconds: 3600
+      
+      # TTL After Finished: 30 days (2592000 seconds)
+      # Keep completed job pods for 30 days for audit and troubleshooting,
+      # then automatically clean up to free cluster resources
+      ttlSecondsAfterFinished: 2592000
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job: statement-formatting
+            tier: backend
+        spec:
+          # Restart Policy: Never
+          # Batch jobs should not auto-restart; rely on backoffLimit for retries
+          restartPolicy: Never
+          
+          # Service Account
+          # Use dedicated service account with permissions for database access
+          # and secret reading
+          serviceAccountName: carddemo-batch-sa
+          
+          containers:
+          - name: statement-formatting-job
+            # Container Image
+            # Use latest backend image containing Spring Batch jobs
+            image: carddemo-backend:latest
+            imagePullPolicy: Always
+            
+            # Command and Arguments
+            # Execute Spring Boot application with specific job name
+            command:
+              - java
+            args:
+              - -jar
+              - /app/carddemo-backend.jar
+              - --spring.batch.job.names=StatementFormattingJob
+              - --spring.profiles.active=batch
+              - --logging.level.com.carddemo.batch=INFO
+              - --spring.batch.job.enabled=true
+            
+            # Environment Variables
+            env:
+            # Database Configuration
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: database.url
+            
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.username
+            
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secrets
+                  key: database.password
+            
+            # Batch Job Configuration
+            - name: SPRING_BATCH_JOB_ENABLED
+              value: "true"
+            
+            - name: SPRING_BATCH_INITIALIZE_SCHEMA
+              value: "never"
+            
+            # Statement Formatting Configuration
+            - name: STATEMENT_OUTPUT_PATH
+              value: "/data/statements"
+            
+            - name: STATEMENT_FORMAT_HTML_ENABLED
+              value: "true"
+            
+            - name: STATEMENT_FORMAT_TEXT_ENABLED
+              value: "true"
+            
+            # Chunk size for batch processing
+            # Process 100 statement records per chunk for optimal memory usage
+            - name: STATEMENT_CHUNK_SIZE
+              value: "100"
+            
+            # JVM Configuration
+            - name: JAVA_OPTS
+              value: "-Xmx768m -Xms512m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+            
+            # Resource Limits
+            resources:
+              requests:
+                # Memory: 512Mi
+                # Sufficient for reading statement data and applying formatting
+                memory: "512Mi"
+                # CPU: 250m (0.25 cores)
+                # Formatting is I/O bound, moderate CPU sufficient
+                cpu: "250m"
+              limits:
+                # Memory: 1Gi
+                # Maximum memory limit to prevent OOM during peak processing
+                memory: "1Gi"
+                # CPU: 1000m (1 core)
+                # Maximum CPU for faster template rendering
+                cpu: "1000m"
+            
+            # Volume Mounts
+            volumeMounts:
+            # Statement output directory
+            - name: statement-output
+              mountPath: /data/statements
+            
+            # Template files for HTML formatting
+            - name: statement-templates
+              mountPath: /app/templates
+              readOnly: true
+            
+            # Liveness Probe
+            # Not applicable for batch jobs - they should complete and terminate
+            # Rely on activeDeadlineSeconds for timeout handling
+            
+            # Readiness Probe
+            # Not applicable for batch jobs
+            
+            # Security Context
+            securityContext:
+              # Run as non-root user
+              runAsNonRoot: true
+              runAsUser: 1000
+              runAsGroup: 1000
+              # Read-only root filesystem
+              readOnlyRootFilesystem: false
+              # Drop all capabilities
+              capabilities:
+                drop:
+                  - ALL
+              # Prevent privilege escalation
+              allowPrivilegeEscalation: false
+          
+          # Volumes
+          volumes:
+          # Persistent volume for statement output files
+          - name: statement-output
+            persistentVolumeClaim:
+              claimName: statement-output-pvc
+          
+          # ConfigMap containing HTML and text templates
+          - name: statement-templates
+            configMap:
+              name: statement-templates
+              items:
+                - key: statement.html.template
+                  path: statement.html.template
+                - key: statement.text.template
+                  path: statement.text.template
+          
+          # Image Pull Secrets
+          # Required if using private container registry
+          imagePullSecrets:
+          - name: carddemo-registry-secret
+          
+          # Pod Security Context
+          securityContext:
+            # Set fsGroup for volume ownership
+            fsGroup: 1000
+            # Ensure non-root execution
+            runAsNonRoot: true
+            # Set SELinux options if required
+            # seLinuxOptions:
+            #   level: "s0:c123,c456"
+          
+          # DNS Configuration
+          dnsPolicy: ClusterFirst
+          
+          # Tolerations
+          # Allow scheduling on nodes with specific taints for batch workloads
+          tolerations:
+          - key: "workload-type"
+            operator: "Equal"
+            value: "batch"
+            effect: "NoSchedule"
+          
+          # Affinity Rules
+          # Prefer scheduling on nodes optimized for batch processing
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                  - key: workload-type
+                    operator: In
+                    values:
+                    - batch
+                    - compute

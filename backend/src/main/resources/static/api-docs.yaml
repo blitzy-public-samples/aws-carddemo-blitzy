@@ -1,0 +1,1990 @@
+openapi: 3.0.3
+info:
+  title: CardDemo API
+  description: |
+    RESTful API for the CardDemo Credit Card Management Application.
+    
+    This API provides comprehensive functionality for managing credit card accounts, cards, 
+    transactions, and bill payments. The API is migrated from a legacy IBM mainframe CICS 
+    application while preserving 100% functional equivalence and business logic integrity.
+    
+    **Key Features:**
+    - User authentication and authorization with JWT tokens
+    - Account management (view, create, update)
+    - Card management with pagination (7 cards per page)
+    - Transaction management with pagination (10 transactions per page)
+    - Bill payment processing
+    - Report generation
+    - Administrative functions
+    - User management
+    
+    **CICS Transaction Mapping:**
+    - CC00 → POST /api/auth/login
+    - CM00 → GET /api/menu
+    - CA00 → Account operations
+    - And more...
+    
+    **License:** Apache 2.0
+  version: 1.0.0
+  contact:
+    name: CardDemo API Support
+    email: support@carddemo.com
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8080
+    description: Development server
+  - url: https://api-dev.carddemo.com
+    description: Development environment
+  - url: https://api.carddemo.com
+    description: Production environment
+
+tags:
+  - name: Authentication
+    description: User authentication and session management (COSGN00)
+  - name: Menu
+    description: Main menu navigation (COMEN01)
+  - name: Accounts
+    description: Account management operations (COACTVW, COACTUP, COACTADD)
+  - name: Cards
+    description: Credit card operations (COCRDLI, COCRDSL, COCRDUP)
+  - name: Transactions
+    description: Transaction management (COTRN00, COTRN01, COTRN02)
+  - name: Payments
+    description: Bill payment processing (COBIL00)
+  - name: Reports
+    description: Report generation (CORPT00)
+  - name: Admin
+    description: Administrative functions (COADM01)
+  - name: Users
+    description: User management (COUSR00, COUSR01, COUSR02, COUSR03)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: User login
+      description: |
+        Authenticates a user with username and password, returning a JWT token for subsequent requests.
+        Maps from CICS transaction CC00 (COSGN00).
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              userId: "DEMO001"
+              password: "Demo1234"
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                responseCode: "00"
+                userName: "Demo User"
+                userType: "R"
+                token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: 401
+                error: "Unauthorized"
+                message: "Invalid user ID or password"
+                timestamp: "2024-01-15T10:30:00Z"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/logout:
+    post:
+      tags:
+        - Authentication
+      summary: User logout
+      description: |
+        Logs out the current user and invalidates the JWT token.
+        Maps from CICS transaction CC00 (COSGN00) logout function.
+      operationId: logout
+      responses:
+        '204':
+          description: Logout successful
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/menu:
+    get:
+      tags:
+        - Menu
+      summary: Get main menu options
+      description: |
+        Retrieves menu options based on user role (Regular User or Administrator).
+        Maps from CICS transaction CM00 (COMEN01).
+      operationId: getMenu
+      responses:
+        '200':
+          description: Menu options retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MenuResponse'
+              example:
+                options:
+                  - id: 1
+                    label: "View Account"
+                    transactionCode: "CA00"
+                  - id: 2
+                    label: "Update Account"
+                    transactionCode: "CA01"
+                  - id: 3
+                    label: "List Cards"
+                    transactionCode: "CC00"
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/accounts/{accountId}:
+    get:
+      tags:
+        - Accounts
+      summary: View account details
+      description: |
+        Retrieves detailed account information including customer details.
+        Maps from CICS transaction CA00 (COACTVW).
+      operationId: getAccount
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          description: 11-digit account number
+          schema:
+            type: string
+            pattern: '^\d{11}$'
+            minLength: 11
+            maxLength: 11
+          example: "00000000001"
+      responses:
+        '200':
+          description: Account details retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDetailResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authorized to view this account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Account not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+        - Accounts
+      summary: Update account information
+      description: |
+        Updates account details such as credit limit and status.
+        Maps from CICS transaction CA01 (COACTUP).
+      operationId: updateAccount
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          description: 11-digit account number
+          schema:
+            type: string
+            pattern: '^\d{11}$'
+            minLength: 11
+            maxLength: 11
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountUpdateRequest'
+      responses:
+        '200':
+          description: Account updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDetailResponse'
+        '400':
+          description: Invalid request data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authorized to update this account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Account not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/accounts:
+    post:
+      tags:
+        - Accounts
+      summary: Create new account
+      description: |
+        Creates a new credit card account for an existing customer.
+        Maps from CICS transaction CA02 (COACTADD).
+        Requires ROLE_ADMIN authorization.
+      operationId: createAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountCreateRequest'
+      responses:
+        '201':
+          description: Account created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDetailResponse'
+        '400':
+          description: Invalid request data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authorized - requires admin role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/cards:
+    get:
+      tags:
+        - Cards
+      summary: List credit cards
+      description: |
+        Retrieves a paginated list of credit cards for an account.
+        Maps from CICS transaction CC00 (COCRDLI).
+        Pagination: 7 cards per page.
+      operationId: listCards
+      parameters:
+        - name: accountId
+          in: query
+          required: true
+          description: 11-digit account number
+          schema:
+            type: string
+            pattern: '^\d{11}$'
+          example: "00000000001"
+        - name: page
+          in: query
+          required: false
+          description: Page number (0-based)
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          example: 0
+        - name: size
+          in: query
+          required: false
+          description: Page size (default 7, max 7)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 7
+            default: 7
+          example: 7
+      responses:
+        '200':
+          description: Card list retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardListResponse'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/cards/{cardId}:
+    get:
+      tags:
+        - Cards
+      summary: Get card details
+      description: |
+        Retrieves detailed information for a specific credit card.
+        Maps from CICS transaction CC01 (COCRDSL).
+      operationId: getCard
+      parameters:
+        - name: cardId
+          in: path
+          required: true
+          description: 16-digit card number
+          schema:
+            type: string
+            pattern: '^\d{16}$'
+            minLength: 16
+            maxLength: 16
+          example: "4000123456789010"
+      responses:
+        '200':
+          description: Card details retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardDetailResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Card not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+        - Cards
+      summary: Update card information
+      description: |
+        Updates card information such as status (Active/Expired/Blocked).
+        Maps from CICS transaction CC02 (COCRDUP).
+      operationId: updateCard
+      parameters:
+        - name: cardId
+          in: path
+          required: true
+          description: 16-digit card number
+          schema:
+            type: string
+            pattern: '^\d{16}$'
+          example: "4000123456789010"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CardUpdateRequest'
+      responses:
+        '200':
+          description: Card updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardDetailResponse'
+        '400':
+          description: Invalid request data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Card not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/transactions:
+    get:
+      tags:
+        - Transactions
+      summary: List transactions
+      description: |
+        Retrieves a paginated list of transactions with optional filtering by date range and transaction ID.
+        Maps from CICS transaction CT00 (COTRN00).
+        Pagination: 10 transactions per page.
+      operationId: listTransactions
+      parameters:
+        - name: accountId
+          in: query
+          required: false
+          description: Filter by account ID
+          schema:
+            type: string
+            pattern: '^\d{11}$'
+          example: "00000000001"
+        - name: cardId
+          in: query
+          required: false
+          description: Filter by card number
+          schema:
+            type: string
+            pattern: '^\d{16}$'
+          example: "4000123456789010"
+        - name: transactionId
+          in: query
+          required: false
+          description: Search by transaction ID
+          schema:
+            type: string
+            maxLength: 16
+          example: "TRN20240115001"
+        - name: startDate
+          in: query
+          required: false
+          description: Start date for filtering (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+          example: "2024-01-01"
+        - name: endDate
+          in: query
+          required: false
+          description: End date for filtering (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+          example: "2024-01-31"
+        - name: page
+          in: query
+          required: false
+          description: Page number (0-based)
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          example: 0
+        - name: size
+          in: query
+          required: false
+          description: Page size (default 10, max 10)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+            default: 10
+          example: 10
+      responses:
+        '200':
+          description: Transaction list retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionListResponse'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - Transactions
+      summary: Create new transaction
+      description: |
+        Creates a new transaction (purchase, payment, etc.).
+        Maps from CICS transaction CT02 (COTRN02).
+      operationId: createTransaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionCreateRequest'
+      responses:
+        '201':
+          description: Transaction created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionDetailResponse'
+        '400':
+          description: Invalid request data or insufficient balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/transactions/{transactionId}:
+    get:
+      tags:
+        - Transactions
+      summary: Get transaction details
+      description: |
+        Retrieves detailed information for a specific transaction.
+        Maps from CICS transaction CT00 (COTRN00) detail view.
+      operationId: getTransaction
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          description: Transaction ID
+          schema:
+            type: string
+            maxLength: 16
+          example: "TRN20240115001"
+      responses:
+        '200':
+          description: Transaction details retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionDetailResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Transaction not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/transactions/categories:
+    get:
+      tags:
+        - Transactions
+      summary: Get transaction category summary
+      description: |
+        Retrieves transaction aggregation by category.
+        Maps from CICS transaction CT01 (COTRN01).
+      operationId: getTransactionCategories
+      parameters:
+        - name: accountId
+          in: query
+          required: true
+          description: Account ID
+          schema:
+            type: string
+            pattern: '^\d{11}$'
+          example: "00000000001"
+        - name: startDate
+          in: query
+          required: false
+          description: Start date for aggregation (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+          example: "2024-01-01"
+        - name: endDate
+          in: query
+          required: false
+          description: End date for aggregation (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+          example: "2024-01-31"
+      responses:
+        '200':
+          description: Category summary retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionCategoryResponse'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/payments/bill:
+    post:
+      tags:
+        - Payments
+      summary: Process bill payment
+      description: |
+        Processes a bill payment transaction.
+        Maps from CICS transaction CB00 (COBIL00).
+      operationId: processBillPayment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillPaymentRequest'
+      responses:
+        '201':
+          description: Bill payment processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillPaymentResponse'
+        '400':
+          description: Invalid request data or insufficient balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/reports/menu:
+    get:
+      tags:
+        - Reports
+      summary: Get report menu options
+      description: |
+        Retrieves available report options based on user role.
+        Maps from CICS transaction CR00 (CORPT00).
+        Requires ROLE_ADMIN authorization.
+      operationId: getReportMenu
+      responses:
+        '200':
+          description: Report menu retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportMenuResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authorized - requires admin role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/reports/generate:
+    post:
+      tags:
+        - Reports
+      summary: Generate report
+      description: |
+        Generates a report based on specified parameters.
+        Maps from CICS transaction CR00 (CORPT00) report generation.
+        Requires ROLE_ADMIN authorization.
+      operationId: generateReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportGenerateRequest'
+      responses:
+        '200':
+          description: Report generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportGenerateResponse'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authorized - requires admin role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/menu:
+    get:
+      tags:
+        - Admin
+      summary: Get admin menu options
+      description: |
+        Retrieves administrative menu options.
+        Maps from CICS transaction CA00 (COADM01).
+        Requires ROLE_ADMIN authorization.
+      operationId: getAdminMenu
+      responses:
+        '200':
+          description: Admin menu retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MenuResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authorized - requires admin role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/users:
+    get:
+      tags:
+        - Users
+      summary: List users
+      description: |
+        Retrieves a list of all users.
+        Maps from CICS transaction CU00 (COUSR00).
+        Requires ROLE_ADMIN authorization.
+      operationId: listUsers
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: Page number (0-based)
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: size
+          in: query
+          required: false
+          description: Page size
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: User list retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authorized - requires admin role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - Users
+      summary: Create new user
+      description: |
+        Creates a new user account.
+        Maps from CICS transaction CU02 (COUSR02).
+        Requires ROLE_ADMIN authorization.
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+      responses:
+        '201':
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDetailResponse'
+        '400':
+          description: Invalid request data or user already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authorized - requires admin role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/users/{userId}:
+    get:
+      tags:
+        - Users
+      summary: Get user profile
+      description: |
+        Retrieves user profile information.
+        Maps from CICS transaction CU01 (COUSR01).
+        Users can view their own profile, admins can view any profile.
+      operationId: getUserProfile
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: User ID (8 characters)
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 8
+          example: "DEMO001"
+      responses:
+        '200':
+          description: User profile retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDetailResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authorized to view this profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+        - Users
+      summary: Update user profile
+      description: |
+        Updates user profile information.
+        Maps from CICS transaction CU03 (COUSR03).
+        Users can update their own profile, admins can update any profile.
+      operationId: updateUser
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: User ID (8 characters)
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 8
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
+      responses:
+        '200':
+          description: User profile updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDetailResponse'
+        '400':
+          description: Invalid request data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authorized to update this profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - Users
+      summary: Delete user
+      description: |
+        Deletes a user account.
+        Maps from CICS transaction CU00 (COUSR00) delete function.
+        Requires ROLE_ADMIN authorization.
+      operationId: deleteUser
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: User ID (8 characters)
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 8
+      responses:
+        '204':
+          description: User deleted successfully
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authorized - requires admin role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT token-based authentication replacing CICS USRSEC file authentication.
+        Token is obtained from the /api/auth/login endpoint.
+
+  schemas:
+    # Authentication Schemas
+    LoginRequest:
+      type: object
+      required:
+        - userId
+        - password
+      properties:
+        userId:
+          type: string
+          minLength: 1
+          maxLength: 8
+          description: User ID (8 characters max, from COBOL PIC X(8))
+          example: "DEMO001"
+        password:
+          type: string
+          minLength: 1
+          maxLength: 8
+          description: Password (8 characters max, from COBOL PIC X(8))
+          format: password
+          example: "Demo1234"
+
+    LoginResponse:
+      type: object
+      properties:
+        responseCode:
+          type: string
+          maxLength: 2
+          description: Response code (00=success, from COBOL PIC 9(2))
+          example: "00"
+        userName:
+          type: string
+          maxLength: 25
+          description: Full user name (from COBOL PIC X(25))
+          example: "Demo User"
+        userType:
+          type: string
+          maxLength: 1
+          enum: [R, A]
+          description: User type - R=Regular User, A=Administrative User (from COBOL PIC X(1))
+          example: "R"
+        token:
+          type: string
+          description: JWT authentication token
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        expiresIn:
+          type: integer
+          description: Token expiration time in seconds
+          example: 86400
+
+    # Menu Schemas
+    MenuResponse:
+      type: object
+      properties:
+        options:
+          type: array
+          description: Available menu options based on user role
+          items:
+            $ref: '#/components/schemas/MenuOption'
+
+    MenuOption:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: Option number (from COMEN01 OPTION field)
+          example: 1
+        label:
+          type: string
+          maxLength: 40
+          description: Option label (from COBOL PIC X(40))
+          example: "View Account"
+        transactionCode:
+          type: string
+          maxLength: 4
+          description: Associated CICS transaction code
+          example: "CA00"
+        requiresAdmin:
+          type: boolean
+          description: Whether option requires admin role
+          example: false
+
+    # Account Schemas
+    AccountDetailResponse:
+      type: object
+      properties:
+        accountId:
+          type: string
+          pattern: '^\d{11}$'
+          description: 11-digit account number (from COBOL PIC 9(11))
+          example: "00000000001"
+        accountStatus:
+          type: string
+          maxLength: 1
+          enum: [Y, N]
+          description: Active status Y/N (from COBOL PIC X(1))
+          example: "Y"
+        accountOpenDate:
+          type: string
+          format: date
+          description: Account open date (from COBOL date field)
+          example: "2024-01-01"
+        accountExpiryDate:
+          type: string
+          format: date
+          description: Account expiry date
+          example: "2029-01-01"
+        accountReissueDate:
+          type: string
+          format: date
+          description: Account reissue date
+          example: "2024-06-01"
+        creditLimit:
+          type: number
+          format: double
+          description: Credit limit with 2 decimal precision (from COBOL COMP-3 PIC S9(13)V99)
+          example: 10000.00
+        cashCreditLimit:
+          type: number
+          format: double
+          description: Cash credit limit with 2 decimal precision
+          example: 2000.00
+        currentBalance:
+          type: number
+          format: double
+          description: Current balance with 2 decimal precision
+          example: 1500.50
+        currentCycleCredit:
+          type: number
+          format: double
+          description: Current cycle credit amount
+          example: 500.00
+        currentCycleDebit:
+          type: number
+          format: double
+          description: Current cycle debit amount
+          example: 2000.50
+        accountGroup:
+          type: string
+          maxLength: 10
+          description: Account group ID (from COBOL PIC X(10))
+          example: "STANDARD"
+        customer:
+          $ref: '#/components/schemas/CustomerDetail'
+
+    CustomerDetail:
+      type: object
+      properties:
+        customerId:
+          type: string
+          pattern: '^\d{9}$'
+          description: 9-digit customer ID (from COBOL PIC 9(9))
+          example: "000000001"
+        firstName:
+          type: string
+          maxLength: 25
+          description: First name (from COBOL PIC X(25))
+          example: "John"
+        middleName:
+          type: string
+          maxLength: 25
+          description: Middle name
+          example: "M"
+        lastName:
+          type: string
+          maxLength: 25
+          description: Last name
+          example: "Doe"
+        dateOfBirth:
+          type: string
+          format: date
+          description: Date of birth
+          example: "1990-01-15"
+        ssn:
+          type: string
+          maxLength: 12
+          description: Social Security Number (from COBOL PIC X(12))
+          example: "123-45-6789"
+        ficoScore:
+          type: integer
+          minimum: 300
+          maximum: 850
+          description: FICO credit score (from COBOL PIC 9(3))
+          example: 750
+        addressLine1:
+          type: string
+          maxLength: 50
+          description: Address line 1 (from COBOL PIC X(50))
+          example: "123 Main Street"
+        addressLine2:
+          type: string
+          maxLength: 50
+          description: Address line 2
+          example: "Apt 4B"
+        city:
+          type: string
+          maxLength: 50
+          description: City
+          example: "New York"
+        state:
+          type: string
+          maxLength: 2
+          description: State code (from COBOL PIC X(2))
+          example: "NY"
+        zipCode:
+          type: string
+          maxLength: 5
+          pattern: '^\d{5}$'
+          description: ZIP code (from COBOL PIC 9(5))
+          example: "10001"
+        country:
+          type: string
+          maxLength: 3
+          description: Country code (from COBOL PIC X(3))
+          example: "USA"
+        phone1:
+          type: string
+          maxLength: 13
+          description: Primary phone number (from COBOL PIC X(13))
+          example: "212-555-1234"
+        phone2:
+          type: string
+          maxLength: 13
+          description: Secondary phone number
+          example: "212-555-5678"
+        governmentId:
+          type: string
+          maxLength: 20
+          description: Government issued ID reference (from COBOL PIC X(20))
+          example: "DL123456789"
+        eftAccountId:
+          type: string
+          maxLength: 10
+          description: EFT account ID (from COBOL PIC X(10))
+          example: "EFT0001"
+        primaryCardholderFlag:
+          type: string
+          maxLength: 1
+          enum: [Y, N]
+          description: Primary cardholder flag Y/N
+          example: "Y"
+
+    AccountUpdateRequest:
+      type: object
+      properties:
+        creditLimit:
+          type: number
+          format: double
+          minimum: 0
+          description: New credit limit
+          example: 15000.00
+        cashCreditLimit:
+          type: number
+          format: double
+          minimum: 0
+          description: New cash credit limit
+          example: 3000.00
+        accountStatus:
+          type: string
+          maxLength: 1
+          enum: [Y, N]
+          description: Account status Y/N
+          example: "Y"
+        accountGroup:
+          type: string
+          maxLength: 10
+          description: Account group ID
+          example: "PREMIUM"
+
+    AccountCreateRequest:
+      type: object
+      required:
+        - customerId
+        - creditLimit
+        - cashCreditLimit
+      properties:
+        customerId:
+          type: string
+          pattern: '^\d{9}$'
+          description: 9-digit customer ID
+          example: "000000001"
+        creditLimit:
+          type: number
+          format: double
+          minimum: 0
+          description: Credit limit
+          example: 10000.00
+        cashCreditLimit:
+          type: number
+          format: double
+          minimum: 0
+          description: Cash credit limit
+          example: 2000.00
+        accountGroup:
+          type: string
+          maxLength: 10
+          description: Account group ID
+          example: "STANDARD"
+
+    # Card Schemas
+    CardListResponse:
+      type: object
+      properties:
+        cards:
+          type: array
+          items:
+            $ref: '#/components/schemas/CardSummary'
+        pagination:
+          $ref: '#/components/schemas/PaginationInfo'
+
+    CardSummary:
+      type: object
+      properties:
+        cardNumber:
+          type: string
+          pattern: '^\d{16}$'
+          description: 16-digit card number (from COBOL PIC 9(16))
+          example: "4000123456789010"
+        cardStatus:
+          type: string
+          maxLength: 1
+          enum: [A, E, B]
+          description: Card status - A=Active, E=Expired, B=Blocked (from COBOL 88-level)
+          example: "A"
+        cardholderName:
+          type: string
+          maxLength: 50
+          description: Name on card
+          example: "JOHN M DOE"
+        expiryDate:
+          type: string
+          format: date
+          description: Card expiration date
+          example: "2029-01-31"
+
+    CardDetailResponse:
+      type: object
+      properties:
+        cardNumber:
+          type: string
+          pattern: '^\d{16}$'
+          description: 16-digit card number
+          example: "4000123456789010"
+        accountId:
+          type: string
+          pattern: '^\d{11}$'
+          description: Associated account number
+          example: "00000000001"
+        cardStatus:
+          type: string
+          maxLength: 1
+          enum: [A, E, B]
+          description: Card status - A=Active, E=Expired, B=Blocked
+          example: "A"
+        cardholderName:
+          type: string
+          maxLength: 50
+          description: Name on card (from COBOL PIC X(50))
+          example: "JOHN M DOE"
+        issueDate:
+          type: string
+          format: date
+          description: Card issue date
+          example: "2024-01-01"
+        expiryDate:
+          type: string
+          format: date
+          description: Card expiration date
+          example: "2029-01-31"
+        cvv:
+          type: string
+          pattern: '^\d{3}$'
+          description: Card CVV (3 digits, from COBOL PIC 9(3))
+          example: "123"
+
+    CardUpdateRequest:
+      type: object
+      properties:
+        cardStatus:
+          type: string
+          maxLength: 1
+          enum: [A, E, B]
+          description: New card status - A=Active, E=Expired, B=Blocked
+          example: "A"
+
+    # Transaction Schemas
+    TransactionListResponse:
+      type: object
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransactionSummary'
+        pagination:
+          $ref: '#/components/schemas/PaginationInfo'
+
+    TransactionSummary:
+      type: object
+      properties:
+        transactionId:
+          type: string
+          maxLength: 16
+          description: Transaction ID (from COBOL PIC X(16))
+          example: "TRN20240115001"
+        transactionDate:
+          type: string
+          format: date-time
+          description: Transaction date and time
+          example: "2024-01-15T14:30:00Z"
+        description:
+          type: string
+          maxLength: 26
+          description: Transaction description (from COBOL PIC X(26))
+          example: "AMAZON.COM PURCHASE"
+        amount:
+          type: number
+          format: double
+          description: Transaction amount with 2 decimal precision (from COBOL COMP-3)
+          example: 125.50
+
+    TransactionDetailResponse:
+      type: object
+      properties:
+        transactionId:
+          type: string
+          maxLength: 16
+          description: Transaction ID
+          example: "TRN20240115001"
+        accountId:
+          type: string
+          pattern: '^\d{11}$'
+          description: Account number
+          example: "00000000001"
+        cardNumber:
+          type: string
+          pattern: '^\d{16}$'
+          description: Card number
+          example: "4000123456789010"
+        transactionDate:
+          type: string
+          format: date-time
+          description: Transaction date and time
+          example: "2024-01-15T14:30:00Z"
+        transactionTypeCode:
+          type: string
+          maxLength: 2
+          description: Transaction type code (from COBOL PIC X(2))
+          example: "01"
+        transactionTypeName:
+          type: string
+          maxLength: 50
+          description: Transaction type name
+          example: "Purchase"
+        transactionCategoryCode:
+          type: string
+          maxLength: 2
+          description: Transaction category code
+          example: "05"
+        transactionCategoryName:
+          type: string
+          maxLength: 50
+          description: Transaction category name
+          example: "Retail"
+        description:
+          type: string
+          maxLength: 100
+          description: Transaction description
+          example: "AMAZON.COM PURCHASE"
+        amount:
+          type: number
+          format: double
+          description: Transaction amount with 2 decimal precision
+          example: 125.50
+        merchantName:
+          type: string
+          maxLength: 50
+          description: Merchant name (from COBOL PIC X(50))
+          example: "AMAZON.COM"
+        merchantCity:
+          type: string
+          maxLength: 50
+          description: Merchant city
+          example: "SEATTLE"
+        merchantZip:
+          type: string
+          maxLength: 10
+          description: Merchant ZIP code
+          example: "98101"
+        confirmationNumber:
+          type: string
+          maxLength: 20
+          description: Confirmation number (from COBOL PIC X(20))
+          example: "CONF123456789"
+
+    TransactionCreateRequest:
+      type: object
+      required:
+        - accountId
+        - cardNumber
+        - transactionTypeCode
+        - amount
+      properties:
+        accountId:
+          type: string
+          pattern: '^\d{11}$'
+          description: Account number
+          example: "00000000001"
+        cardNumber:
+          type: string
+          pattern: '^\d{16}$'
+          description: Card number
+          example: "4000123456789010"
+        transactionTypeCode:
+          type: string
+          maxLength: 2
+          description: Transaction type code
+          example: "01"
+        transactionCategoryCode:
+          type: string
+          maxLength: 2
+          description: Transaction category code
+          example: "05"
+        amount:
+          type: number
+          format: double
+          minimum: 0.01
+          description: Transaction amount
+          example: 125.50
+        description:
+          type: string
+          maxLength: 100
+          description: Transaction description
+          example: "AMAZON.COM PURCHASE"
+        merchantName:
+          type: string
+          maxLength: 50
+          description: Merchant name
+          example: "AMAZON.COM"
+
+    TransactionCategoryResponse:
+      type: object
+      properties:
+        accountId:
+          type: string
+          pattern: '^\d{11}$'
+          description: Account number
+          example: "00000000001"
+        startDate:
+          type: string
+          format: date
+          description: Start date for aggregation
+          example: "2024-01-01"
+        endDate:
+          type: string
+          format: date
+          description: End date for aggregation
+          example: "2024-01-31"
+        categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/CategoryAggregate'
+        totalAmount:
+          type: number
+          format: double
+          description: Total amount across all categories
+          example: 5432.10
+
+    CategoryAggregate:
+      type: object
+      properties:
+        categoryCode:
+          type: string
+          maxLength: 2
+          description: Category code
+          example: "05"
+        categoryName:
+          type: string
+          maxLength: 50
+          description: Category name
+          example: "Retail"
+        transactionCount:
+          type: integer
+          description: Number of transactions in category
+          example: 15
+        totalAmount:
+          type: number
+          format: double
+          description: Total amount for category
+          example: 1245.75
+
+    # Payment Schemas
+    BillPaymentRequest:
+      type: object
+      required:
+        - accountId
+        - amount
+        - payeeName
+      properties:
+        accountId:
+          type: string
+          pattern: '^\d{11}$'
+          description: Account number
+          example: "00000000001"
+        amount:
+          type: number
+          format: double
+          minimum: 0.01
+          description: Payment amount with 2 decimal precision
+          example: 500.00
+        payeeName:
+          type: string
+          maxLength: 50
+          description: Payee name (from COBOL PIC X(50))
+          example: "Electric Company"
+        payeeAccountNumber:
+          type: string
+          maxLength: 20
+          description: Payee account number (from COBOL PIC X(20))
+          example: "ACCT-12345678"
+        paymentDate:
+          type: string
+          format: date
+          description: Payment date (defaults to current date if not provided)
+          example: "2024-01-15"
+
+    BillPaymentResponse:
+      type: object
+      properties:
+        transactionId:
+          type: string
+          maxLength: 16
+          description: Transaction ID for the payment
+          example: "TRN20240115001"
+        confirmationNumber:
+          type: string
+          maxLength: 20
+          description: Payment confirmation number
+          example: "CONF123456789"
+        amount:
+          type: number
+          format: double
+          description: Payment amount
+          example: 500.00
+        paymentDate:
+          type: string
+          format: date
+          description: Payment date
+          example: "2024-01-15"
+        remainingBalance:
+          type: number
+          format: double
+          description: Remaining account balance after payment
+          example: 1000.50
+
+    # Report Schemas
+    ReportMenuResponse:
+      type: object
+      properties:
+        reportTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReportType'
+
+    ReportType:
+      type: object
+      properties:
+        reportCode:
+          type: string
+          maxLength: 10
+          description: Report type code
+          example: "ACCT_SUMM"
+        reportName:
+          type: string
+          maxLength: 50
+          description: Report name
+          example: "Account Summary Report"
+        requiresDateRange:
+          type: boolean
+          description: Whether report requires date range
+          example: true
+
+    ReportGenerateRequest:
+      type: object
+      required:
+        - reportCode
+      properties:
+        reportCode:
+          type: string
+          maxLength: 10
+          description: Report type code
+          example: "ACCT_SUMM"
+        startDate:
+          type: string
+          format: date
+          description: Start date for report
+          example: "2024-01-01"
+        endDate:
+          type: string
+          format: date
+          description: End date for report
+          example: "2024-01-31"
+        accountId:
+          type: string
+          pattern: '^\d{11}$'
+          description: Optional account ID filter
+          example: "00000000001"
+        format:
+          type: string
+          enum: [PDF, CSV, JSON]
+          description: Report output format
+          default: PDF
+          example: "PDF"
+
+    ReportGenerateResponse:
+      type: object
+      properties:
+        reportId:
+          type: string
+          description: Generated report ID
+          example: "RPT20240115001"
+        reportUrl:
+          type: string
+          format: uri
+          description: URL to download the report
+          example: "https://api.carddemo.com/reports/RPT20240115001/download"
+        generatedDate:
+          type: string
+          format: date-time
+          description: Report generation timestamp
+          example: "2024-01-15T15:45:00Z"
+
+    # User Schemas
+    UserListResponse:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserSummary'
+        pagination:
+          $ref: '#/components/schemas/PaginationInfo'
+
+    UserSummary:
+      type: object
+      properties:
+        userId:
+          type: string
+          maxLength: 8
+          description: User ID (from COBOL PIC X(8))
+          example: "DEMO001"
+        userName:
+          type: string
+          maxLength: 25
+          description: Full user name
+          example: "Demo User"
+        userType:
+          type: string
+          maxLength: 1
+          enum: [R, A]
+          description: User type - R=Regular, A=Admin
+          example: "R"
+        lastLoginDate:
+          type: string
+          format: date-time
+          description: Last login timestamp
+          example: "2024-01-15T10:30:00Z"
+
+    UserDetailResponse:
+      type: object
+      properties:
+        userId:
+          type: string
+          maxLength: 8
+          description: User ID
+          example: "DEMO001"
+        userName:
+          type: string
+          maxLength: 25
+          description: Full user name (from COBOL PIC X(25))
+          example: "Demo User"
+        userType:
+          type: string
+          maxLength: 1
+          enum: [R, A]
+          description: User type - R=Regular, A=Admin
+          example: "R"
+        email:
+          type: string
+          maxLength: 50
+          format: email
+          description: User email address
+          example: "demo@example.com"
+        lastLoginDate:
+          type: string
+          format: date-time
+          description: Last login timestamp
+          example: "2024-01-15T10:30:00Z"
+        createdDate:
+          type: string
+          format: date-time
+          description: User creation timestamp
+          example: "2024-01-01T00:00:00Z"
+        modifiedDate:
+          type: string
+          format: date-time
+          description: Last modification timestamp
+          example: "2024-01-15T10:30:00Z"
+
+    UserCreateRequest:
+      type: object
+      required:
+        - userId
+        - userName
+        - password
+        - userType
+      properties:
+        userId:
+          type: string
+          minLength: 1
+          maxLength: 8
+          description: User ID (8 characters max)
+          example: "DEMO001"
+        userName:
+          type: string
+          minLength: 1
+          maxLength: 25
+          description: Full user name
+          example: "Demo User"
+        password:
+          type: string
+          minLength: 8
+          maxLength: 8
+          format: password
+          description: User password (8 characters, will be encrypted with BCrypt)
+          example: "Demo1234"
+        userType:
+          type: string
+          maxLength: 1
+          enum: [R, A]
+          description: User type - R=Regular, A=Admin
+          example: "R"
+        email:
+          type: string
+          maxLength: 50
+          format: email
+          description: User email address
+          example: "demo@example.com"
+
+    UserUpdateRequest:
+      type: object
+      properties:
+        userName:
+          type: string
+          minLength: 1
+          maxLength: 25
+          description: Full user name
+          example: "Demo User Updated"
+        password:
+          type: string
+          minLength: 8
+          maxLength: 8
+          format: password
+          description: New password (optional, will be encrypted with BCrypt)
+          example: "NewPass1"
+        email:
+          type: string
+          maxLength: 50
+          format: email
+          description: User email address
+          example: "demo.updated@example.com"
+
+    # Common Schemas
+    PaginationInfo:
+      type: object
+      properties:
+        page:
+          type: integer
+          minimum: 0
+          description: Current page number (0-based)
+          example: 0
+        size:
+          type: integer
+          minimum: 1
+          description: Page size
+          example: 10
+        totalElements:
+          type: integer
+          minimum: 0
+          description: Total number of elements
+          example: 45
+        totalPages:
+          type: integer
+          minimum: 0
+          description: Total number of pages
+          example: 5
+
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          description: HTTP status code
+          example: 400
+        error:
+          type: string
+          description: Error type
+          example: "Bad Request"
+        message:
+          type: string
+          description: Error message (maps from COBOL error codes to descriptive messages)
+          example: "Invalid account number format"
+        timestamp:
+          type: string
+          format: date-time
+          description: Error timestamp
+          example: "2024-01-15T10:30:00Z"
+        path:
+          type: string
+          description: Request path that caused the error
+          example: "/api/accounts/invalid"
+        fieldErrors:
+          type: array
+          description: Field-level validation errors
+          items:
+            $ref: '#/components/schemas/FieldError'
+
+    FieldError:
+      type: object
+      properties:
+        field:
+          type: string
+          description: Field name that caused the error
+          example: "accountId"
+        message:
+          type: string
+          description: Field-specific error message
+          example: "must match pattern ^\\d{11}$"
+        rejectedValue:
+          type: string
+          description: The value that was rejected
+          example: "123"
+
