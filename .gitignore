@@ -1,0 +1,482 @@
+# ============================================================================
+# OCR Processing Application - Git Ignore Configuration
+# ============================================================================
+# Purpose: Prevent tracking of generated files, dependencies, secrets, and temporary files
+# Last Updated: 2025-11-05
+
+# ============================================================================
+# Node.js / JavaScript / TypeScript
+# ============================================================================
+
+# Dependencies
+node_modules/
+jspm_packages/
+bower_components/
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+.nuxt/
+.cache/
+.parcel-cache/
+.vercel
+
+# Test coverage
+coverage/
+.nyc_output/
+*.lcov
+
+# Runtime and logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+pnpm-debug.log*
+
+# Lock files (keep package-lock.json, exclude others if using npm)
+# Uncomment if using yarn or pnpm exclusively:
+# yarn.lock
+# pnpm-lock.yaml
+
+# Dependency directories
+.pnp/
+.pnp.js
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Optional stylelint cache
+.stylelintcache
+
+# Microbundle cache
+.rpt2_cache/
+.rts2_cache_cjs/
+.rts2_cache_es/
+.rts2_cache_umd/
+
+# Turbo (monorepo build tool)
+.turbo/
+
+# ============================================================================
+# Python
+# ============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# pdm
+.pdm.toml
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# ============================================================================
+# Environment Variables and Secrets
+# ============================================================================
+
+# Environment files (keep .example files)
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
+*.env
+
+# Keep example environment files
+!.env.example
+!.env.local.example
+!.env.*.example
+
+# Secret keys and credentials
+secrets/
+*.key
+*.pem
+*.crt
+*.csr
+*.p12
+*.pfx
+**/credentials.json
+**/service-account*.json
+
+# Cloud provider credentials
+.aws/
+.gcp/
+.azure/
+
+# ============================================================================
+# Databases
+# ============================================================================
+
+# SQLite
+*.sqlite
+*.sqlite3
+*.db
+
+# PostgreSQL
+*.dump
+*.sql
+
+# MongoDB
+*.bson
+
+# Redis
+dump.rdb
+
+# ============================================================================
+# Docker
+# ============================================================================
+
+# Docker volumes
+docker-volumes/
+volumes/
+
+# Docker override files
+docker-compose.override.yml
+
+# ============================================================================
+# IDEs and Editors
+# ============================================================================
+
+# Visual Studio Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.code-workspace
+
+# JetBrains IDEs (IntelliJ IDEA, WebStorm, PyCharm, etc.)
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.*.sw?
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+.directory
+.Trash-*
+.nfs*
+
+# ============================================================================
+# Application-Specific
+# ============================================================================
+
+# Uploaded documents (development/test)
+uploads/
+temp-uploads/
+documents/
+
+# Processed documents
+processed/
+temp-processed/
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Backups
+*.bak
+*.backup
+*.old
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# ============================================================================
+# Build and CI/CD
+# ============================================================================
+
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Kubernetes
+*.kubeconfig
+
+# Helm
+charts/*.tgz
+
+# Build artifacts
+*.jar
+*.war
+*.ear
+*.class
+
+# ============================================================================
+# Testing
+# ============================================================================
+
+# Test results
+test-results/
+junit.xml
+*.xml
+
+# E2E test artifacts
+playwright-report/
+test-results/
+screenshots/
+videos/
+
+# ============================================================================
+# Monitoring and Observability
+# ============================================================================
+
+# DataDog
+.ddtrace/
+
+# Sentry
+.sentryclirc
+
+# ============================================================================
+# Miscellaneous
+# ============================================================================
+
+# OS generated files
+._.DS_Store
+**/.DS_Store
+
+# Package manager directories
+.pnpm-store/
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# ESLint flat config cache
+.eslintcache
+
+# Stylelint cache
+.stylelintcache
+
+# Next.js
+.next/
+out/
+next-env.d.ts
+
+# Nuxt.js
+.nuxt
+.nitro
+.output
+.env.local
+
+# Temporary blitzy test files
+blitzy_adhoc_test_*
+
+# Lock files for Python (if using pip-tools or poetry)
+# requirements-lock.txt
+# poetry.lock
+
+# ============================================================================
+# Keep These Files
+# ============================================================================
+
+# Keep .gitkeep files in otherwise empty directories
+!.gitkeep
+
+# Keep example configuration files
+!*.example
+!*.example.*
+!*.sample
+!*.template
