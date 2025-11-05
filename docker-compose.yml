@@ -33,8 +33,8 @@ services:
       - "5432:5432"
     volumes:
       - postgres_dev_data:/var/lib/postgresql/data
-      # Optional: Mount initialization scripts
-      # - ./backend/src/database/init:/docker-entrypoint-initdb.d
+      # Mount initialization scripts (enables uuid-ossp extension automatically)
+      - ./backend/src/database/init:/docker-entrypoint-initdb.d
     networks:
       - ocr-dev-network
     healthcheck:

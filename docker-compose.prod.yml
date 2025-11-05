@@ -222,6 +222,8 @@ services:
       - PGDATA=/var/lib/postgresql/data/pgdata
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Mount initialization scripts (enables uuid-ossp extension automatically)
+      - ./backend/src/database/init:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ocr_user -d ocr_db"]
       interval: 10s

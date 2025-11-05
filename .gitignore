@@ -248,6 +248,8 @@ secrets/
 # PostgreSQL
 *.dump
 *.sql
+# Exception: Allow database initialization scripts
+!backend/src/database/init/*.sql
 
 # MongoDB
 *.bson
