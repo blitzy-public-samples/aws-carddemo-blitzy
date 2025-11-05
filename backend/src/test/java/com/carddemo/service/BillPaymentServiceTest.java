@@ -7,12 +7,15 @@ package com.carddemo.service;
 
 import com.carddemo.dto.request.BillPaymentRequest;
 import com.carddemo.dto.response.BillPaymentResponse;
+import com.carddemo.constants.CardStatus;
 import com.carddemo.entity.Account;
+import com.carddemo.entity.Card;
 import com.carddemo.entity.Transaction;
 import com.carddemo.exception.AccountNotFoundException;
 import com.carddemo.exception.InsufficientBalanceException;
 import com.carddemo.exception.TransactionException;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.TransactionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -27,6 +30,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -104,10 +108,14 @@ public class BillPaymentServiceTest {
     @Mock
     private TransactionRepository transactionRepository;
 
+    @Mock
+    private CardRepository cardRepository;
+
     @InjectMocks
     private BillPaymentService billPaymentService;
 
     private Account testAccount;
+    private Card testCard;
     private BillPaymentRequest validPaymentRequest;
     private Transaction testTransaction;
 
@@ -125,6 +133,13 @@ public class BillPaymentServiceTest {
         testAccount.setCreditLimit(new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP));
         testAccount.setCashCreditLimit(new BigDecimal("1000.00").setScale(2, RoundingMode.HALF_UP));
         testAccount.setOpenDate(LocalDate.now().minusYears(2));
+
+        // Initialize test card matching CVACT03Y copybook structure
+        testCard = new Card();
+        testCard.setCardNumber("4111111111111111");
+        testCard.setAccount(testAccount);
+        testCard.setCardStatus(CardStatus.ACTIVE);
+        testCard.setExpirationDate(LocalDate.of(2025, 12, 31));
 
         // Initialize valid payment request
         validPaymentRequest = BillPaymentRequest.builder()
@@ -156,6 +171,7 @@ public class BillPaymentServiceTest {
     void processBillPayment_ValidPayment_CompletesSuccessfully() {
         // Arrange
         when(accountRepository.findById(12345678901L)).thenReturn(Optional.of(testAccount));
+        when(cardRepository.findByAccountId(12345678901L)).thenReturn(Arrays.asList(testCard));
         when(transactionRepository.save(any(Transaction.class))).thenReturn(testTransaction);
         when(accountRepository.save(any(Account.class))).thenReturn(testAccount);
 
@@ -203,7 +219,7 @@ public class BillPaymentServiceTest {
         // Act & Assert
         assertThatThrownBy(() -> billPaymentService.processBillPayment(insufficientFundsRequest))
                 .isInstanceOf(InsufficientBalanceException.class)
-                .hasMessageContaining("Payment amount exceeds current account balance");
+                .hasMessageContaining("Insufficient funds for payment");
 
         // Assert - No database modifications occurred (rollback verification)
         verify(accountRepository, times(1)).findById(12345678901L);
@@ -229,7 +245,7 @@ public class BillPaymentServiceTest {
         // Act & Assert
         assertThatThrownBy(() -> billPaymentService.processBillPayment(validPaymentRequest))
                 .isInstanceOf(AccountNotFoundException.class)
-                .hasMessageContaining("Account ID NOT found");
+                .hasMessageContaining("Account ID not found");
 
         // Assert - No database modifications occurred
         verify(accountRepository, times(1)).findById(12345678901L);
@@ -259,7 +275,7 @@ public class BillPaymentServiceTest {
         // Act & Assert
         assertThatThrownBy(() -> billPaymentService.processBillPayment(negativeAmountRequest))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Payment amount must be greater than zero");
+                .hasMessageContaining("Payment amount must be positive");
 
         // Assert - No database modifications occurred
         verify(accountRepository, times(1)).findById(12345678901L);
@@ -281,6 +297,7 @@ public class BillPaymentServiceTest {
         ArgumentCaptor<Account> accountCaptor = ArgumentCaptor.forClass(Account.class);
 
         when(accountRepository.findById(12345678901L)).thenReturn(Optional.of(testAccount));
+        when(cardRepository.findByAccountId(12345678901L)).thenReturn(Arrays.asList(testCard));
         when(transactionRepository.save(transactionCaptor.capture())).thenReturn(testTransaction);
         when(accountRepository.save(accountCaptor.capture())).thenReturn(testAccount);
 
@@ -315,6 +332,7 @@ public class BillPaymentServiceTest {
         ArgumentCaptor<Transaction> transactionCaptor = ArgumentCaptor.forClass(Transaction.class);
 
         when(accountRepository.findById(12345678901L)).thenReturn(Optional.of(testAccount));
+        when(cardRepository.findByAccountId(12345678901L)).thenReturn(Arrays.asList(testCard));
         when(transactionRepository.save(transactionCaptor.capture())).thenReturn(testTransaction);
         when(accountRepository.save(any(Account.class))).thenReturn(testAccount);
 
@@ -349,6 +367,7 @@ public class BillPaymentServiceTest {
         validPaymentRequest.setPaymentAmount(precisePayment);
 
         when(accountRepository.findById(12345678901L)).thenReturn(Optional.of(testAccount));
+        when(cardRepository.findByAccountId(12345678901L)).thenReturn(Arrays.asList(testCard));
         when(transactionRepository.save(any(Transaction.class))).thenReturn(testTransaction);
         when(accountRepository.save(any(Account.class))).thenReturn(testAccount);
 
@@ -401,6 +420,7 @@ public class BillPaymentServiceTest {
     void processBillPayment_WithinTransactionBoundary_Commits() {
         // Arrange
         when(accountRepository.findById(12345678901L)).thenReturn(Optional.of(testAccount));
+        when(cardRepository.findByAccountId(12345678901L)).thenReturn(Arrays.asList(testCard));
         when(transactionRepository.save(any(Transaction.class))).thenReturn(testTransaction);
         when(accountRepository.save(any(Account.class))).thenReturn(testAccount);
 
@@ -429,6 +449,7 @@ public class BillPaymentServiceTest {
     void processBillPayment_DatabaseError_RollsBackEverything() {
         // Arrange - Simulate transaction save failure
         when(accountRepository.findById(12345678901L)).thenReturn(Optional.of(testAccount));
+        when(cardRepository.findByAccountId(12345678901L)).thenReturn(Arrays.asList(testCard));
         when(transactionRepository.save(any(Transaction.class)))
                 .thenThrow(new RuntimeException("Database constraint violation"));
 
@@ -462,6 +483,7 @@ public class BillPaymentServiceTest {
         LocalDateTime testStartTime = LocalDateTime.now();
 
         when(accountRepository.findById(12345678901L)).thenReturn(Optional.of(testAccount));
+        when(cardRepository.findByAccountId(12345678901L)).thenReturn(Arrays.asList(testCard));
         when(transactionRepository.save(transactionCaptor.capture())).thenReturn(testTransaction);
         when(accountRepository.save(any(Account.class))).thenReturn(testAccount);
 
@@ -509,21 +531,24 @@ public class BillPaymentServiceTest {
     }
 
     /**
-     * Test 13: Confirmation required validation - Payment without confirmation should fail.
+     * Test 13: Confirmation required validation - Payment without confirmation should return cancelled response.
      * 
-     * COBOL Source: EVALUATE CONFIRMI OF COBIL0AI (line 173)
-     * Validates confirmation flag check before processing
+     * COBOL Source: EVALUATE CONFIRMI OF COBIL0AI (line 173), COBIL00C.cbl lines 179-181
+     * When confirmation='N', payment is cancelled gracefully (not an error exception)
      */
     @Test
-    @DisplayName("processBillPayment - No confirmation throws IllegalArgumentException")
+    @DisplayName("processBillPayment - No confirmation returns cancelled response")
     void processBillPayment_NoConfirmation_ThrowsException() {
         // Arrange - Confirmation set to 'N'
         validPaymentRequest.setConfirmation("N");
 
-        // Act & Assert
-        assertThatThrownBy(() -> billPaymentService.processBillPayment(validPaymentRequest))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Payment confirmation required");
+        // Act
+        BillPaymentResponse response = billPaymentService.processBillPayment(validPaymentRequest);
+
+        // Assert - Response indicates payment not confirmed
+        assertThat(response).isNotNull();
+        assertThat(response.getConfirmationFlag()).isEqualTo("N");
+        assertThat(response.getErrorMessage()).containsIgnoringCase("Confirm to make a bill payment");
 
         // Assert - No database access occurred
         verify(accountRepository, never()).findById(anyLong());
@@ -544,6 +569,7 @@ public class BillPaymentServiceTest {
         ArgumentCaptor<Transaction> transactionCaptor = ArgumentCaptor.forClass(Transaction.class);
 
         when(accountRepository.findById(12345678901L)).thenReturn(Optional.of(testAccount));
+        when(cardRepository.findByAccountId(12345678901L)).thenReturn(Arrays.asList(testCard));
         when(transactionRepository.save(transactionCaptor.capture())).thenReturn(testTransaction);
         when(accountRepository.save(any(Account.class))).thenReturn(testAccount);
 
@@ -638,6 +664,7 @@ public class BillPaymentServiceTest {
         validPaymentRequest.setPaymentAmount(new BigDecimal("123.456")); // 3 decimal places
 
         when(accountRepository.findById(12345678901L)).thenReturn(Optional.of(testAccount));
+        when(cardRepository.findByAccountId(12345678901L)).thenReturn(Arrays.asList(testCard));
         when(transactionRepository.save(transactionCaptor.capture())).thenReturn(testTransaction);
         when(accountRepository.save(any(Account.class))).thenReturn(testAccount);
 

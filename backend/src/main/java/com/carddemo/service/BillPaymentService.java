@@ -8,11 +8,13 @@ package com.carddemo.service;
 import com.carddemo.dto.request.BillPaymentRequest;
 import com.carddemo.dto.response.BillPaymentResponse;
 import com.carddemo.entity.Account;
+import com.carddemo.entity.Card;
 import com.carddemo.entity.Transaction;
 import com.carddemo.exception.AccountNotFoundException;
 import com.carddemo.exception.InsufficientBalanceException;
 import com.carddemo.exception.TransactionException;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.util.DecimalUtils;
 import org.slf4j.Logger;
@@ -25,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -193,6 +196,7 @@ public class BillPaymentService {
     private static final String PAYMENT_MERCHANT_ZIP = "N/A";
 
     private final AccountRepository accountRepository;
+    private final CardRepository cardRepository;
     private final TransactionRepository transactionRepository;
     private final DecimalUtils decimalUtils;
 
@@ -200,14 +204,17 @@ public class BillPaymentService {
      * Constructor for dependency injection.
      * 
      * @param accountRepository Repository for account data access
+     * @param cardRepository Repository for card data access
      * @param transactionRepository Repository for transaction data access
      * @param decimalUtils Utility for BigDecimal precision operations
      */
     public BillPaymentService(
             AccountRepository accountRepository,
+            CardRepository cardRepository,
             TransactionRepository transactionRepository,
             DecimalUtils decimalUtils) {
         this.accountRepository = accountRepository;
+        this.cardRepository = cardRepository;
         this.transactionRepository = transactionRepository;
         this.decimalUtils = decimalUtils;
     }
@@ -278,9 +285,18 @@ public class BillPaymentService {
         logger.info("Processing bill payment for account: {}", request.getAccountId());
 
         // Validation Step 2: Check confirmation flag
+        // COBOL Source: COBIL00C.cbl lines 179-181 - Handle 'N' confirmation gracefully
         if (!request.isConfirmed()) {
             logger.info("Payment not confirmed for account: {}", request.getAccountId());
-            throw new IllegalArgumentException("Payment confirmation required. Set confirmation to 'Y' to proceed.");
+            // Return response indicating payment was not confirmed (not an error, just cancelled)
+            BillPaymentResponse response = new BillPaymentResponse();
+            response.setAccountId(request.getAccountId());
+            response.setConfirmationFlag("N");
+            response.setCurrentBalance(request.getCurrentBalance());
+            response.setErrorMessage("Confirm to make a bill payment");
+            response.setCurrentDate(java.time.LocalDate.now());
+            response.setCurrentTime(java.time.LocalTime.now());
+            return response;
         }
 
         // Validation Step 3: Retrieve account with locking
@@ -361,7 +377,7 @@ public class BillPaymentService {
         // Validation Rule 1: Payment amount must be positive
         if (scaledPaymentAmount.compareTo(BigDecimal.ZERO) <= 0) {
             logger.error("Invalid payment amount: {}. Must be positive.", scaledPaymentAmount);
-            throw new IllegalArgumentException("Payment amount must be greater than zero");
+            throw new IllegalArgumentException("Payment amount must be positive");
         }
 
         // Validation Rule 2: Current balance must be positive (COBOL: "You have nothing to pay")
@@ -380,8 +396,10 @@ public class BillPaymentService {
         if (scaledPaymentAmount.compareTo(currentBalance) > 0) {
             logger.error("Payment amount {} exceeds current balance {} for account {}",
                         scaledPaymentAmount, currentBalance, account.getAccountId());
+            // Format accountId with leading zeros to match COBOL PIC 9(11) format in error message
+            String formattedAccountId = String.format("%011d", account.getAccountId());
             throw new InsufficientBalanceException(
-                    "Payment amount exceeds current account balance",
+                    "Insufficient funds for payment for account " + formattedAccountId,
                     scaledPaymentAmount,
                     currentBalance,
                     account.getAccountId()
@@ -485,11 +503,25 @@ public class BillPaymentService {
         transaction.setOriginationTimestamp(currentTimestamp);
         transaction.setProcessingTimestamp(currentTimestamp);
 
-        // Note: Card number would be set from cross-reference file in COBOL (line 225)
-        // In this implementation, the card number can be null as it's not required for bill payment
-        // The COBOL program reads CXACAIX file (line 211) but we're simplifying this for now
+        // Set card number from account's primary card (COBOL line 225: MOVE XREF-CARD-NUM TO TRAN-CARD-NUM)
+        // The COBOL program reads CXACAIX cross-reference file (line 211) to get the card number
+        List<Card> cards = cardRepository.findByAccountId(account.getAccountId());
+        if (cards == null || cards.isEmpty()) {
+            logger.error("No card found for account: {}", account.getAccountId());
+            throw new TransactionException(
+                "No card found for account. Card is required for bill payment transaction.",
+                String.valueOf(account.getAccountId())
+            );
+        }
+        // Use the first active card for the transaction
+        Card primaryCard = cards.stream()
+                .filter(card -> "Y".equals(card.getActiveStatus()))
+                .findFirst()
+                .orElse(cards.get(0)); // Fallback to first card if no active card found
+        transaction.setCardNumber(primaryCard.getCardNumber());
 
-        logger.debug("Payment transaction created with ID: {}", transaction.getTransactionId());
+        logger.debug("Payment transaction created with ID: {} for card: {}", 
+                    transaction.getTransactionId(), primaryCard.getCardNumber());
         return transaction;
     }
 
@@ -590,7 +622,7 @@ public class BillPaymentService {
                 .orElseThrow(() -> {
                     logger.error("Account not found: {}", accountId);
                     return new AccountNotFoundException(
-                            "Account ID NOT found",
+                            "Account ID not found",
                             accountId
                     );
                 });
@@ -638,7 +670,8 @@ public class BillPaymentService {
         response.setCurrentTime(java.time.LocalTime.now());
 
         // Set account and balance information
-        response.setAccountId(String.valueOf(account.getAccountId()));
+        // Format accountId with leading zeros to match COBOL PIC 9(11) format (e.g., "00000000001")
+        response.setAccountId(String.format("%011d", account.getAccountId()));
         response.setCurrentBalance(updatedBalance);
 
         // Set confirmation flag

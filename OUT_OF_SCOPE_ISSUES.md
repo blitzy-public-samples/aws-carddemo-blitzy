@@ -360,3 +360,19 @@ assertThatThrownBy(() -> accountUpdateService.updateAccount(validUpdateRequest))
 **Recommendation:**
 Update the unit test to reflect the new correct behavior where the service accepts both formatted and unformatted (10-digit) phone numbers.
 
+
+## Issue Confirmed During BillPaymentIntegrationTest Validation (2025-11-05)
+**File:** `backend/src/test/java/com/carddemo/service/AccountUpdateServiceTest.java`
+**Test:** `updateAccount_ValidatesPhoneNumber_Format` (line 449)
+**Status:** OUT OF SCOPE - Pre-existing issue documented previously
+
+This test expects phone number validation to throw an exception, but the service implementation was modified to format phone numbers instead of rejecting them. This issue was already documented by a previous agent and is not related to BillPaymentIntegrationTest or BillPaymentService changes.
+
+**Test Failure:**
+```
+Expecting code to raise a throwable.
+at com.carddemo.service.AccountUpdateServiceTest.updateAccount_ValidatesPhoneNumber_Format(AccountUpdateServiceTest.java:449)
+```
+
+**Impact:** 1 test failure out of 601 total tests in the backend module.
+**Module Status:** 600 tests passing, module compiles successfully.

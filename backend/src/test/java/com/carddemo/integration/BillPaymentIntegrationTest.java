@@ -9,10 +9,18 @@ import com.carddemo.controller.BillPaymentController;
 import com.carddemo.dto.request.BillPaymentRequest;
 import com.carddemo.dto.response.BillPaymentResponse;
 import com.carddemo.entity.Account;
+import com.carddemo.entity.Card;
+import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
+import com.carddemo.entity.TransactionCategory;
+import com.carddemo.entity.TransactionType;
 import com.carddemo.exception.InsufficientBalanceException;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CustomerRepository;
+import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionTypeRepository;
 import com.carddemo.service.BillPaymentService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -145,6 +153,7 @@ public class BillPaymentIntegrationTest {
         registry.add("spring.datasource.url", postgresContainer::getJdbcUrl);
         registry.add("spring.datasource.username", postgresContainer::getUsername);
         registry.add("spring.datasource.password", postgresContainer::getPassword);
+        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
     }
 
     @Autowired
@@ -154,31 +163,84 @@ public class BillPaymentIntegrationTest {
     private AccountRepository accountRepository;
 
     @Autowired
+    private CardRepository cardRepository;
+
+    @Autowired
+    private CustomerRepository customerRepository;
+
+    @Autowired
     private TransactionRepository transactionRepository;
 
+    @Autowired
+    private TransactionTypeRepository transactionTypeRepository;
+
+    @Autowired
+    private TransactionCategoryRepository transactionCategoryRepository;
+
     private Account testAccount;
+    private Customer testCustomer;
+    private Card testCard;
     private static final String TEST_ACCOUNT_ID = "00000000001";
+    private static final String TEST_CUSTOMER_ID = "000000001";
+    private static final String TEST_CARD_NUMBER = "4111111111111111";
     private static final BigDecimal INITIAL_BALANCE = new BigDecimal("500.00").setScale(2, RoundingMode.HALF_UP);
     private static final BigDecimal CREDIT_LIMIT = new BigDecimal("10000.00").setScale(2, RoundingMode.HALF_UP);
 
     /**
      * Set up test data before each test method.
      * <p>
-     * Creates a test account with initial balance for bill payment testing.
-     * This setup mirrors the account data structure from COBOL ACCTDAT VSAM file.
+     * Creates a test customer, account, and card with initial balance for bill payment testing.
+     * This setup mirrors the data structure from COBOL CUSTDAT, ACCTDAT, and CARDDAT VSAM files.
      * </p>
      *
-     * <p><strong>COBOL Equivalent:</strong> Account record from CVACT01Y.cpy copybook</p>
+     * <p><strong>COBOL Equivalent:</strong> Customer record from CVCUS01Y.cpy, Account record
+     * from CVACT01Y.cpy, and Card record from CVACT03Y.cpy copybooks</p>
      */
     @BeforeEach
     void setUp() {
         // Clean up any existing test data
         transactionRepository.deleteAll();
+        cardRepository.deleteAll();
         accountRepository.deleteAll();
+        customerRepository.deleteAll();
+        
+        // Create reference data for transaction types and categories
+        // This is needed because Transaction entity has foreign key constraints to these tables
+        TransactionType paymentType = new TransactionType();
+        paymentType.setTypeCode("02"); // Payment type code
+        paymentType.setTypeDescription("Payment Transaction");
+        transactionTypeRepository.save(paymentType);
+        
+        // Create transaction category with composite key
+        TransactionCategory.CategoryId categoryId = new TransactionCategory.CategoryId();
+        categoryId.setTypeCode("02");
+        categoryId.setCategoryCode(2); // Bill payment category code
+        
+        TransactionCategory billPaymentCategory = new TransactionCategory();
+        billPaymentCategory.setId(categoryId);
+        billPaymentCategory.setCategoryDescription("Bill Payment");
+        transactionCategoryRepository.save(billPaymentCategory);
+
+        // Create test customer (required for Account foreign key relationship)
+        testCustomer = new Customer();
+        testCustomer.setCustomerId(Long.parseLong(TEST_CUSTOMER_ID));
+        testCustomer.setFirstName("John");
+        testCustomer.setLastName("Doe");
+        testCustomer.setSsn("123456789");
+        testCustomer.setDateOfBirth(LocalDate.of(1980, 1, 1));
+        testCustomer.setFicoCreditScore(750);
+        testCustomer.setAddressLine1("123 Main Street");
+        testCustomer.setStateCode("NY");
+        testCustomer.setZipCode("12345");
+        testCustomer.setCountryCode("USA");
+        testCustomer.setPhoneNumber1("555-1234");
+        testCustomer.setPhoneNumber2("555-5678");
+        testCustomer = customerRepository.save(testCustomer);
 
         // Create test account with initial balance
         testAccount = new Account();
         testAccount.setAccountId(Long.parseLong(TEST_ACCOUNT_ID));
+        testAccount.setCustomer(testCustomer); // Associate with customer
         testAccount.setActiveStatus("Y");
         testAccount.setCurrentBalance(INITIAL_BALANCE);
         testAccount.setCreditLimit(CREDIT_LIMIT);
@@ -190,8 +252,18 @@ public class BillPaymentIntegrationTest {
         testAccount.setCurrentCycleDebit(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
         testAccount.setAddressZip("12345");
         testAccount.setAccountGroupId("GRP001");
-
         testAccount = accountRepository.save(testAccount);
+
+        // Create test card (required for Transaction foreign key relationship)
+        testCard = new Card();
+        testCard.setCardNumber(TEST_CARD_NUMBER);
+        testCard.setAccountId(testAccount.getAccountId());
+        testCard.setAccount(testAccount);
+        testCard.setCvvCode("123");
+        testCard.setEmbossedName("JOHN DOE");
+        testCard.setExpirationDate(LocalDate.now().plusYears(3));
+        testCard.setActiveStatus("Y");
+        testCard = cardRepository.save(testCard);
     }
 
     /**
@@ -277,7 +349,7 @@ public class BillPaymentIntegrationTest {
                 .isEqualTo("BILL PAYMENT");
         // Validate timestamps are set
         assertThat(paymentTransaction.getOriginationTimestamp()).isNotNull();
-        assertThat(paymentTransaction.getProcessedTimestamp()).isNotNull();
+        assertThat(paymentTransaction.getProcessingTimestamp()).isNotNull();
     }
 
     /**
