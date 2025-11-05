@@ -652,17 +652,20 @@ public class AdminService {
 
         try {
             // Delegate to ReportMenuService which handles CORPT00C functionality
-            var reportMenuResponse = reportMenuService.getAvailableReportTypes();
+            Map<String, Object> reportMenuResponse = reportMenuService.getReportMenu();
 
             Map<String, Object> reportMenu = new HashMap<>();
             reportMenu.put("menuTitle", "Report Generation Menu");
             reportMenu.put("menuDescription", "Batch job submission for reports and statements");
-            reportMenu.put("reportTypes", reportMenuResponse.getReportTypes());
-            reportMenu.put("reportCount", reportMenuResponse.getReportCount());
-            reportMenu.put("availableReports", reportMenuResponse);
+            reportMenu.put("delegatedResponse", reportMenuResponse);
 
-            log.debug("Report menu retrieved successfully with {} report types",
-                    reportMenuResponse.getReportCount());
+            // Also get available reports list for menu display
+            var availableReports = reportMenuService.getAvailableReports();
+            reportMenu.put("availableReports", availableReports);
+            reportMenu.put("reportCount", availableReports != null ? 
+                    (availableReports instanceof List ? ((List<?>) availableReports).size() : 0) : 0);
+
+            log.debug("Report menu retrieved successfully");
 
             return reportMenu;
 
