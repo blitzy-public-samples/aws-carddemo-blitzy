@@ -227,6 +227,9 @@ export class LoggingInterceptor implements NestInterceptor {
 
       // Decode payload (base64url decode)
       const payload = parts[1];
+      if (!payload) {
+        return {};
+      }
       const decoded = Buffer.from(payload, 'base64').toString('utf-8');
       const payloadObj: JwtPayload = JSON.parse(decoded);
 
