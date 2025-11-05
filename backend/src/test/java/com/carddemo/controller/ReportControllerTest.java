@@ -29,10 +29,13 @@ import org.springframework.batch.core.JobInstance;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.context.annotation.Import;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
@@ -49,6 +52,8 @@ import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+import org.springframework.context.annotation.Configuration;
 
 /**
  * JUnit 5 test class for ReportController REST endpoint validation.
@@ -93,9 +98,21 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * @see com.carddemo.service.ReportMenuService
  */
 @WebMvcTest(ReportController.class)
-@ContextConfiguration(classes = {ReportController.class, GlobalExceptionHandler.class})
+@AutoConfigureMockMvc(addFilters = false)
+@ContextConfiguration(classes = {ReportController.class, GlobalExceptionHandler.class, ReportControllerTest.TestSecurityConfig.class})
 @DisplayName("ReportController REST Endpoint Tests - CORPT00C.cbl Transformation Validation")
 public class ReportControllerTest {
+
+    /**
+     * Test security configuration to enable method-level security for @PreAuthorize annotations.
+     * Filter-level security is disabled via addFilters=false, but method-level security (@PreAuthorize)
+     * is enabled to test authorization logic at the controller method level.
+     */
+    @Configuration
+    @EnableMethodSecurity
+    static class TestSecurityConfig {
+        // Enables method-level security for @PreAuthorize checks in tests
+    }
 
     @Autowired
     private MockMvc mockMvc;
@@ -120,18 +137,19 @@ public class ReportControllerTest {
         validReportMenuResponse.setProgramName("CORPT00C");
         validReportMenuResponse.setCurrentDate(LocalDate.now());
         validReportMenuResponse.setCurrentTime(LocalTime.now());
-        validReportMenuResponse.setMonthly("N");
-        validReportMenuResponse.setYearly("N");
-        validReportMenuResponse.setCustom("N");
-        validReportMenuResponse.setConfirmation("N");
+        validReportMenuResponse.setMonthlyReportFlag("N");
+        validReportMenuResponse.setYearlyReportFlag("N");
+        validReportMenuResponse.setCustomReportFlag("N");
+        validReportMenuResponse.setConfirmationFlag("N");
 
         // Initialize mock JobExecution for batch job submission tests
-        JobInstance jobInstance = new JobInstance(1L, "TransactionAggregationJob");
+        JobInstance jobInstance = new JobInstance(1001L, "TransactionAggregationJob");
         JobParameters jobParameters = new JobParametersBuilder()
                 .addString("reportType", "monthly")
                 .addLong("timestamp", System.currentTimeMillis())
                 .toJobParameters();
-        mockJobExecution = new JobExecution(jobInstance, jobParameters);
+        mockJobExecution = new JobExecution(jobInstance, 1001L, jobParameters);
+        mockJobExecution.setStatus(org.springframework.batch.core.BatchStatus.COMPLETED);
         mockJobExecution.setExitStatus(org.springframework.batch.core.ExitStatus.COMPLETED);
     }
 
@@ -157,7 +175,7 @@ public class ReportControllerTest {
         mockMvc.perform(get("/api/reports")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.transactionName", is("CR00")))
                 .andExpect(jsonPath("$.title01", is("CardDemo - Transaction Reports")))
                 .andExpect(jsonPath("$.title02", is("Report Generation Menu")))
@@ -231,8 +249,8 @@ public class ReportControllerTest {
                 .param("confirmationFlag", "Y")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.jobExecutionId", is(mockJobExecution.getId().intValue())))
-                .andExpect(jsonPath("$.status", is("COMPLETED")));
+                .andExpect(jsonPath("$.jobId", is(mockJobExecution.getId().intValue())))
+                .andExpect(jsonPath("$.jobStatus", is("COMPLETED")));
 
         long responseTime = System.currentTimeMillis() - startTime;
         assert responseTime < 200 : "Response time " + responseTime + "ms exceeds 200ms requirement";
@@ -300,8 +318,8 @@ public class ReportControllerTest {
                 .param("confirmationFlag", "Y")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.jobExecutionId", is(mockJobExecution.getId().intValue())))
-                .andExpect(jsonPath("$.status", is("COMPLETED")));
+                .andExpect(jsonPath("$.jobId", is(mockJobExecution.getId().intValue())))
+                .andExpect(jsonPath("$.jobStatus", is("COMPLETED")));
 
         verify(reportMenuService, times(1)).submitYearlyReport(eq("Y"));
     }
@@ -339,20 +357,26 @@ public class ReportControllerTest {
         LocalDate startDate = LocalDate.now().minusMonths(1);
         LocalDate endDate = LocalDate.now();
         
-        when(reportMenuService.submitCustomReport(any(LocalDate.class), any(LocalDate.class), eq("Y")))
+        when(reportMenuService.submitCustomReport(any(Integer.class), any(Integer.class), any(Integer.class), 
+                any(Integer.class), any(Integer.class), any(Integer.class), eq("Y")))
                 .thenReturn(mockJobExecution);
 
         // Act & Assert
         mockMvc.perform(post("/api/reports/custom")
-                .param("startDate", startDate.toString())
-                .param("endDate", endDate.toString())
+                .param("startYear", String.valueOf(startDate.getYear()))
+                .param("startMonth", String.valueOf(startDate.getMonthValue()))
+                .param("startDay", String.valueOf(startDate.getDayOfMonth()))
+                .param("endYear", String.valueOf(endDate.getYear()))
+                .param("endMonth", String.valueOf(endDate.getMonthValue()))
+                .param("endDay", String.valueOf(endDate.getDayOfMonth()))
                 .param("confirmationFlag", "Y")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.jobExecutionId", is(mockJobExecution.getId().intValue())))
-                .andExpect(jsonPath("$.status", is("COMPLETED")));
+                .andExpect(jsonPath("$.jobId", is(mockJobExecution.getId().intValue())))
+                .andExpect(jsonPath("$.jobStatus", is("COMPLETED")));
 
-        verify(reportMenuService, times(1)).submitCustomReport(any(LocalDate.class), any(LocalDate.class), eq("Y"));
+        verify(reportMenuService, times(1)).submitCustomReport(any(Integer.class), any(Integer.class), any(Integer.class), 
+                any(Integer.class), any(Integer.class), any(Integer.class), eq("Y"));
     }
 
     /**
@@ -362,21 +386,31 @@ public class ReportControllerTest {
     @WithMockUser(username = "admin", roles = {"ADMIN"})
     @DisplayName("POST /api/reports/custom - Missing Parameters - Returns 400 Bad Request")
     public void testSubmitCustomReport_MissingParameters_ReturnsBadRequest() throws Exception {
-        // Act & Assert - Missing endDate
+        LocalDate date = LocalDate.now();
+        
+        // Act & Assert - Missing endDay
         mockMvc.perform(post("/api/reports/custom")
-                .param("startDate", LocalDate.now().toString())
+                .param("startYear", String.valueOf(date.getYear()))
+                .param("startMonth", String.valueOf(date.getMonthValue()))
+                .param("startDay", String.valueOf(date.getDayOfMonth()))
+                .param("endYear", String.valueOf(date.getYear()))
+                .param("endMonth", String.valueOf(date.getMonthValue()))
                 .param("confirmationFlag", "Y")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest());
 
-        // Act & Assert - Missing startDate
+        // Act & Assert - Missing startDay
         mockMvc.perform(post("/api/reports/custom")
-                .param("endDate", LocalDate.now().toString())
+                .param("startYear", String.valueOf(date.getYear()))
+                .param("startMonth", String.valueOf(date.getMonthValue()))
+                .param("endYear", String.valueOf(date.getYear()))
+                .param("endMonth", String.valueOf(date.getMonthValue()))
+                .param("endDay", String.valueOf(date.getDayOfMonth()))
                 .param("confirmationFlag", "Y")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest());
 
-        verify(reportMenuService, never()).submitCustomReport(any(), any(), anyString());
+        verify(reportMenuService, never()).submitCustomReport(any(), any(), any(), any(), any(), any(), anyString());
     }
 
     /**
@@ -388,15 +422,31 @@ public class ReportControllerTest {
     @WithMockUser(username = "admin", roles = {"ADMIN"})
     @DisplayName("POST /api/reports/custom - Invalid Date Format - Returns 400 Bad Request")
     public void testSubmitCustomReport_InvalidDateFormat_ReturnsBadRequest() throws Exception {
-        // Act & Assert
+        LocalDate endDate = LocalDate.now();
+        
+        // Arrange - Mock service to throw IllegalArgumentException for invalid date
+        when(reportMenuService.submitCustomReport(
+                eq(2024), eq(13), eq(15), 
+                eq(endDate.getYear()), eq(endDate.getMonthValue()), eq(endDate.getDayOfMonth()), 
+                eq("Y")))
+                .thenThrow(new IllegalArgumentException("Invalid month: 13"));
+        
+        // Act & Assert - Invalid month (13 is not a valid month)
         mockMvc.perform(post("/api/reports/custom")
-                .param("startDate", "01/15/2024") // Invalid format
-                .param("endDate", LocalDate.now().toString())
+                .param("startYear", "2024")
+                .param("startMonth", "13") // Invalid month
+                .param("startDay", "15")
+                .param("endYear", String.valueOf(endDate.getYear()))
+                .param("endMonth", String.valueOf(endDate.getMonthValue()))
+                .param("endDay", String.valueOf(endDate.getDayOfMonth()))
                 .param("confirmationFlag", "Y")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest());
 
-        verify(reportMenuService, never()).submitCustomReport(any(), any(), anyString());
+        verify(reportMenuService, times(1)).submitCustomReport(
+                eq(2024), eq(13), eq(15), 
+                eq(endDate.getYear()), eq(endDate.getMonthValue()), eq(endDate.getDayOfMonth()), 
+                eq("Y"));
     }
 
     /**
@@ -413,18 +463,24 @@ public class ReportControllerTest {
         LocalDate futureDate = LocalDate.now().plusDays(1);
         LocalDate endDate = LocalDate.now().plusDays(7);
         
-        when(reportMenuService.submitCustomReport(any(LocalDate.class), any(LocalDate.class), eq("Y")))
+        when(reportMenuService.submitCustomReport(any(Integer.class), any(Integer.class), any(Integer.class), 
+                any(Integer.class), any(Integer.class), any(Integer.class), eq("Y")))
                 .thenThrow(new IllegalArgumentException("Start date cannot be in the future for historical reports"));
 
         // Act & Assert
         mockMvc.perform(post("/api/reports/custom")
-                .param("startDate", futureDate.toString())
-                .param("endDate", endDate.toString())
+                .param("startYear", String.valueOf(futureDate.getYear()))
+                .param("startMonth", String.valueOf(futureDate.getMonthValue()))
+                .param("startDay", String.valueOf(futureDate.getDayOfMonth()))
+                .param("endYear", String.valueOf(endDate.getYear()))
+                .param("endMonth", String.valueOf(endDate.getMonthValue()))
+                .param("endDay", String.valueOf(endDate.getDayOfMonth()))
                 .param("confirmationFlag", "Y")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest());
 
-        verify(reportMenuService, times(1)).submitCustomReport(any(LocalDate.class), any(LocalDate.class), eq("Y"));
+        verify(reportMenuService, times(1)).submitCustomReport(any(Integer.class), any(Integer.class), any(Integer.class), 
+                any(Integer.class), any(Integer.class), any(Integer.class), eq("Y"));
     }
 
     /**
@@ -441,18 +497,24 @@ public class ReportControllerTest {
         LocalDate startDate = LocalDate.now();
         LocalDate endDate = LocalDate.now().minusDays(7);
         
-        when(reportMenuService.submitCustomReport(any(LocalDate.class), any(LocalDate.class), eq("Y")))
+        when(reportMenuService.submitCustomReport(any(Integer.class), any(Integer.class), any(Integer.class), 
+                any(Integer.class), any(Integer.class), any(Integer.class), eq("Y")))
                 .thenThrow(new IllegalArgumentException("Start date must be before or equal to end date"));
 
         // Act & Assert
         mockMvc.perform(post("/api/reports/custom")
-                .param("startDate", startDate.toString())
-                .param("endDate", endDate.toString())
+                .param("startYear", String.valueOf(startDate.getYear()))
+                .param("startMonth", String.valueOf(startDate.getMonthValue()))
+                .param("startDay", String.valueOf(startDate.getDayOfMonth()))
+                .param("endYear", String.valueOf(endDate.getYear()))
+                .param("endMonth", String.valueOf(endDate.getMonthValue()))
+                .param("endDay", String.valueOf(endDate.getDayOfMonth()))
                 .param("confirmationFlag", "Y")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest());
 
-        verify(reportMenuService, times(1)).submitCustomReport(any(LocalDate.class), any(LocalDate.class), eq("Y"));
+        verify(reportMenuService, times(1)).submitCustomReport(any(Integer.class), any(Integer.class), any(Integer.class), 
+                any(Integer.class), any(Integer.class), any(Integer.class), eq("Y"));
     }
 
     /**
@@ -468,18 +530,24 @@ public class ReportControllerTest {
         LocalDate startDate = LocalDate.now().minusYears(2);
         LocalDate endDate = LocalDate.now();
         
-        when(reportMenuService.submitCustomReport(any(LocalDate.class), any(LocalDate.class), eq("Y")))
+        when(reportMenuService.submitCustomReport(any(Integer.class), any(Integer.class), any(Integer.class), 
+                any(Integer.class), any(Integer.class), any(Integer.class), eq("Y")))
                 .thenThrow(new IllegalArgumentException("Date range cannot exceed one year for performance reasons"));
 
         // Act & Assert
         mockMvc.perform(post("/api/reports/custom")
-                .param("startDate", startDate.toString())
-                .param("endDate", endDate.toString())
+                .param("startYear", String.valueOf(startDate.getYear()))
+                .param("startMonth", String.valueOf(startDate.getMonthValue()))
+                .param("startDay", String.valueOf(startDate.getDayOfMonth()))
+                .param("endYear", String.valueOf(endDate.getYear()))
+                .param("endMonth", String.valueOf(endDate.getMonthValue()))
+                .param("endDay", String.valueOf(endDate.getDayOfMonth()))
                 .param("confirmationFlag", "Y")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest());
 
-        verify(reportMenuService, times(1)).submitCustomReport(any(LocalDate.class), any(LocalDate.class), eq("Y"));
+        verify(reportMenuService, times(1)).submitCustomReport(any(Integer.class), any(Integer.class), any(Integer.class), 
+                any(Integer.class), any(Integer.class), any(Integer.class), eq("Y"));
     }
 
     /**
@@ -538,7 +606,7 @@ public class ReportControllerTest {
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest());
 
-        verify(reportMenuService, never()).submitCustomReport(any(), any(), anyString());
+        verify(reportMenuService, never()).submitCustomReport(any(), any(), any(), any(), any(), any(), anyString());
     }
 
     /**
@@ -608,15 +676,20 @@ public class ReportControllerTest {
         LocalDate startDate = LocalDate.now().minusMonths(1);
         LocalDate endDate = LocalDate.now();
         
-        when(reportMenuService.submitCustomReport(any(LocalDate.class), any(LocalDate.class), eq("Y")))
+        when(reportMenuService.submitCustomReport(any(Integer.class), any(Integer.class), any(Integer.class), 
+                any(Integer.class), any(Integer.class), any(Integer.class), eq("Y")))
                 .thenReturn(mockJobExecution);
 
         // Act
         long startTime = System.nanoTime();
         
         MvcResult result = mockMvc.perform(post("/api/reports/custom")
-                .param("startDate", startDate.toString())
-                .param("endDate", endDate.toString())
+                .param("startYear", String.valueOf(startDate.getYear()))
+                .param("startMonth", String.valueOf(startDate.getMonthValue()))
+                .param("startDay", String.valueOf(startDate.getDayOfMonth()))
+                .param("endYear", String.valueOf(endDate.getYear()))
+                .param("endMonth", String.valueOf(endDate.getMonthValue()))
+                .param("endDay", String.valueOf(endDate.getDayOfMonth()))
                 .param("confirmationFlag", "Y")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
@@ -644,7 +717,7 @@ public class ReportControllerTest {
         mockMvc.perform(get("/api/reports")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(header().exists("Content-Type"));
 
         verify(reportMenuService, times(1)).getAvailableReportTypes();
@@ -657,13 +730,17 @@ public class ReportControllerTest {
     @WithMockUser(username = "admin", roles = {"ADMIN"})
     @DisplayName("POST /api/reports/monthly - Empty Confirmation Flag - Returns 400 Bad Request")
     public void testSubmitMonthlyReport_EmptyConfirmationFlag_ReturnsBadRequest() throws Exception {
+        // Arrange - Mock service to throw IllegalArgumentException for empty confirmation
+        when(reportMenuService.submitMonthlyReport(""))
+                .thenThrow(new IllegalArgumentException("Please confirm to print the Monthly report..."));
+
         // Act & Assert
         mockMvc.perform(post("/api/reports/monthly")
                 .param("confirmationFlag", "")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest());
 
-        verify(reportMenuService, never()).submitMonthlyReport(anyString());
+        verify(reportMenuService, times(1)).submitMonthlyReport("");
     }
 
     /**
@@ -678,19 +755,25 @@ public class ReportControllerTest {
         // Arrange
         LocalDate sameDate = LocalDate.now().minusDays(7);
         
-        when(reportMenuService.submitCustomReport(any(LocalDate.class), any(LocalDate.class), eq("Y")))
+        when(reportMenuService.submitCustomReport(any(Integer.class), any(Integer.class), any(Integer.class), 
+                any(Integer.class), any(Integer.class), any(Integer.class), eq("Y")))
                 .thenReturn(mockJobExecution);
 
         // Act & Assert
         mockMvc.perform(post("/api/reports/custom")
-                .param("startDate", sameDate.toString())
-                .param("endDate", sameDate.toString())
+                .param("startYear", String.valueOf(sameDate.getYear()))
+                .param("startMonth", String.valueOf(sameDate.getMonthValue()))
+                .param("startDay", String.valueOf(sameDate.getDayOfMonth()))
+                .param("endYear", String.valueOf(sameDate.getYear()))
+                .param("endMonth", String.valueOf(sameDate.getMonthValue()))
+                .param("endDay", String.valueOf(sameDate.getDayOfMonth()))
                 .param("confirmationFlag", "Y")
                 .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.jobExecutionId", is(mockJobExecution.getId().intValue())));
+                .andExpect(jsonPath("$.jobId", is(mockJobExecution.getId().intValue())));
 
-        verify(reportMenuService, times(1)).submitCustomReport(any(LocalDate.class), any(LocalDate.class), eq("Y"));
+        verify(reportMenuService, times(1)).submitCustomReport(any(Integer.class), any(Integer.class), any(Integer.class), 
+                any(Integer.class), any(Integer.class), any(Integer.class), eq("Y"));
     }
 
     /**

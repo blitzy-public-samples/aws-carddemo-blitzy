@@ -29,8 +29,10 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.context.request.WebRequest;
@@ -956,6 +958,75 @@ public class GlobalExceptionHandler {
         );
         
         return new ResponseEntity<>(errorResponse, HttpStatus.FORBIDDEN);
+    }
+
+    /**
+     * Handles MissingServletRequestParameterException - missing required request parameters.
+     * <p>
+     * Thrown when a required @RequestParam is not provided in the request.
+     * Returns HTTP 400 BAD_REQUEST with details about the missing parameter.
+     * </p>
+     *
+     * @param ex MissingServletRequestParameterException with parameter details
+     * @param request WebRequest for extracting request path
+     * @return ResponseEntity with 400 status and missing parameter details
+     */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ErrorResponse> handleMissingServletRequestParameter(
+            MissingServletRequestParameterException ex, WebRequest request) {
+        
+        logger.warn("Missing required parameter: {} (type: {})", ex.getParameterName(), ex.getParameterType());
+        
+        Map<String, Object> details = new HashMap<>();
+        details.put("parameterName", ex.getParameterName());
+        details.put("parameterType", ex.getParameterType());
+        
+        String message = String.format("Required request parameter '%s' of type '%s' is missing",
+                                       ex.getParameterName(), ex.getParameterType());
+        
+        ErrorResponse errorResponse = buildErrorResponse(
+            "MISSING_PARAMETER",
+            message,
+            HttpStatus.BAD_REQUEST,
+            request,
+            details
+        );
+        
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+    }
+
+    /**
+     * Handles AuthenticationCredentialsNotFoundException - missing authentication.
+     * <p>
+     * Thrown when a request requires authentication but no authentication credentials
+     * are present in the security context. This typically occurs when an endpoint
+     * requires authentication (@PreAuthorize) but the request does not include
+     * authentication headers or tokens.
+     * Returns HTTP 401 UNAUTHORIZED.
+     * </p>
+     *
+     * @param ex AuthenticationCredentialsNotFoundException with authentication details
+     * @param request WebRequest for extracting request path
+     * @return ResponseEntity with 401 status and authentication required message
+     */
+    @ExceptionHandler(AuthenticationCredentialsNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleAuthenticationCredentialsNotFound(
+            AuthenticationCredentialsNotFoundException ex, WebRequest request) {
+        
+        logger.warn("Authentication credentials not found: {}", ex.getMessage());
+        
+        Map<String, Object> details = new HashMap<>();
+        details.put("reason", "Authentication required but no credentials provided");
+        
+        ErrorResponse errorResponse = buildErrorResponse(
+            "UNAUTHORIZED",
+            "Authentication is required to access this resource",
+            HttpStatus.UNAUTHORIZED,
+            request,
+            details
+        );
+        
+        return new ResponseEntity<>(errorResponse, HttpStatus.UNAUTHORIZED);
     }
 
     /**
