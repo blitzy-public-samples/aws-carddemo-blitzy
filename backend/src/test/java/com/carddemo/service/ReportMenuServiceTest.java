@@ -143,7 +143,6 @@ class ReportMenuServiceTest {
      * Service under test with mocked dependencies injected.
      * Contains business logic transformed from CORPT00C.cbl PROCEDURE DIVISION.
      */
-    @InjectMocks
     private ReportMenuService reportMenuService;
 
     /**
@@ -152,9 +151,13 @@ class ReportMenuServiceTest {
      */
     @BeforeEach
     void setUp() {
-        // Mocks are automatically initialized by @ExtendWith(MockitoExtension.class)
-        // Service is automatically created with @InjectMocks annotation
-        // No additional setup required - service ready for testing
+        // Manually construct service to ensure correct mock injection order
+        // This prevents @InjectMocks from potentially swapping the Job beans
+        reportMenuService = new ReportMenuService(
+            jobLauncher,
+            transactionAggregationJob,
+            statementGenerationJob
+        );
     }
 
     // ================================================================================
@@ -183,16 +186,36 @@ class ReportMenuServiceTest {
     @DisplayName("Get Available Report Types - Returns Three Report Options")
     void testGetAvailableReportTypes_ReturnsThreeReportOptions() {
         // Execute: Retrieve available report types
-        List<String> reportTypes = reportMenuService.getAvailableReportTypes();
+        ReportMenuResponse response = reportMenuService.getAvailableReportTypes();
 
-        // Assert: Verify report types list structure and content
-        assertNotNull(reportTypes, "Report types list should not be null");
-        assertEquals(3, reportTypes.size(), "Should return exactly 3 report types");
+        // Assert: Verify response is not null and contains proper structure
+        assertNotNull(response, "Report menu response should not be null");
         
-        // Verify exact report type names match COBOL screen options
-        assertTrue(reportTypes.contains("Monthly"), "Should include Monthly report option");
-        assertTrue(reportTypes.contains("Yearly"), "Should include Yearly report option");
-        assertTrue(reportTypes.contains("Custom"), "Should include Custom report option");
+        // Verify transaction and program metadata
+        assertEquals("CR00", response.getTransactionName(), "Transaction name should be CR00");
+        assertEquals("CORPT00C", response.getProgramName(), "Program name should be CORPT00C");
+        
+        // Verify report type flags are initialized to empty (no selection)
+        assertNotNull(response.getMonthlyReportFlag(), "Monthly report flag should not be null");
+        assertNotNull(response.getYearlyReportFlag(), "Yearly report flag should not be null");
+        assertNotNull(response.getCustomReportFlag(), "Custom report flag should not be null");
+        
+        // Verify all three report type options are available (initialized)
+        assertEquals("", response.getMonthlyReportFlag(), "Monthly report flag should be empty initially");
+        assertEquals("", response.getYearlyReportFlag(), "Yearly report flag should be empty initially");
+        assertEquals("", response.getCustomReportFlag(), "Custom report flag should be empty initially");
+        
+        // Verify screen titles are populated
+        assertNotNull(response.getTitle01(), "Title 01 should not be null");
+        assertNotNull(response.getTitle02(), "Title 02 should not be null");
+        assertTrue(response.getTitle01().contains("Report"), "Title should reference reports");
+        
+        // Verify current date and time are set
+        assertNotNull(response.getCurrentDate(), "Current date should be set");
+        assertNotNull(response.getCurrentTime(), "Current time should be set");
+        
+        // Verify no error message initially
+        assertEquals("", response.getErrorMessage(), "Error message should be empty initially");
     }
 
     // ================================================================================
@@ -250,12 +273,12 @@ class ReportMenuServiceTest {
         JobParameters capturedParams = jobParamsCaptor.getValue();
         assertNotNull(capturedParams, "JobParameters should not be null");
         
-        // Verify date parameters match current month calculation
-        assertNotNull(capturedParams.getParameters().get("startDate"), 
+        // Verify date parameters match current month calculation (note: service uses "start.date" format)
+        assertNotNull(capturedParams.getParameters().get("start.date"), 
             "Start date parameter should be present");
-        assertNotNull(capturedParams.getParameters().get("endDate"), 
+        assertNotNull(capturedParams.getParameters().get("end.date"), 
             "End date parameter should be present");
-        assertEquals("MONTHLY", capturedParams.getString("reportType"), 
+        assertEquals("MONTHLY", capturedParams.getString("report.type"), 
             "Report type should be MONTHLY");
     }
 
@@ -422,7 +445,7 @@ class ReportMenuServiceTest {
         
         JobParameters capturedParams = jobParamsCaptor.getValue();
         assertNotNull(capturedParams, "JobParameters should not be null");
-        assertEquals("YEARLY", capturedParams.getString("reportType"), 
+        assertEquals("YEARLY", capturedParams.getString("report.type"), 
             "Report type should be YEARLY");
     }
 
@@ -521,7 +544,7 @@ class ReportMenuServiceTest {
         
         JobParameters capturedParams = jobParamsCaptor.getValue();
         assertNotNull(capturedParams, "JobParameters should not be null");
-        assertEquals("CUSTOM", capturedParams.getString("reportType"), 
+        assertEquals("CUSTOM", capturedParams.getString("report.type"), 
             "Report type should be CUSTOM");
     }
 
@@ -567,10 +590,10 @@ class ReportMenuServiceTest {
         // Verify error message indicates date range problem
         String errorMessage = exception.getMessage();
         assertTrue(
-            errorMessage.contains("Start Date must be less than or equal to End Date") ||
-            errorMessage.contains("End Date") || 
-            errorMessage.contains("before"),
-            "Error message should indicate date range validation failure"
+            errorMessage.contains("Start date must be less than or equal to end date") ||
+            errorMessage.contains("end date") || 
+            errorMessage.contains("start date"),
+            "Error message should indicate date range validation failure: " + errorMessage
         );
 
         // Verify no job submission occurred
@@ -1030,8 +1053,8 @@ class ReportMenuServiceTest {
         
         // Verify error message matches COBOL text (lines 439-441)
         String errorMessage = errors.get(0);
-        assertTrue(errorMessage.contains("Please select a Report Type"), 
-            "Error message should match COBOL validation text");
+        assertTrue(errorMessage.contains("Select a report type to print report"), 
+            "Error message should match COBOL validation text: " + errorMessage);
     }
 
     /**
@@ -1167,23 +1190,25 @@ class ReportMenuServiceTest {
         JobParameters capturedParams = jobParamsCaptor.getValue();
         assertNotNull(capturedParams, "JobParameters should not be null");
         
-        // Assert: Verify all required parameter fields present
-        assertTrue(capturedParams.getParameters().containsKey("startDate"), 
-            "JobParameters should include startDate");
-        assertTrue(capturedParams.getParameters().containsKey("endDate"), 
-            "JobParameters should include endDate");
-        assertTrue(capturedParams.getParameters().containsKey("reportType"), 
-            "JobParameters should include reportType");
-        assertTrue(capturedParams.getParameters().containsKey("timestamp"), 
-            "JobParameters should include timestamp for uniqueness");
+        // Assert: Verify all required parameter fields present (service uses dotted notation)
+        assertTrue(capturedParams.getParameters().containsKey("start.date"), 
+            "JobParameters should include start.date");
+        assertTrue(capturedParams.getParameters().containsKey("end.date"), 
+            "JobParameters should include end.date");
+        assertTrue(capturedParams.getParameters().containsKey("report.type"), 
+            "JobParameters should include report.type");
+        assertTrue(capturedParams.getParameters().containsKey("run.id"), 
+            "JobParameters should include run.id for uniqueness");
         
-        // Verify parameter types
-        assertNotNull(capturedParams.getDate("startDate"), 
-            "startDate should be DATE type");
-        assertNotNull(capturedParams.getDate("endDate"), 
-            "endDate should be DATE type");
-        assertNotNull(capturedParams.getString("reportType"), 
-            "reportType should be STRING type");
+        // Verify parameter types (dates are stored as STRING, not DATE)
+        assertNotNull(capturedParams.getString("start.date"), 
+            "start.date should be STRING type");
+        assertNotNull(capturedParams.getString("end.date"), 
+            "end.date should be STRING type");
+        assertNotNull(capturedParams.getString("report.type"), 
+            "report.type should be STRING type");
+        assertNotNull(capturedParams.getLong("run.id"), 
+            "run.id should be LONG type");
     }
 
     // ================================================================================
@@ -1214,12 +1239,19 @@ class ReportMenuServiceTest {
         when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
             .thenThrow(new JobExecutionAlreadyRunningException("Job already running"));
 
-        // Execute and Assert: Verify exception propagates
-        assertThrows(
-            JobExecutionAlreadyRunningException.class,
+        // Execute and Assert: Verify exception is wrapped in IllegalStateException
+        IllegalStateException thrown = assertThrows(
+            IllegalStateException.class,
             () -> reportMenuService.submitMonthlyReport("Y"),
-            "Should propagate JobExecutionAlreadyRunningException from JobLauncher"
+            "Should wrap JobExecutionAlreadyRunningException in IllegalStateException"
         );
+        
+        // Verify the cause is the original exception
+        assertNotNull(thrown.getCause(), "Cause should be set");
+        assertTrue(thrown.getCause() instanceof JobExecutionAlreadyRunningException,
+            "Cause should be JobExecutionAlreadyRunningException");
+        assertTrue(thrown.getMessage().contains("Unable to submit monthly report job"),
+            "Error message should indicate monthly report job failure");
 
         // Verify JobLauncher was invoked despite exception
         verify(jobLauncher, times(1)).run(
@@ -1248,12 +1280,19 @@ class ReportMenuServiceTest {
         when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
             .thenThrow(new JobParametersInvalidException("Invalid job parameters"));
 
-        // Execute and Assert: Verify exception propagates
-        assertThrows(
-            JobParametersInvalidException.class,
+        // Execute and Assert: Verify exception is wrapped in IllegalStateException
+        IllegalStateException thrown = assertThrows(
+            IllegalStateException.class,
             () -> reportMenuService.submitYearlyReport("Y"),
-            "Should propagate JobParametersInvalidException from JobLauncher"
+            "Should wrap JobParametersInvalidException in IllegalStateException"
         );
+        
+        // Verify the cause is the original exception
+        assertNotNull(thrown.getCause(), "Cause should be set");
+        assertTrue(thrown.getCause() instanceof JobParametersInvalidException,
+            "Cause should be JobParametersInvalidException");
+        assertTrue(thrown.getMessage().contains("Unable to submit yearly report job"),
+            "Error message should indicate yearly report job failure");
 
         // Verify JobLauncher was invoked
         verify(jobLauncher, times(1)).run(
