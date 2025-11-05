@@ -123,13 +123,13 @@ const customJestConfig = {
   ],
 
   /**
-   * Coverage Thresholds
+   * Coverage Threshold
    * Enforces minimum code coverage percentages as per Section 0.7.1
    * ALL services MUST achieve ≥80% code coverage (branches, functions, lines, statements)
    * 
    * If coverage falls below these thresholds, the test suite will fail
    */
-  coverageThresholds: {
+  coverageThreshold: {
     global: {
       branches: 80,
       functions: 80,
