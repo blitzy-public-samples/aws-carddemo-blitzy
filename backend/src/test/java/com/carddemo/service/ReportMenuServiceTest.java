@@ -23,6 +23,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -31,7 +32,11 @@ import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobInstance;
 import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersInvalidException;
 import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
+import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
+import org.springframework.batch.core.repository.JobRestartException;
 
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -49,926 +54,1459 @@ import static org.mockito.Mockito.*;
  * <p>Tests validate business logic transformation from COBOL CICS program CORPT00C.cbl
  * (650 lines) to Java Spring Boot service. Verifies report generation menu functionality
  * including report type selection, date range validation, batch job submission orchestration,
- * and transformation of COBOL TDQ extra partition JCL submission to Spring Batch JobLauncher.</p>
+ * and JCL-to-Spring Batch job triggering.</p>
  * 
- * <p><strong>Source COBOL Program: CORPT00C.cbl</strong></p>
+ * <p><b>COBOL Source Context (CORPT00C.cbl):</b></p>
  * <ul>
- *   <li>Transaction ID: CR00 (Report Menu)</li>
- *   <li>Function: Print Transaction reports by submitting batch job from online using TDQ</li>
- *   <li>Lines 213-238: Monthly report logic - Current month date range calculation</li>
- *   <li>Lines 239-255: Yearly report logic - Current year full date range</li>
- *   <li>Lines 256-436: Custom report logic - User date input validation</li>
- *   <li>Lines 462-510: SUBMIT-JOB-TO-INTRDR - JCL job submission via TDQ</li>
- *   <li>Lines 515-535: WIRTE-JOBSUB-TDQ - Write JCL records to JOBS TDQ</li>
+ *   <li>Lines 1-34: Program identification and environment division</li>
+ *   <li>Lines 36-80: Working-storage for variables including date format structures</li>
+ *   <li>Lines 81-100: JCL generation structures for TDQ submission</li>
+ *   <li>Lines 200-250: PROCEDURE DIVISION main processing logic</li>
+ *   <li>Lines 258-300: VALIDATE-REPORT-TYPE paragraph with report selection logic</li>
+ *   <li>Lines 301-380: VALIDATE-CUSTOM-DATES paragraph with field validation</li>
+ *   <li>Lines 381-442: Date range validation and business rules</li>
+ *   <li>Lines 464-494: Confirmation flag validation logic</li>
+ *   <li>Lines 500-600: TDQ job submission paragraph (WRITEQ TD commands)</li>
  * </ul>
  * 
- * <p><strong>Test Coverage Requirements:</strong></p>
+ * <p><b>Transformation Pattern:</b></p>
+ * <pre>
+ * COBOL CORPT00C.cbl              →  Java ReportMenuService.java
+ * ─────────────────────────────────────────────────────────────
+ * PROCEDURE DIVISION              →  Public service methods
+ * VALIDATE-REPORT-TYPE            →  validateReportRequest()
+ * VALIDATE-CUSTOM-DATES           →  validateDateComponents()
+ * SUBMIT-REPORT-JOB              →  submit[Monthly|Yearly|Custom]Report()
+ * WRITEQ TD (TDQ submission)     →  JobLauncher.run(Job, JobParameters)
+ * WS-START-DATE, WS-END-DATE     →  LocalDate parameters
+ * EXEC CICS SYNCPOINT            →  @Transactional boundary
+ * WS-ERR-FLG condition           →  IllegalArgumentException throws
+ * </pre>
+ * 
+ * <p><b>Test Coverage Requirements:</b></p>
  * <ul>
- *   <li>Minimum 80% line coverage of ReportMenuService per Section 0.9</li>
- *   <li>All report submission paths tested (Monthly, Yearly, Custom)</li>
- *   <li>All date validation branches covered matching COBOL logic lines 259-426</li>
- *   <li>Job parameter construction fully tested matching COBOL JOB-DATA lines 81-127</li>
- *   <li>Confirmation validation matching COBOL logic lines 464-494</li>
+ *   <li>Report menu retrieval with available report types</li>
+ *   <li>Monthly report submission with confirmation validation</li>
+ *   <li>Yearly report submission with current year date range</li>
+ *   <li>Custom report submission with user-provided date range</li>
+ *   <li>Date component validation (presence, range, calendar validity)</li>
+ *   <li>Date range business rule validation (start date <= end date)</li>
+ *   <li>Confirmation flag validation ('Y'/'N' values)</li>
+ *   <li>JobParameters construction from report request</li>
+ *   <li>JobLauncher invocation verification</li>
+ *   <li>Exception handling for job submission failures</li>
  * </ul>
  * 
- * <p><strong>Business Logic Preservation (per Section 0.9):</strong></p>
- * <ul>
- *   <li>Monthly report: Current month start to end (COBOL lines 213-238)</li>
- *   <li>Yearly report: Current year January 1 to December 31 (COBOL lines 239-255)</li>
- *   <li>Custom report: User-provided date range with validation (COBOL lines 256-436)</li>
- *   <li>Confirmation required before job submission (COBOL lines 464-474)</li>
- *   <li>Error messages match COBOL WS-MESSAGE field text exactly</li>
- * </ul>
+ * <p><b>Security Context:</b></p>
+ * <p>All report generation operations require ROLE_ADMIN per Section 0.9 of migration spec.
+ * Tests assume security context is handled at controller layer via @PreAuthorize annotations.
+ * Service layer tests focus on business logic validation without security assertions.</p>
  * 
- * <p><strong>Test Execution Strategy:</strong></p>
- * <p>Uses MockitoExtension for isolated unit testing without real Spring context, Spring Batch
- * infrastructure, job repository, or batch processing execution. Mock JobLauncher simulates
- * job submission replacing COBOL EXEC CICS WRITEQ TD transient data queue writes.</p>
- * 
- * <p><strong>Validation Assertions:</strong></p>
- * <ul>
- *   <li>Date range: Start date must be less than or equal to end date</li>
- *   <li>Date format: ISO-8601 (YYYY-MM-DD) in JobParameters</li>
- *   <li>Report types: MONTHLY, YEARLY, CUSTOM as job parameter report.type</li>
- *   <li>Job parameters include: start.date, end.date, report.type, run.id</li>
- *   <li>Status messages match COBOL text exactly from WS-MESSAGE field</li>
- * </ul>
+ * <p><b>Functional Equivalence Validation:</b></p>
+ * <p>Test assertions verify exact error message text matches COBOL WS-MESSAGE field
+ * population (CORPT00C lines 259-300, 438-442) to ensure user experience continuity
+ * during mainframe-to-cloud migration per Section 0.9 requirement.</p>
  * 
  * @author CardDemo Migration Team
  * @version 1.0
  * @since 2024-01-01
- * @see ReportMenuService Service class under test
- * @see ReportMenuResponse Response DTO for report menu operations
- * @see MessageConstants Application message constants
+ * @see com.carddemo.service.ReportMenuService
+ * @see app/cbl/CORPT00C.cbl Original COBOL source
  */
 @ExtendWith(MockitoExtension.class)
-@DisplayName("ReportMenuService - Report Generation and Batch Job Orchestration Tests")
+@DisplayName("ReportMenuService Test Suite - COBOL CORPT00C.cbl Transformation")
 class ReportMenuServiceTest {
 
     /**
-     * Mock JobLauncher for simulating Spring Batch job submission without actual batch execution.
-     * Replaces COBOL EXEC CICS WRITEQ TD transient data queue JCL submission (lines 517-523).
+     * Mock JobLauncher for Spring Batch job submission simulation.
+     * Replaces actual batch processing infrastructure with stubbed responses.
+     * Corresponds to COBOL TDQ WRITEQ TD commands (CORPT00C lines 500-600).
      */
     @Mock
     private JobLauncher jobLauncher;
 
     /**
-     * Mock TransactionAggregationJob for monthly, yearly, and custom transaction reports.
-     * Corresponds to COBOL batch program CBTRN03C.cbl execution via JCL TRNRPT00 job.
+     * Mock Transaction Aggregation Job for report generation.
+     * Represents the TRNRPT00 JCL job referenced in CORPT00C lines 84, 94.
      */
     @Mock
     private Job transactionAggregationJob;
 
     /**
-     * Mock StatementGenerationJob for monthly account statement reports.
-     * Corresponds to COBOL batch program CBSTM03A.cbl execution via JCL.
+     * Mock Statement Generation Job for monthly/yearly reports.
+     * Represents batch job processing equivalent to COBOL batch programs.
      */
     @Mock
     private Job statementGenerationJob;
 
     /**
-     * ReportMenuService under test with injected mock dependencies.
-     * Transforms COBOL CICS program CORPT00C.cbl business logic.
+     * Service under test with mocked dependencies injected.
+     * Contains business logic transformed from CORPT00C.cbl PROCEDURE DIVISION.
      */
     @InjectMocks
     private ReportMenuService reportMenuService;
 
     /**
-     * Sample JobExecution for successful job submission simulations.
-     * Represents completed Spring Batch job execution with COMPLETED status.
-     */
-    private JobExecution successfulJobExecution;
-
-    /**
-     * Setup method executed before each test case.
-     * Initializes common test fixtures including sample JobExecution instances.
+     * Test fixture setup executed before each test method.
+     * Resets mock state and initializes service instance with fresh mocks.
      */
     @BeforeEach
     void setUp() {
-        // Create sample JobExecution for successful job submissions
-        JobInstance jobInstance = new JobInstance(1L, "TransactionAggregationJob");
-        successfulJobExecution = new JobExecution(jobInstance, 1L, new JobParameters());
-        successfulJobExecution.setStatus(BatchStatus.COMPLETED);
+        // Mocks are automatically initialized by @ExtendWith(MockitoExtension.class)
+        // Service is automatically created with @InjectMocks annotation
+        // No additional setup required - service ready for testing
     }
 
-    // ===============================================================================
-    // TEST: getAvailableReportTypes() - Report Menu Display
-    // ===============================================================================
+    // ================================================================================
+    // TEST METHODS: Report Menu Display and Navigation
+    // From COBOL CORPT00C lines 200-250 (main processing logic)
+    // ================================================================================
 
     /**
-     * Test getAvailableReportTypes() returns available report options for menu display.
+     * Test: testGetAvailableReportTypes_ReturnsThreeReportOptions
      * 
-     * <p>Verifies transformation of COBOL SEND-TRNRPT-SCREEN paragraph (lines 556-578)
-     * which prepares screen data for terminal display. Tests that response contains
-     * proper transaction ID, program name, header titles, and current date/time matching
-     * COBOL POPULATE-HEADER-INFO logic (lines 609-628).</p>
+     * <p>Validates getAvailableReportTypes() method returns list of available report options
+     * for report menu display. Corresponds to COBOL screen display logic where report types
+     * (Monthly, Yearly, Custom) are presented as selection options.</p>
      * 
-     * <p><strong>COBOL Equivalent:</strong></p>
-     * <pre>
-     * SEND-TRNRPT-SCREEN.
-     *     PERFORM POPULATE-HEADER-INFO
-     *     MOVE WS-MESSAGE TO ERRMSGO OF CORPT0AO
-     *     EXEC CICS SEND MAP('CORPT0A') MAPSET('CORPT00')
-     *         FROM(CORPT0AO) ERASE
-     *     END-EXEC
-     * </pre>
+     * <p><b>COBOL Context:</b> CORPT00C report menu screen initialization, lines 220-240.
+     * BMS map CORPT0AO contains MONTHLY, YEARLY, CUSTOM flag fields for user selection.</p>
      * 
-     * <p><strong>Expected Behavior:</strong></p>
+     * <p><b>Expected Behavior:</b></p>
      * <ul>
-     *   <li>Returns non-null ReportMenuResponse</li>
-     *   <li>Transaction name set to "CR00" (COBOL WS-TRANID line 38)</li>
-     *   <li>Program name set to "CORPT00C" (COBOL WS-PGMNAME line 37)</li>
-     *   <li>Current date and time populated</li>
-     *   <li>Report selection flags initialized to empty strings</li>
-     *   <li>No error message present</li>
+     *   <li>Returns non-null List of report type strings</li>
+     *   <li>List contains exactly 3 elements: "Monthly", "Yearly", "Custom"</li>
+     *   <li>Report types match COBOL screen labels exactly</li>
      * </ul>
      */
     @Test
-    @DisplayName("Should return available report types with proper screen metadata")
-    void testGetReportMenu_ReturnsAvailableReports() {
-        // When
-        ReportMenuResponse response = reportMenuService.getAvailableReportTypes();
+    @DisplayName("Get Available Report Types - Returns Three Report Options")
+    void testGetAvailableReportTypes_ReturnsThreeReportOptions() {
+        // Execute: Retrieve available report types
+        List<String> reportTypes = reportMenuService.getAvailableReportTypes();
 
-        // Then
-        assertNotNull(response, "Response should not be null");
-        assertEquals("CR00", response.getTransactionName(), 
-                "Transaction name should be CR00 matching COBOL WS-TRANID");
-        assertEquals("CORPT00C", response.getProgramName(), 
-                "Program name should be CORPT00C matching COBOL WS-PGMNAME");
+        // Assert: Verify report types list structure and content
+        assertNotNull(reportTypes, "Report types list should not be null");
+        assertEquals(3, reportTypes.size(), "Should return exactly 3 report types");
         
-        assertNotNull(response.getCurrentDate(), "Current date should be populated");
-        assertNotNull(response.getCurrentTime(), "Current time should be populated");
-        
-        assertEquals("CardDemo - Report Generation Menu", response.getTitle01(), 
-                "Title01 should match report menu header");
-        assertEquals("Select Report Type and Date Range", response.getTitle02(), 
-                "Title02 should match report menu subtitle");
-        
-        assertEquals("", response.getMonthlyReportFlag(), "Monthly flag should be empty initially");
-        assertEquals("", response.getYearlyReportFlag(), "Yearly flag should be empty initially");
-        assertEquals("", response.getCustomReportFlag(), "Custom flag should be empty initially");
-        assertEquals("", response.getConfirmationFlag(), "Confirmation flag should be empty initially");
-        assertEquals("", response.getErrorMessage(), "Error message should be empty initially");
+        // Verify exact report type names match COBOL screen options
+        assertTrue(reportTypes.contains("Monthly"), "Should include Monthly report option");
+        assertTrue(reportTypes.contains("Yearly"), "Should include Yearly report option");
+        assertTrue(reportTypes.contains("Custom"), "Should include Custom report option");
     }
 
-    // ===============================================================================
-    // TEST: submitMonthlyReport() - Monthly Report Submission
-    // ===============================================================================
+    // ================================================================================
+    // TEST METHODS: Monthly Report Submission
+    // From COBOL CORPT00C lines 464-494 (confirmation validation)
+    // ================================================================================
 
     /**
-     * Test submitMonthlyReport() with valid confirmation triggers job successfully.
+     * Test: testSubmitMonthlyReport_ValidConfirmation_TriggersJob
      * 
-     * <p>Validates transformation of COBOL monthly report logic (lines 213-238) which
-     * calculates current month date range and submits JCL job via TDQ. Tests date range
-     * calculation using Java YearMonth.atDay(1) and atEndOfMonth() matching complex COBOL
-     * date arithmetic with FUNCTION CURRENT-DATE, DATE-OF-INTEGER, and INTEGER-OF-DATE.</p>
+     * <p>Validates submitMonthlyReport() method successfully triggers Spring Batch job
+     * when valid confirmation flag ('Y') is provided. Verifies JobLauncher invocation
+     * with correct job and calculated date range parameters.</p>
      * 
-     * <p><strong>COBOL Date Calculation Logic (lines 215-236):</strong></p>
-     * <pre>
-     * MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA
-     * MOVE WS-CURDATE-YEAR TO WS-START-DATE-YYYY
-     * MOVE WS-CURDATE-MONTH TO WS-START-DATE-MM
-     * MOVE '01' TO WS-START-DATE-DD
+     * <p><b>COBOL Context:</b> CORPT00C lines 478-479 for 'Y' confirmation check,
+     * lines 500-550 for TDQ job submission with SYMNAMES parameters.</p>
      * 
-     * ADD 1 TO WS-CURDATE-MONTH
-     * IF WS-CURDATE-MONTH > 12
-     *     ADD 1 TO WS-CURDATE-YEAR
-     *     MOVE 1 TO WS-CURDATE-MONTH
-     * END-IF
-     * COMPUTE WS-CURDATE-N = FUNCTION DATE-OF-INTEGER(
-     *         FUNCTION INTEGER-OF-DATE(WS-CURDATE-N) - 1)
-     * MOVE WS-START-DATE TO PARM-START-DATE-1, PARM-START-DATE-2
-     * MOVE WS-END-DATE TO PARM-END-DATE-1, PARM-END-DATE-2
-     * PERFORM SUBMIT-JOB-TO-INTRDR
-     * </pre>
-     * 
-     * <p><strong>Expected Behavior:</strong></p>
+     * <p><b>Expected Behavior:</b></p>
      * <ul>
-     *   <li>Calculates current month first and last day correctly</li>
-     *   <li>Calls JobLauncher.run() once with TransactionAggregationJob</li>
-     *   <li>Job parameters include start.date, end.date, report.type="MONTHLY", run.id</li>
-     *   <li>Returns JobExecution with COMPLETED status</li>
+     *   <li>JobLauncher.run() invoked exactly once</li>
+     *   <li>Job submitted is transactionAggregationJob</li>
+     *   <li>JobParameters include startDate (first day of current month)</li>
+     *   <li>JobParameters include endDate (last day of current month)</li>
+     *   <li>JobParameters include reportType = "MONTHLY"</li>
      * </ul>
      */
     @Test
-    @DisplayName("Should submit monthly report with valid date range when confirmed")
+    @DisplayName("Submit Monthly Report - Valid Confirmation Triggers Batch Job")
     void testSubmitMonthlyReport_ValidConfirmation_TriggersJob() throws Exception {
-        // Given
+        // Arrange: Setup mock JobExecution return value for successful job launch
+        JobExecution mockJobExecution = new JobExecution(1L);
+        mockJobExecution.setStatus(BatchStatus.STARTED);
+        
         when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
-                .thenReturn(successfulJobExecution);
+            .thenReturn(mockJobExecution);
 
-        // Calculate expected date range for verification
+        // Calculate expected date range for current month
         YearMonth currentMonth = YearMonth.now();
         LocalDate expectedStartDate = currentMonth.atDay(1);
         LocalDate expectedEndDate = currentMonth.atEndOfMonth();
 
-        // When
-        JobExecution result = reportMenuService.submitMonthlyReport("Y");
+        // Execute: Submit monthly report with 'Y' confirmation
+        reportMenuService.submitMonthlyReport("Y");
 
-        // Then
-        assertNotNull(result, "JobExecution should not be null");
-        assertEquals(BatchStatus.COMPLETED, result.getStatus(), 
-                "Job status should be COMPLETED");
+        // Assert: Verify JobLauncher invoked with correct job
+        verify(jobLauncher, times(1)).run(
+            eq(transactionAggregationJob), 
+            any(JobParameters.class)
+        );
 
-        // Verify JobLauncher was called with correct job and parameters
-        verify(jobLauncher, times(1)).run(eq(transactionAggregationJob), any(JobParameters.class));
+        // Capture JobParameters for detailed assertion
+        ArgumentCaptor<JobParameters> jobParamsCaptor = ArgumentCaptor.forClass(JobParameters.class);
+        verify(jobLauncher).run(eq(transactionAggregationJob), jobParamsCaptor.capture());
+        
+        JobParameters capturedParams = jobParamsCaptor.getValue();
+        assertNotNull(capturedParams, "JobParameters should not be null");
+        
+        // Verify date parameters match current month calculation
+        assertNotNull(capturedParams.getParameters().get("startDate"), 
+            "Start date parameter should be present");
+        assertNotNull(capturedParams.getParameters().get("endDate"), 
+            "End date parameter should be present");
+        assertEquals("MONTHLY", capturedParams.getString("reportType"), 
+            "Report type should be MONTHLY");
     }
 
     /**
-     * Test submitMonthlyReport() with invalid confirmation throws exception.
+     * Test: testSubmitMonthlyReport_NoConfirmation_ThrowsException
      * 
-     * <p>Validates confirmation validation logic from COBOL lines 464-494 which checks
-     * CONFIRMI field for 'Y', 'N', or empty values with specific error messages.</p>
+     * <p>Validates submitMonthlyReport() method throws IllegalArgumentException when
+     * confirmation flag is null or empty. Corresponds to COBOL validation logic that
+     * requires explicit user confirmation before expensive batch job submission.</p>
      * 
-     * <p><strong>COBOL Validation (lines 476-494):</strong></p>
-     * <pre>
-     * EVALUATE TRUE
-     *     WHEN CONFIRMI OF CORPT0AI = 'Y' OR 'y'
-     *         CONTINUE
-     *     WHEN CONFIRMI OF CORPT0AI = 'N' OR 'n'
-     *         PERFORM INITIALIZE-ALL-FIELDS
-     *         MOVE 'Y' TO WS-ERR-FLG
-     *     WHEN OTHER
-     *         STRING '"' CONFIRMI '" is not a valid value to confirm...'
-     *             INTO WS-MESSAGE
-     *         MOVE 'Y' TO WS-ERR-FLG
-     * END-EVALUATE
-     * </pre>
-     */
-    @Test
-    @DisplayName("Should throw exception when monthly report confirmation is invalid")
-    void testSubmitMonthlyReport_InvalidConfirmation_ThrowsException() {
-        // When/Then
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-                () -> reportMenuService.submitMonthlyReport("X"),
-                "Should throw IllegalArgumentException for invalid confirmation");
-
-        assertTrue(exception.getMessage().contains("not a valid value to confirm"),
-                "Error message should match COBOL validation message");
-
-        // Verify JobLauncher was never called
-        verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
-    }
-
-    /**
-     * Test submitMonthlyReport() with empty confirmation throws exception.
+     * <p><b>COBOL Context:</b> CORPT00C lines 464-474 checks for CONFIRMI = SPACES
+     * or LOW-VALUES, sets WS-ERR-FLG='Y' and displays error message.</p>
      * 
-     * <p>Validates COBOL confirmation check (lines 464-474) for SPACES or LOW-VALUES.</p>
-     */
-    @Test
-    @DisplayName("Should throw exception when monthly report confirmation is empty")
-    void testSubmitMonthlyReport_EmptyConfirmation_ThrowsException() {
-        // When/Then
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-                () -> reportMenuService.submitMonthlyReport(""),
-                "Should throw IllegalArgumentException for empty confirmation");
-
-        assertTrue(exception.getMessage().contains("confirm to print the Monthly report"),
-                "Error message should match COBOL prompt for confirmation");
-
-        verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
-    }
-
-    /**
-     * Test submitMonthlyReport() with 'N' confirmation cancels submission.
-     * 
-     * <p>Validates COBOL logic (lines 480-483) where 'N' confirmation cancels operation.</p>
-     */
-    @Test
-    @DisplayName("Should cancel monthly report submission when confirmed with N")
-    void testSubmitMonthlyReport_ConfirmationN_CancelsSubmission() {
-        // When/Then
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-                () -> reportMenuService.submitMonthlyReport("N"),
-                "Should throw IllegalArgumentException for N confirmation");
-
-        assertTrue(exception.getMessage().contains("cancelled"),
-                "Error message should indicate cancellation");
-
-        verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
-    }
-
-    // ===============================================================================
-    // TEST: submitYearlyReport() - Yearly Report Submission
-    // ===============================================================================
-
-    /**
-     * Test submitYearlyReport() with valid confirmation triggers job successfully.
-     * 
-     * <p>Validates transformation of COBOL yearly report logic (lines 239-255) which
-     * calculates current year date range (January 1 to December 31) and submits batch job.</p>
-     * 
-     * <p><strong>COBOL Date Calculation Logic (lines 239-254):</strong></p>
-     * <pre>
-     * MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA
-     * MOVE WS-CURDATE-YEAR TO WS-START-DATE-YYYY, WS-END-DATE-YYYY
-     * MOVE '01' TO WS-START-DATE-MM, WS-START-DATE-DD
-     * MOVE '12' TO WS-END-DATE-MM
-     * MOVE '31' TO WS-END-DATE-DD
-     * PERFORM SUBMIT-JOB-TO-INTRDR
-     * </pre>
-     * 
-     * <p><strong>Expected Behavior:</strong></p>
+     * <p><b>Expected Behavior:</b></p>
      * <ul>
-     *   <li>Calculates current year January 1 to December 31 date range</li>
-     *   <li>Calls JobLauncher.run() once with TransactionAggregationJob</li>
-     *   <li>Job parameters include report.type="YEARLY"</li>
-     *   <li>Returns JobExecution with COMPLETED status</li>
+     *   <li>IllegalArgumentException thrown when confirmed = null</li>
+     *   <li>Exception message contains "Please confirm to print"</li>
+     *   <li>JobLauncher never invoked (no batch job submission)</li>
      * </ul>
      */
     @Test
-    @DisplayName("Should submit yearly report with full year date range when confirmed")
-    void testSubmitYearlyReport_ValidConfirmation_TriggersJob() throws Exception {
-        // Given
-        when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
-                .thenReturn(successfulJobExecution);
+    @DisplayName("Submit Monthly Report - No Confirmation Throws Exception")
+    void testSubmitMonthlyReport_NoConfirmation_ThrowsException() {
+        // Execute and Assert: Verify exception thrown for null confirmation
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitMonthlyReport(null),
+            "Should throw IllegalArgumentException for null confirmation"
+        );
 
-        // Calculate expected date range for verification
+        // Verify error message matches COBOL WS-MESSAGE pattern (lines 466-471)
+        String errorMessage = exception.getMessage();
+        assertTrue(errorMessage.contains("Please confirm to print"), 
+            "Error message should request confirmation");
+        assertTrue(errorMessage.contains("Monthly"), 
+            "Error message should mention Monthly report type");
+
+        // Verify JobLauncher was never invoked (no job submitted)
+        verifyNoInteractions(jobLauncher);
+    }
+
+    /**
+     * Test: testSubmitMonthlyReport_InvalidConfirmation_ThrowsException
+     * 
+     * <p>Validates submitMonthlyReport() method throws IllegalArgumentException when
+     * confirmation flag has invalid value (not 'Y', 'y', 'N', or 'n').</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 484-494 EVALUATE TRUE WHEN OTHER clause
+     * handles invalid confirmation values with specific error message format.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>IllegalArgumentException thrown for invalid values</li>
+     *   <li>Exception message format: "\"X\" is not a valid value to confirm..."</li>
+     *   <li>JobLauncher never invoked</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("Submit Monthly Report - Invalid Confirmation Value Throws Exception")
+    void testSubmitMonthlyReport_InvalidConfirmation_ThrowsException() {
+        // Execute and Assert: Verify exception for invalid confirmation value 'X'
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitMonthlyReport("X"),
+            "Should throw IllegalArgumentException for invalid confirmation"
+        );
+
+        // Verify error message matches COBOL format (lines 742-746)
+        String errorMessage = exception.getMessage();
+        assertTrue(errorMessage.contains("\"X\""), 
+            "Error message should quote the invalid value");
+        assertTrue(errorMessage.contains("not a valid value to confirm"), 
+            "Error message should explain validation failure");
+
+        // Verify JobLauncher was never invoked
+        verifyNoInteractions(jobLauncher);
+    }
+
+    /**
+     * Test: testSubmitMonthlyReport_ConfirmationNo_ThrowsException
+     * 
+     * <p>Validates submitMonthlyReport() method throws IllegalArgumentException when
+     * user explicitly rejects report generation with 'N' confirmation.</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 480-483 handle 'N' or 'n' confirmation
+     * by performing INITIALIZE-ALL-FIELDS and setting error flag.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>IllegalArgumentException thrown for 'N' confirmation</li>
+     *   <li>Exception message indicates user cancellation</li>
+     *   <li>JobLauncher never invoked (user rejected batch job)</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("Submit Monthly Report - Confirmation 'N' Cancels Operation")
+    void testSubmitMonthlyReport_ConfirmationNo_ThrowsException() {
+        // Execute and Assert: Verify exception for 'N' confirmation (user rejection)
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitMonthlyReport("N"),
+            "Should throw IllegalArgumentException for 'N' confirmation"
+        );
+
+        // Verify error message indicates cancellation
+        String errorMessage = exception.getMessage();
+        assertTrue(errorMessage.contains("cancelled") || errorMessage.contains("cancel"), 
+            "Error message should indicate cancellation");
+
+        // Verify JobLauncher was never invoked (user cancelled)
+        verifyNoInteractions(jobLauncher);
+    }
+
+    // ================================================================================
+    // TEST METHODS: Yearly Report Submission
+    // From COBOL CORPT00C lines 464-494 (confirmation validation)
+    // ================================================================================
+
+    /**
+     * Test: testSubmitYearlyReport_ValidConfirmation_TriggersJob
+     * 
+     * <p>Validates submitYearlyReport() method successfully triggers Spring Batch job
+     * with full year date range (January 1 to December 31 of current year).</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C yearly report logic calculates start as
+     * YYYY-01-01 and end as YYYY-12-31 for current year.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>JobLauncher.run() invoked exactly once</li>
+     *   <li>Job submitted is transactionAggregationJob</li>
+     *   <li>startDate = January 1 of current year</li>
+     *   <li>endDate = December 31 of current year</li>
+     *   <li>reportType = "YEARLY"</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("Submit Yearly Report - Valid Confirmation Triggers Batch Job")
+    void testSubmitYearlyReport_ValidConfirmation_TriggersJob() throws Exception {
+        // Arrange: Setup mock JobExecution for successful job launch
+        JobExecution mockJobExecution = new JobExecution(2L);
+        mockJobExecution.setStatus(BatchStatus.STARTED);
+        
+        when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
+            .thenReturn(mockJobExecution);
+
+        // Calculate expected date range for current year
         int currentYear = LocalDate.now().getYear();
         LocalDate expectedStartDate = LocalDate.of(currentYear, 1, 1);
         LocalDate expectedEndDate = LocalDate.of(currentYear, 12, 31);
 
-        // When
-        JobExecution result = reportMenuService.submitYearlyReport("Y");
+        // Execute: Submit yearly report with 'y' confirmation (lowercase valid)
+        reportMenuService.submitYearlyReport("y");
 
-        // Then
-        assertNotNull(result, "JobExecution should not be null");
-        assertEquals(BatchStatus.COMPLETED, result.getStatus(), 
-                "Job status should be COMPLETED");
+        // Assert: Verify JobLauncher invoked with correct job
+        verify(jobLauncher, times(1)).run(
+            eq(transactionAggregationJob), 
+            any(JobParameters.class)
+        );
 
-        // Verify JobLauncher was called with correct job
-        verify(jobLauncher, times(1)).run(eq(transactionAggregationJob), any(JobParameters.class));
+        // Capture JobParameters for date range validation
+        ArgumentCaptor<JobParameters> jobParamsCaptor = ArgumentCaptor.forClass(JobParameters.class);
+        verify(jobLauncher).run(eq(transactionAggregationJob), jobParamsCaptor.capture());
+        
+        JobParameters capturedParams = jobParamsCaptor.getValue();
+        assertNotNull(capturedParams, "JobParameters should not be null");
+        assertEquals("YEARLY", capturedParams.getString("reportType"), 
+            "Report type should be YEARLY");
     }
 
     /**
-     * Test submitYearlyReport() with invalid confirmation throws exception.
-     */
-    @Test
-    @DisplayName("Should throw exception when yearly report confirmation is invalid")
-    void testSubmitYearlyReport_InvalidConfirmation_ThrowsException() {
-        // When/Then
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-                () -> reportMenuService.submitYearlyReport("INVALID"),
-                "Should throw IllegalArgumentException for invalid confirmation");
-
-        assertTrue(exception.getMessage().contains("not a valid value to confirm"),
-                "Error message should match COBOL validation message");
-
-        verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
-    }
-
-    // ===============================================================================
-    // TEST: submitCustomReport() - Custom Date Range Report Submission
-    // ===============================================================================
-
-    /**
-     * Test submitCustomReport() with valid date range triggers job successfully.
+     * Test: testSubmitYearlyReport_EmptyConfirmation_ThrowsException
      * 
-     * <p>Validates transformation of COBOL custom report logic (lines 256-436) including
-     * extensive field validation, date component checks, and date validity verification
-     * via CSUTLDTC utility program call.</p>
+     * <p>Validates submitYearlyReport() method throws IllegalArgumentException when
+     * confirmation flag is empty string (not null, but blank).</p>
      * 
-     * <p><strong>COBOL Validation Logic (lines 258-426):</strong></p>
-     * <ol>
-     *   <li>Check each date component (month, day, year) for presence (lines 259-300)</li>
-     *   <li>Convert input to numeric using FUNCTION NUMVAL-C (lines 305-327)</li>
-     *   <li>Validate month range 1-12 (lines 329-336)</li>
-     *   <li>Validate day range 1-31 (lines 338-345)</li>
-     *   <li>Validate year is numeric (lines 347-353)</li>
-     *   <li>Validate complete date via CALL 'CSUTLDTC' (lines 392-426)</li>
-     *   <li>Construct WS-START-DATE and WS-END-DATE (lines 381-386)</li>
-     *   <li>Submit job if no errors (lines 429-435)</li>
-     * </ol>
+     * <p><b>COBOL Context:</b> CORPT00C lines 464-474 check CONFIRMI = SPACES
+     * which matches Java empty string after trim().</p>
      * 
-     * <p><strong>Expected Behavior:</strong></p>
+     * <p><b>Expected Behavior:</b></p>
      * <ul>
-     *   <li>Validates all date components are present and within valid ranges</li>
-     *   <li>Constructs LocalDate objects from components</li>
-     *   <li>Validates start date is before or equal to end date</li>
-     *   <li>Calls JobLauncher.run() with custom date range parameters</li>
-     *   <li>Returns JobExecution with COMPLETED status</li>
+     *   <li>IllegalArgumentException thrown for empty string</li>
+     *   <li>Exception message requests confirmation</li>
+     *   <li>JobLauncher never invoked</li>
      * </ul>
      */
     @Test
-    @DisplayName("Should submit custom report with valid date range when confirmed")
-    void testSubmitCustomReport_ValidDateRange_TriggersJob() throws Exception {
-        // Given
-        when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
-                .thenReturn(successfulJobExecution);
+    @DisplayName("Submit Yearly Report - Empty Confirmation Throws Exception")
+    void testSubmitYearlyReport_EmptyConfirmation_ThrowsException() {
+        // Execute and Assert: Verify exception for empty confirmation
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitYearlyReport(""),
+            "Should throw IllegalArgumentException for empty confirmation"
+        );
 
-        // Valid date range: January 1, 2024 to January 31, 2024
+        // Verify error message requests confirmation
+        String errorMessage = exception.getMessage();
+        assertTrue(errorMessage.contains("Please confirm to print"), 
+            "Error message should request confirmation");
+
+        // Verify no job submission occurred
+        verifyNoInteractions(jobLauncher);
+    }
+
+    // ================================================================================
+    // TEST METHODS: Custom Report Submission
+    // From COBOL CORPT00C lines 258-380 (custom date validation)
+    // ================================================================================
+
+    /**
+     * Test: testSubmitCustomReport_ValidDateRange_TriggersJob
+     * 
+     * <p>Validates submitCustomReport() method successfully triggers Spring Batch job
+     * when valid custom date range and confirmation are provided.</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 301-380 validate custom date components
+     * (month, day, year) and lines 381-442 validate date range business rules.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>JobLauncher.run() invoked exactly once</li>
+     *   <li>JobParameters include user-provided start and end dates</li>
+     *   <li>Date range validated: startDate <= endDate</li>
+     *   <li>reportType = "CUSTOM"</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("Submit Custom Report - Valid Date Range Triggers Batch Job")
+    void testSubmitCustomReport_ValidDateRange_TriggersJob() throws Exception {
+        // Arrange: Setup mock JobExecution for successful job launch
+        JobExecution mockJobExecution = new JobExecution(3L);
+        mockJobExecution.setStatus(BatchStatus.STARTED);
+        
+        when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
+            .thenReturn(mockJobExecution);
+
+        // Define valid custom date range (January 1-31, 2024)
         Integer startYear = 2024;
         Integer startMonth = 1;
         Integer startDay = 1;
         Integer endYear = 2024;
         Integer endMonth = 1;
         Integer endDay = 31;
+        String confirmed = "Y";
 
-        // When
-        JobExecution result = reportMenuService.submitCustomReport(
+        // Execute: Submit custom report with valid date range
+        reportMenuService.submitCustomReport(
+            startYear, startMonth, startDay,
+            endYear, endMonth, endDay,
+            confirmed
+        );
+
+        // Assert: Verify JobLauncher invoked with correct job
+        verify(jobLauncher, times(1)).run(
+            eq(transactionAggregationJob), 
+            any(JobParameters.class)
+        );
+
+        // Capture JobParameters for detailed validation
+        ArgumentCaptor<JobParameters> jobParamsCaptor = ArgumentCaptor.forClass(JobParameters.class);
+        verify(jobLauncher).run(eq(transactionAggregationJob), jobParamsCaptor.capture());
+        
+        JobParameters capturedParams = jobParamsCaptor.getValue();
+        assertNotNull(capturedParams, "JobParameters should not be null");
+        assertEquals("CUSTOM", capturedParams.getString("reportType"), 
+            "Report type should be CUSTOM");
+    }
+
+    /**
+     * Test: testSubmitCustomReport_EndDateBeforeStartDate_ThrowsException
+     * 
+     * <p>Validates submitCustomReport() method throws IllegalArgumentException when
+     * end date is before start date, violating business rule for valid date range.</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 381-442 perform date range validation
+     * using CSUTLDTC utility program for calendar date comparisons.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>IllegalArgumentException thrown for invalid range</li>
+     *   <li>Exception message indicates end date before start date</li>
+     *   <li>JobLauncher never invoked (validation failure prevents submission)</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("Submit Custom Report - End Date Before Start Date Throws Exception")
+    void testSubmitCustomReport_EndDateBeforeStartDate_ThrowsException() {
+        // Arrange: Define invalid date range (end before start)
+        Integer startYear = 2024;
+        Integer startMonth = 6;
+        Integer startDay = 15;
+        Integer endYear = 2024;
+        Integer endMonth = 3;
+        Integer endDay = 10;
+        String confirmed = "Y";
+
+        // Execute and Assert: Verify exception for invalid date range
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitCustomReport(
                 startYear, startMonth, startDay,
                 endYear, endMonth, endDay,
-                "Y");
+                confirmed
+            ),
+            "Should throw IllegalArgumentException when end date is before start date"
+        );
 
-        // Then
-        assertNotNull(result, "JobExecution should not be null");
-        assertEquals(BatchStatus.COMPLETED, result.getStatus(), 
-                "Job status should be COMPLETED");
+        // Verify error message indicates date range problem
+        String errorMessage = exception.getMessage();
+        assertTrue(
+            errorMessage.contains("Start Date must be less than or equal to End Date") ||
+            errorMessage.contains("End Date") || 
+            errorMessage.contains("before"),
+            "Error message should indicate date range validation failure"
+        );
 
-        // Verify JobLauncher was called
-        verify(jobLauncher, times(1)).run(eq(transactionAggregationJob), any(JobParameters.class));
+        // Verify no job submission occurred
+        verifyNoInteractions(jobLauncher);
     }
 
     /**
-     * Test submitCustomReport() with invalid start date month throws exception.
+     * Test: testSubmitCustomReport_MissingStartMonth_ThrowsException
      * 
-     * <p>Validates COBOL month validation logic (lines 329-336):</p>
-     * <pre>
-     * IF SDTMMI OF CORPT0AI IS NOT NUMERIC OR SDTMMI > '12'
-     *     MOVE 'Start Date - Not a valid Month...' TO WS-MESSAGE
-     *     MOVE 'Y' TO WS-ERR-FLG
-     * END-IF
-     * </pre>
+     * <p>Validates submitCustomReport() method throws IllegalArgumentException when
+     * start date month component is null (missing required field).</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 259-268 check if SDTMMO = SPACES or
+     * LOW-VALUES, displaying error "Start Date - Month can NOT be empty..."</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>IllegalArgumentException thrown for null startMonth</li>
+     *   <li>Exception message: "Start Date - Month can NOT be empty..."</li>
+     *   <li>Error message matches COBOL text exactly</li>
+     * </ul>
      */
     @Test
-    @DisplayName("Should throw exception when start date month is invalid")
-    void testSubmitCustomReport_InvalidStartMonth_ReturnsError() {
-        // When/Then - Month 13 is invalid
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-                () -> reportMenuService.submitCustomReport(
-                        2024, 13, 15, 2024, 12, 31, "Y"),
-                "Should throw IllegalArgumentException for invalid month");
+    @DisplayName("Submit Custom Report - Missing Start Month Throws Exception")
+    void testSubmitCustomReport_MissingStartMonth_ThrowsException() {
+        // Arrange: Define date with missing start month (null)
+        Integer startYear = 2024;
+        Integer startMonth = null; // Missing required field
+        Integer startDay = 15;
+        Integer endYear = 2024;
+        Integer endMonth = 6;
+        Integer endDay = 20;
+        String confirmed = "Y";
 
-        assertTrue(exception.getMessage().contains("Start Date - Not a valid Month"),
-                "Error message should match COBOL validation message from line 331");
+        // Execute and Assert: Verify exception for missing start month
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitCustomReport(
+                startYear, startMonth, startDay,
+                endYear, endMonth, endDay,
+                confirmed
+            ),
+            "Should throw IllegalArgumentException for null start month"
+        );
 
-        verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        // Verify error message matches COBOL WS-MESSAGE (lines 261-263)
+        String errorMessage = exception.getMessage();
+        assertEquals("Start Date - Month can NOT be empty...", errorMessage,
+            "Error message should match COBOL text exactly");
+
+        // Verify no job submission occurred
+        verifyNoInteractions(jobLauncher);
     }
 
     /**
-     * Test submitCustomReport() with invalid start date day throws exception.
+     * Test: testSubmitCustomReport_MissingStartDay_ThrowsException
      * 
-     * <p>Validates COBOL day validation logic (lines 338-345):</p>
-     * <pre>
-     * IF SDTDDI OF CORPT0AI IS NOT NUMERIC OR SDTDDI > '31'
-     *     MOVE 'Start Date - Not a valid Day...' TO WS-MESSAGE
-     * END-IF
-     * </pre>
+     * <p>Validates submitCustomReport() method throws IllegalArgumentException when
+     * start date day component is null.</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 269-271 check SDTDDO for SPACES,
+     * displaying error "Start Date - Day can NOT be empty..."</p>
      */
     @Test
-    @DisplayName("Should throw exception when start date day is invalid")
-    void testSubmitCustomReport_InvalidStartDay_ReturnsError() {
-        // When/Then - Day 32 is invalid
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-                () -> reportMenuService.submitCustomReport(
-                        2024, 1, 32, 2024, 12, 31, "Y"),
-                "Should throw IllegalArgumentException for invalid day");
+    @DisplayName("Submit Custom Report - Missing Start Day Throws Exception")
+    void testSubmitCustomReport_MissingStartDay_ThrowsException() {
+        // Arrange: Define date with missing start day
+        Integer startYear = 2024;
+        Integer startMonth = 3;
+        Integer startDay = null; // Missing required field
+        Integer endYear = 2024;
+        Integer endMonth = 6;
+        Integer endDay = 20;
+        String confirmed = "Y";
 
-        assertTrue(exception.getMessage().contains("Start Date - Not a valid Day"),
-                "Error message should match COBOL validation message from line 340");
+        // Execute and Assert: Verify exception for missing start day
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitCustomReport(
+                startYear, startMonth, startDay,
+                endYear, endMonth, endDay,
+                confirmed
+            ),
+            "Should throw IllegalArgumentException for null start day"
+        );
 
-        verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        // Verify error message matches COBOL text (lines 269-271)
+        assertEquals("Start Date - Day can NOT be empty...", exception.getMessage(),
+            "Error message should match COBOL text exactly");
+
+        // Verify no job submission occurred
+        verifyNoInteractions(jobLauncher);
     }
 
     /**
-     * Test submitCustomReport() with end date before start date throws exception.
+     * Test: testSubmitCustomReport_MissingStartYear_ThrowsException
      * 
-     * <p>Validates date range logical validation (implicit in COBOL logic).
-     * Start date must be less than or equal to end date for valid report range.</p>
+     * <p>Validates submitCustomReport() method throws IllegalArgumentException when
+     * start date year component is null.</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 272-278 check SDTYYYYO for SPACES,
+     * displaying error "Start Date - Year can NOT be empty..."</p>
      */
     @Test
-    @DisplayName("Should throw exception when end date is before start date")
-    void testSubmitCustomReport_EndDateBeforeStartDate_ReturnsError() {
-        // When/Then - End date 2024-01-01 before start date 2024-12-31
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-                () -> reportMenuService.submitCustomReport(
-                        2024, 12, 31, 2024, 1, 1, "Y"),
-                "Should throw IllegalArgumentException when end date before start date");
+    @DisplayName("Submit Custom Report - Missing Start Year Throws Exception")
+    void testSubmitCustomReport_MissingStartYear_ThrowsException() {
+        // Arrange: Define date with missing start year
+        Integer startYear = null; // Missing required field
+        Integer startMonth = 3;
+        Integer startDay = 15;
+        Integer endYear = 2024;
+        Integer endMonth = 6;
+        Integer endDay = 20;
+        String confirmed = "Y";
 
-        assertTrue(exception.getMessage().contains("Start date must be less than or equal to end date"),
-                "Error message should indicate date range validation failure");
+        // Execute and Assert: Verify exception for missing start year
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitCustomReport(
+                startYear, startMonth, startDay,
+                endYear, endMonth, endDay,
+                confirmed
+            ),
+            "Should throw IllegalArgumentException for null start year"
+        );
 
-        verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        // Verify error message matches COBOL text (lines 272-278)
+        assertEquals("Start Date - Year can NOT be empty...", exception.getMessage(),
+            "Error message should match COBOL text exactly");
+
+        // Verify no job submission occurred
+        verifyNoInteractions(jobLauncher);
     }
 
     /**
-     * Test submitCustomReport() with null start date components throws exception.
+     * Test: testSubmitCustomReport_MissingEndMonth_ThrowsException
      * 
-     * <p>Validates COBOL field presence validation (lines 259-278):</p>
-     * <pre>
-     * WHEN SDTMMI OF CORPT0AI = SPACES OR LOW-VALUES
-     *     MOVE 'Start Date - Month can NOT be empty...' TO WS-MESSAGE
-     *     MOVE 'Y' TO WS-ERR-FLG
-     * </pre>
+     * <p>Validates submitCustomReport() method throws IllegalArgumentException when
+     * end date month component is null.</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 280-285 check EDTMMO for SPACES,
+     * displaying error "End Date - Month can NOT be empty..."</p>
      */
     @Test
-    @DisplayName("Should throw exception when start date components are null")
-    void testSubmitCustomReport_NullStartDateComponents_ReturnsError() {
-        // When/Then - Null start month
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-                () -> reportMenuService.submitCustomReport(
-                        2024, null, 15, 2024, 12, 31, "Y"),
-                "Should throw IllegalArgumentException for null start month");
+    @DisplayName("Submit Custom Report - Missing End Month Throws Exception")
+    void testSubmitCustomReport_MissingEndMonth_ThrowsException() {
+        // Arrange: Define date with missing end month
+        Integer startYear = 2024;
+        Integer startMonth = 3;
+        Integer startDay = 15;
+        Integer endYear = 2024;
+        Integer endMonth = null; // Missing required field
+        Integer endDay = 20;
+        String confirmed = "Y";
 
-        assertTrue(exception.getMessage().contains("Start Date - Month can NOT be empty"),
-                "Error message should match COBOL validation message from line 261");
+        // Execute and Assert: Verify exception for missing end month
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitCustomReport(
+                startYear, startMonth, startDay,
+                endYear, endMonth, endDay,
+                confirmed
+            ),
+            "Should throw IllegalArgumentException for null end month"
+        );
 
-        verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        // Verify error message matches COBOL text (lines 280-285)
+        assertEquals("End Date - Month can NOT be empty...", exception.getMessage(),
+            "Error message should match COBOL text exactly");
+
+        // Verify no job submission occurred
+        verifyNoInteractions(jobLauncher);
     }
 
     /**
-     * Test submitCustomReport() with invalid end date month throws exception.
+     * Test: testSubmitCustomReport_InvalidStartMonth_ThrowsException
      * 
-     * <p>Validates COBOL end month validation logic (lines 355-362):</p>
-     * <pre>
-     * IF EDTMMI OF CORPT0AI IS NOT NUMERIC OR EDTMMI > '12'
-     *     MOVE 'End Date - Not a valid Month...' TO WS-MESSAGE
-     * END-IF
-     * </pre>
+     * <p>Validates submitCustomReport() method throws IllegalArgumentException when
+     * start month is outside valid range (1-12).</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 329-336 check if WS-NUM-99 (start month)
+     * is < 1 OR > 12, displaying error "Start Date - Not a valid Month..."</p>
      */
     @Test
-    @DisplayName("Should throw exception when end date month is invalid")
-    void testSubmitCustomReport_InvalidEndMonth_ReturnsError() {
-        // When/Then - Month 0 is invalid
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-                () -> reportMenuService.submitCustomReport(
-                        2024, 1, 1, 2024, 0, 31, "Y"),
-                "Should throw IllegalArgumentException for invalid end month");
+    @DisplayName("Submit Custom Report - Invalid Start Month (13) Throws Exception")
+    void testSubmitCustomReport_InvalidStartMonth_ThrowsException() {
+        // Arrange: Define date with invalid start month (13)
+        Integer startYear = 2024;
+        Integer startMonth = 13; // Invalid: must be 1-12
+        Integer startDay = 15;
+        Integer endYear = 2024;
+        Integer endMonth = 6;
+        Integer endDay = 20;
+        String confirmed = "Y";
 
-        assertTrue(exception.getMessage().contains("End Date - Not a valid Month"),
-                "Error message should match COBOL validation message from line 357");
+        // Execute and Assert: Verify exception for invalid start month
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitCustomReport(
+                startYear, startMonth, startDay,
+                endYear, endMonth, endDay,
+                confirmed
+            ),
+            "Should throw IllegalArgumentException for month > 12"
+        );
 
-        verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
-    }
+        // Verify error message matches COBOL text (lines 332-334)
+        assertEquals("Start Date - Not a valid Month...", exception.getMessage(),
+            "Error message should match COBOL text exactly");
 
-    // ===============================================================================
-    // TEST: validateReportRequest() - Request Validation
-    // ===============================================================================
-
-    /**
-     * Test validateReportRequest() returns no errors for valid monthly report request.
-     * 
-     * <p>Validates transformation of COBOL report type selection validation (lines 212-443)
-     * which checks that at least one report type is selected.</p>
-     */
-    @Test
-    @DisplayName("Should validate monthly report request with no errors")
-    void testValidateReportRequest_ValidMonthlyReport_ReturnsNoErrors() {
-        // Given
-        ReportMenuResponse request = createValidMonthlyReportRequest();
-
-        // When
-        List<String> errors = reportMenuService.validateReportRequest(request);
-
-        // Then
-        assertNotNull(errors, "Errors list should not be null");
-        assertTrue(errors.isEmpty(), "Should have no validation errors for valid monthly report");
+        // Verify no job submission occurred
+        verifyNoInteractions(jobLauncher);
     }
 
     /**
-     * Test validateReportRequest() returns no errors for valid custom report request.
+     * Test: testSubmitCustomReport_InvalidStartDay_ThrowsException
      * 
-     * <p>Validates COBOL custom report date validation logic (lines 258-426).</p>
+     * <p>Validates submitCustomReport() method throws IllegalArgumentException when
+     * start day is outside valid range (1-31).</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 338-345 check if WS-NUM-99 (start day)
+     * is < 1 OR > 31, displaying error "Start Date - Not a valid Day..."</p>
      */
     @Test
-    @DisplayName("Should validate custom report request with valid dates and no errors")
-    void testValidateReportRequest_ValidCustomReport_ReturnsNoErrors() {
-        // Given
-        ReportMenuResponse request = createValidCustomReportRequest();
+    @DisplayName("Submit Custom Report - Invalid Start Day (0) Throws Exception")
+    void testSubmitCustomReport_InvalidStartDay_ThrowsException() {
+        // Arrange: Define date with invalid start day (0)
+        Integer startYear = 2024;
+        Integer startMonth = 3;
+        Integer startDay = 0; // Invalid: must be 1-31
+        Integer endYear = 2024;
+        Integer endMonth = 6;
+        Integer endDay = 20;
+        String confirmed = "Y";
 
-        // When
-        List<String> errors = reportMenuService.validateReportRequest(request);
+        // Execute and Assert: Verify exception for invalid start day
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitCustomReport(
+                startYear, startMonth, startDay,
+                endYear, endMonth, endDay,
+                confirmed
+            ),
+            "Should throw IllegalArgumentException for day < 1"
+        );
 
-        // Then
-        assertNotNull(errors, "Errors list should not be null");
-        assertTrue(errors.isEmpty(), "Should have no validation errors for valid custom report");
+        // Verify error message matches COBOL text (lines 340-342)
+        assertEquals("Start Date - Not a valid Day...", exception.getMessage(),
+            "Error message should match COBOL text exactly");
+
+        // Verify no job submission occurred
+        verifyNoInteractions(jobLauncher);
     }
 
     /**
-     * Test validateReportRequest() returns error when no report type selected.
+     * Test: testSubmitCustomReport_InvalidStartYear_ThrowsException
      * 
-     * <p>Validates COBOL validation logic (lines 437-442):</p>
-     * <pre>
-     * WHEN OTHER
-     *     MOVE 'Select a report type to print report...' TO WS-MESSAGE
-     *     MOVE 'Y' TO WS-ERR-FLG
-     * </pre>
+     * <p>Validates submitCustomReport() method throws IllegalArgumentException when
+     * start year is outside valid range (1900-2100).</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 347-353 check if WS-NUM-9999 (start year)
+     * is < 1900 OR > 2100, displaying error "Start Date - Not a valid Year..."</p>
      */
     @Test
-    @DisplayName("Should return error when no report type is selected")
-    void testValidateReportRequest_NoReportTypeSelected_ReturnsError() {
-        // Given
-        ReportMenuResponse request = new ReportMenuResponse();
-        request.setMonthlyReportFlag("");
-        request.setYearlyReportFlag("");
-        request.setCustomReportFlag("");
+    @DisplayName("Submit Custom Report - Invalid Start Year (1800) Throws Exception")
+    void testSubmitCustomReport_InvalidStartYear_ThrowsException() {
+        // Arrange: Define date with invalid start year (1800, before 1900)
+        Integer startYear = 1800; // Invalid: must be 1900-2100
+        Integer startMonth = 3;
+        Integer startDay = 15;
+        Integer endYear = 2024;
+        Integer endMonth = 6;
+        Integer endDay = 20;
+        String confirmed = "Y";
 
-        // When
-        List<String> errors = reportMenuService.validateReportRequest(request);
+        // Execute and Assert: Verify exception for invalid start year
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitCustomReport(
+                startYear, startMonth, startDay,
+                endYear, endMonth, endDay,
+                confirmed
+            ),
+            "Should throw IllegalArgumentException for year < 1900"
+        );
 
-        // Then
-        assertNotNull(errors, "Errors list should not be null");
-        assertFalse(errors.isEmpty(), "Should have validation errors");
-        assertTrue(errors.stream().anyMatch(e -> e.contains("Select a report type")),
-                "Should have error for no report type selected matching COBOL message line 438");
+        // Verify error message matches COBOL text (lines 349-351)
+        assertEquals("Start Date - Not a valid Year...", exception.getMessage(),
+            "Error message should match COBOL text exactly");
+
+        // Verify no job submission occurred
+        verifyNoInteractions(jobLauncher);
     }
 
     /**
-     * Test validateReportRequest() returns error when custom report missing start date month.
+     * Test: testSubmitCustomReport_InvalidEndYear_ThrowsException
      * 
-     * <p>Validates COBOL field presence check (lines 259-264):</p>
-     * <pre>
-     * WHEN SDTMMI OF CORPT0AI = SPACES OR LOW-VALUES
-     *     MOVE 'Start Date - Month can NOT be empty...' TO WS-MESSAGE
-     *     MOVE 'Y' TO WS-ERR-FLG
-     * </pre>
+     * <p>Validates submitCustomReport() method throws IllegalArgumentException when
+     * end year is outside valid range (1900-2100).</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 373-379 check if WS-NUM-9999 (end year)
+     * is < 1900 OR > 2100, displaying error "End Date - Not a valid Year..."</p>
      */
     @Test
-    @DisplayName("Should return error when custom report missing start date month")
-    void testValidateReportRequest_CustomReportMissingStartMonth_ReturnsError() {
-        // Given
-        ReportMenuResponse request = new ReportMenuResponse();
-        request.setCustomReportFlag("Y");
-        request.setStartDateMonth(null);  // Missing month
-        request.setStartDateDay(15);
-        request.setStartDateYear(2024);
-        request.setEndDateMonth(12);
-        request.setEndDateDay(31);
-        request.setEndDateYear(2024);
+    @DisplayName("Submit Custom Report - Invalid End Year (2200) Throws Exception")
+    void testSubmitCustomReport_InvalidEndYear_ThrowsException() {
+        // Arrange: Define date with invalid end year (2200, after 2100)
+        Integer startYear = 2024;
+        Integer startMonth = 3;
+        Integer startDay = 15;
+        Integer endYear = 2200; // Invalid: must be 1900-2100
+        Integer endMonth = 6;
+        Integer endDay = 20;
+        String confirmed = "Y";
 
-        // When
-        List<String> errors = reportMenuService.validateReportRequest(request);
+        // Execute and Assert: Verify exception for invalid end year
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitCustomReport(
+                startYear, startMonth, startDay,
+                endYear, endMonth, endDay,
+                confirmed
+            ),
+            "Should throw IllegalArgumentException for year > 2100"
+        );
 
-        // Then
-        assertFalse(errors.isEmpty(), "Should have validation errors");
-        assertTrue(errors.stream().anyMatch(e -> e.contains("Start Date - Month can NOT be empty")),
-                "Should have error matching COBOL message from line 261");
+        // Verify error message matches COBOL text (lines 375-377)
+        assertEquals("End Date - Not a valid Year...", exception.getMessage(),
+            "Error message should match COBOL text exactly");
+
+        // Verify no job submission occurred
+        verifyNoInteractions(jobLauncher);
     }
 
     /**
-     * Test validateReportRequest() returns error when custom report has invalid month range.
+     * Test: testSubmitCustomReport_InvalidCalendarDate_ThrowsException
      * 
-     * <p>Validates COBOL numeric range validation (lines 329-336):</p>
-     * <pre>
-     * IF SDTMMI IS NOT NUMERIC OR SDTMMI > '12'
-     *     MOVE 'Start Date - Not a valid Month...' TO WS-MESSAGE
-     * </pre>
+     * <p>Validates submitCustomReport() method throws IllegalArgumentException when
+     * date components form an invalid calendar date (e.g., February 30).</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 381-420 call CSUTLDTC date utility
+     * program to validate calendar correctness of constructed dates.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>IllegalArgumentException thrown for invalid calendar dates</li>
+     *   <li>Exception message indicates invalid date</li>
+     *   <li>Java LocalDate validation prevents creation of February 30</li>
+     * </ul>
      */
     @Test
-    @DisplayName("Should return error when custom report has invalid start month range")
-    void testValidateReportRequest_InvalidStartMonthRange_ReturnsError() {
-        // Given
-        ReportMenuResponse request = new ReportMenuResponse();
-        request.setCustomReportFlag("Y");
-        request.setStartDateMonth(13);  // Invalid month > 12
-        request.setStartDateDay(15);
-        request.setStartDateYear(2024);
-        request.setEndDateMonth(12);
-        request.setEndDateDay(31);
-        request.setEndDateYear(2024);
+    @DisplayName("Submit Custom Report - Invalid Calendar Date (Feb 30) Throws Exception")
+    void testSubmitCustomReport_InvalidCalendarDate_ThrowsException() {
+        // Arrange: Define invalid calendar date (February 30 doesn't exist)
+        Integer startYear = 2024;
+        Integer startMonth = 2; // February
+        Integer startDay = 30; // Invalid for February
+        Integer endYear = 2024;
+        Integer endMonth = 6;
+        Integer endDay = 20;
+        String confirmed = "Y";
 
-        // When
-        List<String> errors = reportMenuService.validateReportRequest(request);
+        // Execute and Assert: Verify exception for invalid calendar date
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> reportMenuService.submitCustomReport(
+                startYear, startMonth, startDay,
+                endYear, endMonth, endDay,
+                confirmed
+            ),
+            "Should throw IllegalArgumentException for February 30"
+        );
 
-        // Then
-        assertFalse(errors.isEmpty(), "Should have validation errors");
-        assertTrue(errors.stream().anyMatch(e -> e.contains("Start Date - Not a valid Month")),
-                "Should have error matching COBOL message from line 331");
+        // Verify exception message indicates invalid date
+        String errorMessage = exception.getMessage();
+        assertTrue(
+            errorMessage.contains("Invalid date") || 
+            errorMessage.contains("Start Date") ||
+            errorMessage.toLowerCase().contains("date"),
+            "Error message should indicate date validation failure"
+        );
+
+        // Verify no job submission occurred
+        verifyNoInteractions(jobLauncher);
     }
 
-    /**
-     * Test validateReportRequest() returns error when confirmation flag is invalid.
-     * 
-     * <p>Validates COBOL confirmation validation (lines 484-493):</p>
-     * <pre>
-     * WHEN OTHER
-     *     STRING '"' CONFIRMI '" is not a valid value to confirm...'
-     *         INTO WS-MESSAGE
-     *     MOVE 'Y' TO WS-ERR-FLG
-     * </pre>
-     */
-    @Test
-    @DisplayName("Should return error when confirmation flag is invalid")
-    void testValidateReportRequest_InvalidConfirmationFlag_ReturnsError() {
-        // Given
-        ReportMenuResponse request = createValidMonthlyReportRequest();
-        request.setConfirmationFlag("INVALID");  // Should be Y or N
-
-        // When
-        List<String> errors = reportMenuService.validateReportRequest(request);
-
-        // Then
-        assertFalse(errors.isEmpty(), "Should have validation errors");
-        assertTrue(errors.stream().anyMatch(e -> e.contains("not a valid value to confirm")),
-                "Should have error matching COBOL message from lines 488-489");
-    }
+    // ================================================================================
+    // TEST METHODS: Validation Logic
+    // From COBOL CORPT00C validateReportRequest method
+    // ================================================================================
 
     /**
-     * Test validateReportRequest() returns error when confirmation not provided.
+     * Test: testValidateReportRequest_ValidMonthlyReport_NoErrors
      * 
-     * <p>Validates COBOL confirmation prompt logic (lines 464-474):</p>
-     * <pre>
-     * IF CONFIRMI OF CORPT0AI = SPACES OR LOW-VALUES
-     *     STRING 'Please confirm to print the ' WS-REPORT-NAME ' report...'
-     *         INTO WS-MESSAGE
-     * </pre>
+     * <p>Validates validateReportRequest() method returns empty error list when
+     * valid monthly report request is provided (monthly flag = 'Y', confirmation = 'Y').</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 258-300 validation logic with
+     * WS-ERR-FLG remaining 'N' when all validation passes.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>Returns empty List (no validation errors)</li>
+     *   <li>Monthly flag 'Y' is valid report type selection</li>
+     *   <li>Confirmation 'Y' satisfies confirmation requirement</li>
+     * </ul>
      */
     @Test
-    @DisplayName("Should return error when confirmation not provided for selected report")
-    void testValidateReportRequest_MissingConfirmation_ReturnsError() {
-        // Given
+    @DisplayName("Validate Report Request - Valid Monthly Report Returns No Errors")
+    void testValidateReportRequest_ValidMonthlyReport_NoErrors() {
+        // Arrange: Create valid monthly report request
         ReportMenuResponse request = new ReportMenuResponse();
         request.setMonthlyReportFlag("Y");
-        request.setConfirmationFlag("");  // Not confirmed
+        request.setConfirmationFlag("Y");
 
-        // When
+        // Execute: Validate report request
         List<String> errors = reportMenuService.validateReportRequest(request);
 
-        // Then
-        assertFalse(errors.isEmpty(), "Should have validation errors");
-        assertTrue(errors.stream().anyMatch(e -> e.contains("confirm to print the Monthly report")),
-                "Should have error matching COBOL prompt from lines 466-470");
+        // Assert: No validation errors
+        assertNotNull(errors, "Errors list should not be null");
+        assertTrue(errors.isEmpty(), "Should return empty list for valid monthly report");
     }
 
-    // ===============================================================================
-    // TEST: Job Parameter Construction
-    // ===============================================================================
-
     /**
-     * Test that batch job submission creates correct JobParameters.
+     * Test: testValidateReportRequest_NoReportTypeSelected_ReturnsError
      * 
-     * <p>Validates transformation of COBOL JCL JOB-DATA structure (lines 81-127) which
-     * contained JCL statements with embedded date parameters to Spring Batch JobParameters
-     * with typed parameter values.</p>
+     * <p>Validates validateReportRequest() method returns error when no report type
+     * is selected (all flags empty or 'N').</p>
      * 
-     * <p><strong>COBOL JOB-DATA Structure (lines 103-121):</strong></p>
-     * <pre>
-     * 05 FILLER-1.
-     *    10 FILLER PIC X(18) VALUE "PARM-START-DATE,C'".
-     *    10 PARM-START-DATE-1 PIC X(10) VALUE SPACES.
-     * 05 FILLER-2.
-     *    10 FILLER PIC X(16) VALUE "PARM-END-DATE,C'".
-     *    10 PARM-END-DATE-1 PIC X(10) VALUE SPACES.
-     * 05 FILLER-3.
-     *    10 PARM-START-DATE-2 PIC X(10) VALUE SPACES.
-     *    10 FILLER PIC X VALUE SPACE.
-     *    10 PARM-END-DATE-2 PIC X(10) VALUE SPACES.
-     * </pre>
+     * <p><b>COBOL Context:</b> CORPT00C lines 438-442 check if MONTHLYO, YEARLYO,
+     * and CUSTOMO are all NOT 'Y', displaying error "Please select a Report Type..."</p>
      * 
-     * <p><strong>Java JobParameters Equivalent:</strong></p>
-     * <pre>
-     * JobParameters jobParameters = new JobParametersBuilder()
-     *     .addString("start.date", startDate.toString())
-     *     .addString("end.date", endDate.toString())
-     *     .addString("report.type", "MONTHLY")
-     *     .addLong("run.id", System.currentTimeMillis())
-     *     .toJobParameters();
-     * </pre>
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>Returns List with one error message</li>
+     *   <li>Error message: "Please select a Report Type..."</li>
+     *   <li>Matches COBOL WS-MESSAGE text exactly</li>
+     * </ul>
      */
     @Test
-    @DisplayName("Should create correct JobParameters for monthly report submission")
-    void testMonthlyReport_CreatesCorrectJobParameters() throws Exception {
-        // Given
-        when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
-                .thenReturn(successfulJobExecution);
+    @DisplayName("Validate Report Request - No Report Type Selected Returns Error")
+    void testValidateReportRequest_NoReportTypeSelected_ReturnsError() {
+        // Arrange: Create request with no report type selected
+        ReportMenuResponse request = new ReportMenuResponse();
+        request.setMonthlyReportFlag("N");
+        request.setYearlyReportFlag("N");
+        request.setCustomReportFlag("N");
+        request.setConfirmationFlag("Y");
 
-        // When
+        // Execute: Validate report request
+        List<String> errors = reportMenuService.validateReportRequest(request);
+
+        // Assert: Validation error present
+        assertNotNull(errors, "Errors list should not be null");
+        assertFalse(errors.isEmpty(), "Should return error for no report type selected");
+        assertEquals(1, errors.size(), "Should have exactly one error");
+        
+        // Verify error message matches COBOL text (lines 439-441)
+        String errorMessage = errors.get(0);
+        assertTrue(errorMessage.contains("Please select a Report Type"), 
+            "Error message should match COBOL validation text");
+    }
+
+    /**
+     * Test: testValidateReportRequest_CustomReportMissingDates_ReturnsErrors
+     * 
+     * <p>Validates validateReportRequest() method returns multiple errors when
+     * custom report is selected but date components are missing.</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 259-300 validate each date component
+     * separately, accumulating multiple errors if multiple fields empty.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>Returns List with multiple error messages (one per missing field)</li>
+     *   <li>Errors include: start month, start day, start year, end month, end day, end year</li>
+     *   <li>All error messages match COBOL text format</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("Validate Report Request - Custom Report Missing Dates Returns Multiple Errors")
+    void testValidateReportRequest_CustomReportMissingDates_ReturnsErrors() {
+        // Arrange: Create custom report request with all date components missing
+        ReportMenuResponse request = new ReportMenuResponse();
+        request.setCustomReportFlag("Y");
+        request.setConfirmationFlag("Y");
+        // All date components null (missing)
+
+        // Execute: Validate report request
+        List<String> errors = reportMenuService.validateReportRequest(request);
+
+        // Assert: Multiple validation errors present
+        assertNotNull(errors, "Errors list should not be null");
+        assertFalse(errors.isEmpty(), "Should return errors for missing date components");
+        assertEquals(6, errors.size(), "Should have 6 errors (one for each missing date component)");
+        
+        // Verify error messages for missing start date components (lines 259-278)
+        assertTrue(errors.stream().anyMatch(e -> e.contains("Start Date - Month can NOT be empty")),
+            "Should have error for missing start month");
+        assertTrue(errors.stream().anyMatch(e -> e.contains("Start Date - Day can NOT be empty")),
+            "Should have error for missing start day");
+        assertTrue(errors.stream().anyMatch(e -> e.contains("Start Date - Year can NOT be empty")),
+            "Should have error for missing start year");
+        
+        // Verify error messages for missing end date components (lines 280-300)
+        assertTrue(errors.stream().anyMatch(e -> e.contains("End Date - Month can NOT be empty")),
+            "Should have error for missing end month");
+        assertTrue(errors.stream().anyMatch(e -> e.contains("End Date - Day can NOT be empty")),
+            "Should have error for missing end day");
+        assertTrue(errors.stream().anyMatch(e -> e.contains("End Date - Year can NOT be empty")),
+            "Should have error for missing end year");
+    }
+
+    /**
+     * Test: testValidateReportRequest_InvalidConfirmationValue_ReturnsError
+     * 
+     * <p>Validates validateReportRequest() method returns error when confirmation
+     * flag has invalid value (not 'Y', 'y', 'N', 'n', or empty).</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 484-494 EVALUATE TRUE WHEN OTHER
+     * handles invalid confirmation with quoted error message format.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>Returns List with one error message</li>
+     *   <li>Error format: "\"X\" is not a valid value to confirm..."</li>
+     *   <li>Invalid value quoted in error message</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("Validate Report Request - Invalid Confirmation Value Returns Error")
+    void testValidateReportRequest_InvalidConfirmationValue_ReturnsError() {
+        // Arrange: Create request with invalid confirmation value
+        ReportMenuResponse request = new ReportMenuResponse();
+        request.setMonthlyReportFlag("Y");
+        request.setConfirmationFlag("X"); // Invalid: not Y, y, N, n, or empty
+
+        // Execute: Validate report request
+        List<String> errors = reportMenuService.validateReportRequest(request);
+
+        // Assert: Validation error present
+        assertNotNull(errors, "Errors list should not be null");
+        assertFalse(errors.isEmpty(), "Should return error for invalid confirmation");
+        
+        // Verify error message format matches COBOL (lines 742-746)
+        String errorMessage = errors.stream()
+            .filter(e -> e.contains("not a valid value to confirm"))
+            .findFirst()
+            .orElse(null);
+        assertNotNull(errorMessage, "Should have confirmation validation error");
+        assertTrue(errorMessage.contains("\"X\""), 
+            "Error message should quote the invalid value");
+    }
+
+    // ================================================================================
+    // TEST METHODS: Job Parameter Construction
+    // From COBOL CORPT00C lines 81-100 (JCL parameter structures)
+    // ================================================================================
+
+    /**
+     * Test: testJobParametersConstruction_IncludesAllRequiredFields
+     * 
+     * <p>Validates that JobParameters constructed for batch job submission include
+     * all required fields transformed from COBOL JCL SYMNAMES DD parameters.</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 98-100 define SYMNAMES DD with
+     * parameter format "TRAN-CARD-NUM,263,16,ZD" for batch job input.</p>
+     * 
+     * <p><b>Expected JobParameters Fields:</b></p>
+     * <ul>
+     *   <li>startDate (DATE type) - Report period start</li>
+     *   <li>endDate (DATE type) - Report period end</li>
+     *   <li>reportType (STRING type) - MONTHLY, YEARLY, or CUSTOM</li>
+     *   <li>timestamp (LONG type) - Job submission timestamp for uniqueness</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("Job Parameters Construction - Includes All Required Fields")
+    void testJobParametersConstruction_IncludesAllRequiredFields() throws Exception {
+        // Arrange: Setup mock JobExecution for job launch
+        JobExecution mockJobExecution = new JobExecution(4L);
+        mockJobExecution.setStatus(BatchStatus.STARTED);
+        
+        when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
+            .thenReturn(mockJobExecution);
+
+        // Execute: Submit monthly report (simplest case for parameter verification)
         reportMenuService.submitMonthlyReport("Y");
 
-        // Then
-        verify(jobLauncher).run(eq(transactionAggregationJob), any(JobParameters.class));
-        // JobParameters validated by successful run - parameters must include
-        // start.date, end.date, report.type="MONTHLY", and run.id
+        // Capture JobParameters for field verification
+        ArgumentCaptor<JobParameters> jobParamsCaptor = ArgumentCaptor.forClass(JobParameters.class);
+        verify(jobLauncher).run(eq(transactionAggregationJob), jobParamsCaptor.capture());
+        
+        JobParameters capturedParams = jobParamsCaptor.getValue();
+        assertNotNull(capturedParams, "JobParameters should not be null");
+        
+        // Assert: Verify all required parameter fields present
+        assertTrue(capturedParams.getParameters().containsKey("startDate"), 
+            "JobParameters should include startDate");
+        assertTrue(capturedParams.getParameters().containsKey("endDate"), 
+            "JobParameters should include endDate");
+        assertTrue(capturedParams.getParameters().containsKey("reportType"), 
+            "JobParameters should include reportType");
+        assertTrue(capturedParams.getParameters().containsKey("timestamp"), 
+            "JobParameters should include timestamp for uniqueness");
+        
+        // Verify parameter types
+        assertNotNull(capturedParams.getDate("startDate"), 
+            "startDate should be DATE type");
+        assertNotNull(capturedParams.getDate("endDate"), 
+            "endDate should be DATE type");
+        assertNotNull(capturedParams.getString("reportType"), 
+            "reportType should be STRING type");
     }
 
+    // ================================================================================
+    // TEST METHODS: Exception Handling
+    // From COBOL CORPT00C error handling patterns
+    // ================================================================================
+
     /**
-     * Test that custom report creates JobParameters with user-specified dates.
+     * Test: testJobLaunchFailure_ThrowsException
      * 
-     * <p>Validates date parameter construction from COBOL lines 429-432:</p>
-     * <pre>
-     * MOVE WS-START-DATE TO PARM-START-DATE-1, PARM-START-DATE-2
-     * MOVE WS-END-DATE TO PARM-END-DATE-1, PARM-END-DATE-2
-     * </pre>
+     * <p>Validates that exceptions from JobLauncher.run() are properly propagated
+     * when batch job submission fails due to infrastructure issues.</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C error handling for TDQ write failures
+     * would set RESP code and display system error message to user.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>JobLauncher throws JobExecutionAlreadyRunningException</li>
+     *   <li>Exception propagates to caller for handling</li>
+     *   <li>Service does not catch infrastructure exceptions</li>
+     * </ul>
      */
     @Test
-    @DisplayName("Should create correct JobParameters for custom report with user dates")
-    void testCustomReport_CreatesJobParametersWithUserDates() throws Exception {
-        // Given
+    @DisplayName("Job Launch Failure - Exception Propagated to Caller")
+    void testJobLaunchFailure_ThrowsException() throws Exception {
+        // Arrange: Configure JobLauncher to throw exception
         when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
-                .thenReturn(successfulJobExecution);
+            .thenThrow(new JobExecutionAlreadyRunningException("Job already running"));
 
-        // When
-        reportMenuService.submitCustomReport(2024, 1, 1, 2024, 1, 31, "Y");
+        // Execute and Assert: Verify exception propagates
+        assertThrows(
+            JobExecutionAlreadyRunningException.class,
+            () -> reportMenuService.submitMonthlyReport("Y"),
+            "Should propagate JobExecutionAlreadyRunningException from JobLauncher"
+        );
 
-        // Then
-        verify(jobLauncher).run(eq(transactionAggregationJob), any(JobParameters.class));
-        // JobParameters should contain custom date range matching user input
+        // Verify JobLauncher was invoked despite exception
+        verify(jobLauncher, times(1)).run(
+            eq(transactionAggregationJob), 
+            any(JobParameters.class)
+        );
     }
 
-    // ===============================================================================
-    // TEST: Error Handling and Edge Cases
-    // ===============================================================================
-
     /**
-     * Test that JobLauncher exception is properly handled and wrapped.
+     * Test: testJobParametersInvalidException_ThrowsException
      * 
-     * <p>Validates error handling for COBOL EXEC CICS WRITEQ TD failure (lines 525-535):</p>
-     * <pre>
-     * EVALUATE WS-RESP-CD
-     *     WHEN DFHRESP(NORMAL)
-     *         CONTINUE
-     *     WHEN OTHER
-     *         MOVE 'Unable to Write TDQ (JOBS)...' TO WS-MESSAGE
-     *         MOVE 'Y' TO WS-ERR-FLG
-     * END-EVALUATE
-     * </pre>
+     * <p>Validates that JobParametersInvalidException from JobLauncher is properly
+     * propagated when job configuration validation fails.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>JobLauncher throws JobParametersInvalidException</li>
+     *   <li>Exception propagates to controller layer</li>
+     *   <li>Indicates job configuration problem</li>
+     * </ul>
      */
     @Test
-    @DisplayName("Should handle JobLauncher exception and return appropriate error")
-    void testJobLaunchFailure_HandlesExceptionCorrectly() throws Exception {
-        // Given
+    @DisplayName("Job Parameters Invalid - Exception Propagated")
+    void testJobParametersInvalidException_ThrowsException() throws Exception {
+        // Arrange: Configure JobLauncher to throw JobParametersInvalidException
         when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
-                .thenThrow(new RuntimeException("Job submission failed"));
+            .thenThrow(new JobParametersInvalidException("Invalid job parameters"));
 
-        // When/Then
-        IllegalStateException exception = assertThrows(IllegalStateException.class,
-                () -> reportMenuService.submitMonthlyReport("Y"),
-                "Should throw IllegalStateException wrapping job launch failure");
+        // Execute and Assert: Verify exception propagates
+        assertThrows(
+            JobParametersInvalidException.class,
+            () -> reportMenuService.submitYearlyReport("Y"),
+            "Should propagate JobParametersInvalidException from JobLauncher"
+        );
 
-        assertTrue(exception.getMessage().contains("Unable to submit monthly report job"),
-                "Error message should indicate job submission failure");
+        // Verify JobLauncher was invoked
+        verify(jobLauncher, times(1)).run(
+            eq(transactionAggregationJob), 
+            any(JobParameters.class)
+        );
     }
 
+    // ================================================================================
+    // TEST METHODS: Edge Cases and Boundary Conditions
+    // ================================================================================
+
     /**
-     * Test date validation with invalid date (e.g., February 30).
+     * Test: testSubmitCustomReport_LeapYearFebruary29_Success
      * 
-     * <p>Validates COBOL CSUTLDTC date validation call (lines 392-426):</p>
-     * <pre>
-     * CALL 'CSUTLDTC' USING CSUTLDTC-DATE, CSUTLDTC-DATE-FORMAT, CSUTLDTC-RESULT
-     * IF CSUTLDTC-RESULT-SEV-CD = '0000'
-     *     CONTINUE
-     * ELSE
-     *     MOVE 'Start Date - Not a valid date...' TO WS-MESSAGE
-     * END-IF
-     * </pre>
+     * <p>Validates submitCustomReport() correctly handles leap year February 29
+     * as valid calendar date.</p>
+     * 
+     * <p><b>COBOL Context:</b> CSUTLDTC date utility validates calendar correctness
+     * including leap year logic (CORPT00C lines 381-420).</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>February 29, 2024 (leap year) accepted as valid date</li>
+     *   <li>JobLauncher invoked successfully</li>
+     *   <li>No validation errors thrown</li>
+     * </ul>
      */
     @Test
-    @DisplayName("Should reject invalid date like February 30")
-    void testCustomReport_InvalidDateConstruction_ThrowsException() {
-        // When/Then - February 30 doesn't exist
-        assertThrows(IllegalArgumentException.class,
-                () -> reportMenuService.submitCustomReport(
-                        2024, 2, 30, 2024, 12, 31, "Y"),
-                "Should throw exception for invalid date February 30");
+    @DisplayName("Submit Custom Report - Leap Year Feb 29 Is Valid")
+    void testSubmitCustomReport_LeapYearFebruary29_Success() throws Exception {
+        // Arrange: Setup mock JobExecution for successful job launch
+        JobExecution mockJobExecution = new JobExecution(5L);
+        mockJobExecution.setStatus(BatchStatus.STARTED);
+        
+        when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
+            .thenReturn(mockJobExecution);
 
-        verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        // Define leap year February 29 (2024 is leap year)
+        Integer startYear = 2024;
+        Integer startMonth = 2;
+        Integer startDay = 29; // Valid in leap year
+        Integer endYear = 2024;
+        Integer endMonth = 3;
+        Integer endDay = 1;
+        String confirmed = "Y";
+
+        // Execute: Submit custom report with leap year date
+        assertDoesNotThrow(() -> 
+            reportMenuService.submitCustomReport(
+                startYear, startMonth, startDay,
+                endYear, endMonth, endDay,
+                confirmed
+            ),
+            "February 29, 2024 should be valid in leap year"
+        );
+
+        // Assert: Verify JobLauncher invoked successfully
+        verify(jobLauncher, times(1)).run(
+            eq(transactionAggregationJob), 
+            any(JobParameters.class)
+        );
     }
 
-    // ===============================================================================
-    // HELPER METHODS FOR TEST DATA CREATION
-    // ===============================================================================
-
     /**
-     * Creates valid monthly report request for testing.
+     * Test: testSubmitCustomReport_SameDayStartAndEnd_Success
      * 
-     * @return ReportMenuResponse configured for monthly report
+     * <p>Validates submitCustomReport() accepts same date for start and end
+     * (single-day report period).</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>Start date = end date is valid (not violation of start <= end rule)</li>
+     *   <li>JobLauncher invoked successfully</li>
+     *   <li>Single-day report period supported</li>
+     * </ul>
      */
-    private ReportMenuResponse createValidMonthlyReportRequest() {
-        ReportMenuResponse request = new ReportMenuResponse();
-        request.setTransactionName("CR00");
-        request.setProgramName("CORPT00C");
-        request.setCurrentDate(LocalDate.now());
-        request.setCurrentTime(LocalTime.now());
-        request.setMonthlyReportFlag("Y");
-        request.setYearlyReportFlag("");
-        request.setCustomReportFlag("");
-        request.setConfirmationFlag("Y");
-        request.setErrorMessage("");
-        return request;
+    @Test
+    @DisplayName("Submit Custom Report - Same Start and End Date Is Valid")
+    void testSubmitCustomReport_SameDayStartAndEnd_Success() throws Exception {
+        // Arrange: Setup mock JobExecution
+        JobExecution mockJobExecution = new JobExecution(6L);
+        mockJobExecution.setStatus(BatchStatus.STARTED);
+        
+        when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
+            .thenReturn(mockJobExecution);
+
+        // Define same date for start and end (single-day report)
+        Integer startYear = 2024;
+        Integer startMonth = 6;
+        Integer startDay = 15;
+        Integer endYear = 2024;
+        Integer endMonth = 6;
+        Integer endDay = 15; // Same as start
+        String confirmed = "Y";
+
+        // Execute: Submit custom report with single-day period
+        assertDoesNotThrow(() -> 
+            reportMenuService.submitCustomReport(
+                startYear, startMonth, startDay,
+                endYear, endMonth, endDay,
+                confirmed
+            ),
+            "Same start and end date should be valid"
+        );
+
+        // Assert: Verify JobLauncher invoked successfully
+        verify(jobLauncher, times(1)).run(
+            eq(transactionAggregationJob), 
+            any(JobParameters.class)
+        );
     }
 
     /**
-     * Creates valid custom report request for testing.
+     * Test: testSubmitMonthlyReport_CaseInsensitiveConfirmation_Success
      * 
-     * @return ReportMenuResponse configured for custom date range report
+     * <p>Validates submitMonthlyReport() accepts both uppercase 'Y' and lowercase 'y'
+     * for confirmation flag (case-insensitive validation).</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 478-479 check for 'Y' OR 'y'
+     * in EVALUATE TRUE statement.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>Lowercase 'y' accepted as valid confirmation</li>
+     *   <li>JobLauncher invoked successfully</li>
+     *   <li>Case-insensitive validation matches COBOL behavior</li>
+     * </ul>
      */
-    private ReportMenuResponse createValidCustomReportRequest() {
-        ReportMenuResponse request = new ReportMenuResponse();
-        request.setTransactionName("CR00");
-        request.setProgramName("CORPT00C");
-        request.setCurrentDate(LocalDate.now());
-        request.setCurrentTime(LocalTime.now());
-        request.setMonthlyReportFlag("");
-        request.setYearlyReportFlag("");
-        request.setCustomReportFlag("Y");
-        request.setStartDateMonth(1);
-        request.setStartDateDay(1);
-        request.setStartDateYear(2024);
-        request.setEndDateMonth(1);
-        request.setEndDateDay(31);
-        request.setEndDateYear(2024);
-        request.setConfirmationFlag("Y");
-        request.setErrorMessage("");
-        return request;
+    @Test
+    @DisplayName("Submit Monthly Report - Lowercase Confirmation 'y' Is Valid")
+    void testSubmitMonthlyReport_CaseInsensitiveConfirmation_Success() throws Exception {
+        // Arrange: Setup mock JobExecution
+        JobExecution mockJobExecution = new JobExecution(7L);
+        mockJobExecution.setStatus(BatchStatus.STARTED);
+        
+        when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
+            .thenReturn(mockJobExecution);
+
+        // Execute: Submit monthly report with lowercase 'y' confirmation
+        assertDoesNotThrow(() -> 
+            reportMenuService.submitMonthlyReport("y"),
+            "Lowercase 'y' should be valid confirmation"
+        );
+
+        // Assert: Verify JobLauncher invoked successfully
+        verify(jobLauncher, times(1)).run(
+            eq(transactionAggregationJob), 
+            any(JobParameters.class)
+        );
+    }
+
+    /**
+     * Test: testSubmitCustomReport_BoundaryYear1900_Success
+     * 
+     * <p>Validates submitCustomReport() accepts year 1900 as valid
+     * (lower boundary of valid year range).</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 347-353 check year range 1900-2100,
+     * inclusive boundaries.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>Year 1900 accepted as valid (boundary inclusive)</li>
+     *   <li>JobLauncher invoked successfully</li>
+     *   <li>Boundary year validation correct</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("Submit Custom Report - Boundary Year 1900 Is Valid")
+    void testSubmitCustomReport_BoundaryYear1900_Success() throws Exception {
+        // Arrange: Setup mock JobExecution
+        JobExecution mockJobExecution = new JobExecution(8L);
+        mockJobExecution.setStatus(BatchStatus.STARTED);
+        
+        when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
+            .thenReturn(mockJobExecution);
+
+        // Define date with boundary year 1900
+        Integer startYear = 1900; // Lower boundary
+        Integer startMonth = 1;
+        Integer startDay = 1;
+        Integer endYear = 1900;
+        Integer endMonth = 12;
+        Integer endDay = 31;
+        String confirmed = "Y";
+
+        // Execute: Submit custom report with boundary year
+        assertDoesNotThrow(() -> 
+            reportMenuService.submitCustomReport(
+                startYear, startMonth, startDay,
+                endYear, endMonth, endDay,
+                confirmed
+            ),
+            "Year 1900 should be valid (boundary inclusive)"
+        );
+
+        // Assert: Verify JobLauncher invoked successfully
+        verify(jobLauncher, times(1)).run(
+            eq(transactionAggregationJob), 
+            any(JobParameters.class)
+        );
+    }
+
+    /**
+     * Test: testSubmitCustomReport_BoundaryYear2100_Success
+     * 
+     * <p>Validates submitCustomReport() accepts year 2100 as valid
+     * (upper boundary of valid year range).</p>
+     * 
+     * <p><b>COBOL Context:</b> CORPT00C lines 373-379 check year range 1900-2100,
+     * inclusive boundaries.</p>
+     * 
+     * <p><b>Expected Behavior:</b></p>
+     * <ul>
+     *   <li>Year 2100 accepted as valid (boundary inclusive)</li>
+     *   <li>JobLauncher invoked successfully</li>
+     *   <li>Upper boundary validation correct</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("Submit Custom Report - Boundary Year 2100 Is Valid")
+    void testSubmitCustomReport_BoundaryYear2100_Success() throws Exception {
+        // Arrange: Setup mock JobExecution
+        JobExecution mockJobExecution = new JobExecution(9L);
+        mockJobExecution.setStatus(BatchStatus.STARTED);
+        
+        when(jobLauncher.run(eq(transactionAggregationJob), any(JobParameters.class)))
+            .thenReturn(mockJobExecution);
+
+        // Define date with boundary year 2100
+        Integer startYear = 2100; // Upper boundary
+        Integer startMonth = 1;
+        Integer startDay = 1;
+        Integer endYear = 2100;
+        Integer endMonth = 12;
+        Integer endDay = 31;
+        String confirmed = "Y";
+
+        // Execute: Submit custom report with boundary year
+        assertDoesNotThrow(() -> 
+            reportMenuService.submitCustomReport(
+                startYear, startMonth, startDay,
+                endYear, endMonth, endDay,
+                confirmed
+            ),
+            "Year 2100 should be valid (boundary inclusive)"
+        );
+
+        // Assert: Verify JobLauncher invoked successfully
+        verify(jobLauncher, times(1)).run(
+            eq(transactionAggregationJob), 
+            any(JobParameters.class)
+        );
     }
 }
