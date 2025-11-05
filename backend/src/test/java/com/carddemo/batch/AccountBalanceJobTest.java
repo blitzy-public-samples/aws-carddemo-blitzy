@@ -274,7 +274,7 @@ public class AccountBalanceJobTest {
      * Injected to configure JobLauncherTestUtils with the job under test.
      */
     @Autowired
-    private Job accountBalanceJobBean;
+    private Job accountBalanceJob;
 
     /**
      * Test customer for account relationship dependencies.
@@ -393,7 +393,7 @@ public class AccountBalanceJobTest {
     @BeforeEach
     public void setUp() throws Exception {
         // Configure JobLauncherTestUtils with the job under test
-        jobLauncherTestUtils.setJob(accountBalanceJobBean);
+        jobLauncherTestUtils.setJob(accountBalanceJob);
 
         // Reset the AccountBalanceReader state to clear exhausted flag and pagination
         accountBalanceReader.reset();

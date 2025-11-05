@@ -132,7 +132,7 @@ public class TransactionAggregationJobTest {
      * Configured by TransactionAggregationJob configuration class.
      */
     @Autowired
-    private Job transactionAggregationJobBean;
+    private Job transactionAggregationJob;
 
     /**
      * Repository for Transaction entity - CRUD operations and custom queries.
@@ -248,7 +248,7 @@ public class TransactionAggregationJobTest {
     @BeforeEach
     public void setUp() {
         // Configure JobLauncherTestUtils with the job under test
-        jobLauncherTestUtils.setJob(transactionAggregationJobBean);
+        jobLauncherTestUtils.setJob(transactionAggregationJob);
 
         // Initialize test data lists for cleanup tracking
         testCustomers = new ArrayList<>();

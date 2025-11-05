@@ -114,7 +114,7 @@ public class DailyTransactionProcessingJobTest {
     private JobLauncher jobLauncher;
 
     @Autowired
-    @Qualifier("dailyTransactionProcessingJobBean")
+    @Qualifier("dailyTransactionProcessingJob")
     private Job dailyTransactionProcessingJob;
 
     @Autowired

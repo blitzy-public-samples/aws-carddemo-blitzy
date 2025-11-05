@@ -150,7 +150,7 @@ public class StatementFormattingJobTest {
      * Must be explicitly set on jobLauncherTestUtils when multiple jobs exist in context.
      */
     @Autowired
-    @Qualifier("statementFormattingJobBean")
+    @Qualifier("statementFormattingJob")
     private Job statementFormattingJob;
 
     /**

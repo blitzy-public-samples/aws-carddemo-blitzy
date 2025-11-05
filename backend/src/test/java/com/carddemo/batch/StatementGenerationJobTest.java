@@ -134,7 +134,7 @@ public class StatementGenerationJobTest {
     private JobLauncherTestUtils jobLauncherTestUtils;
 
     @Autowired
-    private Job statementGenerationJobBean;
+    private Job statementGenerationJob;
 
     @Autowired
     private AccountRepository accountRepository;
@@ -208,7 +208,7 @@ public class StatementGenerationJobTest {
     @BeforeEach
     public void setUp() {
         // Configure JobLauncherTestUtils with the job to test
-        jobLauncherTestUtils.setJob(statementGenerationJobBean);
+        jobLauncherTestUtils.setJob(statementGenerationJob);
 
         // Execute setup in a transaction that commits
         transactionTemplate.execute(status -> {

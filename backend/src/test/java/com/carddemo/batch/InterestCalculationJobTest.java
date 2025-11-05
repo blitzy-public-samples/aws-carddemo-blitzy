@@ -170,7 +170,7 @@ public class InterestCalculationJobTest {
      * Injected to validate job configuration and execution behavior.
      */
     @Autowired
-    private Job interestCalculationJobBean;
+    private Job interestCalculationJob;
 
     /**
      * Account repository for test data setup and result validation.
@@ -687,7 +687,7 @@ public class InterestCalculationJobTest {
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
 
-        jobLauncherTestUtils.setJob(interestCalculationJobBean);
+        jobLauncherTestUtils.setJob(interestCalculationJob);
 
         // Act
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(jobParameters);
@@ -727,7 +727,7 @@ public class InterestCalculationJobTest {
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
 
-        jobLauncherTestUtils.setJob(interestCalculationJobBean);
+        jobLauncherTestUtils.setJob(interestCalculationJob);
 
         // Act
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(jobParameters);
@@ -778,7 +778,7 @@ public class InterestCalculationJobTest {
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
 
-        jobLauncherTestUtils.setJob(interestCalculationJobBean);
+        jobLauncherTestUtils.setJob(interestCalculationJob);
 
         // Act
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(jobParameters);
@@ -842,7 +842,7 @@ public class InterestCalculationJobTest {
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
 
-        jobLauncherTestUtils.setJob(interestCalculationJobBean);
+        jobLauncherTestUtils.setJob(interestCalculationJob);
 
         // Act
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(jobParameters);
@@ -891,7 +891,7 @@ public class InterestCalculationJobTest {
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
 
-        jobLauncherTestUtils.setJob(interestCalculationJobBean);
+        jobLauncherTestUtils.setJob(interestCalculationJob);
 
         // Act
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(jobParameters);
@@ -961,7 +961,7 @@ public class InterestCalculationJobTest {
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
 
-        jobLauncherTestUtils.setJob(interestCalculationJobBean);
+        jobLauncherTestUtils.setJob(interestCalculationJob);
 
         // Act
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(jobParameters);
@@ -1003,7 +1003,7 @@ public class InterestCalculationJobTest {
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
 
-        jobLauncherTestUtils.setJob(interestCalculationJobBean);
+        jobLauncherTestUtils.setJob(interestCalculationJob);
 
         // Act
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(jobParameters);
@@ -1061,7 +1061,7 @@ public class InterestCalculationJobTest {
                 .addLong("run.id", uniqueRunId)
                 .toJobParameters();
 
-        jobLauncherTestUtils.setJob(interestCalculationJobBean);
+        jobLauncherTestUtils.setJob(interestCalculationJob);
 
         // Act - First execution
         JobExecution firstExecution = jobLauncherTestUtils.launchJob(jobParameters);
@@ -1134,7 +1134,7 @@ public class InterestCalculationJobTest {
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
 
-        jobLauncherTestUtils.setJob(interestCalculationJobBean);
+        jobLauncherTestUtils.setJob(interestCalculationJob);
 
         // Act
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(jobParameters);
@@ -1183,7 +1183,7 @@ public class InterestCalculationJobTest {
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
 
-        jobLauncherTestUtils.setJob(interestCalculationJobBean);
+        jobLauncherTestUtils.setJob(interestCalculationJob);
 
         // Act
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(jobParameters);
@@ -1244,7 +1244,7 @@ public class InterestCalculationJobTest {
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
 
-        jobLauncherTestUtils.setJob(interestCalculationJobBean);
+        jobLauncherTestUtils.setJob(interestCalculationJob);
 
         long startTime = System.currentTimeMillis();
 

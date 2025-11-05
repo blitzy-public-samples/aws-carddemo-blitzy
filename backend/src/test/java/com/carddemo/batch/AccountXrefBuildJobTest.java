@@ -114,7 +114,7 @@ public class AccountXrefBuildJobTest {
     private JobRepositoryTestUtils jobRepositoryTestUtils;
 
     @Autowired
-    @Qualifier("accountXrefBuildJobBean")
+    @Qualifier("accountXrefBuildJob")
     private Job accountXrefBuildJob;
 
     @Autowired

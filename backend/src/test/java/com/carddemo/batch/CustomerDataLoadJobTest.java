@@ -122,7 +122,7 @@ public class CustomerDataLoadJobTest {
     private CustomerRepository customerRepository;
 
     @Autowired
-    @Qualifier("customerDataLoadJobBean")
+    @Qualifier("customerDataLoadJob")
     private Job customerDataLoadJob;
 
     /**

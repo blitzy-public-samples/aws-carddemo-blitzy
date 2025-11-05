@@ -197,7 +197,7 @@ public class AccountDataLoadJobTest {
      * Injected to configure JobLauncherTestUtils.
      */
     @Autowired
-    @Qualifier("accountDataLoadJobBean")
+    @Qualifier("accountDataLoadJob")
     private Job accountDataLoadJob;
 
     /**

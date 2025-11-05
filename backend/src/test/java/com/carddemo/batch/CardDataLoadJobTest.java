@@ -131,7 +131,7 @@ public class CardDataLoadJobTest {
      * when multiple batch jobs exist in the application context.
      */
     @Autowired
-    @Qualifier("cardDataLoadJobBean")
+    @Qualifier("cardDataLoadJob")
     private Job cardDataLoadJob;
 
     /**
