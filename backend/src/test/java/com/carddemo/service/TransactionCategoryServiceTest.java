@@ -89,10 +89,10 @@ class TransactionCategoryServiceTest {
     private static final LocalDate TEST_END_DATE = LocalDate.of(2024, 1, 31);
     
     // Category codes matching COBOL TRAN-CAT-CD PIC 9(04)
-    private static final Integer CATEGORY_GROCERIES = 1001;
-    private static final Integer CATEGORY_GAS = 1002;
-    private static final Integer CATEGORY_DINING = 1003;
-    private static final Integer CATEGORY_TRAVEL = 1004;
+    private static final String CATEGORY_GROCERIES = "015411"; // Grocery Stores
+    private static final String CATEGORY_GAS = "015541";       // Service Stations/Gas
+    private static final String CATEGORY_DINING = "015812";    // Restaurants
+    private static final String CATEGORY_TRAVEL = "015999";    // Miscellaneous/Travel
     
     @BeforeEach
     void setUp() {
@@ -270,7 +270,7 @@ class TransactionCategoryServiceTest {
         assertEquals(4, result.size(), "Should return all 4 categories");
         
         // Verify all category codes are present
-        List<Integer> categoryCodes = result.stream()
+        List<String> categoryCodes = result.stream()
             .map(CategorySummary::getCategoryCode)
             .toList();
         

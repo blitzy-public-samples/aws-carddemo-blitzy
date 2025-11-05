@@ -145,7 +145,7 @@ public class TransactionCategoryService {
      * </p>
      */
     public static class CategorySummary {
-        private Integer categoryCode;
+        private String categoryCode;
         private String categoryName;
         private BigDecimal totalAmount;
         private Long transactionCount;
@@ -159,7 +159,7 @@ public class TransactionCategoryService {
             this.averageAmount = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
         }
         
-        public CategorySummary(Integer categoryCode, String categoryName, BigDecimal totalAmount, Long transactionCount) {
+        public CategorySummary(String categoryCode, String categoryName, BigDecimal totalAmount, Long transactionCount) {
             this.categoryCode = categoryCode;
             this.categoryName = categoryName;
             this.totalAmount = totalAmount != null ? totalAmount.setScale(2, RoundingMode.HALF_UP) 
@@ -170,8 +170,8 @@ public class TransactionCategoryService {
         }
         
         // Getters and setters
-        public Integer getCategoryCode() { return categoryCode; }
-        public void setCategoryCode(Integer categoryCode) { this.categoryCode = categoryCode; }
+        public String getCategoryCode() { return categoryCode; }
+        public void setCategoryCode(String categoryCode) { this.categoryCode = categoryCode; }
         
         public String getCategoryName() { return categoryName; }
         public void setCategoryName(String categoryName) { this.categoryName = categoryName; }
@@ -296,15 +296,9 @@ public class TransactionCategoryService {
         // Transform raw results to CategorySummary objects
         List<CategorySummary> categorySummaries = rawResults.stream()
             .map(row -> {
-                // Category code is String in Transaction entity (matching COBOL PIC X(04))
-                String categoryCodeStr = (String) row[0];
-                Integer categoryCode = null;
-                try {
-                    categoryCode = Integer.parseInt(categoryCodeStr);
-                } catch (NumberFormatException e) {
-                    logger.warn("Invalid category code format: {}", categoryCodeStr);
-                    categoryCode = 0; // Default for invalid codes
-                }
+                // Category code is String in Transaction entity (matching COBOL PIC X(06))
+                // Composite key format: TTCCCC where TT=type code, CCCC=category code
+                String categoryCode = (String) row[0];
                 
                 BigDecimal totalAmount = (BigDecimal) row[1];
                 
