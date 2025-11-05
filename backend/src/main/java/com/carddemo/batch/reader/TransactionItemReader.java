@@ -627,13 +627,16 @@ public class TransactionItemReader extends AbstractItemCountingItemStreamItemRea
             // Create JPA query with pagination
             // CRITICAL: Only select unprocessed transactions (processed_timestamp IS NULL)
             // This ensures the job only processes new transactions, not already-processed ones
+            // IMPORTANT: Always use OFFSET 0 because the WHERE clause filters out already-processed
+            // transactions. Using currentPage * pageSize would skip records incorrectly as the
+            // result set shrinks when transactions are processed during pagination.
             TypedQuery<Transaction> query = entityManager.createQuery(
                 "SELECT t FROM Transaction t WHERE t.processingTimestamp IS NULL ORDER BY t.transactionId",
                 Transaction.class
             );
             
-            // Set pagination parameters
-            query.setFirstResult(currentPage * pageSize);
+            // Set pagination parameters - ALWAYS start from 0 since WHERE clause filters processed records
+            query.setFirstResult(0);  // Always fetch from beginning of filtered result set
             query.setMaxResults(pageSize);
             
             // Execute query and populate page buffer
