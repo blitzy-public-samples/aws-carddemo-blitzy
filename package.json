@@ -1,0 +1,91 @@
+{
+  "name": "aws-carddemo-blitzy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OCR Processing Application - Automated document digitization with intelligent data extraction",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "dev:backend": "npm run dev --workspace=backend",
+    "build": "turbo run build",
+    "build:frontend": "npm run build --workspace=frontend",
+    "build:backend": "npm run build --workspace=backend",
+    "test": "turbo run test",
+    "test:frontend": "npm run test --workspace=frontend",
+    "test:backend": "npm run test --workspace=backend",
+    "test:coverage": "turbo run test:coverage",
+    "lint": "turbo run lint",
+    "lint:fix": "turbo run lint --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yaml,yml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,yaml,yml}\"",
+    "type-check": "turbo run type-check",
+    "clean": "turbo run clean && rm -rf node_modules .turbo",
+    "prepare": "husky install || true",
+    "precommit": "lint-staged",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f",
+    "security:scan": "npm audit --workspaces && snyk test",
+    "deps:update": "npm update --workspaces",
+    "deps:outdated": "npm outdated --workspaces"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "eslint": "9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "eslint-plugin-react": "^7.37.2",
+    "eslint-plugin-react-hooks": "^5.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.11",
+    "prettier": "3.4.2",
+    "turbo": "^2.3.3",
+    "typescript": "5.3.3"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yaml,yml}": [
+      "prettier --write"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/aws-carddemo-blitzy.git"
+  },
+  "keywords": [
+    "ocr",
+    "document-processing",
+    "optical-character-recognition",
+    "nlp",
+    "data-extraction",
+    "automation",
+    "digitization",
+    "nextjs",
+    "nestjs",
+    "react",
+    "typescript"
+  ],
+  "author": {
+    "name": "OCR Processing Team",
+    "email": "team@ocrprocessing.com"
+  },
+  "bugs": {
+    "url": "https://github.com/your-org/aws-carddemo-blitzy/issues"
+  },
+  "homepage": "https://github.com/your-org/aws-carddemo-blitzy#readme"
+}
