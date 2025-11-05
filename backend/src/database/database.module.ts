@@ -38,8 +38,8 @@
  */
 
 import { Global, Module, Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { 
   DataSource, 
   DataSourceOptions, 
@@ -47,7 +47,8 @@ import {
   EntityTarget,
   EntityManager,
   QueryRunner,
-  ObjectLiteral
+  ObjectLiteral,
+  DeepPartial
 } from 'typeorm';
 
 /**
@@ -97,8 +98,8 @@ export function createDatabaseConfig(configService: ConfigService): DataSourceOp
     
     // Entity and migration discovery patterns
     // Auto-discover all *.entity.ts files in feature modules
-    entities: [__dirname + '/../**/*.entity{.ts,.js}'],
-    migrations: [__dirname + '/migrations/**/*{.ts,.js}'],
+    entities: [`${__dirname  }/../**/*.entity{.ts,.js}`],
+    migrations: [`${__dirname  }/migrations/**/*{.ts,.js}`],
     
     // CRITICAL: Never use synchronize in production - use migrations only
     // Per Section 0.7.2: ALL migrations MUST be reversible
@@ -154,14 +155,13 @@ export function createDatabaseConfig(configService: ConfigService): DataSourceOp
   };
 
   // Validate critical configuration
-  // Type assertion since we know this is PostgresConnectionOptions
-  const pgConfig = config as any;
-  if (!pgConfig.password) {
+  // Validate password is configured (required for security)
+  if (!config.password) {
     logger.error('DB_PASSWORD environment variable is required');
     throw new Error('Database password not configured. Set DB_PASSWORD environment variable.');
   }
 
-  logger.log(`Database connection configured: ${pgConfig.host}:${pgConfig.port}/${pgConfig.database}`);
+  logger.log(`Database connection configured: ${config.host}:${config.port}/${config.database}`);
   
   return config;
 }
@@ -202,14 +202,25 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    * Lifecycle hook - called when module is initialized.
    * Logs successful connection and sets up event handlers.
    */
-  async onModuleInit(): Promise<void> {
+  onModuleInit(): void {
     try {
       // Verify connection is established
       if (this.dataSource.isInitialized) {
         this.logger.log('Database connection established successfully');
-        const options = this.dataSource.options as any;
-        this.logger.log(`Connected to: ${options.database} on ${options.host}`);
-        this.logger.log(`Connection pool: min=${options.extra?.min}, max=${options.extra?.max}`);
+        // Access connection options safely using TypeORM DataSourceOptions properties
+        const options = this.dataSource.options;
+        const dbName = typeof options.database === 'string' ? options.database : 'unknown';
+        const dbHost = 'host' in options && typeof options.host === 'string' ? options.host : 'unknown';
+        this.logger.log(`Connected to: ${dbName} on ${dbHost}`);
+        
+        // Access extra options safely with type guard
+        if ('extra' in this.dataSource.options && this.dataSource.options.extra) {
+          const extra: unknown = this.dataSource.options.extra;
+          if (typeof extra === 'object' && extra !== null) {
+            const poolConfig = extra as { min?: number; max?: number };
+            this.logger.log(`Connection pool: min=${poolConfig.min}, max=${poolConfig.max}`);
+          }
+        }
       }
 
       // Set up connection event handlers
@@ -259,11 +270,11 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    * 
    * @example
    * ```typescript
-   * const connection = await databaseService.getConnection();
+   * const connection = databaseService.getConnection();
    * const queryRunner = connection.createQueryRunner();
    * ```
    */
-  async getConnection(): Promise<DataSource> {
+  getConnection(): DataSource {
     if (!this.dataSource.isInitialized) {
       throw new Error('Database connection not initialized');
     }
@@ -276,30 +287,36 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    * SECURITY: Always use parameterized queries to prevent SQL injection.
    * Per Section 0.7.1: ALL database queries MUST use parameterized queries.
    * 
-   * @template T - Expected return type
+   * NOTE: Caller must provide explicit type parameter T for type safety.
+   * The results are cast to T but not validated at runtime - ensure your
+   * type matches the actual query results.
+   * 
+   * @template T - Expected return type (must be explicitly provided)
    * @param sql - SQL query string with parameter placeholders ($1, $2, etc.)
    * @param parameters - Query parameters (optional)
    * @returns Query results as array of type T
    * 
    * @example
    * ```typescript
+   * interface User { id: string; name: string; }
    * const results = await databaseService.query<User>(
    *   'SELECT * FROM users WHERE account_id = $1',
    *   [accountId]
    * );
    * ```
    */
-  async query<T = any>(sql: string, parameters?: any[]): Promise<T[]> {
+  async query<T>(sql: string, parameters?: unknown[]): Promise<T[]> {
     try {
       this.logger.debug(`Executing query: ${sql}`);
       const startTime = Date.now();
       
-      const results = await this.dataSource.query(sql, parameters);
+      // Execute query - TypeORM returns results as any[], caller provides type via generic T
+      const results: unknown = await this.dataSource.query(sql, parameters);
       
       const duration = Date.now() - startTime;
       this.logger.debug(`Query completed in ${duration}ms`);
       
-      return results;
+      return results as T[];
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       const errorStack = error instanceof Error ? error.stack : undefined;
@@ -517,7 +534,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    * 
    * @template Entity - Entity type (must extend ObjectLiteral)
    * @param entity - Entity class
-   * @param records - Array of entity data to insert
+   * @param records - Array of entity data to insert (partial entities)
    * @param chunkSize - Number of records per chunk (default: 100)
    * @returns Promise that resolves when all inserts complete
    * 
@@ -528,7 +545,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    */
   async bulkInsert<Entity extends ObjectLiteral>(
     entity: EntityTarget<Entity>,
-    records: any[],
+    records: Array<Partial<Entity>>,
     chunkSize: number = 100
   ): Promise<void> {
     try {
@@ -538,7 +555,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       // Process in chunks
       for (let i = 0; i < records.length; i += chunkSize) {
         const chunk = records.slice(i, i + chunkSize);
-        await repository.save(chunk);
+        // Cast to DeepPartial for TypeORM save method compatibility
+        await repository.save(chunk as DeepPartial<Entity>[]);
         this.logger.debug(`Inserted chunk ${Math.floor(i / chunkSize) + 1}/${Math.ceil(records.length / chunkSize)}`);
       }
       
@@ -611,8 +629,8 @@ export const dataSource = new DataSource({
   username: process.env.DB_USERNAME || 'ocr_dev',
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME || 'ocr_db',
-  entities: [__dirname + '/../**/*.entity{.ts,.js}'],
-  migrations: [__dirname + '/migrations/**/*{.ts,.js}'],
+  entities: [`${__dirname  }/../**/*.entity{.ts,.js}`],
+  migrations: [`${__dirname  }/migrations/**/*{.ts,.js}`],
   synchronize: false,
   logging: process.env.DB_LOGGING === 'true',
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
