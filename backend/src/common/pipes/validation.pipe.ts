@@ -88,6 +88,24 @@ export class ValidationPipe implements PipeTransform<unknown, unknown> {
       return value;
     }
 
+    // Validate that value is not null or undefined for object transformation
+    // This prevents TypeError when trying to transform null/undefined to DTO
+    if (value === null || value === undefined) {
+      throw new BadRequestException({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: [
+            {
+              field: 'body',
+              message: 'Request body cannot be null or undefined',
+            },
+          ],
+        },
+      });
+    }
+
     // Transform plain object to DTO class instance
     // Options per Section 0.7.2 NestJS Backend guidelines:
     // - enableImplicitConversion: false - Explicit type conversion only
