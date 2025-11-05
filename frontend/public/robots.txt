@@ -1,0 +1,40 @@
+# robots.txt for OCR Processing Application
+# This file controls how search engine crawlers interact with the site
+
+# Allow all user agents to crawl the site
+User-agent: *
+
+# Allow public pages to be indexed
+Allow: /
+
+# Disallow private and sensitive sections
+# API endpoints should not be crawled or indexed
+Disallow: /api/
+
+# Authentication pages should not be indexed
+Disallow: /auth/
+
+# User dashboard and private areas should not be indexed
+Disallow: /dashboard/
+
+# Document management pages contain private user data
+Disallow: /documents/
+
+# Template management is user-specific and private
+Disallow: /templates/
+
+# Analytics dashboards contain private business data
+Disallow: /analytics/
+
+# Settings pages contain private configuration
+Disallow: /settings/
+
+# Admin areas should not be publicly accessible or indexed
+Disallow: /admin/
+
+# Sitemap location for better SEO indexing
+Sitemap: https://ocr-app.example.com/sitemap.xml
+
+# Crawl-delay: 10 seconds (optional, respectful crawling)
+# Uncomment if experiencing server load from crawlers
+# Crawl-delay: 10
