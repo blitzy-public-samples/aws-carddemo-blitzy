@@ -70,9 +70,10 @@ const customJestConfig = {
    * Test Match Patterns
    * Defines which files Jest should recognize as test files
    * Supports both .test and .spec naming conventions
+   * Only matches files with .test or .spec in the name to exclude helper files
    */
   testMatch: [
-    '**/__tests__/**/*.[jt]s?(x)',
+    '**/__tests__/**/*.(test|spec).[jt]s?(x)',
     '**/?(*.)+(spec|test).[jt]s?(x)',
   ],
 
