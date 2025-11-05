@@ -1,0 +1,496 @@
+# Docker Compose Production-like Environment Configuration
+# OCR Processing Application - Complete Stack for Local Testing
+#
+# Purpose: Provides a production-like environment for integration testing
+# before cloud deployment. Includes all application services and infrastructure
+# components with proper health checks, resource limits, and security settings.
+#
+# Usage:
+#   docker-compose -f docker-compose.prod.yml up -d
+#   docker-compose -f docker-compose.prod.yml down
+#   docker-compose -f docker-compose.prod.yml logs -f [service]
+#
+# Note: This configuration uses production-like settings but is NOT intended
+# for actual production deployment. Use Kubernetes manifests for production.
+
+version: '3.8'
+
+services:
+  # ==========================================================================
+  # APPLICATION SERVICES
+  # ==========================================================================
+
+  # Frontend Service - Next.js/React Application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../Dockerfile.frontend
+      target: production
+    container_name: ocr-frontend-prod
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_BASE_URL=http://backend:3000
+      - NEXT_PUBLIC_WS_URL=ws://backend:3000
+      - NEXT_TELEMETRY_DISABLED=1
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: always
+    networks:
+      - ocr-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Backend API Service - NestJS Application
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile.backend
+    container_name: ocr-backend-prod
+    ports:
+      - "3001:3000"  # Mapped to 3001 to avoid conflict with frontend
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      # Database Configuration
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USERNAME=ocr_user
+      - DB_PASSWORD=ocr_prod_password_change_me
+      - DB_NAME=ocr_db
+      - DB_SYNCHRONIZE=false
+      # MongoDB Configuration
+      - MONGODB_URI=mongodb://ocr_user:ocr_mongo_password@mongodb:27017/ocr_documents?authSource=admin
+      # Redis Configuration
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=redis_prod_password_change_me
+      # ElasticSearch Configuration
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=elastic
+      - ELASTICSEARCH_PASSWORD=
+      # RabbitMQ Configuration
+      - RABBITMQ_URL=amqp://ocr_user:rabbitmq_password@rabbitmq:5672
+      - RABBITMQ_QUEUE_NAME=ocr_processing_queue
+      # JWT Configuration (CHANGE IN PRODUCTION)
+      - JWT_ACCESS_SECRET=change_this_jwt_access_secret_in_production
+      - JWT_REFRESH_SECRET=change_this_jwt_refresh_secret_in_production
+      - JWT_ACCESS_EXPIRY=15m
+      - JWT_REFRESH_EXPIRY=7d
+      # AWS S3 Configuration (use placeholders, configure with real credentials)
+      - AWS_S3_BUCKET_NAME=ocr-documents-prod
+      - AWS_S3_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-placeholder}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-placeholder}
+      # OCR Service Configuration
+      - OCR_SERVICE_URL=http://ocr-service:8000
+      # Email Configuration (SendGrid or AWS SES)
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY:-placeholder}
+      - EMAIL_FROM=noreply@ocr-app.local
+      # Rate Limiting
+      - RATE_LIMIT_TTL=3600
+      - RATE_LIMIT_MAX=1000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: always
+    networks:
+      - ocr-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # OCR Processing Service - Python/FastAPI
+  ocr-service:
+    build:
+      context: ./ocr-service
+      dockerfile: ../Dockerfile.ocr-service
+    container_name: ocr-service-prod
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - HOST=0.0.0.0
+      - PORT=8000
+      - WORKERS=4
+      # Redis Configuration
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=redis_prod_password_change_me
+      # RabbitMQ Configuration
+      - RABBITMQ_URL=amqp://ocr_user:rabbitmq_password@rabbitmq:5672
+      # Cloud OCR API Configuration (use placeholders, configure with real credentials)
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/google-vision-key.json
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-placeholder}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-placeholder}
+      - AWS_REGION=us-east-1
+      # OCR Configuration
+      - TESSERACT_CMD=tesseract
+      - TESSERACT_LANG=eng
+      - OCR_CONFIDENCE_THRESHOLD=85
+      - USE_CLOUD_OCR_FALLBACK=true
+      # NLP Configuration
+      - SPACY_MODEL=en_core_web_sm
+      # Logging
+      - LOG_LEVEL=INFO
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: always
+    networks:
+      - ocr-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==========================================================================
+  # INFRASTRUCTURE SERVICES
+  # ==========================================================================
+
+  # PostgreSQL Database - Relational Data Storage
+  postgres:
+    image: postgres:16-alpine
+    container_name: ocr-postgres-prod
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=ocr_user
+      - POSTGRES_PASSWORD=ocr_prod_password_change_me
+      - POSTGRES_DB=ocr_db
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=en_US.UTF-8 --lc-ctype=en_US.UTF-8
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ocr_user -d ocr_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: always
+    networks:
+      - ocr-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c max_connections=100
+      -c effective_cache_size=1GB
+
+  # MongoDB - Document Storage
+  mongodb:
+    image: mongo:7-jammy
+    container_name: ocr-mongodb-prod
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=ocr_user
+      - MONGO_INITDB_ROOT_PASSWORD=ocr_mongo_password
+      - MONGO_INITDB_DATABASE=ocr_documents
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: always
+    networks:
+      - ocr-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Redis - Caching and Session Storage
+  redis:
+    image: redis:7-alpine
+    container_name: ocr-redis-prod
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --requirepass redis_prod_password_change_me
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: always
+    networks:
+      - ocr-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ElasticSearch - Full-Text Search Engine
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    container_name: ocr-elasticsearch-prod
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - cluster.name=ocr-cluster
+      - node.name=ocr-node-1
+      - bootstrap.memory_lock=true
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: always
+    networks:
+      - ocr-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  # RabbitMQ - Message Queue
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: ocr-rabbitmq-prod
+    ports:
+      - "5672:5672"   # AMQP protocol port
+      - "15672:15672" # Management UI port
+    environment:
+      - RABBITMQ_DEFAULT_USER=ocr_user
+      - RABBITMQ_DEFAULT_PASS=rabbitmq_password
+      - RABBITMQ_DEFAULT_VHOST=/
+      - RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbit log_levels [{connection,error},{default,warning}] disk_free_limit 2147483648
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - rabbitmq_logs:/var/log/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: always
+    networks:
+      - ocr-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ==========================================================================
+# NETWORKS
+# ==========================================================================
+
+networks:
+  ocr-network:
+    driver: bridge
+    name: ocr-prod-network
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# ==========================================================================
+# VOLUMES
+# ==========================================================================
+
+volumes:
+  # Application data volumes
+  postgres_data:
+    name: ocr-postgres-prod-data
+    driver: local
+  
+  mongodb_data:
+    name: ocr-mongodb-prod-data
+    driver: local
+  
+  mongodb_config:
+    name: ocr-mongodb-prod-config
+    driver: local
+  
+  redis_data:
+    name: ocr-redis-prod-data
+    driver: local
+  
+  elasticsearch_data:
+    name: ocr-elasticsearch-prod-data
+    driver: local
+  
+  rabbitmq_data:
+    name: ocr-rabbitmq-prod-data
+    driver: local
+  
+  rabbitmq_logs:
+    name: ocr-rabbitmq-prod-logs
+    driver: local
+
+# ==========================================================================
+# NOTES
+# ==========================================================================
+#
+# Security Considerations for Production:
+# 1. Change all default passwords (marked with "change_me")
+# 2. Use Docker secrets or external secret management
+# 3. Configure proper TLS/SSL certificates
+# 4. Set up proper firewall rules
+# 5. Enable authentication on ElasticSearch
+# 6. Use environment-specific credentials
+#
+# Resource Limits:
+# - Adjust CPU and memory limits based on your host machine capacity
+# - Monitor resource usage with: docker stats
+#
+# Data Persistence:
+# - All data is stored in named volumes
+# - Backup volumes regularly: docker run --rm -v ocr-postgres-prod-data:/data -v $(pwd):/backup alpine tar czf /backup/postgres-backup.tar.gz /data
+#
+# Management:
+# - View logs: docker-compose -f docker-compose.prod.yml logs -f [service]
+# - Scale services: docker-compose -f docker-compose.prod.yml up -d --scale ocr-service=3
+# - Stop all: docker-compose -f docker-compose.prod.yml down
+# - Remove volumes: docker-compose -f docker-compose.prod.yml down -v
+#
+# Access Points:
+# - Frontend: http://localhost:3000
+# - Backend API: http://localhost:3001
+# - OCR Service: http://localhost:8000
+# - RabbitMQ Management: http://localhost:15672 (user: ocr_user, pass: rabbitmq_password)
+# - ElasticSearch: http://localhost:9200
+#
+# Performance Tuning:
+# - PostgreSQL: Adjust shared_buffers and effective_cache_size based on available RAM
+# - ElasticSearch: Adjust ES_JAVA_OPTS heap size (recommended: 50% of available RAM, max 32GB)
+# - MongoDB: Configure WiredTiger cache size if needed
+# - Redis: Adjust maxmemory based on caching needs
+#
