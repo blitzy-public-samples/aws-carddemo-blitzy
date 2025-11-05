@@ -43,10 +43,7 @@ module.exports = {
     'plugin:react/recommended',
     'plugin:react/jsx-runtime',
     
-    // React Hooks rules
-    'plugin:react-hooks/recommended',
-    
-    // Next.js specific rules (includes Core Web Vitals)
+    // Next.js specific rules (includes Core Web Vitals and react-hooks)
     'next/core-web-vitals',
     
     // Security best practices
@@ -60,10 +57,10 @@ module.exports = {
   ],
 
   // Load plugins for additional rules
+  // Note: react-hooks is provided by next/core-web-vitals, no need to explicitly include
   plugins: [
     '@typescript-eslint',
     'react',
-    'react-hooks',
     'jsx-a11y',
     'security',
     'import',
@@ -104,8 +101,8 @@ module.exports = {
     // Disallow empty functions (except constructors and methods)
     'no-empty-function': ['error', { allow: ['constructors', 'methods'] }],
     
-    // Disallow unnecessary template literals
-    'no-useless-template-literals': 'error',
+    // Note: 'no-useless-template-literals' rule removed - not available in ESLint 8.x
+    // Consider enabling when upgrading to ESLint 9+
     
     // Prefer const over let when variable is never reassigned
     'prefer-const': 'error',
@@ -511,6 +508,9 @@ module.exports = {
         
         // NestJS uses classes extensively
         'max-classes-per-file': 'off',
+        
+        // Disable Next.js specific rule (backend is not Next.js)
+        '@next/next/no-html-link-for-pages': 'off',
       },
     },
     
