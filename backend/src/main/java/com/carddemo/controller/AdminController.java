@@ -17,6 +17,7 @@
 
 package com.carddemo.controller;
 
+import com.carddemo.dto.request.AdminRequest;
 import com.carddemo.service.AdminService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,10 +29,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-import javax.validation.Valid;
-import javax.validation.constraints.Max;
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
+import jakarta.validation.Valid;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
@@ -360,7 +358,7 @@ public class AdminController {
      *   <li>500 Internal Server Error - Action execution failure</li>
      * </ul>
      * 
-     * @param request AdminActionRequest containing option number and parameters
+     * @param request AdminRequest containing option number and parameters
      * @return ResponseEntity containing execution result with HTTP 200 OK status
      * @throws IllegalArgumentException if option number is invalid or out of range
      * @throws org.springframework.security.access.AccessDeniedException if user lacks ROLE_ADMIN
@@ -368,7 +366,7 @@ public class AdminController {
     @PostMapping("/actions")
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Map<String, Object>> executeAdminAction(
-            @Valid @RequestBody AdminActionRequest request) {
+            @Valid @RequestBody AdminRequest request) {
         try {
             // Extract authenticated user for audit logging
             Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
@@ -380,15 +378,8 @@ public class AdminController {
             // Set userId from authenticated context
             request.setUserId(username);
             
-            // Convert AdminActionRequest to AdminRequest format expected by service
-            AdminRequest serviceRequest = new AdminRequest();
-            serviceRequest.setOptionNumber(request.getOptionNumber());
-            serviceRequest.setSelectedOption(request.getSelectedOption());
-            serviceRequest.setUserId(username);
-            serviceRequest.setParameters(request.getParameters());
-            
             // Delegate to AdminService which implements PROCESS-ENTER-KEY logic
-            Map<String, Object> executionResult = adminService.executeAdminFunction(serviceRequest);
+            Map<String, Object> executionResult = adminService.executeAdminFunction(request);
             
             // Add request metadata for audit trail
             executionResult.put("requestedBy", username);
@@ -423,192 +414,6 @@ public class AdminController {
             errorResponse.put("error", e.getMessage());
             errorResponse.put("timestamp", LocalDateTime.now());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
-        }
-    }
-
-    /**
-     * Inner class representing an admin action request.
-     * 
-     * <p>Defines the structure for admin action execution requests. This class is defined
-     * locally because the DTO is not available in depends_on_files. It matches the structure
-     * expected by AdminService.executeAdminFunction() method.</p>
-     * 
-     * <p><strong>COBOL Source Context:</strong></p>
-     * <p>Maps to COBOL screen input fields from COADM01 mapset:</p>
-     * <ul>
-     *   <li>optionNumber → OPTIONI (user's menu selection)</li>
-     *   <li>selectedOption → CDEMO-ADMIN-OPT-NAME(WS-OPTION)</li>
-     *   <li>userId → CDEMO-USER-ID from COMMAREA</li>
-     * </ul>
-     */
-    public static class AdminActionRequest {
-        
-        @NotNull(message = "Option number is required")
-        @Min(value = 1, message = "Option number must be at least 1")
-        @Max(value = 10, message = "Option number must not exceed 10")
-        private Integer optionNumber;
-        
-        private String selectedOption;
-        private String userId;
-        private Map<String, String> parameters;
-
-        /**
-         * Gets the selected option number.
-         * 
-         * @return option number selected by admin user (1-4 for standard menu)
-         */
-        public Integer getOptionNumber() {
-            return optionNumber;
-        }
-
-        /**
-         * Sets the selected option number.
-         * 
-         * @param optionNumber option number to set
-         */
-        public void setOptionNumber(Integer optionNumber) {
-            this.optionNumber = optionNumber;
-        }
-
-        /**
-         * Gets the selected option name.
-         * 
-         * @return option name (e.g., "User List", "User Add")
-         */
-        public String getSelectedOption() {
-            return selectedOption;
-        }
-
-        /**
-         * Sets the selected option name.
-         * 
-         * @param selectedOption option name to set
-         */
-        public void setSelectedOption(String selectedOption) {
-            this.selectedOption = selectedOption;
-        }
-
-        /**
-         * Gets the user ID.
-         * 
-         * @return user ID of admin user executing the action
-         */
-        public String getUserId() {
-            return userId;
-        }
-
-        /**
-         * Sets the user ID.
-         * 
-         * @param userId user ID to set
-         */
-        public void setUserId(String userId) {
-            this.userId = userId;
-        }
-
-        /**
-         * Gets additional parameters.
-         * 
-         * @return map of additional parameters for the action
-         */
-        public Map<String, String> getParameters() {
-            return parameters;
-        }
-
-        /**
-         * Sets additional parameters.
-         * 
-         * @param parameters parameters to set
-         */
-        public void setParameters(Map<String, String> parameters) {
-            this.parameters = parameters;
-        }
-    }
-
-    /**
-     * Inner class representing an admin request for service layer.
-     * 
-     * <p>Defines the structure matching AdminService.executeAdminFunction() parameter.
-     * This class bridges the controller's AdminActionRequest to the service layer's
-     * expected input format.</p>
-     */
-    public static class AdminRequest {
-        
-        private Integer optionNumber;
-        private String selectedOption;
-        private String userId;
-        private Map<String, String> parameters;
-
-        /**
-         * Gets the option number.
-         * 
-         * @return selected option number
-         */
-        public Integer getOptionNumber() {
-            return optionNumber;
-        }
-
-        /**
-         * Sets the option number.
-         * 
-         * @param optionNumber option number to set
-         */
-        public void setOptionNumber(Integer optionNumber) {
-            this.optionNumber = optionNumber;
-        }
-
-        /**
-         * Gets the selected option.
-         * 
-         * @return selected option name
-         */
-        public String getSelectedOption() {
-            return selectedOption;
-        }
-
-        /**
-         * Sets the selected option.
-         * 
-         * @param selectedOption option name to set
-         */
-        public void setSelectedOption(String selectedOption) {
-            this.selectedOption = selectedOption;
-        }
-
-        /**
-         * Gets the user ID.
-         * 
-         * @return user ID
-         */
-        public String getUserId() {
-            return userId;
-        }
-
-        /**
-         * Sets the user ID.
-         * 
-         * @param userId user ID to set
-         */
-        public void setUserId(String userId) {
-            this.userId = userId;
-        }
-
-        /**
-         * Gets the parameters.
-         * 
-         * @return parameters map
-         */
-        public Map<String, String> getParameters() {
-            return parameters;
-        }
-
-        /**
-         * Sets the parameters.
-         * 
-         * @param parameters parameters to set
-         */
-        public void setParameters(Map<String, String> parameters) {
-            this.parameters = parameters;
         }
     }
 }
