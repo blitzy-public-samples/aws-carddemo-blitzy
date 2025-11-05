@@ -28,7 +28,7 @@
  * @module correction.schema
  */
 
-import { ObjectId } from 'mongodb';
+import type { ObjectId } from 'mongodb';
 
 /**
  * Field Type Union
@@ -67,7 +67,7 @@ export type ValidationStatus = 'pending' | 'approved' | 'rejected';
  * Represents a single field-level correction made by a user during document review.
  * This data is used to improve OCR/NLP models through machine learning training.
  * 
- * @interface ICorrection
+ * @interface Correction
  * 
  * @example
  * {
@@ -88,7 +88,7 @@ export type ValidationStatus = 'pending' | 'approved' | 'rejected';
  *   validation_status: "approved"
  * }
  */
-export interface ICorrection {
+export interface Correction {
   /**
    * MongoDB Document ID
    * Unique identifier for this correction record
@@ -177,7 +177,7 @@ export interface ICorrection {
    * Can include: page_number, bounding_box coordinates, context text, etc.
    * OPTIONAL, FLEXIBLE SCHEMA
    */
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 
   /**
    * Field Type
@@ -226,7 +226,7 @@ export interface ICorrection {
  *   is_training_data: true
  * };
  */
-export type CreateCorrectionDto = Omit<ICorrection, '_id' | 'created_at'>;
+export type CreateCorrectionDto = Omit<Correction, '_id' | 'created_at'>;
 
 /**
  * Update Correction DTO
@@ -234,7 +234,7 @@ export type CreateCorrectionDto = Omit<ICorrection, '_id' | 'created_at'>;
  * Type for updating an existing correction document.
  * All fields are optional except immutable ones (account_id, created_at)
  */
-export type UpdateCorrectionDto = Partial<Omit<ICorrection, '_id' | 'account_id' | 'created_at'>>;
+export type UpdateCorrectionDto = Partial<Omit<Correction, '_id' | 'account_id' | 'created_at'>>;
 
 /**
  * Collection Name Constant
@@ -407,7 +407,7 @@ export const CORRECTION_VALIDATION = {
  * const avgConfidence = calculateAverageOriginalConfidence(corrections);
  * console.log(`Average confidence of corrected fields: ${avgConfidence}%`);
  */
-export function calculateAverageOriginalConfidence(corrections: ICorrection[]): number {
+export function calculateAverageOriginalConfidence(corrections: Correction[]): number {
   if (corrections.length === 0) return 0;
   
   const totalConfidence = corrections.reduce(
@@ -432,9 +432,9 @@ export function calculateAverageOriginalConfidence(corrections: ICorrection[]): 
  * // Use currencyCorrections to train currency field extraction model
  */
 export function filterTrainingDataByFieldType(
-  corrections: ICorrection[],
+  corrections: Correction[],
   fieldType: FieldType
-): ICorrection[] {
+): Correction[] {
   return corrections.filter(
     (correction) =>
       correction.is_training_data &&
@@ -459,16 +459,18 @@ export function filterTrainingDataByFieldType(
  * });
  */
 export function getCorrectionsByUser(
-  corrections: ICorrection[]
-): Map<string, ICorrection[]> {
-  const userMap = new Map<string, ICorrection[]>();
+  corrections: Correction[]
+): Map<string, Correction[]> {
+  const userMap = new Map<string, Correction[]>();
   
   corrections.forEach((correction) => {
     const userId = correction.corrected_by;
-    if (!userMap.has(userId)) {
-      userMap.set(userId, []);
+    const userCorrections = userMap.get(userId);
+    if (userCorrections) {
+      userCorrections.push(correction);
+    } else {
+      userMap.set(userId, [correction]);
     }
-    userMap.get(userId)!.push(correction);
   });
   
   return userMap;
@@ -489,7 +491,7 @@ export function getCorrectionsByUser(
  * console.log('Top 5 fields needing correction:', problematicFields);
  */
 export function getMostCorrectedFields(
-  corrections: ICorrection[],
+  corrections: Correction[],
   limit = 10
 ): Array<[string, number]> {
   const fieldCounts = new Map<string, number>();
@@ -507,9 +509,9 @@ export function getMostCorrectedFields(
 /**
  * Type Export: Correction Document with _id
  * 
- * Alias for ICorrection, emphasizing that it includes MongoDB _id
+ * Alias for Correction, emphasizing that it includes MongoDB _id
  */
-export type CorrectionDocument = ICorrection;
+export type CorrectionDocument = Correction;
 
 /**
  * MongoDB Write Concern Configuration
