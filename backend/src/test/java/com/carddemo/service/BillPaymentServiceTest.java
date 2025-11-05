@@ -342,7 +342,7 @@ public class BillPaymentServiceTest {
         // Assert - Transaction type and category
         Transaction savedTransaction = transactionCaptor.getValue();
         assertThat(savedTransaction.getTransactionTypeCode()).isEqualTo("02");
-        assertThat(savedTransaction.getTransactionCategoryCode()).isEqualTo(2);
+        assertThat(savedTransaction.getTransactionCategoryCode()).isEqualTo("020002");
         assertThat(savedTransaction.getTransactionSource()).isEqualTo("POS TERM");
         assertThat(savedTransaction.getTransactionDescription()).isEqualTo("BILL PAYMENT - ONLINE");
         assertThat(savedTransaction.getMerchantId()).isEqualTo(999999999L);
