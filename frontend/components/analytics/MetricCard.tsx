@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { TrendingUp, TrendingDown, Minus, ArrowUp, ArrowDown } from 'lucide-react';
+import { ArrowDown, ArrowUp, Minus, TrendingDown, TrendingUp } from 'lucide-react';
 import clsx from 'clsx';
 
 /**
@@ -21,50 +21,50 @@ export type MetricVariant = 'default' | 'success' | 'warning' | 'danger';
 export interface MetricCardProps {
   /** Title of the metric (e.g., "Total Documents Processed") */
   title: string;
-  
+
   /** Current value of the metric (can be string or number) */
   value: string | number;
-  
+
   /** Optional subtitle displayed below title */
   subtitle?: string;
-  
+
   /** Optional description displayed at the bottom of the card */
   description?: string;
-  
+
   /** Trend direction indicator (up, down, or stable) */
   trend?: TrendDirection;
-  
+
   /** Percentage change from previous period (positive or negative number) */
   change?: number;
-  
+
   /** Label for the change percentage (e.g., "vs last month", "vs last week") */
   changeLabel?: string;
-  
+
   /** Optional icon displayed in the top-right corner */
   icon?: React.ReactNode;
-  
+
   /** Visual variant affecting background and border colors */
   variant?: MetricVariant;
-  
+
   /** Loading state - displays skeleton placeholder */
   loading?: boolean;
-  
+
   /** Custom function to format the value display */
   formatValue?: (value: number) => string;
-  
+
   /** Click handler - makes card interactive when provided */
   onClick?: () => void;
-  
+
   /** Additional CSS classes for customization */
   className?: string;
 }
 
 /**
  * MetricCard Component
- * 
+ *
  * A comprehensive KPI metric display card that shows key performance indicators
  * with trend visualization, percentage changes, and variant-based styling.
- * 
+ *
  * @component
  * @example
  * // Basic usage with number value
@@ -75,7 +75,7 @@ export interface MetricCardProps {
  *   change={12.5}
  *   changeLabel="vs last month"
  * />
- * 
+ *
  * @example
  * // Currency formatting with success variant
  * <MetricCard
@@ -87,7 +87,7 @@ export interface MetricCardProps {
  *   formatValue={(val) => `$${val.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
  *   icon={<DollarSign className="w-6 h-6" />}
  * />
- * 
+ *
  * @example
  * // Percentage display with warning variant
  * <MetricCard
@@ -98,7 +98,7 @@ export interface MetricCardProps {
  *   change={-0.5}
  *   description="Errors decreased this period"
  * />
- * 
+ *
  * @example
  * // Loading state
  * <MetricCard
@@ -106,7 +106,7 @@ export interface MetricCardProps {
  *   value={0}
  *   loading={true}
  * />
- * 
+ *
  * @example
  * // Clickable card
  * <MetricCard
@@ -139,11 +139,11 @@ const MetricCard: React.FC<MetricCardProps> = ({
     if (typeof value === 'string') {
       return value;
     }
-    
+
     if (formatValue) {
       return formatValue(value);
     }
-    
+
     // Default formatting with locale support and thousand separators
     return value.toLocaleString('en-US', {
       maximumFractionDigits: 2,
@@ -153,18 +153,33 @@ const MetricCard: React.FC<MetricCardProps> = ({
   /**
    * Get the appropriate trend icon based on trend direction
    */
-  const getTrendIcon = () => {
+  const getTrendIcon = (): React.ReactNode => {
     if (!trend) return null;
-    
+
     const iconClasses = 'w-5 h-5';
-    
+
     switch (trend) {
       case 'up':
-        return <TrendingUp className={clsx(iconClasses, 'text-green-600 dark:text-green-400')} aria-label="Trending up" />;
+        return (
+          <TrendingUp
+            className={clsx(iconClasses, 'text-green-600 dark:text-green-400')}
+            aria-label="Trending up"
+          />
+        );
       case 'down':
-        return <TrendingDown className={clsx(iconClasses, 'text-red-600 dark:text-red-400')} aria-label="Trending down" />;
+        return (
+          <TrendingDown
+            className={clsx(iconClasses, 'text-red-600 dark:text-red-400')}
+            aria-label="Trending down"
+          />
+        );
       case 'stable':
-        return <Minus className={clsx(iconClasses, 'text-gray-500 dark:text-gray-400')} aria-label="Stable" />;
+        return (
+          <Minus
+            className={clsx(iconClasses, 'text-gray-500 dark:text-gray-400')}
+            aria-label="Stable"
+          />
+        );
       default:
         return null;
     }
@@ -173,24 +188,21 @@ const MetricCard: React.FC<MetricCardProps> = ({
   /**
    * Get the change indicator with color coding and arrow icon
    */
-  const getChangeIndicator = () => {
+  const getChangeIndicator = (): React.ReactNode => {
     if (change === undefined || change === null) return null;
-    
+
     const isPositive = change > 0;
     const isNegative = change < 0;
     const isNeutral = change === 0;
-    
-    const changeClasses = clsx(
-      'inline-flex items-center gap-1 text-xs font-medium',
-      {
-        'text-green-600 dark:text-green-400': isPositive,
-        'text-red-600 dark:text-red-400': isNegative,
-        'text-gray-500 dark:text-gray-400': isNeutral,
-      }
-    );
-    
+
+    const changeClasses = clsx('inline-flex items-center gap-1 text-xs font-medium', {
+      'text-green-600 dark:text-green-400': isPositive,
+      'text-red-600 dark:text-red-400': isNegative,
+      'text-gray-500 dark:text-gray-400': isNeutral,
+    });
+
     const ArrowIcon = isPositive ? ArrowUp : isNegative ? ArrowDown : null;
-    
+
     return (
       <div className="flex items-center gap-2 mt-2">
         <span className={changeClasses}>
@@ -201,9 +213,7 @@ const MetricCard: React.FC<MetricCardProps> = ({
           </span>
         </span>
         {changeLabel && (
-          <span className="text-xs text-gray-500 dark:text-gray-400">
-            {changeLabel}
-          </span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">{changeLabel}</span>
         )}
       </div>
     );
@@ -212,7 +222,7 @@ const MetricCard: React.FC<MetricCardProps> = ({
   /**
    * Get variant-specific styling classes
    */
-  const getVariantClasses = () => {
+  const getVariantClasses = (): string => {
     switch (variant) {
       case 'success':
         return 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800';
@@ -232,24 +242,20 @@ const MetricCard: React.FC<MetricCardProps> = ({
   if (loading) {
     return (
       <div
-        className={clsx(
-          'border rounded-lg shadow-sm p-4 md:p-6',
-          getVariantClasses(),
-          className
-        )}
+        className={clsx('border rounded-lg shadow-sm p-4 md:p-6', getVariantClasses(), className)}
         role="article"
         aria-busy="true"
         aria-label="Loading metric"
       >
         <div className="animate-pulse">
           {/* Title skeleton */}
-          <div className="h-4 bg-gray-300 dark:bg-gray-600 rounded w-2/3 mb-3"></div>
-          
+          <div className="h-4 bg-gray-300 dark:bg-gray-600 rounded w-2/3 mb-3" />
+
           {/* Value skeleton */}
-          <div className="h-8 md:h-10 bg-gray-300 dark:bg-gray-600 rounded w-1/2 mb-3"></div>
-          
+          <div className="h-8 md:h-10 bg-gray-300 dark:bg-gray-600 rounded w-1/2 mb-3" />
+
           {/* Change skeleton */}
-          <div className="h-3 bg-gray-300 dark:bg-gray-600 rounded w-1/3"></div>
+          <div className="h-3 bg-gray-300 dark:bg-gray-600 rounded w-1/3" />
         </div>
       </div>
     );
@@ -262,7 +268,8 @@ const MetricCard: React.FC<MetricCardProps> = ({
     'border rounded-lg shadow-sm p-4 md:p-6 transition-shadow duration-200',
     getVariantClasses(),
     {
-      'cursor-pointer hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2': onClick,
+      'cursor-pointer hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2':
+        onClick,
     },
     className
   );
@@ -271,7 +278,9 @@ const MetricCard: React.FC<MetricCardProps> = ({
    * Accessibility label for the card
    */
   const ariaLabel = `${title}: ${getFormattedValue()}${
-    change !== undefined ? `, ${change > 0 ? 'up' : change < 0 ? 'down' : 'unchanged'} ${Math.abs(change)}%` : ''
+    change !== undefined
+      ? `, ${change > 0 ? 'up' : change < 0 ? 'down' : 'unchanged'} ${Math.abs(change)}%`
+      : ''
   }`;
 
   return (
@@ -292,14 +301,8 @@ const MetricCard: React.FC<MetricCardProps> = ({
       {/* Header with title and icon */}
       <div className="flex items-start justify-between mb-2">
         <div className="flex-1">
-          <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300">
-            {title}
-          </h3>
-          {subtitle && (
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              {subtitle}
-            </p>
-          )}
+          <h3 className="text-sm font-medium text-gray-600 dark:text-gray-300">{title}</h3>
+          {subtitle && <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{subtitle}</p>}
         </div>
         {icon && (
           <div className="ml-3 text-gray-400 dark:text-gray-500" aria-hidden="true">
@@ -313,11 +316,7 @@ const MetricCard: React.FC<MetricCardProps> = ({
         <p className="text-2xl md:text-3xl font-bold text-gray-900 dark:text-gray-100">
           {getFormattedValue()}
         </p>
-        {trend && (
-          <div className="flex-shrink-0">
-            {getTrendIcon()}
-          </div>
-        )}
+        {trend && <div className="flex-shrink-0">{getTrendIcon()}</div>}
       </div>
 
       {/* Change indicator */}
@@ -325,9 +324,7 @@ const MetricCard: React.FC<MetricCardProps> = ({
 
       {/* Description */}
       {description && (
-        <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">
-          {description}
-        </p>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">{description}</p>
       )}
     </div>
   );
