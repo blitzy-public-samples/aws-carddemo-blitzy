@@ -390,7 +390,7 @@ public class TransactionControllerTest {
                     .andExpect(jsonPath("$.grandTotal", is(1669.95)))
                     .andExpect(jsonPath("$.totalTransactionCount", is(35)))
                     // Verify first category details
-                    .andExpect(jsonPath("$.categorySummaries[0].categoryCode", is(1001)))
+                    .andExpect(jsonPath("$.categorySummaries[0].categoryCode", is("015411")))
                     .andExpect(jsonPath("$.categorySummaries[0].categoryName", is("Groceries")))
                     .andExpect(jsonPath("$.categorySummaries[0].totalAmount", is(542.75)))
                     .andExpect(jsonPath("$.categorySummaries[0].transactionCount", is(12)))
@@ -534,7 +534,7 @@ public class TransactionControllerTest {
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     .andExpect(jsonPath("$.transactionId", is(TEST_TRANSACTION_ID)))
                     .andExpect(jsonPath("$.accountId", is(Long.parseLong(TEST_ACCOUNT_ID)))) // accountId is Long in entity
-                    .andExpect(jsonPath("$.transactionAmount", is(125.50)))
+                    .andExpect(jsonPath("$.transactionAmount", is(-125.50))) // Negative for purchase/debit transactions
                     .andExpect(jsonPath("$.transactionTypeCode", notNullValue()))
                     .andExpect(jsonPath("$.transactionSource", notNullValue()));
 
@@ -665,11 +665,18 @@ public class TransactionControllerTest {
 
         @Test
         @WithMockUser(username = TEST_USER_ID, roles = {"USER"})
-        @DisplayName("Should return 400 for negative transaction amount")
+        @DisplayName("Should return 400 for negative amount on credit transaction")
         void testCreateTransaction_NegativeAmount_Returns400() throws Exception {
-            // Arrange: Create request with negative amount
+            // Arrange: Create request with PAYMENT type (credit) but negative amount (invalid)
+            // Business rule: Credit/Payment transactions must have positive amounts
+            // Note: Sign validation is performed in service layer based on transaction type
             TransactionRequest request = createValidTransactionRequest();
-            request.setTransactionAmount(new BigDecimal("-125.50"));
+            request.setTransactionTypeCode("02"); // Payment type (credit)
+            request.setTransactionAmount(new BigDecimal("-125.50")); // Negative amount - invalid for credit!
+
+            // Mock service to throw TransactionException for invalid amount sign
+            when(transactionCreationService.createTransaction(any(TransactionRequest.class)))
+                    .thenThrow(new TransactionException("Credit transactions must have positive amounts"));
 
             // Act & Assert
             mockMvc.perform(post("/api/transactions")
@@ -677,9 +684,11 @@ public class TransactionControllerTest {
                     .contentType(MediaType.APPLICATION_JSON)
                     .content(objectMapper.writeValueAsString(request)))
                     .andDo(print())
-                    .andExpect(status().isBadRequest());
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.message", containsString("Credit transactions must have positive amounts")));
 
-            verify(transactionCreationService, never()).createTransaction(any(TransactionRequest.class));
+            // Verify service was called (validation happens in service layer)
+            verify(transactionCreationService, times(1)).createTransaction(any(TransactionRequest.class));
         }
 
         @Test
@@ -894,7 +903,7 @@ public class TransactionControllerTest {
 
         // Category 1: Groceries
         TransactionCategoryService.CategorySummary groceries = new TransactionCategoryService.CategorySummary();
-        groceries.setCategoryCode(1001);
+        groceries.setCategoryCode("015411"); // Grocery Stores
         groceries.setCategoryName("Groceries");
         groceries.setTotalAmount(TEST_AMOUNT_542_75);
         groceries.setTransactionCount(12L);
@@ -904,7 +913,7 @@ public class TransactionControllerTest {
 
         // Category 2: Fuel
         TransactionCategoryService.CategorySummary fuel = new TransactionCategoryService.CategorySummary();
-        fuel.setCategoryCode(1002);
+        fuel.setCategoryCode("015541"); // Service Stations/Gas
         fuel.setCategoryName("Fuel");
         fuel.setTotalAmount(new BigDecimal("387.20").setScale(2, RoundingMode.HALF_UP));
         fuel.setTransactionCount(8L);
@@ -914,7 +923,7 @@ public class TransactionControllerTest {
 
         // Category 3: Dining
         TransactionCategoryService.CategorySummary dining = new TransactionCategoryService.CategorySummary();
-        dining.setCategoryCode(1003);
+        dining.setCategoryCode("015812"); // Restaurants
         dining.setCategoryName("Dining");
         dining.setTotalAmount(new BigDecimal("740.00").setScale(2, RoundingMode.HALF_UP));
         dining.setTransactionCount(15L);
@@ -940,9 +949,9 @@ public class TransactionControllerTest {
         TransactionRequest request = new TransactionRequest();
         request.setAccountId(TEST_ACCOUNT_ID);
         request.setCardNumber(TEST_CARD_NUMBER);
-        request.setTransactionTypeCode("PU"); // Purchase type
+        request.setTransactionTypeCode("01"); // Purchase type (debit) - valid code from TransactionTypes enum
         request.setTransactionCategoryCode("FUEL"); // Fuel category
-        request.setTransactionAmount(TEST_AMOUNT_125_50);
+        request.setTransactionAmount(new BigDecimal("-125.50")); // Negative amount for debit/purchase
         request.setTransactionDescription("Gas Station Purchase");
         request.setTransactionSource("POS");
         request.setOriginDate(LocalDate.now().minusDays(1));
@@ -963,7 +972,8 @@ public class TransactionControllerTest {
         response.setTransactionId(TEST_TRANSACTION_ID);
         response.setAccountId(Long.parseLong(TEST_ACCOUNT_ID)); // Set transient accountId for JSON serialization
         response.setCardNumber("************9012"); // Masked card number
-        response.setTransactionAmount(TEST_AMOUNT_125_50);
+        // Purchase type "01" is a debit - should have negative amount
+        response.setTransactionAmount(new BigDecimal("-125.50"));
         response.setTransactionTypeCode("01");
         response.setTransactionCategoryCode("011002");
         response.setTransactionDescription("Gas Station Purchase");
