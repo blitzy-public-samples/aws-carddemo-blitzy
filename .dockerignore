@@ -1,0 +1,354 @@
+# .dockerignore
+# Docker build exclusion patterns for OCR Processing Application
+# Reduces image size and build time by excluding development files, documentation, and build artifacts
+
+# ============================================================================
+# Version Control
+# ============================================================================
+.git
+.gitignore
+.gitattributes
+.github/
+.gitlab-ci.yml
+.travis.yml
+.circleci/
+
+# ============================================================================
+# Dependencies (Node.js)
+# ============================================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+package-lock.json.bak
+yarn.lock.bak
+
+# ============================================================================
+# Dependencies (Python)
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.nox/
+.coverage
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+
+# ============================================================================
+# Build Artifacts
+# ============================================================================
+dist/
+build/
+*.egg-info/
+.next/
+out/
+.nuxt/
+.cache/
+.parcel-cache/
+.turbo/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ============================================================================
+# Development Tools
+# ============================================================================
+.vscode/
+.idea/
+.fleet/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# ============================================================================
+# Documentation
+# ============================================================================
+README.md
+CONTRIBUTING.md
+CHANGELOG.md
+LICENSE
+CODE_OF_CONDUCT.md
+docs/
+*.md
+# Exception: Keep essential docs for production
+!DEPLOYMENT.md
+
+# ============================================================================
+# Test Files
+# ============================================================================
+__tests__/
+tests/
+test/
+*.test.ts
+*.test.tsx
+*.test.js
+*.test.jsx
+*.spec.ts
+*.spec.tsx
+*.spec.js
+*.spec.jsx
+*.test.py
+test_*.py
+*_test.py
+jest.config.js
+jest.config.ts
+playwright.config.ts
+cypress/
+cypress.config.js
+pytest.ini
+.pytest_cache/
+
+# ============================================================================
+# Environment Files (SECURITY CRITICAL)
+# ============================================================================
+.env
+.env.*
+.env.local
+.env.development
+.env.test
+.env.production
+.env.staging
+secrets/
+secrets.*
+*.key
+*.pem
+*.p12
+*.pfx
+.aws/
+.gcloud/
+.azure/
+credentials.json
+service-account-key.json
+
+# ============================================================================
+# Logs and Temporary Files
+# ============================================================================
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
+tmp/
+temp/
+.tmp/
+*.tmp
+*.temp
+*.pid
+*.seed
+*.pid.lock
+.DS_Store
+
+# ============================================================================
+# OS-Specific Files
+# ============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Thumbs.db:encryptable
+Desktop.ini
+$RECYCLE.BIN/
+
+# ============================================================================
+# Coverage Reports
+# ============================================================================
+coverage/
+.nyc_output/
+htmlcov/
+*.cover
+*.coverage
+.hypothesis/
+.coverage.*
+.cache
+
+# ============================================================================
+# Monorepo and Workspace Files
+# ============================================================================
+lerna.json
+turbo.json
+pnpm-workspace.yaml
+.pnpmfile.cjs
+
+# ============================================================================
+# Editor Backup Files
+# ============================================================================
+*~
+*.bak
+*.backup
+*.swp
+*.swo
+.#*
+\#*\#
+
+# ============================================================================
+# Infrastructure as Code (exclude from application images)
+# ============================================================================
+terraform/
+k8s/
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraformrc
+terraform.rc
+
+# ============================================================================
+# Monitoring and Observability
+# ============================================================================
+monitoring/
+.datadog/
+newrelic.log
+
+# ============================================================================
+# Database and Migration (exclude from container context)
+# ============================================================================
+*.sql
+*.sqlite
+*.sqlite3
+*.db
+migrations.bak/
+
+# ============================================================================
+# Media and Large Files (should be in S3/object storage)
+# ============================================================================
+*.mov
+*.mp4
+*.avi
+*.mkv
+*.iso
+
+# ============================================================================
+# Package Manager Caches
+# ============================================================================
+.npm/
+.yarn/
+.pnp.*
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.eslintcache
+.stylelintcache
+
+# ============================================================================
+# Optional: Docker-in-Docker
+# ============================================================================
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# ============================================================================
+# Optional: CI/CD Artifacts
+# ============================================================================
+.github/
+.gitlab/
+.circleci/
+.travis.yml
+azure-pipelines.yml
+bitbucket-pipelines.yml
+Jenkinsfile
+
+# ============================================================================
+# Optional: Security Scanning Reports
+# ============================================================================
+trivy-report.json
+snyk-report.json
+owasp-zap-report.html
+
+# ============================================================================
+# Frontend-Specific
+# ============================================================================
+.next/
+.nuxt/
+.vuepress/dist
+.serverless/
+.fusebox/
+.dynamodb/
+.tern-port
+.vscode-test
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# ============================================================================
+# Backend-Specific
+# ============================================================================
+nest-cli.log
+
+# ============================================================================
+# Python-Specific
+# ============================================================================
+*.egg
+*.egg-info
+dist/
+build/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.manifest
+*.spec
+MANIFEST
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.pybuilder/
+target/
+
+# ============================================================================
+# Development Utilities
+# ============================================================================
+.husky/
+.commitlintrc*
+.prettierrc*
+.prettierignore
+.eslintrc*
+.eslintignore
+.editorconfig
+.nvmrc
+.node-version
+.python-version
+.ruby-version
+
+# ============================================================================
+# Storybook
+# ============================================================================
+storybook-static/
+.storybook/
+
+# ============================================================================
+# End of .dockerignore
+# ============================================================================
