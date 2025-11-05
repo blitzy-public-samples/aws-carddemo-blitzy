@@ -1,4 +1,6 @@
-import { MigrationInterface, QueryRunner, Table, TableIndex } from 'typeorm';
+import { Table, TableIndex } from 'typeorm';
+
+import type { MigrationInterface, QueryRunner} from 'typeorm';
 
 /**
  * Migration: CreateAccountsTable001

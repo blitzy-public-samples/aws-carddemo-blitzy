@@ -1,4 +1,6 @@
-import { MigrationInterface, QueryRunner, Table, TableForeignKey, TableIndex } from 'typeorm';
+import { Table, TableForeignKey, TableIndex } from 'typeorm';
+
+import type { MigrationInterface, QueryRunner} from 'typeorm';
 
 /**
  * Migration: Create processing_jobs table
