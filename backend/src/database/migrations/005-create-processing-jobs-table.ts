@@ -63,8 +63,8 @@ export class CreateProcessingJobsTable005 implements MigrationInterface {
           {
             name: 'user_id',
             type: 'uuid',
-            isNullable: false,
-            comment: 'Foreign key to users table; identifies who initiated the job',
+            isNullable: true,
+            comment: 'Foreign key to users table; identifies who initiated the job; nullable to preserve job history when user is deleted',
           },
           {
             name: 'job_type',
