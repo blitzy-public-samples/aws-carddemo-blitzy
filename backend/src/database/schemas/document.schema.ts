@@ -35,7 +35,7 @@
  * @module DocumentSchema
  */
 
-import { ObjectId } from 'mongodb';
+import type { ObjectId } from 'mongodb';
 
 /**
  * Collection name constant for documents
@@ -124,7 +124,7 @@ export type ValidationRuleType =
  * @property width - Width of the bounding box (pixels)
  * @property height - Height of the bounding box (pixels)
  */
-export interface IBoundingBox {
+export interface BoundingBox {
   x: number;
   y: number;
   width: number;
@@ -140,7 +140,7 @@ export interface IBoundingBox {
  * @property y - Y coordinate on the page
  * @property text - Annotation text content
  */
-export interface IAnnotation {
+export interface Annotation {
   page: number;
   x: number;
   y: number;
@@ -154,7 +154,7 @@ export interface IAnnotation {
  * @property field - Field name that failed validation
  * @property error - Human-readable error message
  */
-export interface IValidationError {
+export interface ValidationError {
   field: string;
   error: string;
 }
@@ -166,7 +166,7 @@ export interface IValidationError {
  * 
  * Example:
  * ```typescript
- * const invoiceNumberField: IExtractedField = {
+ * const invoiceNumberField: ExtractedField = {
  *   field_name: 'invoice_number',
  *   field_label: 'Invoice Number',
  *   field_value: 'INV-2025-001234',
@@ -179,7 +179,7 @@ export interface IValidationError {
  * };
  * ```
  */
-export interface IExtractedField {
+export interface ExtractedField {
   /** Unique field identifier (e.g., 'invoice_number', 'total_amount') */
   field_name: string;
   
@@ -202,7 +202,7 @@ export interface IExtractedField {
   validation_errors?: string[];
   
   /** Location of the field on the document page */
-  bounding_box?: IBoundingBox;
+  bounding_box?: BoundingBox;
   
   /** Page number where this field was found (1-indexed) */
   page_number?: number;
@@ -224,7 +224,7 @@ export interface IExtractedField {
  * 
  * Example:
  * ```typescript
- * const metadata: IProcessingMetadata = {
+ * const metadata: ProcessingMetadata = {
  *   ocr_engine: 'google_vision',
  *   ocr_version: 'v1.4',
  *   processing_time_ms: 2500,
@@ -237,7 +237,7 @@ export interface IExtractedField {
  * };
  * ```
  */
-export interface IProcessingMetadata {
+export interface ProcessingMetadata {
   /** OCR engine that processed this document */
   ocr_engine: OcrEngine;
   
@@ -273,7 +273,7 @@ export interface IProcessingMetadata {
  * 
  * Example:
  * ```typescript
- * const requiredRule: IValidationRule = {
+ * const requiredRule: ValidationRule = {
  *   rule_id: 'rule_001',
  *   rule_type: 'required',
  *   field_name: 'invoice_number',
@@ -281,7 +281,7 @@ export interface IProcessingMetadata {
  *   error_message: 'Invoice number is required'
  * };
  * 
- * const formatRule: IValidationRule = {
+ * const formatRule: ValidationRule = {
  *   rule_id: 'rule_002',
  *   rule_type: 'format',
  *   field_name: 'email',
@@ -290,7 +290,7 @@ export interface IProcessingMetadata {
  * };
  * ```
  */
-export interface IValidationRule {
+export interface ValidationRule {
   /** Unique identifier for this validation rule */
   rule_id: string;
   
@@ -301,7 +301,7 @@ export interface IValidationRule {
   field_name: string;
   
   /** Configuration parameters specific to the rule type */
-  rule_config: Record<string, any>;
+  rule_config: Record<string, unknown>;
   
   /** Error message to display if validation fails */
   error_message: string;
@@ -330,7 +330,7 @@ export interface IValidationRule {
  * 
  * Example Usage:
  * ```typescript
- * const document: IDocument = {
+ * const document: Document = {
  *   _id: new ObjectId(),
  *   document_id: 'uuid-v4-string',
  *   account_id: 'acct_123',
@@ -362,7 +362,7 @@ export interface IValidationRule {
  * };
  * ```
  */
-export interface IDocument {
+export interface Document {
   // === MongoDB Document ID ===
   /** MongoDB internal document identifier */
   _id: ObjectId;
@@ -427,10 +427,10 @@ export interface IDocument {
   extracted_text?: string;
   
   /** Array of structured extracted fields with confidence scores and validation */
-  extracted_fields: IExtractedField[];
+  extracted_fields: ExtractedField[];
   
   /** Complete raw output from OCR engine (for debugging and reprocessing) */
-  raw_ocr_output?: any;
+  raw_ocr_output?: unknown;
   
   /** Overall confidence score (0-100) averaged across all extracted fields */
   overall_confidence: number;
@@ -440,10 +440,10 @@ export interface IDocument {
   
   // === Validation ===
   /** Array of validation rules applied to this document */
-  validation_rules: IValidationRule[];
+  validation_rules: ValidationRule[];
   
   /** Array of current validation errors */
-  validation_errors: IValidationError[];
+  validation_errors: ValidationError[];
   
   /** Whether all validation rules have passed */
   is_validated: boolean;
@@ -481,7 +481,7 @@ export interface IDocument {
   notes?: string;
   
   /** Array of user annotations on document pages */
-  annotations?: IAnnotation[];
+  annotations?: Annotation[];
   
   // === Timestamps ===
   /** Document upload timestamp - indexed */
@@ -501,13 +501,13 @@ export interface IDocument {
   
   // === Metadata ===
   /** OCR processing metadata and performance metrics */
-  processing_metadata: IProcessingMetadata;
+  processing_metadata: ProcessingMetadata;
   
   /** User-defined custom fields for flexible data storage */
-  custom_fields: Record<string, any>;
+  custom_fields: Record<string, unknown>;
   
   /** Third-party integration metadata (QuickBooks, Salesforce, etc.) */
-  integration_data?: Record<string, any>;
+  integration_data?: Record<string, unknown>;
   
   /** Document version number for change tracking */
   version: number;
@@ -519,7 +519,7 @@ export interface IDocument {
  * 
  * Omits: _id (generated by MongoDB), created_at, updated_at (set by application)
  */
-export type CreateDocumentDto = Omit<IDocument, '_id' | 'created_at' | 'updated_at'>;
+export type CreateDocumentDto = Omit<Document, '_id' | 'created_at' | 'updated_at'>;
 
 /**
  * Update Document DTO Type
@@ -527,7 +527,7 @@ export type CreateDocumentDto = Omit<IDocument, '_id' | 'created_at' | 'updated_
  * 
  * Partial type allows updating only specific fields
  */
-export type UpdateDocumentDto = Partial<Omit<IDocument, '_id' | 'document_id' | 'account_id'>>;
+export type UpdateDocumentDto = Partial<Omit<Document, '_id' | 'document_id' | 'account_id'>>;
 
 /**
  * Type guard to check if a string is a valid DocumentStatus
@@ -612,7 +612,7 @@ export function validateDocumentId(id: string): boolean {
  * 
  * @example
  * ```typescript
- * const fields: IExtractedField[] = [
+ * const fields: ExtractedField[] = [
  *   { field_name: 'name', confidence_score: 95, ... },
  *   { field_name: 'date', confidence_score: 88, ... },
  *   { field_name: 'amount', confidence_score: 92, ... }
@@ -621,7 +621,7 @@ export function validateDocumentId(id: string): boolean {
  * const overall = calculateOverallConfidence(fields); // Returns 91.67
  * ```
  */
-export function calculateOverallConfidence(fields: IExtractedField[]): number {
+export function calculateOverallConfidence(fields: ExtractedField[]): number {
   if (!fields || fields.length === 0) {
     return 0;
   }
