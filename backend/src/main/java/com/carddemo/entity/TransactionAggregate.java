@@ -345,7 +345,7 @@ public class TransactionAggregate implements Serializable {
      * exposure in REST API responses. Type code is already available in composite key.</p>
      */
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "transaction_type_code", referencedColumnName = "type_code",
+    @JoinColumn(name = "transaction_type_code", referencedColumnName = "transaction_type_code",
                 insertable = false, updatable = false)
     @JsonIgnore
     private TransactionType transactionType;

@@ -179,9 +179,10 @@ public class TransactionListResponse implements Serializable {
     private Long totalElements;
 
     /**
-     * Current page number (zero-based, calculated field for REST pagination).
+     * Current page number (1-based for display, converted from 0-based internal Spring Data pagination).
      * Not present in COBOL structure - added for modern API pagination support.
-     * Note: pageNumber field above is 1-based legacy display value.
+     * Matches COBOL CDEMO-CT00-PAGE-NUM 1-based display convention.
+     * Note: pageNumber field above is also 1-based legacy display value for compatibility.
      */
     @JsonProperty("currentPage")
     private Integer currentPage;

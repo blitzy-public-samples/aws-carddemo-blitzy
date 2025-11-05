@@ -539,8 +539,9 @@ public class TransactionListService {
         TransactionListResponse response = new TransactionListResponse();
 
         // Set pagination metadata
-        // Keep 0-based page numbering for REST API consistency (per Section 0.3)
-        response.setCurrentPage(transactionPage.getNumber()); // 0-based: page=0 for first page
+        // Convert from 0-based internal page number to 1-based display page number
+        // COBOL CDEMO-CT00-PAGE-NUM is 1-based for user display
+        response.setCurrentPage(transactionPage.getNumber() + 1); // Convert: page 0 -> 1, page 1 -> 2, etc.
         response.setTotalPages(transactionPage.getTotalPages());
         response.setTotalElements(transactionPage.getTotalElements());
         response.setPageSize(PAGE_SIZE);
