@@ -1,0 +1,138 @@
+# =============================================================================
+# Stage 1: Builder Stage
+# Purpose: Install build dependencies and compile Python packages
+# =============================================================================
+FROM python:3.12-slim-bookworm AS builder
+
+# Set build-time labels for metadata
+LABEL maintainer="OCR Processing Team"
+LABEL stage="builder"
+LABEL description="Builder stage for OCR service with Tesseract and Python dependencies"
+
+# Set environment variables for build
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+# Install system build dependencies and Tesseract OCR development libraries
+# gcc, g++, build-essential: Required for compiling Python packages (numpy, scipy, etc.)
+# libtesseract-dev: Tesseract OCR development headers
+# libleptonica-dev: Leptonica image processing library (Tesseract dependency)
+# pkg-config: Helper tool for compiling applications and libraries
+# wget, curl: For downloading additional resources if needed
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    build-essential \
+    libtesseract-dev \
+    libleptonica-dev \
+    pkg-config \
+    wget \
+    curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create Python virtual environment in /opt/venv
+# Using virtual environment ensures clean separation and easy copy to runtime stage
+RUN python -m venv /opt/venv
+
+# Activate virtual environment by modifying PATH
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy requirements.txt first for better layer caching
+# If requirements.txt doesn't change, this layer will be cached
+WORKDIR /build
+COPY ocr-service/requirements.txt .
+
+# Install Python dependencies into virtual environment
+# --no-cache-dir: Reduces image size by not caching pip downloads
+# --upgrade: Ensures latest compatible versions
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
+
+# =============================================================================
+# Stage 2: Runtime Stage
+# Purpose: Minimal runtime environment with only necessary dependencies
+# =============================================================================
+FROM python:3.12-slim-bookworm AS runtime
+
+# Set runtime labels for metadata
+LABEL maintainer="OCR Processing Team"
+LABEL version="1.0.0"
+LABEL description="Production OCR processing service with Tesseract and FastAPI"
+LABEL org.opencontainers.image.source="https://github.com/your-org/ocr-processing-app"
+
+# Set environment variables for runtime
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    PATH="/opt/venv/bin:$PATH" \
+    TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
+
+# Install runtime dependencies
+# tesseract-ocr: Main Tesseract OCR binary (version 5.x from Debian bookworm)
+# tesseract-ocr-eng: English language data files
+# libtesseract5: Tesseract runtime library
+# libleptonica5: Leptonica runtime library
+# libgomp1: GNU OpenMP library for parallel processing
+# curl: Required for health checks
+# ca-certificates: SSL certificate validation for external API calls
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    libtesseract5 \
+    libleptonica5 \
+    libgomp1 \
+    curl \
+    ca-certificates \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Verify Tesseract installation and version
+RUN tesseract --version
+
+# Copy Python virtual environment from builder stage
+# This includes all installed Python packages
+COPY --from=builder /opt/venv /opt/venv
+
+# Create non-root user for running the application (security best practice)
+# UID 1000 ensures consistency across environments
+# --no-log-init: Avoid large UID issues in some environments
+RUN groupadd --gid 1000 ocruser && \
+    useradd --uid 1000 --gid 1000 --no-log-init --create-home --shell /bin/bash ocruser
+
+# Create application directory
+RUN mkdir -p /app && chown -R ocruser:ocruser /app
+
+# Set working directory
+WORKDIR /app
+
+# Copy application code
+# Copy as root first, then change ownership to avoid permission issues
+COPY --chown=ocruser:ocruser ocr-service/ .
+
+# Create directories for temporary file storage and processing
+RUN mkdir -p /app/tmp /app/uploads /app/logs && \
+    chown -R ocruser:ocruser /app/tmp /app/uploads /app/logs
+
+# Expose port 8000 for FastAPI application
+EXPOSE 8000
+
+# Configure health check
+# Checks the FastAPI health endpoint every 30 seconds
+# --fail: Return non-zero exit code on HTTP errors
+# --timeout: Maximum time for health check request
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl --fail http://localhost:8000/api/v1/health || exit 1
+
+# Switch to non-root user for running the application
+# This is a critical security requirement
+USER ocruser
+
+# Default command to run the FastAPI application
+# --host 0.0.0.0: Bind to all network interfaces (required for container networking)
+# --port 8000: Listen on port 8000
+# --workers can be overridden via environment variable for production scaling
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
