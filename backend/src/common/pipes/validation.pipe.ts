@@ -5,8 +5,8 @@ import {
   BadRequestException,
   Type,
 } from '@nestjs/common';
-import { validate, ValidationError } from 'class-validator';
 import { plainToInstance, ClassConstructor } from 'class-transformer';
+import { validate, ValidationError } from 'class-validator';
 
 /**
  * Custom NestJS validation pipe implementing comprehensive DTO validation.
@@ -234,7 +234,7 @@ export class ValidationPipe implements PipeTransform<unknown, unknown> {
         for (const message of constraintMessages) {
           formattedErrors.push({
             field: fieldPath,
-            message: message,
+            message,
           });
         }
       }
