@@ -1,16 +1,16 @@
 /**
  * Role-Based Access Control (RBAC) Utility Module
- * 
+ *
  * This module provides a comprehensive permission system for the OCR Processing Application.
  * It defines permissions, roles, and helper functions for authorization checks throughout the UI.
- * 
+ *
  * @module permissions
  */
 
 /**
  * Permission enum defining all application-level permissions.
  * Each permission represents a specific action a user can perform in the system.
- * 
+ *
  * Naming convention: RESOURCE_ACTION (e.g., DOCUMENT_READ, TEMPLATE_UPDATE)
  */
 export enum Permission {
@@ -47,7 +47,7 @@ export enum Permission {
 
 /**
  * Role type defining all available user roles in the system.
- * 
+ *
  * - Admin: Full system access with all permissions
  * - User: Standard user with document processing and limited management capabilities
  * - Viewer: Read-only access to documents and analytics
@@ -58,7 +58,7 @@ export type Role = 'Admin' | 'User' | 'Viewer' | 'Processor';
 /**
  * RolePermissions mapping defines which permissions each role has.
  * This is the authoritative source for role-based authorization decisions.
- * 
+ *
  * Role Definitions:
  * - Admin: Complete system access including user management, integrations, and audit logs
  * - User: Document processing, template viewing, analytics, own profile management
@@ -132,30 +132,27 @@ export const RolePermissions: Record<Role, Permission[]> = {
 
 /**
  * Checks if a user with given roles has a specific permission.
- * 
+ *
  * This function aggregates permissions from all user roles and checks if
  * the required permission is present in any of them.
- * 
+ *
  * @param userRoles - Array of roles assigned to the user (can be empty)
  * @param permission - The permission to check
  * @returns true if user has the permission through any of their roles, false otherwise
- * 
+ *
  * @example
  * ```typescript
  * const isAllowed = hasPermission(['User'], Permission.DOCUMENT_READ);
  * // Returns: true
- * 
+ *
  * const canDelete = hasPermission(['User'], Permission.DOCUMENT_DELETE);
  * // Returns: false (User role doesn't have delete permission)
- * 
+ *
  * const canManageKeys = hasPermission(['Admin'], Permission.API_KEY_MANAGE);
  * // Returns: true (Admin has all permissions)
  * ```
  */
-export function hasPermission(
-  userRoles: Role[] = [],
-  permission: Permission
-): boolean {
+export function hasPermission(userRoles: Role[] = [], permission: Permission): boolean {
   // Handle empty or null roles gracefully
   if (!userRoles || userRoles.length === 0) {
     return false;
@@ -164,22 +161,22 @@ export function hasPermission(
   // Check if any of the user's roles grant the required permission
   return userRoles.some((role) => {
     const rolePermissions = RolePermissions[role];
-    return rolePermissions && rolePermissions.includes(permission);
+    return rolePermissions?.includes(permission) ?? false;
   });
 }
 
 /**
  * Checks if a user has a specific role.
- * 
+ *
  * @param userRoles - Array of roles assigned to the user (can be empty)
  * @param requiredRole - The role to check for
  * @returns true if user has the specified role, false otherwise
- * 
+ *
  * @example
  * ```typescript
  * const isAdmin = hasRole(['Admin', 'User'], 'Admin');
  * // Returns: true
- * 
+ *
  * const isViewer = hasRole(['User'], 'Viewer');
  * // Returns: false
  * ```
@@ -195,26 +192,23 @@ export function hasRole(userRoles: Role[] = [], requiredRole: Role): boolean {
 
 /**
  * Checks if a user has at least one of the specified roles.
- * 
+ *
  * Useful for scenarios where multiple roles are acceptable for an action.
- * 
+ *
  * @param userRoles - Array of roles assigned to the user (can be empty)
  * @param requiredRoles - Array of roles to check against (at least one must match)
  * @returns true if user has any of the required roles, false otherwise
- * 
+ *
  * @example
  * ```typescript
  * const canProcess = hasAnyRole(['Processor'], ['Admin', 'Processor']);
  * // Returns: true (Processor is in required roles)
- * 
+ *
  * const canManage = hasAnyRole(['Viewer'], ['Admin', 'User']);
  * // Returns: false (Viewer is not in required roles)
  * ```
  */
-export function hasAnyRole(
-  userRoles: Role[] = [],
-  requiredRoles: Role[] = []
-): boolean {
+export function hasAnyRole(userRoles: Role[] = [], requiredRoles: Role[] = []): boolean {
   // Handle empty or null roles gracefully
   if (!userRoles || userRoles.length === 0) {
     return false;
@@ -229,13 +223,13 @@ export function hasAnyRole(
 
 /**
  * Checks if a user has all specified permissions.
- * 
+ *
  * Useful for features that require multiple permissions simultaneously.
- * 
+ *
  * @param userRoles - Array of roles assigned to the user (can be empty)
  * @param permissions - Array of permissions that must all be present
  * @returns true if user has all specified permissions, false otherwise
- * 
+ *
  * @example
  * ```typescript
  * const canManageTemplates = hasAllPermissions(
@@ -243,7 +237,7 @@ export function hasAnyRole(
  *   [Permission.TEMPLATE_READ, Permission.TEMPLATE_WRITE, Permission.TEMPLATE_DELETE]
  * );
  * // Returns: true (Admin has all permissions)
- * 
+ *
  * const canManageDocuments = hasAllPermissions(
  *   ['User'],
  *   [Permission.DOCUMENT_READ, Permission.DOCUMENT_DELETE]
@@ -251,10 +245,7 @@ export function hasAnyRole(
  * // Returns: false (User doesn't have DOCUMENT_DELETE)
  * ```
  */
-export function hasAllPermissions(
-  userRoles: Role[] = [],
-  permissions: Permission[] = []
-): boolean {
+export function hasAllPermissions(userRoles: Role[] = [], permissions: Permission[] = []): boolean {
   // Handle empty or null roles gracefully
   if (!userRoles || userRoles.length === 0) {
     return false;
@@ -266,30 +257,28 @@ export function hasAllPermissions(
   }
 
   // Check that user has every required permission
-  return permissions.every((permission) =>
-    hasPermission(userRoles, permission)
-  );
+  return permissions.every((permission) => hasPermission(userRoles, permission));
 }
 
 /**
  * Checks if a user can perform an action on a resource type.
- * 
+ *
  * This is a convenience function that combines resource type and action
  * into a permission string and checks if the user has that permission.
- * 
+ *
  * @param userRoles - Array of roles assigned to the user (can be empty)
  * @param resource - The resource type (e.g., 'document', 'template', 'user')
  * @param action - The action to perform (e.g., 'read', 'write', 'delete')
  * @returns true if user can perform the action on the resource, false otherwise
- * 
+ *
  * @example
  * ```typescript
  * const canReadDocs = canAccessResource(['User'], 'document', 'read');
  * // Returns: true (checks Permission.DOCUMENT_READ)
- * 
+ *
  * const canDeleteUsers = canAccessResource(['User'], 'user', 'delete');
  * // Returns: false (checks Permission.USER_DELETE)
- * 
+ *
  * const canManageKeys = canAccessResource(['Admin'], 'api_key', 'manage');
  * // Returns: true (checks Permission.API_KEY_MANAGE)
  * ```
@@ -313,9 +302,7 @@ export function canAccessResource(
   const permissionString = `${resource.toLowerCase()}.${action.toLowerCase()}`;
 
   // Check if this permission exists in the Permission enum
-  const permissionExists = Object.values(Permission).includes(
-    permissionString as Permission
-  );
+  const permissionExists = Object.values(Permission).includes(permissionString as Permission);
 
   if (!permissionExists) {
     // Permission doesn't exist in system - deny by default
