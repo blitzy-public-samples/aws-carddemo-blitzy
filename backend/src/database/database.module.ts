@@ -46,7 +46,8 @@ import {
   Repository, 
   EntityTarget,
   EntityManager,
-  QueryRunner
+  QueryRunner,
+  ObjectLiteral
 } from 'typeorm';
 
 /**
@@ -129,8 +130,9 @@ export function createDatabaseConfig(configService: ConfigService): DataSourceOp
     // SSL configuration - required in production per Section 0.4.3
     ssl: isProduction ? { rejectUnauthorized: true } : false,
     
-    // Timezone standardization - all timestamps in UTC per Section 0.7.2
-    timezone: 'UTC',
+    // Note: Timezone standardization handled by PostgreSQL server configuration
+    // All TIMESTAMP columns should use TIMESTAMP WITH TIME ZONE type
+    // Application code should work with Date objects in UTC
     
     // Redis-based query result caching
     cache: {
@@ -152,12 +154,14 @@ export function createDatabaseConfig(configService: ConfigService): DataSourceOp
   };
 
   // Validate critical configuration
-  if (!config.password) {
+  // Type assertion since we know this is PostgresConnectionOptions
+  const pgConfig = config as any;
+  if (!pgConfig.password) {
     logger.error('DB_PASSWORD environment variable is required');
     throw new Error('Database password not configured. Set DB_PASSWORD environment variable.');
   }
 
-  logger.log(`Database connection configured: ${config.host}:${config.port}/${config.database}`);
+  logger.log(`Database connection configured: ${pgConfig.host}:${pgConfig.port}/${pgConfig.database}`);
   
   return config;
 }
@@ -203,14 +207,16 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       // Verify connection is established
       if (this.dataSource.isInitialized) {
         this.logger.log('Database connection established successfully');
-        this.logger.log(`Connected to: ${this.dataSource.options.database} on ${this.dataSource.options['host']}`);
-        this.logger.log(`Connection pool: min=${this.dataSource.options['extra']?.min}, max=${this.dataSource.options['extra']?.max}`);
+        const options = this.dataSource.options as any;
+        this.logger.log(`Connected to: ${options.database} on ${options.host}`);
+        this.logger.log(`Connection pool: min=${options.extra?.min}, max=${options.extra?.max}`);
       }
 
       // Set up connection event handlers
       this.setupConnectionHandlers();
     } catch (error) {
-      this.logger.error('Failed to initialize database connection', error.stack);
+      const errorMessage = error instanceof Error ? error.stack : String(error);
+      this.logger.error('Failed to initialize database connection', errorMessage);
       throw error;
     }
   }
@@ -227,7 +233,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         this.logger.log('Database connection closed successfully');
       }
     } catch (error) {
-      this.logger.error('Error during database shutdown', error.stack);
+      const errorMessage = error instanceof Error ? error.stack : String(error);
+      this.logger.error('Error during database shutdown', errorMessage);
       throw error;
     }
   }
@@ -294,7 +301,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       
       return results;
     } catch (error) {
-      this.logger.error(`Query execution failed: ${error.message}`, error.stack);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      this.logger.error(`Query execution failed: ${errorMessage}`, errorStack);
       this.logger.error(`Failed query: ${sql}`);
       throw error;
     }
@@ -348,7 +357,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       // Rollback on error
       await queryRunner.rollbackTransaction();
       
-      this.logger.error('Transaction rolled back due to error', error.stack);
+      const errorStack = error instanceof Error ? error.stack : String(error);
+      this.logger.error('Transaction rolled back due to error', errorStack);
       throw error;
     } finally {
       // Release query runner
@@ -361,7 +371,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    * 
    * Provides type-safe access to entity CRUD operations.
    * 
-   * @template Entity - Entity class type
+   * @template Entity - Entity class type (must extend ObjectLiteral)
    * @param entity - Entity class or name
    * @returns Repository instance for the entity
    * 
@@ -371,7 +381,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    * const users = await userRepo.find({ where: { accountId } });
    * ```
    */
-  getRepository<Entity>(entity: EntityTarget<Entity>): Repository<Entity> {
+  getRepository<Entity extends ObjectLiteral>(entity: EntityTarget<Entity>): Repository<Entity> {
     return this.dataSource.getRepository(entity);
   }
 
@@ -407,8 +417,10 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         });
       }
     } catch (error) {
-      this.logger.error('Migration execution failed', error.stack);
-      throw new Error(`Failed to run migrations: ${error.message}`);
+      const errorStack = error instanceof Error ? error.stack : String(error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.error('Migration execution failed', errorStack);
+      throw new Error(`Failed to run migrations: ${errorMessage}`);
     }
   }
 
@@ -436,8 +448,10 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       const duration = Date.now() - startTime;
       this.logger.log(`Migration reverted successfully in ${duration}ms`);
     } catch (error) {
-      this.logger.error('Migration revert failed', error.stack);
-      throw new Error(`Failed to revert migration: ${error.message}`);
+      const errorStack = error instanceof Error ? error.stack : String(error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.error('Migration revert failed', errorStack);
+      throw new Error(`Failed to revert migration: ${errorMessage}`);
     }
   }
 
@@ -463,7 +477,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       await this.dataSource.query('SELECT 1');
       return true;
     } catch (error) {
-      this.logger.error('Database health check failed', error.stack);
+      const errorStack = error instanceof Error ? error.stack : String(error);
+      this.logger.error('Database health check failed', errorStack);
       return false;
     }
   }
@@ -500,7 +515,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    * 
    * Splits large inserts into chunks to avoid memory issues and improve performance.
    * 
-   * @template Entity - Entity type
+   * @template Entity - Entity type (must extend ObjectLiteral)
    * @param entity - Entity class
    * @param records - Array of entity data to insert
    * @param chunkSize - Number of records per chunk (default: 100)
@@ -511,7 +526,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    * await databaseService.bulkInsert(Document, documentData, 500);
    * ```
    */
-  async bulkInsert<Entity>(
+  async bulkInsert<Entity extends ObjectLiteral>(
     entity: EntityTarget<Entity>,
     records: any[],
     chunkSize: number = 100
@@ -529,7 +544,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       
       this.logger.log(`Bulk insert completed: ${records.length} records`);
     } catch (error) {
-      this.logger.error('Bulk insert failed', error.stack);
+      const errorStack = error instanceof Error ? error.stack : String(error);
+      this.logger.error('Bulk insert failed', errorStack);
       throw error;
     }
   }
@@ -600,5 +616,5 @@ export const dataSource = new DataSource({
   synchronize: false,
   logging: process.env.DB_LOGGING === 'true',
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
-  timezone: 'UTC',
+  // Note: Timezone handled by PostgreSQL server configuration
 });
