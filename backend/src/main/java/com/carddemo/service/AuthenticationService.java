@@ -32,9 +32,6 @@ import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.core.userdetails.UserDetails;
-import org.springframework.security.core.userdetails.UserDetailsService;
-import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -73,9 +70,10 @@ import java.util.Optional;
  * 
  * <h2>Spring Security Integration</h2>
  * 
- * <p>This service implements Spring Security's UserDetailsService interface for
- * integration with authentication filter chain. The loadUserByUsername() method
- * provides user details for Spring Security's authentication mechanisms.</p>
+ * <p>This service integrates with Spring Security's authentication framework by
+ * delegating to the AuthenticationManager. The CustomUserDetailsService handles
+ * loading user details, while this service orchestrates the complete authentication
+ * flow including JWT token generation.</p>
  * 
  * <h2>JWT Token-Based Authentication</h2>
  * 
@@ -147,7 +145,7 @@ import java.util.Optional;
  * @since 2024-01-01
  */
 @Service
-public class AuthenticationService implements UserDetailsService {
+public class AuthenticationService {
     
     private static final Logger logger = LoggerFactory.getLogger(AuthenticationService.class);
     
@@ -226,85 +224,7 @@ public class AuthenticationService implements UserDetailsService {
         logger.info("AuthenticationService initialized - replacing COBOL COSGN00C.cbl functionality");
     }
     
-    /**
-     * Loads user details by username for Spring Security authentication.
-     * 
-     * <p>This method implements Spring Security's UserDetailsService interface,
-     * providing user details for authentication mechanisms. It replaces the
-     * COBOL USRSEC file read operation from COSGN00C.cbl.</p>
-     * 
-     * <h3>COBOL Equivalent Operation:</h3>
-     * <pre>
-     * READ-USER-SEC-FILE.
-     *     EXEC CICS READ
-     *          DATASET   (WS-USRSEC-FILE)
-     *          INTO      (SEC-USER-DATA)
-     *          LENGTH    (LENGTH OF SEC-USER-DATA)
-     *          RIDFLD    (WS-USER-ID)
-     *          KEYLENGTH (LENGTH OF WS-USER-ID)
-     *          RESP      (WS-RESP-CD)
-     *          RESP2     (WS-REAS-CD)
-     *     END-EXEC.
-     * </pre>
-     * 
-     * <h3>CICS Response Code Mapping:</h3>
-     * <ul>
-     *   <li><strong>RESP=0:</strong> User found → return UserSecurity (implements UserDetails)</li>
-     *   <li><strong>RESP=13 (NOTFND):</strong> User not found → throw UsernameNotFoundException</li>
-     *   <li><strong>Other RESP:</strong> System error → throw UsernameNotFoundException</li>
-     * </ul>
-     * 
-     * <h3>UserDetails Implementation:</h3>
-     * <p>The returned UserSecurity entity implements UserDetails interface, providing:</p>
-     * <ul>
-     *   <li>getUsername() → userId</li>
-     *   <li>getPassword() → BCrypt password hash</li>
-     *   <li>getAuthorities() → ROLE_USER or ROLE_ADMIN based on userType</li>
-     *   <li>isAccountNonExpired() → true (no expiration in COBOL)</li>
-     *   <li>isAccountNonLocked() → true (no locking in COBOL)</li>
-     *   <li>isCredentialsNonExpired() → true (no password expiration)</li>
-     *   <li>isEnabled() → true (all users enabled)</li>
-     * </ul>
-     * 
-     * @param username the user ID to look up (8 characters max, from COBOL PIC X(08))
-     * @return UserDetails implementation containing user authentication data
-     * @throws UsernameNotFoundException if user not found (COBOL RESP 13 equivalent)
-     */
-    @Override
-    @Transactional(readOnly = true)
-    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
-        logger.debug("Loading user details for username: {}", username);
-        
-        if (username == null || username.trim().isEmpty()) {
-            logger.error("Username is null or empty during user details loading");
-            throw new UsernameNotFoundException("Username cannot be null or empty");
-        }
-        
-        // Convert to uppercase to match COBOL behavior
-        // COBOL: MOVE FUNCTION UPPER-CASE(USERIDI OF COSGN0AI) TO WS-USER-ID
-        String normalizedUsername = username.trim().toUpperCase();
-        
-        logger.debug("Querying UserSecurityRepository for userId: {}", normalizedUsername);
-        
-        // EXEC CICS READ DATASET(USRSEC) RIDFLD(WS-USER-ID) equivalent
-        Optional<UserSecurity> userOptional = userSecurityRepository.findByUserId(normalizedUsername);
-        
-        if (userOptional.isEmpty()) {
-            // COBOL: WHEN 13 (NOTFND)
-            // "User not found. Try again ..."
-            logger.warn("User not found during authentication: {}", normalizedUsername);
-            throw new UsernameNotFoundException(
-                String.format("User not found with ID: %s", normalizedUsername)
-            );
-        }
-        
-        UserSecurity user = userOptional.get();
-        logger.info("Successfully loaded user details for userId: {} with userType: {}", 
-                    user.getUserId(), user.getUserType());
-        
-        return user;
-    }
-    
+
     /**
      * Authenticates user credentials and generates JWT token.
      * 

@@ -482,12 +482,16 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * Finds active accounts for statement generation within a specific period.
      * Used by Spring Batch AccountStatementReader for normal pagination.
      *
+     * CRITICAL: Query must use 'A' for active accounts, not 'Y'
+     * Account.activeStatus = 'A' per AccountStatus.ACTIVE constant
+     * (Note: Card.cardStatus = 'Y' per CardStatus.ACTIVE - different entity)
+     *
      * @param periodStart Statement period start date
      * @param periodEnd Statement period end date
      * @param pageable Pagination parameters
      * @return Page of active Account entities
      */
-    @Query("SELECT a FROM Account a JOIN FETCH a.customer WHERE a.activeStatus = 'Y' AND a.openDate <= :periodEnd ORDER BY a.accountId ASC")
+    @Query("SELECT a FROM Account a JOIN FETCH a.customer WHERE a.activeStatus = 'A' AND a.openDate <= :periodEnd ORDER BY a.accountId ASC")
     Page<Account> findActiveAccountsForStatementPeriod(
             @Param("periodEnd") java.time.LocalDate periodEnd,
             Pageable pageable
@@ -497,13 +501,16 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * Finds active accounts for statement generation after a specific account ID.
      * Used by Spring Batch AccountStatementReader for restart scenarios.
      *
+     * CRITICAL: Query must use 'A' for active accounts, not 'Y'
+     * Account.activeStatus = 'A' per AccountStatus.ACTIVE constant
+     *
      * @param periodStart Statement period start date
      * @param periodEnd Statement period end date
      * @param lastAccountId Last processed account ID (exclusive)
      * @param pageable Pagination parameters
      * @return Page of active Account entities after the specified ID
      */
-    @Query("SELECT a FROM Account a JOIN FETCH a.customer WHERE a.activeStatus = 'Y' AND a.openDate <= :periodEnd AND a.accountId > :lastAccountId ORDER BY a.accountId ASC")
+    @Query("SELECT a FROM Account a JOIN FETCH a.customer WHERE a.activeStatus = 'A' AND a.openDate <= :periodEnd AND a.accountId > :lastAccountId ORDER BY a.accountId ASC")
     Page<Account> findActiveAccountsForStatementPeriodAfterAccountId(
             @Param("periodEnd") java.time.LocalDate periodEnd,
             @Param("lastAccountId") Long lastAccountId,

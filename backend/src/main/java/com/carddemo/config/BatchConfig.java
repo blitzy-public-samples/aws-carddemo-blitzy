@@ -28,6 +28,7 @@
  */
 package com.carddemo.config;
 
+import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
 import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
@@ -59,6 +60,11 @@ import java.util.Map;
 /**
  * BatchConfig - Spring Batch Infrastructure Configuration
  * 
+ * @EnableBatchProcessing annotation disables Spring Boot's auto-configuration
+ * for Spring Batch, allowing us to define custom JobLauncher and JobRepository
+ * beans without conflicts. This is necessary for asynchronous batch job execution
+ * required by Kubernetes CronJobs.
+ * 
  * Provides comprehensive Spring Batch configuration for migrated COBOL batch programs:
  * - CBACT01C (Account data load) → AccountDataLoadJob
  * - CBACT02C (Account cross-reference) → AccountXrefBuildJob
@@ -83,6 +89,11 @@ import java.util.Map;
  * - Skippable errors: Skip up to 100 records before job failure
  * - Fatal errors: Immediate job failure with rollback
  * - All errors logged with full context for troubleshooting
+ * 
+ * Spring Boot 3.x Configuration Note:
+ * We do NOT use @EnableBatchProcessing to avoid conflicts with JPA auto-configuration.
+ * Instead, we define custom JobLauncher beans with unique names that won't conflict
+ * with Spring Boot's auto-configured jobLauncher bean.
  */
 @Configuration
 public class BatchConfig {
@@ -155,14 +166,17 @@ public class BatchConfig {
      */
 
     /**
-     * JobLauncher Bean - Asynchronous job launcher for batch execution.
+     * Async JobLauncher Bean - Asynchronous job launcher for production batch execution.
+     * 
+     * Named "asyncJobLauncher" to avoid conflict with Spring Boot's auto-configured "jobLauncher".
+     * This bean is marked as @Primary so it will be injected by default in non-test profiles.
      * 
      * Enables asynchronous batch job execution in background threads, allowing
      * Kubernetes CronJobs to trigger jobs without blocking the main application thread.
      * 
      * Configuration:
      * - Task executor: SimpleAsyncTaskExecutor for background execution
-     * - Job repository: Database-backed repository for execution tracking
+     * - Job repository: Database-backed repository (auto-configured by Spring Boot)
      * 
      * Used by Kubernetes CronJobs to launch batch jobs:
      * - account-data-load-cronjob.yaml
@@ -171,14 +185,14 @@ public class BatchConfig {
      * - statement-generation-cronjob.yaml
      * - And 7 additional batch job CronJobs
      * 
-     * @param jobRepository JobRepository for tracking job execution
+     * @param jobRepository JobRepository for tracking job execution (auto-configured)
      * @return JobLauncher configured for asynchronous execution
      * @throws Exception if JobLauncher initialization fails
      */
-    @Bean
+    @Bean("asyncJobLauncher")
     @Primary
     @Profile("!test")
-    public JobLauncher jobLauncher(JobRepository jobRepository) throws Exception {
+    public JobLauncher asyncJobLauncher(JobRepository jobRepository) throws Exception {
         TaskExecutorJobLauncher jobLauncher = new TaskExecutorJobLauncher();
         jobLauncher.setJobRepository(jobRepository);
         
@@ -192,23 +206,26 @@ public class BatchConfig {
     }
 
     /**
-     * JobLauncher Bean - Synchronous job launcher for test execution.
+     * Sync JobLauncher Bean - Synchronous job launcher for test execution.
+     * 
+     * Named "syncJobLauncher" to avoid conflict with Spring Boot's auto-configured "jobLauncher".
+     * This bean is marked as @Primary in test profile so it will be injected by default in tests.
      * 
      * Provides synchronous job execution for Spring Batch tests to ensure
      * JobExecution is fully completed before assertions are evaluated.
      * 
      * Configuration:
      * - Task executor: null (synchronous execution on calling thread)
-     * - Job repository: Database-backed repository for execution tracking
+     * - Job repository: Database-backed repository (auto-configured by Spring Boot)
      * 
-     * @param jobRepository JobRepository for tracking job execution
+     * @param jobRepository JobRepository for tracking job execution (auto-configured)
      * @return JobLauncher configured for synchronous execution in tests
      * @throws Exception if JobLauncher initialization fails
      */
-    @Bean("jobLauncher")
+    @Bean("syncJobLauncher")
     @Primary
     @Profile("test")
-    public JobLauncher testJobLauncher(JobRepository jobRepository) throws Exception {
+    public JobLauncher syncJobLauncher(JobRepository jobRepository) throws Exception {
         TaskExecutorJobLauncher jobLauncher = new TaskExecutorJobLauncher();
         jobLauncher.setJobRepository(jobRepository);
         

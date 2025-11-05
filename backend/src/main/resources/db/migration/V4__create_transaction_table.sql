@@ -61,7 +61,7 @@ CREATE TABLE transaction (
     
     -- From CVTRA05Y.cpy: TRAN-MERCHANT-ID PIC 9(09)
     -- Merchant identification number (9 digits)
-    merchant_id VARCHAR(9),
+    merchant_id BIGINT,
     
     -- From CVTRA05Y.cpy: TRAN-MERCHANT-NAME PIC X(50)
     -- Merchant business name
@@ -303,7 +303,7 @@ CREATE TRIGGER trg_transaction_updated_at
 -- TRAN-SOURCE             | transaction_source          | VARCHAR(10)
 -- TRAN-DESC               | transaction_description     | VARCHAR(100)
 -- TRAN-AMT                | transaction_amount          | NUMERIC(11,2), was S9(09)V99
--- TRAN-MERCHANT-ID        | merchant_id                 | VARCHAR(9)
+-- TRAN-MERCHANT-ID        | merchant_id                 | BIGINT, was PIC 9(09)
 -- TRAN-MERCHANT-NAME      | merchant_name               | VARCHAR(50)
 -- TRAN-MERCHANT-CITY      | merchant_city               | VARCHAR(50)
 -- TRAN-MERCHANT-ZIP       | merchant_zip                | VARCHAR(10)

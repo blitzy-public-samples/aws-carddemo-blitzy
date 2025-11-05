@@ -47,12 +47,14 @@ CREATE TABLE card_xref (
     -- Customer ID (9 digits) - Second component of composite key
     -- Source: CVACT03Y.cpy - XREF-CUST-ID PIC 9(09)
     -- Links card to owning customer
-    customer_id VARCHAR(9) NOT NULL,
+    -- Migration Note: Changed from VARCHAR(9) to BIGINT to match Long type in CardXref.java entity
+    customer_id BIGINT NOT NULL,
     
     -- Account ID (11 digits) - Third component of composite key
     -- Source: CVACT03Y.cpy - XREF-ACCT-ID PIC 9(11)
     -- Links card to specific account
-    account_id VARCHAR(11) NOT NULL,
+    -- Migration Note: Changed from VARCHAR(11) to BIGINT to match Long type in CardXref.java entity
+    account_id BIGINT NOT NULL,
     
     -- Audit timestamp - Record creation time
     -- Not in COBOL copybook - added for audit trail compliance
@@ -94,11 +96,13 @@ COMMENT ON COLUMN card_xref.updated_at IS 'Record last update timestamp. Added f
 CREATE TABLE account_xref (
     -- Customer ID (9 digits) - First component of composite key
     -- Links to customer table primary key
-    customer_id VARCHAR(9) NOT NULL,
+    -- Migration Note: Changed from VARCHAR(9) to BIGINT to match Long type in AccountXref.java entity
+    customer_id BIGINT NOT NULL,
     
     -- Account ID (11 digits) - Second component of composite key
     -- Links to account table primary key
-    account_id VARCHAR(11) NOT NULL,
+    -- Migration Note: Changed from VARCHAR(11) to BIGINT to match Long type in AccountXref.java entity
+    account_id BIGINT NOT NULL,
     
     -- Relationship type describing customer-account relationship
     -- Valid values: PRIMARY, SECONDARY, AUTHORIZED_USER
@@ -107,11 +111,13 @@ CREATE TABLE account_xref (
     
     -- Audit timestamp - Record creation time
     -- Added for audit trail compliance and relationship tracking
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- Migration Note: Changed from created_at to created_date to match AccountXref.java entity field name
+    created_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     
     -- Audit timestamp - Last update time
     -- Added for audit trail compliance and change tracking
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- Migration Note: Changed from updated_at to updated_date to match AccountXref.java entity field name
+    updated_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     
     -- Composite primary key ensuring unique customer-account pairs
     -- Prevents duplicate relationships in the system
@@ -130,8 +136,8 @@ COMMENT ON TABLE account_xref IS 'Cross-reference table mapping customers to acc
 COMMENT ON COLUMN account_xref.customer_id IS 'Customer ID (9 digits). References customer.customer_id. First component of composite primary key.';
 COMMENT ON COLUMN account_xref.account_id IS 'Account ID (11 digits). References account.account_id. Second component of composite primary key.';
 COMMENT ON COLUMN account_xref.relationship_type IS 'Type of customer-account relationship. Valid values: PRIMARY (primary account holder), SECONDARY (secondary holder), AUTHORIZED_USER (authorized user). Defaults to PRIMARY.';
-COMMENT ON COLUMN account_xref.created_at IS 'Timestamp when customer-account relationship was created. Audit trail field.';
-COMMENT ON COLUMN account_xref.updated_at IS 'Timestamp when relationship was last modified. Audit trail field for tracking relationship changes.';
+COMMENT ON COLUMN account_xref.created_date IS 'Timestamp when customer-account relationship was created. Audit trail field.';
+COMMENT ON COLUMN account_xref.updated_date IS 'Timestamp when relationship was last modified. Audit trail field for tracking relationship changes.';
 
 
 -- ==============================================================================
@@ -149,7 +155,8 @@ CREATE TABLE transaction_category_balance (
     -- Account ID (11 digits) - First component of composite key
     -- Source: CVTRA01Y.cpy - TRANCAT-ACCT-ID PIC 9(11)
     -- Links to account table for balance aggregation
-    account_id VARCHAR(11) NOT NULL,
+    -- Migration Note: Changed from VARCHAR(11) to BIGINT to match Long type in entity
+    account_id BIGINT NOT NULL,
     
     -- Transaction type code (2 characters) - Second component of composite key
     -- Source: CVTRA01Y.cpy - TRANCAT-TYPE-CD PIC X(02)

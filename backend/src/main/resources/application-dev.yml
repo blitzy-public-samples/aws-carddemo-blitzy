@@ -41,8 +41,8 @@ spring:
   # Equivalent to VSAM file allocation in JCL with local development access
   datasource:
     url: jdbc:postgresql://localhost:5432/carddemo_dev
-    username: devuser
-    password: devpass
+    username: carddemo
+    password: carddemo123
     driver-class-name: org.postgresql.Driver
     
     # HikariCP Connection Pool Settings (Development - smaller pool)
@@ -93,9 +93,8 @@ spring:
         # Statistics for performance analysis
         generate_statistics: true
         
-        # Enhanced logging
+        # Enhanced logging (note: format_sql already set above at line 71)
         show_sql: true
-        format_sql: true
     
     # Disable open-in-view to catch lazy loading issues early
     open-in-view: false
@@ -203,9 +202,11 @@ spring:
   # ===================================================================
   # Batch Processing Configuration
   # ===================================================================
+  # NOTE: Job auto-execution disabled to prevent startup conflicts
+  # Batch jobs should be triggered via scheduled tasks or manual execution
   batch:
     job:
-      enabled: true
+      enabled: false
     jdbc:
       initialize-schema: always
       table-prefix: BATCH_

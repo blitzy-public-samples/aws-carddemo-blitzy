@@ -869,6 +869,39 @@ public class SecurityConfig {
     }
     
     /**
+     * Configures DaoAuthenticationProvider with custom UserDetailsService and PasswordEncoder.
+     * 
+     * <p>This bean explicitly connects our CustomUserDetailsService and BCryptPasswordEncoder
+     * to the authentication flow, ensuring that Spring Security uses BCrypt for password
+     * verification instead of the default DelegatingPasswordEncoder.</p>
+     * 
+     * <p><strong>Why This is Necessary:</strong></p>
+     * <p>Spring Security 5.0+ defaults to using DelegatingPasswordEncoder, which expects
+     * passwords to be prefixed with the algorithm ID like {@code {bcrypt}$2a$...} or
+     * {@code {noop}plaintext}. Our BCrypt passwords start with {@code $2a$...} without
+     * the {@code {bcrypt}} prefix, so we need to explicitly configure the authentication
+     * provider to use BCryptPasswordEncoder directly.</p>
+     * 
+     * @param userDetailsService the CustomUserDetailsService for loading user data
+     * @param passwordEncoder the BCryptPasswordEncoder for password verification
+     * @return DaoAuthenticationProvider configured for CardDemo authentication
+     * 
+     * @see CustomUserDetailsService
+     * @see #passwordEncoder()
+     * @see org.springframework.security.authentication.dao.DaoAuthenticationProvider
+     */
+    @Bean
+    public org.springframework.security.authentication.dao.DaoAuthenticationProvider authenticationProvider(
+            CustomUserDetailsService userDetailsService,
+            PasswordEncoder passwordEncoder) {
+        org.springframework.security.authentication.dao.DaoAuthenticationProvider authProvider = 
+            new org.springframework.security.authentication.dao.DaoAuthenticationProvider();
+        authProvider.setUserDetailsService(userDetailsService);
+        authProvider.setPasswordEncoder(passwordEncoder);
+        return authProvider;
+    }
+    
+    /**
      * Provides AuthenticationManager bean for processing authentication requests.
      * 
      * <p>The AuthenticationManager is the core component of Spring Security's authentication

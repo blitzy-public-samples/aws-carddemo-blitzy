@@ -439,19 +439,18 @@ class AccountUpdateServiceTest {
         when(customerRepository.findByCustomerId(eq(987654321L))).thenReturn(Optional.of(testCustomer));
         when(accountRepository.save(any(Account.class))).thenReturn(testAccount);
 
-        // Test valid phone number format
+        // Test valid phone number format (pre-formatted)
         validUpdateRequest.setPhoneNumber1("(312)555-7890");
         AccountViewResponse updatedAccount = accountUpdateService.updateAccount(validUpdateRequest);
         assertThat(updatedAccount.getPhone1()).isEqualTo("(312)555-7890");
 
-        // Test invalid format - missing parentheses
+        // Test auto-formatting of 10-digit phone number (REST API convenience feature)
+        // Service auto-formats to (XXX)XXX-XXXX matching COBOL WS-EDIT-US-PHONE-NUM structure
         validUpdateRequest.setPhoneNumber1("3125557890");
-        assertThatThrownBy(() -> accountUpdateService.updateAccount(validUpdateRequest))
-            .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("phone")
-            .hasMessageContaining("format");
+        updatedAccount = accountUpdateService.updateAccount(validUpdateRequest);
+        assertThat(updatedAccount.getPhone1()).isEqualTo("(312)555-7890");
 
-        // Test invalid format - missing area code
+        // Test invalid format - missing area code (too short)
         validUpdateRequest.setPhoneNumber1("555-1234");
         assertThatThrownBy(() -> accountUpdateService.updateAccount(validUpdateRequest))
             .isInstanceOf(IllegalArgumentException.class)

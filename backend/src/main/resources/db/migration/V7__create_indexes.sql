@@ -40,16 +40,12 @@ ON customer(ssn);
 CREATE INDEX idx_customer_dob 
 ON customer(date_of_birth);
 
--- Customer status for active customer filtering
--- Supports: Active vs inactive customer queries
--- Usage Pattern: SELECT * FROM customer WHERE customer_status = 'A'
-CREATE INDEX idx_customer_status 
-ON customer(customer_status);
+-- NOTE: customer_status index removed - no status field exists in original COBOL CUSTOMER-RECORD (CVCUS01Y.cpy)
+-- The original COBOL structure does not include a customer status field
 
 COMMENT ON INDEX idx_customer_name IS 'Customer name lookup - supports COBOL PERFORM VARYING search patterns';
 COMMENT ON INDEX idx_customer_ssn IS 'SSN lookup - equivalent to VSAM alternate index';
 COMMENT ON INDEX idx_customer_dob IS 'Date of birth range queries - batch reporting support';
-COMMENT ON INDEX idx_customer_status IS 'Active customer filtering - list operations';
 
 -- =====================================================================================
 -- SECTION 2: ACCOUNT TABLE INDEXES
@@ -59,37 +55,17 @@ COMMENT ON INDEX idx_customer_status IS 'Active customer filtering - list operat
 -- Primary Key: account_id (11-character account number)
 -- =====================================================================================
 
--- Account-to-customer foreign key lookup
--- Supports: Retrieve all accounts for a customer (COACTVWC.cbl)
--- Usage Pattern: SELECT * FROM account WHERE customer_id = ?
--- Performance Critical: Used in account list display (7 accounts per page pagination)
-CREATE INDEX idx_account_customer 
-ON account(customer_id);
-
--- Account status for filtering active/closed accounts
--- Supports: Active account queries and administrative functions
--- Usage Pattern: SELECT * FROM account WHERE account_status IN ('A', 'C')
-CREATE INDEX idx_account_status 
-ON account(account_status);
-
--- Account group classification
--- Supports: Account grouping and category-based operations (CVACT02Y.cpy)
--- Usage Pattern: SELECT * FROM account WHERE account_group_id = ?
-CREATE INDEX idx_account_group 
-ON account(account_group_id);
+-- NOTE: Following indexes already created in V2__create_account_table.sql:
+--   - idx_account_customer_id ON account(customer_id) - FK lookup
+--   - idx_active_status ON account(active_status) - status filtering
+--   - idx_account_customer_status ON account(customer_id, active_status) - composite
+--   - idx_account_group_id ON account(account_group_id) - group classification
 
 -- Account open date for reporting and aging analysis
 -- Supports: Batch processing date range queries (CBACT03C.cbl)
--- Usage Pattern: SELECT * FROM account WHERE account_open_date BETWEEN ? AND ?
+-- Usage Pattern: SELECT * FROM account WHERE open_date BETWEEN ? AND ?
 CREATE INDEX idx_account_open_date 
-ON account(account_open_date);
-
--- Composite index for customer account list with status filtering
--- Replicates: VSAM CXACAIX cross-reference file access pattern
--- Supports: Account list by customer with status filter (most common query pattern)
--- Usage Pattern: SELECT * FROM account WHERE customer_id = ? AND account_status = 'A'
-CREATE INDEX idx_account_customer_status 
-ON account(customer_id, account_status);
+ON account(open_date);
 
 -- Account balance lookup for financial operations
 -- Supports: Balance queries and threshold-based filtering
@@ -97,11 +73,7 @@ ON account(customer_id, account_status);
 CREATE INDEX idx_account_balance 
 ON account(current_balance);
 
-COMMENT ON INDEX idx_account_customer IS 'Customer-to-accounts FK lookup - VSAM XREF equivalent';
-COMMENT ON INDEX idx_account_status IS 'Account status filtering - active/closed distinction';
-COMMENT ON INDEX idx_account_group IS 'Account grouping - category classification';
 COMMENT ON INDEX idx_account_open_date IS 'Account aging analysis - batch processing support';
-COMMENT ON INDEX idx_account_customer_status IS 'Composite VSAM AIX equivalent - primary access pattern';
 COMMENT ON INDEX idx_account_balance IS 'Balance-based queries - financial reporting';
 
 -- =====================================================================================
@@ -113,49 +85,38 @@ COMMENT ON INDEX idx_account_balance IS 'Balance-based queries - financial repor
 -- Primary Key: card_number (16-digit card number)
 -- =====================================================================================
 
--- Card-to-account foreign key lookup
--- Supports: Retrieve all cards for an account (COCRDLIC.cbl - card list display)
--- Usage Pattern: SELECT * FROM card WHERE account_id = ?
--- Performance Critical: Card list pagination (7 cards per page)
-CREATE INDEX idx_card_account 
-ON card(account_id);
+-- NOTE: Following indexes already created in V3__create_card_table.sql:
+--   - idx_card_account_id ON card(account_id) - FK lookup for card list display
+--   - idx_card_status_expiry ON card(active_status, expiration_date) - composite
 
--- Card status for active/expired/blocked filtering
+-- Additional card status index for standalone status queries
 -- Supports: Card status validation and administrative operations (COCRDUPC.cbl)
--- Usage Pattern: SELECT * FROM card WHERE card_status = 'A'
+-- Usage Pattern: SELECT * FROM card WHERE active_status = 'A'
 CREATE INDEX idx_card_status 
-ON card(card_status);
+ON card(active_status);
 
--- Card expiration date for renewal processing
+-- Additional card expiration index for standalone expiration queries
 -- Supports: Batch expiration detection and renewal notifications
--- Usage Pattern: SELECT * FROM card WHERE card_expiration_date < CURRENT_DATE
+-- Usage Pattern: SELECT * FROM card WHERE expiration_date < CURRENT_DATE
 CREATE INDEX idx_card_expiration 
-ON card(card_expiration_date);
+ON card(expiration_date);
 
 -- Composite index replicating VSAM AIX (Alternate Index)
 -- VSAM AIX Definition: KEYLEN=11 (account_id), RKP=5, AXRKP=16
 -- Supports: Card lookup by account with status filter (primary COBOL access pattern)
--- Usage Pattern: SELECT * FROM card WHERE account_id = ? AND card_status = 'A'
+-- Usage Pattern: SELECT * FROM card WHERE account_id = ? AND active_status = 'A'
 CREATE INDEX idx_card_account_status 
-ON card(account_id, card_status);
-
--- Card type classification for product categorization
--- Supports: Card type filtering (credit, debit, prepaid)
--- Usage Pattern: SELECT * FROM card WHERE card_type = 'C'
-CREATE INDEX idx_card_type 
-ON card(card_type);
+ON card(account_id, active_status);
 
 -- Cardholder name for search and verification
 -- Supports: Name-based card lookup
--- Usage Pattern: SELECT * FROM card WHERE cardholder_name LIKE ?
+-- Usage Pattern: SELECT * FROM card WHERE embossed_name LIKE ?
 CREATE INDEX idx_card_holder_name 
-ON card(cardholder_name);
+ON card(embossed_name);
 
-COMMENT ON INDEX idx_card_account IS 'Account-to-cards FK lookup - card list display';
 COMMENT ON INDEX idx_card_status IS 'Card status filtering - active/blocked/expired';
 COMMENT ON INDEX idx_card_expiration IS 'Expiration date lookup - renewal batch processing';
 COMMENT ON INDEX idx_card_account_status IS 'VSAM AIX replication - primary card access pattern';
-COMMENT ON INDEX idx_card_type IS 'Card type classification - product filtering';
 COMMENT ON INDEX idx_card_holder_name IS 'Cardholder name search - verification support';
 
 -- =====================================================================================
@@ -166,50 +127,19 @@ COMMENT ON INDEX idx_card_holder_name IS 'Cardholder name search - verification 
 -- Primary Key: transaction_id (16-character transaction identifier)
 -- =====================================================================================
 
--- Transaction-to-card foreign key lookup
--- Supports: Retrieve all transactions for a card (COTRN00C.cbl - transaction list)
--- Usage Pattern: SELECT * FROM transaction WHERE card_number = ? ORDER BY transaction_timestamp DESC
--- Performance Critical: Transaction pagination (10 transactions per page)
-CREATE INDEX idx_transaction_card 
-ON transaction(card_number);
-
--- Transaction timestamp for chronological ordering
--- Supports: Recent transaction queries and date range filtering
--- Usage Pattern: SELECT * FROM transaction ORDER BY transaction_timestamp DESC LIMIT 10
--- Descending order optimizes recent transaction retrieval
-CREATE INDEX idx_transaction_timestamp 
-ON transaction(transaction_timestamp DESC);
-
--- Composite index for card transaction history with pagination
--- Supports: Primary transaction list query pattern (COTRN00C.cbl)
--- Usage Pattern: SELECT * FROM transaction WHERE card_number = ? ORDER BY transaction_timestamp DESC LIMIT 10 OFFSET ?
--- Critical Path: <200ms response time requirement
-CREATE INDEX idx_transaction_card_date 
-ON transaction(card_number, transaction_timestamp DESC);
-
--- Transaction type code for categorization
--- Supports: Transaction type filtering (CVTRA02Y.cpy reference data)
--- Usage Pattern: SELECT * FROM transaction WHERE transaction_type_code = 'PURCHASE'
-CREATE INDEX idx_transaction_type 
-ON transaction(transaction_type_code);
-
--- Transaction category code for aggregation
--- Supports: Category-based reporting (COTRN01C.cbl - category summary)
--- Usage Pattern: SELECT transaction_category_code, SUM(transaction_amount) FROM transaction GROUP BY transaction_category_code
-CREATE INDEX idx_transaction_category 
-ON transaction(transaction_category_code);
+-- NOTE: Following indexes already created in V4__create_transaction_table.sql:
+--   - idx_transaction_timestamp ON transaction(transaction_timestamp DESC)
+--   - idx_transaction_card_number ON transaction(card_number)
+--   - idx_transaction_card_timestamp ON transaction(card_number, transaction_timestamp DESC)
+--   - idx_transaction_type_code ON transaction(transaction_type_code)
+--   - idx_transaction_category_code ON transaction(transaction_category_code)
+--   - idx_transaction_card_amount ON transaction(card_number, transaction_amount)
 
 -- Merchant identifier for merchant-based queries
 -- Supports: Merchant transaction analysis and reporting
 -- Usage Pattern: SELECT * FROM transaction WHERE merchant_id = ?
 CREATE INDEX idx_transaction_merchant 
 ON transaction(merchant_id);
-
--- Account-based transaction lookup (via card-account relationship)
--- Supports: Account transaction history across all cards
--- Usage Pattern: SELECT t.* FROM transaction t JOIN card c ON t.card_number = c.card_number WHERE c.account_id = ?
-CREATE INDEX idx_transaction_account_lookup 
-ON transaction(card_number, transaction_timestamp DESC, transaction_id);
 
 -- Transaction amount for threshold-based queries
 -- Supports: Large transaction detection and financial analysis
@@ -220,25 +150,13 @@ ON transaction(transaction_amount);
 -- Transaction date for batch processing date ranges
 -- Supports: Daily batch transaction processing (CBTRN02C.cbl)
 -- Usage Pattern: SELECT * FROM transaction WHERE transaction_timestamp::date = ?
+-- Functional index extracts date component for batch processing
 CREATE INDEX idx_transaction_date 
 ON transaction((transaction_timestamp::date));
 
--- Authorization code lookup for transaction verification
--- Supports: Authorization code validation and dispute resolution
--- Usage Pattern: SELECT * FROM transaction WHERE authorization_code = ?
-CREATE INDEX idx_transaction_auth_code 
-ON transaction(authorization_code);
-
-COMMENT ON INDEX idx_transaction_card IS 'Card-to-transactions FK lookup - primary access path';
-COMMENT ON INDEX idx_transaction_timestamp IS 'Chronological ordering - recent transactions first';
-COMMENT ON INDEX idx_transaction_card_date IS 'Composite pagination index - VSAM sequential read equivalent';
-COMMENT ON INDEX idx_transaction_type IS 'Transaction type filtering - CVTRA02Y reference';
-COMMENT ON INDEX idx_transaction_category IS 'Category aggregation - COTRN01C category summary';
 COMMENT ON INDEX idx_transaction_merchant IS 'Merchant transaction analysis';
-COMMENT ON INDEX idx_transaction_account_lookup IS 'Account transaction history - cross-card queries';
 COMMENT ON INDEX idx_transaction_amount IS 'Amount-based filtering - large transaction detection';
 COMMENT ON INDEX idx_transaction_date IS 'Daily batch processing - CBTRN02C.cbl support';
-COMMENT ON INDEX idx_transaction_auth_code IS 'Authorization verification - dispute resolution';
 
 -- =====================================================================================
 -- SECTION 5: USER SECURITY TABLE INDEXES
@@ -248,35 +166,20 @@ COMMENT ON INDEX idx_transaction_auth_code IS 'Authorization verification - disp
 -- Primary Key: user_id (8-character user identifier)
 -- =====================================================================================
 
+-- NOTE: Following indexes already created in V5__create_user_security_table.sql:
+--   - idx_user_type ON user_security(user_type)
+--   - idx_user_active_status ON user_security(enabled, account_non_locked) WHERE enabled = true AND account_non_locked = true
+--   - idx_user_last_login ON user_security(last_login_at)
+
 -- Username unique lookup for authentication
 -- Supports: Login authentication (COSGN00C.cbl sign-on processing)
 -- Usage Pattern: SELECT * FROM user_security WHERE username = ?
 -- Performance Critical: Authentication must complete in <100ms
+-- NEW INDEX: Not created in V5, essential for authentication
 CREATE UNIQUE INDEX idx_user_username 
 ON user_security(username);
 
--- User type for role-based access control
--- Supports: Role filtering (Regular 'R' vs Administrative 'A' users)
--- Usage Pattern: SELECT * FROM user_security WHERE user_type = 'A'
-CREATE INDEX idx_user_type 
-ON user_security(user_type);
-
--- User status for active user filtering
--- Supports: Active vs inactive user account management
--- Usage Pattern: SELECT * FROM user_security WHERE user_status = 'A'
-CREATE INDEX idx_user_status 
-ON user_security(user_status);
-
--- Last login timestamp for security monitoring
--- Supports: Inactive account detection and security auditing
--- Usage Pattern: SELECT * FROM user_security WHERE last_login_timestamp < (CURRENT_TIMESTAMP - INTERVAL '90 days')
-CREATE INDEX idx_user_last_login 
-ON user_security(last_login_timestamp);
-
 COMMENT ON INDEX idx_user_username IS 'Unique username lookup - authentication critical path';
-COMMENT ON INDEX idx_user_type IS 'Role-based filtering - Regular vs Admin distinction';
-COMMENT ON INDEX idx_user_status IS 'Active user filtering - account management';
-COMMENT ON INDEX idx_user_last_login IS 'Inactive account detection - security monitoring';
 
 -- =====================================================================================
 -- SECTION 6: CARD CROSS-REFERENCE TABLE INDEXES

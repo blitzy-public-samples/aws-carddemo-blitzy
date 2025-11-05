@@ -41,7 +41,7 @@ DROP TABLE IF EXISTS transaction_type CASCADE;
 -- ---------------------------------------------------------------------
 
 CREATE TABLE transaction_type (
-    transaction_type_code CHAR(2) NOT NULL,
+    transaction_type_code VARCHAR(2) NOT NULL,
     type_description VARCHAR(50) NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -63,8 +63,8 @@ COMMENT ON COLUMN transaction_type.type_description IS 'Transaction type descrip
 -- ---------------------------------------------------------------------
 
 CREATE TABLE transaction_category (
-    transaction_category_code CHAR(6) NOT NULL,
-    transaction_type_code CHAR(2) NOT NULL,
+    transaction_category_code VARCHAR(6) NOT NULL,
+    transaction_type_code VARCHAR(2) NOT NULL,
     category_description VARCHAR(50) NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

@@ -15,11 +15,26 @@ import com.carddemo.batch.job.StatementGenerationJob;
 import com.carddemo.batch.job.TransactionAggregationJob;
 import com.carddemo.batch.job.TransactionDataLoadJob;
 import com.carddemo.entity.Account;
+import com.carddemo.entity.AccountGroup;
+import com.carddemo.entity.Card;
 import com.carddemo.entity.Customer;
+import com.carddemo.entity.DailyTransactionStaging;
 import com.carddemo.entity.Transaction;
+import com.carddemo.entity.TransactionAggregate;
+import com.carddemo.entity.TransactionCategory;
+import com.carddemo.entity.TransactionType;
+import com.carddemo.repository.AccountBalanceRepository;
+import com.carddemo.repository.AccountGroupRepository;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.AccountXrefRepository;
+import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.CustomerRepository;
+import com.carddemo.repository.DailyTransactionStagingRepository;
+import com.carddemo.repository.TransactionAggregateRepository;
+import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionTypeRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -36,8 +51,10 @@ import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -175,7 +192,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 @SpringBootTest
 @SpringBatchTest
 @Testcontainers
-@Transactional
+@ActiveProfiles("test")
+@Transactional(propagation = Propagation.NOT_SUPPORTED)
 public class BatchProcessingIntegrationTest {
 
     /**
@@ -256,7 +274,34 @@ public class BatchProcessingIntegrationTest {
     private AccountRepository accountRepository;
 
     @Autowired
+    private AccountBalanceRepository accountBalanceRepository;
+
+    @Autowired
+    private AccountXrefRepository accountXrefRepository;
+
+    @Autowired
+    private TransactionAggregateRepository transactionAggregateRepository;
+
+    @Autowired
     private TransactionRepository transactionRepository;
+
+    @Autowired
+    private CardRepository cardRepository;
+
+    @Autowired
+    private CardXrefRepository cardXrefRepository;
+
+    @Autowired
+    private TransactionTypeRepository transactionTypeRepository;
+
+    @Autowired
+    private TransactionCategoryRepository transactionCategoryRepository;
+
+    @Autowired
+    private AccountGroupRepository accountGroupRepository;
+
+    @Autowired
+    private DailyTransactionStagingRepository dailyTransactionStagingRepository;
 
     @Autowired
     private JobRepositoryTestUtils jobRepositoryTestUtils;
@@ -271,41 +316,139 @@ public class BatchProcessingIntegrationTest {
         // Clean Spring Batch job metadata to prevent conflicts
         jobRepositoryTestUtils.removeJobExecutions();
 
-        // Clean all repositories
+        // Clean all repositories (order matters due to foreign key constraints)
         transactionRepository.deleteAll();
+        transactionAggregateRepository.deleteAll();  // Delete before accounts
+        cardXrefRepository.deleteAll();  // Delete before cards
+        cardRepository.deleteAll();
+        accountBalanceRepository.deleteAll();  // Delete before accounts
+        accountXrefRepository.deleteAll();  // Delete before accounts
         accountRepository.deleteAll();
         customerRepository.deleteAll();
+        accountGroupRepository.deleteAll();  // Delete account groups
+        transactionCategoryRepository.deleteAll();
+        transactionTypeRepository.deleteAll();
 
         // Create test customers (matching app/data/ASCII/custdata.txt)
         Customer customer1 = createTestCustomer(1000000001L, "John", "Doe", "FICO", "777");
         Customer customer2 = createTestCustomer(1000000002L, "Jane", "Smith", "FICO", "811");
         Customer customer3 = createTestCustomer(1000000003L, "Robert", "Johnson", "FICO", "699");
         
-        customerRepository.saveAll(Arrays.asList(customer1, customer2, customer3));
+        // Save customers and capture the managed entities returned by saveAll()
+        List<Customer> savedCustomers = customerRepository.saveAll(Arrays.asList(customer1, customer2, customer3));
+        customer1 = savedCustomers.get(0);
+        customer2 = savedCustomers.get(1);
+        customer3 = savedCustomers.get(2);
 
         // Create test accounts (matching app/data/ASCII/acctdata.txt)
-        Account account1 = createTestAccount(10000000001L, customer1, "Y", 
-                new BigDecimal("5000.00"), new BigDecimal("10000.00"));
-        Account account2 = createTestAccount(10000000002L, customer1, "Y", 
-                new BigDecimal("2500.50"), new BigDecimal("5000.00"));
-        Account account3 = createTestAccount(10000000003L, customer2, "Y", 
-                new BigDecimal("15000.75"), new BigDecimal("25000.00"));
+        // CRITICAL: Active status must be "A" (not "Y") for DailyTransactionProcessor validation
+        // DailyTransactionProcessor.ACTIVE_STATUS constant is "A" (line 111)
+        Account account1 = createTestAccount(10000000001L, customer1, "A", 
+                new BigDecimal("5000.00"), new BigDecimal("10000.00"), "GROUP00001");
+        Account account2 = createTestAccount(10000000002L, customer1, "A", 
+                new BigDecimal("2500.50"), new BigDecimal("5000.00"), "GROUP00001");
+        Account account3 = createTestAccount(10000000003L, customer2, "A", 
+                new BigDecimal("15000.75"), new BigDecimal("25000.00"), "GROUP00001");
         Account account4 = createTestAccount(10000000004L, customer3, "N", 
-                new BigDecimal("100.00"), new BigDecimal("1000.00"));
+                new BigDecimal("100.00"), new BigDecimal("1000.00"), "GROUP00001");
         
         accountRepository.saveAll(Arrays.asList(account1, account2, account3, account4));
 
+        // Create test cards (matching required foreign key for transactions)
+        // CRITICAL: Card numbers must have first 11 digits = account ID for DailyTransactionProcessor validation
+        // DailyTransactionProcessor.extractAccountIdFromCardNumber() extracts first 11 digits as account ID
+        // This matches COBOL XREF-FILE structure where XREF-CARD-NUM maps to XREF-ACCT-ID
+        Card card1 = createTestCard("1000000000100001", account1, "123", "John Doe", "Y");
+        Card card2 = createTestCard("1000000000200002", account2, "456", "John Doe", "Y");
+        Card card3 = createTestCard("1000000000300003", account3, "789", "Jane Smith", "Y");
+        Card card4 = createTestCard("1000000000400004", account4, "321", "Robert Johnson", "N");
+        
+        cardRepository.saveAll(Arrays.asList(card1, card2, card3, card4));
+
+        // Create test transaction type and category (matching required foreign keys for transactions)
+        TransactionType transactionType = new TransactionType();
+        transactionType.setTypeCode("01"); // Type code matching first 2 chars of category code
+        transactionType.setTypeDescription("Purchase");
+        transactionTypeRepository.save(transactionType);
+
+        TransactionCategory transactionCategory = new TransactionCategory();
+        transactionCategory.setCategoryCode("011001"); // 6-character category code (first 2 chars = "01")
+        transactionCategory.setTypeCode("01"); // Must match first 2 chars of categoryCode
+        transactionCategory.setCategoryDescription("Groceries");
+        transactionCategoryRepository.save(transactionCategory);
+
+        // Create interest transaction category (required by InterestCalculationProcessor)
+        // The processor uses hardcoded category code "010005" for all interest transactions
+        TransactionCategory interestCategory = new TransactionCategory();
+        interestCategory.setCategoryCode("010005"); // Interest category code used by InterestCalculationProcessor
+        interestCategory.setTypeCode("01"); // Must match first 2 chars of categoryCode
+        interestCategory.setCategoryDescription("Interest Charges");
+        transactionCategoryRepository.save(interestCategory);
+
+        // Create test AccountGroup (required by InterestCalculationJob)
+        // The processor retrieves the AccountGroup to get the interest rate
+        AccountGroup accountGroup = new AccountGroup();
+        AccountGroup.GroupId groupId = new AccountGroup.GroupId();
+        groupId.setAccountGroupId("GROUP00001"); // Matches account group IDs assigned to test accounts
+        groupId.setTransactionTypeCode("01"); // Matches transaction type code
+        groupId.setTransactionCategoryCode("011001"); // Matches transaction category code
+        accountGroup.setId(groupId);
+        accountGroup.setInterestRate(new BigDecimal("15.99")); // 15.99% annual interest rate (non-zero)
+        accountGroupRepository.save(accountGroup);
+
+        // Create AccountGroup for interest category (required by InterestCalculationProcessor)
+        // The processor looks up interest rate using accountGroupId + type "01" + category "010005"
+        AccountGroup interestAccountGroup = new AccountGroup();
+        AccountGroup.GroupId interestGroupId = new AccountGroup.GroupId();
+        interestGroupId.setAccountGroupId("GROUP00001"); // Matches account group IDs assigned to test accounts
+        interestGroupId.setTransactionTypeCode("01"); // Matches transaction type code
+        interestGroupId.setTransactionCategoryCode("010005"); // Interest category code
+        interestAccountGroup.setId(interestGroupId);
+        interestAccountGroup.setInterestRate(new BigDecimal("15.99")); // 15.99% annual interest rate (non-zero)
+        accountGroupRepository.save(interestAccountGroup);
+
         // Create test transactions (matching app/data/ASCII/transact.txt)
-        Transaction trans1 = createTestTransaction("T00000000001", account1, 
+        // CRITICAL: Card numbers must match the corrected format (account ID in first 11 digits)
+        Transaction trans1 = createTestTransaction("T00000000001", account1, "1000000000100001",
                 new BigDecimal("100.00"), LocalDate.now().minusDays(5), "Purchase");
-        Transaction trans2 = createTestTransaction("T00000000002", account1, 
+        Transaction trans2 = createTestTransaction("T00000000002", account1, "1000000000100001",
                 new BigDecimal("250.50"), LocalDate.now().minusDays(3), "Purchase");
-        Transaction trans3 = createTestTransaction("T00000000003", account2, 
+        Transaction trans3 = createTestTransaction("T00000000003", account2, "1000000000200002",
                 new BigDecimal("50.25"), LocalDate.now().minusDays(2), "Purchase");
-        Transaction trans4 = createTestTransaction("T00000000004", account3, 
+        Transaction trans4 = createTestTransaction("T00000000004", account3, "1000000000300003",
                 new BigDecimal("1000.00"), LocalDate.now().minusDays(1), "Purchase");
         
         transactionRepository.saveAll(Arrays.asList(trans1, trans2, trans3, trans4));
+
+        // Create test TransactionAggregate entities (required by InterestCalculationJob)
+        // These represent aggregated transaction data by account, type, and category
+        TransactionAggregate aggregate1 = createTestTransactionAggregate(
+                account1, transactionType, transactionCategory, new BigDecimal("350.50"), 2);
+        TransactionAggregate aggregate2 = createTestTransactionAggregate(
+                account2, transactionType, transactionCategory, new BigDecimal("50.25"), 1);
+        TransactionAggregate aggregate3 = createTestTransactionAggregate(
+                account3, transactionType, transactionCategory, new BigDecimal("1000.00"), 1);
+        
+        transactionAggregateRepository.saveAll(Arrays.asList(aggregate1, aggregate2, aggregate3));
+
+        // Create test DailyTransactionStaging records (required by DailyTransactionProcessingJob)
+        // The DailyTransactionReader queries this staging table for records with status='PENDING'
+        // These records simulate daily transaction file loads from external systems (COBOL DALYTRAN-FILE)
+        // CRITICAL: Card numbers must match the corrected format (account ID in first 11 digits)
+        DailyTransactionStaging staging1 = createTestDailyTransactionStaging(
+                "S00000000001", "01", "011001", "POS", "Test Purchase 1", 
+                new BigDecimal("75.00"), "1000000000100001", LocalDateTime.now().minusDays(1));
+        DailyTransactionStaging staging2 = createTestDailyTransactionStaging(
+                "S00000000002", "01", "011001", "ONLINE", "Test Purchase 2", 
+                new BigDecimal("125.50"), "1000000000100001", LocalDateTime.now().minusDays(1));
+        DailyTransactionStaging staging3 = createTestDailyTransactionStaging(
+                "S00000000003", "01", "011001", "ATM", "Test Purchase 3", 
+                new BigDecimal("50.00"), "1000000000200002", LocalDateTime.now().minusDays(1));
+        DailyTransactionStaging staging4 = createTestDailyTransactionStaging(
+                "S00000000004", "01", "011001", "POS", "Test Purchase 4", 
+                new BigDecimal("200.00"), "1000000000300003", LocalDateTime.now().minusDays(1));
+        
+        dailyTransactionStagingRepository.saveAll(Arrays.asList(staging1, staging2, staging3, staging4));
     }
 
     /**
@@ -687,13 +830,21 @@ public class BatchProcessingIntegrationTest {
     @DisplayName("Test Statement Generation Job - Monthly Statement Assembly")
     public void testStatementGenerationJob() throws Exception {
         // Given: Active accounts with transactions exist
-        List<Account> activeAccounts = accountRepository.findByActiveStatus("Y");
+        // CRITICAL: Query must use "A" (ACTIVE_STATUS constant) not "Y" 
+        // Account.activeStatus = "A" for active accounts per DailyTransactionProcessor validation
+        List<Account> activeAccounts = accountRepository.findByActiveStatus("A");
         assertTrue(activeAccounts.size() > 0, "Active accounts should exist for statement generation");
 
         // When: Execute statement generation job
+        // CRITICAL: Job requires statementPeriodStart and statementPeriodEnd (not single statementPeriod)
+        // AccountStatementReader expects these as separate job parameters (lines 143-144)
+        LocalDate periodStart = LocalDate.now().withDayOfMonth(1);
+        LocalDate periodEnd = LocalDate.now().withDayOfMonth(LocalDate.now().lengthOfMonth());
+        
         JobParameters jobParameters = new JobParametersBuilder()
                 .addLong("timestamp", System.currentTimeMillis())
-                .addString("statementPeriod", LocalDate.now().withDayOfMonth(1).toString())
+                .addString("statementPeriodStart", periodStart.toString())
+                .addString("statementPeriodEnd", periodEnd.toString())
                 .toJobParameters();
 
         JobExecution jobExecution = jobLauncher.run(statementGenerationJob, jobParameters);
@@ -871,17 +1022,43 @@ public class BatchProcessingIntegrationTest {
      * @return Account entity ready for persistence
      */
     private Account createTestAccount(Long accountId, Customer customer, String activeStatus,
-                                     BigDecimal currentBalance, BigDecimal creditLimit) {
+                                     BigDecimal currentBalance, BigDecimal creditLimit, String accountGroupId) {
         Account account = new Account();
         account.setAccountId(accountId);
         account.setCustomer(customer);
         account.setActiveStatus(activeStatus);
         account.setCurrentBalance(currentBalance.setScale(2, RoundingMode.HALF_UP));
         account.setCreditLimit(creditLimit.setScale(2, RoundingMode.HALF_UP));
+        account.setCashCreditLimit(new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP)); // Set required cash credit limit
         account.setOpenDate(LocalDate.now().minusYears(2));
         account.setExpirationDate(LocalDate.now().plusYears(3));
+        account.setCurrentCycleCredit(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP)); // Set required cycle credit
+        account.setCurrentCycleDebit(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP)); // Set required cycle debit
+        account.setAccountGroupId(accountGroupId); // Set account group ID for interest calculation
         // Set other required fields with default test values
         return account;
+    }
+
+    /**
+     * Creates a test card entity with specified attributes.
+     *
+     * @param cardNumber Card number (primary key)
+     * @param account Associated account entity (foreign key)
+     * @param cvvCode CVV security code
+     * @param embossedName Name embossed on card
+     * @param activeStatus Active status ('Y' or 'N')
+     * @return Card entity ready for persistence
+     */
+    private Card createTestCard(String cardNumber, Account account, String cvvCode,
+                               String embossedName, String activeStatus) {
+        Card card = new Card();
+        card.setCardNumber(cardNumber);
+        card.setAccountId(account.getAccountId());
+        card.setCvvCode(cvvCode);
+        card.setEmbossedName(embossedName);
+        card.setActiveStatus(activeStatus);
+        card.setExpirationDate(LocalDate.now().plusYears(3));
+        return card;
     }
 
     /**
@@ -889,24 +1066,123 @@ public class BatchProcessingIntegrationTest {
      *
      * @param transactionId Transaction unique identifier
      * @param account Associated account entity (foreign key)
+     * @param cardNumber Card number for the transaction (must match an existing card)
      * @param amount Transaction amount with scale 2
      * @param transactionDate Transaction date
      * @param description Transaction description
      * @return Transaction entity ready for persistence
      */
     private Transaction createTestTransaction(String transactionId, Account account,
-                                             BigDecimal amount, LocalDate transactionDate,
-                                             String description) {
+                                             String cardNumber, BigDecimal amount, 
+                                             LocalDate transactionDate, String description) {
         Transaction transaction = new Transaction();
         transaction.setTransactionId(transactionId);
         transaction.setAccountId(account.getAccountId()); // Use transient account ID field
+        transaction.setCardNumber(cardNumber); // Set the provided card number
         transaction.setTransactionAmount(amount.setScale(2, RoundingMode.HALF_UP));
         transaction.setTransactionDate(transactionDate); // Deprecated but maintains compatibility
         transaction.setOriginationTimestamp(transactionDate.atStartOfDay()); // Correct method for timestamp
-        transaction.setTransactionTypeCode("PU"); // Purchase
+        transaction.setTransactionTypeCode("01"); // Purchase type code (matches first 2 chars of category)
         transaction.setTransactionCategoryCode("011001"); // Set required category code (e.g., Groceries)
         transaction.setTransactionDescription(description); // Set the description parameter
         // Set other required fields with default test values
         return transaction;
+    }
+
+    /**
+     * Creates a test TransactionAggregate entity with specified attributes and COMP-3 precision.
+     * Transaction aggregates represent summarized transaction data by account, type, and category,
+     * required by the InterestCalculationJob to calculate interest on outstanding balances.
+     *
+     * @param account Associated account entity (foreign key)
+     * @param transactionType Associated transaction type (foreign key)
+     * @param transactionCategory Associated transaction category (foreign key)
+     * @param categoryBalance Aggregated balance for this category with scale 2
+     * @param transactionCount Number of transactions in this aggregate
+     * @return TransactionAggregate entity ready for persistence
+     */
+    private TransactionAggregate createTestTransactionAggregate(Account account, 
+                                                                TransactionType transactionType,
+                                                                TransactionCategory transactionCategory,
+                                                                BigDecimal categoryBalance,
+                                                                Integer transactionCount) {
+        TransactionAggregate aggregate = new TransactionAggregate();
+        
+        // Set composite key fields
+        TransactionAggregate.AggregateId id = new TransactionAggregate.AggregateId();
+        id.setAccountId(account.getAccountId());
+        id.setTransactionTypeCode(transactionType.getTypeCode());
+        id.setTransactionCategoryCode(transactionCategory.getCategoryCode());
+        aggregate.setId(id);
+        
+        // Set relationships
+        aggregate.setAccount(account);
+        aggregate.setTransactionType(transactionType);
+        aggregate.setTransactionCategory(transactionCategory);
+        
+        // Set balance with COMP-3 precision (scale 2, HALF_UP rounding)
+        aggregate.setCategoryBalance(categoryBalance.setScale(2, RoundingMode.HALF_UP));
+        
+        // Set transaction count
+        aggregate.setTransactionCount(transactionCount);
+        
+        // Set timestamps
+        aggregate.setLastUpdated(LocalDateTime.now());
+        aggregate.setCreatedAt(LocalDateTime.now().minusDays(30)); // Created 30 days ago
+        
+        return aggregate;
+    }
+
+    /**
+     * Helper method to create test DailyTransactionStaging entity for batch processing tests.
+     * 
+     * @param transactionId Unique transaction identifier
+     * @param typeCode Transaction type code (e.g., "01")
+     * @param categoryCode Transaction category code (e.g., "011001")
+     * @param source Transaction source/channel (e.g., "POS", "ATM", "ONLINE")
+     * @param description Transaction description
+     * @param amount Transaction amount (precision 11, scale 2)
+     * @param cardNumber Card number used for transaction
+     * @param originalTimestamp Original transaction timestamp from source system
+     * @return Configured DailyTransactionStaging entity with status='PENDING'
+     */
+    private DailyTransactionStaging createTestDailyTransactionStaging(String transactionId,
+                                                                      String typeCode,
+                                                                      String categoryCode,
+                                                                      String source,
+                                                                      String description,
+                                                                      BigDecimal amount,
+                                                                      String cardNumber,
+                                                                      LocalDateTime originalTimestamp) {
+        DailyTransactionStaging staging = new DailyTransactionStaging();
+        
+        // Set primary key
+        staging.setTransactionId(transactionId);
+        
+        // Set transaction classification
+        staging.setTypeCode(typeCode);
+        staging.setCategoryCode(categoryCode);
+        staging.setSource(source);
+        staging.setDescription(description);
+        
+        // Set amount with COMP-3 precision (scale 2, HALF_UP rounding)
+        staging.setAmount(amount.setScale(2, RoundingMode.HALF_UP));
+        
+        // Set merchant information (optional fields)
+        staging.setMerchantId("M" + transactionId.substring(1)); // Generate merchant ID from transaction ID
+        staging.setMerchantName("Test Merchant " + transactionId.substring(9));
+        staging.setMerchantCity("Test City");
+        staging.setMerchantZip("12345");
+        
+        // Set card number (required for transaction processing)
+        staging.setCardNumber(cardNumber);
+        
+        // Set timestamp
+        staging.setOriginalTimestamp(originalTimestamp);
+        
+        // Status defaults to 'PENDING' via @PrePersist, but set explicitly for clarity
+        staging.setStatus("PENDING");
+        
+        return staging;
     }
 }

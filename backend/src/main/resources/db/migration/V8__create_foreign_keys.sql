@@ -54,25 +54,16 @@ COMMENT ON CONSTRAINT fk_card_account ON card IS
 'Enforces account-card relationship from VSAM ACCTDAT-CARDDAT. CASCADE deletes cards when account is deleted (dependent relationship), matching COBOL cleanup logic.';
 
 -- ================================================================
--- 3. CARD-TRANSACTION FOREIGN KEY
+-- NOTE: CARD-TRANSACTION FOREIGN KEY
 -- ================================================================
--- Source: CVTRA05Y.cpy TRAN-CARD-NUM field
--- Business Rule: Transaction history must be preserved for audit
--- Deletion Policy: RESTRICT preserves transaction history even if card deleted
---                  (matches COBOL historical data retention requirement)
+-- The fk_transaction_card constraint is already defined in 
+-- V4__create_transaction_table.sql (line 218) and should not be 
+-- duplicated here. Transaction history preservation is enforced 
+-- by the existing constraint.
 -- ================================================================
-ALTER TABLE transaction
-  ADD CONSTRAINT fk_transaction_card
-  FOREIGN KEY (card_number)
-  REFERENCES card(card_number)
-  ON DELETE RESTRICT
-  ON UPDATE CASCADE;
-
-COMMENT ON CONSTRAINT fk_transaction_card ON transaction IS 
-'Enforces card-transaction relationship from VSAM CARDDAT-TRANSACT. RESTRICT preserves transaction history even if card deleted, ensuring audit trail integrity per compliance requirements.';
 
 -- ================================================================
--- 4. CARD CROSS-REFERENCE FOREIGN KEYS
+-- 3. CARD CROSS-REFERENCE FOREIGN KEYS
 -- ================================================================
 -- Source: CVACT03Y.cpy CARD-XREF-RECORD structure
 --         Fields: XREF-CARD-NUM, XREF-CUST-ID, XREF-ACCT-ID
@@ -81,7 +72,7 @@ COMMENT ON CONSTRAINT fk_transaction_card ON transaction IS
 --                  (matches COBOL XREF file maintenance logic)
 -- ================================================================
 
--- 4a. Card Cross-Reference to Card
+-- 3a. Card Cross-Reference to Card
 ALTER TABLE card_xref
   ADD CONSTRAINT fk_cardxref_card
   FOREIGN KEY (card_number)
@@ -92,7 +83,7 @@ ALTER TABLE card_xref
 COMMENT ON CONSTRAINT fk_cardxref_card ON card_xref IS 
 'Enforces card_xref-card relationship from VSAM XREF file. CASCADE removes orphaned cross-references when card deleted, matching COBOL XREF maintenance.';
 
--- 4b. Card Cross-Reference to Customer
+-- 3b. Card Cross-Reference to Customer
 ALTER TABLE card_xref
   ADD CONSTRAINT fk_cardxref_customer
   FOREIGN KEY (customer_id)
@@ -115,14 +106,14 @@ COMMENT ON CONSTRAINT fk_cardxref_account ON card_xref IS
 'Enforces card_xref-account relationship from VSAM XREF file. CASCADE removes orphaned cross-references when account deleted.';
 
 -- ================================================================
--- 5. ACCOUNT CROSS-REFERENCE FOREIGN KEYS
+-- 4. ACCOUNT CROSS-REFERENCE FOREIGN KEYS
 -- ================================================================
 -- Source: VSAM CXACAIX alternate index file (customer-account cross-reference)
 -- Business Rule: Account cross-references require valid parent entities
 -- Deletion Policy: CASCADE cleanup matching COBOL XREF maintenance patterns
 -- ================================================================
 
--- 5a. Account Cross-Reference to Customer
+-- 4a. Account Cross-Reference to Customer
 ALTER TABLE account_xref
   ADD CONSTRAINT fk_acctxref_customer
   FOREIGN KEY (customer_id)
@@ -133,7 +124,7 @@ ALTER TABLE account_xref
 COMMENT ON CONSTRAINT fk_acctxref_customer ON account_xref IS 
 'Enforces account_xref-customer relationship from VSAM CXACAIX file. CASCADE removes orphaned cross-references when customer deleted.';
 
--- 5b. Account Cross-Reference to Account
+-- 4b. Account Cross-Reference to Account
 ALTER TABLE account_xref
   ADD CONSTRAINT fk_acctxref_account
   FOREIGN KEY (account_id)
@@ -145,7 +136,7 @@ COMMENT ON CONSTRAINT fk_acctxref_account ON account_xref IS
 'Enforces account_xref-account relationship from VSAM CXACAIX file. CASCADE removes orphaned cross-references when account deleted.';
 
 -- ================================================================
--- 6. TRANSACTION CATEGORY BALANCE FOREIGN KEY
+-- 5. TRANSACTION CATEGORY BALANCE FOREIGN KEY
 -- ================================================================
 -- Source: CVTRA01Y.cpy transaction-account relationship
 -- Business Rule: Category balances are aggregate data tied to account

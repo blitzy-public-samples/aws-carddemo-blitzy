@@ -560,7 +560,16 @@ public class AccountUpdateService {
             return phoneNumber;
         }
         
-        // Return original without auto-formatting (will fail validation)
+        // Format 10-digit phone number to (XXX)XXX-XXXX per COBOL WS-EDIT-US-PHONE-NUM structure
+        // COBOL source: lines 82-100 in COACTUPC.cbl define format with parentheses and dash
+        if (phoneNumber.matches("^\\d{10}$")) {
+            return String.format("(%s)%s-%s",
+                phoneNumber.substring(0, 3),
+                phoneNumber.substring(3, 6),
+                phoneNumber.substring(6, 10));
+        }
+        
+        // Return original (will fail validation if not in expected format)
         // This matches COBOL behavior where BMS screen provides formatted input
         return phoneNumber;
     }

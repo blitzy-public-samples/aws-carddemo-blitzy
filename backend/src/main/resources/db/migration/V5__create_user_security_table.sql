@@ -57,13 +57,13 @@ CREATE TABLE user_security (
   last_name VARCHAR(20) NOT NULL,
   
   -- ****************************************************************
-  -- PASSWORD FIELD: password_hash
+  -- PASSWORD FIELD: password
   -- Source: SEC-USR-PWD PIC X(08) (plaintext in COBOL)
   -- CRITICAL TRANSFORMATION: Plaintext → BCrypt hash
   -- BCrypt strength: 12 (per Section 0.5 Security Configuration)
-  -- Hash length: 60 characters (BCrypt output), with buffer for future algorithms
+  -- Hash length: 60 characters (BCrypt output)
   -- ****************************************************************
-  password_hash VARCHAR(100) NOT NULL,
+  password VARCHAR(60) NOT NULL,
   
   -- ****************************************************************
   -- USER ROLE FIELD: user_type
@@ -153,8 +153,8 @@ COMMENT ON COLUMN user_security.first_name IS
 COMMENT ON COLUMN user_security.last_name IS 
 'User last name (up to 20 characters), from SEC-USR-LNAME PIC X(20) in CSUSR01Y.cpy.';
 
-COMMENT ON COLUMN user_security.password_hash IS 
-'BCrypt password hash (strength 12) replacing plaintext SEC-USR-PWD PIC X(08) from CSUSR01Y.cpy. Hash generated using Spring Security BCryptPasswordEncoder. Supports up to 100 characters for future algorithm compatibility.';
+COMMENT ON COLUMN user_security.password IS 
+'BCrypt password hash (strength 12) replacing plaintext SEC-USR-PWD PIC X(08) from CSUSR01Y.cpy. Hash generated using Spring Security BCryptPasswordEncoder. Length 60 characters for BCrypt output.';
 
 COMMENT ON COLUMN user_security.user_type IS 
 'User type from SEC-USR-TYPE PIC X(01) in CSUSR01Y.cpy. Two-tier role model: R=Regular User (maps to ROLE_USER), A=Administrative User (maps to ROLE_ADMIN). Used by Spring Security for role-based authorization via @PreAuthorize annotations.';
@@ -316,8 +316,8 @@ COMMENT ON TRIGGER trg_check_failed_logins ON user_security IS
 -- Query to verify password hash format (BCrypt validation)
 -- SELECT 
 --   user_id,
---   LENGTH(password_hash) as hash_length,
---   SUBSTRING(password_hash, 1, 4) as bcrypt_prefix
+--   LENGTH(password) as hash_length,
+--   SUBSTRING(password, 1, 4) as bcrypt_prefix
 -- FROM user_security;
 -- Expected: hash_length = 60, bcrypt_prefix = '$2a$' or '$2b$'
 
@@ -326,7 +326,7 @@ COMMENT ON TRIGGER trg_check_failed_logins ON user_security IS
 -- ******************************************************************
 -- 1. user_id must be exactly 8 characters (matching VSAM KEYLEN=8)
 -- 2. username must equal user_id (enforced by application, not database)
--- 3. password_hash must be valid BCrypt hash starting with $2a$ or $2b$
+-- 3. password must be valid BCrypt hash starting with $2a$ or $2b$
 -- 4. user_type must be 'R' or 'A' only (enforced by CHECK constraint)
 -- 5. failed_login_attempts resets to 0 on successful login (application logic)
 -- 6. last_login_at updated on successful authentication (application logic)
@@ -359,7 +359,7 @@ COMMENT ON TRIGGER trg_check_failed_logins ON user_security IS
 --   SEC-USR-ID PIC X(08)    → user_id VARCHAR(8) PRIMARY KEY
 --   SEC-USR-FNAME PIC X(20) → first_name VARCHAR(20)
 --   SEC-USR-LNAME PIC X(20) → last_name VARCHAR(20)
---   SEC-USR-PWD PIC X(08)   → password_hash VARCHAR(100) [BCrypt]
+--   SEC-USR-PWD PIC X(08)   → password VARCHAR(60) [BCrypt]
 --   SEC-USR-TYPE PIC X(01)  → user_type VARCHAR(1) ['R'|'A']
 --   SEC-USR-FILLER PIC X(23) → [NOT MIGRATED - unused padding]
 --
