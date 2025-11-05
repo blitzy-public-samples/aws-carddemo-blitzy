@@ -24,10 +24,9 @@ import com.carddemo.repository.UserSecurityRepository;
 import com.carddemo.security.SecurityConstants;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.test.context.support.WithAnonymousUser;
 import org.springframework.security.test.context.support.WithMockUser;
@@ -39,6 +38,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.lenient;
 
 /**
  * Comprehensive JUnit 5 test suite for AdminService validating business logic transformation
@@ -93,50 +93,50 @@ import static org.mockito.Mockito.*;
  * @version 1.0
  * @since 1.0.0
  */
-@ExtendWith(MockitoExtension.class)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 class AdminServiceTest {
 
     /**
      * Admin service under test with mocked dependencies injected.
      * 
-     * <p>Mockito @InjectMocks creates AdminService instance and injects all @Mock
-     * annotated dependencies, enabling isolated unit testing without Spring context
-     * or actual database connections.</p>
+     * <p>Spring @Autowired injects AdminService with Spring Security proxy enabled,
+     * allowing @PreAuthorize annotations to be tested. MockBeans provide isolated
+     * testing without actual database connections.</p>
      */
-    @InjectMocks
+    @Autowired
     private AdminService adminService;
 
     /**
      * Mock UserManagementService for testing delegation of user admin operations
      * (COUSR00C-COUSR03C program equivalents).
      */
-    @Mock
+    @MockBean
     private UserManagementService userManagementService;
 
     /**
      * Mock ReportMenuService for testing delegation of report generation operations
      * (CORPT00C program equivalent).
      */
-    @Mock
+    @MockBean
     private ReportMenuService reportMenuService;
 
     /**
      * Mock UserSecurityRepository for testing admin user count queries and
      * dashboard metrics aggregation.
      */
-    @Mock
+    @MockBean
     private UserSecurityRepository userSecurityRepository;
 
     /**
      * Mock AccountRepository for testing account statistics and dashboard data.
      */
-    @Mock
+    @MockBean
     private AccountRepository accountRepository;
 
     /**
      * Mock TransactionRepository for testing transaction metrics and statistics.
      */
-    @Mock
+    @MockBean
     private TransactionRepository transactionRepository;
 
     /**
@@ -176,10 +176,11 @@ class AdminServiceTest {
         testAdminRequest.setOptionNumber(1);
         testAdminRequest.setUserId(TEST_ADMIN_USER_ID);
 
-        // Configure mock repository behaviors for dashboard metrics
-        when(userSecurityRepository.count()).thenReturn(150L);
-        when(accountRepository.count()).thenReturn(500L);
-        when(transactionRepository.count()).thenReturn(25000L);
+        // Configure lenient mock repository behaviors for dashboard metrics
+        // Lenient stubs allow tests that don't use these mocks to pass without UnnecessaryStubbingException
+        lenient().when(userSecurityRepository.count()).thenReturn(150L);
+        lenient().when(accountRepository.count()).thenReturn(500L);
+        lenient().when(transactionRepository.count()).thenReturn(25000L);
     }
 
     /**
