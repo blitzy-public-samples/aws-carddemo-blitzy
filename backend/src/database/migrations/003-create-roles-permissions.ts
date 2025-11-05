@@ -1,4 +1,4 @@
-import { QueryRunner } from 'typeorm';
+import { MigrationInterface, QueryRunner } from 'typeorm';
 
 /**
  * Migration: CreateRolesPermissions003
@@ -15,7 +15,7 @@ import { QueryRunner } from 'typeorm';
  * Includes seeding of default permissions for document management, template management,
  * user management, integration management, API key management, and analytics access.
  */
-export class CreateRolesPermissions003 {
+export class CreateRolesPermissions003 implements MigrationInterface {
   /**
    * Executes the migration to create RBAC tables and seed default permissions
    * 
