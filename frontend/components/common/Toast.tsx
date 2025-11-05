@@ -1,16 +1,16 @@
 /**
  * Toast Notification Component
- * 
+ *
  * Provides a consistent notification system throughout the application using react-hot-toast.
  * Supports multiple variants (success, error, warning, info) with auto-dismiss functionality,
  * action buttons, stack management, and customizable positioning.
- * 
+ *
  * @module components/common/Toast
  */
 
-import React, { FC, ReactNode } from 'react';
-import toast, { Toaster, ToastOptions as ReactHotToastOptions } from 'react-hot-toast';
-import { CheckCircle, XCircle, AlertTriangle, Info } from 'lucide-react';
+import React, { type FC } from 'react';
+import toast, { type ToastOptions as ReactHotToastOptions, Toaster } from 'react-hot-toast';
+import { AlertTriangle, CheckCircle, Info, XCircle } from 'lucide-react';
 import clsx from 'clsx';
 
 /**
@@ -20,7 +20,7 @@ export type ToastVariant = 'success' | 'error' | 'warning' | 'info';
 
 /**
  * Configuration options for toast notifications
- * 
+ *
  * @interface ToastOptions
  * @property {string} message - The message content to display in the toast
  * @property {number} [duration] - Duration in milliseconds before auto-dismiss (default: 4000)
@@ -35,7 +35,13 @@ export interface ToastOptions {
   action?: boolean;
   actionLabel?: string;
   onAction?: () => void;
-  position?: 'top-left' | 'top-center' | 'top-right' | 'bottom-left' | 'bottom-center' | 'bottom-right';
+  position?:
+    | 'top-left'
+    | 'top-center'
+    | 'top-right'
+    | 'bottom-left'
+    | 'bottom-center'
+    | 'bottom-right';
 }
 
 /**
@@ -104,19 +110,19 @@ const variantConfig: Record<ToastVariant, ToastVariantConfig> = {
 
 /**
  * Custom toast content renderer with variant styling and action buttons
- * 
+ *
  * @param {ToastVariant} variant - The toast variant type
  * @param {string} message - The message to display
  * @param {string} [toastId] - Unique identifier for the toast instance
  * @param {CustomToastOptions} [options] - Additional options including action button config
- * @returns {ReactNode} The rendered toast content
+ * @returns {JSX.Element} The rendered toast content
  */
 const renderToast = (
   variant: ToastVariant,
   message: string,
   toastId?: string,
   options?: CustomToastOptions
-): ReactNode => {
+): JSX.Element => {
   const config = variantConfig[variant];
   const IconComponent = config.icon;
 
@@ -131,12 +137,13 @@ const renderToast = (
       aria-live={config.ariaLive}
       aria-atomic="true"
     >
-      <IconComponent className={clsx('w-5 h-5 flex-shrink-0 mt-0.5', config.iconColor)} aria-hidden="true" />
-      
+      <IconComponent
+        className={clsx('w-5 h-5 flex-shrink-0 mt-0.5', config.iconColor)}
+        aria-hidden="true"
+      />
+
       <div className="flex-1 min-w-0">
-        <p className={clsx('text-sm font-medium', config.textColor)}>
-          {message}
-        </p>
+        <p className={clsx('text-sm font-medium', config.textColor)}>{message}</p>
       </div>
 
       {options?.action && options?.actionLabel && options?.onAction && (
@@ -150,9 +157,11 @@ const renderToast = (
           className={clsx(
             'flex-shrink-0 text-sm font-medium px-3 py-1 rounded-md',
             'hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-offset-2',
-            variant === 'success' && 'text-green-700 bg-green-100 hover:bg-green-200 focus:ring-green-500',
+            variant === 'success' &&
+              'text-green-700 bg-green-100 hover:bg-green-200 focus:ring-green-500',
             variant === 'error' && 'text-red-700 bg-red-100 hover:bg-red-200 focus:ring-red-500',
-            variant === 'warning' && 'text-yellow-700 bg-yellow-100 hover:bg-yellow-200 focus:ring-yellow-500',
+            variant === 'warning' &&
+              'text-yellow-700 bg-yellow-100 hover:bg-yellow-200 focus:ring-yellow-500',
             variant === 'info' && 'text-blue-700 bg-blue-100 hover:bg-blue-200 focus:ring-blue-500'
           )}
           aria-label={options.actionLabel}
@@ -188,7 +197,7 @@ const renderToast = (
 
 /**
  * Helper function to show a toast notification
- * 
+ *
  * @param {ToastVariant} variant - The toast variant type
  * @param {string | ToastOptions} messageOrOptions - Message string or options object
  * @param {Partial<ToastOptions>} [additionalOptions] - Additional options when first param is string
@@ -230,15 +239,15 @@ const showToast = (
 
 /**
  * Display a success toast notification
- * 
+ *
  * @param {string | ToastOptions} messageOrOptions - Message string or full options object
  * @param {Partial<ToastOptions>} [options] - Additional options when first param is string
  * @returns {string} The toast ID for programmatic dismissal
- * 
+ *
  * @example
  * // Simple success message
  * showSuccess('Document uploaded successfully');
- * 
+ *
  * @example
  * // Success with action button
  * showSuccess({
@@ -257,15 +266,15 @@ export const showSuccess = (
 
 /**
  * Display an error toast notification
- * 
+ *
  * @param {string | ToastOptions} messageOrOptions - Message string or full options object
  * @param {Partial<ToastOptions>} [options] - Additional options when first param is string
  * @returns {string} The toast ID for programmatic dismissal
- * 
+ *
  * @example
  * // Simple error message
  * showError('Failed to upload document');
- * 
+ *
  * @example
  * // Error with retry action
  * showError({
@@ -285,15 +294,15 @@ export const showError = (
 
 /**
  * Display a warning toast notification
- * 
+ *
  * @param {string | ToastOptions} messageOrOptions - Message string or full options object
  * @param {Partial<ToastOptions>} [options] - Additional options when first param is string
  * @returns {string} The toast ID for programmatic dismissal
- * 
+ *
  * @example
  * // Simple warning message
  * showWarning('Low confidence detected in extraction');
- * 
+ *
  * @example
  * // Warning with action
  * showWarning({
@@ -312,15 +321,15 @@ export const showWarning = (
 
 /**
  * Display an informational toast notification
- * 
+ *
  * @param {string | ToastOptions} messageOrOptions - Message string or full options object
  * @param {Partial<ToastOptions>} [options] - Additional options when first param is string
  * @returns {string} The toast ID for programmatic dismissal
- * 
+ *
  * @example
  * // Simple info message
  * showInfo('Processing will begin shortly');
- * 
+ *
  * @example
  * // Info with custom duration
  * showInfo({
@@ -340,17 +349,17 @@ export const showInfo = (
 
 /**
  * ToastContainer component that renders the toast notification system
- * 
+ *
  * This component should be included once in the application root (typically in _app.tsx)
  * to enable toast notifications throughout the application.
- * 
+ *
  * @component
  * @returns {JSX.Element} The toast container with configured Toaster
- * 
+ *
  * @example
  * // In _app.tsx
  * import { ToastContainer } from '@/components/common/Toast';
- * 
+ *
  * function MyApp({ Component, pageProps }) {
  *   return (
  *     <>

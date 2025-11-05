@@ -1,4 +1,4 @@
-import React, { memo, useEffect, ReactNode, FC, Fragment } from 'react';
+import React, { type FC, Fragment, memo, type ReactNode, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Dialog, Transition } from '@headlessui/react';
 import { X } from 'lucide-react';
@@ -11,7 +11,7 @@ type ModalSize = 'sm' | 'md' | 'lg' | 'xl';
 
 /**
  * Props for the Modal component
- * 
+ *
  * @interface ModalProps
  * @property {boolean} isOpen - Controls whether the modal is visible
  * @property {() => void} onClose - Callback function invoked when modal should close
@@ -49,14 +49,14 @@ const sizeClasses: Record<ModalSize, string> = {
 
 /**
  * Modal Dialog Component
- * 
+ *
  * Implements an accessible modal dialog with overlay backdrop following WCAG 2.1 AA guidelines.
  * Uses Headless UI Dialog component for built-in accessibility features including:
  * - Focus trap to prevent tab navigation outside modal
  * - Automatic focus management
  * - ARIA attributes (aria-modal, role="dialog")
  * - Keyboard ESC handling
- * 
+ *
  * Features:
  * - Portal rendering to document.body for proper z-index stacking
  * - Customizable header, body, and footer sections
@@ -66,7 +66,7 @@ const sizeClasses: Record<ModalSize, string> = {
  * - Smooth enter/exit transitions with backdrop blur
  * - Prevents background scroll when modal is open
  * - Responsive design with mobile-first approach
- * 
+ *
  * @example
  * ```tsx
  * <Modal
@@ -84,7 +84,7 @@ const sizeClasses: Record<ModalSize, string> = {
  *   <p>Are you sure you want to proceed with this action?</p>
  * </Modal>
  * ```
- * 
+ *
  * @param {ModalProps} props - Component props
  * @returns {React.ReactElement | null} Modal component rendered via portal
  */
@@ -109,10 +109,10 @@ const ModalComponent: FC<ModalProps> = ({
     if (isOpen) {
       // Save original overflow value
       const originalOverflow = document.body.style.overflow;
-      
+
       // Prevent scrolling
       document.body.style.overflow = 'hidden';
-      
+
       // Restore original overflow when modal closes
       return () => {
         document.body.style.overflow = originalOverflow;
@@ -126,7 +126,7 @@ const ModalComponent: FC<ModalProps> = ({
    * Handle overlay click
    * Only closes modal if closeOnOverlayClick is enabled
    */
-  const handleOverlayClick = () => {
+  const handleOverlayClick = (): void => {
     if (closeOnOverlayClick) {
       onClose();
     }
@@ -137,7 +137,7 @@ const ModalComponent: FC<ModalProps> = ({
    * Headless UI Dialog automatically calls onClose when ESC is pressed
    * This prop controls whether that behavior is enabled
    */
-  const handleClose = () => {
+  const handleClose = (): void => {
     if (closeOnEsc) {
       onClose();
     }
@@ -149,12 +149,7 @@ const ModalComponent: FC<ModalProps> = ({
    */
   const modalContent = (
     <Transition appear show={isOpen} as={Fragment}>
-      <Dialog
-        as="div"
-        className="relative z-50"
-        onClose={handleClose}
-        aria-modal="true"
-      >
+      <Dialog as="div" className="relative z-50" onClose={handleClose} aria-modal="true">
         {/* Backdrop overlay with blur effect */}
         <Transition.Child
           as={Fragment}
@@ -192,6 +187,7 @@ const ModalComponent: FC<ModalProps> = ({
                 )}
               >
                 {/* Header section */}
+                {/* eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing */}
                 {(title || showCloseButton) && (
                   <div className="relative border-b border-gray-200 px-6 py-4">
                     {/* Title */}
@@ -203,7 +199,7 @@ const ModalComponent: FC<ModalProps> = ({
                         {title}
                       </Dialog.Title>
                     )}
-                    
+
                     {/* Close button */}
                     {showCloseButton && (
                       <button
@@ -219,9 +215,7 @@ const ModalComponent: FC<ModalProps> = ({
                 )}
 
                 {/* Body section */}
-                <div className="px-6 py-4">
-                  {children}
-                </div>
+                <div className="px-6 py-4">{children}</div>
 
                 {/* Footer section */}
                 {footer && (
