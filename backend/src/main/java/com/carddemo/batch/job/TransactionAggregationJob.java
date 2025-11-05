@@ -166,7 +166,7 @@ import java.time.LocalDate;
  * @see <a href="Section 0.5">Batch Processing Configuration Requirements</a>
  * @see <a href="Section 0.9">Numeric Precision and Transaction Boundary Requirements</a>
  */
-@Configuration
+@Configuration("transactionAggregationJobConfig")
 public class TransactionAggregationJob {
 
     /**
@@ -357,8 +357,8 @@ public class TransactionAggregationJob {
      * @return Configured Job instance ready for execution by Spring Batch framework. Job can be
      *         launched programmatically via JobLauncher or automatically via Kubernetes CronJob.
      */
-    @Bean(name = "transactionAggregationJobBean")
-    public Job createTransactionAggregationJob(Step transactionAggregationStep) {
+    @Bean
+    public Job transactionAggregationJob(Step transactionAggregationStep) {
         
         logger.info("Configuring transactionAggregationJob - Transaction Category Aggregation Batch Job");
         logger.info("COBOL Source: CBTRN03C.cbl - Transaction Detail Report Generation");

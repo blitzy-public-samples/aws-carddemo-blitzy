@@ -148,7 +148,7 @@ import java.time.Duration;
  * @version 1.0
  * @since 2024-01-01
  */
-@Configuration
+@Configuration("dailyTransactionProcessingJobConfig")
 public class DailyTransactionProcessingJob {
 
     private static final Logger logger = LoggerFactory.getLogger(DailyTransactionProcessingJob.class);
@@ -254,7 +254,7 @@ public class DailyTransactionProcessingJob {
      * @param processingStep the validateAndPostTransactionsStep bean injected by Spring
      * @return Job bean for daily transaction processing
      */
-    @Bean(name = "dailyTransactionProcessingJobBean")
+    @Bean
     public Job dailyTransactionProcessingJob(Step validateAndPostTransactionsStep) {
         logger.info("Configuring dailyTransactionProcessingJob");
         

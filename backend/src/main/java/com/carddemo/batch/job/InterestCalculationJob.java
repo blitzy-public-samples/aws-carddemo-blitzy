@@ -269,7 +269,7 @@ import java.util.Map;
  * @version 1.0
  * @since 2024-01-01
  */
-@Configuration
+@Configuration("interestCalculationJobConfig")
 public class InterestCalculationJob {
 
     /**
@@ -445,8 +445,8 @@ public class InterestCalculationJob {
      * 
      * @return fully configured Spring Batch Job for monthly interest calculation processing
      */
-    @Bean(name = "interestCalculationJobBean")
-    public Job createInterestCalculationJob() {
+    @Bean
+    public Job interestCalculationJob() {
         logger.info("Configuring Interest Calculation Job - COBOL CBACT04C.cbl equivalent");
         
         return new JobBuilder(JOB_NAME, jobRepository)

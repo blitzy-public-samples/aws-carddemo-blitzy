@@ -140,7 +140,7 @@ import org.springframework.dao.TransientDataAccessException;
  * @see <a href="Section 0.5">Refactored Structure Planning - Batch Processing</a>
  * @see <a href="Section 0.6">File-by-File Transformation Plan - CBACT02C.cbl</a>
  */
-@Configuration
+@Configuration("accountXrefBuildJobConfig")
 public class AccountXrefBuildJob {
     
     private static final Logger logger = LoggerFactory.getLogger(AccountXrefBuildJob.class);
@@ -167,7 +167,7 @@ public class AccountXrefBuildJob {
      * Bean name for the account cross-reference build job.
      * Used to avoid bean name conflicts with job name in Spring context.
      */
-    private static final String JOB_BEAN_NAME = "accountXrefBuildJobBean";
+    private static final String JOB_BEAN_NAME = "accountXrefBuildJob";
     
     /**
      * Step name for the account cross-reference build step.
@@ -250,7 +250,7 @@ public class AccountXrefBuildJob {
      * @param accountXrefBuildStep the accountXrefBuildStep bean injected by Spring
      * @return Configured Job bean ready for execution
      */
-    @Bean(name = JOB_BEAN_NAME)
+    @Bean
     public Job accountXrefBuildJob(Step accountXrefBuildStep) {
         
         logger.info("Configuring AccountXrefBuildJob (COBOL program CBACT02C transformation)");

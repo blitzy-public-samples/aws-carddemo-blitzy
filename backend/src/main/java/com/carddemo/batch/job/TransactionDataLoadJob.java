@@ -238,7 +238,7 @@ import java.time.temporal.ChronoUnit;
  * @author AWS CardDemo Modernization Team
  * @since 1.0.0
  */
-@Configuration
+@Configuration("transactionDataLoadJobConfig")
 public class TransactionDataLoadJob {
     
     private static final Logger logger = LoggerFactory.getLogger(TransactionDataLoadJob.class);
@@ -402,8 +402,8 @@ public class TransactionDataLoadJob {
      * to avoid Spring Boot factory-bean naming conflicts. The bean method name is also different
      * from the Job name to prevent Spring from misidentifying this as a factory-bean reference.
      */
-    @Bean(name = "transactionDataLoadJobBean")
-    public Job createTransactionDataLoadJob(Step transactionLoadStep) {
+    @Bean
+    public Job transactionDataLoadJob(Step transactionLoadStep) {
         
         logger.info("Configuring transaction data load job: {}", JOB_NAME);
         

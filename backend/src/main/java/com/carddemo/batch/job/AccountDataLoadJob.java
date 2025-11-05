@@ -232,7 +232,7 @@ import org.springframework.transaction.PlatformTransactionManager;
  * @see <a href="Section 0.5">Spring Batch for Mainframe Batch Modernization</a>
  * @see <a href="Section 0.9">Business Logic Preservation Mandate</a>
  */
-@Configuration
+@Configuration("accountDataLoadJobConfig")
 public class AccountDataLoadJob {
 
     /**
@@ -245,7 +245,7 @@ public class AccountDataLoadJob {
      * Bean name for the account data load job.
      * Used to avoid bean name conflicts with job name in Spring context.
      */
-    private static final String JOB_BEAN_NAME = "accountDataLoadJobBean";
+    private static final String JOB_BEAN_NAME = "accountDataLoadJob";
 
     /**
      * Step name for the account data load step.
@@ -380,7 +380,7 @@ public class AccountDataLoadJob {
      * @param accountDataLoadStep the accountDataLoadStep bean injected by Spring
      * @return Job configured with account data load step and restart capability
      */
-    @Bean(name = JOB_BEAN_NAME)
+    @Bean
     public Job accountDataLoadJob(Step accountDataLoadStep) {
         
         logger.info("Configuring accountDataLoadJob - COBOL program CBACT01C.cbl equivalent");

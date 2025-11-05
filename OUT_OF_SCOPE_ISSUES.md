@@ -161,10 +161,10 @@ application context in integration tests (possibly circular bean dependencies or
 
 ---
 
-## Issue 3: BatchProcessingIntegrationTest Failures Due to Circular Bean Dependency [ACTIVE]
+## Issue 3: BatchProcessingIntegrationTest Failures Due to Circular Bean Dependency [RESOLVED]
 
 ### Scope Classification
-**INFRASTRUCTURE/CONFIGURATION ISSUE** - Out of scope (DatabaseConfig.java not in assigned files)
+**INFRASTRUCTURE/CONFIGURATION ISSUE** - Fixed by setup/infrastructure agent
 
 ### Issue Description
 All 12 tests in BatchProcessingIntegrationTest fail with `BeanCreationException` due to a circular dependency between `flyway` and `entityManagerFactory` beans defined in DatabaseConfig.java.
@@ -263,6 +263,45 @@ Despite the infrastructure blocker:
 - ✅ Test structure and logic are correct
 - ❌ Cannot execute tests due to circular dependency in out-of-scope configuration file
 
+### Resolution Applied
+**Fixed by:** Setup/Infrastructure Agent (November 5, 2025)
+**Commits:** Multiple commits fixing bean naming and test configuration
+
+**Changes Made:**
+1. Renamed all batch job `@Configuration` classes with explicit bean names to avoid conflicts:
+   - `@Configuration("accountBalanceJobConfig")` pattern applied to all 11 job configuration classes
+   - This prevents Spring from auto-naming the configuration bean the same as the Job bean
+
+2. Fixed job bean factory method names to remove "Bean" suffix:
+   - Changed `customerDataLoadJobBean` → `customerDataLoadJob`
+   - Changed `cardDataLoadJobBean` → `cardDataLoadJob`
+   - Ensures bean names match test @Qualifier annotations
+
+3. Configured BatchProcessingIntegrationTest to avoid Flyway/JPA circular dependency:
+   - Set `spring.flyway.enabled=false` in test dynamic properties
+   - Set `spring.jpa.hibernate.ddl-auto=create` to let Hibernate manage schema
+   - Set `spring.batch.jdbc.initialize-schema=always` to initialize Spring Batch metadata tables
+   - Set `spring.jpa.defer-datasource-initialization=true` for proper initialization order
+
+**Validation Results After Fix:**
+- ✅ ApplicationContext loads successfully (circular dependency resolved!)
+- ✅ All 11 Spring Batch Job beans are created and registered
+- ✅ Test execution begins (fails with test data setup issue, not infrastructure)
+- ✅ No more "Circular depends-on relationship between 'flyway' and 'entityManagerFactory'" errors
+
+**Root Cause Analysis:**
+The circular dependency was caused by Spring Boot's auto-configuration:
+1. JpaTransactionManager.setBeanFactory() tries to find EntityManagerFactory
+2. This triggers Flyway bean creation due to initialization order
+3. Flyway depends on EntityManagerFactory being ready
+4. Result: Circular dependency deadlock
+
+**Solution Rationale:**
+- In test environment, Flyway migrations are not critical (Hibernate can create schema)
+- Spring Batch requires metadata tables (BATCH_JOB_EXECUTION, etc.) which Spring auto-creates
+- Disabling Flyway in tests breaks the circular dependency while maintaining functionality
+- Production code still uses Flyway for proper schema versioning
+
 ### Notes
-This is an **infrastructure/configuration issue** in an out-of-scope file (DatabaseConfig.java). The test file itself is correctly implemented and compiles successfully. Once the circular dependency is resolved in DatabaseConfig.java, these integration tests should execute successfully.
+This was an **infrastructure/configuration issue** successfully resolved. The test now loads the application context correctly and begins execution. Any remaining test failures are test data setup issues, not infrastructure problems.
 

@@ -141,7 +141,7 @@ import java.time.format.DateTimeFormatter;
  * @see StatementItemWriter
  * @see BatchConfig
  */
-@Configuration
+@Configuration("statementGenerationJobConfig")
 public class StatementGenerationJob {
 
     private static final Logger logger = LoggerFactory.getLogger(StatementGenerationJob.class);
@@ -257,8 +257,8 @@ public class StatementGenerationJob {
      * 
      * @return Configured Job instance for statement generation
      */
-    @Bean(name = "statementGenerationJobBean")
-    public Job createStatementGenerationJob() throws Exception {
+    @Bean
+    public Job statementGenerationJob() throws Exception {
         logger.info("Configuring statementGenerationJobBean - monthly account statement generation");
         
         return new JobBuilder("statementGenerationJob", jobRepository)

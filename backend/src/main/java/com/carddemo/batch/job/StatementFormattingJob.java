@@ -159,7 +159,7 @@ import java.util.Map;
  * @see <a href="Section 0.6">File-by-File Transformation Plan</a>
  * @see <a href="Section 0.9">Special Instructions - Batch Processing</a>
  */
-@Configuration
+@Configuration("statementFormattingJobConfig")
 public class StatementFormattingJob {
 
     private static final Logger log = LoggerFactory.getLogger(StatementFormattingJob.class);
@@ -260,8 +260,8 @@ public class StatementFormattingJob {
      * @param pdfFormatStep Step for PDF format generation
      * @return Configured Job instance for statement formatting
      */
-    @Bean(name = "statementFormattingJobBean")
-    public Job createStatementFormattingJob(Step textFormatStep, Step htmlFormatStep, Step pdfFormatStep) {
+    @Bean
+    public Job statementFormattingJob(Step textFormatStep, Step htmlFormatStep, Step pdfFormatStep) {
         log.info("Configuring statementFormattingJob with chunk size {} and skip limit {}", CHUNK_SIZE, SKIP_LIMIT);
         
         return new JobBuilder("statementFormattingJob", jobRepository)

@@ -184,7 +184,7 @@ import java.math.RoundingMode;
  * @see <a href="Section 0.5">File-by-File Transformation Plan</a>
  * @see <a href="Section 0.9">Special Instructions for Refactoring</a>
  */
-@Configuration
+@Configuration("accountBalanceJobConfig")
 public class AccountBalanceJob {
 
     private static final Logger logger = LoggerFactory.getLogger(AccountBalanceJob.class);
@@ -334,8 +334,8 @@ public class AccountBalanceJob {
      * @param accountBalanceStep The configured step for balance calculation
      * @return Configured Job instance ready for execution
      */
-    @Bean(name = "accountBalanceJobBean")
-    public Job createAccountBalanceJob(Step accountBalanceStep) {
+    @Bean
+    public Job accountBalanceJob(Step accountBalanceStep) {
         logger.info("Building accountBalanceJob with accountBalanceStep");
         
         return new JobBuilder("accountBalanceJob", jobRepository)

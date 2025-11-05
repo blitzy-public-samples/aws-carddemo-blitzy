@@ -89,7 +89,7 @@ import org.springframework.transaction.PlatformTransactionManager;
  * @see <a href="Section 0.6">File-by-File Transformation Plan</a>
  * @since 1.0
  */
-@Configuration
+@Configuration("cardDataLoadJobConfig")
 public class CardDataLoadJob {
 
     private static final Logger logger = LoggerFactory.getLogger(CardDataLoadJob.class);
@@ -104,7 +104,7 @@ public class CardDataLoadJob {
      * Bean name for the card data load job bean.
      * Different from JOB_NAME to avoid conflicts with @Configuration class naming.
      */
-    private static final String JOB_BEAN_NAME = "cardDataLoadJobBean";
+    private static final String JOB_BEAN_NAME = "cardDataLoadJob";
 
     /**
      * Step name constant for card data loading step.
@@ -190,8 +190,8 @@ public class CardDataLoadJob {
      * @see JobRepository
      * @see <a href="Section 0.5">Batch Job Configuration</a>
      */
-    @Bean(name = JOB_BEAN_NAME)
-    public Job cardDataLoadJobBean(Step cardDataLoadStep) {
+    @Bean
+    public Job cardDataLoadJob(Step cardDataLoadStep) {
         logger.info("Building {} - Card data load batch job", JOB_NAME);
         
         return new JobBuilder(JOB_NAME, jobRepository)

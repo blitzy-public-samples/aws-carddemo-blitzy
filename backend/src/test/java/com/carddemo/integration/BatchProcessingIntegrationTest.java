@@ -202,8 +202,12 @@ public class BatchProcessingIntegrationTest {
         registry.add("spring.datasource.username", postgresContainer::getUsername);
         registry.add("spring.datasource.password", postgresContainer::getPassword);
         registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
-        registry.add("spring.flyway.enabled", () -> "true");
+        // Disable Flyway to avoid circular dependency, use Hibernate for schema creation
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "create");
+        registry.add("spring.jpa.defer-datasource-initialization", () -> "true");
+        registry.add("spring.flyway.enabled", () -> "false");
+        // Spring Batch schema initialized via TestFlywayConfig
+        registry.add("spring.batch.jdbc.initialize-schema", () -> "always");
     }
 
     @Autowired

@@ -52,7 +52,8 @@ spring:
     exclude:
       - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
       - org.springframework.boot.autoconfigure.session.SessionAutoConfiguration
-      - org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration
+      # FlywayAutoConfiguration is NOT excluded to support integration tests with Testcontainers
+      # Integration tests like BatchProcessingIntegrationTest need Flyway for schema initialization
 
 logging:
   level:
