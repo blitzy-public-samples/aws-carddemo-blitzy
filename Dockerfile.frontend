@@ -1,0 +1,166 @@
+# ==============================================================================
+# Multi-stage Dockerfile for Next.js Frontend Application
+# OCR Processing Application - Frontend Service
+# ==============================================================================
+#
+# This Dockerfile creates an optimized production image for the Next.js frontend
+# with the following features:
+# - Multi-stage build for minimal final image size
+# - Next.js standalone output (80% smaller than standard builds)
+# - Security hardening with non-root user
+# - Health checks for container orchestration
+# - Server-side rendering (SSR) support
+# - Production-only dependencies in final image
+#
+# Build context: ./frontend
+# Target architecture: linux/amd64, linux/arm64
+#
+# Performance targets:
+# - Initial page load: <2 seconds
+# - Build time: <5 minutes
+# - Final image size: <200MB
+# - Cold start: <3 seconds
+#
+# ==============================================================================
+
+# ==============================================================================
+# Stage 1: Dependencies
+# Purpose: Install production dependencies separately for better layer caching
+# ==============================================================================
+FROM node:22-alpine AS deps
+
+# Add metadata
+LABEL maintainer="OCR Processing Team"
+LABEL stage="dependencies"
+LABEL description="Production dependencies layer"
+
+# Set working directory
+WORKDIR /app
+
+# Install libc6-compat for compatibility with some native modules
+RUN apk add --no-cache libc6-compat
+
+# Copy package manager files
+# Only copy package files to leverage Docker layer caching
+COPY package.json package-lock.json* ./
+
+# Install production dependencies only
+# --only=production flag ensures dev dependencies are excluded
+# --frozen-lockfile ensures reproducible builds
+RUN npm ci --only=production --frozen-lockfile && \
+    npm cache clean --force
+
+# ==============================================================================
+# Stage 2: Builder
+# Purpose: Build the Next.js application with all dependencies and source code
+# ==============================================================================
+FROM node:22-alpine AS builder
+
+LABEL stage="builder"
+LABEL description="Application build layer"
+
+# Set working directory
+WORKDIR /app
+
+# Install build dependencies
+RUN apk add --no-cache libc6-compat
+
+# Copy package files
+COPY package.json package-lock.json* ./
+
+# Install ALL dependencies (including devDependencies for build)
+RUN npm ci --frozen-lockfile && \
+    npm cache clean --force
+
+# Copy application source code
+# Copy only necessary files for the build
+COPY pages ./pages
+COPY components ./components
+COPY public ./public
+COPY styles ./styles
+COPY lib ./lib
+COPY hooks ./hooks
+COPY next.config.js ./
+COPY tsconfig.json ./
+COPY tailwind.config.js ./
+COPY postcss.config.js* ./
+
+# Copy environment template for build-time reference
+# Actual environment variables should be provided at runtime
+COPY .env.local.example ./.env.local.example
+
+# Set build-time environment variables
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
+
+# Build the Next.js application
+# This creates the optimized production build in .next/
+# The standalone output mode is enabled in next.config.js
+# and creates a minimal server bundle
+RUN npm run build
+
+# ==============================================================================
+# Stage 3: Runtime
+# Purpose: Create minimal runtime image with only production assets
+# ==============================================================================
+FROM node:22-alpine AS runner
+
+LABEL stage="runtime"
+LABEL description="Production runtime image"
+LABEL version="1.0.0"
+LABEL org.opencontainers.image.title="OCR Processing Frontend"
+LABEL org.opencontainers.image.description="Next.js frontend for OCR Processing Application"
+LABEL org.opencontainers.image.vendor="OCR Processing Team"
+
+# Install runtime dependencies
+# - dumb-init: Proper signal handling for PID 1
+# - wget: Health check utility
+RUN apk add --no-cache \
+    dumb-init \
+    wget \
+    && rm -rf /var/cache/apk/*
+
+# Set working directory
+WORKDIR /app
+
+# Create non-root user for security
+# UID and GID 1000 for compatibility with most systems
+RUN addgroup -g 1000 nextuser && \
+    adduser -D -u 1000 -G nextuser nextuser
+
+# Set production environment
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+# Copy Next.js standalone output from builder
+# Standalone output includes only necessary files for runtime
+COPY --from=builder --chown=nextuser:nextuser /app/.next/standalone ./
+
+# Copy static files for Next.js
+# These are required for serving static assets
+COPY --from=builder --chown=nextuser:nextuser /app/.next/static ./.next/static
+
+# Copy public directory for static assets
+COPY --from=builder --chown=nextuser:nextuser /app/public ./public
+
+# Switch to non-root user
+USER nextuser
+
+# Expose application port
+EXPOSE 3000
+
+# Health check configuration
+# Checks if the application responds on the health endpoint
+# Interval: 30s - how often to check
+# Timeout: 10s - how long to wait for response
+# Start period: 40s - grace period before starting checks
+# Retries: 3 - how many failures before marking unhealthy
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
+
+# Use dumb-init to handle signals properly
+# This ensures graceful shutdown and proper signal forwarding
+# The standalone server.js is the entry point created by Next.js build
+CMD ["dumb-init", "node", "server.js"]
