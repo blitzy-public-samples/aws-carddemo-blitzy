@@ -382,9 +382,7 @@ public class TransactionAggregate implements Serializable {
      * Category code is already available in composite key for client-side lookup if needed.</p>
      */
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "transaction_type_code", referencedColumnName = "type_code",
-                insertable = false, updatable = false)
-    @JoinColumn(name = "transaction_category_code", referencedColumnName = "category_code",
+    @JoinColumn(name = "transaction_category_code", referencedColumnName = "transaction_category_code",
                 insertable = false, updatable = false)
     @JsonIgnore
     private TransactionCategory transactionCategory;
@@ -470,7 +468,7 @@ public class TransactionAggregate implements Serializable {
      * 
      * @return the transaction category code component of the composite key, or null if id is not set
      */
-    public Integer getTransactionCategoryCode() {
+    public String getTransactionCategoryCode() {
         return id != null ? id.getTransactionCategoryCode() : null;
     }
 
@@ -584,38 +582,39 @@ public class TransactionAggregate implements Serializable {
         private String transactionTypeCode;
 
         /**
-         * Transaction category code component of composite key (4-digit integer).
+         * Transaction category code component of composite key (6-character string).
          * 
-         * <p>Maps from COBOL field: TRANCAT-CD PIC 9(04)</p>
+         * <p>Maps from database field: transaction_category_code VARCHAR(6)</p>
          * 
          * <p>Third component of composite primary key. Provides unique category
          * identification within each transaction type for detailed transaction
-         * classification. Numeric range 1-9999 allows up to 9,999 distinct
-         * categories per transaction type.</p>
+         * classification. Format is 6-character string where first 2 characters
+         * match the transaction type code.</p>
          * 
          * <p>Example category codes by transaction type:
          * <ul>
-         *   <li>Type "PU": 1001=Groceries, 1002=Gas, 1003=Dining, 1004=Shopping</li>
-         *   <li>Type "CA": 2001=ATM, 2002=Branch, 2003=Check</li>
-         *   <li>Type "FE": 3001=Annual, 3002=Late, 3003=OverLimit</li>
+         *   <li>Type "01": "010001"=Groceries, "010002"=Gas, "010003"=Dining, "010004"=Shopping</li>
+         *   <li>Type "02": "020001"=ATM, "020002"=Branch, "020003"=Check</li>
+         *   <li>Type "03": "030001"=Annual, "030002"=Late, "030003"=OverLimit</li>
          * </ul>
          * </p>
          * 
          * <p>Constraints:
          * <ul>
-         *   <li>Type: Integer to match COBOL PIC 9(04) numeric field</li>
-         *   <li>Range: 1 to 9999 (4 digits maximum)</li>
+         *   <li>Type: String to match database VARCHAR(6)</li>
+         *   <li>Length: Exactly 6 characters</li>
+         *   <li>Format: First 2 characters must match transactionTypeCode</li>
          *   <li>NOT NULL: Required component of primary key</li>
-         *   <li>Foreign Key: Must exist in transaction_category.category_code (with type_code)</li>
+         *   <li>Foreign Key: Must exist in transaction_category.transaction_category_code</li>
          *   <li>Immutable: Should not be changed after entity creation</li>
          * </ul>
          * </p>
          * 
-         * <p>Note: Using Integer instead of String for numeric COBOL PIC 9 field
-         * provides type safety and natural ordering for category code ranges.</p>
+         * <p>Note: Changed from Integer to String to match database schema and
+         * align with Transaction entity's transactionCategoryCode field.</p>
          */
-        @Column(name = "transaction_category_code", nullable = false)
-        private Integer transactionCategoryCode;
+        @Column(name = "transaction_category_code", length = 6, nullable = false)
+        private String transactionCategoryCode;
 
         /**
          * Equals method for composite key comparison.

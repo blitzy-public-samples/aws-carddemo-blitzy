@@ -244,10 +244,13 @@ public class Transaction implements Serializable {
      * transaction_category(type_code, category_code). Enforces referential integrity
      * per Section 0.9 cross-reference data relationship requirements.</p>
      * 
-     * <p>Range: 0001-9999 (4-digit numeric allows up to 9,999 categories per type)</p>
+     * <p>Range: 000001-999999 (6-character string, first 2 digits match type code)</p>
+     * 
+     * <p>Note: Changed from Integer to String to match database schema VARCHAR(6) and
+     * reference data format where category codes are 6 characters (e.g., '010001').</p>
      */
-    @Column(name = "transaction_category_code", nullable = false)
-    private Integer transactionCategoryCode;
+    @Column(name = "transaction_category_code", length = 6, nullable = false)
+    private String transactionCategoryCode;
 
     /**
      * Transaction source - Origination channel or system (10 characters).
@@ -824,12 +827,8 @@ public class Transaction implements Serializable {
      * category descriptions in high-volume transaction processing.</p>
      */
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumns({
-        @JoinColumn(name = "transaction_type_code", referencedColumnName = "type_code",
-                    insertable = false, updatable = false),
-        @JoinColumn(name = "transaction_category_code", referencedColumnName = "category_code",
-                    insertable = false, updatable = false)
-    })
+    @JoinColumn(name = "transaction_category_code", referencedColumnName = "transaction_category_code",
+                insertable = false, updatable = false)
     @JsonIgnore
     private TransactionCategory transactionCategory;
 

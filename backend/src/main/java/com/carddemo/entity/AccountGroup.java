@@ -112,9 +112,9 @@ public class AccountGroup implements Serializable {
     /**
      * Convenience method to get the transaction category code from the composite key.
      * 
-     * @return transaction category code (4 digits), or null if id is null
+     * @return transaction category code (6-character string), or null if id is null
      */
-    public Integer getTransactionCategoryCode() {
+    public String getTransactionCategoryCode() {
         return this.id != null ? this.id.getTransactionCategoryCode() : null;
     }
 
@@ -161,13 +161,13 @@ public class AccountGroup implements Serializable {
         /**
          * Transaction category code.
          * 
-         * Maps COBOL field: DIS-TRAN-CAT-CD PIC 9(04)
-         * Range: 0-9999 (4 digits)
+         * Maps database field: transaction_category_code VARCHAR(6)
+         * Format: 6-character string where first 2 characters match transaction type code
          * 
          * References TransactionCategory entity via this code field.
          */
-        @Column(name = "transaction_category_code", nullable = false)
-        private Integer transactionCategoryCode;
+        @Column(name = "transaction_category_code", length = 6, nullable = false)
+        private String transactionCategoryCode;
 
         /**
          * Checks equality based on all composite key components.

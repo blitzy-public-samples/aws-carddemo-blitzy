@@ -824,15 +824,8 @@ public class TransactionCreationService {
         // Set transaction classification fields
         transaction.setTransactionTypeCode(request.getTransactionTypeCode());
         
-        // Parse category code from string to integer
-        Integer categoryCode;
-        try {
-            categoryCode = Integer.parseInt(request.getTransactionCategoryCode());
-        } catch (NumberFormatException e) {
-            log.error("Invalid transaction category code: {}", request.getTransactionCategoryCode());
-            throw new TransactionException("Transaction category code must be numeric", "INVALID_CATEGORY");
-        }
-        transaction.setTransactionCategoryCode(categoryCode);
+        // Set category code directly as string (matches database VARCHAR(6) schema)
+        transaction.setTransactionCategoryCode(request.getTransactionCategoryCode());
         
         // Set transaction details
         transaction.setTransactionSource(request.getTransactionSource());

@@ -316,7 +316,7 @@ public class TransactionGroupReader implements ItemStreamReader<TransactionGroup
             // Map primary grouping keys
             group.setAccountId(rs.getLong("account_id"));
             group.setTransactionTypeCode(rs.getString("transaction_type_code"));
-            group.setTransactionCategoryCode(rs.getInt("transaction_category_code"));
+            group.setTransactionCategoryCode(rs.getString("transaction_category_code"));
 
             // Map aggregated values with COBOL COMP-3 precision
             group.setTransactionCount(rs.getInt("transaction_count"));
@@ -359,7 +359,7 @@ public class TransactionGroupReader implements ItemStreamReader<TransactionGroup
         // Grouping keys (composite primary key)
         private Long accountId;
         private String transactionTypeCode;
-        private Integer transactionCategoryCode;
+        private String transactionCategoryCode;
 
         // Aggregated metrics
         private Integer transactionCount;
@@ -400,11 +400,11 @@ public class TransactionGroupReader implements ItemStreamReader<TransactionGroup
             this.transactionTypeCode = transactionTypeCode;
         }
 
-        public Integer getTransactionCategoryCode() {
+        public String getTransactionCategoryCode() {
             return transactionCategoryCode;
         }
 
-        public void setTransactionCategoryCode(Integer transactionCategoryCode) {
+        public void setTransactionCategoryCode(String transactionCategoryCode) {
             this.transactionCategoryCode = transactionCategoryCode;
         }
 

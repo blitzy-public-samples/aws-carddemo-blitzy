@@ -483,7 +483,7 @@ class TransactionRepositoryTest {
         Transaction newTransaction = new Transaction();
         newTransaction.setTransactionId("TXN0000000000099");
         newTransaction.setTransactionTypeCode("01"); // Purchase
-        newTransaction.setTransactionCategoryCode(5010); // Retail
+        newTransaction.setTransactionCategoryCode("055010"); // Retail
         newTransaction.setTransactionSource("POS");
         newTransaction.setTransactionDescription("Test Purchase");
         
@@ -720,7 +720,7 @@ class TransactionRepositoryTest {
         Transaction txnToDelete = new Transaction();
         txnToDelete.setTransactionId("TXN0000000000098");
         txnToDelete.setTransactionTypeCode("01");
-        txnToDelete.setTransactionCategoryCode(5010);
+        txnToDelete.setTransactionCategoryCode("055010");
         txnToDelete.setTransactionAmount(
             new BigDecimal("10.00").setScale(2, RoundingMode.HALF_UP));
         txnToDelete.setCardNumber("4000123456789010");

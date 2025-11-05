@@ -190,9 +190,10 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionAg
     /**
      * Transaction category code for interest charges.
      * Maps to COBOL line 483: MOVE '05' TO TRAN-CAT-CD
-     * Category '05' represents interest category within type '01' transactions.
+     * Category '010005' represents interest category within type '01' (Purchase) transactions.
+     * Changed from Integer to String to match database schema VARCHAR(6).
      */
-    private static final Integer INTEREST_TRANSACTION_CATEGORY_CODE = 5;
+    private static final String INTEREST_TRANSACTION_CATEGORY_CODE = "010005";
 
     /**
      * Transaction source identifier for system-generated interest transactions.
@@ -352,7 +353,7 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionAg
         // Extract input fields from TransactionAggregate
         Long accountId = item.getAccountId();
         String transactionTypeCode = item.getTransactionTypeCode();
-        Integer transactionCategoryCode = item.getTransactionCategoryCode();
+        String transactionCategoryCode = item.getTransactionCategoryCode();
         BigDecimal categoryBalance = item.getCategoryBalance();
 
         if (logger.isDebugEnabled()) {

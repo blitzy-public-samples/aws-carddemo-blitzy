@@ -222,7 +222,7 @@ import java.util.Optional;
  * @see com.carddemo.batch.job.TransactionAggregationJob
  */
 @Repository
-public interface TransactionCategoryRepository extends JpaRepository<TransactionCategory, TransactionCategory.CategoryId> {
+public interface TransactionCategoryRepository extends JpaRepository<TransactionCategory, String> {
 
     /**
      * Find all transaction categories for a specific transaction type code.
@@ -251,7 +251,7 @@ public interface TransactionCategoryRepository extends JpaRepository<Transaction
      *    END-PERFORM.
      * 
      * Java Equivalent:
-     *    List&lt;TransactionCategory&gt; categories = repository.findByIdTypeCode("PU");
+     *    List&lt;TransactionCategory&gt; categories = repository.findByTypeCode("PU");
      *    categories.forEach(this::processCategory);
      * </pre>
      * 
@@ -260,13 +260,13 @@ public interface TransactionCategoryRepository extends JpaRepository<Transaction
      * <pre>
      * SELECT tc.*
      * FROM transaction_category tc
-     * WHERE tc.type_code = ?
-     * ORDER BY tc.type_code, tc.category_code
+     * WHERE tc.transaction_type_code = ?
+     * ORDER BY tc.transaction_category_code
      * </pre>
      * 
      * <p><strong>Performance:</strong></p>
      * <ul>
-     *   <li>Uses composite primary key index for efficient filtering</li>
+     *   <li>Uses index on transaction_type_code for efficient filtering</li>
      *   <li>Typical result set: 10-50 categories per transaction type</li>
      *   <li>Query execution time: &lt; 5ms (indexed access)</li>
      *   <li>Recommended for caching in Redis due to static reference data nature</li>
@@ -284,26 +284,26 @@ public interface TransactionCategoryRepository extends JpaRepository<Transaction
      * <pre>
      * // Service layer method for transaction form
      * public List&lt;CategoryDTO&gt; getCategoriesForTransactionType(String transactionType) {
-     *     List&lt;TransactionCategory&gt; categories = repository.findByIdTypeCode(transactionType);
+     *     List&lt;TransactionCategory&gt; categories = repository.findByTypeCode(transactionType);
      *     return categories.stream()
      *         .map(this::convertToDTO)
      *         .collect(Collectors.toList());
      * }
      * </pre>
      * 
-     * @param typeCode the 2-character transaction type code (e.g., "PU", "CA", "PM", "FE")
+     * @param typeCode the 2-character transaction type code (e.g., "01", "02", "03", "04")
      * @return list of TransactionCategory entities matching the type code, ordered by category code;
      *         empty list if no categories exist for the specified type
      * @throws IllegalArgumentException if typeCode is null or empty
      */
-    List<TransactionCategory> findByIdTypeCode(String typeCode);
+    List<TransactionCategory> findByTypeCode(String typeCode);
 
     /**
-     * Find a specific transaction category by both type code and category code.
+     * Find a specific transaction category by type code and numeric category identifier.
      * 
-     * <p>This method provides an alternative to findById(CategoryId) by accepting both components
-     * of the composite key as separate parameters. Useful when caller has type code and category
-     * code as individual values rather than a constructed CategoryId object.</p>
+     * <p>This method provides a convenience lookup by accepting the type code and numeric category
+     * identifier as separate parameters, then constructing the full 6-character category code
+     * internally to perform the lookup.</p>
      * 
      * <p><strong>COBOL Equivalent:</strong></p>
      * <pre>
@@ -319,23 +319,23 @@ public interface TransactionCategoryRepository extends JpaRepository<Transaction
      * 
      * Java Equivalent:
      *    Optional&lt;TransactionCategory&gt; category = 
-     *        repository.findByIdTypeCodeAndIdCategoryCode("PU", 1001);
+     *        repository.findByTypeCodeAndCategoryNumber("01", 1);
      *    String description = category
      *        .map(TransactionCategory::getCategoryDescription)
      *        .orElse("Category not found");
      * </pre>
      * 
-     * <p><strong>Query Generation:</strong></p>
-     * <p>Spring Data JPA generates SQL query:</p>
+     * <p><strong>Implementation:</strong></p>
+     * <p>Constructs full 6-character code from type code (2 chars) + formatted category number (4 digits),
+     * then uses findById() for primary key lookup.</p>
      * <pre>
-     * SELECT tc.*
-     * FROM transaction_category tc
-     * WHERE tc.type_code = ? AND tc.category_code = ?
+     * String fullCode = typeCode + String.format("%04d", categoryNumber);
+     * return findById(fullCode);
      * </pre>
      * 
      * <p><strong>Performance:</strong></p>
      * <ul>
-     *   <li>Uses composite primary key for O(1) hash lookup or O(log n) B-tree lookup</li>
+     *   <li>Uses primary key index for O(1) lookup</li>
      *   <li>Query execution time: &lt; 1ms (primary key access)</li>
      *   <li>Most efficient query pattern for category validation</li>
      *   <li>Ideal for use in transaction posting validation per Section 0.9 requirements</li>
@@ -344,7 +344,7 @@ public interface TransactionCategoryRepository extends JpaRepository<Transaction
      * <p><strong>Use Cases:</strong></p>
      * <ul>
      *   <li>Transaction creation validation: verify category exists before posting transaction</li>
-     *   <li>REST API endpoints accepting type code and category code as path variables</li>
+     *   <li>REST API endpoints accepting type code and category number as path variables</li>
      *   <li>Category detail display in transaction view screens</li>
      *   <li>Batch processing validation during transaction import</li>
      * </ul>
@@ -352,48 +352,33 @@ public interface TransactionCategoryRepository extends JpaRepository<Transaction
      * <p><strong>Example Usage:</strong></p>
      * <pre>
      * // Validation in TransactionCreationService
-     * public void validateTransactionCategory(String typeCode, Integer categoryCode) {
+     * public void validateTransactionCategory(String typeCode, Integer categoryNumber) {
      *     Optional&lt;TransactionCategory&gt; category = 
-     *         repository.findByIdTypeCodeAndIdCategoryCode(typeCode, categoryCode);
+     *         repository.findByTypeCodeAndCategoryNumber(typeCode, categoryNumber);
      *     
      *     if (category.isEmpty()) {
      *         throw new InvalidCategoryException(
-     *             String.format("Category %s-%04d not found", typeCode, categoryCode)
+     *             String.format("Category %s%04d not found", typeCode, categoryNumber)
      *         );
      *     }
      * }
-     * 
-     * // REST Controller path variable handling
-     * @GetMapping("/categories/{typeCode}/{categoryCode}")
-     * public ResponseEntity&lt;CategoryDTO&gt; getCategory(
-     *         @PathVariable String typeCode,
-     *         @PathVariable Integer categoryCode) {
-     *     return repository.findByIdTypeCodeAndIdCategoryCode(typeCode, categoryCode)
-     *         .map(this::convertToDTO)
-     *         .map(ResponseEntity::ok)
-     *         .orElse(ResponseEntity.notFound().build());
-     * }
      * </pre>
      * 
-     * <p><strong>Comparison with findById():</strong></p>
-     * <pre>
-     * // Using findById (requires CategoryId construction):
-     * CategoryId id = new CategoryId("PU", 1001);
-     * Optional&lt;TransactionCategory&gt; cat1 = repository.findById(id);
-     * 
-     * // Using this method (direct parameters):
-     * Optional&lt;TransactionCategory&gt; cat2 = 
-     *     repository.findByIdTypeCodeAndIdCategoryCode("PU", 1001);
-     * 
-     * // Both return identical results and have same performance
-     * </pre>
-     * 
-     * @param typeCode the 2-character transaction type code (e.g., "PU", "CA", "PM")
-     * @param categoryCode the 4-digit category code (1-9999)
+     * @param typeCode the 2-character transaction type code (e.g., "01", "02", "03")
+     * @param categoryNumber the numeric category identifier (1-9999)
      * @return Optional containing the TransactionCategory if found, empty Optional if not found
-     * @throws IllegalArgumentException if typeCode is null/empty or categoryCode is null/negative
+     * @throws IllegalArgumentException if typeCode is null/empty or categoryNumber is null/negative
      */
-    Optional<TransactionCategory> findByIdTypeCodeAndIdCategoryCode(String typeCode, Integer categoryCode);
+    default Optional<TransactionCategory> findByTypeCodeAndCategoryNumber(String typeCode, Integer categoryNumber) {
+        if (typeCode == null || typeCode.isEmpty()) {
+            throw new IllegalArgumentException("Type code cannot be null or empty");
+        }
+        if (categoryNumber == null || categoryNumber < 0) {
+            throw new IllegalArgumentException("Category number cannot be null or negative");
+        }
+        String fullCode = typeCode + String.format("%04d", categoryNumber);
+        return findById(fullCode);
+    }
 
     /**
      * Retrieve all transaction categories sorted alphabetically by category description.

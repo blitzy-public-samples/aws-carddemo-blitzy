@@ -968,7 +968,7 @@ public class TransactionListServiceTest {
             txn.setOriginationTimestamp(baseTime.plusMinutes(i)); // Each 1 minute later
             txn.setTransactionDescription("Test Transaction " + (i + 1));
             txn.setTransactionTypeCode("PU"); // Purchase type
-            txn.setTransactionCategoryCode(1001); // Category code
+            txn.setTransactionCategoryCode("011001"); // Category code
             txn.setTransactionSource("POS");
             txn.setCardNumber(TEST_CARD_NUMBER);
             transactions.add(txn);
@@ -994,7 +994,7 @@ public class TransactionListServiceTest {
         txn.setOriginationTimestamp(timestamp);
         txn.setTransactionDescription("Transaction " + transactionId);
         txn.setTransactionTypeCode("PU");
-        txn.setTransactionCategoryCode(1001);
+        txn.setTransactionCategoryCode("011001");
         txn.setTransactionSource("POS");
         txn.setCardNumber(TEST_CARD_NUMBER);
         return txn;

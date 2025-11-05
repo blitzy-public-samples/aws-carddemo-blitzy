@@ -316,7 +316,7 @@ public class DailyTransactionReader implements ItemReader<DailyTransactionReader
             // Map columns to entity fields with null safety
             transaction.setTransactionId((String) row[0]);
             transaction.setTypeCode((String) row[1]);
-            transaction.setCategoryCode((Integer) row[2]);
+            transaction.setCategoryCode((String) row[2]);
             transaction.setSource((String) row[3]);
             transaction.setDescription((String) row[4]);
             transaction.setAmount((BigDecimal) row[5]);
@@ -403,8 +403,8 @@ public class DailyTransactionReader implements ItemReader<DailyTransactionReader
         /** Transaction type code (DALYTRAN-TYPE-CD): 'DR' = Debit, 'CR' = Credit */
         private String typeCode;
         
-        /** Transaction category code (DALYTRAN-CAT-CD): 1-9999 */
-        private Integer categoryCode;
+        /** Transaction category code (DALYTRAN-CAT-CD): 6-character string like '010001' */
+        private String categoryCode;
         
         /** Transaction source (DALYTRAN-SOURCE): 'POS', 'ATM', 'ONLINE', etc. */
         private String source;
@@ -460,11 +460,11 @@ public class DailyTransactionReader implements ItemReader<DailyTransactionReader
             this.typeCode = typeCode;
         }
 
-        public Integer getCategoryCode() {
+        public String getCategoryCode() {
             return categoryCode;
         }
 
-        public void setCategoryCode(Integer categoryCode) {
+        public void setCategoryCode(String categoryCode) {
             this.categoryCode = categoryCode;
         }
 

@@ -413,7 +413,7 @@ public class TransactionAggregationProcessor implements ItemProcessor<Transactio
         // Extract group attributes
         Long accountId = transactionGroup.getAccountId();
         String transactionTypeCode = transactionGroup.getTransactionTypeCode();
-        Integer transactionCategoryCode = transactionGroup.getTransactionCategoryCode();
+        String transactionCategoryCode = transactionGroup.getTransactionCategoryCode();
         BigDecimal totalAmount = transactionGroup.getTotalAmount();
         Integer transactionCount = transactionGroup.getTransactionCount();
 
@@ -451,13 +451,11 @@ public class TransactionAggregationProcessor implements ItemProcessor<Transactio
 
             // Validation: Transaction category code existence check
             // Replaces COBOL 1500-C-LOOKUP-TRANCATG paragraph (CBTRN03C.cbl lines 504-512)
-            // Note: TransactionCategory uses composite key
-            boolean categoryExists = transactionCategoryRepository.existsById(
-                    new com.carddemo.entity.TransactionCategory.CategoryId(
-                            transactionTypeCode, transactionCategoryCode));
+            // Note: TransactionCategory now uses single 6-character category code as primary key
+            boolean categoryExists = transactionCategoryRepository.existsById(transactionCategoryCode);
             if (!categoryExists) {
-                logger.warn("Transaction group for account {} has invalid category code '{}' for type '{}', skipping",
-                        accountId, transactionCategoryCode, transactionTypeCode);
+                logger.warn("Transaction group for account {} has invalid category code '{}', skipping",
+                        accountId, transactionCategoryCode);
                 return null;
             }
 

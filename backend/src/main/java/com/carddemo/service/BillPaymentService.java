@@ -156,8 +156,10 @@ public class BillPaymentService {
     /**
      * Transaction category code for payment transactions.
      * Maps to COBOL: MOVE 2 TO TRAN-CAT-CD (line 221)
+     * Category '020002' represents electronic payment within type '02' (Payment) transactions.
+     * Changed from Integer to String to match database schema VARCHAR(6).
      */
-    private static final Integer PAYMENT_CATEGORY_CODE = 2;
+    private static final String PAYMENT_CATEGORY_CODE = "020002";
 
     /**
      * Transaction source for online bill payments.

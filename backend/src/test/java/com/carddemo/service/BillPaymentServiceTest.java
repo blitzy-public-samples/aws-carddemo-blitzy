@@ -154,7 +154,7 @@ public class BillPaymentServiceTest {
         testTransaction = new Transaction();
         testTransaction.setTransactionId("TEST1234567890AB");
         testTransaction.setTransactionTypeCode("02");
-        testTransaction.setTransactionCategoryCode(2);
+        testTransaction.setTransactionCategoryCode("010002");
         testTransaction.setTransactionAmount(new BigDecimal("250.00").setScale(2, RoundingMode.HALF_UP));
         testTransaction.setOriginationTimestamp(LocalDateTime.now());
         testTransaction.setProcessingTimestamp(LocalDateTime.now());

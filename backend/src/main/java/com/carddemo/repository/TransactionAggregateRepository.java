@@ -89,15 +89,15 @@ public interface TransactionAggregateRepository extends JpaRepository<Transactio
      * Retrieves all transaction aggregations for a specific transaction category.
      * 
      * <p>This method returns aggregation records filtered by transaction category code
-     * (e.g., 5000 for retail, 5010 for dining). Useful for category-based analysis
+     * (e.g., "010001" for groceries, "010002" for gas). Useful for category-based analysis
      * and reporting across all accounts and transaction types.</p>
      * 
      * <p>Equivalent COBOL logic: Lookup and reporting by TRAN-CAT-CD in CBTRN03C.</p>
      * 
-     * @param categoryCode the transaction category code (4-digit integer code)
+     * @param categoryCode the transaction category code (6-character string code, e.g., "010001")
      * @return list of all transaction aggregates for the category; empty list if none found
      */
-    List<TransactionAggregate> findById_TransactionCategoryCode(Integer categoryCode);
+    List<TransactionAggregate> findById_TransactionCategoryCode(String categoryCode);
 
     /**
      * Finds a specific transaction aggregation using the composite business key.
@@ -114,13 +114,13 @@ public interface TransactionAggregateRepository extends JpaRepository<Transactio
      * 
      * @param accountId the unique identifier of the account
      * @param typeCode the transaction type code (2-character code)
-     * @param categoryCode the transaction category code (4-digit integer code)
+     * @param categoryCode the transaction category code (6-character string code)
      * @return Optional containing the matching aggregate if found, empty Optional otherwise
      */
     Optional<TransactionAggregate> findById_AccountIdAndId_TransactionTypeCodeAndId_TransactionCategoryCode(
             Long accountId, 
             String typeCode, 
-            Integer categoryCode
+            String categoryCode
     );
 
     /**
@@ -158,13 +158,13 @@ public interface TransactionAggregateRepository extends JpaRepository<Transactio
      * <p>This method retrieves aggregations across all accounts for a specific
      * transaction type and category pair, useful for cross-account category analysis.</p>
      * 
-     * @param typeCode the transaction type code
-     * @param categoryCode the transaction category code
+     * @param typeCode the transaction type code (2-character string, e.g., "01")
+     * @param categoryCode the transaction category code (6-character string, e.g., "010001")
      * @return list of matching aggregates across all accounts; empty list if none found
      */
     List<TransactionAggregate> findById_TransactionTypeCodeAndId_TransactionCategoryCode(
             String typeCode,
-            Integer categoryCode
+            String categoryCode
     );
 
     /**

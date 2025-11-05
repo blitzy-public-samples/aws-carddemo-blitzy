@@ -79,8 +79,8 @@ public class DailyTransactionStaging {
      * COBOL: DALYTRAN-CAT-CD PIC 9(04)
      * Valid range: 1-9999
      */
-    @Column(name = "category_code", nullable = false)
-    private Integer categoryCode;
+    @Column(name = "category_code", length = 6, nullable = false)
+    private String categoryCode;
 
     /**
      * Transaction source/channel.
@@ -237,11 +237,11 @@ public class DailyTransactionStaging {
         this.typeCode = typeCode;
     }
 
-    public Integer getCategoryCode() {
+    public String getCategoryCode() {
         return categoryCode;
     }
 
-    public void setCategoryCode(Integer categoryCode) {
+    public void setCategoryCode(String categoryCode) {
         this.categoryCode = categoryCode;
     }
 

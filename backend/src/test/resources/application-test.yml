@@ -66,6 +66,7 @@ logging:
     org.hibernate.type.descriptor.sql.BasicBinder: TRACE
 
 # JWT Configuration for testing
-jwt:
-  secret: testSecretKeyForIntegrationTestingPurposesOnly12345
-  expiration: 86400000
+app:
+  jwt:
+    secret: testSecretKeyForIntegrationTestingPurposesOnly12345
+    expiration: 86400000

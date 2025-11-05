@@ -904,7 +904,7 @@ public class BatchProcessingIntegrationTest {
         transaction.setTransactionDate(transactionDate); // Deprecated but maintains compatibility
         transaction.setOriginationTimestamp(transactionDate.atStartOfDay()); // Correct method for timestamp
         transaction.setTransactionTypeCode("PU"); // Purchase
-        transaction.setTransactionCategoryCode(1001); // Set required category code (e.g., Groceries)
+        transaction.setTransactionCategoryCode("011001"); // Set required category code (e.g., Groceries)
         transaction.setTransactionDescription(description); // Set the description parameter
         // Set other required fields with default test values
         return transaction;

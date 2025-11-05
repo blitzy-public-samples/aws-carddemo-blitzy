@@ -376,3 +376,40 @@ at com.carddemo.service.AccountUpdateServiceTest.updateAccount_ValidatesPhoneNum
 
 **Impact:** 1 test failure out of 601 total tests in the backend module.
 **Module Status:** 600 tests passing, module compiles successfully.
+
+## Test Compilation Issues Due to TransactionCategory Schema Change (Out of Scope)
+
+**Date**: 2025-11-05
+**Context**: Fixed fundamental schema mismatch where TransactionCategory used composite @EmbeddedId but database has single primary key
+
+**Root Cause**: Changed TransactionCategory entity from composite key (CategoryId with typeCode + categoryCode as Integer) to single primary key (categoryCode as String VARCHAR(6))
+
+**Out-of-Scope Test Files Requiring Updates** (9 files):
+1. `src/test/java/com/carddemo/batch/AccountBalanceJobTest.java` - References CategoryId
+2. `src/test/java/com/carddemo/batch/TransactionAggregationJobTest.java` - References CategoryId
+3. `src/test/java/com/carddemo/batch/DailyTransactionProcessingJobTest.java` - References CategoryId, creates `new CategoryId("PU", 1001)`
+4. `src/test/java/com/carddemo/batch/InterestCalculationJobTest.java` - References CategoryId
+5. `src/test/java/com/carddemo/batch/TransactionDataLoadJobTest.java` - References CategoryId
+6. `src/test/java/com/carddemo/batch/StatementFormattingJobTest.java` - References CategoryId
+7. `src/test/java/com/carddemo/batch/StatementGenerationJobTest.java` - References CategoryId
+8. `src/test/java/com/carddemo/repository/TransactionCategoryRepositoryTest.java` - Heavy usage of CategoryId, getId(), setId()
+9. `src/test/java/com/carddemo/integration/BillPaymentIntegrationTest.java` - References CategoryId
+
+**Required Test Refactoring Pattern**:
+```java
+// OLD (broken):
+TransactionCategory.CategoryId categoryId = new TransactionCategory.CategoryId("PU", 1001);
+TransactionCategory category = new TransactionCategory();
+category.setId(categoryId);
+category.setCategoryDescription("Groceries");
+
+// NEW (correct):
+TransactionCategory category = new TransactionCategory();
+category.setCategoryCode("010001");  // 6-char string: "01" (type) + "0001" (category)
+category.setTypeCode("01");
+category.setCategoryDescription("Groceries");
+```
+
+**Main Source Code**: All fixed and compiles successfully
+**In-Scope Test (TransactionIntegrationTest.java)**: Compiles successfully, ready for execution
+

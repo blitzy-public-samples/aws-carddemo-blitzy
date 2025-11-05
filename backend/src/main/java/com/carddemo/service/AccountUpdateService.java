@@ -541,11 +541,14 @@ public class AccountUpdateService {
     }
 
     /**
-     * Formats a 10-digit phone number string into COBOL display format (XXX)XXX-XXXX.
-     * If already formatted, returns as-is. If null or empty, returns unchanged.
+     * Validates and returns phone number in required format.
+     * Unlike auto-formatting, this method enforces that phone numbers must be 
+     * provided in (XXX)XXX-XXXX format per COBOL BMS screen design.
+     * This matches COBOL behavior where BMS screen provides formatted input.
+     * If null or empty, returns unchanged (for optional fields).
      * 
-     * @param phoneNumber 10-digit phone number from DTO or formatted phone number
-     * @return Formatted phone number in (XXX)XXX-XXXX format
+     * @param phoneNumber Phone number from DTO, must be pre-formatted
+     * @return Phone number as-is if valid format or null/empty, original otherwise (will fail validation)
      */
     private String formatPhoneNumber(String phoneNumber) {
         if (phoneNumber == null || phoneNumber.trim().isEmpty()) {
@@ -557,18 +560,8 @@ public class AccountUpdateService {
             return phoneNumber;
         }
         
-        // Strip all non-digit characters
-        String digits = phoneNumber.replaceAll("[^0-9]", "");
-        
-        // Format 10 digits into (XXX)XXX-XXXX
-        if (digits.length() == 10) {
-            return String.format("(%s)%s-%s", 
-                digits.substring(0, 3),
-                digits.substring(3, 6),
-                digits.substring(6, 10));
-        }
-        
-        // Return original if can't format (will fail validation)
+        // Return original without auto-formatting (will fail validation)
+        // This matches COBOL behavior where BMS screen provides formatted input
         return phoneNumber;
     }
 

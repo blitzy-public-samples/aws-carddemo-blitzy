@@ -965,7 +965,7 @@ public class TransactionControllerTest {
         response.setCardNumber("************9012"); // Masked card number
         response.setTransactionAmount(TEST_AMOUNT_125_50);
         response.setTransactionTypeCode("01");
-        response.setTransactionCategoryCode(1002);
+        response.setTransactionCategoryCode("011002");
         response.setTransactionDescription("Gas Station Purchase");
         response.setOriginationTimestamp(LocalDateTime.now());
         response.setProcessingTimestamp(LocalDateTime.now());
