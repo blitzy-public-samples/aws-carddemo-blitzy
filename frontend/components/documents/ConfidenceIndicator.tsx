@@ -30,8 +30,8 @@
  * />
  */
 
-import React, { memo, FC } from 'react';
-import { CheckCircle2, AlertCircle, XCircle } from 'lucide-react';
+import React, { type FC, memo } from 'react';
+import { AlertCircle, CheckCircle2, XCircle } from 'lucide-react';
 import clsx from 'clsx';
 
 /**
@@ -81,6 +81,15 @@ export interface ConfidenceIndicatorProps {
 type ConfidenceLevel = 'high' | 'medium' | 'low';
 
 /**
+ * Confidence thresholds as defined in Section 0.7.3
+ * High confidence: >= 90%
+ * Medium confidence: >= 70% and < 90%
+ * Low confidence: < 70%
+ */
+const CONFIDENCE_THRESHOLD_HIGH = 90;
+const CONFIDENCE_THRESHOLD_MEDIUM = 70;
+
+/**
  * ConfidenceIndicator Component
  *
  * Displays a visual indicator of OCR extraction confidence with color coding,
@@ -97,8 +106,8 @@ const ConfidenceIndicator: FC<ConfidenceIndicatorProps> = memo(
   ({ confidence, showLabel = true, showPercentage = true, size = 'md', className }) => {
     // Compute confidence level based on thresholds from Section 0.7.3
     const getConfidenceLevel = (score: number): ConfidenceLevel => {
-      if (score >= 90) return 'high';
-      if (score >= 70) return 'medium';
+      if (score >= CONFIDENCE_THRESHOLD_HIGH) return 'high';
+      if (score >= CONFIDENCE_THRESHOLD_MEDIUM) return 'medium';
       return 'low';
     };
 
