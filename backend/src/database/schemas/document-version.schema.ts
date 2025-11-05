@@ -44,7 +44,7 @@ export type ChangeType =
  * Status change tracking
  * Records transitions between document statuses
  */
-export interface IStatusChange {
+export interface StatusChange {
   /** Previous status value */
   from: string;
   
@@ -56,22 +56,22 @@ export interface IStatusChange {
  * Individual field modification details
  * Captures what changed in a specific field between versions
  */
-export interface IFieldModification {
+export interface FieldModification {
   /** Name of the field that was modified */
   field: string;
   
   /** Previous field value (can be any type) */
-  old_value: any;
+  old_value: unknown;
   
   /** New field value (can be any type) */
-  new_value: any;
+  new_value: unknown;
 }
 
 /**
  * Summary of changes between versions
  * Provides quick overview of what changed without comparing full snapshots
  */
-export interface IChangesSummary {
+export interface ChangesSummary {
   /** Array of field names that were added in this version */
   fields_added?: string[];
   
@@ -79,10 +79,10 @@ export interface IChangesSummary {
   fields_removed?: string[];
   
   /** Array of detailed field modifications showing old and new values */
-  fields_modified?: IFieldModification[];
+  fields_modified?: FieldModification[];
   
   /** Status transition details if status changed */
-  status_change?: IStatusChange;
+  status_change?: StatusChange;
 }
 
 /**
@@ -90,7 +90,7 @@ export interface IChangesSummary {
  * Stores the full state of a document at a specific point in time
  * This mirrors the main document schema but is frozen as historical record
  */
-export interface IDocumentSnapshot {
+export interface DocumentSnapshot {
   /** Document ID reference (same as parent document_id) */
   document_id: string;
   
@@ -114,7 +114,7 @@ export interface IDocumentSnapshot {
    * Structure varies by document type
    * Example: { invoice_number: "INV-001", total: 1500.00, date: "2025-10-31" }
    */
-  extracted_data: Record<string, any>;
+  extracted_data: Record<string, unknown>;
   
   /** 
    * Confidence scores for each extracted field (0-100)
@@ -135,7 +135,7 @@ export interface IDocumentSnapshot {
    * Custom fields defined by user or template
    * Flexible structure for business-specific data
    */
-  custom_fields: Record<string, any>;
+  custom_fields: Record<string, unknown>;
 }
 
 /**
@@ -151,7 +151,7 @@ export interface IDocumentSnapshot {
  * 
  * Usage Example:
  * ```typescript
- * const version: IDocumentVersion = {
+ * const version: DocumentVersion = {
  *   _id: new ObjectId(),
  *   document_id: "doc_123",
  *   account_id: "acc_456",
@@ -172,7 +172,7 @@ export interface IDocumentSnapshot {
  * };
  * ```
  */
-export interface IDocumentVersion {
+export interface DocumentVersion {
   /** MongoDB document ID (primary key) */
   _id: ObjectId;
   
@@ -226,14 +226,14 @@ export interface IDocumentVersion {
    * Contains all extracted data, confidence scores, metadata
    * Large object - consider archival for old versions
    */
-  document_snapshot: IDocumentSnapshot;
+  document_snapshot: DocumentSnapshot;
   
   /** 
    * Optional summary of what changed from previous version
    * Helps avoid full snapshot comparison for quick diffs
    * Generated during version creation
    */
-  changes_summary?: IChangesSummary;
+  changes_summary?: ChangesSummary;
   
   /** 
    * Optional user-provided reason for the change
@@ -257,14 +257,14 @@ export interface IDocumentVersion {
    * Additional flexible metadata
    * Can store integration context, workflow info, etc.
    */
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 /**
  * DTO for creating new document versions
  * Omits MongoDB-generated _id field
  */
-export type CreateDocumentVersionDto = Omit<IDocumentVersion, '_id'>;
+export type CreateDocumentVersionDto = Omit<DocumentVersion, '_id'>;
 
 /**
  * Collection name constant
@@ -397,50 +397,64 @@ export function isValidChangeType(value: string): value is ChangeType {
 /**
  * Validates that a document version object has all required fields
  * @param obj - Object to validate
- * @returns True if object is a valid IDocumentVersion structure
+ * @returns True if object is a valid DocumentVersion structure
  */
-export function isValidDocumentVersion(obj: any): obj is IDocumentVersion {
+export function isValidDocumentVersion(obj: unknown): obj is DocumentVersion {
+  if (!obj || typeof obj !== 'object') {
+    return false;
+  }
+  
+  const record = obj as Record<string, unknown>;
+  
   return (
-    obj &&
-    typeof obj === 'object' &&
-    obj._id instanceof ObjectId &&
-    typeof obj.document_id === 'string' &&
-    typeof obj.account_id === 'string' &&
-    typeof obj.version_number === 'number' &&
-    obj.version_number >= 1 &&
-    isValidChangeType(obj.change_type) &&
-    typeof obj.changed_by === 'string' &&
-    typeof obj.changed_by_email === 'string' &&
-    obj.created_at instanceof Date &&
-    obj.document_snapshot &&
-    typeof obj.document_snapshot === 'object'
+    record._id instanceof ObjectId &&
+    typeof record.document_id === 'string' &&
+    typeof record.account_id === 'string' &&
+    typeof record.version_number === 'number' &&
+    record.version_number >= 1 &&
+    typeof record.change_type === 'string' &&
+    isValidChangeType(record.change_type) &&
+    typeof record.changed_by === 'string' &&
+    typeof record.changed_by_email === 'string' &&
+    record.created_at instanceof Date &&
+    record.document_snapshot !== null &&
+    record.document_snapshot !== undefined &&
+    typeof record.document_snapshot === 'object'
   );
 }
 
 /**
  * Validates that a document snapshot has required fields
  * @param obj - Object to validate
- * @returns True if object is a valid IDocumentSnapshot structure
+ * @returns True if object is a valid DocumentSnapshot structure
  */
-export function isValidDocumentSnapshot(obj: any): obj is IDocumentSnapshot {
+export function isValidDocumentSnapshot(obj: unknown): obj is DocumentSnapshot {
+  if (!obj || typeof obj !== 'object') {
+    return false;
+  }
+  
+  const record = obj as Record<string, unknown>;
+  
   return (
-    obj &&
-    typeof obj === 'object' &&
-    typeof obj.document_id === 'string' &&
-    typeof obj.file_name === 'string' &&
-    typeof obj.file_size === 'number' &&
-    typeof obj.file_type === 'string' &&
-    typeof obj.status === 'string' &&
-    typeof obj.document_type === 'string' &&
-    obj.extracted_data &&
-    typeof obj.extracted_data === 'object' &&
-    obj.confidence_scores &&
-    typeof obj.confidence_scores === 'object' &&
-    obj.processing_metadata &&
-    typeof obj.processing_metadata === 'object' &&
-    Array.isArray(obj.tags) &&
-    obj.custom_fields &&
-    typeof obj.custom_fields === 'object'
+    typeof record.document_id === 'string' &&
+    typeof record.file_name === 'string' &&
+    typeof record.file_size === 'number' &&
+    typeof record.file_type === 'string' &&
+    typeof record.status === 'string' &&
+    typeof record.document_type === 'string' &&
+    record.extracted_data !== null &&
+    record.extracted_data !== undefined &&
+    typeof record.extracted_data === 'object' &&
+    record.confidence_scores !== null &&
+    record.confidence_scores !== undefined &&
+    typeof record.confidence_scores === 'object' &&
+    record.processing_metadata !== null &&
+    record.processing_metadata !== undefined &&
+    typeof record.processing_metadata === 'object' &&
+    Array.isArray(record.tags) &&
+    record.custom_fields !== null &&
+    record.custom_fields !== undefined &&
+    typeof record.custom_fields === 'object'
   );
 }
 
@@ -449,8 +463,8 @@ export function isValidDocumentSnapshot(obj: any): obj is IDocumentSnapshot {
  * 
  * Creating a version on document creation:
  * ```typescript
- * import { ObjectId } from 'mongodb';
- * import { IDocumentVersion, CreateDocumentVersionDto, DOCUMENT_VERSIONS_COLLECTION } from './document-version.schema';
+ * import type { ObjectId } from 'mongodb';
+ * import { DocumentVersion, CreateDocumentVersionDto, DOCUMENT_VERSIONS_COLLECTION } from './document-version.schema';
  * 
  * const newVersion: CreateDocumentVersionDto = {
  *   document_id: 'doc_abc123',
