@@ -30,7 +30,7 @@ import java.io.Serializable;
  * <p>Database Mapping:
  * <ul>
  *   <li>Table: transaction_type</li>
- *   <li>Primary Key: type_code (2 characters)</li>
+ *   <li>Primary Key: transaction_type_code (2 characters)</li>
  *   <li>Reference data loaded via Flyway migration V9__load_reference_data.sql</li>
  * </ul>
  * </p>
@@ -92,7 +92,7 @@ public class TransactionType implements Serializable {
      * </p>
      */
     @Id
-    @Column(name = "type_code", length = 2, nullable = false)
+    @Column(name = "transaction_type_code", length = 2, nullable = false)
     private String typeCode;
 
     /**
