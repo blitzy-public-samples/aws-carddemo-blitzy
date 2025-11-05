@@ -28,10 +28,12 @@
  * @module TransformInterceptor
  */
 
+import { randomUUID } from 'crypto';
+
 import { Injectable, NestInterceptor, ExecutionContext, CallHandler } from '@nestjs/common';
+import { Request } from 'express';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
-import { randomUUID } from 'crypto';
 
 /**
  * Standardized API response interface with generic type support.
@@ -178,7 +180,7 @@ export class TransformInterceptor<T> implements NestInterceptor<T, Response<T>> 
   intercept(context: ExecutionContext, next: CallHandler): Observable<Response<T>> {
     // Extract HTTP request object from execution context
     const httpContext = context.switchToHttp();
-    const request = httpContext.getRequest();
+    const request = httpContext.getRequest<Request & { requestId?: string }>();
 
     // Extract or generate request ID for tracing
     // Priority: X-Request-ID header > request.requestId property > generate new UUID
@@ -186,7 +188,7 @@ export class TransformInterceptor<T> implements NestInterceptor<T, Response<T>> 
 
     // Pass control to next handler and transform the response
     return next.handle().pipe(
-      map((data) => this.transformResponse(data, requestId))
+      map((data: T) => this.transformResponse(data, requestId))
     );
   }
 
@@ -201,15 +203,20 @@ export class TransformInterceptor<T> implements NestInterceptor<T, Response<T>> 
    * This ensures consistent request tracking across the entire request lifecycle
    * and supports distributed tracing when request ID is propagated from upstream.
    * 
-   * @param {any} request - Express request object
+   * @param {Request & { requestId?: string }} request - Express request object with optional requestId property
    * @returns {string} Request ID (existing or newly generated)
    * 
    * @private
    */
-  private extractRequestId(request: any): string {
+  private extractRequestId(request: Request & { requestId?: string }): string {
     // Check for request ID in custom header (standard for distributed tracing)
-    if (request.headers && request.headers['x-request-id']) {
-      return request.headers['x-request-id'];
+    const headerRequestId = request.headers['x-request-id'];
+    if (headerRequestId) {
+      // Handle both string and string[] types from headers
+      const id = Array.isArray(headerRequestId) ? headerRequestId[0] : headerRequestId;
+      if (id) {
+        return id;
+      }
     }
 
     // Check for request ID set by LoggingInterceptor or other middleware
@@ -246,11 +253,11 @@ export class TransformInterceptor<T> implements NestInterceptor<T, Response<T>> 
   private transformResponse(data: T, requestId: string): Response<T> {
     return {
       success: true,
-      data: data,
+      data,
       meta: {
         timestamp: new Date().toISOString(),
         version: this.apiVersion,
-        requestId: requestId
+        requestId
       }
     };
   }
