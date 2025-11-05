@@ -124,7 +124,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     };
 
     // Include stack trace only in development environment (security requirement)
-    if (process.env.NODE_ENV !== 'production') {
+    if (process.env.NODE_ENV === 'development') {
       errorResponse.error.stack = exception.stack;
     }
 
@@ -222,7 +222,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const details: ValidationErrorDetail[] = [];
 
     // Extract validation error details for 400 Bad Request responses
-    if (status === HttpStatus.BAD_REQUEST && typeof exceptionResponse === 'object') {
+    if (status === HttpStatus.BAD_REQUEST && typeof exceptionResponse === 'object' && exceptionResponse !== null) {
       // Handle class-validator error format
       if (Array.isArray(exceptionResponse.message)) {
         exceptionResponse.message.forEach((msg: any) => {
