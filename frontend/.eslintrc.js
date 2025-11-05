@@ -470,5 +470,6 @@ module.exports = {
     '*.min.js',
     'public/',
     '.turbo/',
+    '**/blitzy_adhoc_test_*.test.tsx',
   ],
 };
