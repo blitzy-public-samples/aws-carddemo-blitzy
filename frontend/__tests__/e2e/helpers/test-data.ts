@@ -44,7 +44,7 @@ export interface TestDocument {
   mimeType: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   uploadedAt: string;
-  extractedFields: Record<string, any>;
+  extractedFields: Record<string, unknown>;
   confidenceScore: number;
 }
 
@@ -70,7 +70,7 @@ export interface TestTemplate {
   documentType: 'invoice' | 'receipt' | 'contract' | 'form';
   description: string;
   zones: TemplateZone[];
-  validationRules: Record<string, any>;
+  validationRules: Record<string, unknown>;
   createdAt: string;
 }
 
@@ -108,7 +108,7 @@ export interface TestWebhook {
   secret: string;
   testEvent: {
     type: string;
-    payload: Record<string, any>;
+    payload: Record<string, unknown>;
   };
 }
 
@@ -117,7 +117,7 @@ export interface TestWebhook {
  */
 export interface TestSearchQuery {
   query: string;
-  filters?: Record<string, any>;
+  filters?: Record<string, unknown>;
   expectedCount: number;
   description: string;
 }
@@ -711,7 +711,10 @@ export function generateTestEmail(username: string, seed: number): string {
  * @param sizeInKb - Size in kilobytes
  * @returns Mock file data object
  */
-export function generateTestFileData(filename: string, sizeInKb: number) {
+export function generateTestFileData(
+  filename: string,
+  sizeInKb: number
+): { filename: string; size: number; mimeType: string; lastModified: number } {
   const mimeTypes: Record<string, string> = {
     pdf: 'application/pdf',
     jpg: 'image/jpeg',
@@ -719,8 +722,8 @@ export function generateTestFileData(filename: string, sizeInKb: number) {
     png: 'image/png',
   };
 
-  const extension = filename.split('.').pop()?.toLowerCase() || 'pdf';
-  const mimeType = mimeTypes[extension] || 'application/octet-stream';
+  const extension = filename.split('.').pop()?.toLowerCase() ?? 'pdf';
+  const mimeType = mimeTypes[extension] ?? 'application/octet-stream';
 
   return {
     filename,
@@ -758,7 +761,7 @@ export function createTestDocument(overrides: Partial<TestDocument> = {}): TestD
  * @returns Promise that resolves after specified time
  */
 export function waitFor(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**

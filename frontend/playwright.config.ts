@@ -63,7 +63,7 @@ export default defineConfig({
      * Configurable via PLAYWRIGHT_BASE_URL environment variable
      * Defaults to local development server
      */
-    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000',
+    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3000',
 
     /**
      * Capture trace on first retry for debugging failed tests
