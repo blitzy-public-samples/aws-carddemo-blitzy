@@ -1,0 +1,121 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": [
+    "package.json",
+    "tsconfig.json",
+    ".env",
+    ".env.local",
+    ".env.example"
+  ],
+  "pipeline": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": [
+        "dist/**",
+        "build/**",
+        ".next/**",
+        "!.next/cache/**"
+      ],
+      "cache": true,
+      "env": [
+        "NODE_ENV",
+        "NEXT_PUBLIC_API_BASE_URL",
+        "NEXT_PUBLIC_WS_URL",
+        "DATABASE_URL",
+        "MONGODB_URI",
+        "REDIS_URL"
+      ]
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "outputs": [
+        "coverage/**"
+      ],
+      "cache": true,
+      "env": [
+        "NODE_ENV"
+      ]
+    },
+    "test:unit": {
+      "dependsOn": [],
+      "outputs": [
+        "coverage/**"
+      ],
+      "cache": true
+    },
+    "test:integration": {
+      "dependsOn": ["build"],
+      "outputs": [
+        "coverage/**"
+      ],
+      "cache": true,
+      "env": [
+        "DATABASE_URL",
+        "MONGODB_URI",
+        "REDIS_URL"
+      ]
+    },
+    "test:e2e": {
+      "dependsOn": ["build"],
+      "outputs": [
+        "coverage/**",
+        "test-results/**",
+        "playwright-report/**"
+      ],
+      "cache": true,
+      "env": [
+        "NEXT_PUBLIC_API_BASE_URL",
+        "DATABASE_URL"
+      ]
+    },
+    "lint": {
+      "dependsOn": [],
+      "outputs": [],
+      "cache": true
+    },
+    "lint:fix": {
+      "dependsOn": [],
+      "outputs": [],
+      "cache": false
+    },
+    "type-check": {
+      "dependsOn": ["^build"],
+      "outputs": [],
+      "cache": true
+    },
+    "dev": {
+      "dependsOn": [],
+      "cache": false,
+      "persistent": true
+    },
+    "start": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "persistent": true
+    },
+    "clean": {
+      "dependsOn": [],
+      "cache": false
+    },
+    "format": {
+      "dependsOn": [],
+      "outputs": [],
+      "cache": false
+    },
+    "format:check": {
+      "dependsOn": [],
+      "outputs": [],
+      "cache": true
+    }
+  },
+  "globalEnv": [
+    "NODE_ENV",
+    "CI",
+    "VERCEL",
+    "AWS_REGION",
+    "GCP_PROJECT_ID"
+  ],
+  "remoteCache": {
+    "enabled": false
+  }
+}
