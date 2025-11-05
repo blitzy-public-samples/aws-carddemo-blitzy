@@ -184,28 +184,9 @@ export class CreateAuditLogsTable007 implements MigrationInterface {
    * @returns Promise<void>
    */
   public async down(queryRunner: QueryRunner): Promise<void> {
-    // Drop all indexes first (PostgreSQL automatically drops them with table, but explicit for clarity)
-    await queryRunner.query(`DROP INDEX IF EXISTS idx_audit_logs_changes_gin;`);
-    await queryRunner.query(`DROP INDEX IF EXISTS idx_audit_logs_created_at;`);
-    await queryRunner.query(`DROP INDEX IF EXISTS idx_audit_logs_security;`);
-    await queryRunner.query(`DROP INDEX IF EXISTS idx_audit_logs_status;`);
-    await queryRunner.query(`DROP INDEX IF EXISTS idx_audit_logs_action_created;`);
-    await queryRunner.query(`DROP INDEX IF EXISTS idx_audit_logs_resource;`);
-    await queryRunner.query(`DROP INDEX IF EXISTS idx_audit_logs_user_created;`);
-    await queryRunner.query(`DROP INDEX IF EXISTS idx_audit_logs_account_created;`);
-
-    // Drop foreign key constraints (automatically dropped with table, but explicit for documentation)
-    await queryRunner.query(`
-      ALTER TABLE audit_logs 
-        DROP CONSTRAINT IF EXISTS fk_audit_logs_user;
-    `);
-
-    await queryRunner.query(`
-      ALTER TABLE audit_logs 
-        DROP CONSTRAINT IF EXISTS fk_audit_logs_account;
-    `);
-
-    // Drop the audit_logs table
-    await queryRunner.query(`DROP TABLE IF EXISTS audit_logs;`);
+    // Drop the audit_logs table with CASCADE
+    // This automatically drops all indexes, constraints, and dependent objects
+    // Using IF EXISTS makes this operation idempotent
+    await queryRunner.query(`DROP TABLE IF EXISTS audit_logs CASCADE;`);
   }
 }
