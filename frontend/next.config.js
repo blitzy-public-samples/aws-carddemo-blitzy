@@ -170,8 +170,7 @@ const nextConfig = {
     // Use SWC for CSS minimization
     swcMinify: true,
 
-    // Server actions for form submissions (if using app directory)
-    serverActions: true,
+    // Note: serverActions is now available by default in Next.js 14+ and doesn't need to be enabled
 
     // Optimize package imports to reduce bundle size
     optimizePackageImports: ['lucide-react', '@headlessui/react', 'date-fns'],
