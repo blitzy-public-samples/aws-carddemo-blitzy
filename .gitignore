@@ -344,7 +344,7 @@ $RECYCLE.BIN/
 # Uploaded documents (development/test)
 uploads/
 temp-uploads/
-documents/
+/documents/
 
 # Processed documents
 processed/
