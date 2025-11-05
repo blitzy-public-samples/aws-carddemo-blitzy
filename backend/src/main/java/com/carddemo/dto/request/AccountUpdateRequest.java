@@ -1,6 +1,7 @@
 package com.carddemo.dto.request;
 
 import com.carddemo.constants.AccountStatus;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.*;
 import lombok.AllArgsConstructor;
@@ -502,6 +503,7 @@ public class AccountUpdateRequest {
      * @throws IllegalArgumentException if accountStatus is null or invalid code
      * @see AccountStatus#fromString(String)
      */
+    @JsonIgnore
     public AccountStatus getAccountStatusEnum() {
         return AccountStatus.fromString(this.accountStatus);
     }
@@ -522,6 +524,7 @@ public class AccountUpdateRequest {
      * @throws NullPointerException if status is null
      * @see AccountStatus#getCode()
      */
+    @JsonIgnore
     public void setAccountStatusEnum(AccountStatus status) {
         if (status == null) {
             throw new NullPointerException("Account status cannot be null");

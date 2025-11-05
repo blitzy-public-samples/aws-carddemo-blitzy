@@ -318,10 +318,13 @@ public class AccountController {
             
             log.debug("User '{}' attempting to update account ID: {}", currentUsername, id);
             
+            // Convert path parameter ID to 11-digit zero-padded string format
+            String paddedAccountId = String.format("%011d", id);
+            
             // Validate path parameter matches request body account ID
             // Prevents accidental updates to wrong account via URL manipulation
-            if (request.getAccountId() != null && !request.getAccountId().equals(id.toString())) {
-                log.warn("Account ID mismatch - path: {}, body: {}", id, request.getAccountId());
+            if (request.getAccountId() != null && !request.getAccountId().equals(paddedAccountId)) {
+                log.warn("Account ID mismatch - path: {} (padded: {}), body: {}", id, paddedAccountId, request.getAccountId());
                 throw new IllegalArgumentException(
                     String.format("Account ID in path (%d) does not match account ID in request body (%s)",
                         id, request.getAccountId()));
@@ -329,7 +332,7 @@ public class AccountController {
             
             // Ensure request contains the account ID for service layer processing
             if (request.getAccountId() == null) {
-                request.setAccountId(id.toString());
+                request.setAccountId(paddedAccountId);
             }
             
             // Delegate to service layer for business logic validation and update execution
