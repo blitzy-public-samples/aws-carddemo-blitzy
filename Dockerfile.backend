@@ -1,0 +1,155 @@
+# =============================================================================
+# Multi-stage Dockerfile for NestJS Backend API Service
+# =============================================================================
+# Stage 1: Dependencies - Install production dependencies only
+# Stage 2: Builder - Compile TypeScript to JavaScript
+# Stage 3: Runtime - Minimal production image with security hardening
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1: Dependencies
+# Purpose: Install and cache production dependencies separately
+# Base: Node.js 22 LTS on Alpine Linux for minimal image size
+# -----------------------------------------------------------------------------
+FROM node:22-alpine AS dependencies
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files for dependency installation
+# Copying only package files first leverages Docker layer caching
+COPY package.json package-lock.json ./
+
+# Install production dependencies only
+# --only=production excludes devDependencies
+# --frozen-lockfile ensures exact versions from package-lock.json
+# npm ci is faster and more reliable than npm install for CI/CD
+RUN npm ci --only=production --frozen-lockfile && \
+    npm cache clean --force
+
+# Store production dependencies for later stage
+# This creates a clean node_modules with only runtime dependencies
+RUN cp -R node_modules /app/prod_node_modules
+
+# -----------------------------------------------------------------------------
+# Stage 2: Builder
+# Purpose: Install all dependencies and compile TypeScript to JavaScript
+# Base: Node.js 22 LTS on Alpine Linux
+# -----------------------------------------------------------------------------
+FROM node:22-alpine AS builder
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package.json package-lock.json ./
+
+# Install ALL dependencies (including devDependencies for build)
+# TypeScript, NestJS CLI, and other build tools are needed here
+RUN npm ci --frozen-lockfile && \
+    npm cache clean --force
+
+# Copy source code and configuration files
+COPY tsconfig.json ./
+COPY nest-cli.json ./
+COPY src ./src
+
+# Build the application
+# Compiles TypeScript to JavaScript in dist/ directory
+# NestJS build process handles compilation and bundling
+RUN npm run build
+
+# Remove development dependencies after build to save space
+RUN npm prune --production
+
+# -----------------------------------------------------------------------------
+# Stage 3: Runtime
+# Purpose: Minimal production image with compiled code and runtime dependencies
+# Security: Non-root user, minimal attack surface, proper signal handling
+# -----------------------------------------------------------------------------
+FROM node:22-alpine AS runtime
+
+# Install dumb-init for proper signal handling
+# dumb-init ensures signals (SIGTERM, SIGINT) are properly forwarded to Node.js
+# This enables graceful shutdown in containerized environments
+RUN apk add --no-cache dumb-init wget
+
+# Create non-root user and group for security
+# Running as non-root prevents privilege escalation attacks
+# UID/GID 1000 is standard for non-privileged users
+RUN addgroup -g 1000 nestuser && \
+    adduser -D -u 1000 -G nestuser nestuser
+
+# Set working directory
+WORKDIR /app
+
+# Copy production dependencies from dependencies stage
+COPY --from=dependencies --chown=nestuser:nestuser /app/prod_node_modules ./node_modules
+
+# Copy compiled JavaScript from builder stage
+COPY --from=builder --chown=nestuser:nestuser /app/dist ./dist
+
+# Copy package.json for runtime metadata
+COPY --chown=nestuser:nestuser package.json ./
+
+# Copy environment template (actual .env should be provided at runtime)
+# Note: .env.example serves as documentation; real secrets come from orchestration
+COPY --chown=nestuser:nestuser backend/.env.example ./.env.example
+
+# Switch to non-root user
+# All subsequent commands and the container process run as nestuser
+USER nestuser
+
+# Expose application port
+# NestJS backend runs on port 3000 by default
+EXPOSE 3000
+
+# Set production environment
+ENV NODE_ENV=production
+
+# Health check configuration
+# Verifies the application is responding to requests
+# --spider: don't download, just check if URL exists
+# --timeout: wait 10 seconds for response
+# --tries: attempt only once
+# Interval: check every 30 seconds
+# Timeout: health check times out after 10 seconds
+# Start period: wait 40 seconds before first check (app startup time)
+# Retries: mark unhealthy after 3 consecutive failures
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD wget --spider --timeout=10 --tries=1 http://localhost:3000/health || exit 1
+
+# Use dumb-init as entrypoint for proper signal handling
+# Executes node to run the compiled main.js
+# dumb-init forwards signals correctly and reaps zombie processes
+ENTRYPOINT ["dumb-init", "--"]
+
+# Start the application
+# Runs the compiled JavaScript from dist/main.js
+CMD ["node", "dist/main.js"]
+
+# =============================================================================
+# Build Instructions:
+# docker build -f Dockerfile.backend -t ocr-backend:latest .
+#
+# Run Instructions:
+# docker run -p 3000:3000 --env-file .env ocr-backend:latest
+#
+# Image Size Optimization:
+# - Multi-stage build separates build-time and runtime dependencies
+# - Alpine Linux base reduces image size by ~60% vs standard Node.js images
+# - Production dependencies only in final image
+# - npm cache cleaned after installations
+#
+# Security Features:
+# - Non-root user (nestuser) prevents privilege escalation
+# - dumb-init handles signals properly for graceful shutdown
+# - Minimal attack surface (only runtime dependencies)
+# - Ready for vulnerability scanning with Trivy
+# - No development tools or source code in final image
+#
+# Performance:
+# - Docker layer caching optimized (package files copied before source)
+# - Frozen lockfile ensures reproducible builds
+# - Health check ensures container readiness
+# =============================================================================
