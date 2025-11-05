@@ -56,8 +56,8 @@ export class CreateDocumentsTable004 {
           REFERENCES accounts(id) ON DELETE CASCADE,
         CONSTRAINT fk_documents_user FOREIGN KEY (user_id) 
           REFERENCES users(id) ON DELETE SET NULL,
-        CONSTRAINT fk_documents_template FOREIGN KEY (template_id) 
-          REFERENCES templates(id) ON DELETE SET NULL,
+        -- Note: template_id foreign key constraint will be added in migration 006
+        -- after templates table is created (Phase 7 - Section 0.5.8)
         CONSTRAINT fk_documents_approved_by FOREIGN KEY (approved_by) 
           REFERENCES users(id) ON DELETE SET NULL
       );
@@ -83,6 +83,7 @@ export class CreateDocumentsTable004 {
     `);
 
     // Index for template-based document queries
+    // Note: templates table and FK constraint added in migration 006
     await queryRunner.query(`
       CREATE INDEX idx_documents_template 
       ON documents(template_id) WHERE template_id IS NOT NULL;
