@@ -10,11 +10,7 @@
   "scope": "/",
   "lang": "en-US",
   "dir": "ltr",
-  "categories": [
-    "business",
-    "productivity",
-    "utilities"
-  ],
+  "categories": ["business", "productivity", "utilities"],
   "icons": [
     {
       "src": "/images/icon-192x192.png",
@@ -135,12 +131,7 @@
       "files": [
         {
           "name": "document",
-          "accept": [
-            "image/jpeg",
-            "image/png",
-            "image/webp",
-            "application/pdf"
-          ]
+          "accept": ["image/jpeg", "image/png", "image/webp", "application/pdf"]
         }
       ]
     }

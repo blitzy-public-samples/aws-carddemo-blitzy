@@ -1,16 +1,16 @@
 /**
  * Next.js Configuration for OCR Processing Application
- * 
+ *
  * This configuration file defines build settings, performance optimizations,
  * security headers, image optimization, and environment variable handling
  * for the React frontend application.
- * 
+ *
  * Requirements:
  * - Next.js 14.2.21 with SSR support
  * - Image optimization for <2 second load time (Section 0.7.1)
  * - Security headers for TLS 1.3 and application security (Section 0.7.1)
  * - Compression and minification for optimal performance
- * 
+ *
  * @see https://nextjs.org/docs/app/api-reference/next-config-js
  */
 
@@ -41,22 +41,22 @@ const nextConfig = {
       // Example: 'ocr-documents.s3.us-east-1.amazonaws.com',
       // Example: 'ocr-processed.s3.us-east-1.amazonaws.com',
     ],
-    
+
     // Modern image formats for optimal performance (AVIF is smaller than WebP)
     formats: ['image/avif', 'image/webp'],
-    
+
     // Device sizes for responsive images (breakpoints in pixels)
     deviceSizes: [640, 750, 828, 1080, 1200, 1920, 2048, 3840],
-    
+
     // Image sizes for different layouts (in pixels)
     imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
-    
+
     // Minimum cache TTL for optimized images (in seconds)
     minimumCacheTTL: 60,
-    
+
     // Disable static imports for images (use next/image component)
     disableStaticImages: false,
-    
+
     // Allow SVG images (with caution - validate sources)
     dangerouslyAllowSVG: true,
     contentSecurityPolicy: "default-src 'self'; script-src 'none'; sandbox;",
@@ -134,7 +134,7 @@ const nextConfig = {
   // Webpack customization for advanced build configuration
   webpack: (config, { buildId, dev, isServer, defaultLoaders, webpack }) => {
     // Add custom webpack rules or plugins here if needed
-    
+
     // Example: Optimize bundle size by using specific imports
     config.resolve.alias = {
       ...config.resolve.alias,
@@ -166,19 +166,15 @@ const nextConfig = {
   experimental: {
     // Enable optimistic client cache for faster navigation
     optimisticClientCache: true,
-    
+
     // Use SWC for CSS minimization
     swcMinify: true,
-    
+
     // Server actions for form submissions (if using app directory)
     serverActions: true,
-    
+
     // Optimize package imports to reduce bundle size
-    optimizePackageImports: [
-      'lucide-react',
-      '@headlessui/react',
-      'date-fns',
-    ],
+    optimizePackageImports: ['lucide-react', '@headlessui/react', 'date-fns'],
   },
 
   // TypeScript configuration
@@ -227,14 +223,17 @@ const nextConfig = {
 
   // Production optimizations
   productionBrowserSourceMaps: true, // Enable source maps for Sentry error tracking
-  
+
   // Compiler options
   compiler: {
     // Remove console logs in production
-    removeConsole: process.env.NODE_ENV === 'production' ? {
-      exclude: ['error', 'warn'],
-    } : false,
-    
+    removeConsole:
+      process.env.NODE_ENV === 'production'
+        ? {
+            exclude: ['error', 'warn'],
+          }
+        : false,
+
     // Enable styled-components if used
     // styledComponents: true,
   },

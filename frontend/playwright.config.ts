@@ -2,17 +2,17 @@ import { defineConfig, devices } from '@playwright/test';
 
 /**
  * Playwright End-to-End Testing Configuration
- * 
+ *
  * Configures Playwright test runner for comprehensive E2E testing of the OCR Processing Application.
  * Supports multiple browsers (Chromium, Firefox, WebKit) and mobile device emulation.
- * 
+ *
  * Test Coverage Requirements (from Section 0.5.14):
  * - Authentication flows (login, signup, password reset)
  * - Document upload and processing
  * - Field correction and validation
  * - Search functionality
  * - Batch processing operations
- * 
+ *
  * @see https://playwright.dev/docs/test-configuration
  */
 export default defineConfig({
@@ -52,10 +52,7 @@ export default defineConfig({
    * - html: Visual test report with screenshots and traces
    * - list: Console output with test progress
    */
-  reporter: [
-    ['html', { outputFolder: 'playwright-report', open: 'never' }],
-    ['list']
-  ],
+  reporter: [['html', { outputFolder: 'playwright-report', open: 'never' }], ['list']],
 
   /**
    * Shared settings for all test projects
@@ -115,9 +112,9 @@ export default defineConfig({
      */
     {
       name: 'chromium',
-      use: { 
+      use: {
         ...devices['Desktop Chrome'],
-        viewport: { width: 1280, height: 720 }
+        viewport: { width: 1280, height: 720 },
       },
     },
 
@@ -127,9 +124,9 @@ export default defineConfig({
      */
     {
       name: 'firefox',
-      use: { 
+      use: {
         ...devices['Desktop Firefox'],
-        viewport: { width: 1280, height: 720 }
+        viewport: { width: 1280, height: 720 },
       },
     },
 
@@ -139,9 +136,9 @@ export default defineConfig({
      */
     {
       name: 'webkit',
-      use: { 
+      use: {
         ...devices['Desktop Safari'],
-        viewport: { width: 1280, height: 720 }
+        viewport: { width: 1280, height: 720 },
       },
     },
 
@@ -152,7 +149,7 @@ export default defineConfig({
      */
     {
       name: 'Mobile Chrome',
-      use: { 
+      use: {
         ...devices['Pixel 5'],
       },
     },
@@ -164,7 +161,7 @@ export default defineConfig({
      */
     {
       name: 'Mobile Safari',
-      use: { 
+      use: {
         ...devices['iPhone 12'],
       },
     },
@@ -173,7 +170,7 @@ export default defineConfig({
   /**
    * Web Server Configuration
    * Automatically starts the Next.js development server before running tests
-   * 
+   *
    * Benefits:
    * - No manual server management required
    * - Consistent test environment

@@ -1,10 +1,10 @@
 /**
  * E2E Test Data Fixtures
- * 
+ *
  * This file provides deterministic, reusable test data for E2E tests.
  * All data is predefined and consistent to ensure tests are deterministic
  * and do not produce random failures per Section 0.7.1 testing requirements.
- * 
+ *
  * IMPORTANT: All data here is FAKE and for testing purposes only.
  * Do NOT use production data or real credentials.
  */
@@ -138,7 +138,7 @@ export const testUsers = {
     name: 'Admin Test User',
     role: 'admin' as const,
   } as TestUser,
-  
+
   user: {
     id: 'test-user-001',
     email: 'user.test@ocr-test.example.com',
@@ -146,7 +146,7 @@ export const testUsers = {
     name: 'Regular Test User',
     role: 'user' as const,
   } as TestUser,
-  
+
   viewer: {
     id: 'test-viewer-001',
     email: 'viewer.test@ocr-test.example.com',
@@ -169,7 +169,7 @@ export const testAPIKeys = {
     permissions: ['document.read', 'document.create', 'template.read'],
     expirationDate: '2026-12-31T23:59:59Z',
   } as TestAPIKey,
-  
+
   adminKey: {
     name: 'Admin Test API Key',
     permissions: [
@@ -214,7 +214,7 @@ export const testDocuments = {
       dueDate: '2025-11-15',
       vendorName: 'Test Vendor Inc.',
       vendorAddress: '123 Test Street, Test City, TC 12345',
-      totalAmount: 1250.50,
+      totalAmount: 1250.5,
       currency: 'USD',
       taxAmount: 125.05,
       subtotal: 1125.45,
@@ -222,8 +222,8 @@ export const testDocuments = {
         {
           description: 'Professional Services',
           quantity: 10,
-          unitPrice: 100.00,
-          total: 1000.00,
+          unitPrice: 100.0,
+          total: 1000.0,
         },
         {
           description: 'Consulting Fee',
@@ -234,7 +234,7 @@ export const testDocuments = {
       ],
     },
   } as TestDocument,
-  
+
   receipt1: {
     id: 'test-doc-receipt-001',
     filename: 'test-receipt-001.jpg',
@@ -254,13 +254,13 @@ export const testDocuments = {
       paymentMethod: 'Credit Card',
       lastFourDigits: '4242',
       items: [
-        { name: 'Latte', price: 5.50, quantity: 1 },
+        { name: 'Latte', price: 5.5, quantity: 1 },
         { name: 'Croissant', price: 3.25, quantity: 2 },
         { name: 'Tip', price: 3.75, quantity: 1 },
       ],
     },
   } as TestDocument,
-  
+
   contract1: {
     id: 'test-doc-contract-001',
     filename: 'test-contract-001.pdf',
@@ -276,14 +276,14 @@ export const testDocuments = {
       partyB: 'Test Client Inc.',
       effectiveDate: '2025-11-01',
       expirationDate: '2026-10-31',
-      contractValue: 50000.00,
+      contractValue: 50000.0,
       currency: 'USD',
       termMonths: 12,
       signatureDate: '2025-10-17',
       signatories: ['John Doe', 'Jane Smith'],
     },
   } as TestDocument,
-  
+
   // Low confidence document for testing validation workflows
   invoice2: {
     id: 'test-doc-invoice-002',
@@ -298,7 +298,7 @@ export const testDocuments = {
       invoiceNumber: 'INV-2025-002',
       invoiceDate: '2025-10-18',
       vendorName: 'Low Quality Scan Vendor',
-      totalAmount: 500.00,
+      totalAmount: 500.0,
       currency: 'USD',
     },
   } as TestDocument,
@@ -362,7 +362,7 @@ export const testTemplates = {
       totalAmount: { required: true, type: 'number', min: 0 },
     },
   } as TestTemplate,
-  
+
   receiptTemplate: {
     id: 'test-template-receipt-001',
     name: 'Standard Receipt Template',
@@ -404,7 +404,7 @@ export const testTemplates = {
       total: { required: true, type: 'number', min: 0 },
     },
   } as TestTemplate,
-  
+
   contractTemplate: {
     id: 'test-template-contract-001',
     name: 'Standard Contract Template',
@@ -463,14 +463,14 @@ export const testIntegrations: TestIntegration = {
     callbackUrl: 'http://localhost:3000/api/v1/integrations/quickbooks/callback',
     realmId: 'test-realm-123456',
   },
-  
+
   salesforce: {
     clientId: 'test-sf-client-id-789012',
     clientSecret: 'test-sf-client-secret-ghijkl',
     instanceUrl: 'https://test.salesforce.com',
     username: 'test@ocr-test.example.com.sandbox',
   },
-  
+
   netsuite: {
     accountId: 'test-ns-account-123',
     consumerKey: 'test-ns-consumer-key-mnopqr',
@@ -506,7 +506,7 @@ export const testWebhooks: TestWebhook = {
       confidenceScore: 0.95,
       extractedFields: {
         invoiceNumber: 'INV-2025-001',
-        totalAmount: 1250.50,
+        totalAmount: 1250.5,
       },
       timestamp: '2025-10-15T10:35:00Z',
     },
@@ -527,7 +527,7 @@ export const testSearchQueries = {
     expectedCount: 2,
     description: 'Basic full-text search for "invoice"',
   } as TestSearchQuery,
-  
+
   filterByType: {
     query: '',
     filters: {
@@ -536,7 +536,7 @@ export const testSearchQueries = {
     expectedCount: 2,
     description: 'Filter documents by type: invoice',
   } as TestSearchQuery,
-  
+
   filterByDateRange: {
     query: '',
     filters: {
@@ -546,18 +546,18 @@ export const testSearchQueries = {
     expectedCount: 3,
     description: 'Filter documents by upload date range',
   } as TestSearchQuery,
-  
+
   complexQuery: {
     query: 'Test Vendor',
     filters: {
       documentType: 'invoice',
-      confidenceScoreMin: 0.90,
+      confidenceScoreMin: 0.9,
       uploadedFrom: '2025-10-01T00:00:00Z',
     },
     expectedCount: 1,
     description: 'Complex search with text query and multiple filters',
   } as TestSearchQuery,
-  
+
   noResults: {
     query: 'nonexistent-document-xyz-123',
     expectedCount: 0,
@@ -578,13 +578,13 @@ export const testNotificationSettings = {
     inApp: true,
     webhook: false,
   },
-  
+
   weeklyDigest: {
     enabled: true,
     dayOfWeek: 'Monday',
     time: '09:00',
   },
-  
+
   accountActivity: {
     newUserAdded: true,
     integrationConnected: true,
@@ -613,14 +613,14 @@ export const testBatchProcessing = {
     ],
     expectedProcessingTime: 150, // seconds
   },
-  
+
   mediumBatch: {
     id: 'test-batch-medium-001',
     name: 'Medium Batch Test (25 documents)',
     documentCount: 25,
     expectedProcessingTime: 600, // seconds
   },
-  
+
   largeBatch: {
     id: 'test-batch-large-001',
     name: 'Large Batch Test (100 documents)',
@@ -643,28 +643,28 @@ export const testExportConfigs = {
     includeMetadata: true,
     includeConfidenceScores: true,
   },
-  
+
   csvExport: {
     format: 'csv',
     fields: ['invoiceNumber', 'invoiceDate', 'totalAmount', 'vendorName'],
     includeHeaders: true,
     delimiter: ',',
   },
-  
+
   xmlExport: {
     format: 'xml',
     fields: ['invoiceNumber', 'invoiceDate', 'totalAmount', 'vendorName'],
     rootElement: 'documents',
     itemElement: 'document',
   },
-  
+
   excelExport: {
     format: 'excel',
     fields: ['invoiceNumber', 'invoiceDate', 'totalAmount', 'vendorName'],
     sheetName: 'Extracted Documents',
     includeFormatting: true,
   },
-  
+
   fullExport: {
     format: 'json',
     fields: 'all', // Export all fields
@@ -681,7 +681,7 @@ export const testExportConfigs = {
 /**
  * Generate a deterministic timestamp-based ID
  * Uses a fixed seed to ensure determinism across test runs
- * 
+ *
  * @param prefix - Prefix for the ID
  * @param seed - Seed number for determinism
  * @returns Deterministic ID string
@@ -695,7 +695,7 @@ export function generateDeterministicId(prefix: string, seed: number): string {
 
 /**
  * Generate a deterministic email address for testing
- * 
+ *
  * @param username - Username part of email
  * @param seed - Seed number for uniqueness
  * @returns Deterministic email address
@@ -706,7 +706,7 @@ export function generateTestEmail(username: string, seed: number): string {
 
 /**
  * Generate deterministic file data for upload testing
- * 
+ *
  * @param filename - Name of the file
  * @param sizeInKb - Size in kilobytes
  * @returns Mock file data object
@@ -718,10 +718,10 @@ export function generateTestFileData(filename: string, sizeInKb: number) {
     jpeg: 'image/jpeg',
     png: 'image/png',
   };
-  
+
   const extension = filename.split('.').pop()?.toLowerCase() || 'pdf';
   const mimeType = mimeTypes[extension] || 'application/octet-stream';
-  
+
   return {
     filename,
     size: sizeInKb * 1024,
@@ -732,7 +732,7 @@ export function generateTestFileData(filename: string, sizeInKb: number) {
 
 /**
  * Create a test document with deterministic data
- * 
+ *
  * @param overrides - Fields to override in default document
  * @returns Test document object
  */
@@ -745,7 +745,7 @@ export function createTestDocument(overrides: Partial<TestDocument> = {}): TestD
     mimeType: 'application/pdf',
     status: 'completed',
     uploadedAt: new Date().toISOString(),
-    confidenceScore: 0.90,
+    confidenceScore: 0.9,
     extractedFields: {},
     ...overrides,
   };
@@ -753,12 +753,12 @@ export function createTestDocument(overrides: Partial<TestDocument> = {}): TestD
 
 /**
  * Wait helper for E2E tests - ensures deterministic timing
- * 
+ *
  * @param ms - Milliseconds to wait
  * @returns Promise that resolves after specified time
  */
 export function waitFor(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
@@ -772,7 +772,7 @@ export const testScenarios = {
     document: testDocuments.invoice1,
     expectedSteps: ['signup', 'verify-email', 'upload', 'review', 'approve'],
   },
-  
+
   // Scenario: Admin managing users and permissions
   adminUserManagement: {
     admin: testUsers.admin,
@@ -782,7 +782,7 @@ export const testScenarios = {
       role: 'user' as const,
     },
   },
-  
+
   // Scenario: Batch processing workflow
   batchProcessingWorkflow: {
     user: testUsers.user,
@@ -790,17 +790,17 @@ export const testScenarios = {
     expectedOutcomes: {
       successful: 5,
       failed: 0,
-      avgConfidence: 0.90,
+      avgConfidence: 0.9,
     },
   },
-  
+
   // Scenario: Integration setup and data export
   integrationSetup: {
     user: testUsers.admin,
     integration: testIntegrations.quickbooks,
     exportConfig: testExportConfigs.jsonExport,
   },
-  
+
   // Scenario: Template creation and document matching
   templateCreation: {
     user: testUsers.admin,
@@ -823,39 +823,39 @@ export class TestDataTracker {
   private createdTemplates: string[] = [];
   private createdUsers: string[] = [];
   private createdAPIKeys: string[] = [];
-  
+
   trackDocument(documentId: string): void {
     this.createdDocuments.push(documentId);
   }
-  
+
   trackTemplate(templateId: string): void {
     this.createdTemplates.push(templateId);
   }
-  
+
   trackUser(userId: string): void {
     this.createdUsers.push(userId);
   }
-  
+
   trackAPIKey(keyId: string): void {
     this.createdAPIKeys.push(keyId);
   }
-  
+
   getCreatedDocuments(): string[] {
     return [...this.createdDocuments];
   }
-  
+
   getCreatedTemplates(): string[] {
     return [...this.createdTemplates];
   }
-  
+
   getCreatedUsers(): string[] {
     return [...this.createdUsers];
   }
-  
+
   getCreatedAPIKeys(): string[] {
     return [...this.createdAPIKeys];
   }
-  
+
   reset(): void {
     this.createdDocuments = [];
     this.createdTemplates = [];

@@ -21,8 +21,8 @@ Per Section 0.7.9 cost optimization guidelines, **system fonts are strongly pref
 The application's default font stack uses system fonts:
 
 ```css
-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-  'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu',
+  'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
 ```
 
 ### When to Use Custom Fonts
@@ -43,6 +43,7 @@ Custom fonts placed in this directory are:
 3. **Applied via Classes**: Reference fonts in TailwindCSS configuration or CSS
 
 Next.js automatically serves all files in the `public` directory from the root path:
+
 - File path: `frontend/public/fonts/CustomFont.woff2`
 - Browser URL: `https://yourdomain.com/fonts/CustomFont.woff2`
 
@@ -53,11 +54,13 @@ Use modern font formats for optimal performance:
 ### Recommended Format Priority
 
 1. **WOFF2** (Web Open Font Format 2) - **Preferred**
+
    - Best compression (~30% smaller than WOFF)
    - Supported by all modern browsers (95%+ coverage)
    - Use this as your primary format
 
 2. **WOFF** (Web Open Font Format) - **Fallback**
+
    - Good compression
    - Broad browser support (older browsers)
    - Include for browsers that don't support WOFF2
@@ -90,6 +93,7 @@ Ensure you have the legal right to use and self-host the font. Check the font li
 Before adding fonts, optimize them:
 
 1. **Subset the font** to include only necessary characters:
+
    ```bash
    # Example using pyftsubset (from fonttools)
    pyftsubset CustomFont.ttf \
@@ -100,6 +104,7 @@ Before adding fonts, optimize them:
    ```
 
 2. **Convert to WOFF2** format if not already available:
+
    ```bash
    # Example using fonttools
    fonttools ttLib.woff2 compress CustomFont.ttf
@@ -123,6 +128,7 @@ frontend/public/fonts/
 ```
 
 **Naming Convention**: Use descriptive names that include weight and style:
+
 - `FontName-Regular.woff2`
 - `FontName-Bold.woff2`
 - `FontName-Italic.woff2`
@@ -139,12 +145,11 @@ Add `@font-face` declarations in your CSS file (e.g., `frontend/styles/globals.c
   font-style: normal;
   font-weight: 400;
   font-display: swap; /* Critical for performance */
-  src: 
+  src:
     url('/fonts/CustomFont-Regular.woff2') format('woff2'),
     url('/fonts/CustomFont-Regular.woff') format('woff');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
-    U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
-    U+FEFF, U+FFFD;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F,
+    U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 /* Custom Font - Bold */
@@ -153,12 +158,11 @@ Add `@font-face` declarations in your CSS file (e.g., `frontend/styles/globals.c
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: 
+  src:
     url('/fonts/CustomFont-Bold.woff2') format('woff2'),
     url('/fonts/CustomFont-Bold.woff') format('woff');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
-    U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
-    U+FEFF, U+FFFD;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F,
+    U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 ```
 
@@ -178,7 +182,7 @@ module.exports = {
           'BlinkMacSystemFont',
           'Segoe UI',
           'Roboto',
-          'sans-serif'
+          'sans-serif',
         ],
         // Or create a separate utility class
         brand: ['Custom Font', 'sans-serif'],
@@ -223,12 +227,14 @@ Or use in custom CSS:
 ```
 
 **What it does**:
+
 - Shows text immediately in fallback font
 - Swaps to custom font when loaded
 - Prevents invisible text (FOIT)
 - Improves Core Web Vitals scores
 
 **Other font-display values** (generally not recommended):
+
 - `block` - Hides text while font loads (bad UX)
 - `fallback` - Very short block period (limited browser support)
 - `optional` - Makes font fully optional (unpredictable)
@@ -247,6 +253,7 @@ Limits which characters use the custom font:
 ```
 
 **Benefits**:
+
 - Browser only downloads font if needed characters are present
 - Reduces unnecessary font downloads
 - Improves performance for multilingual sites
@@ -257,9 +264,9 @@ Always list formats from most modern to least modern:
 
 ```css
 @font-face {
-  src: 
-    url('/fonts/Font.woff2') format('woff2'), /* Modern browsers */
-    url('/fonts/Font.woff') format('woff');    /* Older browsers */
+  src:
+    url('/fonts/Font.woff2') format('woff2'),
+    /* Modern browsers */ url('/fonts/Font.woff') format('woff'); /* Older browsers */
 }
 ```
 
@@ -272,13 +279,14 @@ Browser will use the first format it supports.
 Remove unused characters to reduce file size:
 
 **Example**: Latin-only subset
+
 ```css
-unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
-  U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
-  U+FEFF, U+FFFD;
+unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F,
+  U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 ```
 
 **Tools for subsetting**:
+
 - [pyftsubset](https://github.com/fonttools/fonttools) (Python)
 - [glyphhanger](https://github.com/zachleat/glyphhanger) (Node.js)
 - [Font Squirrel Webfont Generator](https://www.fontsquirrel.com/tools/webfont-generator)
@@ -293,6 +301,7 @@ Only include what you actually use:
 - ❌ Don't include italic unless used
 
 **File size impact**:
+
 - Each weight/style = ~20-50KB (WOFF2)
 - 5 weights × 2 styles = 200-500KB just for fonts
 
@@ -307,7 +316,7 @@ For fonts used above-the-fold, consider preloading:
   href="/fonts/CustomFont-Regular.woff2"
   as="font"
   type="font/woff2"
-  crossOrigin="anonymous"
+  crossorigin="anonymous"
 />
 ```
 
@@ -334,6 +343,7 @@ For multiple weights, variable fonts can be more efficient:
 ```
 
 **Benefits**:
+
 - One file for all weights
 - Smooth font-weight transitions
 - Smaller total file size than multiple files
@@ -350,6 +360,7 @@ Before adding any font to this directory:
 4. ✅ Document font source and license in this README
 
 **Common license types**:
+
 - **OFL (Open Font License)**: Free for commercial use, can embed
 - **Apache/MIT**: Free for commercial use, can embed
 - **Commercial licenses**: Check specific terms for self-hosting rights
