@@ -153,7 +153,7 @@ public class ReportController {
     @Autowired
     public ReportController(ReportMenuService reportMenuService) {
         this.reportMenuService = reportMenuService;
-        logger.info("ReportController initialized with ReportMenuService");
+        log.info("ReportController initialized with ReportMenuService");
     }
 
     /**
@@ -204,19 +204,18 @@ public class ReportController {
     @PreAuthorize("hasRole('ADMIN')")
     @GetMapping
     public ResponseEntity<ReportMenuResponse> getReportMenu() {
-        logger.info("GET /api/reports - Retrieving report menu");
+        log.info("GET /api/reports - Retrieving report menu");
         
         try {
             // Retrieve available report types from service (replaces POPULATE-HEADER-INFO)
             ReportMenuResponse response = reportMenuService.getAvailableReportTypes();
             
-            logger.debug("Report menu retrieved successfully with {} report types", 
-                    response.getAvailableReports() != null ? response.getAvailableReports().size() : 0);
+            log.debug("Report menu retrieved successfully");
             
             return ResponseEntity.ok(response);
             
         } catch (Exception e) {
-            logger.error("Error retrieving report menu", e);
+            log.error("Error retrieving report menu", e);
             // Return error response with generic message
             ReportMenuResponse errorResponse = new ReportMenuResponse();
             errorResponse.setErrorMessage("Unable to retrieve report menu: " + e.getMessage());
@@ -301,7 +300,7 @@ public class ReportController {
     public ResponseEntity<Map<String, Object>> submitMonthlyReport(
             @RequestParam(name = "confirmationFlag", required = true) String confirmationFlag) {
         
-        logger.info("POST /api/reports/monthly - Submitting monthly report with confirmation: {}", 
+        log.info("POST /api/reports/monthly - Submitting monthly report with confirmation: {}", 
                 confirmationFlag);
         
         try {
@@ -311,26 +310,26 @@ public class ReportController {
             // Build response with job execution details
             Map<String, Object> response = buildJobExecutionResponse(jobExecution, "Monthly");
             
-            logger.info("Monthly report job submitted successfully. Job ID: {}, Status: {}", 
+            log.info("Monthly report job submitted successfully. Job ID: {}, Status: {}", 
                     jobExecution.getJobId(), jobExecution.getStatus());
             
             return ResponseEntity.ok(response);
             
         } catch (IllegalArgumentException e) {
             // Validation error or user cancellation (COBOL WS-ERR-FLG = 'Y')
-            logger.warn("Monthly report submission validation failed: {}", e.getMessage());
+            log.warn("Monthly report submission validation failed: {}", e.getMessage());
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(buildErrorResponse(e.getMessage()));
             
         } catch (IllegalStateException e) {
             // Job submission failure
-            logger.error("Monthly report job submission failed", e);
+            log.error("Monthly report job submission failed", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(buildErrorResponse("Unable to submit monthly report job: " + e.getMessage()));
             
         } catch (Exception e) {
             // Unexpected error
-            logger.error("Unexpected error submitting monthly report", e);
+            log.error("Unexpected error submitting monthly report", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(buildErrorResponse("Unexpected error: " + e.getMessage()));
         }
@@ -416,7 +415,7 @@ public class ReportController {
     public ResponseEntity<Map<String, Object>> submitYearlyReport(
             @RequestParam(name = "confirmationFlag", required = true) String confirmationFlag) {
         
-        logger.info("POST /api/reports/yearly - Submitting yearly report with confirmation: {}", 
+        log.info("POST /api/reports/yearly - Submitting yearly report with confirmation: {}", 
                 confirmationFlag);
         
         try {
@@ -426,26 +425,26 @@ public class ReportController {
             // Build response with job execution details
             Map<String, Object> response = buildJobExecutionResponse(jobExecution, "Yearly");
             
-            logger.info("Yearly report job submitted successfully. Job ID: {}, Status: {}", 
+            log.info("Yearly report job submitted successfully. Job ID: {}, Status: {}", 
                     jobExecution.getJobId(), jobExecution.getStatus());
             
             return ResponseEntity.ok(response);
             
         } catch (IllegalArgumentException e) {
             // Validation error or user cancellation (COBOL WS-ERR-FLG = 'Y')
-            logger.warn("Yearly report submission validation failed: {}", e.getMessage());
+            log.warn("Yearly report submission validation failed: {}", e.getMessage());
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(buildErrorResponse(e.getMessage()));
             
         } catch (IllegalStateException e) {
             // Job submission failure
-            logger.error("Yearly report job submission failed", e);
+            log.error("Yearly report job submission failed", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(buildErrorResponse("Unable to submit yearly report job: " + e.getMessage()));
             
         } catch (Exception e) {
             // Unexpected error
-            logger.error("Unexpected error submitting yearly report", e);
+            log.error("Unexpected error submitting yearly report", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(buildErrorResponse("Unexpected error: " + e.getMessage()));
         }
@@ -561,7 +560,7 @@ public class ReportController {
             @RequestParam(name = "endDay", required = true) Integer endDay,
             @RequestParam(name = "confirmationFlag", required = true) String confirmationFlag) {
         
-        logger.info("POST /api/reports/custom - Submitting custom report: {}/{}/{} to {}/{}/{} with confirmation: {}",
+        log.info("POST /api/reports/custom - Submitting custom report: {}/{}/{} to {}/{}/{} with confirmation: {}",
                 startMonth, startDay, startYear, endMonth, endDay, endYear, confirmationFlag);
         
         try {
@@ -580,32 +579,32 @@ public class ReportController {
             response.put("startDate", startDate.format(DATE_FORMATTER));
             response.put("endDate", endDate.format(DATE_FORMATTER));
             
-            logger.info("Custom report job submitted successfully. Job ID: {}, Status: {}, Date Range: {} to {}", 
+            log.info("Custom report job submitted successfully. Job ID: {}, Status: {}, Date Range: {} to {}", 
                     jobExecution.getJobId(), jobExecution.getStatus(), startDate, endDate);
             
             return ResponseEntity.ok(response);
             
         } catch (IllegalArgumentException e) {
             // Validation error or user cancellation (COBOL WS-ERR-FLG = 'Y')
-            logger.warn("Custom report submission validation failed: {}", e.getMessage());
+            log.warn("Custom report submission validation failed: {}", e.getMessage());
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(buildErrorResponse(e.getMessage()));
             
         } catch (DateTimeParseException e) {
             // Date parsing error
-            logger.error("Custom report date parsing failed", e);
+            log.error("Custom report date parsing failed", e);
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(buildErrorResponse("Invalid date format: " + e.getMessage()));
             
         } catch (IllegalStateException e) {
             // Job submission failure
-            logger.error("Custom report job submission failed", e);
+            log.error("Custom report job submission failed", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(buildErrorResponse("Unable to submit custom report job: " + e.getMessage()));
             
         } catch (Exception e) {
             // Unexpected error
-            logger.error("Unexpected error submitting custom report", e);
+            log.error("Unexpected error submitting custom report", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(buildErrorResponse("Unexpected error: " + e.getMessage()));
         }
