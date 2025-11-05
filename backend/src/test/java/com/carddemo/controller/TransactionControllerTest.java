@@ -20,6 +20,7 @@ package com.carddemo.controller;
 import com.carddemo.dto.request.TransactionRequest;
 import com.carddemo.dto.response.TransactionListResponse;
 import com.carddemo.dto.response.TransactionCategoryResponse;
+import com.carddemo.entity.Transaction;
 import com.carddemo.exception.AccountNotFoundException;
 import com.carddemo.exception.CardNotFoundException;
 import com.carddemo.exception.InsufficientBalanceException;
@@ -112,8 +113,14 @@ public class TransactionControllerTest {
     @MockBean
     private TransactionCreationService transactionCreationService;
 
+    @MockBean
+    private com.carddemo.security.JwtTokenProvider jwtTokenProvider;
+
+    @MockBean
+    private com.carddemo.security.CustomUserDetailsService customUserDetailsService;
+
     // Test data constants matching COBOL specifications
-    private static final String TEST_ACCOUNT_ID = "100000000001";
+    private static final String TEST_ACCOUNT_ID = "10000000001"; // 11 chars max per validation
     private static final String TEST_CARD_NUMBER = "4532123456789012";
     private static final String TEST_TRANSACTION_ID = "0000000123456789";
     private static final String TEST_USER_ID = "testuser";
@@ -158,7 +165,7 @@ public class TransactionControllerTest {
                     .contentType(MediaType.APPLICATION_JSON))
                     .andDo(print())
                     .andExpect(status().isOk())
-                    .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     // Verify pagination metadata
                     .andExpect(jsonPath("$.currentPage", is(0)))
                     .andExpect(jsonPath("$.pageSize", is(DEFAULT_PAGE_SIZE)))
@@ -168,10 +175,11 @@ public class TransactionControllerTest {
                     .andExpect(jsonPath("$.hasPrevious", is(false)))
                     // Verify transaction array size
                     .andExpect(jsonPath("$.transactions", hasSize(10)))
-                    // Verify first transaction fields
+                    // Verify first transaction fields (matching COBOL COTRN00C.cbl screen layout)
                     .andExpect(jsonPath("$.transactions[0].transactionId", notNullValue()))
-                    .andExpect(jsonPath("$.transactions[0].accountId", is(TEST_ACCOUNT_ID)))
-                    .andExpect(jsonPath("$.transactions[0].transactionAmount", notNullValue()))
+                    .andExpect(jsonPath("$.transactions[0].transactionDate", notNullValue()))
+                    .andExpect(jsonPath("$.transactions[0].description", notNullValue()))
+                    .andExpect(jsonPath("$.transactions[0].amount", notNullValue()))
                     .andReturn();
 
             long responseTime = System.currentTimeMillis() - startTime;
@@ -375,7 +383,7 @@ public class TransactionControllerTest {
                     .contentType(MediaType.APPLICATION_JSON))
                     .andDo(print())
                     .andExpect(status().isOk())
-                    .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     // Verify category summaries
                     .andExpect(jsonPath("$.categorySummaries", hasSize(3)))
                     // Verify grand total with exact precision
@@ -510,7 +518,7 @@ public class TransactionControllerTest {
         void testCreateTransaction_ValidRequest_Returns201Created() throws Exception {
             // Arrange: Create valid transaction request
             TransactionRequest request = createValidTransactionRequest();
-            TransactionCreationService.TransactionResponse mockResponse = createMockTransactionResponse();
+            Transaction mockResponse = createMockTransactionResponse();
             
             when(transactionCreationService.createTransaction(any(TransactionRequest.class)))
                     .thenReturn(mockResponse);
@@ -523,12 +531,12 @@ public class TransactionControllerTest {
                     .content(objectMapper.writeValueAsString(request)))
                     .andDo(print())
                     .andExpect(status().isCreated())
-                    .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     .andExpect(jsonPath("$.transactionId", is(TEST_TRANSACTION_ID)))
-                    .andExpect(jsonPath("$.accountId", is(TEST_ACCOUNT_ID)))
+                    .andExpect(jsonPath("$.accountId", is(Long.parseLong(TEST_ACCOUNT_ID)))) // accountId is Long in entity
                     .andExpect(jsonPath("$.transactionAmount", is(125.50)))
-                    .andExpect(jsonPath("$.newAccountBalance", is(1874.50)))
-                    .andExpect(jsonPath("$.message", containsString("successfully")));
+                    .andExpect(jsonPath("$.transactionTypeCode", notNullValue()))
+                    .andExpect(jsonPath("$.transactionSource", notNullValue()));
 
             long responseTime = System.currentTimeMillis() - startTime;
             
@@ -546,7 +554,7 @@ public class TransactionControllerTest {
             TransactionRequest request = createValidTransactionRequest();
             request.setTransactionAmount(new BigDecimal("125.555")); // Test rounding
             
-            TransactionCreationService.TransactionResponse mockResponse = createMockTransactionResponse();
+            Transaction mockResponse = createMockTransactionResponse();
             mockResponse.setTransactionAmount(new BigDecimal("125.56")); // Expected rounded value
             
             when(transactionCreationService.createTransaction(any(TransactionRequest.class)))
@@ -575,8 +583,9 @@ public class TransactionControllerTest {
             when(transactionCreationService.createTransaction(any(TransactionRequest.class)))
                     .thenThrow(new InsufficientBalanceException(
                             "Insufficient available credit. Available: $500.00, Requested: $2500.00",
+                            TEST_AMOUNT_2500_00,
                             new BigDecimal("500.00"),
-                            TEST_AMOUNT_2500_00));
+                            Long.parseLong(TEST_ACCOUNT_ID)));
 
             // Act & Assert
             mockMvc.perform(post("/api/transactions")
@@ -679,7 +688,7 @@ public class TransactionControllerTest {
         void testCreateTransaction_AdminAccess_Returns201() throws Exception {
             // Arrange
             TransactionRequest request = createValidTransactionRequest();
-            TransactionCreationService.TransactionResponse mockResponse = createMockTransactionResponse();
+            Transaction mockResponse = createMockTransactionResponse();
             
             when(transactionCreationService.createTransaction(any(TransactionRequest.class)))
                     .thenReturn(mockResponse);
@@ -719,7 +728,7 @@ public class TransactionControllerTest {
         void testCreateTransaction_InvalidTransactionType_Returns400() throws Exception {
             // Arrange
             TransactionRequest request = createValidTransactionRequest();
-            request.setTransactionType("99"); // Invalid type code
+            request.setTransactionTypeCode("99"); // Invalid type code
             
             when(transactionCreationService.createTransaction(any(TransactionRequest.class)))
                     .thenThrow(new IllegalArgumentException("Invalid transaction type: 99"));
@@ -775,7 +784,7 @@ public class TransactionControllerTest {
             TransactionRequest request = createValidTransactionRequest();
             request.setTransactionAmount(new BigDecimal("125.5")); // Single decimal place
             
-            TransactionCreationService.TransactionResponse mockResponse = createMockTransactionResponse();
+            Transaction mockResponse = createMockTransactionResponse();
             mockResponse.setTransactionAmount(new BigDecimal("125.50")); // Should pad to 2 decimals
             
             when(transactionCreationService.createTransaction(any(TransactionRequest.class)))
@@ -799,7 +808,7 @@ public class TransactionControllerTest {
             TransactionRequest request = createValidTransactionRequest();
             request.setTransactionAmount(new BigDecimal("125.556")); // Should round to 125.56
             
-            TransactionCreationService.TransactionResponse mockResponse = createMockTransactionResponse();
+            Transaction mockResponse = createMockTransactionResponse();
             mockResponse.setTransactionAmount(new BigDecimal("125.56"));
             
             when(transactionCreationService.createTransaction(any(TransactionRequest.class)))
@@ -853,33 +862,23 @@ public class TransactionControllerTest {
         TransactionListResponse response = new TransactionListResponse();
         response.setCurrentPage(currentPage);
         response.setPageSize(pageSize);
-        response.setTotalElements(totalElements);
+        response.setTotalElements((long) totalElements);
         response.setTotalPages((int) Math.ceil((double) totalElements / pageSize));
         response.setHasNext(currentPage < response.getTotalPages() - 1);
         response.setHasPrevious(currentPage > 0);
 
         // Create list of transaction data transfer objects
-        List<TransactionListResponse.TransactionData> transactions = new ArrayList<>();
+        List<TransactionListResponse.TransactionItemDTO> transactions = new ArrayList<>();
         for (int i = 0; i < Math.min(pageSize, totalElements - (currentPage * pageSize)); i++) {
-            TransactionListResponse.TransactionData txn = new TransactionListResponse.TransactionData();
+            TransactionListResponse.TransactionItemDTO txn = new TransactionListResponse.TransactionItemDTO();
             txn.setTransactionId(String.format("%016d", (currentPage * pageSize) + i + 1));
-            txn.setAccountId(TEST_ACCOUNT_ID);
-            txn.setCardNumber("************" + String.format("%04d", 9012 + i));
-            txn.setTransactionAmount(TEST_AMOUNT_125_50.add(new BigDecimal(i * 10)));
-            txn.setTransactionType("01");
-            txn.setTransactionDescription("Test Transaction " + (i + 1));
+            txn.setSelectionFlag(" ");
             txn.setTransactionDate(LocalDate.now().minusDays(i));
-            txn.setMerchantName("Test Merchant " + (i + 1));
-            txn.setMerchantCity("Seattle");
+            txn.setDescription("Test Transaction " + (i + 1));
+            txn.setAmount(TEST_AMOUNT_125_50.add(new BigDecimal(i * 10)));
             transactions.add(txn);
         }
         response.setTransactions(transactions);
-
-        // Set first and last transaction IDs for pagination tracking
-        if (!transactions.isEmpty()) {
-            response.setFirstTransactionId(transactions.get(0).getTransactionId());
-            response.setLastTransactionId(transactions.get(transactions.size() - 1).getTransactionId());
-        }
 
         return response;
     }
@@ -898,7 +897,7 @@ public class TransactionControllerTest {
         groceries.setCategoryCode(1001);
         groceries.setCategoryName("Groceries");
         groceries.setTotalAmount(TEST_AMOUNT_542_75);
-        groceries.setTransactionCount(12);
+        groceries.setTransactionCount(12L);
         groceries.setPercentage(new BigDecimal("32.50").setScale(2, RoundingMode.HALF_UP));
         groceries.setAverageAmount(new BigDecimal("45.23").setScale(2, RoundingMode.HALF_UP));
         summaries.add(groceries);
@@ -908,7 +907,7 @@ public class TransactionControllerTest {
         fuel.setCategoryCode(1002);
         fuel.setCategoryName("Fuel");
         fuel.setTotalAmount(new BigDecimal("387.20").setScale(2, RoundingMode.HALF_UP));
-        fuel.setTransactionCount(8);
+        fuel.setTransactionCount(8L);
         fuel.setPercentage(new BigDecimal("23.19").setScale(2, RoundingMode.HALF_UP));
         fuel.setAverageAmount(new BigDecimal("48.40").setScale(2, RoundingMode.HALF_UP));
         summaries.add(fuel);
@@ -918,7 +917,7 @@ public class TransactionControllerTest {
         dining.setCategoryCode(1003);
         dining.setCategoryName("Dining");
         dining.setTotalAmount(new BigDecimal("740.00").setScale(2, RoundingMode.HALF_UP));
-        dining.setTransactionCount(15);
+        dining.setTransactionCount(15L);
         dining.setPercentage(new BigDecimal("44.31").setScale(2, RoundingMode.HALF_UP));
         dining.setAverageAmount(new BigDecimal("49.33").setScale(2, RoundingMode.HALF_UP));
         summaries.add(dining);
@@ -926,8 +925,7 @@ public class TransactionControllerTest {
         TransactionCategoryService.AggregationResult result = new TransactionCategoryService.AggregationResult();
         result.setCategorySummaries(summaries);
         result.setGrandTotal(new BigDecimal("1669.95").setScale(2, RoundingMode.HALF_UP));
-        result.setTotalTransactionCount(35);
-        result.setAccountId(TEST_ACCOUNT_ID);
+        result.setTotalTransactionCount(35L);
 
         return result;
     }
@@ -942,41 +940,39 @@ public class TransactionControllerTest {
         TransactionRequest request = new TransactionRequest();
         request.setAccountId(TEST_ACCOUNT_ID);
         request.setCardNumber(TEST_CARD_NUMBER);
-        request.setTransactionType("01"); // Purchase type
-        request.setCategoryCode(1002); // Fuel category
+        request.setTransactionTypeCode("PU"); // Purchase type
+        request.setTransactionCategoryCode("FUEL"); // Fuel category
         request.setTransactionAmount(TEST_AMOUNT_125_50);
         request.setTransactionDescription("Gas Station Purchase");
         request.setTransactionSource("POS");
-        request.setOriginationTimestamp(LocalDateTime.now());
-        request.setProcessingTimestamp(LocalDateTime.now());
-        request.setMerchantId("MERCHANT123");
+        request.setOriginDate(LocalDate.now().minusDays(1));
+        request.setProcessDate(LocalDate.now());
+        request.setMerchantId("MERCH123"); // 8 chars - within 9 char limit
         request.setMerchantName("Shell Gas Station");
-        request.setMerchantCity("Seattle");
-        request.setMerchantZipCode("98101");
         return request;
     }
 
     /**
-     * Helper method to create a mock TransactionResponse for successful creation.
+     * Helper method to create a mock Transaction for successful creation.
      * Simulates COBOL COTRN02C.cbl successful transaction add response.
      *
-     * @return TransactionResponse with transaction details and balance updates
+     * @return Transaction entity with transaction details
      */
-    private TransactionCreationService.TransactionResponse createMockTransactionResponse() {
-        TransactionCreationService.TransactionResponse response = new TransactionCreationService.TransactionResponse();
+    private Transaction createMockTransactionResponse() {
+        Transaction response = new Transaction();
         response.setTransactionId(TEST_TRANSACTION_ID);
-        response.setAccountId(TEST_ACCOUNT_ID);
+        response.setAccountId(Long.parseLong(TEST_ACCOUNT_ID)); // Set transient accountId for JSON serialization
         response.setCardNumber("************9012"); // Masked card number
         response.setTransactionAmount(TEST_AMOUNT_125_50);
-        response.setTransactionType("01");
-        response.setCategoryCode(1002);
+        response.setTransactionTypeCode("01");
+        response.setTransactionCategoryCode(1002);
         response.setTransactionDescription("Gas Station Purchase");
-        response.setTransactionDate(LocalDateTime.now());
+        response.setOriginationTimestamp(LocalDateTime.now());
+        response.setProcessingTimestamp(LocalDateTime.now());
         response.setMerchantName("Shell Gas Station");
         response.setMerchantCity("Seattle");
-        response.setNewAccountBalance(new BigDecimal("1874.50").setScale(2, RoundingMode.HALF_UP));
-        response.setAvailableCredit(new BigDecimal("3125.50").setScale(2, RoundingMode.HALF_UP));
-        response.setMessage("Transaction added successfully. Your Tran ID is " + TEST_TRANSACTION_ID + ".");
+        response.setMerchantZip("98101");
+        response.setTransactionSource("POS");
         return response;
     }
 }

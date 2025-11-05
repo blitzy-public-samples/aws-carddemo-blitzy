@@ -20,6 +20,8 @@ package com.carddemo.controller;
 import com.carddemo.dto.request.TransactionRequest;
 import com.carddemo.dto.response.TransactionCategoryResponse;
 import com.carddemo.dto.response.TransactionListResponse;
+import com.carddemo.exception.AccountNotFoundException;
+import com.carddemo.exception.CardNotFoundException;
 import com.carddemo.exception.InsufficientBalanceException;
 import com.carddemo.exception.TransactionException;
 import com.carddemo.service.TransactionCategoryService;
@@ -401,6 +403,16 @@ public class TransactionController {
             
             return ResponseEntity.ok(response);
             
+        } catch (AccountNotFoundException e) {
+            // Account not found - return 404
+            log.error("Account not found: {}", e.getMessage());
+            throw e; // Re-throw for GlobalExceptionHandler to return 404
+            
+        } catch (CardNotFoundException e) {
+            // Card not found - return 404
+            log.error("Card not found: {}", e.getMessage());
+            throw e; // Re-throw for GlobalExceptionHandler to return 404
+            
         } catch (IllegalArgumentException e) {
             log.error("Validation error retrieving transactions: {}", e.getMessage());
             throw e; // Re-throw for GlobalExceptionHandler to process
@@ -544,6 +556,11 @@ public class TransactionController {
                     response.getGrandTotal());
             
             return ResponseEntity.ok(response);
+            
+        } catch (AccountNotFoundException e) {
+            // Account not found - return 404
+            log.error("Account not found: {}", e.getMessage());
+            throw e; // Re-throw for GlobalExceptionHandler to return 404
             
         } catch (IllegalArgumentException e) {
             log.error("Validation error aggregating categories: {}", e.getMessage());
@@ -726,6 +743,16 @@ public class TransactionController {
                     transactionRequest.getTransactionAmount(),
                     e.getAvailableCredit());
             throw e; // Re-throw for GlobalExceptionHandler to return 422
+            
+        } catch (AccountNotFoundException e) {
+            // Account not found - return 404
+            log.error("Account not found: {}", e.getMessage());
+            throw e; // Re-throw for GlobalExceptionHandler to return 404
+            
+        } catch (CardNotFoundException e) {
+            // Card not found - return 404
+            log.error("Card not found: {}", e.getMessage());
+            throw e; // Re-throw for GlobalExceptionHandler to return 404
             
         } catch (IllegalArgumentException e) {
             // Validation error (invalid account, card, or field format)

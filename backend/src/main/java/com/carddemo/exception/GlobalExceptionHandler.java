@@ -456,9 +456,20 @@ public class GlobalExceptionHandler {
         }
         
         // Determine status based on error type
-        HttpStatus status = ex.getMessage().contains("duplicate") || 
-                          ex.getMessage().contains("conflict") ?
-                          HttpStatus.CONFLICT : HttpStatus.BAD_REQUEST;
+        HttpStatus status;
+        if (ex.getMessage().contains("duplicate") || ex.getMessage().contains("conflict")) {
+            status = HttpStatus.CONFLICT;
+        } else if (ex.getErrorCode() != null && 
+                  (ex.getErrorCode().contains("DB_") || 
+                   ex.getErrorCode().contains("SYSTEM_") ||
+                   ex.getMessage().toLowerCase().contains("database") ||
+                   ex.getMessage().toLowerCase().contains("unexpected"))) {
+            // Database or system errors should return 500
+            status = HttpStatus.INTERNAL_SERVER_ERROR;
+        } else {
+            // Validation or business logic errors return 400
+            status = HttpStatus.BAD_REQUEST;
+        }
         
         ErrorResponse errorResponse = buildErrorResponse(
             "TRANSACTION_ERROR",
@@ -776,6 +787,38 @@ public class GlobalExceptionHandler {
         ErrorResponse errorResponse = buildErrorResponse(
             "VALIDATION_ERROR",
             "Request validation failed. Please check field errors.",
+            HttpStatus.BAD_REQUEST,
+            request,
+            details
+        );
+        
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+    }
+
+    /**
+     * Handles IllegalArgumentException - invalid method arguments or business validation failures.
+     * 
+     * <p>Thrown when controller or service receives invalid parameters that fail business validation
+     * rules (e.g., negative page numbers, missing required filters, invalid enum values).</p>
+     * 
+     * <p><strong>HTTP Status:</strong> 400 BAD_REQUEST</p>
+     * 
+     * @param ex IllegalArgumentException with validation error message
+     * @param request WebRequest for extracting request path
+     * @return ResponseEntity with 400 status and validation error details
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalArgumentException(
+            IllegalArgumentException ex, WebRequest request) {
+        
+        logger.warn("Illegal argument: {}", ex.getMessage());
+        
+        Map<String, Object> details = new HashMap<>();
+        details.put("validationError", ex.getMessage());
+        
+        ErrorResponse errorResponse = buildErrorResponse(
+            "VALIDATION_ERROR",
+            ex.getMessage(),
             HttpStatus.BAD_REQUEST,
             request,
             details
