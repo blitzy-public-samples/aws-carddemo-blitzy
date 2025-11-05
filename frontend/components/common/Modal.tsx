@@ -118,6 +118,8 @@ const ModalComponent: FC<ModalProps> = ({
         document.body.style.overflow = originalOverflow;
       };
     }
+    // Explicitly return undefined when modal is not open
+    return undefined;
   }, [isOpen]);
 
   /**
