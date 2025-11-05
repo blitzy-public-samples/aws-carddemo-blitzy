@@ -161,8 +161,8 @@ class TransactionRepositoryTest {
                     "Transaction ID should match");
                 assertEquals("01", transaction.getTransactionTypeCode(), 
                     "Transaction type code should be '01' (Purchase)");
-                assertEquals(5010, transaction.getTransactionCategoryCode(), 
-                    "Category code should be 5010");
+                assertEquals("015010", transaction.getTransactionCategoryCode(), 
+                    "Category code should be 015010");
                 assertNotNull(transaction.getTransactionAmount(), 
                     "Transaction amount should not be null");
                 assertEquals(2, transaction.getTransactionAmount().scale(), 
@@ -222,8 +222,8 @@ class TransactionRepositoryTest {
                 assertEquals(transactionId, txn.getTransactionId());
                 assertEquals("02", txn.getTransactionTypeCode(), 
                     "Type code should be '02' (Cash Advance)");
-                assertEquals(6011, txn.getTransactionCategoryCode(), 
-                    "Category code should be 6011 (ATM Withdrawal)");
+                assertEquals("026010", txn.getTransactionCategoryCode(), 
+                    "Category code should be 026010 (ATM Withdrawal)");
             }
         );
     }
@@ -395,8 +395,8 @@ class TransactionRepositoryTest {
             () -> results.forEach(row -> {
                 assertNotNull(row[0], "Category code should not be null");
                 assertNotNull(row[1], "Sum amount should not be null");
-                assertTrue(row[0] instanceof Integer, 
-                    "Category code should be Integer");
+                assertTrue(row[0] instanceof String, 
+                    "Category code should be String");
                 assertTrue(row[1] instanceof BigDecimal, 
                     "Sum amount should be BigDecimal");
                 BigDecimal sumAmount = (BigDecimal) row[1];
