@@ -1,0 +1,396 @@
+# Docker Compose Configuration for OCR Processing Application - Local Development Environment
+# Version: 3.8
+# Purpose: Provides all infrastructure services needed for local development
+# Usage: docker-compose up -d (start all services in background)
+#        docker-compose down (stop and remove containers)
+#        docker-compose logs -f [service] (view logs)
+#        docker-compose ps (check service status)
+
+version: '3.8'
+
+# ============================================================================
+# SERVICES CONFIGURATION
+# ============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  # PostgreSQL Database - Relational Data Store
+  # --------------------------------------------------------------------------
+  # Stores: accounts, users, roles, permissions, documents metadata,
+  #         processing jobs, templates, audit logs, API keys, webhooks
+  postgres:
+    image: postgres:16-alpine
+    container_name: ocr-postgres-dev
+    environment:
+      POSTGRES_USER: ocr_dev
+      POSTGRES_PASSWORD: dev_password
+      POSTGRES_DB: ocr_db
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+      # Performance tuning for development
+      POSTGRES_SHARED_BUFFERS: 256MB
+      POSTGRES_MAX_CONNECTIONS: 100
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+      # Optional: Mount initialization scripts
+      # - ./backend/src/database/init:/docker-entrypoint-initdb.d
+    networks:
+      - ocr-dev-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ocr_dev -d ocr_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    # Resource limits for development (adjust based on your machine)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+  # --------------------------------------------------------------------------
+  # MongoDB - Document Store
+  # --------------------------------------------------------------------------
+  # Stores: Full extracted document data, document versions, corrections,
+  #         annotations with nested fields and complex structures
+  mongodb:
+    image: mongo:7-jammy
+    container_name: ocr-mongodb-dev
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ocr_dev
+      MONGO_INITDB_ROOT_PASSWORD: dev_password
+      MONGO_INITDB_DATABASE: ocr_documents
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_dev_data:/data/db
+      - mongodb_dev_config:/data/configdb
+    networks:
+      - ocr-dev-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    command: ["--auth"]
+
+  # --------------------------------------------------------------------------
+  # Redis - Caching and Session Store
+  # --------------------------------------------------------------------------
+  # Stores: Session data, API rate limiting counters, job status cache,
+  #         temporary file references, application cache
+  redis:
+    image: redis:7-alpine
+    container_name: ocr-redis-dev
+    command: >
+      redis-server
+      --requirepass dev_password
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+      --loglevel notice
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+    networks:
+      - ocr-dev-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--pass", "dev_password", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+  # --------------------------------------------------------------------------
+  # ElasticSearch - Full-Text Search Engine
+  # --------------------------------------------------------------------------
+  # Stores: Indexed document content for fast full-text search across all
+  #         processed documents with metadata and extracted fields
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    container_name: ocr-elasticsearch-dev
+    environment:
+      # Single-node development cluster
+      discovery.type: single-node
+      # Disable security for development (NEVER do this in production)
+      xpack.security.enabled: "false"
+      xpack.security.enrollment.enabled: "false"
+      # Memory settings (adjust based on available RAM)
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      # Disable ML features in development
+      xpack.ml.enabled: "false"
+      # Network settings
+      network.host: 0.0.0.0
+      http.port: 9200
+      # Logging
+      logger.level: INFO
+    ports:
+      - "9200:9200"  # HTTP API
+      - "9300:9300"  # Node communication
+    volumes:
+      - elasticsearch_dev_data:/usr/share/elasticsearch/data
+      # Optional: Custom elasticsearch.yml
+      # - ./config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+    networks:
+      - ocr-dev-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  # --------------------------------------------------------------------------
+  # RabbitMQ - Message Queue
+  # --------------------------------------------------------------------------
+  # Handles: Asynchronous job processing, document processing queue,
+  #          notification queue, export queue with dead letter queues
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: ocr-rabbitmq-dev
+    environment:
+      RABBITMQ_DEFAULT_USER: ocr_dev
+      RABBITMQ_DEFAULT_PASS: dev_password
+      RABBITMQ_DEFAULT_VHOST: /
+      # Enable management plugin by default
+      RABBITMQ_MANAGEMENT_ALLOW_WEB_ACCESS: "true"
+      # Logging
+      RABBITMQ_LOGS: "-"
+      RABBITMQ_SASL_LOGS: "-"
+      # Performance settings for development
+      RABBITMQ_VM_MEMORY_HIGH_WATERMARK: 0.6
+    ports:
+      - "5672:5672"   # AMQP protocol
+      - "15672:15672" # Management UI (http://localhost:15672)
+    volumes:
+      - rabbitmq_dev_data:/var/lib/rabbitmq
+      - rabbitmq_dev_log:/var/log/rabbitmq
+      # Optional: Custom rabbitmq.conf
+      # - ./config/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    networks:
+      - ocr-dev-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    hostname: ocr-rabbitmq
+
+# ============================================================================
+# NETWORKS CONFIGURATION
+# ============================================================================
+networks:
+  ocr-dev-network:
+    driver: bridge
+    name: ocr-dev-network
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+# ============================================================================
+# VOLUMES CONFIGURATION
+# ============================================================================
+# All volumes are named volumes managed by Docker
+# Data persists across container restarts and docker-compose down
+# To reset all data: docker-compose down -v (WARNING: deletes all data)
+volumes:
+  postgres_dev_data:
+    name: ocr_postgres_dev_data
+    driver: local
+  
+  mongodb_dev_data:
+    name: ocr_mongodb_dev_data
+    driver: local
+  
+  mongodb_dev_config:
+    name: ocr_mongodb_dev_config
+    driver: local
+  
+  redis_dev_data:
+    name: ocr_redis_dev_data
+    driver: local
+  
+  elasticsearch_dev_data:
+    name: ocr_elasticsearch_dev_data
+    driver: local
+  
+  rabbitmq_dev_data:
+    name: ocr_rabbitmq_dev_data
+    driver: local
+  
+  rabbitmq_dev_log:
+    name: ocr_rabbitmq_dev_log
+    driver: local
+
+# ============================================================================
+# DEVELOPER QUICK REFERENCE
+# ============================================================================
+#
+# CONNECTION STRINGS FOR APPLICATION CONFIGURATION:
+# -------------------------------------------------
+#
+# PostgreSQL:
+#   Host: localhost
+#   Port: 5432
+#   Database: ocr_db
+#   Username: ocr_dev
+#   Password: dev_password
+#   Connection String: postgresql://ocr_dev:dev_password@localhost:5432/ocr_db
+#
+# MongoDB:
+#   Host: localhost
+#   Port: 27017
+#   Database: ocr_documents
+#   Username: ocr_dev
+#   Password: dev_password
+#   Connection String: mongodb://ocr_dev:dev_password@localhost:27017/ocr_documents?authSource=admin
+#
+# Redis:
+#   Host: localhost
+#   Port: 6379
+#   Password: dev_password
+#   Connection String: redis://:dev_password@localhost:6379/0
+#
+# ElasticSearch:
+#   URL: http://localhost:9200
+#   No authentication in development mode
+#
+# RabbitMQ:
+#   Host: localhost
+#   Port: 5672 (AMQP)
+#   Management UI: http://localhost:15672
+#   Username: ocr_dev
+#   Password: dev_password
+#   Connection String: amqp://ocr_dev:dev_password@localhost:5672/
+#
+# COMMON COMMANDS:
+# ----------------
+#
+# Start all services:
+#   docker-compose up -d
+#
+# Stop all services:
+#   docker-compose down
+#
+# View logs (all services):
+#   docker-compose logs -f
+#
+# View logs (specific service):
+#   docker-compose logs -f postgres
+#   docker-compose logs -f mongodb
+#   docker-compose logs -f redis
+#   docker-compose logs -f elasticsearch
+#   docker-compose logs -f rabbitmq
+#
+# Check service status:
+#   docker-compose ps
+#
+# Restart a specific service:
+#   docker-compose restart postgres
+#
+# Execute command in container:
+#   docker-compose exec postgres psql -U ocr_dev -d ocr_db
+#   docker-compose exec mongodb mongosh -u ocr_dev -p dev_password
+#   docker-compose exec redis redis-cli -a dev_password
+#
+# Remove all containers and volumes (DESTRUCTIVE):
+#   docker-compose down -v
+#
+# Rebuild and restart services:
+#   docker-compose up -d --build --force-recreate
+#
+# MANAGEMENT UIs:
+# ---------------
+#
+# RabbitMQ Management: http://localhost:15672
+#   Username: ocr_dev
+#   Password: dev_password
+#
+# TROUBLESHOOTING:
+# ----------------
+#
+# If ElasticSearch fails to start with "max virtual memory areas vm.max_map_count too low":
+#   Linux: sudo sysctl -w vm.max_map_count=262144
+#   macOS/Windows Docker Desktop: Increase Docker memory to at least 4GB
+#
+# If services fail health checks:
+#   docker-compose logs [service-name]
+#
+# To reset a specific service:
+#   docker-compose stop [service-name]
+#   docker volume rm ocr_[service]_dev_data
+#   docker-compose up -d [service-name]
+#
+# SECURITY NOTES:
+# ---------------
+#
+# WARNING: This configuration is for DEVELOPMENT ONLY!
+# - Default passwords are used (change in .env for team development)
+# - ElasticSearch security is disabled
+# - All services expose ports to host
+# - No TLS/SSL encryption
+# - No network isolation beyond bridge network
+#
+# NEVER use this configuration in production!
+# Production deployments should use:
+# - Strong, unique passwords from secret management
+# - TLS/SSL for all connections
+# - Network policies and firewalls
+# - Authentication enabled on all services
+# - Resource limits based on production workload
+# - Monitoring and alerting
+# - Regular backups
+#
+# ============================================================================
