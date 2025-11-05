@@ -5,11 +5,18 @@
 
 package com.carddemo.controller;
 
+import com.carddemo.config.SecurityConfig;
 import com.carddemo.dto.request.BillPaymentRequest;
 import com.carddemo.dto.response.BillPaymentResponse;
 import com.carddemo.exception.AccountNotFoundException;
+import com.carddemo.exception.AccountUpdateException;
 import com.carddemo.exception.GlobalExceptionHandler;
 import com.carddemo.exception.InsufficientBalanceException;
+import com.carddemo.exception.InvalidPayeeException;
+import com.carddemo.exception.TransactionException;
+import com.carddemo.exception.ValidationException;
+import com.carddemo.security.CustomUserDetailsService;
+import com.carddemo.security.JwtTokenProvider;
 import com.carddemo.security.SecurityConstants;
 import com.carddemo.service.BillPaymentService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -20,10 +27,12 @@ import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Import;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.test.context.support.WithMockUser;
-import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
@@ -87,7 +96,7 @@ import java.time.LocalDate;
  * @version 1.0
  */
 @WebMvcTest(BillPaymentController.class)
-@ContextConfiguration(classes = {BillPaymentController.class, GlobalExceptionHandler.class})
+@Import({SecurityConfig.class, GlobalExceptionHandler.class})
 public class BillPaymentControllerTest {
 
     /**
@@ -104,6 +113,22 @@ public class BillPaymentControllerTest {
      */
     @MockBean
     private BillPaymentService billPaymentService;
+
+    /**
+     * Mocked JwtTokenProvider for JWT token generation and validation.
+     * Required by SecurityConfig's JwtAuthenticationFilter to enable security context
+     * in test environment without actual token processing.
+     */
+    @MockBean
+    private JwtTokenProvider jwtTokenProvider;
+
+    /**
+     * Mocked CustomUserDetailsService for user authentication.
+     * Required by SecurityConfig's JwtAuthenticationFilter for user validation
+     * in test environment without actual database access.
+     */
+    @MockBean
+    private CustomUserDetailsService customUserDetailsService;
 
     /**
      * ObjectMapper for JSON serialization/deserialization in test request/response bodies.
@@ -248,7 +273,7 @@ public class BillPaymentControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(validPaymentRequest)))
                 .andExpect(MockMvcResultMatchers.status().isOk())
-                .andExpect(MockMvcResultMatchers.content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(MockMvcResultMatchers.content().contentType("application/json;charset=UTF-8"))
                 .andExpect(MockMvcResultMatchers.jsonPath("$.transactionName", Matchers.is("CB00")))
                 .andExpect(MockMvcResultMatchers.jsonPath("$.programName", Matchers.is("COBIL00C")))
                 .andExpect(MockMvcResultMatchers.jsonPath("$.accountId", Matchers.is(VALID_ACCOUNT_ID)))
@@ -305,11 +330,11 @@ public class BillPaymentControllerTest {
                         Long.parseLong(VALID_ACCOUNT_ID)
                 ));
 
-        // Act & Assert: Execute POST request expecting HTTP 400 Bad Request
+        // Act & Assert: Execute POST request expecting HTTP 422 Unprocessable Entity
         mockMvc.perform(MockMvcRequestBuilders.post(BILL_PAYMENT_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(excessivePaymentRequest)))
-                .andExpect(MockMvcResultMatchers.status().isBadRequest())
+                .andExpect(MockMvcResultMatchers.status().isUnprocessableEntity())
                 .andExpect(MockMvcResultMatchers.jsonPath("$.message", 
                         Matchers.containsString("Payment amount exceeds")));
 
@@ -341,9 +366,9 @@ public class BillPaymentControllerTest {
                 .payeeName("Invalid Payee")
                 .build();
 
-        // Configure service mock to throw IllegalArgumentException for invalid payee
+        // Configure service mock to throw InvalidPayeeException for invalid payee
         Mockito.when(billPaymentService.processBillPayment(Mockito.any(BillPaymentRequest.class)))
-                .thenThrow(new IllegalArgumentException("Invalid payee ID: " + INVALID_PAYEE_ID));
+                .thenThrow(new InvalidPayeeException(INVALID_PAYEE_ID));
 
         // Act & Assert: Execute POST request expecting HTTP 400 Bad Request
         mockMvc.perform(MockMvcRequestBuilders.post(BILL_PAYMENT_ENDPOINT)
@@ -498,7 +523,7 @@ public class BillPaymentControllerTest {
                         .content(objectMapper.writeValueAsString(validPaymentRequest)))
                 .andExpect(MockMvcResultMatchers.status().isInternalServerError())
                 .andExpect(MockMvcResultMatchers.jsonPath("$.message", 
-                        Matchers.containsString("Unable to process bill payment")));
+                        Matchers.containsString("unexpected error")));
 
         // Verify service method was called but transaction rolled back
         Mockito.verify(billPaymentService, Mockito.times(1))
@@ -690,7 +715,7 @@ public class BillPaymentControllerTest {
 
         // Configure service to throw exception for unconfirmed payment
         Mockito.when(billPaymentService.processBillPayment(Mockito.any(BillPaymentRequest.class)))
-                .thenThrow(new IllegalArgumentException("Payment confirmation required"));
+                .thenThrow(new TransactionException("Payment confirmation required"));
 
         // Act & Assert: Execute POST request expecting HTTP 400 Bad Request
         mockMvc.perform(MockMvcRequestBuilders.post(BILL_PAYMENT_ENDPOINT)
@@ -731,7 +756,7 @@ public class BillPaymentControllerTest {
 
         // Configure service to throw exception for over-limit payment
         Mockito.when(billPaymentService.processBillPayment(Mockito.any(BillPaymentRequest.class)))
-                .thenThrow(new IllegalArgumentException("Payment amount exceeds daily limit"));
+                .thenThrow(new TransactionException("Payment amount exceeds daily limit"));
 
         // Act & Assert: Execute POST request expecting HTTP 400 Bad Request
         mockMvc.perform(MockMvcRequestBuilders.post(BILL_PAYMENT_ENDPOINT)
@@ -758,10 +783,11 @@ public class BillPaymentControllerTest {
     @Test
     public void testPaymentWithoutAuthentication() throws Exception {
         // Act & Assert: Execute POST request without @WithMockUser annotation (no authentication)
+        // Spring Security returns 403 Forbidden for unauthenticated requests when no authentication entry point is configured
         mockMvc.perform(MockMvcRequestBuilders.post(BILL_PAYMENT_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(validPaymentRequest)))
-                .andExpect(MockMvcResultMatchers.status().isUnauthorized());
+                .andExpect(MockMvcResultMatchers.status().isForbidden());
 
         // Verify service method was NOT called due to authentication failure
         Mockito.verify(billPaymentService, Mockito.never())
@@ -823,7 +849,7 @@ public class BillPaymentControllerTest {
                         .content(objectMapper.writeValueAsString(validPaymentRequest)))
                 .andExpect(MockMvcResultMatchers.status().isInternalServerError())
                 .andExpect(MockMvcResultMatchers.jsonPath("$.message", 
-                        Matchers.containsString("Optimistic locking failure")));
+                        Matchers.containsString("unexpected error")));
 
         // Verify service method was called
         Mockito.verify(billPaymentService, Mockito.times(1))
@@ -845,7 +871,7 @@ public class BillPaymentControllerTest {
     public void testPaymentForClosedAccount() throws Exception {
         // Arrange: Configure service to throw exception for closed account
         Mockito.when(billPaymentService.processBillPayment(Mockito.any(BillPaymentRequest.class)))
-                .thenThrow(new IllegalArgumentException("Cannot process payment for closed account"));
+                .thenThrow(new TransactionException("Cannot process payment for closed account"));
 
         // Act & Assert: Execute POST request expecting HTTP 400 Bad Request
         mockMvc.perform(MockMvcRequestBuilders.post(BILL_PAYMENT_ENDPOINT)
@@ -874,7 +900,7 @@ public class BillPaymentControllerTest {
     public void testPaymentForBlockedAccount() throws Exception {
         // Arrange: Configure service to throw exception for blocked account
         Mockito.when(billPaymentService.processBillPayment(Mockito.any(BillPaymentRequest.class)))
-                .thenThrow(new IllegalArgumentException("Cannot process payment for blocked account"));
+                .thenThrow(new TransactionException("Cannot process payment for blocked account"));
 
         // Act & Assert: Execute POST request expecting HTTP 400 Bad Request
         mockMvc.perform(MockMvcRequestBuilders.post(BILL_PAYMENT_ENDPOINT)

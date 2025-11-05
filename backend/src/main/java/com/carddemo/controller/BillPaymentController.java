@@ -10,12 +10,14 @@ import com.carddemo.dto.response.BillPaymentResponse;
 import com.carddemo.exception.AccountNotFoundException;
 import com.carddemo.exception.InsufficientBalanceException;
 import com.carddemo.exception.InvalidPayeeException;
+import com.carddemo.exception.TransactionException;
 import com.carddemo.service.BillPaymentService;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -132,7 +134,7 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p><strong>Security Model (Section 0.9):</strong></p>
  * <ul>
- *   <li><strong>Role-Based Access:</strong> @PreAuthorize("hasRole('USER')") enforces authenticated access</li>
+ *   <li><strong>Role-Based Access:</strong> @PreAuthorize("hasAnyRole('USER', 'ADMIN')") enforces authenticated access</li>
  *   <li><strong>Account Ownership:</strong> Regular users can only process payments for their own accounts</li>
  *   <li><strong>Admin Override:</strong> ROLE_ADMIN users can process payments for any account</li>
  *   <li><strong>JWT Authentication:</strong> SecurityContext provides user identity from JWT token</li>
@@ -333,7 +335,7 @@ public class BillPaymentController {
      * @throws IllegalArgumentException if request validation fails (GlobalExceptionHandler returns HTTP 400)
      */
     @PostMapping("/bill")
-    @PreAuthorize("hasRole('USER')")
+    @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
     public ResponseEntity<BillPaymentResponse> processBillPayment(
             @Valid @RequestBody BillPaymentRequest request) {
         
@@ -390,10 +392,16 @@ public class BillPaymentController {
             // GlobalExceptionHandler converts to HTTP 400 BAD REQUEST
             throw e;
 
-        } catch (SecurityException e) {
+        } catch (AccessDeniedException e) {
             // Authorization validation failure - user not authorized for account
             log.error("Security violation during bill payment: {}", e.getMessage(), e);
             // GlobalExceptionHandler converts to HTTP 403 FORBIDDEN
+            throw e;
+
+        } catch (TransactionException e) {
+            // Maps to COBOL transaction processing errors (confirmation, limits, etc.)
+            log.error("Transaction validation failed for account: {} - {}", request.getAccountId(), e.getMessage(), e);
+            // GlobalExceptionHandler converts to HTTP 400 BAD REQUEST
             throw e;
 
         } catch (Exception e) {
@@ -430,7 +438,7 @@ public class BillPaymentController {
      * @param accountId The account ID from the payment request
      * @param userId The authenticated user ID from JWT token (SecurityContext)
      * @param authentication The Spring Security Authentication object containing roles
-     * @throws SecurityException if user is not authorized to access the account (converted to HTTP 403 by GlobalExceptionHandler)
+     * @throws AccessDeniedException if user is not authorized to access the account (converted to HTTP 403 by GlobalExceptionHandler)
      */
     private void validateAccountOwnership(String accountId, String userId, Authentication authentication) {
         // Check if user has admin role - admins can process payments for any account
@@ -448,7 +456,7 @@ public class BillPaymentController {
         if (!accountId.equals(userId)) {
             log.warn("User {} attempted to process payment for account {} without authorization", 
                      userId, accountId);
-            throw new SecurityException(
+            throw new AccessDeniedException(
                 String.format("User %s is not authorized to process payments for account %s", 
                              userId, accountId)
             );
