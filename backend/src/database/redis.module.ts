@@ -64,10 +64,36 @@ import { createClient, RedisClientType } from 'redis';
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
-  private client: RedisClientType;
+  private client!: RedisClientType;
   private isConnected = false;
 
   constructor(private readonly configService: ConfigService) {}
+
+  /**
+   * Helper method to safely extract error message from unknown error type.
+   * 
+   * @param {unknown} error - The error object
+   * @returns {string} The error message
+   */
+  private getErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return String(error);
+  }
+
+  /**
+   * Helper method to safely extract error stack from unknown error type.
+   * 
+   * @param {unknown} error - The error object
+   * @returns {string | undefined} The error stack trace
+   */
+  private getErrorStack(error: unknown): string | undefined {
+    if (error instanceof Error) {
+      return error.stack;
+    }
+    return undefined;
+  }
 
   /**
    * Initialize Redis connection on module initialization.
@@ -140,7 +166,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       await this.client.connect();
       this.logger.log('Redis connection initialization complete');
     } catch (error) {
-      this.logger.error(`Failed to connect to Redis: ${error.message}`, error.stack);
+      this.logger.error(`Failed to connect to Redis: ${this.getErrorMessage(error)}`, this.getErrorStack(error));
       throw error;
     }
   }
@@ -155,7 +181,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         await this.client.quit();
         this.logger.log('Redis connection closed gracefully');
       } catch (error) {
-        this.logger.error(`Error closing Redis connection: ${error.message}`);
+        this.logger.error(`Error closing Redis connection: ${this.getErrorMessage(error)}`);
         // Force disconnect if graceful quit fails
         await this.client.disconnect();
       }
@@ -175,7 +201,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     try {
       return await this.client.get(key);
     } catch (error) {
-      this.logger.error(`Error getting key ${key}: ${error.message}`);
+      this.logger.error(`Error getting key ${key}: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -198,7 +224,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         await this.client.set(key, value);
       }
     } catch (error) {
-      this.logger.error(`Error setting key ${key}: ${error.message}`);
+      this.logger.error(`Error setting key ${key}: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -215,7 +241,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.client.del(key);
     } catch (error) {
-      this.logger.error(`Error deleting key ${key}: ${error.message}`);
+      this.logger.error(`Error deleting key ${key}: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -234,7 +260,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       const result = await this.client.exists(key);
       return result === 1;
     } catch (error) {
-      this.logger.error(`Error checking existence of key ${key}: ${error.message}`);
+      this.logger.error(`Error checking existence of key ${key}: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -252,7 +278,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.client.expire(key, seconds);
     } catch (error) {
-      this.logger.error(`Error setting expiration for key ${key}: ${error.message}`);
+      this.logger.error(`Error setting expiration for key ${key}: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -270,7 +296,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     try {
       return await this.client.ttl(key);
     } catch (error) {
-      this.logger.error(`Error getting TTL for key ${key}: ${error.message}`);
+      this.logger.error(`Error getting TTL for key ${key}: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -290,7 +316,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       this.logger.debug(`Scanning keys with pattern: ${pattern}`);
       return await this.client.keys(pattern);
     } catch (error) {
-      this.logger.error(`Error scanning keys with pattern ${pattern}: ${error.message}`);
+      this.logger.error(`Error scanning keys with pattern ${pattern}: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -311,7 +337,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       await this.client.flushDb();
       this.logger.warn('Redis database flushed');
     } catch (error) {
-      this.logger.error(`Error flushing database: ${error.message}`);
+      this.logger.error(`Error flushing database: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -397,7 +423,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     try {
       return await this.client.incr(key);
     } catch (error) {
-      this.logger.error(`Error incrementing key ${key}: ${error.message}`);
+      this.logger.error(`Error incrementing key ${key}: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -416,7 +442,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     try {
       await this.client.setEx(key, seconds, value);
     } catch (error) {
-      this.logger.error(`Error setting key ${key} with expiration: ${error.message}`);
+      this.logger.error(`Error setting key ${key} with expiration: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -436,7 +462,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       const serialized = JSON.stringify(value);
       await this.set(key, serialized, ttl);
     } catch (error) {
-      this.logger.error(`Error setting JSON for key ${key}: ${error.message}`);
+      this.logger.error(`Error setting JSON for key ${key}: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -458,7 +484,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       }
       return JSON.parse(value) as T;
     } catch (error) {
-      this.logger.error(`Error getting JSON for key ${key}: ${error.message}`);
+      this.logger.error(`Error getting JSON for key ${key}: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -490,7 +516,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       const result = await this.client.ping();
       return result === 'PONG';
     } catch (error) {
-      this.logger.error(`Redis ping failed: ${error.message}`);
+      this.logger.error(`Redis ping failed: ${this.getErrorMessage(error)}`);
       return false;
     }
   }
