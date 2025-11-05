@@ -209,7 +209,7 @@ public class TransactionCategory implements Serializable {
      * during JSON conversion.</p>
      */
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "transaction_type_code", referencedColumnName = "type_code", 
+    @JoinColumn(name = "transaction_type_code", referencedColumnName = "transaction_type_code", 
                 insertable = false, updatable = false)
     @JsonIgnore
     private TransactionType transactionType;
