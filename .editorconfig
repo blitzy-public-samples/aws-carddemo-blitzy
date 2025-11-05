@@ -1,0 +1,118 @@
+# EditorConfig is awesome: https://EditorConfig.org
+
+# Top-most EditorConfig file
+root = true
+
+# Unix-style newlines with a newline ending every file
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# TypeScript and JavaScript files - 2 space indentation
+[*.{ts,tsx,js,jsx}]
+indent_style = space
+indent_size = 2
+
+# Python files - 4 space indentation (PEP 8)
+[*.py]
+indent_style = space
+indent_size = 4
+max_line_length = 120
+
+# JSON files - 2 space indentation
+[*.json]
+indent_style = space
+indent_size = 2
+
+# YAML files - 2 space indentation
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# Markdown files - 2 space indentation, preserve trailing whitespace
+[*.md]
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = false
+
+# Shell scripts - 2 space indentation
+[*.sh]
+indent_style = space
+indent_size = 2
+
+# Dockerfile - 4 space indentation
+[Dockerfile]
+indent_style = space
+indent_size = 4
+
+[Dockerfile.*]
+indent_style = space
+indent_size = 4
+
+# Configuration files - 2 space indentation
+[.prettierrc]
+indent_style = space
+indent_size = 2
+
+[.eslintrc.js]
+indent_style = space
+indent_size = 2
+
+# Package manager configuration files
+[package.json]
+indent_style = space
+indent_size = 2
+
+[package-lock.json]
+indent_style = space
+indent_size = 2
+
+[yarn.lock]
+indent_style = space
+indent_size = 2
+
+[pnpm-lock.yaml]
+indent_style = space
+indent_size = 2
+
+# Python package files
+[requirements.txt]
+indent_style = space
+indent_size = 2
+
+[setup.py]
+indent_style = space
+indent_size = 4
+
+[pyproject.toml]
+indent_style = space
+indent_size = 2
+
+# Terraform files - 2 space indentation
+[*.tf]
+indent_style = space
+indent_size = 2
+
+# HTML files - 2 space indentation
+[*.html]
+indent_style = space
+indent_size = 2
+
+# CSS and SCSS files - 2 space indentation
+[*.{css,scss,sass}]
+indent_style = space
+indent_size = 2
+
+# XML files - 2 space indentation
+[*.xml]
+indent_style = space
+indent_size = 2
+
+# Makefile - tabs required
+[Makefile]
+indent_style = tab
+
+[*.mk]
+indent_style = tab
