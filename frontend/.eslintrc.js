@@ -41,31 +41,19 @@ module.exports = {
   
   // Extend recommended configurations
   extends: [
-    // Next.js core web vitals (includes next/core-web-vitals)
+    // Next.js core web vitals (includes react, react-hooks, jsx-a11y, next)
     'next/core-web-vitals',
-    // Next.js recommended ESLint configuration
-    'eslint:recommended',
     // TypeScript recommended rules
     'plugin:@typescript-eslint/recommended',
     // TypeScript type-aware recommended rules
     'plugin:@typescript-eslint/recommended-requiring-type-checking',
-    // React recommended rules
-    'plugin:react/recommended',
-    // React Hooks rules
-    'plugin:react-hooks/recommended',
-    // Accessibility rules (WCAG 2.1 AA compliance)
-    'plugin:jsx-a11y/recommended',
     // Prettier integration (must be last to override other configs)
-    'prettier',
+    'plugin:prettier/recommended',
   ],
   
-  // ESLint plugins
+  // ESLint plugins (next/core-web-vitals already includes react, react-hooks, jsx-a11y)
   plugins: [
     '@typescript-eslint',
-    'react',
-    'react-hooks',
-    'jsx-a11y',
-    'prettier',
   ],
   
   // React version detection
