@@ -155,7 +155,7 @@ public class ValidationException extends RuntimeException {
      * set to error states (FLG-ALPHA-NOT-OK, FLG-CRED-LIMIT-NOT-OK, etc.)
      * with INPUT-ERROR flag set to '1'.</p>
      * 
-     * @param fieldErrors map of field names to error messages
+     * @param fieldErrors map of field names to error messages (null treated as empty map)
      * 
      * @example
      * <pre>
@@ -167,7 +167,7 @@ public class ValidationException extends RuntimeException {
      */
     public ValidationException(Map<String, String> fieldErrors) {
         super(buildMessageFromFieldErrors(fieldErrors));
-        this.fieldErrors = new HashMap<>(fieldErrors);
+        this.fieldErrors = (fieldErrors != null) ? new HashMap<>(fieldErrors) : new HashMap<>();
     }
     
     /**
@@ -182,7 +182,7 @@ public class ValidationException extends RuntimeException {
      * COBOL programs display a summary message plus field-specific highlights.</p>
      * 
      * @param message the detail message explaining the overall validation failure
-     * @param fieldErrors map of field names to error messages
+     * @param fieldErrors map of field names to error messages (null treated as empty map)
      * 
      * @example
      * <pre>
@@ -194,7 +194,7 @@ public class ValidationException extends RuntimeException {
      */
     public ValidationException(String message, Map<String, String> fieldErrors) {
         super(message);
-        this.fieldErrors = new HashMap<>(fieldErrors);
+        this.fieldErrors = (fieldErrors != null) ? new HashMap<>(fieldErrors) : new HashMap<>();
     }
     
     /**
