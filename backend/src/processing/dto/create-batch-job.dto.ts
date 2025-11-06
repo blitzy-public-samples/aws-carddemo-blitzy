@@ -93,7 +93,7 @@ export class CreateBatchJobDto {
     message: 'Maximum 100 documents can be processed in a single batch',
   })
   @IsUUID(4, { each: true, message: 'Each document ID must be a valid UUID v4' })
-  documentIds: string[];
+  documentIds!: string[];
 
   /**
    * Job priority for queue ordering (1=highest, 10=lowest).
@@ -167,7 +167,7 @@ export class CreateBatchJobDto {
       expectedProcessingTime: 900,
     },
     required: false,
-    type: 'object',
+    type: Object,
   })
   @IsOptional()
   @IsObject({ message: 'Metadata must be a valid JSON object' })
