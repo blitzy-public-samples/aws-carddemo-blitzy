@@ -430,19 +430,24 @@ export class StorageError extends Error {
    * @returns HTTP status code
    */
   private mapErrorCodeToStatus(code: StorageErrorCode): number {
-    const statusMap: Record<StorageErrorCode, number> = {
-      [StorageErrorCode.UPLOAD_FAILED]: 500,
-      [StorageErrorCode.DOWNLOAD_FAILED]: 500,
-      [StorageErrorCode.DELETE_FAILED]: 500,
-      [StorageErrorCode.FILE_NOT_FOUND]: 404,
-      [StorageErrorCode.VIRUS_DETECTED]: 400,
-      [StorageErrorCode.SCAN_FAILED]: 500,
-      [StorageErrorCode.INVALID_BUCKET]: 400,
-      [StorageErrorCode.PERMISSION_DENIED]: 403,
-      [StorageErrorCode.QUOTA_EXCEEDED]: 429,
-    };
-    
-    return statusMap[code] || 500;
+    // Use switch statement for security linter compliance
+    switch (code) {
+      case StorageErrorCode.FILE_NOT_FOUND:
+        return 404;
+      case StorageErrorCode.PERMISSION_DENIED:
+        return 403;
+      case StorageErrorCode.QUOTA_EXCEEDED:
+        return 429;
+      case StorageErrorCode.VIRUS_DETECTED:
+      case StorageErrorCode.INVALID_BUCKET:
+        return 400;
+      case StorageErrorCode.UPLOAD_FAILED:
+      case StorageErrorCode.DOWNLOAD_FAILED:
+      case StorageErrorCode.DELETE_FAILED:
+      case StorageErrorCode.SCAN_FAILED:
+      default:
+        return 500;
+    }
   }
   
   /**
