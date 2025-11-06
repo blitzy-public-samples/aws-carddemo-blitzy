@@ -1,0 +1,66 @@
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": "../",
+  "testEnvironment": "node",
+  "testRegex": ".e2e-spec.ts$",
+  "transform": {
+    "^.+\\.(t|j)s$": "ts-jest"
+  },
+  "coverageDirectory": "../coverage-e2e",
+  "testTimeout": 30000,
+  "moduleNameMapper": {
+    "^@/(.*)$": "<rootDir>/src/$1",
+    "^@common/(.*)$": "<rootDir>/src/common/$1",
+    "^@auth/(.*)$": "<rootDir>/src/auth/$1",
+    "^@users/(.*)$": "<rootDir>/src/users/$1",
+    "^@documents/(.*)$": "<rootDir>/src/documents/$1",
+    "^@processing/(.*)$": "<rootDir>/src/processing/$1",
+    "^@templates/(.*)$": "<rootDir>/src/templates/$1",
+    "^@integrations/(.*)$": "<rootDir>/src/integrations/$1",
+    "^@search/(.*)$": "<rootDir>/src/search/$1",
+    "^@analytics/(.*)$": "<rootDir>/src/analytics/$1",
+    "^@export/(.*)$": "<rootDir>/src/export/$1",
+    "^@database/(.*)$": "<rootDir>/src/database/$1",
+    "^@storage/(.*)$": "<rootDir>/src/storage/$1",
+    "^@notifications/(.*)$": "<rootDir>/src/notifications/$1",
+    "^@audit/(.*)$": "<rootDir>/src/audit/$1",
+    "^@api-keys/(.*)$": "<rootDir>/src/api-keys/$1",
+    "^@cache/(.*)$": "<rootDir>/src/cache/$1"
+  },
+  "setupFilesAfterEnv": ["<rootDir>/test/setup-e2e.ts"],
+  "collectCoverageFrom": [
+    "src/**/*.{js,ts}",
+    "!src/**/*.spec.ts",
+    "!src/**/*.e2e-spec.ts",
+    "!src/**/*.interface.ts",
+    "!src/**/*.dto.ts",
+    "!src/**/*.entity.ts",
+    "!src/**/*.schema.ts",
+    "!src/**/*.module.ts",
+    "!src/main.ts",
+    "!src/**/index.ts",
+    "!node_modules/**"
+  ],
+  "coverageThresholds": {
+    "global": {
+      "branches": 70,
+      "functions": 70,
+      "lines": 70,
+      "statements": 70
+    }
+  },
+  "maxWorkers": 1,
+  "verbose": true,
+  "forceExit": true,
+  "detectOpenHandles": true,
+  "globals": {
+    "ts-jest": {
+      "tsconfig": {
+        "module": "commonjs",
+        "esModuleInterop": true,
+        "allowSyntheticDefaultImports": true,
+        "strict": false
+      }
+    }
+  }
+}
