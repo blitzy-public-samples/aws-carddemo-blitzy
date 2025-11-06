@@ -64,7 +64,7 @@ export class EmailAttachmentDto {
   @Matches(/^[a-zA-Z0-9_\-\.]+$/, {
     message: 'Attachment name must contain only alphanumeric characters, underscores, hyphens, and dots',
   })
-  name: string;
+  name!: string;
 
   /**
    * Base64-encoded attachment content
@@ -84,7 +84,7 @@ export class EmailAttachmentDto {
   @Matches(/^[A-Za-z0-9+/]*={0,2}$/, {
     message: 'Attachment content must be valid base64-encoded data',
   })
-  content: string;
+  content!: string;
 
   /**
    * MIME type of the attachment
@@ -105,7 +105,7 @@ export class EmailAttachmentDto {
   @Matches(/^[a-zA-Z0-9][a-zA-Z0-9!#$&^_+-]*\/[a-zA-Z0-9][a-zA-Z0-9!#$&^_.+-]*$/, {
     message: 'Content type must be a valid MIME type (e.g., application/pdf, image/jpeg)',
   })
-  contentType: string;
+  contentType!: string;
 }
 
 /**
@@ -153,7 +153,7 @@ export class SendEmailDto {
   })
   @IsEmail({}, { message: 'Recipient must be a valid email address per RFC 5322' })
   @IsNotEmpty({ message: 'Recipient email address is required' })
-  recipient: string;
+  recipient!: string;
 
   /**
    * Email subject line
@@ -172,7 +172,7 @@ export class SendEmailDto {
   @IsString({ message: 'Subject must be a string' })
   @IsNotEmpty({ message: 'Subject cannot be empty' })
   @MaxLength(200, { message: 'Subject must not exceed 200 characters' })
-  subject: string;
+  subject!: string;
 
   /**
    * Email body content
@@ -190,7 +190,7 @@ export class SendEmailDto {
   })
   @IsString({ message: 'Body must be a string' })
   @IsNotEmpty({ message: 'Body cannot be empty' })
-  body: string;
+  body!: string;
 
   /**
    * Email attachments
@@ -234,7 +234,7 @@ export class SendEmailDto {
   @ApiProperty({
     description: 'Template variables for dynamic content substitution in email body',
     type: 'object',
-    required: false,
+    additionalProperties: true,
     example: {
       userName: 'John Doe',
       documentName: 'Invoice_2024.pdf',
