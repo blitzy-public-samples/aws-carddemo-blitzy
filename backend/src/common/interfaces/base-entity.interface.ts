@@ -484,7 +484,7 @@ export interface SoftDeletable {
 /**
  * Type guard to check if an entity implements BaseEntity interface.
  * 
- * @param {any} entity - The entity to check
+ * @param {unknown} entity - The entity to check
  * @returns {boolean} true if entity implements BaseEntity
  * 
  * @example
@@ -493,22 +493,27 @@ export interface SoftDeletable {
  *   console.log('Created at:', someEntity.createdAt);
  * }
  */
-export function isBaseEntity(entity: any): entity is BaseEntity {
+export function isBaseEntity(entity: unknown): entity is BaseEntity {
   return (
     entity !== null &&
     typeof entity === 'object' &&
-    typeof entity.id === 'string' &&
-    typeof entity.accountId === 'string' &&
-    entity.createdAt instanceof Date &&
-    entity.updatedAt instanceof Date &&
-    typeof entity.version === 'number'
+    'id' in entity &&
+    'accountId' in entity &&
+    'createdAt' in entity &&
+    'updatedAt' in entity &&
+    'version' in entity &&
+    typeof (entity as Record<string, unknown>).id === 'string' &&
+    typeof (entity as Record<string, unknown>).accountId === 'string' &&
+    (entity as Record<string, unknown>).createdAt instanceof Date &&
+    (entity as Record<string, unknown>).updatedAt instanceof Date &&
+    typeof (entity as Record<string, unknown>).version === 'number'
   );
 }
 
 /**
  * Type guard to check if an entity implements SoftDeletable interface.
  * 
- * @param {any} entity - The entity to check
+ * @param {unknown} entity - The entity to check
  * @returns {boolean} true if entity implements SoftDeletable
  * 
  * @example
@@ -516,7 +521,7 @@ export function isBaseEntity(entity: any): entity is BaseEntity {
  *   console.log('This entity was deleted at:', someEntity.deletedAt);
  * }
  */
-export function isSoftDeletable(entity: any): entity is SoftDeletable {
+export function isSoftDeletable(entity: unknown): entity is SoftDeletable {
   return (
     entity !== null &&
     typeof entity === 'object' &&
@@ -528,7 +533,7 @@ export function isSoftDeletable(entity: any): entity is SoftDeletable {
 /**
  * Type guard to check if an entity implements TimestampEntity interface.
  * 
- * @param {any} entity - The entity to check
+ * @param {unknown} entity - The entity to check
  * @returns {boolean} true if entity implements TimestampEntity
  * 
  * @example
@@ -537,12 +542,15 @@ export function isSoftDeletable(entity: any): entity is SoftDeletable {
  *   console.log('Updated at:', someEntity.updatedAt);
  * }
  */
-export function isTimestampEntity(entity: any): entity is TimestampEntity {
+export function isTimestampEntity(entity: unknown): entity is TimestampEntity {
   return (
     entity !== null &&
     typeof entity === 'object' &&
-    typeof entity.id === 'string' &&
-    entity.createdAt instanceof Date &&
-    entity.updatedAt instanceof Date
+    'id' in entity &&
+    'createdAt' in entity &&
+    'updatedAt' in entity &&
+    typeof (entity as Record<string, unknown>).id === 'string' &&
+    (entity as Record<string, unknown>).createdAt instanceof Date &&
+    (entity as Record<string, unknown>).updatedAt instanceof Date
   );
 }

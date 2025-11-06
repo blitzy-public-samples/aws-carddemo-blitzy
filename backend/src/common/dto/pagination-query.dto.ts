@@ -24,9 +24,9 @@
  * @see Section 0.7.2 NestJS Backend Guidelines
  */
 
-import { IsOptional, IsInt, Min, Max, IsString, IsEnum } from 'class-validator';
-import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import { IsOptional, IsInt, Min, Max, IsString, IsEnum } from 'class-validator';
 
 /**
  * Sort Order Enum
