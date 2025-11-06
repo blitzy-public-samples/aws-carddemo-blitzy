@@ -84,6 +84,62 @@ export function sanitizeHtml(content: string): string {
 }
 
 /**
+ * Sanitizes URLs to prevent XSS attacks via dangerous protocols
+ * 
+ * Per Section 0.7.1: ALL user inputs MUST be validated and sanitized
+ * Blocks dangerous protocols (javascript:, data:, vbscript:, file:) and returns safe default
+ * 
+ * @param url - URL string that may contain malicious protocol
+ * @returns Safe URL or '#' if dangerous protocol detected
+ * 
+ * @example
+ * ```typescript
+ * const maliciousUrl = 'javascript:alert("xss")';
+ * const safe = sanitizeUrl(maliciousUrl);
+ * // Returns: '#'
+ * 
+ * const validUrl = 'https://example.com';
+ * const safe2 = sanitizeUrl(validUrl);
+ * // Returns: 'https://example.com'
+ * ```
+ */
+export function sanitizeUrl(url: string): string {
+  if (!url || typeof url !== 'string') {
+    return '#';
+  }
+  
+  // Trim whitespace and convert to lowercase for protocol check
+  const trimmedUrl = url.trim();
+  const lowerUrl = trimmedUrl.toLowerCase();
+  
+  // List of dangerous protocols that should be blocked
+  const dangerousProtocols = [
+    'javascript:',
+    'data:',
+    'vbscript:',
+    'file:',
+    'about:',
+  ];
+  
+  // Check if URL starts with any dangerous protocol
+  for (const protocol of dangerousProtocols) {
+    if (lowerUrl.startsWith(protocol)) {
+      return '#'; // Return safe default
+    }
+  }
+  
+  // Check for protocol-relative URLs that might be used for XSS
+  // Allow them only if they don't contain dangerous patterns
+  if (trimmedUrl.startsWith('//')) {
+    // Allow protocol-relative URLs (e.g., //example.com)
+    return trimmedUrl;
+  }
+  
+  // Allow relative URLs, http://, https://, mailto:, tel:, and other safe protocols
+  return trimmedUrl;
+}
+
+/**
  * Formats a date object into human-readable string for email display
  * 
  * @param date - Date object to format
@@ -175,13 +231,13 @@ export function generateButton(params: ButtonParams): string {
         <tr>
           <td style="font-family: ${EMAIL_FONTS}; font-size: 16px; vertical-align: top; background-color: ${backgroundColor}; border-radius: 6px; text-align: center;" valign="top" align="center">
             <!--[if mso]>
-            <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="${sanitizeHtml(url)}" style="height:44px;v-text-anchor:middle;width:200px;" arcsize="14%" stroke="f" fillcolor="${backgroundColor}">
+            <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="${sanitizeUrl(url)}" style="height:44px;v-text-anchor:middle;width:200px;" arcsize="14%" stroke="f" fillcolor="${backgroundColor}">
               <w:anchorlock/>
               <center style="color:${textColor};font-family:${EMAIL_FONTS};font-size:16px;font-weight:600;">${sanitizeHtml(text)}</center>
             </v:roundrect>
             <![endif]-->
             <!--[if !mso]><!-->
-            <a href="${sanitizeHtml(url)}" target="_blank" style="display: inline-block; background-color: ${backgroundColor}; border-radius: 6px; box-sizing: border-box; color: ${textColor}; cursor: pointer; text-decoration: none; font-size: 16px; font-weight: 600; margin: 0; padding: 12px 24px; border: solid 1px ${backgroundColor}; min-width: 200px;">
+            <a href="${sanitizeUrl(url)}" target="_blank" style="display: inline-block; background-color: ${backgroundColor}; border-radius: 6px; box-sizing: border-box; color: ${textColor}; cursor: pointer; text-decoration: none; font-size: 16px; font-weight: 600; margin: 0; padding: 12px 24px; border: solid 1px ${backgroundColor}; min-width: 200px;">
               ${sanitizeHtml(text)}
             </a>
             <!--<![endif]-->
@@ -340,7 +396,7 @@ export function generateEmailHeader(
   const finalLogoUrl = logoUrl || defaultLogoUrl;
   
   const navHtml = navigationLinks ? navigationLinks.map(link => 
-    `<a href="${sanitizeHtml(link.url)}" style="color: ${EMAIL_COLORS.textLight}; text-decoration: none; font-size: 14px; margin-left: 20px;">${sanitizeHtml(link.text)}</a>`
+    `<a href="${sanitizeUrl(link.url)}" style="color: ${EMAIL_COLORS.textLight}; text-decoration: none; font-size: 14px; margin-left: 20px;">${sanitizeHtml(link.text)}</a>`
   ).join('') : '';
   
   return `
@@ -351,7 +407,7 @@ export function generateEmailHeader(
             <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse: collapse; width: 100%;">
               <tr>
                 <td style="vertical-align: middle; width: 70%;" valign="middle">
-                  <img src="${sanitizeHtml(finalLogoUrl)}" alt="OCR Processing Application" style="display: block; height: 32px; width: auto; border: 0; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic;" />
+                  <img src="${sanitizeUrl(finalLogoUrl)}" alt="OCR Processing Application" style="display: block; height: 32px; width: auto; border: 0; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic;" />
                   <span style="font-size: 20px; font-weight: 700; color: ${EMAIL_COLORS.text}; margin-left: 12px; vertical-align: middle;">OCR Processing Application</span>
                 </td>
                 <td style="vertical-align: middle; width: 30%; text-align: right;" valign="middle" align="right">
@@ -387,7 +443,7 @@ export function generateEmailFooter(unsubscribeUrl: string, accountName: string)
   ];
   
   const socialHtml = socialLinks.map(social => 
-    `<a href="${sanitizeHtml(social.url)}" style="color: ${EMAIL_COLORS.textLight}; text-decoration: none; margin: 0 8px;" title="${sanitizeHtml(social.name)}">${social.icon}</a>`
+    `<a href="${sanitizeUrl(social.url)}" style="color: ${EMAIL_COLORS.textLight}; text-decoration: none; margin: 0 8px;" title="${sanitizeHtml(social.name)}">${social.icon}</a>`
   ).join('');
   
   return `
@@ -428,11 +484,11 @@ export function generateEmailFooter(unsubscribeUrl: string, accountName: string)
             <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse: collapse; width: 100%; margin-bottom: 16px;">
               <tr>
                 <td style="text-align: center; font-size: 12px; color: ${EMAIL_COLORS.textLight};" align="center">
-                  <a href="${sanitizeHtml(privacyUrl)}" style="color: ${EMAIL_COLORS.textLight}; text-decoration: underline; margin: 0 8px;">Privacy Policy</a>
+                  <a href="${sanitizeUrl(privacyUrl)}" style="color: ${EMAIL_COLORS.textLight}; text-decoration: underline; margin: 0 8px;">Privacy Policy</a>
                   <span style="color: #D1D5DB;">|</span>
-                  <a href="${sanitizeHtml(termsUrl)}" style="color: ${EMAIL_COLORS.textLight}; text-decoration: underline; margin: 0 8px;">Terms of Service</a>
+                  <a href="${sanitizeUrl(termsUrl)}" style="color: ${EMAIL_COLORS.textLight}; text-decoration: underline; margin: 0 8px;">Terms of Service</a>
                   <span style="color: #D1D5DB;">|</span>
-                  <a href="${sanitizeHtml(unsubscribeUrl)}" style="color: ${EMAIL_COLORS.textLight}; text-decoration: underline; margin: 0 8px;">Unsubscribe</a>
+                  <a href="${sanitizeUrl(unsubscribeUrl)}" style="color: ${EMAIL_COLORS.textLight}; text-decoration: underline; margin: 0 8px;">Unsubscribe</a>
                 </td>
               </tr>
             </table>
