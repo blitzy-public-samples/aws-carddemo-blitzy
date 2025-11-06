@@ -166,13 +166,16 @@ export class JsonFormatterService {
       }
 
       // Handle JSON stringification errors (circular references, non-serializable data)
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      
       this.logger.error(
-        `Failed to format document to JSON: ${error.message}`,
-        error.stack,
+        `Failed to format document to JSON: ${errorMessage}`,
+        errorStack,
       );
 
       throw new BadRequestException(
-        `Failed to generate JSON export: ${error.message}`,
+        `Failed to generate JSON export: ${errorMessage}`,
       );
     }
   }
@@ -239,11 +242,12 @@ export class JsonFormatterService {
 
             return formattedDoc;
           } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             this.logger.error(
-              `Failed to format document at index ${index}: ${error.message}`,
+              `Failed to format document at index ${index}: ${errorMessage}`,
             );
             throw new BadRequestException(
-              `Failed to format document at index ${index}: ${error.message}`,
+              `Failed to format document at index ${index}: ${errorMessage}`,
             );
           }
         },
@@ -282,13 +286,16 @@ export class JsonFormatterService {
         throw error;
       }
 
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorStack = error instanceof Error ? error.stack : undefined;
+
       this.logger.error(
-        `Failed to format batch to JSON: ${error.message}`,
-        error.stack,
+        `Failed to format batch to JSON: ${errorMessage}`,
+        errorStack,
       );
 
       throw new BadRequestException(
-        `Failed to generate batch JSON export: ${error.message}`,
+        `Failed to generate batch JSON export: ${errorMessage}`,
       );
     }
   }
@@ -387,7 +394,7 @@ export class JsonFormatterService {
     const fields = document.extracted_fields || document.fields || [];
     const confidenceScores = fields
       .map((field) => field.confidence_score)
-      .filter((score) => typeof score === 'number');
+      .filter((score): score is number => typeof score === 'number');
 
     metadata.confidence_metrics = {
       overall_score: document.confidence_score || null,
@@ -437,7 +444,8 @@ export class JsonFormatterService {
 
       return undefined;
     } catch (error) {
-      this.logger.warn(`Failed to format date: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.warn(`Failed to format date: ${errorMessage}`);
       return undefined;
     }
   }
