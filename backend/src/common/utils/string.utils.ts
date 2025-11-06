@@ -546,10 +546,10 @@ export function maskEmail(email: string | null | undefined): string {
 
   // Show first character of local part, mask the rest
   if (localPart.length === 0) {
-    return '***' + domain;
+    return `***${  domain}`;
   }
 
-  return localPart.charAt(0) + '***' + domain;
+  return `${localPart.charAt(0)  }***${  domain}`;
 }
 
 /**
@@ -585,12 +585,12 @@ export function maskPhone(phone: string | null | undefined): string {
 
   // Try to preserve original formatting if present
   if (str.includes('-')) {
-    return '***-***-' + last4;
+    return `***-***-${  last4}`;
   } else if (str.includes(' ')) {
-    return '*** *** ' + last4;
-  } else {
+    return `*** *** ${  last4}`;
+  } 
     return mask + last4;
-  }
+  
 }
 
 /**
@@ -624,17 +624,17 @@ export function maskCreditCard(cardNumber: string | null | undefined): string {
 
   // For exactly 4 digits, still show masking for security
   if (digitsOnly.length === 4) {
-    return '****' + last4;
+    return `****${  last4}`;
   }
 
   // Try to preserve formatting if present (every 4 digits)
   if (str.includes('-')) {
-    return '****-****-****-' + last4;
+    return `****-****-****-${  last4}`;
   } else if (str.includes(' ')) {
-    return '**** **** **** ' + last4;
-  } else {
+    return `**** **** **** ${  last4}`;
+  } 
     const maskedLength = digitsOnly.length - 4;
     const mask = '*'.repeat(maskedLength);
     return mask + last4;
-  }
+  
 }

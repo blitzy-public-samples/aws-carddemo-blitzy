@@ -18,8 +18,9 @@
  * @module encryption.utils
  */
 
-import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
+
+import * as bcrypt from 'bcrypt';
 
 /**
  * Default number of salt rounds for bcrypt password hashing.
@@ -263,7 +264,7 @@ export async function encrypt(plainText: string, encryptionKey: string): Promise
 
     // Prepend IV to encrypted data (IV is not secret)
     const ivHex = iv.toString('hex');
-    return ivHex + ':' + encrypted;
+    return `${ivHex  }:${  encrypted}`;
   } catch (error) {
     if (error instanceof Error) {
       throw new Error(`Failed to encrypt data: ${error.message}`);
