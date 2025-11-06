@@ -585,8 +585,8 @@ public class StringUtils {
         // Remove any existing spaces or hyphens
         String cleanNumber = cardNumber.replaceAll("[\\s-]", "");
         
-        if (cleanNumber.length() < 4) {
-            // If less than 4 digits, mask everything
+        if (cleanNumber.length() <= 4) {
+            // If 4 or fewer digits, mask everything (no point showing "last 4" when there are only 4)
             StringBuilder masked = new StringBuilder();
             for (int i = 0; i < cleanNumber.length(); i++) {
                 masked.append('*');
