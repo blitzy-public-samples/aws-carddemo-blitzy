@@ -65,7 +65,7 @@ export class DocumentProcessedPayloadDto {
     format: 'uuid',
   })
   @IsUUID('4')
-  documentId: string;
+  documentId!: string;
 
   @ApiProperty({
     description: 'Document type classification (invoice, receipt, contract, form)',
@@ -73,7 +73,7 @@ export class DocumentProcessedPayloadDto {
     enum: ['invoice', 'receipt', 'contract', 'form', 'other'],
   })
   @IsString()
-  documentType: string;
+  documentType!: string;
 
   @ApiProperty({
     description: 'Overall confidence score for the extraction (0-100)',
@@ -84,7 +84,7 @@ export class DocumentProcessedPayloadDto {
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   @Max(100)
-  confidenceScore: number;
+  confidenceScore!: number;
 
   @ApiProperty({
     description: 'Extracted fields with values and individual confidence scores',
@@ -117,7 +117,7 @@ export class DocumentProcessedPayloadDto {
   })
   @IsArray()
   @ValidateNested({ each: true })
-  extractedFields: Array<{
+  extractedFields!: Array<{
     fieldName: string;
     value: any;
     confidence: number;
@@ -136,7 +136,7 @@ export class DocumentProcessedPayloadDto {
   })
   @IsNumber()
   @Min(0)
-  processingTimeMs: number;
+  processingTimeMs!: number;
 
   @ApiProperty({
     description: 'Number of pages processed',
@@ -145,7 +145,7 @@ export class DocumentProcessedPayloadDto {
   })
   @IsInt()
   @Min(1)
-  pageCount: number;
+  pageCount!: number;
 
   @ApiProperty({
     description: 'OCR engine used (tesseract, google-vision, aws-textract)',
@@ -153,7 +153,7 @@ export class DocumentProcessedPayloadDto {
     enum: ['tesseract', 'google-vision', 'aws-textract', 'hybrid'],
   })
   @IsString()
-  ocrEngine: string;
+  ocrEngine!: string;
 
   @ApiPropertyOptional({
     description: 'Validation errors or warnings for extracted fields',
@@ -188,7 +188,7 @@ export class JobProgressPayloadDto {
     format: 'uuid',
   })
   @IsUUID('4')
-  jobId: string;
+  jobId!: string;
 
   @ApiProperty({
     description: 'Job progress percentage (0-100)',
@@ -199,7 +199,7 @@ export class JobProgressPayloadDto {
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   @Max(100)
-  percentComplete: number;
+  percentComplete!: number;
 
   @ApiProperty({
     description: 'Total number of documents in the batch',
@@ -208,7 +208,7 @@ export class JobProgressPayloadDto {
   })
   @IsInt()
   @Min(1)
-  totalDocuments: number;
+  totalDocuments!: number;
 
   @ApiProperty({
     description: 'Number of documents processed so far',
@@ -217,7 +217,7 @@ export class JobProgressPayloadDto {
   })
   @IsInt()
   @Min(0)
-  processedDocuments: number;
+  processedDocuments!: number;
 
   @ApiProperty({
     description: 'Number of documents that failed processing',
@@ -226,7 +226,7 @@ export class JobProgressPayloadDto {
   })
   @IsInt()
   @Min(0)
-  failedDocuments: number;
+  failedDocuments!: number;
 
   @ApiPropertyOptional({
     description: 'UUID of the document currently being processed',
@@ -262,7 +262,7 @@ export class JobProgressPayloadDto {
   })
   @IsNumber()
   @Min(0)
-  averageProcessingTimeMs: number;
+  averageProcessingTimeMs!: number;
 }
 
 /**
@@ -278,7 +278,7 @@ export class JobCompletedPayloadDto {
     format: 'uuid',
   })
   @IsUUID('4')
-  jobId: string;
+  jobId!: string;
 
   @ApiProperty({
     description: 'Total number of documents processed',
@@ -287,7 +287,7 @@ export class JobCompletedPayloadDto {
   })
   @IsInt()
   @Min(0)
-  totalDocuments: number;
+  totalDocuments!: number;
 
   @ApiProperty({
     description: 'Number of documents processed successfully',
@@ -296,7 +296,7 @@ export class JobCompletedPayloadDto {
   })
   @IsInt()
   @Min(0)
-  successCount: number;
+  successCount!: number;
 
   @ApiProperty({
     description: 'Number of documents that failed processing',
@@ -305,7 +305,7 @@ export class JobCompletedPayloadDto {
   })
   @IsInt()
   @Min(0)
-  failureCount: number;
+  failureCount!: number;
 
   @ApiProperty({
     description: 'Total processing time for the entire job in milliseconds',
@@ -314,7 +314,7 @@ export class JobCompletedPayloadDto {
   })
   @IsNumber()
   @Min(0)
-  totalProcessingTimeMs: number;
+  totalProcessingTimeMs!: number;
 
   @ApiProperty({
     description: 'Average confidence score across all successfully processed documents (0-100)',
@@ -325,7 +325,7 @@ export class JobCompletedPayloadDto {
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   @Max(100)
-  averageConfidenceScore: number;
+  averageConfidenceScore!: number;
 
   @ApiProperty({
     description: 'Job completion timestamp in ISO 8601 format',
@@ -333,7 +333,7 @@ export class JobCompletedPayloadDto {
     format: 'date-time',
   })
   @IsISO8601()
-  completedAt: string;
+  completedAt!: string;
 
   @ApiPropertyOptional({
     description: 'Breakdown of processing statistics by document type',
@@ -374,7 +374,7 @@ export class JobFailedPayloadDto {
     format: 'uuid',
   })
   @IsUUID('4')
-  jobId: string;
+  jobId!: string;
 
   @ApiProperty({
     description: 'Error code identifying the failure type',
@@ -389,14 +389,14 @@ export class JobFailedPayloadDto {
     ],
   })
   @IsString()
-  errorCode: string;
+  errorCode!: string;
 
   @ApiProperty({
     description: 'Human-readable error message',
     example: 'OCR service is temporarily unavailable. Please try again later.',
   })
   @IsString()
-  errorMessage: string;
+  errorMessage!: string;
 
   @ApiPropertyOptional({
     description: 'Detailed error stack trace (only in development/debugging)',
@@ -413,7 +413,7 @@ export class JobFailedPayloadDto {
   })
   @IsInt()
   @Min(0)
-  processedDocuments: number;
+  processedDocuments!: number;
 
   @ApiProperty({
     description: 'Total number of documents in the failed job',
@@ -422,7 +422,7 @@ export class JobFailedPayloadDto {
   })
   @IsInt()
   @Min(0)
-  totalDocuments: number;
+  totalDocuments!: number;
 
   @ApiProperty({
     description: 'List of document IDs that were affected by the failure',
@@ -431,7 +431,7 @@ export class JobFailedPayloadDto {
   })
   @IsArray()
   @IsUUID('4', { each: true })
-  affectedDocumentIds: string[];
+  affectedDocumentIds!: string[];
 
   @ApiProperty({
     description: 'Timestamp when the job failed in ISO 8601 format',
@@ -439,14 +439,14 @@ export class JobFailedPayloadDto {
     format: 'date-time',
   })
   @IsISO8601()
-  failedAt: string;
+  failedAt!: string;
 
   @ApiProperty({
     description: 'Whether the job can be retried',
     example: true,
   })
   @IsBoolean()
-  canRetry: boolean;
+  canRetry!: boolean;
 
   @ApiPropertyOptional({
     description: 'Suggested retry delay in milliseconds',
@@ -500,7 +500,7 @@ export class WebSocketEventDto {
     enumName: 'WebSocketEventType',
   })
   @IsEnum(WebSocketEventType)
-  eventType: WebSocketEventType;
+  eventType!: WebSocketEventType;
 
   @ApiProperty({
     description: 'Event-specific payload data. Type depends on eventType.',
@@ -514,7 +514,7 @@ export class WebSocketEventDto {
   @IsObject()
   @ValidateNested()
   @Type(() => Object)
-  payload:
+  payload!:
     | DocumentProcessedPayloadDto
     | JobProgressPayloadDto
     | JobCompletedPayloadDto
@@ -544,7 +544,7 @@ export class WebSocketEventDto {
     format: 'uuid',
   })
   @IsUUID('4')
-  accountId: string;
+  accountId!: string;
 
   @ApiPropertyOptional({
     description: 'User ID for user-specific event routing (optional)',
@@ -562,7 +562,7 @@ export class WebSocketEventDto {
   })
   @IsISO8601()
   @Type(() => String)
-  timestamp: string;
+  timestamp!: string;
 
   @ApiPropertyOptional({
     description: 'Additional metadata for the event (custom fields, debugging info, etc.)',
