@@ -75,7 +75,7 @@ export class CreateJobDto {
     format: 'uuid',
   })
   @IsUUID(4, { message: 'Document ID must be a valid UUID v4' })
-  documentId: string;
+  documentId!: string;
 
   /**
    * Job priority for queue ordering.
@@ -142,7 +142,7 @@ export class CreateJobDto {
     description: 'Optional metadata for the processing job (e.g., file size, page count, source application)',
     example: { fileSize: 1024000, pageCount: 5, source: 'web_upload' },
     required: false,
-    type: 'object',
+    type: Object,
   })
   @IsOptional()
   @IsObject({ message: 'Metadata must be a valid JSON object' })
