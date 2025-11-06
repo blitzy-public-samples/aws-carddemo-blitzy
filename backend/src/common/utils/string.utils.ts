@@ -59,10 +59,9 @@ export function sanitizeInput(input: string | null | undefined): string {
 
   // Remove SQL injection patterns
   const sqlPatterns = [
-    /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|EXECUTE|UNION|DECLARE)\b)/gi,
+    /\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|EXECUTE|UNION|DECLARE|TABLE|FROM|WHERE|JOIN)\b/gi,
     /(--|\;|\/\*|\*\/)/g,
-    /(\bOR\b\s+\d+\s*=\s*\d+)/gi,
-    /(\bAND\b\s+\d+\s*=\s*\d+)/gi,
+    /\b(OR|AND)\b\s+\d+\s*=\s*\d+/gi,
   ];
 
   sqlPatterns.forEach(pattern => {
@@ -112,7 +111,7 @@ export function escapeHTML(text: string | null | undefined): string {
     '/': '&#x2F;',
   };
 
-  return String(text).replace(/[&<>"'\/]/g, (char) => htmlEscapeMap[char]);
+  return String(text).replace(/[&<>"'\/]/g, (char) => htmlEscapeMap[char] || char);
 }
 
 /**
@@ -219,6 +218,156 @@ export function isEmpty(value: string | null | undefined): boolean {
   }
 
   return String(value).trim().length === 0;
+}
+
+/**
+ * Validates if a string is a properly formatted email address.
+ * Uses RFC 5322 compliant regex pattern for email validation.
+ * 
+ * Validation Criteria:
+ * - Valid local part (before @)
+ * - Valid domain part (after @)
+ * - Proper domain extension (2-6 characters)
+ * - No special characters that violate RFC 5322
+ * 
+ * @param {string | null | undefined} email - The email address to validate
+ * @returns {boolean} True if the string is a valid email address
+ * 
+ * @example
+ * isEmail('user@example.com'); // Returns: true
+ * isEmail('user.name+tag@example.co.uk'); // Returns: true
+ * isEmail('invalid.email'); // Returns: false
+ * isEmail('@example.com'); // Returns: false
+ * isEmail(null); // Returns: false
+ */
+export function isEmail(email: string | null | undefined): boolean {
+  if (isEmpty(email)) {
+    return false;
+  }
+
+  const str = String(email).trim();
+
+  // RFC 5322 compliant email regex (simplified but comprehensive)
+  const emailRegex = /^[a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+
+  // Additional validation: check for valid TLD length (2-6 characters)
+  const parts = str.split('@');
+  if (parts.length !== 2) {
+    return false;
+  }
+
+  const domain = parts[1];
+  if (!domain) {
+    return false;
+  }
+
+  const domainParts = domain.split('.');
+  
+  if (domainParts.length < 2) {
+    return false;
+  }
+
+  const tld = domainParts[domainParts.length - 1];
+  if (!tld || tld.length < 2 || tld.length > 6) {
+    return false;
+  }
+
+  return emailRegex.test(str);
+}
+
+/**
+ * Validates if a string is a properly formatted URL.
+ * Supports http, https, ftp, and ftps protocols.
+ * 
+ * Validation Criteria:
+ * - Valid protocol (http, https, ftp, ftps)
+ * - Valid domain name or IP address
+ * - Optional port number
+ * - Optional path, query parameters, and fragment
+ * 
+ * @param {string | null | undefined} url - The URL to validate
+ * @returns {boolean} True if the string is a valid URL
+ * 
+ * @example
+ * isURL('https://example.com'); // Returns: true
+ * isURL('http://example.com/path?query=value'); // Returns: true
+ * isURL('ftp://files.example.com:21/files'); // Returns: true
+ * isURL('not-a-url'); // Returns: false
+ * isURL('//example.com'); // Returns: false
+ * isURL(null); // Returns: false
+ */
+export function isURL(url: string | null | undefined): boolean {
+  if (isEmpty(url)) {
+    return false;
+  }
+
+  const str = String(url).trim();
+
+  try {
+    // Use built-in URL constructor for validation
+    const urlObj = new URL(str);
+    
+    // Check for valid protocols
+    const validProtocols = ['http:', 'https:', 'ftp:', 'ftps:'];
+    if (!validProtocols.includes(urlObj.protocol)) {
+      return false;
+    }
+
+    // Check that hostname exists
+    if (!urlObj.hostname) {
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Validates if a string is a properly formatted phone number.
+ * Supports various international phone number formats.
+ * 
+ * Validation Criteria:
+ * - Minimum 7 digits (local numbers)
+ * - Maximum 15 digits (international standard)
+ * - Allows common formatting characters: +, -, (), spaces
+ * - Optional country code prefix (+)
+ * 
+ * @param {string | null | undefined} phone - The phone number to validate
+ * @returns {boolean} True if the string is a valid phone number
+ * 
+ * @example
+ * isPhoneNumber('+1-555-123-4567'); // Returns: true
+ * isPhoneNumber('(555) 123-4567'); // Returns: true
+ * isPhoneNumber('5551234567'); // Returns: true
+ * isPhoneNumber('+44 20 7946 0958'); // Returns: true
+ * isPhoneNumber('123'); // Returns: false (too short)
+ * isPhoneNumber('abc-def-ghij'); // Returns: false (no digits)
+ * isPhoneNumber(null); // Returns: false
+ */
+export function isPhoneNumber(phone: string | null | undefined): boolean {
+  if (isEmpty(phone)) {
+    return false;
+  }
+
+  const str = String(phone).trim();
+
+  // Remove common formatting characters to get digits only
+  const digitsOnly = str.replace(/[\s\-().+]/g, '');
+
+  // Check if remaining string contains only digits
+  if (!/^\d+$/.test(digitsOnly)) {
+    return false;
+  }
+
+  // International phone number standard: minimum 7 digits, maximum 15 digits
+  const digitCount = digitsOnly.length;
+  if (digitCount < 7 || digitCount > 15) {
+    return false;
+  }
+
+  return true;
 }
 
 /**
@@ -330,6 +479,7 @@ export function toSnakeCase(text: string | null | undefined): string {
 
   // Insert underscore before capital letters and convert to lowercase
   return str
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2') // Handle consecutive capitals like "API"
     .replace(/([a-z])([A-Z])/g, '$1_$2') // camelCase to snake_case
     .replace(/[\s-]+/g, '_') // spaces and hyphens to underscores
     .replace(/_+/g, '_') // multiple underscores to single
@@ -358,6 +508,7 @@ export function toKebabCase(text: string | null | undefined): string {
 
   // Insert hyphen before capital letters and convert to lowercase
   return str
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2') // Handle consecutive capitals like "API"
     .replace(/([a-z])([A-Z])/g, '$1-$2') // camelCase to kebab-case
     .replace(/[\s_]+/g, '-') // spaces and underscores to hyphens
     .replace(/-+/g, '-') // multiple hyphens to single
@@ -470,6 +621,11 @@ export function maskCreditCard(cardNumber: string | null | undefined): string {
 
   // Show last 4 digits, mask the rest
   const last4 = digitsOnly.slice(-4);
+
+  // For exactly 4 digits, still show masking for security
+  if (digitsOnly.length === 4) {
+    return '****' + last4;
+  }
 
   // Try to preserve formatting if present (every 4 digits)
   if (str.includes('-')) {
