@@ -36,28 +36,33 @@ import axios from 'axios';
  */
 @Injectable()
 export class MicrosoftOAuthStrategy extends PassportStrategy(Strategy, 'microsoft') {
-  constructor(private readonly configService: ConfigService) {
+  constructor(configService: ConfigService) {
+    // Extract configuration values for validation and super() call
+    const clientId = configService.get<string>('MICROSOFT_CLIENT_ID');
+    const clientSecret = configService.get<string>('MICROSOFT_CLIENT_SECRET');
+    const baseUrl = configService.get<string>('BASE_URL');
+
+    // Validate required configuration before initialization
+    if (!clientId) {
+      throw new Error('MICROSOFT_CLIENT_ID environment variable is required for Microsoft OAuth strategy');
+    }
+    if (!clientSecret) {
+      throw new Error('MICROSOFT_CLIENT_SECRET environment variable is required for Microsoft OAuth strategy');
+    }
+    if (!baseUrl) {
+      throw new Error('BASE_URL environment variable is required for Microsoft OAuth callback URL');
+    }
+
     super({
       authorizationURL: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
       tokenURL: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
-      clientID: configService.get<string>('MICROSOFT_CLIENT_ID'),
-      clientSecret: configService.get<string>('MICROSOFT_CLIENT_SECRET'),
-      callbackURL: `${configService.get<string>('BASE_URL')}/api/v1/auth/microsoft/callback`,
+      clientID: clientId,
+      clientSecret: clientSecret,
+      callbackURL: `${baseUrl}/api/v1/auth/microsoft/callback`,
       scope: ['User.Read', 'email', 'profile'],
       // Pass access token to validate method for profile fetching
       passReqToCallback: false,
     });
-
-    // Validate required configuration at instantiation
-    if (!configService.get<string>('MICROSOFT_CLIENT_ID')) {
-      throw new Error('MICROSOFT_CLIENT_ID environment variable is required for Microsoft OAuth strategy');
-    }
-    if (!configService.get<string>('MICROSOFT_CLIENT_SECRET')) {
-      throw new Error('MICROSOFT_CLIENT_SECRET environment variable is required for Microsoft OAuth strategy');
-    }
-    if (!configService.get<string>('BASE_URL')) {
-      throw new Error('BASE_URL environment variable is required for Microsoft OAuth callback URL');
-    }
   }
 
   /**
@@ -93,7 +98,7 @@ export class MicrosoftOAuthStrategy extends PassportStrategy(Strategy, 'microsof
   async validate(
     accessToken: string,
     refreshToken: string,
-    profile: any,
+    _profile: any, // Underscore prefix indicates intentionally unused - we fetch complete profile from Graph API
     done: VerifyCallback,
   ): Promise<any> {
     try {
@@ -122,20 +127,20 @@ export class MicrosoftOAuthStrategy extends PassportStrategy(Strategy, 'microsof
             
             if (status === 401) {
               // Invalid or expired access token
-              return done(new Error('Microsoft OAuth access token is invalid or expired'), null);
+              return done(new Error('Microsoft OAuth access token is invalid or expired'), false);
             } else if (status === 403) {
               // Insufficient permissions
-              return done(new Error('Insufficient permissions to access Microsoft profile. Required scopes: User.Read, email, profile'), null);
+              return done(new Error('Insufficient permissions to access Microsoft profile. Required scopes: User.Read, email, profile'), false);
             } else {
               // Other Microsoft Graph API errors
-              return done(new Error(`Microsoft Graph API error: ${errorData?.error?.message || 'Unknown error'}`), null);
+              return done(new Error(`Microsoft Graph API error: ${errorData?.error?.message || 'Unknown error'}`), false);
             }
           } else if (error.request) {
             // Network error - no response received
-            return done(new Error('Failed to connect to Microsoft Graph API. Please check network connectivity.'), null);
+            return done(new Error('Failed to connect to Microsoft Graph API. Please check network connectivity.'), false);
           } else {
             // Request setup error
-            return done(new Error(`Failed to fetch Microsoft profile: ${error.message}`), null);
+            return done(new Error(`Failed to fetch Microsoft profile: ${error.message}`), false);
           }
         }
         // Non-Axios error
@@ -151,11 +156,11 @@ export class MicrosoftOAuthStrategy extends PassportStrategy(Strategy, 'microsof
 
       // Validate required fields per Section 0.7.1 security requirements
       if (!email) {
-        return done(new Error('Microsoft profile missing required email address'), null);
+        return done(new Error('Microsoft profile missing required email address'), false);
       }
       
       if (!microsoftId) {
-        return done(new Error('Microsoft profile missing required user ID'), null);
+        return done(new Error('Microsoft profile missing required user ID'), false);
       }
 
       // Construct normalized user object for auth service
@@ -201,7 +206,7 @@ export class MicrosoftOAuthStrategy extends PassportStrategy(Strategy, 'microsof
       // Catch any unexpected errors and pass to Passport
       // This ensures errors are properly logged and handled by NestJS exception filters
       const errorMessage = error instanceof Error ? error.message : 'Unknown error during Microsoft OAuth validation';
-      return done(new Error(`Microsoft OAuth validation failed: ${errorMessage}`), null);
+      return done(new Error(`Microsoft OAuth validation failed: ${errorMessage}`), false);
     }
   }
 }
