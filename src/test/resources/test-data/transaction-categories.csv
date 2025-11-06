@@ -1,0 +1,19 @@
+categoryCode,categoryName
+010001,Regular Sales Draft
+010002,Regular Cash Advance
+010003,Convenience Check Debit
+010004,ATM Cash Advance
+010005,Interest Amount
+020001,Cash payment
+020002,Electronic payment
+020003,Check payment
+030001,Credit to Account
+030002,Credit to Purchase balance
+030003,Credit to Cash balance
+040001,Zero dollar authorization
+040002,Online purchase authorization
+040003,Travel booking authorization
+050001,Refund credit
+060001,Fraud reversal
+060002,Non-fraud reversal
+070001,Sales draft credit adjustment
