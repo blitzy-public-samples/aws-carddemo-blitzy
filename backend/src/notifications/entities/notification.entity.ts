@@ -8,8 +8,9 @@ import {
   JoinColumn,
   Index,
 } from 'typeorm';
-import { User } from '../../users/entities/user.entity';
+
 import { Account } from '../../accounts/entities/account.entity';
+import { User } from '../../users/entities/user.entity';
 
 /**
  * Notification type enum for different notification categories

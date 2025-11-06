@@ -1,5 +1,5 @@
-import { IsUUID, IsOptional, IsInt, Min, Max, IsObject } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { IsUUID, IsOptional, IsInt, Min, Max, IsObject } from 'class-validator';
 
 /**
  * Data Transfer Object for creating a single OCR processing job.

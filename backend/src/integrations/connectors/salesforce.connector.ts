@@ -308,7 +308,7 @@ export class SalesforceConnector {
       response_type: 'code',
       client_id: clientId,
       redirect_uri: redirectUri,
-      state: state,
+      state,
       scope: 'api refresh_token full', // api=REST API access, refresh_token=offline access, full=full access
       prompt: 'consent', // Force consent screen to ensure refresh token is issued
     });
@@ -487,7 +487,7 @@ export class SalesforceConnector {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: new URLSearchParams({
-          token: token,
+          token,
         }),
       });
 
@@ -532,9 +532,9 @@ export class SalesforceConnector {
 
     // Create new OAuth2 configuration
     const oauth2 = new jsforce.OAuth2({
-      clientId: clientId,
-      clientSecret: clientSecret,
-      redirectUri: redirectUri,
+      clientId,
+      clientSecret,
+      redirectUri,
       loginUrl: credentials.environment === 'sandbox'
         ? 'https://test.salesforce.com'
         : 'https://login.salesforce.com',
@@ -542,7 +542,7 @@ export class SalesforceConnector {
 
     // Create connection with OAuth credentials
     const connection = new jsforce.Connection({
-      oauth2: oauth2,
+      oauth2,
       instanceUrl: credentials.instance_url,
       accessToken: credentials.access_token,
       refreshToken: credentials.refresh_token,
@@ -689,7 +689,7 @@ export class SalesforceConnector {
 
       // Build conversion request
       const convertRequest: any = {
-        leadId: leadId,
+        leadId,
         convertedStatus: conversionData.convertedStatus,
         doNotCreateOpportunity: conversionData.doNotCreateOpportunity || false,
         sendNotificationEmail: conversionData.sendNotificationEmail || false,
@@ -707,7 +707,7 @@ export class SalesforceConnector {
       if (!result.success) {
         return {
           success: false,
-          leadId: leadId,
+          leadId,
           errors: result.errors || [],
         };
       }
@@ -716,7 +716,7 @@ export class SalesforceConnector {
 
       return {
         success: true,
-        leadId: leadId,
+        leadId,
         accountId: result.accountId,
         contactId: result.contactId,
         opportunityId: result.opportunityId,
@@ -1032,7 +1032,7 @@ export class SalesforceConnector {
 
       // Execute queryAll to include deleted records
       // Use type assertion as queryAll might not be in all jsforce versions
-      const result = await (connection as any).queryAll(soql) as any;
+      const result = await (connection as any).queryAll(soql);
 
       let records = result.records;
 

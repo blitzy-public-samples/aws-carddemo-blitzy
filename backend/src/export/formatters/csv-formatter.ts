@@ -1,6 +1,7 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
-import { Readable } from 'stream';
 import { Buffer } from 'buffer';
+import { Readable } from 'stream';
+
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 
 /**
  * Base export options interface for all formatters
@@ -113,10 +114,10 @@ export class CsvFormatterService {
       if (shouldStream) {
         // Return streaming response for large exports
         return this.createStreamingResponse(rows, delimiter, lineEnding, includeHeaders, includeMetadata);
-      } else {
+      } 
         // Return Buffer for small exports
         return this.createBufferResponse(rows, delimiter, lineEnding, includeHeaders, includeMetadata);
-      }
+      
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       const errorStack = error instanceof Error ? error.stack : undefined;
@@ -203,10 +204,10 @@ export class CsvFormatterService {
       if (shouldStream) {
         // Return streaming response for large batches
         return this.createStreamingResponse(allRows, delimiter, lineEnding, includeHeaders, includeMetadata);
-      } else {
+      } 
         // Return Buffer for small batches
         return this.createBufferResponse(allRows, delimiter, lineEnding, includeHeaders, includeMetadata);
-      }
+      
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       const errorStack = error instanceof Error ? error.stack : undefined;

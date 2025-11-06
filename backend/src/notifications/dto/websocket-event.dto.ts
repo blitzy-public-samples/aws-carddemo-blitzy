@@ -16,6 +16,8 @@
  * @see Section 0.5.5 Phase 4 Group 4D - Processing Status and Notifications
  */
 
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import {
   IsEnum,
   IsObject,
@@ -31,8 +33,6 @@ import {
   IsBoolean,
   IsInt,
 } from 'class-validator';
-import { Type } from 'class-transformer';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 /**
  * WebSocket event type enumeration

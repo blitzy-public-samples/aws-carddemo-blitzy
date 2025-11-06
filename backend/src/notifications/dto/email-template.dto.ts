@@ -17,6 +17,7 @@
  * Per Section 0.4.8 Email Notification Integration and Section 0.7.2 validation requirements.
  */
 
+import { ApiProperty } from '@nestjs/swagger';
 import {
   IsString,
   IsBoolean,
@@ -26,7 +27,6 @@ import {
   ArrayNotEmpty,
   IsEnum,
 } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
 
 /**
  * Email Template Category Enumeration

@@ -335,7 +335,7 @@ export class ExcelFormatterService {
     const keys = Object.keys(rowSample);
     
     return keys.map(key => ({
-      key: key,
+      key,
       header: this.formatHeaderText(key),
       width: 15 // Initial width, will be auto-sized later
     }));

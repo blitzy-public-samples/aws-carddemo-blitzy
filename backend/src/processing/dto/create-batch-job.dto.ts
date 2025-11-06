@@ -1,3 +1,4 @@
+import { ApiProperty } from '@nestjs/swagger';
 import {
   IsArray,
   ArrayMinSize,
@@ -9,7 +10,6 @@ import {
   Max,
   IsObject,
 } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
 
 /**
  * Data Transfer Object for creating batch OCR processing jobs.

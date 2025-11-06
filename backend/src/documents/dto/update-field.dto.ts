@@ -1,3 +1,4 @@
+import { ApiProperty } from '@nestjs/swagger';
 import {
   IsString,
   IsNotEmpty,
@@ -5,7 +6,6 @@ import {
   MaxLength,
   IsOptional,
 } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
 
 /**
  * Data Transfer Object for correcting extracted field values.

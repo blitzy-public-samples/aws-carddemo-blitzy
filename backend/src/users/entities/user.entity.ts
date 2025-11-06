@@ -8,6 +8,7 @@ import {
   JoinColumn,
   Index,
 } from 'typeorm';
+
 import { Account } from '../../accounts/entities/account.entity';
 
 /**

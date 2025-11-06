@@ -12,6 +12,8 @@
  * @module NotificationPreferencesDto
  */
 
+import { ApiProperty } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
@@ -21,8 +23,6 @@ import {
   Matches,
   ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
-import { ApiProperty } from '@nestjs/swagger';
 
 /**
  * Email frequency enumeration for notification batching

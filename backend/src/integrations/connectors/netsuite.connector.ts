@@ -1,8 +1,9 @@
+import * as crypto from 'crypto';
+
 import { Injectable, Logger, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import OAuth = require('oauth-1.0a');
-import * as crypto from 'crypto';
 import axios, { AxiosError, AxiosRequestConfig } from 'axios';
+import OAuth = require('oauth-1.0a');
 
 /**
  * NetSuite API Connector Service
@@ -215,7 +216,7 @@ export class NetSuiteConnector {
     const oauthClient = this.createOAuthClient(credentials);
     
     const requestData = {
-      url: url,
+      url,
       method: method.toUpperCase(),
     };
 
@@ -470,7 +471,7 @@ export class NetSuiteConnector {
       }
       
       if (conditions.length > 0) {
-        query += ' AND ' + conditions.join(' AND ');
+        query += ` AND ${  conditions.join(' AND ')}`;
       }
       
       query += ' ORDER BY companyname LIMIT 100';
@@ -1427,8 +1428,8 @@ export class NetSuiteConnector {
     try {
       const config: AxiosRequestConfig = {
         method: method.toUpperCase() as any,
-        url: url,
-        headers: headers,
+        url,
+        headers,
         timeout: 60000, // 60 second timeout for NetSuite API
         validateStatus: (status) => status >= 200 && status < 300,
       };

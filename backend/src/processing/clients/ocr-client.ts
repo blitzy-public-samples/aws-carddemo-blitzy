@@ -330,7 +330,7 @@ export class OcrClient {
         return response.data;
       },
       (error) => {
-        const duration = Date.now() - (error.config as any)?.metadata?.startTime;
+        const duration = Date.now() - (error.config)?.metadata?.startTime;
         
         this.logger.error(
           `OCR request failed: ${error.response?.status || 'NO_RESPONSE'} ${error.config?.url} (${duration}ms) - ${error.message}`,
@@ -708,7 +708,7 @@ export class OcrClient {
     
     if (!response.success && !response.error) {
       throw new OcrServiceException(
-        'OCR processing failed: ' + (response.error || 'Unknown error'),
+        `OCR processing failed: ${  response.error || 'Unknown error'}`,
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

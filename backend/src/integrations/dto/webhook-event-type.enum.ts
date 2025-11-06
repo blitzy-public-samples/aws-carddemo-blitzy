@@ -128,7 +128,7 @@ export function parseWebhookEventType(value: string): WebhookEventType {
   if (!isValidWebhookEventType(value)) {
     throw new Error(`Invalid webhook event type: ${value}`);
   }
-  return value as WebhookEventType;
+  return value;
 }
 
 /**

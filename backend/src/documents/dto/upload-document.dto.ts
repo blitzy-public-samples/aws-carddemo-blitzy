@@ -1,5 +1,5 @@
-import { IsUUID, IsEnum, IsOptional, IsArray, IsString, IsNotEmpty } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { IsUUID, IsEnum, IsOptional, IsArray, IsString, IsNotEmpty } from 'class-validator';
 
 /**
  * Document type enumeration for classification and processing rules.

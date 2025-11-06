@@ -8,6 +8,7 @@ import {
   JoinColumn,
   Index,
 } from 'typeorm';
+
 import { Template } from './template.entity';
 
 /**

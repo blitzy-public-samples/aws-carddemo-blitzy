@@ -1,5 +1,6 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { Buffer } from 'buffer';
+
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 
 /**
  * Export options interface for XML formatting configuration.
@@ -195,9 +196,9 @@ export class XmlFormatterService {
       // Add each document
       for (const document of documents) {
         this.validateDocumentData(document);
-        xml += this.indent(1, indentSpaces) + '<document>\n';
+        xml += `${this.indent(1, indentSpaces)  }<document>\n`;
         xml += this.buildDocumentElement(document, 2, selectedFields, indentSpaces, options);
-        xml += this.indent(1, indentSpaces) + '</document>\n';
+        xml += `${this.indent(1, indentSpaces)  }</document>\n`;
       }
 
       // Close root element
@@ -247,15 +248,15 @@ export class XmlFormatterService {
     const indent1 = this.indent(indentLevel, spaces);
 
     // Document metadata elements
-    xml += indent1 + `<id>${this.escapeXML(document.id)}</id>\n`;
-    xml += indent1 + `<file_name>${this.escapeXML(document.file_name)}</file_name>\n`;
-    xml += indent1 + `<document_type>${this.escapeXML(document.document_type)}</document_type>\n`;
-    xml += indent1 + `<status>${this.escapeXML(document.status)}</status>\n`;
-    xml += indent1 + `<confidence_score>${document.confidence_score}</confidence_score>\n`;
-    xml += indent1 + `<created_at>${this.escapeXML(document.created_at)}</created_at>\n`;
+    xml += `${indent1  }<id>${this.escapeXML(document.id)}</id>\n`;
+    xml += `${indent1  }<file_name>${this.escapeXML(document.file_name)}</file_name>\n`;
+    xml += `${indent1  }<document_type>${this.escapeXML(document.document_type)}</document_type>\n`;
+    xml += `${indent1  }<status>${this.escapeXML(document.status)}</status>\n`;
+    xml += `${indent1  }<confidence_score>${document.confidence_score}</confidence_score>\n`;
+    xml += `${indent1  }<created_at>${this.escapeXML(document.created_at)}</created_at>\n`;
     
     if (document.processing_completed_at) {
-      xml += indent1 + `<processing_completed_at>${this.escapeXML(document.processing_completed_at)}</processing_completed_at>\n`;
+      xml += `${indent1  }<processing_completed_at>${this.escapeXML(document.processing_completed_at)}</processing_completed_at>\n`;
     }
 
     // Add fields section
@@ -265,13 +266,13 @@ export class XmlFormatterService {
       : fields;
 
     if (filteredFields.length > 0) {
-      xml += indent1 + '<fields>\n';
+      xml += `${indent1  }<fields>\n`;
       
       for (const field of filteredFields) {
         xml += this.buildFieldElement(field, indentLevel + 1, spaces, options);
       }
       
-      xml += indent1 + '</fields>\n';
+      xml += `${indent1  }</fields>\n`;
     }
 
     // Add metadata section if requested
@@ -302,59 +303,59 @@ export class XmlFormatterService {
     const indent1 = this.indent(indentLevel, spaces);
     const indent2 = this.indent(indentLevel + 1, spaces);
 
-    xml += indent1 + '<field>\n';
+    xml += `${indent1  }<field>\n`;
 
     // Field properties
-    xml += indent2 + `<field_name>${this.escapeXML(field.field_name)}</field_name>\n`;
+    xml += `${indent2  }<field_name>${this.escapeXML(field.field_name)}</field_name>\n`;
     
     if (field.field_label) {
-      xml += indent2 + `<field_label>${this.escapeXML(field.field_label)}</field_label>\n`;
+      xml += `${indent2  }<field_label>${this.escapeXML(field.field_label)}</field_label>\n`;
     }
     
-    xml += indent2 + `<field_type>${this.escapeXML(field.field_type)}</field_type>\n`;
+    xml += `${indent2  }<field_type>${this.escapeXML(field.field_type)}</field_type>\n`;
     
     // Handle value wrapping with CDATA if option is enabled
     if (options?.useCDATA) {
-      xml += indent2 + `<original_value><![CDATA[${field.original_value || ''}]]></original_value>\n`;
+      xml += `${indent2  }<original_value><![CDATA[${field.original_value || ''}]]></original_value>\n`;
       if (field.corrected_value !== undefined) {
-        xml += indent2 + `<corrected_value><![CDATA[${field.corrected_value || ''}]]></corrected_value>\n`;
+        xml += `${indent2  }<corrected_value><![CDATA[${field.corrected_value || ''}]]></corrected_value>\n`;
       }
       if (field.normalized_value !== undefined) {
-        xml += indent2 + `<normalized_value><![CDATA[${field.normalized_value || ''}]]></normalized_value>\n`;
+        xml += `${indent2  }<normalized_value><![CDATA[${field.normalized_value || ''}]]></normalized_value>\n`;
       }
     } else {
-      xml += indent2 + `<original_value>${this.escapeXML(field.original_value)}</original_value>\n`;
+      xml += `${indent2  }<original_value>${this.escapeXML(field.original_value)}</original_value>\n`;
       if (field.corrected_value !== undefined) {
-        xml += indent2 + `<corrected_value>${this.escapeXML(field.corrected_value)}</corrected_value>\n`;
+        xml += `${indent2  }<corrected_value>${this.escapeXML(field.corrected_value)}</corrected_value>\n`;
       }
       if (field.normalized_value !== undefined) {
-        xml += indent2 + `<normalized_value>${this.escapeXML(field.normalized_value)}</normalized_value>\n`;
+        xml += `${indent2  }<normalized_value>${this.escapeXML(field.normalized_value)}</normalized_value>\n`;
       }
     }
     
-    xml += indent2 + `<confidence_score>${field.confidence_score}</confidence_score>\n`;
-    xml += indent2 + `<validation_status>${this.escapeXML(field.validation_status)}</validation_status>\n`;
+    xml += `${indent2  }<confidence_score>${field.confidence_score}</confidence_score>\n`;
+    xml += `${indent2  }<validation_status>${this.escapeXML(field.validation_status)}</validation_status>\n`;
     
     if (field.page_number !== undefined) {
-      xml += indent2 + `<page_number>${field.page_number}</page_number>\n`;
+      xml += `${indent2  }<page_number>${field.page_number}</page_number>\n`;
     }
     
     if (field.bounding_box) {
-      xml += indent2 + '<bounding_box>\n';
+      xml += `${indent2  }<bounding_box>\n`;
       const indent3 = this.indent(indentLevel + 2, spaces);
-      xml += indent3 + `<x>${field.bounding_box.x}</x>\n`;
-      xml += indent3 + `<y>${field.bounding_box.y}</y>\n`;
-      xml += indent3 + `<width>${field.bounding_box.width}</width>\n`;
-      xml += indent3 + `<height>${field.bounding_box.height}</height>\n`;
-      xml += indent3 + `<page>${field.bounding_box.page}</page>\n`;
-      xml += indent2 + '</bounding_box>\n';
+      xml += `${indent3  }<x>${field.bounding_box.x}</x>\n`;
+      xml += `${indent3  }<y>${field.bounding_box.y}</y>\n`;
+      xml += `${indent3  }<width>${field.bounding_box.width}</width>\n`;
+      xml += `${indent3  }<height>${field.bounding_box.height}</height>\n`;
+      xml += `${indent3  }<page>${field.bounding_box.page}</page>\n`;
+      xml += `${indent2  }</bounding_box>\n`;
     }
     
     if (field.extraction_method) {
-      xml += indent2 + `<extraction_method>${this.escapeXML(field.extraction_method)}</extraction_method>\n`;
+      xml += `${indent2  }<extraction_method>${this.escapeXML(field.extraction_method)}</extraction_method>\n`;
     }
 
-    xml += indent1 + '</field>\n';
+    xml += `${indent1  }</field>\n`;
 
     return xml;
   }
@@ -374,78 +375,78 @@ export class XmlFormatterService {
     const indent2 = this.indent(indentLevel + 1, spaces);
     const indent3 = this.indent(indentLevel + 2, spaces);
 
-    xml += indent1 + '<metadata>\n';
+    xml += `${indent1  }<metadata>\n`;
 
     // Processing info
-    xml += indent2 + '<processing_info>\n';
+    xml += `${indent2  }<processing_info>\n`;
     
     if (document.processing_date) {
-      xml += indent3 + `<processing_date>${this.escapeXML(document.processing_date)}</processing_date>\n`;
+      xml += `${indent3  }<processing_date>${this.escapeXML(document.processing_date)}</processing_date>\n`;
     }
     
     if (document.uploaded_by) {
-      xml += indent3 + `<uploaded_by>${this.escapeXML(document.uploaded_by)}</uploaded_by>\n`;
+      xml += `${indent3  }<uploaded_by>${this.escapeXML(document.uploaded_by)}</uploaded_by>\n`;
     }
     
     if (document.approved_by) {
-      xml += indent3 + `<approved_by>${this.escapeXML(document.approved_by)}</approved_by>\n`;
+      xml += `${indent3  }<approved_by>${this.escapeXML(document.approved_by)}</approved_by>\n`;
     }
     
     if (document.approved_at) {
-      xml += indent3 + `<approved_at>${this.escapeXML(document.approved_at)}</approved_at>\n`;
+      xml += `${indent3  }<approved_at>${this.escapeXML(document.approved_at)}</approved_at>\n`;
     }
     
-    xml += indent2 + '</processing_info>\n';
+    xml += `${indent2  }</processing_info>\n`;
 
     // Confidence metrics
-    xml += indent2 + '<confidence_metrics>\n';
-    xml += indent3 + `<overall_score>${document.confidence_score}</overall_score>\n`;
+    xml += `${indent2  }<confidence_metrics>\n`;
+    xml += `${indent3  }<overall_score>${document.confidence_score}</overall_score>\n`;
     
     const fields = document.extracted_fields || document.fields || [];
     if (fields.length > 0) {
-      xml += indent3 + '<field_scores>\n';
+      xml += `${indent3  }<field_scores>\n`;
       const indent4 = this.indent(indentLevel + 3, spaces);
       
       for (const field of fields) {
-        xml += indent4 + `<field name="${this.escapeXML(field.field_name)}" score="${field.confidence_score}"/>\n`;
+        xml += `${indent4  }<field name="${this.escapeXML(field.field_name)}" score="${field.confidence_score}"/>\n`;
       }
       
-      xml += indent3 + '</field_scores>\n';
+      xml += `${indent3  }</field_scores>\n`;
     }
     
-    xml += indent2 + '</confidence_metrics>\n';
+    xml += `${indent2  }</confidence_metrics>\n`;
 
     // Corrections history if available
     if (document.corrections && document.corrections.length > 0) {
-      xml += indent2 + '<corrections>\n';
+      xml += `${indent2  }<corrections>\n`;
       
       for (const correction of document.corrections) {
-        xml += indent3 + '<correction>\n';
+        xml += `${indent3  }<correction>\n`;
         const indent4 = this.indent(indentLevel + 3, spaces);
         
         if (correction.field_name) {
-          xml += indent4 + `<field_name>${this.escapeXML(correction.field_name)}</field_name>\n`;
+          xml += `${indent4  }<field_name>${this.escapeXML(correction.field_name)}</field_name>\n`;
         }
         if (correction.original_value !== undefined) {
-          xml += indent4 + `<original_value>${this.escapeXML(correction.original_value)}</original_value>\n`;
+          xml += `${indent4  }<original_value>${this.escapeXML(correction.original_value)}</original_value>\n`;
         }
         if (correction.corrected_value !== undefined) {
-          xml += indent4 + `<corrected_value>${this.escapeXML(correction.corrected_value)}</corrected_value>\n`;
+          xml += `${indent4  }<corrected_value>${this.escapeXML(correction.corrected_value)}</corrected_value>\n`;
         }
         if (correction.corrected_by) {
-          xml += indent4 + `<corrected_by>${this.escapeXML(correction.corrected_by)}</corrected_by>\n`;
+          xml += `${indent4  }<corrected_by>${this.escapeXML(correction.corrected_by)}</corrected_by>\n`;
         }
         if (correction.corrected_at) {
-          xml += indent4 + `<corrected_at>${this.escapeXML(correction.corrected_at)}</corrected_at>\n`;
+          xml += `${indent4  }<corrected_at>${this.escapeXML(correction.corrected_at)}</corrected_at>\n`;
         }
         
-        xml += indent3 + '</correction>\n';
+        xml += `${indent3  }</correction>\n`;
       }
       
-      xml += indent2 + '</corrections>\n';
+      xml += `${indent2  }</corrections>\n`;
     }
 
-    xml += indent1 + '</metadata>\n';
+    xml += `${indent1  }</metadata>\n`;
 
     return xml;
   }

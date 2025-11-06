@@ -26,6 +26,8 @@
  * ```
  */
 
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type, Transform } from 'class-transformer';
 import {
   IsString,
   IsNotEmpty,
@@ -42,8 +44,6 @@ import {
   ArrayUnique,
   Matches,
 } from 'class-validator';
-import { Type, Transform } from 'class-transformer';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 /**
  * Data Transfer Object for creating new API keys with scoped permissions.

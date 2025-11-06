@@ -290,9 +290,9 @@ export class DocumentQueue implements OnModuleInit, OnModuleDestroy {
         
         await new Promise(resolve => setTimeout(resolve, delay));
         return this.connectToRabbitMQ();
-      } else {
+      } 
         throw new QueueConnectionError(`Failed to connect after ${MAX_RETRY_ATTEMPTS} attempts: ${errorMessage}`);
-      }
+      
     }
   }
 
@@ -402,7 +402,7 @@ export class DocumentQueue implements OnModuleInit, OnModuleDestroy {
         messageBuffer,
         {
           persistent: true,
-          priority: priority,
+          priority,
           timestamp: Date.now(),
           contentType: 'application/json',
           messageId: jobMessage.jobId,
@@ -414,11 +414,11 @@ export class DocumentQueue implements OnModuleInit, OnModuleDestroy {
         this.metrics.lastPublishTime = new Date();
         this.logger.log(`Published job ${jobMessage.jobId} with priority ${priority} for document ${jobMessage.documentId}`);
         return true;
-      } else {
+      } 
         this.logger.warn(`Failed to publish job ${jobMessage.jobId} - channel buffer full`);
         this.metrics.totalFailed++;
         return false;
-      }
+      
     } catch (error) {
       const errorStack = error instanceof Error ? error.stack : undefined;
       this.logger.error(`Error publishing job ${jobMessage.jobId}:`, errorStack);

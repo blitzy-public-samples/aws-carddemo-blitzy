@@ -16,7 +16,7 @@
  * Performance Target: <1 second search across 100,000 documents (Section 0.7.1)
  */
 
-import { ConfigService } from '@nestjs/config';
+import type { ConfigService } from '@nestjs/config';
 
 /**
  * ElasticSearch index configuration interface

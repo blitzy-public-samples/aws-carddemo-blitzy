@@ -1,5 +1,5 @@
-import { IsNotEmpty, IsNumber, Min } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { IsNotEmpty, IsNumber, Min } from 'class-validator';
 
 /**
  * ZoneCoordinatesDto - Data Transfer Object for bounding box coordinates defining document extraction zones.

@@ -17,10 +17,11 @@
  * @see Section 0.5.11 - Phase 10 Group 10C Implementation
  */
 
+import { createHmac, timingSafeEqual } from 'crypto';
+
 import { Injectable, Logger, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import QuickBooks from 'node-quickbooks';
-import { createHmac, timingSafeEqual } from 'crypto';
 
 /**
  * QuickBooks OAuth 2.0 credentials structure
@@ -231,7 +232,7 @@ export class QuickBooksConnector {
     const params = new URLSearchParams({
       client_id: clientId,
       redirect_uri: redirectUri,
-      scope: scope,
+      scope,
       response_type: 'code',
       state: `${accountId}:${state}`, // Encode accountId in state for callback
     });
@@ -410,7 +411,7 @@ export class QuickBooksConnector {
           'Authorization': `Basic ${authHeader}`,
         },
         body: new URLSearchParams({
-          token: token,
+          token,
         }).toString(),
       });
 
