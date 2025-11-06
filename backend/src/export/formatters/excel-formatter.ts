@@ -57,7 +57,8 @@ export class ExcelFormatterService {
   private readonly MAX_COLUMN_WIDTH = 50;
   private readonly DEFAULT_HEADER_COLOR = 'FF4472C4';
   private readonly DEFAULT_HEADER_TEXT_COLOR = 'FFFFFFFF';
-  private readonly STREAMING_THRESHOLD = 10000;
+  // Reserved for future streaming implementation (Phase 2 enhancement)
+  // private readonly STREAMING_THRESHOLD = 10000;
 
   /**
    * Format document data into Excel Buffer
@@ -141,13 +142,16 @@ export class ExcelFormatterService {
       return buffer as Buffer;
       
     } catch (error) {
-      this.logger.error(`Excel format failed: ${error.message}`, error.stack);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      
+      this.logger.error(`Excel format failed: ${errorMessage}`, errorStack);
       
       if (error instanceof BadRequestException) {
         throw error;
       }
       
-      throw new BadRequestException(`Failed to generate Excel export: ${error.message}`);
+      throw new BadRequestException(`Failed to generate Excel export: ${errorMessage}`);
     }
   }
 
@@ -248,13 +252,16 @@ export class ExcelFormatterService {
       return buffer as Buffer;
       
     } catch (error) {
-      this.logger.error(`Batch Excel format failed: ${error.message}`, error.stack);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      
+      this.logger.error(`Batch Excel format failed: ${errorMessage}`, errorStack);
       
       if (error instanceof BadRequestException) {
         throw error;
       }
       
-      throw new BadRequestException(`Failed to generate batch Excel export: ${error.message}`);
+      throw new BadRequestException(`Failed to generate batch Excel export: ${errorMessage}`);
     }
   }
 
@@ -555,13 +562,13 @@ export class ExcelFormatterService {
    * 
    * @param workbook - Excel workbook
    * @param documents - Array of documents
-   * @param options - Export options
+   * @param _options - Export options (reserved for future use)
    * @private
    */
   private createBatchSummaryWorksheet(
     workbook: ExcelJS.Workbook,
     documents: any[],
-    options?: ExcelExportOptions
+    _options?: ExcelExportOptions
   ): void {
     const worksheet = workbook.addWorksheet('Summary');
     
