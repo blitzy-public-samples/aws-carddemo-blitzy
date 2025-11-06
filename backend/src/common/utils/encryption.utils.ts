@@ -305,12 +305,12 @@ export async function decrypt(encryptedData: string, encryptionKey: string): Pro
 
     // Split IV and encrypted data
     const parts = encryptedData.split(':');
-    if (parts.length !== 2) {
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
       throw new Error('Invalid encrypted data format. Expected IV:encryptedData');
     }
 
-    const ivHex = parts[0];
-    const encryptedHex = parts[1];
+    const ivHex: string = parts[0];
+    const encryptedHex: string = parts[1];
 
     // Derive the same key used for encryption
     const key = await new Promise<Buffer>((resolve, reject) => {
