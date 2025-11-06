@@ -88,7 +88,7 @@ export class ZoneCoordinatesDto {
   @IsNotEmpty({ message: 'X coordinate is required' })
   @IsNumber({}, { message: 'X coordinate must be a number' })
   @Min(0, { message: 'X coordinate must be >= 0' })
-  x: number;
+  x!: number;
 
   /**
    * Y coordinate of zone top-left corner relative to page origin.
@@ -107,7 +107,7 @@ export class ZoneCoordinatesDto {
   @IsNotEmpty({ message: 'Y coordinate is required' })
   @IsNumber({}, { message: 'Y coordinate must be a number' })
   @Min(0, { message: 'Y coordinate must be >= 0' })
-  y: number;
+  y!: number;
 
   /**
    * Width of the extraction zone in document units.
@@ -126,7 +126,7 @@ export class ZoneCoordinatesDto {
   @IsNotEmpty({ message: 'Width is required' })
   @IsNumber({}, { message: 'Width must be a number' })
   @Min(1, { message: 'Width must be > 0' })
-  width: number;
+  width!: number;
 
   /**
    * Height of the extraction zone in document units.
@@ -145,5 +145,5 @@ export class ZoneCoordinatesDto {
   @IsNotEmpty({ message: 'Height is required' })
   @IsNumber({}, { message: 'Height must be a number' })
   @Min(1, { message: 'Height must be > 0' })
-  height: number;
+  height!: number;
 }
