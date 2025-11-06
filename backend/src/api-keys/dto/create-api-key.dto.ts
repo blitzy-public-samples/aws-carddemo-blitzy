@@ -69,7 +69,7 @@ export class CreateApiKeyDto {
     minLength: 1,
     maxLength: 100,
   })
-  key_name: string;
+  key_name!: string;
 
   /**
    * Optional description explaining the purpose and usage of this API key.
