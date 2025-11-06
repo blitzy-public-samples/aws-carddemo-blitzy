@@ -93,5 +93,8 @@
   "bugs": {
     "url": "https://github.com/your-org/aws-carddemo-blitzy/issues"
   },
-  "homepage": "https://github.com/your-org/aws-carddemo-blitzy#readme"
+  "homepage": "https://github.com/your-org/aws-carddemo-blitzy#readme",
+  "dependencies": {
+    "node-quickbooks": "^2.0.46"
+  }
 }
