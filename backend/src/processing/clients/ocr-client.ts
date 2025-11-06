@@ -638,7 +638,8 @@ export class OcrClient {
     accountId: string,
   ): OcrServiceException {
     const status = error.response?.status || HttpStatus.BAD_GATEWAY;
-    const message = error.response?.data?.error?.message || 
+    const responseData = error.response?.data as any;
+    const message = responseData?.error?.message || 
                     error.message || 
                     'Unknown OCR service error';
     
