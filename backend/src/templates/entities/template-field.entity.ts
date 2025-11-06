@@ -8,7 +8,7 @@ import {
   JoinColumn,
   Index,
 } from 'typeorm';
-import type { Template } from './template.entity';
+import { Template } from './template.entity';
 
 /**
  * Field type enumeration for template field data types.
@@ -162,7 +162,7 @@ export class TemplateField {
    * Uses UUID for better distribution and security per Section 0.7.1.
    */
   @PrimaryGeneratedColumn('uuid')
-  id: string;
+  id!: string;
 
   /**
    * Foreign key to parent template.
@@ -170,7 +170,7 @@ export class TemplateField {
    * Indexed for query performance optimization.
    */
   @Column({ type: 'uuid', name: 'template_id' })
-  templateId: string;
+  templateId!: string;
 
   /**
    * Parent template relationship.
@@ -184,7 +184,7 @@ export class TemplateField {
     nullable: false,
   })
   @JoinColumn({ name: 'template_id' })
-  template: Template;
+  template!: Template;
 
   /**
    * X coordinate of zone top-left corner.
@@ -193,7 +193,7 @@ export class TemplateField {
    * Unit: points (1/72 inch) or pixels depending on document resolution.
    */
   @Column({ type: 'decimal', precision: 10, scale: 2 })
-  x: number;
+  x!: number;
 
   /**
    * Y coordinate of zone top-left corner.
@@ -202,7 +202,7 @@ export class TemplateField {
    * Unit: points (1/72 inch) or pixels depending on document resolution.
    */
   @Column({ type: 'decimal', precision: 10, scale: 2 })
-  y: number;
+  y!: number;
 
   /**
    * Zone width in document units.
@@ -210,7 +210,7 @@ export class TemplateField {
    * Must be > 0 (enforced by database CHECK constraint).
    */
   @Column({ type: 'decimal', precision: 10, scale: 2 })
-  width: number;
+  width!: number;
 
   /**
    * Zone height in document units.
@@ -218,7 +218,7 @@ export class TemplateField {
    * Must be > 0 (enforced by database CHECK constraint).
    */
   @Column({ type: 'decimal', precision: 10, scale: 2 })
-  height: number;
+  height!: number;
 
   /**
    * Page number for multi-page documents.
@@ -227,7 +227,7 @@ export class TemplateField {
    * Must be > 0 (enforced by database CHECK constraint).
    */
   @Column({ type: 'int', name: 'page_number', default: 1 })
-  pageNumber: number;
+  pageNumber!: number;
 
   /**
    * Internal field name (unique within template).
@@ -237,7 +237,7 @@ export class TemplateField {
    * Indexed as part of composite index (template_id, field_name) for fast lookups.
    */
   @Column({ type: 'varchar', length: 100, name: 'field_name' })
-  fieldName: string;
+  fieldName!: string;
 
   /**
    * Human-readable field label.
@@ -246,7 +246,7 @@ export class TemplateField {
    * Optional - if null, fieldName is used for display.
    */
   @Column({ type: 'varchar', length: 100, name: 'field_label', nullable: true })
-  fieldLabel: string | null;
+  fieldLabel!: string | null;
 
   /**
    * Field data type for validation and parsing.
@@ -261,7 +261,7 @@ export class TemplateField {
     name: 'field_type',
     default: FieldType.TEXT,
   })
-  fieldType: FieldType;
+  fieldType!: FieldType;
 
   /**
    * Whether field must be extracted and validated.
@@ -270,7 +270,7 @@ export class TemplateField {
    * Defaults to false.
    */
   @Column({ type: 'boolean', name: 'is_required', default: false })
-  isRequired: boolean;
+  isRequired!: boolean;
 
   /**
    * Display order in UI (0-indexed).
@@ -280,7 +280,7 @@ export class TemplateField {
    * Defaults to 0.
    */
   @Column({ type: 'int', name: 'field_order', default: 0 })
-  fieldOrder: number;
+  fieldOrder!: number;
 
   /**
    * Flexible validation rules stored as JSONB.
@@ -338,7 +338,7 @@ export class TemplateField {
    * Null value indicates no validation rules (accept any extracted value).
    */
   @Column({ type: 'jsonb', name: 'validation_rules', nullable: true })
-  validationRules: Record<string, any> | null;
+  validationRules!: Record<string, any> | null;
 
   /**
    * Minimum confidence score for auto-approval (0.00-100.00).
@@ -359,7 +359,7 @@ export class TemplateField {
     name: 'confidence_threshold',
     default: 85.0,
   })
-  confidenceThreshold: number;
+  confidenceThreshold!: number;
 
   /**
    * Optional hint for OCR engine to improve extraction accuracy.
@@ -375,7 +375,7 @@ export class TemplateField {
    * Null value indicates no specific extraction hint.
    */
   @Column({ type: 'varchar', length: 500, name: 'extraction_hint', nullable: true })
-  extractionHint: string | null;
+  extractionHint!: string | null;
 
   /**
    * Timestamp of field creation (UTC).
@@ -387,7 +387,7 @@ export class TemplateField {
     default: () => 'CURRENT_TIMESTAMP',
     name: 'created_at',
   })
-  createdAt: Date;
+  createdAt!: Date;
 
   /**
    * Timestamp of last field update (UTC).
@@ -399,7 +399,7 @@ export class TemplateField {
     default: () => 'CURRENT_TIMESTAMP',
     name: 'updated_at',
   })
-  updatedAt: Date;
+  updatedAt!: Date;
 
   /**
    * Get bounding box coordinates as structured object.
