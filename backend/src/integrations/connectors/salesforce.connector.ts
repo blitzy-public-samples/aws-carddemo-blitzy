@@ -522,10 +522,12 @@ export class SalesforceConnector {
     // Check if we have a cached connection for this account
     if (accountId && this.sfConnections.has(accountId)) {
       const cachedConnection = this.sfConnections.get(accountId);
-      // Update access token in case it was refreshed
-      cachedConnection.accessToken = credentials.access_token;
-      cachedConnection.instanceUrl = credentials.instance_url;
-      return cachedConnection;
+      if (cachedConnection) {
+        // Update access token in case it was refreshed
+        cachedConnection.accessToken = credentials.access_token;
+        cachedConnection.instanceUrl = credentials.instance_url;
+        return cachedConnection;
+      }
     }
 
     // Create new OAuth2 configuration
@@ -548,7 +550,7 @@ export class SalesforceConnector {
     });
 
     // Set up automatic token refresh callback
-    connection.on('refresh', async (accessToken: string, res: any) => {
+    connection.on('refresh', async (_accessToken: string, _res: any) => {
       this.logger.log('Salesforce access token was refreshed automatically');
       // Token refresh is handled automatically by jsforce
       // Parent service should persist the new token if needed
@@ -595,10 +597,10 @@ export class SalesforceConnector {
       };
     } catch (error) {
       this.logger.error('Salesforce connection test failed', error);
-      
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       return {
         success: false,
-        message: `Connection test failed: ${error.message || 'Unknown error'}`,
+        message: `Connection test failed: ${errorMessage}`,
       };
     }
   }
@@ -721,7 +723,8 @@ export class SalesforceConnector {
       };
     } catch (error) {
       this.logger.error('Error converting Lead', error);
-      throw new BadRequestException(`Failed to convert Lead: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new BadRequestException(`Failed to convert Lead: ${errorMessage}`);
     }
   }
 
@@ -838,7 +841,12 @@ export class SalesforceConnector {
         contentVersion.FirstPublishLocationId = documentData.FirstPublishLocationId;
       }
 
-      const cvResult = await connection.sobject('ContentVersion').create(contentVersion);
+      const cvResultRaw = await connection.sobject('ContentVersion').create(contentVersion);
+      const cvResult = Array.isArray(cvResultRaw) ? cvResultRaw[0] : cvResultRaw;
+
+      if (!cvResult) {
+        throw new BadRequestException('Failed to create ContentVersion: No result returned');
+      }
 
       if (!cvResult.success) {
         throw new BadRequestException(`Failed to create ContentVersion: ${JSON.stringify(cvResult.errors)}`);
@@ -866,9 +874,12 @@ export class SalesforceConnector {
         Visibility: 'AllUsers', // AllUsers = visible to all org users
       };
 
-      const cdlResult = await connection.sobject('ContentDocumentLink').create(cdLink);
+      const cdlResultRaw = await connection.sobject('ContentDocumentLink').create(cdLink);
+      const cdlResult = Array.isArray(cdlResultRaw) ? cdlResultRaw[0] : cdlResultRaw;
 
-      if (!cdlResult.success) {
+      if (!cdlResult) {
+        this.logger.warn('Failed to create ContentDocumentLink: No result returned');
+      } else if (!cdlResult.success) {
         this.logger.warn(`Failed to create ContentDocumentLink: ${JSON.stringify(cdlResult.errors)}`);
         // Don't throw - document was created, just not linked
       }
@@ -912,7 +923,12 @@ export class SalesforceConnector {
         contentVersion.Description = attachment.Description;
       }
 
-      const result = await connection.sobject('ContentVersion').create(contentVersion);
+      const resultRaw = await connection.sobject('ContentVersion').create(contentVersion);
+      const result = Array.isArray(resultRaw) ? resultRaw[0] : resultRaw;
+
+      if (!result) {
+        throw new BadRequestException('Failed to upload attachment: No result returned');
+      }
 
       if (!result.success) {
         throw new BadRequestException(`Failed to upload attachment: ${JSON.stringify(result.errors)}`);
@@ -980,14 +996,14 @@ export class SalesforceConnector {
       const connection = this.connect(credentials);
 
       // Execute query with automatic pagination handling
-      const result = await connection.query<T>(soql);
+      const result = await connection.query(soql) as any;
 
       let records = result.records;
 
       // Handle pagination if there are more records (more than 2000)
       let nextRecordsUrl = result.nextRecordsUrl;
       while (nextRecordsUrl && !result.done) {
-        const moreResult = await connection.queryMore<T>(nextRecordsUrl);
+        const moreResult = await connection.queryMore(nextRecordsUrl) as any;
         records = records.concat(moreResult.records);
         nextRecordsUrl = moreResult.nextRecordsUrl;
       }
@@ -1015,14 +1031,15 @@ export class SalesforceConnector {
       const connection = this.connect(credentials);
 
       // Execute queryAll to include deleted records
-      const result = await connection.queryAll<T>(soql);
+      // Use type assertion as queryAll might not be in all jsforce versions
+      const result = await (connection as any).queryAll(soql) as any;
 
       let records = result.records;
 
       // Handle pagination
       let nextRecordsUrl = result.nextRecordsUrl;
       while (nextRecordsUrl && !result.done) {
-        const moreResult = await connection.queryMore<T>(nextRecordsUrl);
+        const moreResult = await connection.queryMore(nextRecordsUrl) as any;
         records = records.concat(moreResult.records);
         nextRecordsUrl = moreResult.nextRecordsUrl;
       }
@@ -1050,11 +1067,13 @@ export class SalesforceConnector {
       const connection = this.connect(credentials);
 
       // Execute SOSL search
-      const result = await connection.search(sosl);
+      const result = await connection.search(sosl) as any;
 
       this.logger.log(`SOSL search executed successfully`);
 
-      return result.searchRecords;
+      // jsforce returns the search records directly as an array
+      // Wrap in SearchResult structure for consistency with our interface
+      return [{ searchRecords: result.searchRecords || result }];
     } catch (error) {
       return this.handleSFError(error, 'search');
     }
@@ -1086,7 +1105,7 @@ export class SalesforceConnector {
 
       // Create batch
       const batch = job.createBatch();
-      batch.execute(records);
+      batch.execute(records as any);
 
       // Poll for completion (5 second interval, 60 second timeout)
       await batch.poll(5000, 60000);
@@ -1115,7 +1134,7 @@ export class SalesforceConnector {
       this.logger.log(`Bulk insert completed: ${successfulResults.length} successful, ${failedResults.length} failed`);
 
       return {
-        id: job.id,
+        id: job.id || 'unknown',
         success: failedResults.length === 0,
         successfulResults,
         failedResults,
@@ -1157,7 +1176,7 @@ export class SalesforceConnector {
 
       // Create batch
       const batch = job.createBatch();
-      batch.execute(records);
+      batch.execute(records as any);
 
       // Poll for completion
       await batch.poll(5000, 60000);
@@ -1186,7 +1205,7 @@ export class SalesforceConnector {
       this.logger.log(`Bulk update completed: ${successfulResults.length} successful, ${failedResults.length} failed`);
 
       return {
-        id: job.id,
+        id: job.id || 'unknown',
         success: failedResults.length === 0,
         successfulResults,
         failedResults,
@@ -1215,7 +1234,7 @@ export class SalesforceConnector {
 
       this.logger.log(`Retrieved metadata for object: ${objectName}`);
 
-      return describe as ObjectDescribe;
+      return describe as unknown as ObjectDescribe;
     } catch (error) {
       return this.handleSFError(error, 'describeObject');
     }
@@ -1327,25 +1346,31 @@ export class SalesforceConnector {
     }
 
     // Format close date as YYYY-MM-DD
-    const closeDateStr = closeDate.toISOString().split('T')[0];
+    const closeDateStr: string = closeDate.toISOString().split('T')[0]!;
+
+    // Parse amount from string if necessary
+    let amount: number | undefined = undefined;
+    const rawAmount = fields.amount || fields.total || fields.total_amount;
+    if (rawAmount !== undefined) {
+      if (typeof rawAmount === 'string') {
+        const amountStr = rawAmount.replace(/[^0-9.-]/g, '');
+        amount = parseFloat(amountStr) || undefined;
+      } else if (typeof rawAmount === 'number') {
+        amount = rawAmount;
+      }
+    }
 
     // Build Opportunity data from extracted fields
     const opportunityData: OpportunityData = {
       Name: fields.opportunity_name || fields.project_name || document.document_name || 'OCR Opportunity',
       StageName: 'Prospecting', // Default stage for new opportunities
       CloseDate: closeDateStr,
-      Amount: fields.amount || fields.total || fields.total_amount || undefined,
+      Amount: amount,
       Type: fields.opportunity_type || 'New Business',
       LeadSource: 'OCR Document',
       Description: `Extracted from document: ${document.document_name}\nDocument Type: ${document.document_type}\nConfidence: ${document.confidence_score}%`,
       NextStep: 'Review extracted data and qualify opportunity',
     };
-
-    // Parse amount from string if necessary
-    if (typeof opportunityData.Amount === 'string') {
-      const amountStr = opportunityData.Amount.replace(/[^0-9.-]/g, '');
-      opportunityData.Amount = parseFloat(amountStr) || undefined;
-    }
 
     // Set probability based on stage
     opportunityData.Probability = 10; // 10% for Prospecting stage
