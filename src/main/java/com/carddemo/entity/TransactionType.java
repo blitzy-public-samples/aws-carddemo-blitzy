@@ -1,0 +1,203 @@
+package com.carddemo.entity;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import jakarta.persistence.Version;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.io.Serializable;
+
+/**
+ * JPA Entity representing transaction type reference data.
+ * 
+ * <p>This entity is mapped from the COBOL copybook CVTRA03Y.cpy (TRAN-TYPE-RECORD)
+ * to the PostgreSQL transaction_type table. It stores reference data for transaction
+ * type codes and their descriptions used throughout the CardDemo application for
+ * transaction categorization and validation.</p>
+ * 
+ * <p><b>COBOL Source Structure:</b></p>
+ * <pre>
+ * 01  TRAN-TYPE-RECORD.
+ *     05  TRAN-TYPE           PIC X(02).
+ *     05  TRAN-TYPE-DESC      PIC X(50).
+ * </pre>
+ * 
+ * <p><b>Field Mappings:</b></p>
+ * <ul>
+ *   <li>TRAN-TYPE (PIC X(02)) → typeCode (String, length 2, PRIMARY KEY)</li>
+ *   <li>TRAN-TYPE-DESC (PIC X(50)) → typeDescription (String, length 50)</li>
+ * </ul>
+ * 
+ * <p><b>Usage:</b> This entity provides reference data for transaction types such as
+ * purchases, refunds, payments, cash advances, and other transaction categories.
+ * It is used by the Transaction entity for foreign key relationships and by service
+ * layers for transaction validation and reporting.</p>
+ * 
+ * <p><b>Concurrency Control:</b> Uses optimistic locking with @Version to prevent
+ * concurrent update conflicts in distributed environments.</p>
+ * 
+ * <p><b>Serialization:</b> Implements Serializable to support JPA second-level caching,
+ * Redis session storage for reference data caching, and distributed cache operations.</p>
+ * 
+ * @see java.io.Serializable
+ * @see jakarta.persistence.Entity
+ * @see jakarta.persistence.Table
+ * @author CardDemo Migration Team
+ * @version 1.0
+ * @since 1.0
+ */
+@Entity
+@Table(name = "transaction_type")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class TransactionType implements Serializable {
+
+    /**
+     * Serial version UID for serialization compatibility.
+     * This ensures proper serialization/deserialization across JVM instances
+     * and cache operations.
+     */
+    private static final long serialVersionUID = 1L;
+
+    /**
+     * Transaction type code (Primary Key).
+     * 
+     * <p>Two-character code identifying the transaction type.
+     * Mapped from COBOL field: TRAN-TYPE PIC X(02)</p>
+     * 
+     * <p><b>Examples:</b></p>
+     * <ul>
+     *   <li>"01" - Purchase</li>
+     *   <li>"02" - Refund</li>
+     *   <li>"03" - Payment</li>
+     *   <li>"04" - Cash Advance</li>
+     *   <li>"05" - Balance Transfer</li>
+     * </ul>
+     * 
+     * <p><b>Constraints:</b></p>
+     * <ul>
+     *   <li>Required (NOT NULL)</li>
+     *   <li>Unique (PRIMARY KEY)</li>
+     *   <li>Maximum length: 2 characters</li>
+     *   <li>Format: Alphanumeric</li>
+     * </ul>
+     * 
+     * @return the transaction type code
+     */
+    @Id
+    @Column(name = "type_code", nullable = false, length = 2)
+    private String typeCode;
+
+    /**
+     * Transaction type description.
+     * 
+     * <p>Human-readable description of the transaction type.
+     * Mapped from COBOL field: TRAN-TYPE-DESC PIC X(50)</p>
+     * 
+     * <p><b>Examples:</b></p>
+     * <ul>
+     *   <li>"Purchase Transaction"</li>
+     *   <li>"Refund/Return"</li>
+     *   <li>"Payment Received"</li>
+     *   <li>"Cash Advance"</li>
+     *   <li>"Balance Transfer"</li>
+     * </ul>
+     * 
+     * <p><b>Constraints:</b></p>
+     * <ul>
+     *   <li>Required (NOT NULL)</li>
+     *   <li>Maximum length: 50 characters</li>
+     *   <li>Format: Alphanumeric with spaces</li>
+     * </ul>
+     * 
+     * @return the transaction type description
+     */
+    @Column(name = "type_description", nullable = false, length = 50)
+    private String typeDescription;
+
+    /**
+     * Version field for optimistic locking.
+     * 
+     * <p>This field is automatically managed by JPA to implement optimistic concurrency
+     * control. It prevents lost updates when multiple transactions attempt to modify
+     * the same transaction type record concurrently.</p>
+     * 
+     * <p><b>Behavior:</b></p>
+     * <ul>
+     *   <li>Automatically incremented on each update</li>
+     *   <li>Checked before update to detect concurrent modifications</li>
+     *   <li>Throws OptimisticLockException if version mismatch detected</li>
+     * </ul>
+     * 
+     * <p><b>Note:</b> Application code should not manually set this field.
+     * JPA provider manages this field automatically.</p>
+     * 
+     * @return the current version number
+     */
+    @Version
+    @Column(name = "version")
+    private Long version;
+
+    /**
+     * Returns a string representation of this transaction type.
+     * 
+     * <p>Generated by Lombok @Data annotation. Includes all fields
+     * in the format: TransactionType(typeCode=XX, typeDescription=..., version=N)</p>
+     * 
+     * <p><b>Example output:</b></p>
+     * <pre>
+     * TransactionType(typeCode=01, typeDescription=Purchase Transaction, version=1)
+     * </pre>
+     * 
+     * @return string representation of this transaction type
+     */
+    @Override
+    public String toString() {
+        return "TransactionType(typeCode=" + typeCode + 
+               ", typeDescription=" + typeDescription + 
+               ", version=" + version + ")";
+    }
+
+    /**
+     * Compares this transaction type with another object for equality.
+     * 
+     * <p>Two TransactionType instances are considered equal if they have
+     * the same typeCode (primary key). The version field is not included
+     * in equality comparison as it changes with each update.</p>
+     * 
+     * <p>Generated by Lombok @Data annotation with business key equality.</p>
+     * 
+     * @param o the object to compare with
+     * @return true if objects are equal based on typeCode, false otherwise
+     */
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof TransactionType)) return false;
+        TransactionType that = (TransactionType) o;
+        return typeCode != null && typeCode.equals(that.typeCode);
+    }
+
+    /**
+     * Returns the hash code for this transaction type.
+     * 
+     * <p>Hash code is based solely on the typeCode (primary key) to ensure
+     * consistency with equals() method and proper behavior in hash-based
+     * collections like HashMap and HashSet.</p>
+     * 
+     * <p>Generated by Lombok @Data annotation.</p>
+     * 
+     * @return hash code based on typeCode
+     */
+    @Override
+    public int hashCode() {
+        return typeCode != null ? typeCode.hashCode() : 0;
+    }
+}
