@@ -78,7 +78,7 @@ export class UploadDocumentDto {
   })
   @IsUUID(4, { message: 'Account ID must be a valid UUID v4' })
   @IsNotEmpty({ message: 'Account ID is required' })
-  account_id: string;
+  account_id!: string;
 
   /**
    * Document file for OCR processing.
@@ -172,7 +172,7 @@ export class UploadDocumentDto {
     message: 'Document type must be one of: invoice, receipt, contract, form, other' 
   })
   @IsNotEmpty({ message: 'Document type is required' })
-  document_type: DocumentType;
+  document_type!: DocumentType;
 
   /**
    * Optional tags for document categorization and filtering.
