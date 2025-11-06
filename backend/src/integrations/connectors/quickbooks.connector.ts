@@ -19,7 +19,7 @@
 
 import { Injectable, Logger, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as QuickBooks from 'node-quickbooks';
+import QuickBooks from 'node-quickbooks';
 import { createHmac, timingSafeEqual } from 'crypto';
 
 /**
@@ -304,7 +304,8 @@ export class QuickBooksConnector {
         token_type: data.token_type,
       };
     } catch (error) {
-      this.logger.error(`Token exchange error: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Token exchange error: ${errorMessage}`);
       throw error instanceof UnauthorizedException ? error : new UnauthorizedException('Token exchange failed');
     }
   }
@@ -421,7 +422,8 @@ export class QuickBooksConnector {
 
       this.logger.log('Successfully revoked QuickBooks token');
     } catch (error) {
-      this.logger.error(`Token revocation error: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Token revocation error: ${errorMessage}`);
       throw error;
     }
   }
@@ -454,6 +456,10 @@ export class QuickBooksConnector {
     const clientId = this.configService.get<string>('QUICKBOOKS_CLIENT_ID');
     const clientSecret = this.configService.get<string>('QUICKBOOKS_CLIENT_SECRET');
 
+    if (!clientId || !clientSecret) {
+      throw new Error('QuickBooks client credentials not configured');
+    }
+
     // Create QuickBooks client with SDK
     const qbClient = new QuickBooks(
       clientId,
@@ -469,7 +475,7 @@ export class QuickBooksConnector {
     );
 
     // Configure automatic token refresh callback
-    qbClient.setTokenRefreshCallback(async (newAccessToken: string, newRefreshToken: string) => {
+    qbClient.setTokenRefreshCallback(async (_newAccessToken: string, _newRefreshToken: string) => {
       this.logger.log(`QuickBooks token auto-refreshed for realm: ${realm_id}`);
       // Note: In production, this should trigger a database update to store new tokens
       // This is handled by the IntegrationsService which manages credential storage
@@ -524,10 +530,11 @@ export class QuickBooksConnector {
         message: `Successfully connected to ${companyName}`,
       };
     } catch (error) {
-      this.logger.error(`QuickBooks connection test failed: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`QuickBooks connection test failed: ${errorMessage}`);
       return {
         success: false,
-        message: `Connection failed: ${error.message}`,
+        message: `Connection failed: ${errorMessage}`,
       };
     }
   }
@@ -586,7 +593,8 @@ export class QuickBooksConnector {
       this.logger.log(`Created QuickBooks invoice: ${createdInvoice.Id} (${createdInvoice.DocNumber})`);
       return createdInvoice;
     } catch (error) {
-      this.logger.error(`Failed to create QuickBooks invoice: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Failed to create QuickBooks invoice: ${errorMessage}`);
       throw error;
     }
   }
@@ -642,7 +650,8 @@ export class QuickBooksConnector {
       this.logger.log(`Created QuickBooks vendor: ${createdVendor.Id} (${createdVendor.DisplayName})`);
       return createdVendor;
     } catch (error) {
-      this.logger.error(`Failed to create QuickBooks vendor: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Failed to create QuickBooks vendor: ${errorMessage}`);
       throw error;
     }
   }
@@ -689,7 +698,8 @@ export class QuickBooksConnector {
       this.logger.log(`Created QuickBooks bill: ${createdBill.Id} (Amount: ${createdBill.TotalAmt})`);
       return createdBill;
     } catch (error) {
-      this.logger.error(`Failed to create QuickBooks bill: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Failed to create QuickBooks bill: ${errorMessage}`);
       throw error;
     }
   }
@@ -742,7 +752,8 @@ export class QuickBooksConnector {
       this.logger.log(`Created QuickBooks expense: ${createdExpense.Id} (Amount: ${createdExpense.TotalAmt})`);
       return createdExpense;
     } catch (error) {
-      this.logger.error(`Failed to create QuickBooks expense: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Failed to create QuickBooks expense: ${errorMessage}`);
       throw error;
     }
   }
@@ -781,7 +792,8 @@ export class QuickBooksConnector {
       this.logger.log(`Retrieved ${accounts.length} QuickBooks accounts`);
       return accounts.filter((acc) => acc.Active !== false); // Filter active accounts
     } catch (error) {
-      this.logger.error(`Failed to query QuickBooks accounts: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Failed to query QuickBooks accounts: ${errorMessage}`);
       throw error;
     }
   }
@@ -816,7 +828,7 @@ export class QuickBooksConnector {
     // Transform line items
     const lineItems = fields.line_items.map((item: any, index: number) => ({
       Amount: parseFloat(item.amount || item.total || 0),
-      DetailType: 'SalesItemLineDetail',
+      DetailType: 'SalesItemLineDetail' as const,
       SalesItemLineDetail: {
         ItemRef: { value: item.item_id || '1' }, // Default to service item if not specified
       },
@@ -869,7 +881,7 @@ export class QuickBooksConnector {
     // Transform line items
     const lineItems = fields.line_items.map((item: any, index: number) => ({
       Amount: parseFloat(item.amount || item.total || 0),
-      DetailType: 'AccountBasedExpenseLineDetail',
+      DetailType: 'AccountBasedExpenseLineDetail' as const,
       AccountBasedExpenseLineDetail: {
         AccountRef: { value: item.account_id || '1' }, // Requires account mapping
       },
@@ -940,7 +952,8 @@ export class QuickBooksConnector {
 
       return isValid;
     } catch (error) {
-      this.logger.error(`Webhook signature verification error: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Webhook signature verification error: ${errorMessage}`);
       return false;
     }
   }
@@ -993,7 +1006,8 @@ export class QuickBooksConnector {
 
       this.logger.log('Successfully processed QuickBooks webhook event');
     } catch (error) {
-      this.logger.error(`Failed to process QuickBooks webhook: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Failed to process QuickBooks webhook: ${errorMessage}`);
       throw error;
     }
   }
@@ -1054,24 +1068,27 @@ export class QuickBooksConnector {
         lastError = error;
 
         // Don't retry on authentication or validation errors
+        const errorMessage = error instanceof Error ? error.message : '';
+        const errorCode = (error as any)?.code;
+        
         if (
           error instanceof UnauthorizedException ||
           error instanceof BadRequestException ||
-          error.message?.includes('validation') ||
-          error.message?.includes('Unauthorized')
+          errorMessage.includes('validation') ||
+          errorMessage.includes('Unauthorized')
         ) {
           throw error;
         }
 
         // Retry on network errors, rate limiting, server errors
         const shouldRetry = 
-          error.message?.includes('rate limit') ||
-          error.message?.includes('network') ||
-          error.message?.includes('ECONNRESET') ||
-          error.code === 'ETIMEDOUT' ||
-          error.code === 500 ||
-          error.code === 502 ||
-          error.code === 503;
+          errorMessage.includes('rate limit') ||
+          errorMessage.includes('network') ||
+          errorMessage.includes('ECONNRESET') ||
+          errorCode === 'ETIMEDOUT' ||
+          errorCode === 500 ||
+          errorCode === 502 ||
+          errorCode === 503;
 
         if (!shouldRetry || attempt === maxRetries - 1) {
           throw error;
@@ -1107,7 +1124,8 @@ export class QuickBooksConnector {
       const invoices = result?.QueryResponse?.Invoice || [];
       return invoices.length > 0 ? invoices[0] : null;
     } catch (error) {
-      this.logger.debug(`Error finding invoice by DocNumber: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.debug(`Error finding invoice by DocNumber: ${errorMessage}`);
       return null;
     }
   }
@@ -1132,7 +1150,8 @@ export class QuickBooksConnector {
       const vendors = result?.QueryResponse?.Vendor || [];
       return vendors.length > 0 ? vendors[0] : null;
     } catch (error) {
-      this.logger.debug(`Error finding vendor by name: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.debug(`Error finding vendor by name: ${errorMessage}`);
       return null;
     }
   }
