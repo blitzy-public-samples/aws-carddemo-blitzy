@@ -3,12 +3,8 @@ import {
   IsString,
   IsNumber,
   Min,
-  Max,
   IsBoolean,
-  ValidateNested,
-  IsObject,
 } from 'class-validator';
-import { Type } from 'class-transformer';
 
 /**
  * ValidationRuleDto - Data Transfer Object for field validation rules configuration.
@@ -67,7 +63,6 @@ import { Type } from 'class-transformer';
  * @see TemplateField.validationRules - Database column storing these rules
  * @see Section 0.5.7 - Phase 7 Template Builder with validation rules
  */
-@IsObject()
 export class ValidationRuleDto {
   /**
    * Regular expression pattern for text validation.
