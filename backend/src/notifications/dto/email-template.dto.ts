@@ -95,7 +95,7 @@ export class EmailTemplateDto {
   @MaxLength(100, {
     message: 'Template name must not exceed 100 characters',
   })
-  name: string;
+  name!: string;
 
   /**
    * Email subject line template
@@ -122,7 +122,7 @@ export class EmailTemplateDto {
   @MaxLength(200, {
     message: 'Subject line must not exceed 200 characters',
   })
-  subject: string;
+  subject!: string;
 
   /**
    * HTML email body template
@@ -151,7 +151,7 @@ export class EmailTemplateDto {
     required: true,
   })
   @IsString()
-  htmlBody: string;
+  htmlBody!: string;
 
   /**
    * Plain text email body fallback
@@ -219,7 +219,7 @@ export class EmailTemplateDto {
     message: 'At least one required variable must be specified',
   })
   @IsString({ each: true })
-  requiredVariables: string[];
+  requiredVariables!: string[];
 
   /**
    * Template category classification
@@ -254,7 +254,7 @@ export class EmailTemplateDto {
   @IsEnum(TemplateCategoryEnum, {
     message: 'Category must be one of: transactional, marketing, system',
   })
-  category: TemplateCategoryEnum;
+  category!: TemplateCategoryEnum;
 
   /**
    * Template activation status
@@ -288,7 +288,7 @@ export class EmailTemplateDto {
   @IsBoolean({
     message: 'isActive must be a boolean value (true or false)',
   })
-  isActive: boolean;
+  isActive!: boolean;
 
   /**
    * Optional template description
