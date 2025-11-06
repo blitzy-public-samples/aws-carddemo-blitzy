@@ -14,7 +14,7 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
 import { Box, Typography } from '@mui/material';
 import PropTypes from 'prop-types';
 
