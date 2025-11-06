@@ -420,7 +420,7 @@ public final class AIDKeyConstants {
      * 
      * <p>Maps from: {@link #DFHENTER}</p>
      */
-    public static final String ACTION_SUBMIT = "SUBMIT";
+    public static final String ACTION_SUBMIT = "ACTION_SUBMIT";
 
     /**
      * ACTION_BACK - Return to previous screen or cancel operation
@@ -435,7 +435,7 @@ public final class AIDKeyConstants {
      * 
      * <p>Maps from: {@link #DFHPF3}</p>
      */
-    public static final String ACTION_BACK = "BACK";
+    public static final String ACTION_BACK = "ACTION_BACK";
 
     /**
      * ACTION_PAGE_UP - Navigate to previous page in paginated list
@@ -451,7 +451,7 @@ public final class AIDKeyConstants {
      * 
      * <p>Maps from: {@link #DFHPF7}</p>
      */
-    public static final String ACTION_PAGE_UP = "PAGE_UP";
+    public static final String ACTION_PAGE_UP = "ACTION_PAGE_UP";
 
     /**
      * ACTION_PAGE_DOWN - Navigate to next page in paginated list
@@ -467,7 +467,7 @@ public final class AIDKeyConstants {
      * 
      * <p>Maps from: {@link #DFHPF8}</p>
      */
-    public static final String ACTION_PAGE_DOWN = "PAGE_DOWN";
+    public static final String ACTION_PAGE_DOWN = "ACTION_PAGE_DOWN";
 
     /**
      * ACTION_CLEAR - Reset form to initial state
@@ -482,7 +482,7 @@ public final class AIDKeyConstants {
      * 
      * <p>Maps from: {@link #DFHCLEAR}</p>
      */
-    public static final String ACTION_CLEAR = "CLEAR";
+    public static final String ACTION_CLEAR = "ACTION_CLEAR";
 
     /**
      * ACTION_CANCEL - Cancel current operation without saving
@@ -497,7 +497,7 @@ public final class AIDKeyConstants {
      * 
      * <p>Maps from: {@link #DFHPA2}</p>
      */
-    public static final String ACTION_CANCEL = "CANCEL";
+    public static final String ACTION_CANCEL = "ACTION_CANCEL";
 
     /**
      * ACTION_EXIT - Exit application or module
@@ -511,7 +511,7 @@ public final class AIDKeyConstants {
      * 
      * <p>Maps from: {@link #DFHPF3}</p>
      */
-    public static final String ACTION_EXIT = "EXIT";
+    public static final String ACTION_EXIT = "ACTION_EXIT";
 
     /**
      * ACTION_REFRESH - Refresh current view with latest data
@@ -526,7 +526,7 @@ public final class AIDKeyConstants {
      * 
      * <p>Maps from: {@link #DFHPF12}</p>
      */
-    public static final String ACTION_REFRESH = "REFRESH";
+    public static final String ACTION_REFRESH = "ACTION_REFRESH";
 
     /**
      * ACTION_HELP - Display help or information dialog
@@ -541,5 +541,5 @@ public final class AIDKeyConstants {
      * 
      * <p>Maps from: {@link #DFHPA1}</p>
      */
-    public static final String ACTION_HELP = "HELP";
+    public static final String ACTION_HELP = "ACTION_HELP";
 }
