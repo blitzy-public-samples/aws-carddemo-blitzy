@@ -25,32 +25,32 @@
 /**
  * Wrong username or password provided during authentication
  */
-export const ERR_INVALID_CREDENTIALS = 'INVALID_CREDENTIALS' as const;
+export const ERR_INVALID_CREDENTIALS = 'INVALID_CREDENTIALS';
 
 /**
  * JWT access token has expired and needs to be refreshed
  */
-export const ERR_TOKEN_EXPIRED = 'TOKEN_EXPIRED' as const;
+export const ERR_TOKEN_EXPIRED = 'TOKEN_EXPIRED';
 
 /**
  * JWT token is invalid, malformed, or tampered with
  */
-export const ERR_TOKEN_INVALID = 'TOKEN_INVALID' as const;
+export const ERR_TOKEN_INVALID = 'TOKEN_INVALID';
 
 /**
  * Authentication is required to access this resource
  */
-export const ERR_UNAUTHORIZED_ACCESS = 'UNAUTHORIZED_ACCESS' as const;
+export const ERR_UNAUTHORIZED_ACCESS = 'UNAUTHORIZED_ACCESS';
 
 /**
  * User lacks the required role or permission to perform this action
  */
-export const ERR_INSUFFICIENT_PERMISSIONS = 'INSUFFICIENT_PERMISSIONS' as const;
+export const ERR_INSUFFICIENT_PERMISSIONS = 'INSUFFICIENT_PERMISSIONS';
 
 /**
  * Multi-factor authentication is required for this operation
  */
-export const ERR_MFA_REQUIRED = 'MFA_REQUIRED' as const;
+export const ERR_MFA_REQUIRED = 'MFA_REQUIRED';
 
 // ============================================================================
 // Validation Error Codes
@@ -59,32 +59,32 @@ export const ERR_MFA_REQUIRED = 'MFA_REQUIRED' as const;
 /**
  * Generic validation failure for request data
  */
-export const ERR_VALIDATION_FAILED = 'VALIDATION_ERROR' as const;
+export const ERR_VALIDATION_FAILED = 'VALIDATION_ERROR';
 
 /**
  * Input data format is invalid or cannot be parsed
  */
-export const ERR_INVALID_INPUT = 'INVALID_INPUT' as const;
+export const ERR_INVALID_INPUT = 'INVALID_INPUT';
 
 /**
  * A required field is missing from the request
  */
-export const ERR_MISSING_REQUIRED_FIELD = 'MISSING_REQUIRED_FIELD' as const;
+export const ERR_MISSING_REQUIRED_FIELD = 'MISSING_REQUIRED_FIELD';
 
 /**
  * Uploaded file type is not supported (must be PDF, JPG, PNG, etc.)
  */
-export const ERR_INVALID_FILE_TYPE = 'INVALID_FILE_TYPE' as const;
+export const ERR_INVALID_FILE_TYPE = 'INVALID_FILE_TYPE';
 
 /**
  * Uploaded file exceeds the maximum allowed size limit
  */
-export const ERR_FILE_TOO_LARGE = 'FILE_TOO_LARGE' as const;
+export const ERR_FILE_TOO_LARGE = 'FILE_TOO_LARGE';
 
 /**
  * Date range parameters are invalid (end date before start date, etc.)
  */
-export const ERR_INVALID_DATE_RANGE = 'INVALID_DATE_RANGE' as const;
+export const ERR_INVALID_DATE_RANGE = 'INVALID_DATE_RANGE';
 
 // ============================================================================
 // Resource Error Codes
@@ -93,22 +93,22 @@ export const ERR_INVALID_DATE_RANGE = 'INVALID_DATE_RANGE' as const;
 /**
  * The requested resource (document, template, user, etc.) does not exist
  */
-export const ERR_RESOURCE_NOT_FOUND = 'RESOURCE_NOT_FOUND' as const;
+export const ERR_RESOURCE_NOT_FOUND = 'RESOURCE_NOT_FOUND';
 
 /**
  * Resource already exists or conflicts with existing data
  */
-export const ERR_RESOURCE_CONFLICT = 'RESOURCE_CONFLICT' as const;
+export const ERR_RESOURCE_CONFLICT = 'RESOURCE_CONFLICT';
 
 /**
  * Resource is currently locked by another user or process
  */
-export const ERR_RESOURCE_LOCKED = 'RESOURCE_LOCKED' as const;
+export const ERR_RESOURCE_LOCKED = 'RESOURCE_LOCKED';
 
 /**
  * Resource has been deleted and is no longer available
  */
-export const ERR_RESOURCE_DELETED = 'RESOURCE_DELETED' as const;
+export const ERR_RESOURCE_DELETED = 'RESOURCE_DELETED';
 
 // ============================================================================
 // Document Processing Error Codes
@@ -117,27 +117,27 @@ export const ERR_RESOURCE_DELETED = 'RESOURCE_DELETED' as const;
 /**
  * OCR text extraction failed for the document
  */
-export const ERR_OCR_PROCESSING_FAILED = 'OCR_PROCESSING_FAILED' as const;
+export const ERR_OCR_PROCESSING_FAILED = 'OCR_PROCESSING_FAILED';
 
 /**
  * General document processing error during upload or extraction
  */
-export const ERR_DOCUMENT_PROCESSING_ERROR = 'DOCUMENT_PROCESSING_ERROR' as const;
+export const ERR_DOCUMENT_PROCESSING_ERROR = 'DOCUMENT_PROCESSING_ERROR';
 
 /**
  * Batch processing job failed to complete successfully
  */
-export const ERR_BATCH_PROCESSING_FAILED = 'BATCH_PROCESSING_FAILED' as const;
+export const ERR_BATCH_PROCESSING_FAILED = 'BATCH_PROCESSING_FAILED';
 
 /**
  * Malware or virus detected in the uploaded file
  */
-export const ERR_VIRUS_DETECTED = 'VIRUS_DETECTED' as const;
+export const ERR_VIRUS_DETECTED = 'VIRUS_DETECTED';
 
 /**
  * Document file is corrupted and cannot be processed
  */
-export const ERR_DOCUMENT_CORRUPTED = 'DOCUMENT_CORRUPTED' as const;
+export const ERR_DOCUMENT_CORRUPTED = 'DOCUMENT_CORRUPTED';
 
 // ============================================================================
 // Integration Error Codes
@@ -146,22 +146,22 @@ export const ERR_DOCUMENT_CORRUPTED = 'DOCUMENT_CORRUPTED' as const;
 /**
  * External third-party API call failed (QuickBooks, Salesforce, etc.)
  */
-export const ERR_EXTERNAL_API_ERROR = 'EXTERNAL_API_ERROR' as const;
+export const ERR_EXTERNAL_API_ERROR = 'EXTERNAL_API_ERROR';
 
 /**
  * Webhook delivery to subscriber endpoint was unsuccessful
  */
-export const ERR_WEBHOOK_DELIVERY_FAILED = 'WEBHOOK_DELIVERY_FAILED' as const;
+export const ERR_WEBHOOK_DELIVERY_FAILED = 'WEBHOOK_DELIVERY_FAILED';
 
 /**
  * Integration is not configured or credentials are missing
  */
-export const ERR_INTEGRATION_NOT_CONFIGURED = 'INTEGRATION_NOT_CONFIGURED' as const;
+export const ERR_INTEGRATION_NOT_CONFIGURED = 'INTEGRATION_NOT_CONFIGURED';
 
 /**
  * OAuth authentication or token refresh failed
  */
-export const ERR_OAUTH_ERROR = 'OAUTH_ERROR' as const;
+export const ERR_OAUTH_ERROR = 'OAUTH_ERROR';
 
 // ============================================================================
 // System Error Codes
@@ -170,27 +170,27 @@ export const ERR_OAUTH_ERROR = 'OAUTH_ERROR' as const;
 /**
  * Unexpected internal server error occurred
  */
-export const ERR_INTERNAL_ERROR = 'INTERNAL_ERROR' as const;
+export const ERR_INTERNAL_ERROR = 'INTERNAL_ERROR';
 
 /**
  * Database operation failed (connection, query, transaction error)
  */
-export const ERR_DATABASE_ERROR = 'DATABASE_ERROR' as const;
+export const ERR_DATABASE_ERROR = 'DATABASE_ERROR';
 
 /**
  * Service is temporarily unavailable (maintenance, high load, etc.)
  */
-export const ERR_SERVICE_UNAVAILABLE = 'SERVICE_UNAVAILABLE' as const;
+export const ERR_SERVICE_UNAVAILABLE = 'SERVICE_UNAVAILABLE';
 
 /**
  * Rate limit exceeded - too many requests from this account/IP
  */
-export const ERR_RATE_LIMIT_EXCEEDED = 'RATE_LIMIT_EXCEEDED' as const;
+export const ERR_RATE_LIMIT_EXCEEDED = 'RATE_LIMIT_EXCEEDED';
 
 /**
  * Processing queue is at capacity and cannot accept new jobs
  */
-export const ERR_QUEUE_FULL = 'QUEUE_FULL' as const;
+export const ERR_QUEUE_FULL = 'QUEUE_FULL';
 
 // ============================================================================
 // Account/Tenant Error Codes
@@ -199,17 +199,17 @@ export const ERR_QUEUE_FULL = 'QUEUE_FULL' as const;
 /**
  * Account has been suspended and cannot perform operations
  */
-export const ERR_ACCOUNT_SUSPENDED = 'ACCOUNT_SUSPENDED' as const;
+export const ERR_ACCOUNT_SUSPENDED = 'ACCOUNT_SUSPENDED';
 
 /**
  * Account has reached its usage limit (documents, users, API calls, etc.)
  */
-export const ERR_ACCOUNT_LIMIT_REACHED = 'ACCOUNT_LIMIT_REACHED' as const;
+export const ERR_ACCOUNT_LIMIT_REACHED = 'ACCOUNT_LIMIT_REACHED';
 
 /**
  * Invalid or non-existent account identifier
  */
-export const ERR_INVALID_ACCOUNT = 'INVALID_ACCOUNT' as const;
+export const ERR_INVALID_ACCOUNT = 'INVALID_ACCOUNT';
 
 // ============================================================================
 // Grouped Error Codes Object
