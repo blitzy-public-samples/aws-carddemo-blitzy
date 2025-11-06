@@ -71,7 +71,7 @@ export class JobStatusDto {
     format: 'uuid',
   })
   @Expose()
-  id: string;
+  id!: string;
 
   @ApiProperty({
     description: 'Account ID for multi-tenant isolation',
@@ -79,7 +79,7 @@ export class JobStatusDto {
     format: 'uuid',
   })
   @Expose()
-  accountId: string;
+  accountId!: string;
 
   @ApiProperty({
     description: 'Document ID being processed',
@@ -87,7 +87,7 @@ export class JobStatusDto {
     format: 'uuid',
   })
   @Expose()
-  documentId: string;
+  documentId!: string;
 
   @ApiProperty({
     description: 'User ID who created the job',
@@ -96,7 +96,7 @@ export class JobStatusDto {
     nullable: true,
   })
   @Expose()
-  userId: string | null;
+  userId!: string | null;
 
   @ApiProperty({
     description: 'Current job status',
@@ -104,7 +104,7 @@ export class JobStatusDto {
     example: JobStatus.COMPLETED,
   })
   @Expose()
-  status: JobStatus;
+  status!: JobStatus;
 
   @ApiProperty({
     description: 'Job type (single or batch)',
@@ -112,7 +112,7 @@ export class JobStatusDto {
     example: JobType.SINGLE,
   })
   @Expose()
-  jobType: JobType;
+  jobType!: JobType;
 
   @ApiProperty({
     description: 'Batch ID if this job is part of a batch',
@@ -121,7 +121,7 @@ export class JobStatusDto {
     nullable: true,
   })
   @Expose()
-  batchId: string | null;
+  batchId!: string | null;
 
   @ApiProperty({
     description: 'Job priority (1=highest, 10=lowest)',
@@ -130,7 +130,7 @@ export class JobStatusDto {
     maximum: 10,
   })
   @Expose()
-  priority: number;
+  priority!: number;
 
   @ApiProperty({
     description: 'Number of retry attempts made',
@@ -138,7 +138,7 @@ export class JobStatusDto {
     minimum: 0,
   })
   @Expose()
-  retryCount: number;
+  retryCount!: number;
 
   @ApiProperty({
     description: 'Maximum retry attempts allowed',
@@ -146,7 +146,7 @@ export class JobStatusDto {
     minimum: 0,
   })
   @Expose()
-  maxRetries: number;
+  maxRetries!: number;
 
   @ApiProperty({
     description: 'Timestamp when processing started',
@@ -156,7 +156,7 @@ export class JobStatusDto {
   })
   @Expose()
   @Type(() => Date)
-  processingStartedAt: Date | null;
+  processingStartedAt!: Date | null;
 
   @ApiProperty({
     description: 'Timestamp when processing completed (success or failure)',
@@ -166,7 +166,7 @@ export class JobStatusDto {
   })
   @Expose()
   @Type(() => Date)
-  processingCompletedAt: Date | null;
+  processingCompletedAt!: Date | null;
 
   @ApiProperty({
     description: 'Human-readable error message if job failed',
@@ -174,7 +174,7 @@ export class JobStatusDto {
     nullable: true,
   })
   @Expose()
-  errorMessage: string | null;
+  errorMessage!: string | null;
 
   /**
    * Error stack trace (EXCLUDED from API responses for security).
@@ -199,6 +199,7 @@ export class JobStatusDto {
     },
     nullable: true,
     type: 'object',
+    additionalProperties: true,
   })
   @Expose()
   result: any;
@@ -213,9 +214,10 @@ export class JobStatusDto {
     },
     nullable: true,
     type: 'object',
+    additionalProperties: true,
   })
   @Expose()
-  metadata: Record<string, any>;
+  metadata!: Record<string, any>;
 
   @ApiProperty({
     description: 'Timestamp when job was created',
@@ -224,7 +226,7 @@ export class JobStatusDto {
   })
   @Expose()
   @Type(() => Date)
-  createdAt: Date;
+  createdAt!: Date;
 
   @ApiProperty({
     description: 'Timestamp when job was last updated',
@@ -233,7 +235,7 @@ export class JobStatusDto {
   })
   @Expose()
   @Type(() => Date)
-  updatedAt: Date;
+  updatedAt!: Date;
 
   /**
    * Computed property indicating if the job has reached a terminal state.
