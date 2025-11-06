@@ -169,8 +169,10 @@ export class DocumentQueue implements OnModuleInit, OnModuleDestroy {
         throw new QueueConnectionError(`Unsupported queue type: ${this.queueType}`);
       }
     } catch (error) {
-      this.logger.error('Failed to initialize DocumentQueue service', error.stack);
-      throw new QueueConnectionError(`Module initialization failed: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      this.logger.error('Failed to initialize DocumentQueue service', errorStack);
+      throw new QueueConnectionError(`Module initialization failed: ${errorMessage}`);
     }
   }
 
@@ -199,7 +201,8 @@ export class DocumentQueue implements OnModuleInit, OnModuleDestroy {
 
       this.logger.log('DocumentQueue service shutdown complete');
     } catch (error) {
-      this.logger.error('Error during DocumentQueue shutdown', error.stack);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      this.logger.error('Error during DocumentQueue shutdown', errorStack);
       // Force cleanup even on error
       this.channel = null;
       this.connection = null;
@@ -274,7 +277,9 @@ export class DocumentQueue implements OnModuleInit, OnModuleDestroy {
       // Reset reconnect attempts on successful connection
       this.reconnectAttempts = 0;
     } catch (error) {
-      this.logger.error('Failed to connect to RabbitMQ', error.stack);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error('Failed to connect to RabbitMQ', errorStack);
       this.metrics.connectionFailures++;
       
       // Implement exponential backoff retry
@@ -286,7 +291,7 @@ export class DocumentQueue implements OnModuleInit, OnModuleDestroy {
         await new Promise(resolve => setTimeout(resolve, delay));
         return this.connectToRabbitMQ();
       } else {
-        throw new QueueConnectionError(`Failed to connect after ${MAX_RETRY_ATTEMPTS} attempts: ${error.message}`);
+        throw new QueueConnectionError(`Failed to connect after ${MAX_RETRY_ATTEMPTS} attempts: ${errorMessage}`);
       }
     }
   }
@@ -342,8 +347,10 @@ export class DocumentQueue implements OnModuleInit, OnModuleDestroy {
       
       this.logger.log('Reconnection successful');
     } catch (error) {
-      this.logger.error('Reconnection failed', error.stack);
-      throw new QueueConnectionError(`Reconnection failed: ${error.message}`);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error('Reconnection failed', errorStack);
+      throw new QueueConnectionError(`Reconnection failed: ${errorMessage}`);
     }
   }
 
@@ -413,7 +420,8 @@ export class DocumentQueue implements OnModuleInit, OnModuleDestroy {
         return false;
       }
     } catch (error) {
-      this.logger.error(`Error publishing job ${jobMessage.jobId}:`, error.stack);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      this.logger.error(`Error publishing job ${jobMessage.jobId}:`, errorStack);
       this.metrics.totalFailed++;
       
       // Attempt retry with exponential backoff
@@ -423,7 +431,8 @@ export class DocumentQueue implements OnModuleInit, OnModuleDestroy {
         try {
           return await this.publishJob(jobMessage);
         } catch (retryError) {
-          this.logger.error('Retry failed after reconnection', retryError.stack);
+          const retryErrorStack = retryError instanceof Error ? retryError.stack : undefined;
+          this.logger.error('Retry failed after reconnection', retryErrorStack);
           return false;
         }
       }
@@ -477,8 +486,10 @@ export class DocumentQueue implements OnModuleInit, OnModuleDestroy {
 
       return { success, failed };
     } catch (error) {
-      this.logger.error('Error publishing batch jobs:', error.stack);
-      throw new QueuePublishError(`Batch publish failed: ${error.message}`);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error('Error publishing batch jobs:', errorStack);
+      throw new QueuePublishError(`Batch publish failed: ${errorMessage}`);
     }
   }
 
@@ -500,7 +511,8 @@ export class DocumentQueue implements OnModuleInit, OnModuleDestroy {
       const queueInfo = await this.channel!.checkQueue(QUEUE_NAME);
       return queueInfo.messageCount;
     } catch (error) {
-      this.logger.error('Error getting queue depth:', error.stack);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      this.logger.error('Error getting queue depth:', errorStack);
       return 0;
     }
   }
@@ -525,7 +537,8 @@ export class DocumentQueue implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(`Queue ${QUEUE_NAME} has been purged`);
       return true;
     } catch (error) {
-      this.logger.error('Error purging queue:', error.stack);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      this.logger.error('Error purging queue:', errorStack);
       return false;
     }
   }
