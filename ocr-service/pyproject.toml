@@ -1,0 +1,120 @@
+[tool.poetry]
+name = "ocr-processing-service"
+version = "1.0.0"
+description = "OCR Processing Microservice with FastAPI, Tesseract, Google Cloud Vision, and AWS Textract"
+authors = ["Your Team <team@example.com>"]
+license = "Apache-2.0"
+readme = "README.md"
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "0.115.6"
+uvicorn = {extras = ["standard"], version = "0.34.0"}
+pydantic = "2.10.4"
+pydantic-settings = "2.6.1"
+python-multipart = "0.0.20"
+pytesseract = "0.3.13"
+Pillow = "11.0.0"
+opencv-python = "4.10.0.84"
+google-cloud-vision = "3.8.1"
+boto3 = "1.35.94"
+spacy = "3.8.3"
+transformers = "4.47.1"
+torch = "2.5.1"
+numpy = "2.2.0"
+pandas = "2.2.3"
+scikit-learn = "1.6.0"
+redis = "5.2.1"
+pika = "1.3.2"
+python-jose = {extras = ["cryptography"], version = "3.3.0"}
+httpx = "0.28.1"
+aiofiles = "24.1.0"
+python-dotenv = "1.0.1"
+sentry-sdk = {extras = ["fastapi"], version = "2.19.2"}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "8.3.4"
+pytest-asyncio = "0.24.0"
+pytest-cov = "6.0.0"
+black = "24.10.0"
+flake8 = "7.1.1"
+mypy = "1.14.1"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+strict_equality = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = [
+    "--cov=app",
+    "--cov-report=html",
+    "--cov-report=term",
+    "--cov-report=xml",
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "asyncio: Async tests",
+]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+precision = 2
+show_missing = true
