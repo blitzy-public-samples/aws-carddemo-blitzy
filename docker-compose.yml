@@ -1,0 +1,277 @@
+# Docker Compose Configuration for CardDemo Application
+# Local Development Environment
+#
+# This configuration orchestrates three core services replacing mainframe infrastructure:
+# - PostgreSQL 16: Replaces VSAM KSDS files for persistent data storage
+# - Redis 7: Replaces CICS COMMAREA for session state management
+# - Spring Boot App: Modernized Java application replacing COBOL programs
+#
+# Usage:
+#   Start all services:     docker-compose up -d
+#   Stop all services:      docker-compose down
+#   View logs:              docker-compose logs -f [service_name]
+#   Rebuild app:            docker-compose up -d --build app
+#   Database management:    http://localhost:5050 (pgAdmin)
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database Service
+  # Replaces: VSAM KSDS files (CUSTDAT, ACCTDAT, CARDDAT, TRANSACT, USRSEC)
+  # Purpose: Persistent relational database for all business data
+  postgres:
+    image: postgres:16.1
+    container_name: carddemo-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      # Database configuration
+      POSTGRES_DB: carddemo
+      POSTGRES_USER: ${DB_USERNAME:-carddemo_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-carddemo_pass}
+      # Performance tuning for local development
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=en_US.UTF-8"
+      # Timezone configuration
+      TZ: America/New_York
+    volumes:
+      # Persistent data volume (survives container restarts)
+      - postgres_data:/var/lib/postgresql/data
+      # Optional: Custom PostgreSQL configuration
+      # - ./docker/postgres/postgresql.conf:/etc/postgresql/postgresql.conf
+      # Optional: Initialization scripts (run once on first startup)
+      # - ./docker/postgres/init:/docker-entrypoint-initdb.d
+    networks:
+      - carddemo-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-carddemo_user} -d carddemo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+
+  # Redis Cache Service
+  # Replaces: CICS COMMAREA pseudo-conversational state management
+  # Purpose: Session storage and distributed caching
+  redis:
+    image: redis:7.2-alpine
+    container_name: carddemo-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      # Persistent cache data (optional for development)
+      - redis_data:/data
+    networks:
+      - carddemo-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+  # Spring Boot Application Service
+  # Replaces: COBOL programs (28 programs: 17 online + 10 batch + 1 utility)
+  # Purpose: Core application logic, REST APIs, batch processing
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - MAVEN_OPTS=-Xmx2048m
+    container_name: carddemo-app
+    restart: unless-stopped
+    ports:
+      # Main application port (REST API)
+      - "8080:8080"
+      # Debug port for remote debugging
+      - "5005:5005"
+    environment:
+      # Spring profile configuration
+      SPRING_PROFILES_ACTIVE: dev
+      
+      # Database connection (PostgreSQL)
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: carddemo
+      DB_USERNAME: ${DB_USERNAME:-carddemo_user}
+      DB_PASSWORD: ${DB_PASSWORD:-carddemo_pass}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/carddemo
+      SPRING_DATASOURCE_USERNAME: ${DB_USERNAME:-carddemo_user}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-carddemo_pass}
+      
+      # Redis connection (Session management)
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+      
+      # JPA/Hibernate configuration
+      SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+      SPRING_JPA_SHOW_SQL: true
+      SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: true
+      SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQLDialect
+      
+      # Flyway database migration
+      SPRING_FLYWAY_ENABLED: true
+      SPRING_FLYWAY_BASELINE_ON_MIGRATE: true
+      SPRING_FLYWAY_LOCATIONS: classpath:db/migration
+      
+      # Spring Batch configuration
+      SPRING_BATCH_JDBC_INITIALIZE_SCHEMA: always
+      SPRING_BATCH_JOB_ENABLED: false
+      
+      # Security configuration
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-key-change-in-production-minimum-256-bits}
+      JWT_EXPIRATION: 86400000
+      
+      # Logging configuration
+      LOGGING_LEVEL_ROOT: INFO
+      LOGGING_LEVEL_COM_CARDDEMO: DEBUG
+      LOGGING_LEVEL_ORG_SPRINGFRAMEWORK: INFO
+      LOGGING_LEVEL_ORG_HIBERNATE: INFO
+      
+      # Server configuration
+      SERVER_PORT: 8080
+      SERVER_COMPRESSION_ENABLED: true
+      
+      # Connection pool configuration (HikariCP)
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 20
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 5
+      SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT: 30000
+      SPRING_DATASOURCE_HIKARI_IDLE_TIMEOUT: 600000
+      SPRING_DATASOURCE_HIKARI_MAX_LIFETIME: 1800000
+      
+      # Java options
+      JAVA_OPTS: >-
+        -Xms512m
+        -Xmx2048m
+        -XX:+UseG1GC
+        -XX:MaxGCPauseMillis=200
+        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005
+      
+      # Timezone
+      TZ: America/New_York
+    volumes:
+      # Hot-reload support: Mount source code for development
+      # Changes to Java files will trigger automatic recompilation
+      - ./src:/app/src:ro
+      # Mount Maven repository cache to speed up builds
+      - maven_cache:/root/.m2
+      # Application logs
+      - ./logs:/app/logs
+    networks:
+      - carddemo-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+
+  # pgAdmin Service (Optional)
+  # Purpose: Web-based PostgreSQL database management interface
+  # Access: http://localhost:5050
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: carddemo-pgadmin
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@carddemo.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    volumes:
+      # Persistent pgAdmin configuration
+      - pgadmin_data:/var/lib/pgadmin
+      # Pre-configured server connections
+      # - ./docker/pgadmin/servers.json:/pgadmin4/servers.json
+    networks:
+      - carddemo-network
+    depends_on:
+      - postgres
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    profiles:
+      - tools
+
+# Network Configuration
+# Bridge network for inter-service communication
+networks:
+  carddemo-network:
+    driver: bridge
+    name: carddemo-network
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+# Volume Configuration
+# Persistent volumes survive container restarts and removal
+volumes:
+  # PostgreSQL data volume
+  # Contains all database tables, indexes, and data
+  postgres_data:
+    driver: local
+    name: carddemo_postgres_data
+  
+  # Redis data volume
+  # Contains session data and cache (optional persistence)
+  redis_data:
+    driver: local
+    name: carddemo_redis_data
+  
+  # pgAdmin configuration volume
+  # Contains saved server connections and user preferences
+  pgadmin_data:
+    driver: local
+    name: carddemo_pgadmin_data
+  
+  # Maven cache volume
+  # Speeds up application builds by caching dependencies
+  maven_cache:
+    driver: local
+    name: carddemo_maven_cache
