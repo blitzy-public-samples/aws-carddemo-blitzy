@@ -1,27 +1,32 @@
 /**
  * Validation Error Message Constants
- * 
+ *
  * This file defines standardized, user-friendly validation error messages used throughout
  * the OCR Processing Application backend API. These constants ensure consistent error
  * messaging across all DTOs, controllers, and validation logic.
- * 
+ *
  * Message templates support placeholders (e.g., {min}, {max}, {types}) that should be
  * replaced with actual values at runtime to provide specific feedback to users.
- * 
+ *
  * Usage Example:
  * ```typescript
  * @MinLength(8, { message: MSG_PASSWORD_LENGTH })
  * password: string;
- * 
+ *
  * // Or with dynamic values:
  * throw new BadRequestException(
  *   MSG_FILE_TOO_LARGE.replace('{maxSize}', '10')
  * );
  * ```
- * 
+ *
  * @see Section 0.7.4 API Design Guidelines
  * @see Section 0.7.11 UX Directives
  */
+
+/* eslint-disable @typescript-eslint/no-unnecessary-type-assertion */
+// Note: 'as const' assertions are intentionally used here to create literal types
+// for better type safety, even though ESLint considers them unnecessary. This follows
+// TypeScript best practices for constant definitions as specified in requirements.
 
 // ============================================================================
 // Required Field Messages
@@ -195,7 +200,8 @@ export const MSG_VIRUS_DETECTED = 'File failed security scan' as const;
 /**
  * Password does not meet strength requirements
  */
-export const MSG_PASSWORD_WEAK = 'Password must contain uppercase, lowercase, number, and special character' as const;
+export const MSG_PASSWORD_WEAK =
+  'Password must contain uppercase, lowercase, number, and special character' as const;
 
 /**
  * Password and confirmation password do not match
@@ -205,7 +211,8 @@ export const MSG_PASSWORD_MISMATCH = 'Passwords do not match' as const;
 /**
  * Password is too common or easily guessable
  */
-export const MSG_PASSWORD_COMMON = 'This password is too common. Please choose a stronger password' as const;
+export const MSG_PASSWORD_COMMON =
+  'This password is too common. Please choose a stronger password' as const;
 
 /**
  * Password has been used recently and cannot be reused
@@ -253,13 +260,15 @@ export const MSG_INVALID_CREDENTIALS = 'Invalid email or password' as const;
 /**
  * Account has been locked due to security reasons
  */
-export const MSG_ACCOUNT_LOCKED = 'Account has been locked due to multiple failed login attempts' as const;
+export const MSG_ACCOUNT_LOCKED =
+  'Account has been locked due to multiple failed login attempts' as const;
 
 /**
  * Rate limit has been exceeded for API requests
  * Placeholder: {minutes} - time until rate limit resets
  */
-export const MSG_RATE_LIMIT_EXCEEDED = 'Too many requests. Please try again in {minutes} minutes' as const;
+export const MSG_RATE_LIMIT_EXCEEDED =
+  'Too many requests. Please try again in {minutes} minutes' as const;
 
 /**
  * Batch operation size exceeds maximum allowed
@@ -318,15 +327,15 @@ export const MSG_CIRCULAR_REFERENCE = 'Circular reference detected' as const;
 
 /**
  * ValidationMessages object containing all validation error messages
- * 
+ *
  * This grouped export provides an alternative way to access validation messages
  * through a single namespace object. Useful for scenarios where you want to
  * import all messages at once or need to iterate through available messages.
- * 
+ *
  * Usage Example:
  * ```typescript
  * import { ValidationMessages } from './validation-messages.constants';
- * 
+ *
  * throw new BadRequestException({
  *   message: ValidationMessages.INVALID_EMAIL
  * });
