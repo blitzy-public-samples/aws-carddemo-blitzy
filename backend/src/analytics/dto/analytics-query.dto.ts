@@ -1,3 +1,5 @@
+import { ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import {
   IsOptional,
   IsEnum,
@@ -9,8 +11,6 @@ import {
   Max,
   IsUUID,
 } from 'class-validator';
-import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
 
 /**
  * Enum defining available metrics for analytics queries
