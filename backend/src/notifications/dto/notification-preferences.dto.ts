@@ -50,7 +50,7 @@ export class NotificationTypePreferencesDto {
     required: true,
   })
   @IsBoolean({ message: 'processingComplete must be a boolean value' })
-  processingComplete: boolean;
+  processingComplete!: boolean;
 
   @ApiProperty({
     description: 'Receive notifications when document processing fails',
@@ -59,7 +59,7 @@ export class NotificationTypePreferencesDto {
     required: true,
   })
   @IsBoolean({ message: 'processingFailed must be a boolean value' })
-  processingFailed: boolean;
+  processingFailed!: boolean;
 
   @ApiProperty({
     description: 'Receive weekly digest emails summarizing account activity',
@@ -68,7 +68,7 @@ export class NotificationTypePreferencesDto {
     required: true,
   })
   @IsBoolean({ message: 'weeklyDigest must be a boolean value' })
-  weeklyDigest: boolean;
+  weeklyDigest!: boolean;
 
   @ApiProperty({
     description: 'Receive notifications for general account activity (user changes, settings updates)',
@@ -77,7 +77,7 @@ export class NotificationTypePreferencesDto {
     required: true,
   })
   @IsBoolean({ message: 'accountActivity must be a boolean value' })
-  accountActivity: boolean;
+  accountActivity!: boolean;
 
   @ApiProperty({
     description: 'Receive password reset notifications (always enabled for security, immutable)',
@@ -87,7 +87,7 @@ export class NotificationTypePreferencesDto {
     default: true,
   })
   @IsBoolean({ message: 'passwordReset must be a boolean value' })
-  passwordReset: boolean;
+  passwordReset!: boolean;
 
   @ApiProperty({
     description: 'Receive notifications when invited to collaborate on documents or teams',
@@ -96,7 +96,7 @@ export class NotificationTypePreferencesDto {
     required: true,
   })
   @IsBoolean({ message: 'userInvitation must be a boolean value' })
-  userInvitation: boolean;
+  userInvitation!: boolean;
 }
 
 /**
@@ -122,7 +122,7 @@ export class NotificationPreferencesDto {
     default: true,
   })
   @IsBoolean({ message: 'emailEnabled must be a boolean value' })
-  emailEnabled: boolean;
+  emailEnabled!: boolean;
 
   @ApiProperty({
     description: 'Enable or disable real-time WebSocket notifications. When disabled, no WebSocket events will be pushed to the client.',
@@ -132,7 +132,7 @@ export class NotificationPreferencesDto {
     default: true,
   })
   @IsBoolean({ message: 'websocketEnabled must be a boolean value' })
-  websocketEnabled: boolean;
+  websocketEnabled!: boolean;
 
   @ApiProperty({
     description: 'Fine-grained notification type preferences. Control which specific event types trigger notifications.',
@@ -150,7 +150,7 @@ export class NotificationPreferencesDto {
   @IsObject({ message: 'notificationTypes must be a valid object' })
   @ValidateNested({ message: 'notificationTypes must contain valid notification type preferences' })
   @Type(() => NotificationTypePreferencesDto)
-  notificationTypes: NotificationTypePreferencesDto;
+  notificationTypes!: NotificationTypePreferencesDto;
 
   @ApiProperty({
     description: 'Email batching frequency. Controls how often notifications are bundled and sent via email.',
@@ -163,7 +163,7 @@ export class NotificationPreferencesDto {
   @IsEnum(EmailFrequencyEnum, {
     message: `emailFrequency must be one of: ${Object.values(EmailFrequencyEnum).join(', ')}`,
   })
-  emailFrequency: EmailFrequencyEnum;
+  emailFrequency!: EmailFrequencyEnum;
 
   @ApiProperty({
     description: 'Enable quiet hours during which notifications will be suppressed. Notifications received during quiet hours are queued and delivered after the quiet period ends.',
@@ -173,7 +173,7 @@ export class NotificationPreferencesDto {
     default: false,
   })
   @IsBoolean({ message: 'quietHoursEnabled must be a boolean value' })
-  quietHoursEnabled: boolean;
+  quietHoursEnabled!: boolean;
 
   @ApiProperty({
     description: 'Start time for quiet hours in 24-hour HH:MM format (e.g., "22:00" for 10:00 PM). Required when quietHoursEnabled is true.',
