@@ -75,7 +75,7 @@ import java.math.BigDecimal;
  *   <li><b>Scale:</b> 2 decimal places (matching V99 in COBOL)</li>
  *   <li><b>Precision:</b> 10 integer digits + 2 decimal places = 12 total digits</li>
  *   <li><b>Rounding:</b> RoundingMode.HALF_UP (matches COBOL rounding behavior)</li>
- *   <li><b>Range:</b> -99,999,999,999.99 to 99,999,999,999.99</li>
+ *   <li><b>Range:</b> -9,999,999,999.99 to 9,999,999,999.99</li>
  * </ul>
  * 
  * <h2>Validation Rules</h2>
@@ -83,7 +83,7 @@ import java.math.BigDecimal;
  * definitions from the mainframe application:</p>
  * <ul>
  *   <li><b>accountId:</b> Required field, maps to 11-digit numeric ACCT-ID</li>
- *   <li><b>creditLimit:</b> Required, must be between 0.00 and 99,999,999,999.99 with exactly 2 decimal places</li>
+ *   <li><b>creditLimit:</b> Required, must be between 0.00 and 9,999,999,999.99 with exactly 2 decimal places</li>
  *   <li><b>cashCreditLimit:</b> Required, same precision and range as creditLimit</li>
  *   <li><b>activeStatus:</b> Required, must be exactly 'Y' (Active) or 'N' (Inactive)</li>
  * </ul>
@@ -155,7 +155,7 @@ public class AccountUpdateRequest implements Serializable {
      * <ul>
      *   <li>Required field (cannot be null)</li>
      *   <li>Minimum value: 0.00 (no negative credit limits)</li>
-     *   <li>Maximum value: 99,999,999,999.99 (matches COBOL PIC S9(10)V99 range)</li>
+     *   <li>Maximum value: 9,999,999,999.99 (matches COBOL PIC S9(10)V99 range)</li>
      *   <li>Exactly 2 decimal places required</li>
      *   <li>Maximum 10 integer digits</li>
      * </ul>
@@ -166,7 +166,7 @@ public class AccountUpdateRequest implements Serializable {
     @JsonFormat(shape = JsonFormat.Shape.STRING)
     @NotNull(message = "Credit limit is required")
     @DecimalMin(value = "0.00", message = "Credit limit must be at least 0.00")
-    @DecimalMax(value = "99999999999.99", message = "Credit limit cannot exceed 99,999,999,999.99")
+    @DecimalMax(value = "9999999999.99", message = "Credit limit cannot exceed 9,999,999,999.99")
     @Digits(integer = 10, fraction = 2, message = "Credit limit must have at most 10 integer digits and exactly 2 decimal places")
     private BigDecimal creditLimit;
     
@@ -184,7 +184,7 @@ public class AccountUpdateRequest implements Serializable {
      * <ul>
      *   <li>Required field (cannot be null)</li>
      *   <li>Minimum value: 0.00 (no negative cash credit limits)</li>
-     *   <li>Maximum value: 99,999,999,999.99 (matches COBOL PIC S9(10)V99 range)</li>
+     *   <li>Maximum value: 9,999,999,999.99 (matches COBOL PIC S9(10)V99 range)</li>
      *   <li>Exactly 2 decimal places required</li>
      *   <li>Maximum 10 integer digits</li>
      * </ul>
@@ -199,7 +199,7 @@ public class AccountUpdateRequest implements Serializable {
     @JsonFormat(shape = JsonFormat.Shape.STRING)
     @NotNull(message = "Cash credit limit is required")
     @DecimalMin(value = "0.00", message = "Cash credit limit must be at least 0.00")
-    @DecimalMax(value = "99999999999.99", message = "Cash credit limit cannot exceed 99,999,999,999.99")
+    @DecimalMax(value = "9999999999.99", message = "Cash credit limit cannot exceed 9,999,999,999.99")
     @Digits(integer = 10, fraction = 2, message = "Cash credit limit must have at most 10 integer digits and exactly 2 decimal places")
     private BigDecimal cashCreditLimit;
     
