@@ -1,0 +1,3092 @@
+openapi: 3.0.3
+info:
+  title: OCR Processing Application API
+  version: v1.0.0
+  description: |
+    Comprehensive REST API for the OCR Processing Application that provides document OCR processing, 
+    intelligent data extraction, template management, batch processing, and third-party integrations.
+    
+    ## Features
+    - Document upload and OCR processing with confidence scoring
+    - Custom extraction templates with visual zone selection
+    - Batch processing for high-volume document handling
+    - Full-text search across all processed documents
+    - Data export in multiple formats (JSON, CSV, XML, Excel)
+    - Native integrations with QuickBooks, Salesforce, and NetSuite
+    - Real-time webhook notifications
+    - Comprehensive analytics and reporting
+    
+    ## Authentication
+    This API supports three authentication methods:
+    1. **JWT Bearer Tokens** - For web application users
+    2. **API Keys** - For programmatic access and integrations
+    3. **OAuth 2.0** - For third-party applications (Google, Microsoft)
+    
+    ## Rate Limiting
+    API requests are rate-limited to 1000 requests per hour per account. 
+    Rate limit information is included in response headers:
+    - `X-RateLimit-Limit`: Maximum requests per hour
+    - `X-RateLimit-Remaining`: Remaining requests in current window
+    - `X-RateLimit-Reset`: Unix timestamp when limit resets
+    
+    ## Versioning
+    This API uses URL versioning (e.g., /api/v1/). Multiple versions are supported 
+    simultaneously for backward compatibility.
+  contact:
+    name: OCR Application API Support
+    email: api-support@ocr-app.com
+    url: https://docs.ocr-app.com
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: https://ocr-app.com/terms
+
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Local development server
+  - url: https://staging-api.ocr-app.com/api/v1
+    description: Staging environment for testing
+  - url: https://api.ocr-app.com/api/v1
+    description: Production environment
+
+tags:
+  - name: Authentication
+    description: User authentication and authorization endpoints
+  - name: Users
+    description: User management and profile operations
+  - name: Documents
+    description: Document upload, retrieval, and management
+  - name: Processing
+    description: OCR processing jobs and batch operations
+  - name: Templates
+    description: Custom extraction template management
+  - name: Search
+    description: Full-text search and advanced filtering
+  - name: Export
+    description: Data export in various formats
+  - name: Integrations
+    description: Third-party system integrations and webhooks
+  - name: API Keys
+    description: API key generation and management
+  - name: Analytics
+    description: Usage analytics and reporting
+  - name: Audit
+    description: Audit log access and compliance
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+paths:
+  # ============================================================================
+  # AUTHENTICATION ENDPOINTS
+  # ============================================================================
+  /auth/register:
+    post:
+      tags:
+        - Authentication
+      summary: Register a new user account
+      description: Creates a new user account with email and password authentication
+      operationId: registerUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+                - firstName
+                - lastName
+                - accountName
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: john.doe@example.com
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  description: Must contain uppercase, lowercase, number, and special character
+                  example: SecureP@ss123
+                firstName:
+                  type: string
+                  minLength: 1
+                  maxLength: 50
+                  example: John
+                lastName:
+                  type: string
+                  minLength: 1
+                  maxLength: 50
+                  example: Doe
+                accountName:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  description: Name for the new organization account
+                  example: Acme Corporation
+      responses:
+        '201':
+          description: User successfully registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      user:
+                        $ref: '#/components/schemas/User'
+                      accessToken:
+                        type: string
+                        description: JWT access token (expires in 15 minutes)
+                      refreshToken:
+                        type: string
+                        description: JWT refresh token (expires in 7 days)
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: Login with email and password
+      description: Authenticates user and returns JWT tokens
+      operationId: loginUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: john.doe@example.com
+                password:
+                  type: string
+                  format: password
+                  example: SecureP@ss123
+      responses:
+        '200':
+          description: Successfully authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      user:
+                        $ref: '#/components/schemas/User'
+                      accessToken:
+                        type: string
+                      refreshToken:
+                        type: string
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/refresh:
+    post:
+      tags:
+        - Authentication
+      summary: Refresh access token
+      description: Generates a new access token using a valid refresh token
+      operationId: refreshToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refreshToken
+              properties:
+                refreshToken:
+                  type: string
+                  description: Valid refresh token
+      responses:
+        '200':
+          description: New tokens generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      accessToken:
+                        type: string
+                      refreshToken:
+                        type: string
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags:
+        - Authentication
+      summary: Logout current user
+      description: Invalidates the current refresh token
+      operationId: logoutUser
+      responses:
+        '204':
+          description: Successfully logged out
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/google:
+    get:
+      tags:
+        - Authentication
+      summary: Initiate Google OAuth flow
+      description: Redirects to Google consent screen for OAuth authentication
+      operationId: googleOAuthInit
+      security: []
+      responses:
+        '302':
+          description: Redirect to Google OAuth consent screen
+
+  /auth/google/callback:
+    get:
+      tags:
+        - Authentication
+      summary: Google OAuth callback
+      description: Handles OAuth callback from Google and returns JWT tokens
+      operationId: googleOAuthCallback
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Authorization code from Google
+        - name: state
+          in: query
+          schema:
+            type: string
+          description: State parameter for CSRF protection
+      responses:
+        '302':
+          description: Redirect to application with tokens in URL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/microsoft:
+    get:
+      tags:
+        - Authentication
+      summary: Initiate Microsoft OAuth flow
+      description: Redirects to Microsoft consent screen for OAuth authentication
+      operationId: microsoftOAuthInit
+      security: []
+      responses:
+        '302':
+          description: Redirect to Microsoft OAuth consent screen
+
+  /auth/microsoft/callback:
+    get:
+      tags:
+        - Authentication
+      summary: Microsoft OAuth callback
+      description: Handles OAuth callback from Microsoft and returns JWT tokens
+      operationId: microsoftOAuthCallback
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Authorization code from Microsoft
+        - name: state
+          in: query
+          schema:
+            type: string
+          description: State parameter for CSRF protection
+      responses:
+        '302':
+          description: Redirect to application with tokens in URL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/forgot-password:
+    post:
+      tags:
+        - Authentication
+      summary: Request password reset
+      description: Sends password reset email to user
+      operationId: forgotPassword
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: john.doe@example.com
+      responses:
+        '200':
+          description: Password reset email sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: Password reset instructions sent to email
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+
+  /auth/reset-password:
+    post:
+      tags:
+        - Authentication
+      summary: Reset password
+      description: Resets user password using reset token from email
+      operationId: resetPassword
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - token
+                - newPassword
+              properties:
+                token:
+                  type: string
+                  description: Password reset token from email
+                newPassword:
+                  type: string
+                  format: password
+                  minLength: 8
+                  example: NewSecureP@ss123
+      responses:
+        '200':
+          description: Password successfully reset
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: Password successfully reset
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # ============================================================================
+  # USER MANAGEMENT ENDPOINTS
+  # ============================================================================
+  /users:
+    get:
+      tags:
+        - Users
+      summary: List users
+      description: Retrieves paginated list of users in the account
+      operationId: listUsers
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: role
+          in: query
+          schema:
+            type: string
+            enum: [admin, user]
+          description: Filter by user role
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Search by name or email
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/User'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/{id}:
+    get:
+      tags:
+        - Users
+      summary: Get user by ID
+      description: Retrieves detailed information about a specific user
+      operationId: getUserById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: User ID
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/User'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags:
+        - Users
+      summary: Update user
+      description: Updates user information (partial update)
+      operationId: updateUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                firstName:
+                  type: string
+                  minLength: 1
+                  maxLength: 50
+                lastName:
+                  type: string
+                  minLength: 1
+                  maxLength: 50
+                role:
+                  type: string
+                  enum: [admin, user]
+                  description: Requires admin privileges to change
+      responses:
+        '200':
+          description: User updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/User'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Users
+      summary: Delete user
+      description: Deletes a user account (requires admin role)
+      operationId: deleteUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: User deleted successfully
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # DOCUMENT ENDPOINTS
+  # ============================================================================
+  /documents/upload:
+    post:
+      tags:
+        - Documents
+      summary: Upload document for OCR processing
+      description: |
+        Uploads a document file for OCR processing. Supported formats: PDF, JPG, PNG, TIFF.
+        Maximum file size: 50MB. File is virus scanned before processing.
+      operationId: uploadDocument
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Document file to process
+                templateId:
+                  type: string
+                  format: uuid
+                  description: Optional template ID for structured extraction
+                metadata:
+                  type: string
+                  description: JSON string with additional metadata
+                  example: '{"invoice_number": "INV-001", "vendor": "Acme Corp"}'
+      responses:
+        '201':
+          description: Document uploaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/Document'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+
+  /documents:
+    get:
+      tags:
+        - Documents
+      summary: List documents
+      description: Retrieves paginated list of documents with optional filtering
+      operationId: listDocuments
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [queued, processing, completed, failed, approved]
+          description: Filter by document status
+        - name: type
+          in: query
+          schema:
+            type: string
+          description: Filter by document type
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filter documents uploaded from this date
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filter documents uploaded until this date
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Search in document filename and extracted content
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Document'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+
+  /documents/{id}:
+    get:
+      tags:
+        - Documents
+      summary: Get document by ID
+      description: Retrieves detailed document information including extracted data
+      operationId: getDocumentById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/Document'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags:
+        - Documents
+      summary: Update document
+      description: Updates document metadata, status, or extracted data
+      operationId: updateDocument
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [approved, rejected]
+                extractedData:
+                  type: object
+                  description: Updated extracted data fields
+                notes:
+                  type: string
+                  description: User notes or comments
+      responses:
+        '200':
+          description: Document updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/Document'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Documents
+      summary: Delete document
+      description: Permanently deletes document and all associated data
+      operationId: deleteDocument
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Document deleted successfully
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /documents/{id}/fields/{fieldId}:
+    patch:
+      tags:
+        - Documents
+      summary: Update document field
+      description: |
+        Updates a specific extracted field value. Corrections are logged for ML training.
+      operationId: updateDocumentField
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: fieldId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - value
+              properties:
+                value:
+                  type: string
+                  description: Corrected field value
+                confidenceScore:
+                  type: number
+                  minimum: 0
+                  maximum: 100
+                  description: Optional manual confidence score
+      responses:
+        '200':
+          description: Field updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ExtractedField'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /documents/{id}/approve:
+    post:
+      tags:
+        - Documents
+      summary: Approve document
+      description: Marks document as approved and triggers configured webhooks
+      operationId: approveDocument
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Document approved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/Document'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /documents/{id}/history:
+    get:
+      tags:
+        - Documents
+      summary: Get document history
+      description: Retrieves version history and changes for a document
+      operationId: getDocumentHistory
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DocumentVersion'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # PROCESSING ENDPOINTS
+  # ============================================================================
+  /processing/batch:
+    post:
+      tags:
+        - Processing
+      summary: Create batch processing job
+      description: |
+        Uploads multiple documents for batch processing. Maximum 100 documents per batch.
+      operationId: createBatchJob
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - files
+              properties:
+                files:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: string
+                    format: binary
+                  description: Array of document files
+                templateId:
+                  type: string
+                  format: uuid
+                  description: Optional template for all documents
+                priority:
+                  type: string
+                  enum: [normal, high]
+                  default: normal
+                  description: Processing priority
+      responses:
+        '201':
+          description: Batch job created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ProcessingJob'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+
+  /processing/jobs/{jobId}:
+    get:
+      tags:
+        - Processing
+      summary: Get processing job status
+      description: Retrieves detailed status and progress of a processing job
+      operationId: getProcessingJob
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ProcessingJob'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /processing/jobs/{jobId}/cancel:
+    post:
+      tags:
+        - Processing
+      summary: Cancel processing job
+      description: Cancels unprocessed documents in a batch job
+      operationId: cancelProcessingJob
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Job cancelled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: Processing job cancelled
+                      cancelledCount:
+                        type: integer
+                        description: Number of documents cancelled
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # TEMPLATE ENDPOINTS
+  # ============================================================================
+  /templates:
+    get:
+      tags:
+        - Templates
+      summary: List templates
+      description: Retrieves paginated list of extraction templates
+      operationId: listTemplates
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: documentType
+          in: query
+          schema:
+            type: string
+          description: Filter by document type
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Search in template name
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Template'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+
+    post:
+      tags:
+        - Templates
+      summary: Create template
+      description: Creates a new extraction template with zones and field definitions
+      operationId: createTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplateInput'
+      responses:
+        '201':
+          description: Template created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/Template'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /templates/{id}:
+    get:
+      tags:
+        - Templates
+      summary: Get template by ID
+      description: Retrieves detailed template information
+      operationId: getTemplateById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/Template'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags:
+        - Templates
+      summary: Update template
+      description: Updates template configuration (creates new version)
+      operationId: updateTemplate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplateInput'
+      responses:
+        '200':
+          description: Template updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/Template'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Templates
+      summary: Delete template
+      description: Deletes a template (requires admin role)
+      operationId: deleteTemplate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Template deleted successfully
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /templates/{id}/test:
+    post:
+      tags:
+        - Templates
+      summary: Test template
+      description: Tests template extraction against a document and returns accuracy metrics
+      operationId: testTemplate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - documentId
+              properties:
+                documentId:
+                  type: string
+                  format: uuid
+                  description: Document ID to test template against
+      responses:
+        '200':
+          description: Test results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      extractedData:
+                        type: object
+                        description: Data extracted using template
+                      accuracy:
+                        type: number
+                        description: Overall accuracy percentage
+                        example: 95.5
+                      fieldResults:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            fieldName:
+                              type: string
+                            extracted:
+                              type: string
+                            confidence:
+                              type: number
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # SEARCH ENDPOINTS
+  # ============================================================================
+  /search/documents:
+    get:
+      tags:
+        - Search
+      summary: Search documents
+      description: Full-text search across all document content and metadata
+      operationId: searchDocuments
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search query
+          example: invoice apple
+        - name: filters
+          in: query
+          schema:
+            type: string
+          description: JSON string with filter criteria
+          example: '{"status":"completed","documentType":"invoice","dateRange":{"from":"2025-01-01","to":"2025-12-31"},"confidenceMin":85}'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [relevance, date, confidence]
+            default: relevance
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      totalHits:
+                        type: integer
+                        example: 1247
+                      maxScore:
+                        type: number
+                        example: 8.5
+                      results:
+                        type: array
+                        items:
+                          allOf:
+                            - $ref: '#/components/schemas/Document'
+                            - type: object
+                              properties:
+                                _score:
+                                  type: number
+                                  description: Search relevance score
+                                highlights:
+                                  type: object
+                                  description: Highlighted matching text
+                      aggregations:
+                        type: object
+                        description: Faceted search aggregations
+                        properties:
+                          byDocumentType:
+                            type: object
+                            additionalProperties:
+                              type: integer
+                          byStatus:
+                            type: object
+                            additionalProperties:
+                              type: integer
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+
+  /search/advanced:
+    post:
+      tags:
+        - Search
+      summary: Advanced search
+      description: Execute complex search queries using ElasticSearch query DSL
+      operationId: advancedSearch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: ElasticSearch query DSL
+              example:
+                query:
+                  bool:
+                    must:
+                      - match:
+                          extractedData.invoiceNumber: INV-001
+                    filter:
+                      - range:
+                          uploadedAt:
+                            gte: "2025-01-01"
+                            lte: "2025-12-31"
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    description: ElasticSearch response
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # ============================================================================
+  # EXPORT ENDPOINTS
+  # ============================================================================
+  /export:
+    post:
+      tags:
+        - Export
+      summary: Create export job
+      description: |
+        Creates an export job for document data in specified format.
+        Supports JSON, CSV, XML, and Excel formats.
+      operationId: createExportJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - documentIds
+                - format
+              properties:
+                documentIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  description: Array of document IDs to export
+                  maxItems: 1000
+                format:
+                  type: string
+                  enum: [json, csv, xml, excel]
+                  description: Export file format
+                includeMetadata:
+                  type: boolean
+                  default: true
+                  description: Include processing metadata
+      responses:
+        '201':
+          description: Export job created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ExportJob'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /export/{jobId}:
+    get:
+      tags:
+        - Export
+      summary: Get export job status
+      description: Retrieves export job status and download URL when complete
+      operationId: getExportJob
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Export job status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ExportJob'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /export/{jobId}/download:
+    get:
+      tags:
+        - Export
+      summary: Download export file
+      description: Downloads the exported file
+      operationId: downloadExport
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: File download
+          content:
+            application/json:
+              schema:
+                type: string
+                format: binary
+            text/csv:
+              schema:
+                type: string
+                format: binary
+            application/xml:
+              schema:
+                type: string
+                format: binary
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # INTEGRATION ENDPOINTS
+  # ============================================================================
+  /integrations:
+    get:
+      tags:
+        - Integrations
+      summary: List integrations
+      description: Retrieves list of available and connected integrations
+      operationId: listIntegrations
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          example: quickbooks
+                        name:
+                          type: string
+                          example: QuickBooks Online
+                        status:
+                          type: string
+                          enum: [connected, disconnected]
+                        lastSync:
+                          type: string
+                          format: date-time
+                          nullable: true
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+
+  /integrations/quickbooks/connect:
+    post:
+      tags:
+        - Integrations
+      summary: Connect QuickBooks
+      description: Initiates QuickBooks OAuth flow
+      operationId: connectQuickBooks
+      responses:
+        '302':
+          description: Redirect to QuickBooks OAuth
+
+  /integrations/quickbooks/callback:
+    get:
+      tags:
+        - Integrations
+      summary: QuickBooks OAuth callback
+      description: Handles OAuth callback from QuickBooks
+      operationId: quickbooksCallback
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: realmId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to application
+
+  /integrations/quickbooks/sync:
+    post:
+      tags:
+        - Integrations
+      summary: Sync to QuickBooks
+      description: Exports invoice data to QuickBooks
+      operationId: syncToQuickBooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - documentIds
+              properties:
+                documentIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        '200':
+          description: Sync initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      syncJobId:
+                        type: string
+                        format: uuid
+                      status:
+                        type: string
+                        example: processing
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+
+  /integrations/quickbooks/disconnect:
+    delete:
+      tags:
+        - Integrations
+      summary: Disconnect QuickBooks
+      description: Revokes QuickBooks integration
+      operationId: disconnectQuickBooks
+      responses:
+        '204':
+          description: Integration disconnected
+
+  /integrations/salesforce/connect:
+    post:
+      tags:
+        - Integrations
+      summary: Connect Salesforce
+      description: Initiates Salesforce OAuth flow
+      operationId: connectSalesforce
+      responses:
+        '302':
+          description: Redirect to Salesforce OAuth
+
+  /integrations/salesforce/callback:
+    get:
+      tags:
+        - Integrations
+      summary: Salesforce OAuth callback
+      description: Handles OAuth callback from Salesforce
+      operationId: salesforceCallback
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to application
+
+  /integrations/salesforce/sync:
+    post:
+      tags:
+        - Integrations
+      summary: Sync to Salesforce
+      description: Creates or updates Salesforce records from documents
+      operationId: syncToSalesforce
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - documentIds
+                - objectType
+              properties:
+                documentIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                objectType:
+                  type: string
+                  enum: [Lead, Opportunity, Account]
+      responses:
+        '200':
+          description: Sync initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      syncJobId:
+                        type: string
+                        format: uuid
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+
+  /integrations/salesforce/disconnect:
+    delete:
+      tags:
+        - Integrations
+      summary: Disconnect Salesforce
+      description: Revokes Salesforce integration
+      operationId: disconnectSalesforce
+      responses:
+        '204':
+          description: Integration disconnected
+
+  /integrations/netsuite/connect:
+    post:
+      tags:
+        - Integrations
+      summary: Connect NetSuite
+      description: Connects NetSuite using token-based authentication
+      operationId: connectNetSuite
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - accountId
+                - consumerKey
+                - consumerSecret
+                - tokenId
+                - tokenSecret
+              properties:
+                accountId:
+                  type: string
+                  description: NetSuite account ID
+                consumerKey:
+                  type: string
+                  description: Consumer key from integration record
+                consumerSecret:
+                  type: string
+                  format: password
+                  description: Consumer secret
+                tokenId:
+                  type: string
+                  description: Token ID
+                tokenSecret:
+                  type: string
+                  format: password
+                  description: Token secret
+      responses:
+        '200':
+          description: NetSuite connected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        example: connected
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /integrations/netsuite/disconnect:
+    delete:
+      tags:
+        - Integrations
+      summary: Disconnect NetSuite
+      description: Revokes NetSuite integration
+      operationId: disconnectNetSuite
+      responses:
+        '204':
+          description: Integration disconnected
+
+  /integrations/webhooks:
+    get:
+      tags:
+        - Integrations
+      summary: List webhook subscriptions
+      description: Retrieves all webhook subscriptions for the account
+      operationId: listWebhooks
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Webhook'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+
+    post:
+      tags:
+        - Integrations
+      summary: Create webhook subscription
+      description: Creates a new webhook subscription for specified events
+      operationId: createWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - url
+                - events
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: Webhook endpoint URL (must be HTTPS)
+                  example: https://api.example.com/webhooks/ocr
+                events:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                      - document.uploaded
+                      - document.processing
+                      - document.processed
+                      - document.approved
+                      - batch.completed
+                      - template.created
+                  description: Events to subscribe to
+                secret:
+                  type: string
+                  description: Secret for webhook signature verification
+      responses:
+        '201':
+          description: Webhook created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/Webhook'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /integrations/webhooks/{id}:
+    delete:
+      tags:
+        - Integrations
+      summary: Delete webhook subscription
+      description: Removes a webhook subscription
+      operationId: deleteWebhook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Webhook deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # API KEY ENDPOINTS
+  # ============================================================================
+  /api-keys:
+    get:
+      tags:
+        - API Keys
+      summary: List API keys
+      description: Retrieves list of API keys (keys are masked)
+      operationId: listApiKeys
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiKey'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+
+    post:
+      tags:
+        - API Keys
+      summary: Create API key
+      description: |
+        Creates a new API key (requires admin role).
+        WARNING: API key is shown only once upon creation.
+      operationId: createApiKey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - scopes
+              properties:
+                name:
+                  type: string
+                  description: Descriptive name for the API key
+                  example: Production Integration
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                      - read:documents
+                      - write:documents
+                      - manage:templates
+                      - admin
+                  description: Permissions for the API key
+                expiresAt:
+                  type: string
+                  format: date-time
+                  description: Optional expiration date
+      responses:
+        '201':
+          description: API key created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/ApiKey'
+                      - type: object
+                        properties:
+                          key:
+                            type: string
+                            description: Full API key (shown only once)
+                            example: ocr_live_1234567890abcdefghijklmnopqrstuvwxyz
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api-keys/{id}:
+    delete:
+      tags:
+        - API Keys
+      summary: Delete API key
+      description: Revokes an API key
+      operationId: deleteApiKey
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: API key deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # ANALYTICS ENDPOINTS
+  # ============================================================================
+  /analytics/overview:
+    get:
+      tags:
+        - Analytics
+      summary: Get analytics overview
+      description: Retrieves high-level analytics and KPIs
+      operationId: getAnalyticsOverview
+      parameters:
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Start date for analytics period
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+            format: date
+          description: End date for analytics period
+      responses:
+        '200':
+          description: Analytics data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      totalDocumentsProcessed:
+                        type: integer
+                        example: 1523
+                      averageProcessingTime:
+                        type: number
+                        description: Average processing time in seconds
+                        example: 18.5
+                      averageConfidenceScore:
+                        type: number
+                        description: Average confidence score (0-100)
+                        example: 94.2
+                      documentsByStatus:
+                        type: object
+                        properties:
+                          completed:
+                            type: integer
+                          processing:
+                            type: integer
+                          failed:
+                            type: integer
+                      documentsByType:
+                        type: object
+                        additionalProperties:
+                          type: integer
+                        example:
+                          invoice: 850
+                          receipt: 420
+                          contract: 253
+                      processingVolumeTrend:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            date:
+                              type: string
+                              format: date
+                            count:
+                              type: integer
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+
+  /analytics/accuracy:
+    get:
+      tags:
+        - Analytics
+      summary: Get accuracy metrics
+      description: Retrieves OCR accuracy metrics by document type
+      operationId: getAccuracyMetrics
+      responses:
+        '200':
+          description: Accuracy metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        documentType:
+                          type: string
+                          example: invoice
+                        averageConfidence:
+                          type: number
+                          example: 96.5
+                        correctionRate:
+                          type: number
+                          description: Percentage of fields requiring correction
+                          example: 3.2
+                        sampleSize:
+                          type: integer
+                          example: 850
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+
+  /analytics/users:
+    get:
+      tags:
+        - Analytics
+      summary: Get user activity metrics
+      description: Retrieves user activity and usage metrics (requires admin role)
+      operationId: getUserActivityMetrics
+      responses:
+        '200':
+          description: User activity data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        userId:
+                          type: string
+                          format: uuid
+                        userName:
+                          type: string
+                        documentsProcessed:
+                          type: integer
+                        correctionsMe:
+                          type: integer
+                        lastActive:
+                          type: string
+                          format: date-time
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ============================================================================
+  # AUDIT LOG ENDPOINTS
+  # ============================================================================
+  /audit/logs:
+    get:
+      tags:
+        - Audit
+      summary: Get audit logs
+      description: Retrieves audit logs (requires admin role)
+      operationId: getAuditLogs
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: userId
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by user ID
+        - name: action
+          in: query
+          schema:
+            type: string
+          description: Filter by action type
+        - name: resourceType
+          in: query
+          schema:
+            type: string
+          description: Filter by resource type
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Audit logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLog'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+                  meta:
+                    $ref: '#/components/schemas/ResponseMeta'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+# ==============================================================================
+# COMPONENTS
+# ==============================================================================
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT Bearer token obtained from /auth/login or /auth/refresh endpoints.
+        Access tokens expire in 15 minutes. Use refresh token to obtain new access token.
+        
+        Example: Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        API key for programmatic access. Generate from /api-keys endpoint (requires admin role).
+        API keys have configurable scopes and optional expiration dates.
+        
+        Example: X-API-Key: ocr_live_1234567890abcdefghijklmnopqrstuvwxyz
+
+    OAuth2:
+      type: oauth2
+      description: OAuth 2.0 authentication for third-party applications
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.ocr-app.com/oauth/authorize
+          tokenUrl: https://api.ocr-app.com/oauth/token
+          scopes:
+            read:documents: Read access to documents
+            write:documents: Write access to documents and upload
+            manage:templates: Manage extraction templates
+            admin: Full administrative access
+
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+      description: Page number (1-indexed)
+
+    LimitParam:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+      description: Number of items per page (max 100)
+
+  schemas:
+    # Core Models
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+        email:
+          type: string
+          format: email
+          example: john.doe@example.com
+        firstName:
+          type: string
+          example: John
+        lastName:
+          type: string
+          example: Doe
+        role:
+          type: string
+          enum: [admin, user]
+          example: user
+        accountId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Account:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: Acme Corporation
+        plan:
+          type: string
+          enum: [free, professional, enterprise]
+          example: professional
+        status:
+          type: string
+          enum: [active, suspended, cancelled]
+          example: active
+        settings:
+          type: object
+          description: Account-specific settings
+        createdAt:
+          type: string
+          format: date-time
+
+    Document:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        filename:
+          type: string
+          example: invoice_2025_001.pdf
+        fileUrl:
+          type: string
+          format: uri
+          description: Presigned S3 URL (expires in 15 minutes)
+          example: https://s3.amazonaws.com/bucket/file.pdf?signature=...
+        fileSize:
+          type: integer
+          description: File size in bytes
+          example: 524288
+        mimeType:
+          type: string
+          example: application/pdf
+        status:
+          type: string
+          enum: [queued, processing, completed, failed, approved, rejected]
+          example: completed
+        documentType:
+          type: string
+          example: invoice
+        uploadedAt:
+          type: string
+          format: date-time
+        processingStartedAt:
+          type: string
+          format: date-time
+          nullable: true
+        processingCompletedAt:
+          type: string
+          format: date-time
+          nullable: true
+        extractedData:
+          type: object
+          description: Extracted document data
+          example:
+            invoiceNumber: INV-2025-001
+            invoiceDate: "2025-01-15"
+            dueDate: "2025-02-15"
+            vendorName: Acme Supplier Inc
+            totalAmount: 1250.00
+            currency: USD
+        confidenceScores:
+          type: object
+          description: Confidence scores per field (0-100)
+          example:
+            invoiceNumber: 98.5
+            invoiceDate: 95.2
+            totalAmount: 99.1
+        validationErrors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+              severity:
+                type: string
+                enum: [error, warning]
+        notes:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ExtractedField:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          example: invoiceNumber
+        value:
+          type: string
+          example: INV-2025-001
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 100
+          example: 98.5
+        boundingBox:
+          type: object
+          properties:
+            x:
+              type: number
+            y:
+              type: number
+            width:
+              type: number
+            height:
+              type: number
+        validated:
+          type: boolean
+          example: true
+
+    DocumentVersion:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        documentId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          example: 2
+        changes:
+          type: object
+          description: Changed fields and their old/new values
+        changedBy:
+          type: string
+          format: uuid
+          description: User ID who made changes
+        changedAt:
+          type: string
+          format: date-time
+
+    Template:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: Standard Invoice Template
+        documentType:
+          type: string
+          example: invoice
+        zones:
+          type: array
+          description: Extraction zones with coordinates
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              x:
+                type: number
+                description: X coordinate (0-1 normalized)
+              y:
+                type: number
+              width:
+                type: number
+              height:
+                type: number
+              fieldId:
+                type: string
+        fields:
+          type: array
+          description: Field definitions
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+                example: invoiceNumber
+              type:
+                type: string
+                enum: [text, number, date, currency, email, phone]
+              required:
+                type: boolean
+              validationRegex:
+                type: string
+                nullable: true
+        validationRules:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              rule:
+                type: string
+              errorMessage:
+                type: string
+        version:
+          type: integer
+          example: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    TemplateInput:
+      type: object
+      required:
+        - name
+        - documentType
+        - zones
+        - fields
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        documentType:
+          type: string
+        zones:
+          type: array
+          items:
+            type: object
+            required:
+              - x
+              - y
+              - width
+              - height
+              - fieldId
+            properties:
+              x:
+                type: number
+                minimum: 0
+                maximum: 1
+              y:
+                type: number
+                minimum: 0
+                maximum: 1
+              width:
+                type: number
+                minimum: 0
+                maximum: 1
+              height:
+                type: number
+                minimum: 0
+                maximum: 1
+              fieldId:
+                type: string
+        fields:
+          type: array
+          items:
+            type: object
+            required:
+              - id
+              - name
+              - type
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              type:
+                type: string
+                enum: [text, number, date, currency, email, phone]
+              required:
+                type: boolean
+                default: false
+              validationRegex:
+                type: string
+        validationRules:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              rule:
+                type: string
+              errorMessage:
+                type: string
+
+    ProcessingJob:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, processing, completed, failed, cancelled]
+          example: processing
+        totalDocuments:
+          type: integer
+          example: 50
+        processedCount:
+          type: integer
+          example: 30
+        failedCount:
+          type: integer
+          example: 2
+        progressPercentage:
+          type: number
+          minimum: 0
+          maximum: 100
+          example: 64
+        estimatedCompletionTime:
+          type: string
+          format: date-time
+          nullable: true
+        documentResults:
+          type: array
+          items:
+            type: object
+            properties:
+              documentId:
+                type: string
+                format: uuid
+              filename:
+                type: string
+              status:
+                type: string
+              errorMessage:
+                type: string
+                nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ExportJob:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, processing, completed, failed]
+          example: completed
+        format:
+          type: string
+          enum: [json, csv, xml, excel]
+        documentCount:
+          type: integer
+          example: 25
+        downloadUrl:
+          type: string
+          format: uri
+          nullable: true
+          description: Presigned S3 URL (1-hour expiry, only when completed)
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    ApiKey:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: Production Integration
+        key:
+          type: string
+          description: Masked API key (full key shown only on creation)
+          example: ocr_live_***************************xyz
+        scopes:
+          type: array
+          items:
+            type: string
+          example: ["read:documents", "write:documents"]
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    Webhook:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+          example: https://api.example.com/webhooks/ocr
+        events:
+          type: array
+          items:
+            type: string
+          example: ["document.processed", "batch.completed"]
+        secret:
+          type: string
+          description: Masked secret (full secret shown only on creation)
+          example: whsec_************************
+        status:
+          type: string
+          enum: [active, disabled]
+          example: active
+        lastTriggered:
+          type: string
+          format: date-time
+          nullable: true
+        failureCount:
+          type: integer
+          description: Consecutive failure count
+          example: 0
+        createdAt:
+          type: string
+          format: date-time
+
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+        userId:
+          type: string
+          format: uuid
+        userName:
+          type: string
+        accountId:
+          type: string
+          format: uuid
+        action:
+          type: string
+          example: document.update
+        resourceType:
+          type: string
+          example: document
+        resourceId:
+          type: string
+          format: uuid
+        ipAddress:
+          type: string
+          example: 192.168.1.1
+        userAgent:
+          type: string
+          example: Mozilla/5.0...
+        changes:
+          type: object
+          description: Detailed changes made
+          nullable: true
+
+    # Common Response Types
+    Pagination:
+      type: object
+      properties:
+        total:
+          type: integer
+          description: Total number of items
+          example: 1247
+        page:
+          type: integer
+          description: Current page number
+          example: 1
+        pageSize:
+          type: integer
+          description: Items per page
+          example: 25
+        totalPages:
+          type: integer
+          description: Total number of pages
+          example: 50
+        hasNext:
+          type: boolean
+          description: Whether there is a next page
+          example: true
+        hasPrevious:
+          type: boolean
+          description: Whether there is a previous page
+          example: false
+
+    ResponseMeta:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Response timestamp (ISO 8601 UTC)
+          example: "2025-10-31T12:00:00Z"
+        version:
+          type: string
+          description: API version
+          example: v1
+
+    Error:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code
+              example: VALIDATION_ERROR
+            message:
+              type: string
+              description: Human-readable error message
+              example: Invalid document format
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                    description: Field that caused the error
+                  message:
+                    type: string
+                    description: Specific error message for the field
+              description: Detailed validation errors
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+
+  responses:
+    BadRequest:
+      description: Bad Request - Invalid input data
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            error:
+              code: VALIDATION_ERROR
+              message: Validation failed
+              details:
+                - field: email
+                  message: Must be a valid email address
+                - field: password
+                  message: Must be at least 8 characters
+            meta:
+              timestamp: "2025-10-31T12:00:00Z"
+              version: v1
+
+    Unauthorized:
+      description: Unauthorized - Authentication required or failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            error:
+              code: UNAUTHORIZED
+              message: Authentication required
+            meta:
+              timestamp: "2025-10-31T12:00:00Z"
+              version: v1
+
+    Forbidden:
+      description: Forbidden - Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            error:
+              code: FORBIDDEN
+              message: Insufficient permissions to access this resource
+            meta:
+              timestamp: "2025-10-31T12:00:00Z"
+              version: v1
+
+    NotFound:
+      description: Not Found - Resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            error:
+              code: NOT_FOUND
+              message: Resource not found
+            meta:
+              timestamp: "2025-10-31T12:00:00Z"
+              version: v1
+
+    Conflict:
+      description: Conflict - Resource already exists
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            error:
+              code: CONFLICT
+              message: Email address already registered
+            meta:
+              timestamp: "2025-10-31T12:00:00Z"
+              version: v1
+
+    PayloadTooLarge:
+      description: Payload Too Large - File exceeds size limit
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            error:
+              code: PAYLOAD_TOO_LARGE
+              message: File exceeds 50MB limit
+            meta:
+              timestamp: "2025-10-31T12:00:00Z"
+              version: v1
+
+    UnsupportedMediaType:
+      description: Unsupported Media Type - File type not supported
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            error:
+              code: UNSUPPORTED_MEDIA_TYPE
+              message: File type not supported. Allowed types: PDF, JPG, PNG, TIFF
+            meta:
+              timestamp: "2025-10-31T12:00:00Z"
+              version: v1
+
+    TooManyRequests:
+      description: Too Many Requests - Rate limit exceeded
+      headers:
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+          description: Request limit per hour
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+          description: Remaining requests
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+          description: Unix timestamp when limit resets
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds until rate limit resets
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      retryAfter:
+                        type: integer
+                        description: Seconds to wait before retrying
+          example:
+            success: false
+            error:
+              code: RATE_LIMIT_EXCEEDED
+              message: Rate limit exceeded. Maximum 1000 requests per hour.
+              retryAfter: 3600
+            meta:
+              timestamp: "2025-10-31T12:00:00Z"
+              version: v1
+
+    InternalServerError:
+      description: Internal Server Error - Unexpected error occurred
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            error:
+              code: INTERNAL_ERROR
+              message: An unexpected error occurred. Please try again later.
+            meta:
+              timestamp: "2025-10-31T12:00:00Z"
+              version: v1
+
+externalDocs:
+  description: Full API Documentation
+  url: https://docs.ocr-app.com/api
+
