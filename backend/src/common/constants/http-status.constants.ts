@@ -33,7 +33,7 @@
  * // Successful document retrieval
  * return res.status(HTTP_STATUS_OK).json({ data: document });
  */
-export const HTTP_STATUS_OK = 200 as const;
+export const HTTP_STATUS_OK = 200;
 
 /**
  * HTTP 201 Created
@@ -45,7 +45,7 @@ export const HTTP_STATUS_OK = 200 as const;
  * // Successful document upload
  * return res.status(HTTP_STATUS_CREATED).json({ data: newDocument });
  */
-export const HTTP_STATUS_CREATED = 201 as const;
+export const HTTP_STATUS_CREATED = 201;
 
 /**
  * HTTP 202 Accepted
@@ -57,7 +57,7 @@ export const HTTP_STATUS_CREATED = 201 as const;
  * // Batch processing job accepted
  * return res.status(HTTP_STATUS_ACCEPTED).json({ data: { jobId: '123' } });
  */
-export const HTTP_STATUS_ACCEPTED = 202 as const;
+export const HTTP_STATUS_ACCEPTED = 202;
 
 /**
  * HTTP 204 No Content
@@ -69,7 +69,7 @@ export const HTTP_STATUS_ACCEPTED = 202 as const;
  * // Successful document deletion
  * return res.status(HTTP_STATUS_NO_CONTENT).send();
  */
-export const HTTP_STATUS_NO_CONTENT = 204 as const;
+export const HTTP_STATUS_NO_CONTENT = 204;
 
 // ============================================================================
 // HTTP 4xx Client Error Status Codes
@@ -85,7 +85,7 @@ export const HTTP_STATUS_NO_CONTENT = 204 as const;
  * // Invalid document format
  * throw new BadRequestException('Invalid document format');
  */
-export const HTTP_STATUS_BAD_REQUEST = 400 as const;
+export const HTTP_STATUS_BAD_REQUEST = 400;
 
 /**
  * HTTP 401 Unauthorized
@@ -97,7 +97,7 @@ export const HTTP_STATUS_BAD_REQUEST = 400 as const;
  * // Missing or expired JWT token
  * throw new UnauthorizedException('Authentication required');
  */
-export const HTTP_STATUS_UNAUTHORIZED = 401 as const;
+export const HTTP_STATUS_UNAUTHORIZED = 401;
 
 /**
  * HTTP 403 Forbidden
@@ -109,7 +109,7 @@ export const HTTP_STATUS_UNAUTHORIZED = 401 as const;
  * // User without admin role trying to access admin endpoint
  * throw new ForbiddenException('Insufficient permissions');
  */
-export const HTTP_STATUS_FORBIDDEN = 403 as const;
+export const HTTP_STATUS_FORBIDDEN = 403;
 
 /**
  * HTTP 404 Not Found
@@ -121,7 +121,7 @@ export const HTTP_STATUS_FORBIDDEN = 403 as const;
  * // Document with specified ID not found
  * throw new NotFoundException('Document not found');
  */
-export const HTTP_STATUS_NOT_FOUND = 404 as const;
+export const HTTP_STATUS_NOT_FOUND = 404;
 
 /**
  * HTTP 409 Conflict
@@ -133,7 +133,7 @@ export const HTTP_STATUS_NOT_FOUND = 404 as const;
  * // Attempting to create a template with duplicate name
  * throw new ConflictException('Template name already exists');
  */
-export const HTTP_STATUS_CONFLICT = 409 as const;
+export const HTTP_STATUS_CONFLICT = 409;
 
 /**
  * HTTP 422 Unprocessable Entity
@@ -145,7 +145,7 @@ export const HTTP_STATUS_CONFLICT = 409 as const;
  * // Document field validation failed
  * throw new UnprocessableEntityException('Field validation failed');
  */
-export const HTTP_STATUS_UNPROCESSABLE_ENTITY = 422 as const;
+export const HTTP_STATUS_UNPROCESSABLE_ENTITY = 422;
 
 /**
  * HTTP 429 Too Many Requests
@@ -157,7 +157,7 @@ export const HTTP_STATUS_UNPROCESSABLE_ENTITY = 422 as const;
  * // API rate limit exceeded (default: 1000 requests/hour per account)
  * throw new TooManyRequestsException('Rate limit exceeded');
  */
-export const HTTP_STATUS_TOO_MANY_REQUESTS = 429 as const;
+export const HTTP_STATUS_TOO_MANY_REQUESTS = 429;
 
 // ============================================================================
 // HTTP 5xx Server Error Status Codes
@@ -173,7 +173,7 @@ export const HTTP_STATUS_TOO_MANY_REQUESTS = 429 as const;
  * // Unexpected exception during processing
  * throw new InternalServerErrorException('An unexpected error occurred');
  */
-export const HTTP_STATUS_INTERNAL_SERVER_ERROR = 500 as const;
+export const HTTP_STATUS_INTERNAL_SERVER_ERROR = 500;
 
 /**
  * HTTP 502 Bad Gateway
@@ -185,7 +185,7 @@ export const HTTP_STATUS_INTERNAL_SERVER_ERROR = 500 as const;
  * // OCR service returned invalid response
  * throw new BadGatewayException('Invalid response from OCR service');
  */
-export const HTTP_STATUS_BAD_GATEWAY = 502 as const;
+export const HTTP_STATUS_BAD_GATEWAY = 502;
 
 /**
  * HTTP 503 Service Unavailable
@@ -197,7 +197,7 @@ export const HTTP_STATUS_BAD_GATEWAY = 502 as const;
  * // Database connection pool exhausted
  * throw new ServiceUnavailableException('Service temporarily unavailable');
  */
-export const HTTP_STATUS_SERVICE_UNAVAILABLE = 503 as const;
+export const HTTP_STATUS_SERVICE_UNAVAILABLE = 503;
 
 // ============================================================================
 // Grouped HttpStatus Object

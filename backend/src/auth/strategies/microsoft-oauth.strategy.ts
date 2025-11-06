@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { PassportStrategy } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
-import { Strategy, VerifyCallback } from 'passport-oauth2';
+import { PassportStrategy } from '@nestjs/passport';
 import axios from 'axios';
+import { Strategy, VerifyCallback } from 'passport-oauth2';
 
 /**
  * Microsoft OAuth 2.0 Authentication Strategy
@@ -57,7 +57,7 @@ export class MicrosoftOAuthStrategy extends PassportStrategy(Strategy, 'microsof
       authorizationURL: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
       tokenURL: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
       clientID: clientId,
-      clientSecret: clientSecret,
+      clientSecret,
       callbackURL: `${baseUrl}/api/v1/auth/microsoft/callback`,
       scope: ['User.Read', 'email', 'profile'],
       // Pass access token to validate method for profile fetching
@@ -131,17 +131,17 @@ export class MicrosoftOAuthStrategy extends PassportStrategy(Strategy, 'microsof
             } else if (status === 403) {
               // Insufficient permissions
               return done(new Error('Insufficient permissions to access Microsoft profile. Required scopes: User.Read, email, profile'), false);
-            } else {
+            } 
               // Other Microsoft Graph API errors
               return done(new Error(`Microsoft Graph API error: ${errorData?.error?.message || 'Unknown error'}`), false);
-            }
+            
           } else if (error.request) {
             // Network error - no response received
             return done(new Error('Failed to connect to Microsoft Graph API. Please check network connectivity.'), false);
-          } else {
+          } 
             // Request setup error
             return done(new Error(`Failed to fetch Microsoft profile: ${error.message}`), false);
-          }
+          
         }
         // Non-Axios error
         throw error;

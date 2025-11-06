@@ -1,3 +1,4 @@
+import { ApiProperty } from '@nestjs/swagger';
 import {
   IsEmail,
   IsString,
@@ -8,7 +9,6 @@ import {
   IsUUID,
   IsOptional,
 } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
 
 /**
  * Data Transfer Object for creating a new user account.
