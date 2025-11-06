@@ -135,16 +135,17 @@ export class XmlFormatterService {
 
       // Convert to Buffer
       return Buffer.from(xml, 'utf-8');
-    } catch (error) {
+    } catch (error: unknown) {
       if (error instanceof BadRequestException) {
         throw error;
       }
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error({
         message: 'Error formatting document to XML',
-        error: error.message,
+        error: errorMessage,
         document_id: documentData?.id,
       });
-      throw new BadRequestException(`Failed to format document to XML: ${error.message}`);
+      throw new BadRequestException(`Failed to format document to XML: ${errorMessage}`);
     }
   }
 
@@ -207,16 +208,17 @@ export class XmlFormatterService {
 
       // Convert to Buffer
       return Buffer.from(xml, 'utf-8');
-    } catch (error) {
+    } catch (error: unknown) {
       if (error instanceof BadRequestException) {
         throw error;
       }
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error({
         message: 'Error formatting batch to XML',
-        error: error.message,
+        error: errorMessage,
         document_count: documents?.length,
       });
-      throw new BadRequestException(`Failed to format batch to XML: ${error.message}`);
+      throw new BadRequestException(`Failed to format batch to XML: ${errorMessage}`);
     }
   }
 
@@ -243,7 +245,6 @@ export class XmlFormatterService {
 
     // Add document metadata as attributes
     const indent1 = this.indent(indentLevel, spaces);
-    const indent2 = this.indent(indentLevel + 1, spaces);
 
     // Document metadata elements
     xml += indent1 + `<id>${this.escapeXML(document.id)}</id>\n`;
@@ -493,14 +494,17 @@ export class XmlFormatterService {
    */
   private validateXML(xmlString: string): boolean {
     try {
+      // Remove CDATA sections temporarily for tag counting
+      const xmlWithoutCDATA = xmlString.replace(/<!\[CDATA\[.*?\]\]>/gs, '');
+      
       // Basic validation: check for matching tags
       // Count opening and closing tags
-      const openTags = xmlString.match(/<[^/][^>]*>/g) || [];
-      const closeTags = xmlString.match(/<\/[^>]+>/g) || [];
+      const openTags = xmlWithoutCDATA.match(/<[^/][^>]*>/g) || [];
+      const closeTags = xmlWithoutCDATA.match(/<\/[^>]+>/g) || [];
       
       // Filter out self-closing tags and XML declaration
-      const selfClosingTags = xmlString.match(/<[^>]+\/>/g) || [];
-      const xmlDeclaration = xmlString.match(/<\?xml[^>]+\?>/g) || [];
+      const selfClosingTags = xmlWithoutCDATA.match(/<[^>]+\/>/g) || [];
+      const xmlDeclaration = xmlWithoutCDATA.match(/<\?xml[^>]+\?>/g) || [];
       
       const openCount = openTags.length - selfClosingTags.length - xmlDeclaration.length;
       const closeCount = closeTags.length;
@@ -512,11 +516,12 @@ export class XmlFormatterService {
       }
 
       return true;
-    } catch (error) {
+    } catch (error: unknown) {
       if (error instanceof BadRequestException) {
         throw error;
       }
-      throw new BadRequestException(`XML validation failed: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new BadRequestException(`XML validation failed: ${errorMessage}`);
     }
   }
 
