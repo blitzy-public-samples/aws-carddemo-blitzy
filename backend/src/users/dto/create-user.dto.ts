@@ -52,7 +52,7 @@ export class CreateUserDto {
   })
   @IsEmail({}, { message: 'Invalid email format' })
   @IsNotEmpty({ message: 'Email is required' })
-  email: string;
+  email!: string;
 
   /**
    * User password with complexity requirements.
@@ -76,7 +76,7 @@ export class CreateUserDto {
       message: 'Password must contain uppercase, lowercase, number, and special character',
     },
   )
-  password: string;
+  password!: string;
 
   /**
    * User first name.
@@ -92,7 +92,7 @@ export class CreateUserDto {
   @IsNotEmpty({ message: 'First name is required' })
   @MinLength(2, { message: 'First name must be at least 2 characters' })
   @MaxLength(50, { message: 'First name must not exceed 50 characters' })
-  firstName: string;
+  firstName!: string;
 
   /**
    * User last name.
@@ -108,7 +108,7 @@ export class CreateUserDto {
   @IsNotEmpty({ message: 'Last name is required' })
   @MinLength(2, { message: 'Last name must be at least 2 characters' })
   @MaxLength(50, { message: 'Last name must not exceed 50 characters' })
-  lastName: string;
+  lastName!: string;
 
   /**
    * Account ID for multi-tenant isolation.
@@ -122,7 +122,7 @@ export class CreateUserDto {
   })
   @IsUUID(4, { message: 'Account ID must be a valid UUID v4' })
   @IsNotEmpty({ message: 'Account ID is required' })
-  account_id: string;
+  account_id!: string;
 
   /**
    * Array of role names to assign to user.
