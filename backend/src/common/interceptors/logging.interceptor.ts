@@ -18,6 +18,8 @@
  * @module LoggingInterceptor
  */
 
+import { randomUUID } from 'crypto';
+
 import {
   Injectable,
   NestInterceptor,
@@ -25,11 +27,10 @@ import {
   CallHandler,
   Inject,
 } from '@nestjs/common';
+import { Request, Response } from 'express';
 import { Observable, throwError } from 'rxjs';
 import { tap, catchError } from 'rxjs/operators';
 import { Logger } from 'winston';
-import { randomUUID } from 'crypto';
-import { Request, Response } from 'express';
 
 /**
  * Interface for JWT payload structure
@@ -53,7 +54,7 @@ interface LogEntry {
   requestId: string;
   method: string;
   url: string;
-  query?: Record<string, any>;
+  query?: Record<string, unknown>;
   userAgent?: string;
   contentType?: string;
   userId?: string;
@@ -99,9 +100,9 @@ export class LoggingInterceptor implements NestInterceptor {
    * 
    * @param {ExecutionContext} context - NestJS execution context with request/response
    * @param {CallHandler} next - Call handler for continuing request processing
-   * @returns {Observable<any>} Observable with tap/catchError operators for logging
+   * @returns {Observable<unknown>} Observable with tap/catchError operators for logging
    */
-  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     // Generate unique request ID for tracking
     const requestId = randomUUID();
 
@@ -162,16 +163,17 @@ export class LoggingInterceptor implements NestInterceptor {
           timestamp: new Date().toISOString(),
         });
       }),
-      catchError((error) => {
+      catchError((error: unknown) => {
         // Calculate response time even for errors
         const endTime = process.hrtime.bigint();
         const responseTime = Number(endTime - startTime) / 1_000_000;
 
-        // Extract error details
-        const statusCode = error.status || error.statusCode || 500;
-        const errorName = error.name || 'Error';
-        const errorMessage = error.message || 'Unknown error';
-        const errorStack = error.stack;
+        // Extract error details - safely handle unknown error type
+        const err = error as { status?: number; statusCode?: number; name?: string; message?: string; stack?: string };
+        const statusCode = err.status || err.statusCode || 500;
+        const errorName = err.name || 'Error';
+        const errorMessage = err.message || 'Unknown error';
+        const errorStack = err.stack;
 
         // Log error with full details
         this.logError({
@@ -231,7 +233,7 @@ export class LoggingInterceptor implements NestInterceptor {
         return {};
       }
       const decoded = Buffer.from(payload, 'base64').toString('utf-8');
-      const payloadObj: JwtPayload = JSON.parse(decoded);
+      const payloadObj = JSON.parse(decoded) as JwtPayload;
 
       // Extract user ID (support multiple field names)
       const userId = payloadObj.sub || payloadObj.userId;
@@ -254,16 +256,16 @@ export class LoggingInterceptor implements NestInterceptor {
    * Removes or masks sensitive query parameters like tokens, passwords, API keys
    * to prevent leaking sensitive information in logs.
    * 
-   * @param {any} query - Query parameters object
-   * @returns {Record<string, any>} Sanitized query parameters
+   * @param {unknown} query - Query parameters object
+   * @returns {Record<string, unknown>} Sanitized query parameters
    * @private
    */
-  private sanitizeQueryParams(query: any): Record<string, any> {
+  private sanitizeQueryParams(query: unknown): Record<string, unknown> {
     if (!query || typeof query !== 'object') {
       return {};
     }
 
-    const sanitized: Record<string, any> = {};
+    const sanitized: Record<string, unknown> = {};
     const sensitiveKeys = ['password', 'token', 'api_key', 'apiKey', 'secret', 'authorization'];
 
     for (const [key, value] of Object.entries(query)) {
@@ -271,8 +273,10 @@ export class LoggingInterceptor implements NestInterceptor {
       const isSensitive = sensitiveKeys.some((sensitive) => lowerKey.includes(sensitive));
 
       if (isSensitive) {
+        // eslint-disable-next-line security/detect-object-injection -- Safe: key comes from Object.entries iteration
         sanitized[key] = '[REDACTED]';
       } else {
+        // eslint-disable-next-line security/detect-object-injection -- Safe: key comes from Object.entries iteration
         sanitized[key] = value;
       }
     }
