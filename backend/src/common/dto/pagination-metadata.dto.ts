@@ -46,7 +46,7 @@ export class PaginationMetadataDto {
     type: Number,
     minimum: 0,
   })
-  total: number;
+  total!: number;
 
   /**
    * Current page number (1-indexed).
@@ -60,7 +60,7 @@ export class PaginationMetadataDto {
     type: Number,
     minimum: 1,
   })
-  page: number;
+  page!: number;
 
   /**
    * Number of records per page.
@@ -75,7 +75,7 @@ export class PaginationMetadataDto {
     minimum: 1,
     maximum: 100,
   })
-  pageSize: number;
+  pageSize!: number;
 
   /**
    * Total number of pages available.
@@ -90,7 +90,7 @@ export class PaginationMetadataDto {
     type: Number,
     minimum: 0,
   })
-  totalPages: number;
+  totalPages!: number;
 
   /**
    * Indicates whether there are more pages available after the current page.
@@ -103,7 +103,7 @@ export class PaginationMetadataDto {
     example: true,
     type: Boolean,
   })
-  hasNext: boolean;
+  hasNext!: boolean;
 
   /**
    * Optional cursor for cursor-based pagination.
