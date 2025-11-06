@@ -85,7 +85,7 @@ export class GoogleOAuthStrategy extends PassportStrategy(Strategy, 'google') {
    * @param configService - NestJS ConfigService for environment variable access
    * @throws Error if required environment variables are missing
    */
-  constructor(private readonly configService: ConfigService) {
+  constructor(configService: ConfigService) {
     // Validate required environment variables
     const clientID = configService.get<string>('GOOGLE_CLIENT_ID');
     const clientSecret = configService.get<string>('GOOGLE_CLIENT_SECRET');
@@ -133,8 +133,8 @@ export class GoogleOAuthStrategy extends PassportStrategy(Strategy, 'google') {
    * @throws Error if required profile fields are missing
    */
   async validate(
-    accessToken: string,
-    refreshToken: string,
+    _accessToken: string,
+    _refreshToken: string,
     profile: Profile,
     done: VerifyCallback
   ): Promise<any> {
@@ -145,7 +145,7 @@ export class GoogleOAuthStrategy extends PassportStrategy(Strategy, 'google') {
       }
 
       // Extract email from profile (emails array contains verified emails)
-      const email = profile.emails && profile.emails.length > 0 
+      const email = profile.emails && profile.emails.length > 0 && profile.emails[0]
         ? profile.emails[0].value 
         : null;
 
@@ -154,7 +154,7 @@ export class GoogleOAuthStrategy extends PassportStrategy(Strategy, 'google') {
       }
 
       // Validate email verification status for security
-      const emailVerified = profile.emails[0].verified !== undefined 
+      const emailVerified = profile.emails && profile.emails[0] && profile.emails[0].verified !== undefined 
         ? profile.emails[0].verified 
         : false;
 
@@ -174,7 +174,7 @@ export class GoogleOAuthStrategy extends PassportStrategy(Strategy, 'google') {
       }
 
       // Extract profile photo if available
-      const profilePhoto = profile.photos && profile.photos.length > 0 
+      const profilePhoto = profile.photos && profile.photos.length > 0 && profile.photos[0]
         ? profile.photos[0].value 
         : undefined;
 
