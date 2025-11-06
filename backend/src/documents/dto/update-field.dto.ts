@@ -62,7 +62,7 @@ export class UpdateFieldDto {
   @IsNotEmpty({ message: 'Field name is required' })
   @MinLength(1, { message: 'Field name must be at least 1 character' })
   @MaxLength(100, { message: 'Field name must not exceed 100 characters' })
-  field_name: string;
+  field_name!: string;
 
   /**
    * Corrected value for the field.
@@ -81,7 +81,7 @@ export class UpdateFieldDto {
   @IsString({ message: 'Corrected value must be a string' })
   @IsNotEmpty({ message: 'Corrected value is required' })
   @MaxLength(5000, { message: 'Corrected value must not exceed 5000 characters' })
-  corrected_value: string;
+  corrected_value!: string;
 
   /**
    * Optional explanation for why the correction was made.
