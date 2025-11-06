@@ -21,7 +21,7 @@
  * @module auth/strategies
  */
 
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
 import { Strategy, ExtractJwt } from 'passport-jwt';
@@ -119,7 +119,16 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
    * @param {ConfigService} configService - NestJS configuration service for environment variables
    * @throws {Error} If JWT_ACCESS_SECRET is not configured in environment
    */
-  constructor(private readonly configService: ConfigService) {
+  constructor(configService: ConfigService) {
+    // Validate that JWT_ACCESS_SECRET is configured BEFORE calling super()
+    // Fail fast if critical security configuration is missing
+    const jwtSecret = configService.get<string>('JWT_ACCESS_SECRET');
+    if (!jwtSecret) {
+      throw new Error(
+        'JWT_ACCESS_SECRET is not configured. Please set JWT_ACCESS_SECRET environment variable.'
+      );
+    }
+
     super({
       // Extract JWT from Authorization header using Bearer scheme
       // Expects header format: "Authorization: Bearer <token>"
@@ -131,16 +140,8 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
 
       // Load JWT secret from environment variable
       // Critical: NEVER hardcode secrets per Section 0.7.1
-      secretOrKey: configService.get<string>('JWT_ACCESS_SECRET'),
+      secretOrKey: jwtSecret,
     });
-
-    // Validate that JWT_ACCESS_SECRET is configured
-    // Fail fast if critical security configuration is missing
-    if (!this.configService.get<string>('JWT_ACCESS_SECRET')) {
-      throw new Error(
-        'JWT_ACCESS_SECRET is not configured. Please set JWT_ACCESS_SECRET environment variable.'
-      );
-    }
   }
 
   /**
