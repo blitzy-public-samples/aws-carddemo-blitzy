@@ -1,5 +1,5 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
-import { Transform, Readable } from 'stream';
+import { Readable } from 'stream';
 import { Buffer } from 'buffer';
 
 /**
@@ -118,18 +118,21 @@ export class CsvFormatterService {
         return this.createBufferResponse(rows, delimiter, lineEnding, includeHeaders, includeMetadata);
       }
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorStack = error instanceof Error ? error.stack : undefined;
+
       this.logger.error({
         message: 'CSV formatting failed',
         document_id: documentData?.id,
-        error: error.message,
-        stack: error.stack
+        error: errorMessage,
+        stack: errorStack
       });
 
       if (error instanceof BadRequestException) {
         throw error;
       }
 
-      throw new BadRequestException(`CSV formatting failed: ${error.message}`);
+      throw new BadRequestException(`CSV formatting failed: ${errorMessage}`);
     }
   }
 
@@ -166,7 +169,8 @@ export class CsvFormatterService {
         try {
           this.validateDocumentData(doc);
         } catch (error) {
-          throw new BadRequestException(`Invalid document at index ${index}: ${error.message}`);
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          throw new BadRequestException(`Invalid document at index ${index}: ${errorMessage}`);
         }
       });
 
@@ -204,18 +208,21 @@ export class CsvFormatterService {
         return this.createBufferResponse(allRows, delimiter, lineEnding, includeHeaders, includeMetadata);
       }
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorStack = error instanceof Error ? error.stack : undefined;
+
       this.logger.error({
         message: 'Batch CSV formatting failed',
         document_count: documents?.length,
-        error: error.message,
-        stack: error.stack
+        error: errorMessage,
+        stack: errorStack
       });
 
       if (error instanceof BadRequestException) {
         throw error;
       }
 
-      throw new BadRequestException(`Batch CSV formatting failed: ${error.message}`);
+      throw new BadRequestException(`Batch CSV formatting failed: ${errorMessage}`);
     }
   }
 
@@ -294,18 +301,9 @@ export class CsvFormatterService {
     let currentIndex = 0;
     let headerEmitted = false;
 
-    const transform = new Transform({
-      objectMode: false,
-      transform(chunk: any, encoding: string, callback: Function) {
-        try {
-          // This transform stream doesn't process input chunks
-          // It generates output from rows array
-          callback();
-        } catch (error) {
-          callback(error);
-        }
-      }
-    });
+    // Capture methods in closure for use in read()
+    const escapeCSV = this.escapeCSV.bind(this);
+    const rowToCSV = this.rowToCSV.bind(this);
 
     // Custom readable stream that pushes CSV rows
     const readable = new Readable({
@@ -313,7 +311,7 @@ export class CsvFormatterService {
         try {
           // Emit header row first
           if (!headerEmitted && includeHeaders) {
-            const headerRow = headers.map(h => this.escapeCSV(h, delimiter)).join(delimiter);
+            const headerRow = headers.map(h => escapeCSV(h, delimiter)).join(delimiter);
             const pushed = this.push(headerRow + lineEnding);
             headerEmitted = true;
 
@@ -326,7 +324,7 @@ export class CsvFormatterService {
           // Emit data rows
           while (currentIndex < rows.length) {
             const row = rows[currentIndex];
-            const csvRow = this.rowToCSV(row, headers, delimiter);
+            const csvRow = rowToCSV(row, headers, delimiter);
             const pushed = this.push(csvRow + lineEnding);
             currentIndex++;
 
@@ -341,14 +339,10 @@ export class CsvFormatterService {
             this.push(null);
           }
         } catch (error) {
-          this.destroy(error);
+          this.destroy(error as Error);
         }
-      }.bind(this) // Bind context for access to escapeCSV and rowToCSV
+      }
     });
-
-    // Bind the private methods to readable stream for use in read()
-    (readable as any).escapeCSV = this.escapeCSV.bind(this);
-    (readable as any).rowToCSV = this.rowToCSV.bind(this);
 
     return readable;
   }
@@ -421,7 +415,7 @@ export class CsvFormatterService {
     // Handle edge case: document with no fields
     if (rows.length === 0 && fields.length === 0) {
       // Create a single row with document info only
-      rows.push({
+      const defaultRow: any = {
         document_id: document.id,
         file_name: document.file_name,
         document_type: document.document_type || document.type || '',
@@ -439,7 +433,26 @@ export class CsvFormatterService {
         page_number: '',
         bounding_box_json: '',
         extraction_method: ''
-      });
+      };
+
+      // Add metadata if available (same logic as for field rows)
+      if (document.processing_date || document.created_at) {
+        defaultRow.processing_date = document.processing_date || document.created_at || '';
+      }
+      if (document.uploaded_by || document.user_id) {
+        defaultRow.uploaded_by = document.uploaded_by || document.user_id || '';
+      }
+      if (document.approved_by) {
+        defaultRow.approved_by = document.approved_by || '';
+      }
+      if (document.approved_at) {
+        defaultRow.approved_at = document.approved_at || '';
+      }
+      if (document.correction_count !== undefined) {
+        defaultRow.correction_count = document.correction_count || 0;
+      }
+
+      rows.push(defaultRow);
     }
 
     return rows;
