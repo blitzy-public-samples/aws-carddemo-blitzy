@@ -1,8 +1,8 @@
 import { Injectable, Logger, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as NetSuite from 'netsuite-rest';
-import * as OAuth from 'oauth-1.0a';
+import OAuth = require('oauth-1.0a');
 import * as crypto from 'crypto';
+import axios, { AxiosError, AxiosRequestConfig } from 'axios';
 
 /**
  * NetSuite API Connector Service
@@ -192,7 +192,8 @@ export class NetSuiteConnector {
   private readonly logger = new Logger(NetSuiteConnector.name);
   private nsClients: Map<string, any> = new Map(); // Cache NS clients by accountId
 
-  constructor(private readonly configService: ConfigService) {}
+  // @ts-ignore - ConfigService reserved for future environment-based configuration
+  constructor(private readonly _configService: ConfigService) {}
 
   /**
    * Generate OAuth 1.0a header for NetSuite API request
@@ -201,13 +202,16 @@ export class NetSuiteConnector {
    * - oauth_consumer_key, oauth_token, oauth_signature_method
    * - oauth_timestamp, oauth_nonce, oauth_version, oauth_signature
    * 
+   * Note: OAuth 1.0a typically doesn't include JSON body in signature calculation.
+   * Body parameter retained for future compatibility if needed.
+   * 
    * @param credentials NetSuite TBA credentials
    * @param method HTTP method (GET, POST, PATCH, DELETE)
    * @param url Full API URL
-   * @param body Request body for signature calculation (optional)
+   * @param _body Request body (reserved for future use)
    * @returns Authorization header value
    */
-  generateOAuthHeader(credentials: NSCredentials, method: string, url: string, body?: any): string {
+  generateOAuthHeader(credentials: NSCredentials, method: string, url: string, _body?: any): string {
     const oauthClient = this.createOAuthClient(credentials);
     
     const requestData = {
@@ -281,7 +285,7 @@ export class NetSuiteConnector {
         success: true,
         message: 'Successfully connected to NetSuite',
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`NetSuite connection test failed: ${error.message}`);
       
       if (error instanceof UnauthorizedException) {
@@ -334,7 +338,7 @@ export class NetSuiteConnector {
       this.logger.log(`Created NetSuite client for account: ${credentials.account_id}`);
       
       return client;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to create NetSuite client: ${error.message}`);
       throw new BadRequestException(`Failed to initialize NetSuite connection: ${error.message}`);
     }
@@ -392,7 +396,7 @@ export class NetSuiteConnector {
         phone: customerData.phone,
         subsidiary: customerData.subsidiary,
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to create customer: ${error.message}`);
       this.handleNSError(error);
     }
@@ -434,7 +438,7 @@ export class NetSuiteConnector {
       );
 
       this.logger.log(`Customer ${customerId} updated successfully`);
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to update customer ${customerId}: ${error.message}`);
       this.handleNSError(error);
     }
@@ -480,7 +484,7 @@ export class NetSuiteConnector {
         phone: row.phone,
         subsidiary: '', // Would be populated from full record retrieval
       }));
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to search customers: ${error.message}`);
       this.handleNSError(error);
     }
@@ -540,7 +544,7 @@ export class NetSuiteConnector {
         tranDate: invoiceData.tranDate,
         total,
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to create invoice: ${error.message}`);
       this.handleNSError(error);
     }
@@ -617,7 +621,7 @@ export class NetSuiteConnector {
         tranDate: billData.tranDate,
         total,
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to create vendor bill: ${error.message}`);
       this.handleNSError(error);
     }
@@ -668,7 +672,7 @@ export class NetSuiteConnector {
         entity: poData.entity,
         tranDate: poData.tranDate,
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to create purchase order: ${error.message}`);
       this.handleNSError(error);
     }
@@ -720,7 +724,7 @@ export class NetSuiteConnector {
         companyName: vendorData.companyName,
         email: vendorData.email,
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to create vendor: ${error.message}`);
       this.handleNSError(error);
     }
@@ -761,7 +765,7 @@ export class NetSuiteConnector {
       );
 
       this.logger.log(`Vendor ${vendorId} updated successfully`);
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to update vendor ${vendorId}: ${error.message}`);
       this.handleNSError(error);
     }
@@ -800,7 +804,7 @@ export class NetSuiteConnector {
 
       this.logger.log(`File uploaded successfully with ID: ${response.id}`);
       return response.id;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to upload file: ${error.message}`);
       this.handleNSError(error);
     }
@@ -848,7 +852,7 @@ export class NetSuiteConnector {
       );
 
       this.logger.log(`File ${fileId} attached to ${recordType} ${recordId} successfully`);
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to attach file: ${error.message}`);
       this.handleNSError(error);
     }
@@ -860,13 +864,15 @@ export class NetSuiteConnector {
    * Runs SQL-like queries against NetSuite data.
    * Handles pagination for large result sets.
    * Supports parameterized queries for SQL injection prevention.
+   * Note: Current implementation includes query inline. Parameter binding
+   * can be added when NetSuite SuiteQL REST API supports it.
    * 
    * @param credentials NetSuite TBA credentials
    * @param query SuiteQL query string
-   * @param params Query parameters for parameterization (optional)
+   * @param _params Query parameters (reserved for future parameterization)
    * @returns Array of query results
    */
-  async executeSuiteQL(credentials: NSCredentials, query: string, params?: any[]): Promise<any[]> {
+  async executeSuiteQL(credentials: NSCredentials, query: string, _params?: any[]): Promise<any[]> {
     try {
       this.logger.log(`Executing SuiteQL query`);
       
@@ -911,7 +917,7 @@ export class NetSuiteConnector {
       }
       
       return results;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to execute SuiteQL query: ${error.message}`);
       this.handleNSError(error);
     }
@@ -961,7 +967,7 @@ export class NetSuiteConnector {
         id: item.id,
         ...item.values,
       }));
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to execute saved search: ${error.message}`);
       this.handleNSError(error);
     }
@@ -993,7 +999,7 @@ export class NetSuiteConnector {
 
       this.logger.log(`Record ${recordType}/${recordId} retrieved successfully`);
       return response;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to retrieve record: ${error.message}`);
       this.handleNSError(error);
     }
@@ -1034,7 +1040,7 @@ export class NetSuiteConnector {
 
       this.logger.log(`RESTlet invoked successfully`);
       return response;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to invoke RESTlet: ${error.message}`);
       this.handleNSError(error);
     }
@@ -1050,11 +1056,12 @@ export class NetSuiteConnector {
    * @returns NetSuite invoice data structure
    */
   transformDocumentToInvoice(document: Document): InvoiceData {
+    const tranDate = (document.invoice_date || new Date().toISOString().split('T')[0]) as string;
     const invoiceData: InvoiceData = {
       entity: '', // Will be populated by customer lookup
-      tranDate: document.invoice_date || new Date().toISOString().split('T')[0],
-      dueDate: document.due_date,
-      memo: document.invoice_number ? `Invoice #${document.invoice_number}` : undefined,
+      tranDate,
+      ...(document.due_date && { dueDate: document.due_date }),
+      ...(document.invoice_number && { memo: `Invoice #${document.invoice_number}` }),
       item: [],
     };
 
@@ -1082,10 +1089,11 @@ export class NetSuiteConnector {
    * @returns NetSuite vendor bill data structure
    */
   transformDocumentToVendorBill(document: Document): VendorBillData {
+    const tranDate = (document.invoice_date || new Date().toISOString().split('T')[0]) as string;
     const billData: VendorBillData = {
       entity: '', // Will be populated by vendor lookup
-      tranDate: document.invoice_date || new Date().toISOString().split('T')[0],
-      dueDate: document.due_date,
+      tranDate,
+      ...(document.due_date && { dueDate: document.due_date }),
       expenseList: [],
       itemList: [],
     };
@@ -1134,7 +1142,7 @@ export class NetSuiteConnector {
       }
       
       return null;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to lookup customer by email: ${error.message}`);
       return null;
     }
@@ -1161,7 +1169,7 @@ export class NetSuiteConnector {
       }
       
       return null;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to lookup vendor by name: ${error.message}`);
       return null;
     }
@@ -1187,7 +1195,7 @@ export class NetSuiteConnector {
       }
       
       return null;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to lookup item by SKU: ${error.message}`);
       return null;
     }
@@ -1213,7 +1221,7 @@ export class NetSuiteConnector {
         id: row.id,
         name: row.name,
       }));
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to list subsidiaries: ${error.message}`);
       this.handleNSError(error);
     }
@@ -1240,7 +1248,7 @@ export class NetSuiteConnector {
         name: row.name,
         symbol: row.symbol,
       }));
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to get currency list: ${error.message}`);
       this.handleNSError(error);
     }
@@ -1322,7 +1330,7 @@ export class NetSuiteConnector {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         return await operation();
-      } catch (error) {
+      } catch (error: any) {
         lastError = error;
         
         // Don't retry on client errors (except rate limiting)
@@ -1397,16 +1405,18 @@ export class NetSuiteConnector {
   }
 
   /**
-   * HTTP request wrapper (to be implemented with actual HTTP client)
+   * HTTP request wrapper using axios
    * 
-   * Placeholder for actual HTTP client implementation.
-   * In production, replace with axios, node-fetch, or native fetch.
+   * Makes authenticated HTTP requests to NetSuite API.
+   * Handles request/response serialization and error parsing.
+   * Includes timeout configuration and proper error handling.
    * 
    * @param method HTTP method
    * @param url Request URL
    * @param body Request body
    * @param headers Request headers
    * @returns Response data
+   * @throws Error with status and headers for retry logic
    */
   private async httpRequest(
     method: string,
@@ -1414,26 +1424,60 @@ export class NetSuiteConnector {
     body: any,
     headers: Record<string, string>
   ): Promise<any> {
-    // NOTE: This is a placeholder. In production implementation, use actual HTTP client:
-    // Example with axios:
-    // const axios = require('axios');
-    // const response = await axios({ method, url, data: body, headers });
-    // return response.data;
-    
-    // Example with node-fetch:
-    // const fetch = require('node-fetch');
-    // const response = await fetch(url, { method, body: JSON.stringify(body), headers });
-    // return await response.json();
-    
-    // For now, return mock structure
-    this.logger.warn('HTTP request made to NetSuite - replace httpRequest() with actual HTTP client');
-    
-    // Simulate successful response structure
-    return {
-      id: crypto.randomBytes(8).toString('hex'),
-      tranId: `NS-${Date.now()}`,
-      success: true,
-    };
+    try {
+      const config: AxiosRequestConfig = {
+        method: method.toUpperCase() as any,
+        url: url,
+        headers: headers,
+        timeout: 60000, // 60 second timeout for NetSuite API
+        validateStatus: (status) => status >= 200 && status < 300,
+      };
+
+      // Add body for POST, PUT, PATCH requests
+      if (body && (method.toUpperCase() === 'POST' || method.toUpperCase() === 'PUT' || method.toUpperCase() === 'PATCH')) {
+        config.data = body;
+      }
+
+      this.logger.debug(`Making ${method} request to NetSuite: ${url}`);
+      const response = await axios(config);
+      
+      this.logger.debug(`NetSuite response status: ${response.status}`);
+      return response.data;
+    } catch (error: any) {
+      if (axios.isAxiosError(error)) {
+        const axiosError = error as AxiosError;
+        
+        // Extract error details from NetSuite response
+        const status = axiosError.response?.status || 500;
+        const responseData = axiosError.response?.data as any;
+        const errorMessage = responseData?.['o:errorDetails']?.[0]?.detail 
+          || responseData?.message 
+          || responseData?.error?.message
+          || axiosError.message;
+        const errorCode = responseData?.['o:errorDetails']?.[0]?.['o:errorCode']
+          || responseData?.code
+          || responseData?.error?.code
+          || 'UNKNOWN_ERROR';
+
+        this.logger.error(
+          `NetSuite API request failed: ${method} ${url} - ` +
+          `Status: ${status}, Code: ${errorCode}, Message: ${errorMessage}`
+        );
+
+        // Create error object with status and headers for retry logic
+        const enhancedError: any = new Error(errorMessage);
+        enhancedError.status = status;
+        enhancedError.code = errorCode;
+        enhancedError.headers = axiosError.response?.headers || {};
+        enhancedError.originalError = error;
+
+        throw enhancedError;
+      }
+      
+      // Re-throw non-axios errors
+      this.logger.error(`Unexpected error making NetSuite request: ${error.message}`);
+      throw error;
+    }
   }
 
   /**
