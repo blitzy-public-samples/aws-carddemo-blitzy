@@ -1,0 +1,474 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- 
+        CardDemo Spring Boot Application - Maven Project Object Model
+        
+        This POM defines the complete dependency manifest for the CardDemo mainframe-to-cloud migration.
+        Replaces mainframe JCL STEPLIB and COBOL runtime with modern Java Spring Boot framework.
+        
+        Key Migration Replacements:
+        - CICS Transaction Processing → Spring Boot REST APIs
+        - VSAM KSDS Files → Spring Data JPA with PostgreSQL
+        - JCL Batch Jobs → Spring Batch
+        - RACF Security → Spring Security with JWT
+        - COMMAREA State → Redis Session Management
+        - BMS Screen Maps → React Frontend (separate package.json)
+    -->
+
+    <!-- Parent POM provides dependency management for Spring Boot ecosystem -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.0</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+
+    <!-- Project Coordinates -->
+    <groupId>com.carddemo</groupId>
+    <artifactId>carddemo-spring</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Spring Boot Application</name>
+    <description>
+        Credit Card Demo Application - Mainframe COBOL/CICS/VSAM to Java Spring Boot Migration.
+        Comprehensive transformation of 28 COBOL programs, 17 BMS mapsets, and 5 VSAM files
+        to cloud-native microservices architecture with PostgreSQL, Redis, and React frontend.
+    </description>
+
+    <properties>
+        <!-- Java Version - Java 21 LTS for modern language features and performance -->
+        <java.version>21</java.version>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- Spring Boot Version -->
+        <spring-boot.version>3.2.0</spring-boot.version>
+
+        <!-- Database Drivers -->
+        <postgresql.version>42.7.1</postgresql.version>
+        <h2.version>2.2.224</h2.version>
+
+        <!-- Security Libraries -->
+        <jjwt.version>0.12.3</jjwt.version>
+
+        <!-- Utility Libraries -->
+        <lombok.version>1.18.30</lombok.version>
+        <mapstruct.version>1.5.5.Final</mapstruct.version>
+
+        <!-- Database Migration -->
+        <flyway.version>10.3.0</flyway.version>
+
+        <!-- API Documentation -->
+        <springdoc.version>2.3.0</springdoc.version>
+
+        <!-- Build Plugins -->
+        <maven-compiler-plugin.version>3.11.0</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.2.3</maven-surefire-plugin.version>
+    </properties>
+
+    <dependencies>
+        <!-- 
+            ============================================================================
+            SPRING BOOT CORE DEPENDENCIES
+            ============================================================================
+        -->
+
+        <!-- Spring Boot Web Starter - REST API Framework (replaces CICS transaction processing) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+            <!-- Version managed by spring-boot-starter-parent -->
+            <!-- Includes: Spring MVC, embedded Tomcat, Jackson JSON, validation -->
+        </dependency>
+
+        <!-- Spring Data JPA - ORM Framework (replaces VSAM file I/O) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+            <!-- Includes: Hibernate ORM, Spring Data JPA, HikariCP connection pool -->
+        </dependency>
+
+        <!-- Spring Batch - Batch Processing Framework (replaces JCL batch jobs) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+            <!-- Includes: Spring Batch core, job repository, transaction management -->
+        </dependency>
+
+        <!-- Spring Security - Authentication and Authorization (replaces RACF) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+            <!-- Includes: Spring Security Core, BCrypt password encoder, authentication filters -->
+        </dependency>
+
+        <!-- Spring Data Redis - Session Management (replaces CICS COMMAREA state) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+            <!-- Includes: Lettuce Redis client, Spring Data Redis -->
+        </dependency>
+
+        <!-- Spring Session Data Redis - HTTP Session backed by Redis -->
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-data-redis</artifactId>
+            <version>3.2.0</version>
+            <!-- Provides stateless session management for pseudo-conversational CICS pattern -->
+        </dependency>
+
+        <!-- Spring Boot Validation - Bean Validation (replaces COBOL PIC clause validation) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+            <!-- Includes: Hibernate Validator, Jakarta Validation API -->
+        </dependency>
+
+        <!-- Spring Boot Actuator - Health checks and monitoring -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+            <!-- Provides: /actuator/health, /actuator/metrics endpoints for Kubernetes -->
+        </dependency>
+
+        <!-- 
+            ============================================================================
+            DATABASE DEPENDENCIES
+            ============================================================================
+        -->
+
+        <!-- PostgreSQL JDBC Driver (replaces VSAM data storage) -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
+            <scope>runtime</scope>
+            <!-- JDBC driver for PostgreSQL 16.1+ connectivity -->
+        </dependency>
+
+        <!-- Flyway Database Migrations - Schema version control -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+            <version>${flyway.version}</version>
+            <!-- Manages database schema evolution with versioned migration scripts -->
+        </dependency>
+
+        <!-- H2 Database - In-memory database for testing -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>${h2.version}</version>
+            <scope>test</scope>
+            <!-- Fast in-memory database for unit and integration tests -->
+        </dependency>
+
+        <!-- 
+            ============================================================================
+            SECURITY DEPENDENCIES
+            ============================================================================
+        -->
+
+        <!-- JWT API - JSON Web Token authentication -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>${jjwt.version}</version>
+            <!-- JWT token creation, parsing, and validation API -->
+        </dependency>
+
+        <!-- JWT Implementation - Runtime JWT processor -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+            <!-- JWT implementation with HMAC, RSA, ECDSA signature algorithms -->
+        </dependency>
+
+        <!-- JWT Jackson Integration - JSON processing for JWT -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+            <!-- Jackson-based JSON serialization for JWT claims -->
+        </dependency>
+
+        <!-- 
+            ============================================================================
+            UTILITY DEPENDENCIES
+            ============================================================================
+        -->
+
+        <!-- Lombok - Boilerplate code reduction -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+            <!-- Annotations: @Data, @Builder, @Slf4j, @RequiredArgsConstructor, @Getter, @Setter -->
+        </dependency>
+
+        <!-- MapStruct - Type-safe bean mapping -->
+        <dependency>
+            <groupId>org.mapstruct</groupId>
+            <artifactId>mapstruct</artifactId>
+            <version>${mapstruct.version}</version>
+            <!-- Compile-time DTO to Entity mapping generation -->
+        </dependency>
+
+        <!-- 
+            ============================================================================
+            API DOCUMENTATION DEPENDENCIES
+            ============================================================================
+        -->
+
+        <!-- SpringDoc OpenAPI - API Documentation with Swagger UI -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>${springdoc.version}</version>
+            <!-- Generates OpenAPI 3.0 specification and Swagger UI at /swagger-ui.html -->
+        </dependency>
+
+        <!-- 
+            ============================================================================
+            TESTING DEPENDENCIES
+            ============================================================================
+        -->
+
+        <!-- Spring Boot Test Starter - Comprehensive testing framework -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+            <!-- Includes: JUnit 5, Mockito, AssertJ, Hamcrest, Spring Test, JSONassert -->
+        </dependency>
+
+        <!-- Spring Security Test - Security testing utilities -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+            <!-- Provides: @WithMockUser, @WithUserDetails, SecurityMockMvcConfigurers -->
+        </dependency>
+
+        <!-- Spring Batch Test - Batch job testing utilities -->
+        <dependency>
+            <groupId>org.springframework.batch</groupId>
+            <artifactId>spring-batch-test</artifactId>
+            <scope>test</scope>
+            <!-- Provides: JobLauncherTestUtils, JobRepositoryTestUtils -->
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>${project.artifactId}</finalName>
+
+        <plugins>
+            <!-- 
+                ============================================================================
+                BUILD PLUGINS
+                ============================================================================
+            -->
+
+            <!-- Spring Boot Maven Plugin - Executable JAR packaging -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>${spring-boot.version}</version>
+                <configuration>
+                    <!-- Exclude Lombok from packaged JAR (provided scope) -->
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                    <!-- Create executable JAR with embedded Tomcat -->
+                    <executable>true</executable>
+                    <!-- Include layered JAR structure for Docker optimization -->
+                    <layers>
+                        <enabled>true</enabled>
+                    </layers>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <!-- Repackage goal creates executable JAR -->
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Maven Compiler Plugin - Java compilation with annotation processing -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>${maven-compiler-plugin.version}</version>
+                <configuration>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                    <encoding>${project.build.sourceEncoding}</encoding>
+                    <!-- Annotation Processors for Lombok and MapStruct -->
+                    <annotationProcessorPaths>
+                        <!-- Lombok annotation processor -->
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                        <!-- MapStruct annotation processor -->
+                        <path>
+                            <groupId>org.mapstruct</groupId>
+                            <artifactId>mapstruct-processor</artifactId>
+                            <version>${mapstruct.version}</version>
+                        </path>
+                        <!-- Lombok + MapStruct binding -->
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok-mapstruct-binding</artifactId>
+                            <version>0.2.0</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    <!-- Compiler arguments for better error reporting -->
+                    <compilerArgs>
+                        <arg>-parameters</arg>
+                        <arg>-Amapstruct.defaultComponentModel=spring</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <!-- Maven Surefire Plugin - Unit test execution -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven-surefire-plugin.version}</version>
+                <configuration>
+                    <!-- Include all test classes -->
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*Tests.java</include>
+                    </includes>
+                    <!-- Parallel test execution for faster builds -->
+                    <parallel>classes</parallel>
+                    <threadCount>4</threadCount>
+                    <!-- System properties for tests -->
+                    <systemPropertyVariables>
+                        <spring.profiles.active>test</spring.profiles.active>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+
+            <!-- Maven Failsafe Plugin - Integration test execution -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.2.3</version>
+                <configuration>
+                    <includes>
+                        <include>**/*IT.java</include>
+                        <include>**/*IntegrationTest.java</include>
+                    </includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Jacoco Maven Plugin - Code coverage reporting -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.11</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <!-- Enforce minimum 80% code coverage -->
+                    <execution>
+                        <id>check</id>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>INSTRUCTION</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <!-- 
+        ============================================================================
+        REPOSITORIES
+        ============================================================================
+    -->
+    <repositories>
+        <!-- Maven Central Repository (default, explicit declaration for clarity) -->
+        <repository>
+            <id>central</id>
+            <name>Maven Central Repository</name>
+            <url>https://repo.maven.apache.org/maven2</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+    <pluginRepositories>
+        <!-- Maven Central Plugin Repository -->
+        <pluginRepository>
+            <id>central</id>
+            <name>Maven Plugin Repository</name>
+            <url>https://repo.maven.apache.org/maven2</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </pluginRepository>
+    </pluginRepositories>
+
+</project>
