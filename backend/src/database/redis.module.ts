@@ -451,13 +451,13 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
    * Store a JSON object in Redis with automatic serialization.
    * 
    * @param {string} key - The Redis key to set
-   * @param {any} value - The object to serialize and store
+   * @param {unknown} value - The object to serialize and store
    * @param {number} [ttl] - Optional expiration time in seconds
    * 
    * @example
    * await redisService.setJson('cache:user:123', { name: 'John', role: 'admin' }, 3600);
    */
-  async setJson(key: string, value: any, ttl?: number): Promise<void> {
+  async setJson(key: string, value: unknown, ttl?: number): Promise<void> {
     try {
       const serialized = JSON.stringify(value);
       await this.set(key, serialized, ttl);
