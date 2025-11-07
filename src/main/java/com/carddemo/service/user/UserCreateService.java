@@ -373,8 +373,6 @@ public class UserCreateService {
                 .firstName(savedUser.getFirstName())
                 .lastName(savedUser.getLastName())
                 .userType(savedUser.getUserType().getCode())
-                .createdDate(savedUser.getCreatedDate())
-                .updatedDate(savedUser.getUpdatedDate())
                 .build();
     }
 
