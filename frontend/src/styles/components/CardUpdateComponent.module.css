@@ -1,0 +1,666 @@
+/**
+ * CardUpdateComponent.module.css
+ * 
+ * CSS Module for Card Update Component
+ * Transformed from BMS Mapset: COCRDUP.bms (CCRDUPA)
+ * 
+ * This module styles the credit card update form, preserving the functional
+ * layout and visual hierarchy from the original 3270 terminal screen while
+ * providing a modern, responsive web interface.
+ * 
+ * BMS Field Mappings:
+ * - ACCTSID: Account Number (11 chars, protected)
+ * - CARDSID: Card Number (16 chars, editable)
+ * - CRDNAME: Cardholder Name (50 chars, editable)
+ * - CRDSTCD: Card Active Status (1 char Y/N, editable)
+ * - EXPMON/EXPYEAR: Expiration Date (MM/YYYY, editable)
+ * - INFOMSG: Information message area
+ * - ERRMSG: Error message area (RED, BRT)
+ * - FKEYS: Function key hints
+ */
+
+/* Container for the entire card update form */
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: 'Roboto', 'Arial', sans-serif;
+  background-color: #ffffff;
+  min-height: 100vh;
+}
+
+/* Header section matching BMS rows 1-2 */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+  padding: 16px;
+  background-color: #f5f5f5;
+  border-bottom: 2px solid #1976d2; /* BLUE from BMS */
+  border-radius: 4px 4px 0 0;
+}
+
+.headerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: #1976d2; /* BLUE from BMS */
+  font-size: 14px;
+}
+
+.headerCenter {
+  flex: 1;
+  text-align: center;
+  padding: 0 20px;
+}
+
+.headerRight {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: #1976d2; /* BLUE from BMS */
+  font-size: 14px;
+  text-align: right;
+}
+
+.transactionName,
+.programName {
+  font-weight: 500;
+  color: #1976d2; /* BLUE from BMS */
+}
+
+.title {
+  color: #f57c00; /* YELLOW from BMS */
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.dateTime {
+  color: #1976d2; /* BLUE from BMS */
+  font-size: 13px;
+}
+
+/* Main form title - centered at POS=(4,30) */
+.formTitle {
+  text-align: center;
+  font-size: 24px;
+  font-weight: 600;
+  color: #424242; /* NEUTRAL from BMS */
+  margin: 32px 0 40px 0;
+  padding: 16px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+/* Form container */
+.form {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 24px;
+  background-color: #fafafa;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Form group for each field - maintains BMS spacing */
+.formGroup {
+  display: flex;
+  align-items: center;
+  margin-bottom: 24px;
+  gap: 16px;
+}
+
+.formGroupVertical {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 24px;
+  gap: 8px;
+}
+
+/* Field labels - TURQUOISE color from BMS */
+.label {
+  flex: 0 0 220px;
+  color: #00897b; /* TURQUOISE from BMS */
+  font-weight: 500;
+  font-size: 15px;
+  text-align: right;
+  padding-right: 12px;
+}
+
+.labelInline {
+  color: #00897b; /* TURQUOISE from BMS */
+  font-weight: 500;
+  font-size: 15px;
+  margin-bottom: 6px;
+}
+
+/* Input field base styles */
+.input {
+  flex: 1;
+  padding: 10px 12px;
+  font-size: 15px;
+  font-family: 'Courier New', monospace;
+  border: 1px solid #bdbdbd;
+  border-radius: 4px;
+  background-color: #ffffff;
+  transition: all 0.2s ease;
+}
+
+.input:focus {
+  outline: none;
+  border-color: #1976d2;
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
+}
+
+/* Account ID field - PROT (protected/read-only), HILIGHT=UNDERLINE */
+.accountIdField {
+  flex: 0 0 150px;
+  padding: 10px 12px;
+  font-size: 15px;
+  font-family: 'Courier New', monospace;
+  background-color: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-bottom: 2px solid #1976d2; /* HILIGHT=UNDERLINE */
+  border-radius: 4px;
+  color: #424242;
+  cursor: not-allowed;
+  max-width: 160px;
+}
+
+/* Card ID field - UNPROT (editable), HILIGHT=UNDERLINE, LEN=16 */
+.cardIdField {
+  flex: 0 0 200px;
+  padding: 10px 12px;
+  font-size: 15px;
+  font-family: 'Courier New', monospace;
+  border: 1px solid #bdbdbd;
+  border-bottom: 2px solid #00897b; /* HILIGHT=UNDERLINE in TURQUOISE */
+  border-radius: 4px;
+  background-color: #ffffff;
+  transition: all 0.2s ease;
+  max-width: 220px;
+}
+
+.cardIdField:focus {
+  outline: none;
+  border-color: #1976d2;
+  border-bottom-color: #1976d2;
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
+}
+
+/* Cardholder name field - UNPROT, HILIGHT=UNDERLINE, LEN=50 */
+.nameField {
+  padding: 10px 12px;
+  font-size: 15px;
+  font-family: 'Arial', sans-serif;
+  border: 1px solid #bdbdbd;
+  border-bottom: 2px solid #00897b; /* HILIGHT=UNDERLINE in TURQUOISE */
+  border-radius: 4px;
+  background-color: #ffffff;
+  transition: all 0.2s ease;
+  width: 100%;
+  max-width: 550px;
+}
+
+.nameField:focus {
+  outline: none;
+  border-color: #1976d2;
+  border-bottom-color: #1976d2;
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
+}
+
+/* Card active status field - UNPROT, HILIGHT=UNDERLINE, LEN=1 */
+.statusField {
+  flex: 0 0 50px;
+  padding: 10px 12px;
+  font-size: 15px;
+  font-family: 'Courier New', monospace;
+  border: 1px solid #bdbdbd;
+  border-bottom: 2px solid #00897b; /* HILIGHT=UNDERLINE in TURQUOISE */
+  border-radius: 4px;
+  background-color: #ffffff;
+  text-align: center;
+  text-transform: uppercase;
+  transition: all 0.2s ease;
+  max-width: 60px;
+}
+
+.statusField:focus {
+  outline: none;
+  border-color: #1976d2;
+  border-bottom-color: #1976d2;
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
+}
+
+/* Expiration date container - MM/YYYY grouping */
+.expirationGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Expiration month field - UNPROT, HILIGHT=UNDERLINE, LEN=2, JUSTIFY=RIGHT */
+.expirationMonth {
+  flex: 0 0 60px;
+  padding: 10px 12px;
+  font-size: 15px;
+  font-family: 'Courier New', monospace;
+  border: 1px solid #bdbdbd;
+  border-bottom: 2px solid #00897b; /* HILIGHT=UNDERLINE in TURQUOISE */
+  border-radius: 4px;
+  background-color: #ffffff;
+  text-align: right;
+  transition: all 0.2s ease;
+  max-width: 70px;
+}
+
+.expirationMonth:focus {
+  outline: none;
+  border-color: #1976d2;
+  border-bottom-color: #1976d2;
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
+}
+
+/* Expiration date separator */
+.expirationSeparator {
+  font-size: 18px;
+  font-weight: bold;
+  color: #424242;
+  padding: 0 4px;
+}
+
+/* Expiration year field - UNPROT, HILIGHT=UNDERLINE, LEN=4, JUSTIFY=RIGHT */
+.expirationYear {
+  flex: 0 0 80px;
+  padding: 10px 12px;
+  font-size: 15px;
+  font-family: 'Courier New', monospace;
+  border: 1px solid #bdbdbd;
+  border-bottom: 2px solid #00897b; /* HILIGHT=UNDERLINE in TURQUOISE */
+  border-radius: 4px;
+  background-color: #ffffff;
+  text-align: right;
+  transition: all 0.2s ease;
+  max-width: 90px;
+}
+
+.expirationYear:focus {
+  outline: none;
+  border-color: #1976d2;
+  border-bottom-color: #1976d2;
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
+}
+
+/* Information message area - NEUTRAL color, POS=(20,25), LEN=40 */
+.infoMessage {
+  text-align: center;
+  padding: 16px;
+  margin: 32px 0 24px 0;
+  font-size: 15px;
+  color: #424242; /* NEUTRAL from BMS */
+  background-color: #e3f2fd;
+  border-left: 4px solid #1976d2;
+  border-radius: 4px;
+  min-height: 24px;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.infoMessage:empty {
+  display: none;
+}
+
+/* Error message area - RED color, BRT (bright), POS=(23,1), LEN=80 */
+.errorMessage {
+  padding: 16px;
+  margin: 24px 0;
+  font-size: 15px;
+  font-weight: 600; /* BRT attribute */
+  color: #c62828; /* RED from BMS */
+  background-color: #ffebee;
+  border-left: 4px solid #c62828;
+  border-radius: 4px;
+  min-height: 24px;
+  width: 100%;
+  box-shadow: 0 2px 4px rgba(198, 40, 40, 0.1);
+}
+
+.errorMessage:empty {
+  display: none;
+}
+
+/* Button container for form actions */
+.buttonContainer {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 40px;
+  padding-top: 24px;
+  border-top: 1px solid #e0e0e0;
+}
+
+/* Primary action button - ENTER=Process */
+.submitButton {
+  padding: 12px 32px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #ffffff;
+  background-color: #1976d2;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  min-width: 140px;
+}
+
+.submitButton:hover {
+  background-color: #1565c0;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+  transform: translateY(-1px);
+}
+
+.submitButton:active {
+  background-color: #0d47a1;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transform: translateY(0);
+}
+
+.submitButton:disabled {
+  background-color: #bdbdbd;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+/* Secondary action button - F5=Save */
+.saveButton {
+  padding: 12px 32px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #ffffff;
+  background-color: #388e3c;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  min-width: 140px;
+}
+
+.saveButton:hover {
+  background-color: #2e7d32;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+  transform: translateY(-1px);
+}
+
+.saveButton:active {
+  background-color: #1b5e20;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transform: translateY(0);
+}
+
+/* Cancel button - F12=Cancel */
+.cancelButton {
+  padding: 12px 32px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #424242;
+  background-color: #ffffff;
+  border: 2px solid #bdbdbd;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 140px;
+}
+
+.cancelButton:hover {
+  background-color: #f5f5f5;
+  border-color: #9e9e9e;
+  transform: translateY(-1px);
+}
+
+.cancelButton:active {
+  background-color: #eeeeee;
+  transform: translateY(0);
+}
+
+/* Exit button - F3=Exit */
+.exitButton {
+  padding: 12px 32px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #ffffff;
+  background-color: #d32f2f;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  min-width: 140px;
+}
+
+.exitButton:hover {
+  background-color: #c62828;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+  transform: translateY(-1px);
+}
+
+.exitButton:active {
+  background-color: #b71c1c;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transform: translateY(0);
+}
+
+/* Function key hints footer - YELLOW color, POS=(24,1) and (24,23) */
+.footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 32px;
+  padding: 16px;
+  background-color: #fff3e0;
+  border-top: 2px solid #f57c00; /* YELLOW from BMS */
+  border-radius: 0 0 4px 4px;
+  font-size: 14px;
+  color: #e65100;
+  font-weight: 500;
+}
+
+.functionKeys {
+  display: flex;
+  gap: 24px;
+}
+
+.functionKey {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.keyLabel {
+  font-weight: 600;
+  color: #e65100; /* YELLOW from BMS, darker for readability */
+}
+
+.keyDescription {
+  color: #ef6c00;
+}
+
+/* Field validation states */
+.input.invalid,
+.cardIdField.invalid,
+.nameField.invalid,
+.statusField.invalid,
+.expirationMonth.invalid,
+.expirationYear.invalid {
+  border-color: #c62828;
+  border-bottom-color: #c62828;
+  background-color: #ffebee;
+}
+
+.input.valid,
+.cardIdField.valid,
+.nameField.valid,
+.statusField.valid,
+.expirationMonth.valid,
+.expirationYear.valid {
+  border-color: #388e3c;
+  border-bottom-color: #388e3c;
+}
+
+/* Field helper text */
+.helperText {
+  font-size: 12px;
+  color: #757575;
+  margin-top: 4px;
+  margin-left: 236px;
+}
+
+.helperText.error {
+  color: #c62828;
+  font-weight: 500;
+}
+
+/* Loading state */
+.loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 40px;
+  font-size: 16px;
+  color: #757575;
+}
+
+/* Responsive design for smaller screens */
+@media (max-width: 768px) {
+  .container {
+    padding: 12px;
+  }
+
+  .header {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .headerLeft,
+  .headerRight {
+    text-align: left;
+  }
+
+  .headerCenter {
+    padding: 0;
+  }
+
+  .formTitle {
+    font-size: 20px;
+    margin: 24px 0 32px 0;
+  }
+
+  .form {
+    padding: 16px;
+  }
+
+  .formGroup {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .label {
+    flex: none;
+    text-align: left;
+    padding-right: 0;
+  }
+
+  .accountIdField,
+  .cardIdField,
+  .nameField,
+  .statusField {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .expirationGroup {
+    width: 100%;
+  }
+
+  .expirationMonth,
+  .expirationYear {
+    flex: 1;
+    max-width: none;
+  }
+
+  .buttonContainer {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .submitButton,
+  .saveButton,
+  .cancelButton,
+  .exitButton {
+    width: 100%;
+  }
+
+  .footer {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .functionKeys {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .helperText {
+    margin-left: 0;
+  }
+}
+
+/* Print styles */
+@media print {
+  .buttonContainer,
+  .footer {
+    display: none;
+  }
+
+  .form {
+    box-shadow: none;
+    border: 1px solid #e0e0e0;
+  }
+
+  .errorMessage {
+    border: 1px solid #c62828;
+  }
+}
+
+/* Accessibility enhancements */
+.input:focus-visible,
+.cardIdField:focus-visible,
+.nameField:focus-visible,
+.statusField:focus-visible,
+.expirationMonth:focus-visible,
+.expirationYear:focus-visible,
+.submitButton:focus-visible,
+.saveButton:focus-visible,
+.cancelButton:focus-visible,
+.exitButton:focus-visible {
+  outline: 3px solid #1976d2;
+  outline-offset: 2px;
+}
+
+/* Screen reader only text */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
