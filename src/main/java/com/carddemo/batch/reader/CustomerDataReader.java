@@ -8,7 +8,13 @@ import org.springframework.batch.item.file.transform.FixedLengthTokenizer;
 import org.springframework.batch.item.file.transform.Range;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.convert.ConversionService;
+import org.springframework.core.convert.converter.Converter;
+import org.springframework.core.convert.support.DefaultConversionService;
 import org.springframework.core.io.ClassPathResource;
+
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 
 /**
  * Spring Batch configuration for reading customer data from fixed-width text files.
@@ -274,7 +280,7 @@ public class CustomerDataReader {
      * </ul>
      * 
      * <h3>Field Tokenization:</h3>
-     * <p>The FixedLengthTokenizer is configured with 18 field ranges matching the COBOL copybook:</p>
+     * <p>The FixedLengthTokenizer is configured with 19 field ranges matching the COBOL copybook:</p>
      * <ol>
      *   <li>customerId: Range 1-9 (9 characters) - Customer ID primary key</li>
      *   <li>firstName: Range 10-34 (25 characters) - Customer first name</li>
@@ -284,7 +290,7 @@ public class CustomerDataReader {
      *   <li>addressLine2: Range 135-184 (50 characters) - Secondary address line</li>
      *   <li>addressLine3: Range 185-234 (50 characters) - Tertiary address line (city)</li>
      *   <li>addressStateCode: Range 235-236 (2 characters) - US state code</li>
-     *   <li>addressCountryCode: Range 237-239 (3 characters) - ISO country code</li>
+     *   <li>addressCountryCode: Range 237-239 (3 characters) - US state code</li>
      *   <li>addressZip: Range 240-249 (10 characters) - ZIP/postal code</li>
      *   <li>phoneNumber1: Range 250-264 (15 characters) - Primary phone number</li>
      *   <li>phoneNumber2: Range 265-279 (15 characters) - Secondary phone number</li>
@@ -294,6 +300,7 @@ public class CustomerDataReader {
      *   <li>eftAccountId: Range 319-328 (10 characters) - EFT account identifier</li>
      *   <li>primaryCardHolderIndicator: Range 329-329 (1 character) - Primary holder flag (Y/N)</li>
      *   <li>ficoScore: Range 330-332 (3 characters) - FICO credit score (300-850)</li>
+     *   <li>filler: Range 333-500 (168 characters) - COBOL FILLER field (not mapped to entity)</li>
      * </ol>
      * 
      * <h3>Field Set Mapping:</h3>
@@ -303,6 +310,7 @@ public class CustomerDataReader {
      *   <li>Automatically convert string data to appropriate Java types (Long, Integer, LocalDate, String)</li>
      *   <li>Trim whitespace from fixed-width fields (trailing spaces from padding)</li>
      *   <li>Handle type conversion errors with descriptive exception messages</li>
+     *   <li>Ignore the "filler" field (not mapped to any entity property) to support the full 500-byte record structure</li>
      * </ul>
      * 
      * <h3>Data Validation:</h3>
@@ -375,7 +383,8 @@ public class CustomerDataReader {
             "dateOfBirth",                   // Position 309-318
             "eftAccountId",                  // Position 319-328
             "primaryCardHolderIndicator",    // Position 329
-            "ficoScore"                      // Position 330-332
+            "ficoScore",                     // Position 330-332
+            "filler"                         // Position 333-500 (COBOL FILLER - not mapped to entity)
         );
         
         // Set field ranges using Spring Batch Range objects (1-based indexing)
@@ -397,8 +406,8 @@ public class CustomerDataReader {
             new Range(309, 318),   // dateOfBirth: 10 characters (YYYY-MM-DD)
             new Range(319, 328),   // eftAccountId: 10 characters
             new Range(329, 329),   // primaryCardHolderIndicator: 1 character
-            new Range(330, 332)    // ficoScore: 3 characters
-            // Note: FILLER field (positions 333-500) is not mapped
+            new Range(330, 332),   // ficoScore: 3 characters
+            new Range(333, 500)    // filler: 168 characters (COBOL FILLER - not mapped to entity)
         );
         
         // Configure strict mode to validate record structure
@@ -408,8 +417,23 @@ public class CustomerDataReader {
         BeanWrapperFieldSetMapper<Customer> fieldSetMapper = new BeanWrapperFieldSetMapper<>();
         fieldSetMapper.setTargetType(Customer.class);
         
-        // Enable strict validation for field mapping
-        fieldSetMapper.setStrict(true);
+        // Disable strict validation for field mapping to allow filler field (not mapped to entity)
+        fieldSetMapper.setStrict(false);
+        
+        // Register custom converters for LocalDate parsing from YYYY-MM-DD format
+        DefaultConversionService conversionService = new DefaultConversionService();
+        conversionService.addConverter(new Converter<String, LocalDate>() {
+            private final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+            
+            @Override
+            public LocalDate convert(String source) {
+                if (source == null || source.trim().isEmpty()) {
+                    return null;
+                }
+                return LocalDate.parse(source.trim(), formatter);
+            }
+        });
+        fieldSetMapper.setConversionService(conversionService);
         
         // Build and configure the FlatFileItemReader using the fluent builder API
         return new FlatFileItemReaderBuilder<Customer>()
