@@ -1,6 +1,7 @@
 package com.carddemo.repository;
 
 import com.carddemo.entity.Customer;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -83,6 +84,9 @@ public class CustomerRepositoryTest {
 
     @Autowired
     private CustomerRepository customerRepository;
+
+    @Autowired
+    private EntityManager entityManager;
 
     private Customer testCustomer1;
     private Customer testCustomer2;
@@ -557,6 +561,10 @@ public class CustomerRepositoryTest {
 
         // Act: Save updated customer (EXEC CICS REWRITE)
         Customer updatedCustomer = customerRepository.save(customerToUpdate);
+        
+        // Flush to ensure version field is incremented and changes are synchronized
+        entityManager.flush();
+        entityManager.clear();
 
         // Assert: Customer updated with modified fields
         assertThat(updatedCustomer.getCustomerId()).isEqualTo(123456789L);
