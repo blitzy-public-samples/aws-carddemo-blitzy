@@ -21,14 +21,16 @@ import com.carddemo.dto.request.LoginRequest;
 import com.carddemo.dto.response.LoginResponse;
 import com.carddemo.entity.User;
 import com.carddemo.exception.AuthenticationException;
-import com.carddemo.exception.ResourceNotFoundException;
 import com.carddemo.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.DisabledException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -185,11 +187,19 @@ public class AuthenticationService {
      * 
      * @param loginRequest Login credentials containing userId and password
      * @return LoginResponse with JWT token, user details, and expiration timestamp
-     * @throws ResourceNotFoundException if user ID not found in database (HTTP 404)
-     * @throws AuthenticationException if password incorrect or user inactive (HTTP 401)
+     * @throws UsernameNotFoundException if user ID not found in database (COBOL RESP-CD=13)
+     * @throws BadCredentialsException if password is incorrect (COBOL wrong password flow)
+     * @throws DisabledException if user account is deleted or disabled
+     * @throws IllegalArgumentException if loginRequest is null
      */
-    @Transactional(readOnly = true)
+    @Transactional
     public LoginResponse authenticate(LoginRequest loginRequest) {
+        // Validate input to prevent NullPointerException
+        if (loginRequest == null) {
+            log.error("Login request is null");
+            throw new IllegalArgumentException("Login request cannot be null");
+        }
+
         log.info("Authentication attempt for userId: {}", loginRequest.getUserId());
 
         // Step 1: Extract credentials from request
@@ -205,16 +215,18 @@ public class AuthenticationService {
         // Step 3: Handle user not found scenario
         // Replaces: IF WS-RESP-CD = DFHRESP(NOTFND)
         //              MOVE 'User not found. Try again ...' TO WS-MESSAGE
+        // Using Spring Security UsernameNotFoundException as specified in Agent Action Plan
         User user = userOptional.orElseThrow(() -> {
             log.warn("Authentication failed: User not found - userId: {}", userId);
-            return new ResourceNotFoundException(MessageConstants.MSG_USER_NOT_FOUND + ": " + userId);
+            return new UsernameNotFoundException(MessageConstants.MSG_USER_NOT_FOUND + ": " + userId);
         });
 
         // Step 4: Check if user account is deleted (soft delete check)
         // Additional validation not present in COBOL but required for modern system
+        // Using Spring Security DisabledException for deleted/disabled accounts
         if (user.isDeleted()) {
             log.warn("Authentication failed: User account is deleted - userId: {}", userId);
-            throw new AuthenticationException(MessageConstants.MSG_USER_NOT_FOUND);
+            throw new DisabledException("User account is disabled or deleted");
         }
 
         // Step 5: Verify password using BCrypt
@@ -222,23 +234,34 @@ public class AuthenticationService {
         //              [success flow]
         //          ELSE
         //              MOVE 'Wrong Password. Try again ...' TO WS-MESSAGE
+        // Using Spring Security BadCredentialsException as specified in Agent Action Plan
         boolean passwordMatches = passwordEncoder.matches(password, user.getPassword());
         if (!passwordMatches) {
             log.warn("Authentication failed: Wrong password - userId: {}", userId);
-            throw new AuthenticationException(MessageConstants.MSG_WRONG_PASSWORD);
+            throw new BadCredentialsException(MessageConstants.MSG_WRONG_PASSWORD);
         }
 
         log.info("Authentication successful for userId: {} with userType: {}", userId, user.getUserType());
 
-        // Step 6: Generate JWT token with user claims
+        // Step 6: Update last login date (modern enhancement for audit trail)
+        // While COBOL COSGN00C.cbl doesn't update user records, tracking last login
+        // is a security best practice for modern applications
+        user.setLastLoginDate(LocalDateTime.now());
+        userRepository.save(user);
+        log.debug("Updated last login date for userId: {}", userId);
+
+        // Step 7: Generate JWT token with user claims
         // Replaces: MOVE SEC-USR-ID TO CDEMO-USER-ID
         //          MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE
         //          [COMMAREA passed to next program via XCTL]
         String userTypeCode = user.getUserType().getCode();
         String jwtToken = jwtService.generateToken(userId, userTypeCode);
-        LocalDateTime expiresAt = jwtService.getTokenExpiration();
+        
+        // Convert milliseconds expiration to LocalDateTime
+        long expirationMs = jwtService.getTokenExpiration();
+        LocalDateTime expiresAt = LocalDateTime.now().plusSeconds(expirationMs / 1000);
 
-        // Step 7: Create Spring Security Authentication
+        // Step 8: Create Spring Security Authentication
         // Build granted authorities based on user type
         // Replaces: COBOL 88-level conditions (CDEMO-USRTYP-ADMIN VALUE 'A', CDEMO-USRTYP-USER VALUE 'U')
         List<GrantedAuthority> authorities = buildGrantedAuthorities(user);
@@ -250,20 +273,19 @@ public class AuthenticationService {
                 authorities
         );
 
-        // Step 8: Set authentication in SecurityContext for current request
+        // Step 9: Set authentication in SecurityContext for current request
         // This enables role-based authorization via @PreAuthorize annotations
         SecurityContextHolder.getContext().setAuthentication(authentication);
 
         log.debug("SecurityContext populated with authentication for userId: {}", userId);
 
-        // Step 9: Build and return LoginResponse
+        // Step 10: Build and return LoginResponse
         // Replaces: EXEC CICS XCTL PROGRAM(COADM01C or COMEN01C) COMMAREA(CARDDEMO-COMMAREA)
+        // COBOL COMMAREA only contains CDEMO-USER-ID and CDEMO-USER-TYPE (no user names)
         return LoginResponse.builder()
                 .jwtToken(jwtToken)
                 .userId(user.getUserId())
                 .userType(user.getUserType().name())
-                .firstName(user.getFirstName())
-                .lastName(user.getLastName())
                 .expiresAt(expiresAt)
                 .build();
     }
