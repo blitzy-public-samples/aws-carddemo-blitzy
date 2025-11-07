@@ -1,0 +1,687 @@
+/*
+ * TransactionReportComponent.module.css
+ * 
+ * CSS Module for Transaction Reports screen
+ * Transformed from CORPT00.bms BMS mapset
+ * 
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * Licensed under the Apache License, Version 2.0
+ */
+
+/* ============================================
+ * Container and Layout
+ * ============================================ */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background-color: #1e1e1e;
+  color: #e0e0e0;
+  font-family: 'Courier New', monospace;
+  padding: 0;
+  margin: 0;
+}
+
+/* ============================================
+ * Header Section (Lines 1-2 of BMS)
+ * ============================================ */
+
+.header {
+  display: flex;
+  flex-direction: column;
+  background-color: #000080;
+  padding: 0.5rem 1rem;
+  border-bottom: 2px solid #4169e1;
+}
+
+.headerRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 1.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.headerRow:last-child {
+  margin-bottom: 0;
+}
+
+.transactionLabel {
+  color: #4169e1;
+  font-weight: normal;
+  margin-right: 0.5rem;
+}
+
+.transactionName {
+  color: #4169e1;
+  font-weight: bold;
+}
+
+.title {
+  color: #ffd700;
+  font-weight: bold;
+  text-align: center;
+  flex: 1;
+  margin: 0 2rem;
+}
+
+.dateLabel,
+.timeLabel {
+  color: #4169e1;
+  font-weight: normal;
+  margin-right: 0.5rem;
+}
+
+.dateValue,
+.timeValue {
+  color: #4169e1;
+  font-weight: normal;
+}
+
+.programLabel {
+  color: #4169e1;
+  font-weight: normal;
+  margin-right: 0.5rem;
+}
+
+.programName {
+  color: #4169e1;
+  font-weight: bold;
+}
+
+/* ============================================
+ * Main Title Section
+ * ============================================ */
+
+.mainTitle {
+  text-align: center;
+  font-size: 1.25rem;
+  font-weight: bold;
+  color: #e0e0e0;
+  padding: 1.5rem 0 1rem 0;
+  margin: 0;
+  letter-spacing: 0.05em;
+}
+
+/* ============================================
+ * Report Form Content
+ * ============================================ */
+
+.reportForm {
+  flex: 1;
+  padding: 1rem 2rem;
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* ============================================
+ * Report Type Selection Section
+ * (MONTHLY, YEARLY, CUSTOM fields)
+ * ============================================ */
+
+.reportTypeSection {
+  margin-top: 1rem;
+  margin-bottom: 2rem;
+}
+
+.reportTypeOption {
+  display: flex;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-left: 2rem;
+}
+
+.reportTypeOption:last-child {
+  margin-bottom: 0;
+}
+
+.reportTypeInput {
+  appearance: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 2px solid #00ff00;
+  border-radius: 50%;
+  background-color: transparent;
+  cursor: pointer;
+  margin-right: 1rem;
+  position: relative;
+  transition: all 0.2s ease;
+}
+
+.reportTypeInput:checked {
+  background-color: #00ff00;
+  border-color: #00ff00;
+}
+
+.reportTypeInput:checked::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background-color: #1e1e1e;
+}
+
+.reportTypeInput:focus {
+  outline: 2px solid #00ff00;
+  outline-offset: 2px;
+}
+
+.reportTypeInput:hover {
+  border-color: #00ff88;
+  box-shadow: 0 0 8px rgba(0, 255, 0, 0.4);
+}
+
+.reportTypeLabel {
+  color: #00ced1;
+  font-weight: bold;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.2s ease;
+}
+
+.reportTypeLabel:hover {
+  color: #00ffff;
+}
+
+/* ============================================
+ * Date Range Section
+ * (Start Date and End Date fields)
+ * ============================================ */
+
+.dateRangeSection {
+  margin-top: 2rem;
+  margin-bottom: 2rem;
+  padding-left: 2rem;
+  display: none; /* Initially hidden, shown when CUSTOM is selected */
+}
+
+.dateRangeSection.visible {
+  display: block;
+}
+
+.dateField {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.dateField:last-child {
+  margin-bottom: 0;
+}
+
+.dateLabel {
+  color: #00ced1;
+  font-weight: normal;
+  width: 10rem;
+  text-align: right;
+  margin-right: 1rem;
+}
+
+.dateInputGroup {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.dateInput {
+  background-color: transparent;
+  border: none;
+  border-bottom: 2px solid #00ff00;
+  color: #00ff00;
+  font-family: 'Courier New', monospace;
+  font-size: 1rem;
+  text-align: center;
+  padding: 0.25rem 0.5rem;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.dateInput.monthInput,
+.dateInput.dayInput {
+  width: 2.5rem;
+}
+
+.dateInput.yearInput {
+  width: 4rem;
+}
+
+.dateInput:focus {
+  border-bottom-color: #00ff88;
+  background-color: rgba(0, 255, 0, 0.1);
+  box-shadow: 0 2px 4px rgba(0, 255, 0, 0.2);
+}
+
+.dateInput:hover {
+  border-bottom-color: #00ff88;
+}
+
+.dateInput::placeholder {
+  color: #006600;
+}
+
+.dateSeparator {
+  color: #4169e1;
+  font-weight: bold;
+  margin: 0 0.25rem;
+  user-select: none;
+}
+
+.dateFormatHint {
+  color: #4169e1;
+  font-size: 0.875rem;
+  margin-left: 1rem;
+  font-style: italic;
+}
+
+/* ============================================
+ * Confirmation Section
+ * ============================================ */
+
+.confirmationSection {
+  margin-top: 3rem;
+  padding: 1.5rem;
+  border-top: 1px solid #4169e1;
+  border-bottom: 1px solid #4169e1;
+  background-color: rgba(0, 0, 139, 0.1);
+}
+
+.confirmationMessage {
+  color: #00ced1;
+  font-weight: normal;
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+
+.confirmationField {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.confirmationLabel {
+  color: #00ced1;
+  font-weight: normal;
+  margin-right: 1rem;
+}
+
+.confirmationInput {
+  background-color: transparent;
+  border: none;
+  border-bottom: 2px solid #00ff00;
+  color: #00ff00;
+  font-family: 'Courier New', monospace;
+  font-size: 1.25rem;
+  font-weight: bold;
+  text-align: center;
+  width: 2.5rem;
+  padding: 0.5rem;
+  text-transform: uppercase;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.confirmationInput:focus {
+  border-bottom-color: #00ff88;
+  background-color: rgba(0, 255, 0, 0.1);
+  box-shadow: 0 2px 8px rgba(0, 255, 0, 0.3);
+}
+
+.confirmationInput:hover {
+  border-bottom-color: #00ff88;
+}
+
+.confirmationHint {
+  color: #e0e0e0;
+  font-weight: normal;
+  margin-left: 0.5rem;
+  font-size: 0.875rem;
+}
+
+/* ============================================
+ * Error Message Area
+ * ============================================ */
+
+.errorMessage {
+  min-height: 2rem;
+  padding: 0.5rem 1rem;
+  margin: 1rem 0;
+  color: #ff0000;
+  font-weight: bold;
+  background-color: rgba(255, 0, 0, 0.1);
+  border-left: 4px solid #ff0000;
+  display: none;
+}
+
+.errorMessage.visible {
+  display: block;
+}
+
+.errorMessage.empty {
+  display: none;
+}
+
+/* ============================================
+ * Action Buttons Section
+ * ============================================ */
+
+.actionButtons {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 2rem;
+  padding: 1rem 0;
+}
+
+.submitButton {
+  background-color: #00ff00;
+  color: #1e1e1e;
+  border: none;
+  padding: 0.75rem 2rem;
+  font-family: 'Courier New', monospace;
+  font-size: 1rem;
+  font-weight: bold;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.submitButton:hover {
+  background-color: #00ff88;
+  box-shadow: 0 4px 12px rgba(0, 255, 0, 0.4);
+  transform: translateY(-2px);
+}
+
+.submitButton:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(0, 255, 0, 0.3);
+}
+
+.submitButton:disabled {
+  background-color: #666666;
+  color: #999999;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.backButton {
+  background-color: transparent;
+  color: #ffd700;
+  border: 2px solid #ffd700;
+  padding: 0.75rem 2rem;
+  font-family: 'Courier New', monospace;
+  font-size: 1rem;
+  font-weight: bold;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.backButton:hover {
+  background-color: rgba(255, 215, 0, 0.1);
+  border-color: #ffed4e;
+  color: #ffed4e;
+  box-shadow: 0 4px 12px rgba(255, 215, 0, 0.3);
+  transform: translateY(-2px);
+}
+
+.backButton:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(255, 215, 0, 0.2);
+}
+
+/* ============================================
+ * Footer Section (Function Keys)
+ * ============================================ */
+
+.footer {
+  background-color: #000080;
+  padding: 0.75rem 1rem;
+  border-top: 2px solid #4169e1;
+  margin-top: auto;
+}
+
+.functionKeys {
+  color: #ffd700;
+  font-weight: normal;
+  text-align: left;
+  font-size: 0.875rem;
+  letter-spacing: 0.05em;
+}
+
+/* ============================================
+ * Form Validation States
+ * ============================================ */
+
+.dateInput.invalid,
+.confirmationInput.invalid {
+  border-bottom-color: #ff0000;
+  color: #ff0000;
+}
+
+.dateInput.invalid:focus,
+.confirmationInput.invalid:focus {
+  box-shadow: 0 2px 8px rgba(255, 0, 0, 0.3);
+  background-color: rgba(255, 0, 0, 0.1);
+}
+
+.dateInput.valid,
+.confirmationInput.valid {
+  border-bottom-color: #00ff00;
+}
+
+/* ============================================
+ * Loading State
+ * ============================================ */
+
+.loading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.loadingSpinner {
+  display: none;
+  text-align: center;
+  padding: 2rem;
+  color: #00ced1;
+}
+
+.loadingSpinner.visible {
+  display: block;
+}
+
+/* ============================================
+ * Responsive Design
+ * ============================================ */
+
+@media (max-width: 768px) {
+  .container {
+    font-size: 0.875rem;
+  }
+
+  .reportForm {
+    padding: 1rem;
+  }
+
+  .reportTypeOption {
+    padding-left: 1rem;
+  }
+
+  .dateRangeSection {
+    padding-left: 1rem;
+  }
+
+  .dateField {
+    flex-direction: column;
+    align-items: flex-start;
+    margin-bottom: 1.5rem;
+  }
+
+  .dateLabel {
+    width: auto;
+    text-align: left;
+    margin-right: 0;
+    margin-bottom: 0.5rem;
+  }
+
+  .dateFormatHint {
+    margin-left: 0;
+    margin-top: 0.5rem;
+  }
+
+  .confirmationSection {
+    padding: 1rem;
+  }
+
+  .confirmationField {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .confirmationLabel {
+    margin-right: 0;
+    margin-bottom: 0.5rem;
+  }
+
+  .confirmationHint {
+    margin-left: 0;
+    margin-top: 0.5rem;
+  }
+
+  .actionButtons {
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .submitButton,
+  .backButton {
+    width: 100%;
+    padding: 1rem;
+  }
+
+  .headerRow {
+    flex-wrap: wrap;
+  }
+
+  .title {
+    margin: 0.5rem 0;
+    flex-basis: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .container {
+    font-size: 0.75rem;
+  }
+
+  .mainTitle {
+    font-size: 1rem;
+    padding: 1rem 0 0.75rem 0;
+  }
+
+  .dateInputGroup {
+    gap: 0.15rem;
+  }
+
+  .dateInput.monthInput,
+  .dateInput.dayInput {
+    width: 2rem;
+  }
+
+  .dateInput.yearInput {
+    width: 3.5rem;
+  }
+
+  .dateSeparator {
+    margin: 0 0.1rem;
+  }
+}
+
+/* ============================================
+ * Print Styles
+ * ============================================ */
+
+@media print {
+  .container {
+    background-color: white;
+    color: black;
+  }
+
+  .header,
+  .footer {
+    background-color: white;
+    border-color: black;
+  }
+
+  .submitButton,
+  .backButton {
+    display: none;
+  }
+
+  .errorMessage {
+    border-color: black;
+    color: black;
+  }
+}
+
+/* ============================================
+ * Accessibility Enhancements
+ * ============================================ */
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Focus visible for keyboard navigation */
+*:focus-visible {
+  outline: 2px solid #00ff00;
+  outline-offset: 2px;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .container {
+    background-color: #000000;
+    color: #ffffff;
+  }
+
+  .reportTypeInput,
+  .dateInput,
+  .confirmationInput {
+    border-width: 3px;
+  }
+
+  .submitButton,
+  .backButton {
+    border-width: 3px;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
