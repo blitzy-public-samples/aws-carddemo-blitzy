@@ -1,6 +1,7 @@
 package com.carddemo.repository;
 
 import com.carddemo.entity.TransactionType;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -125,6 +126,9 @@ public class TransactionTypeRepositoryTest {
 
     @Autowired
     private TransactionTypeRepository transactionTypeRepository;
+
+    @Autowired
+    private EntityManager entityManager;
 
     /**
      * Test data: Transaction type codes and descriptions matching COBOL reference data.
@@ -541,6 +545,7 @@ public class TransactionTypeRepositoryTest {
         String updatedDescription = "Updated Purchase Transaction";
         existingType.setTypeDescription(updatedDescription);
         TransactionType updatedType = transactionTypeRepository.save(existingType);
+        entityManager.flush(); // Force version increment
         
         // Then: Transaction type is updated correctly
         assertThat(updatedType).isNotNull();
@@ -702,7 +707,7 @@ public class TransactionTypeRepositoryTest {
     @DisplayName("Type description field maintains COBOL PIC X(50) maximum length constraint")
     public void testTypeDescription_MaintainsFiftyCharacterConstraint() {
         // Given: Transaction type with description exactly 50 characters
-        String fiftyCharDescription = "This is a fifty character transaction type desc!";
+        String fiftyCharDescription = "This is exactly fifty character type description!!";
         assertThat(fiftyCharDescription).hasSize(50);
         
         TransactionType transactionType = TransactionType.builder()
