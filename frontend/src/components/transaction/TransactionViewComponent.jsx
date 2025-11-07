@@ -22,7 +22,7 @@
  * - GET /api/transactions/{id} - Fetch transaction details
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   Button,
@@ -62,17 +62,6 @@ const TransactionViewComponent = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [inputError, setInputError] = useState('');
-
-  /**
-   * Initialize component with transaction ID from navigation state if available
-   */
-  useEffect(() => {
-    if (location.state?.transactionId) {
-      const preloadedId = location.state.transactionId;
-      setTransactionId(preloadedId);
-      fetchTransactionDetails(preloadedId);
-    }
-  }, [location.state]);
 
   /**
    * Format amount with BigDecimal precision (2 decimal places)
@@ -115,7 +104,7 @@ const TransactionViewComponent = () => {
    * @param {string} id - Transaction ID to validate
    * @returns {boolean} True if valid, false otherwise
    */
-  const validateTransactionId = (id) => {
+  const validateTransactionId = useCallback((id) => {
     if (!id || id.trim() === '') {
       setInputError('Tran ID can NOT be empty...');
       return false;
@@ -126,7 +115,7 @@ const TransactionViewComponent = () => {
     }
     setInputError('');
     return true;
-  };
+  }, []);
 
   /**
    * Fetch transaction details from REST API
@@ -136,7 +125,7 @@ const TransactionViewComponent = () => {
    * 
    * @param {string} id - Transaction ID to fetch (optional, uses state if not provided)
    */
-  const fetchTransactionDetails = async (id = null) => {
+  const fetchTransactionDetails = useCallback(async (id = null) => {
     const targetId = id || transactionId;
 
     // Validate input
@@ -186,7 +175,18 @@ const TransactionViewComponent = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [transactionId, navigate, validateTransactionId]);
+
+  /**
+   * Initialize component with transaction ID from navigation state if available
+   */
+  useEffect(() => {
+    if (location.state?.transactionId) {
+      const preloadedId = location.state.transactionId;
+      setTransactionId(preloadedId);
+      fetchTransactionDetails(preloadedId);
+    }
+  }, [location.state, fetchTransactionDetails]);
 
   /**
    * Handle Enter key press in transaction ID input field
@@ -575,7 +575,7 @@ const TransactionViewComponent = () => {
         {/* Footer Help Text */}
         <Box sx={{ mt: 3, p: 2, bgcolor: 'grey.100', borderRadius: 1 }}>
           <Typography variant="body2" color="text.secondary">
-            <strong>Instructions:</strong> Enter a transaction ID and press ENTER or click "Fetch Transaction" to view details.
+            <strong>Instructions:</strong> Enter a transaction ID and press ENTER or click &quot;Fetch Transaction&quot; to view details.
             Use navigation buttons to go back, clear the form, or browse all transactions.
           </Typography>
         </Box>
