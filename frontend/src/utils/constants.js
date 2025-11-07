@@ -26,8 +26,9 @@
 /**
  * Base URL for API endpoints
  * Retrieved from environment variable or defaults to localhost development server
+ * Uses Vite's import.meta.env instead of process.env
  */
-export const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8080/api';
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080/api';
 
 /**
  * API request timeout in milliseconds (30 seconds)
