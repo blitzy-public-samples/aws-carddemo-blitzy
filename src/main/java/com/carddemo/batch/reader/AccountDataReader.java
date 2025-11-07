@@ -270,7 +270,8 @@ public class AccountDataReader {
             "currentCycleCredit",  // ACCT-CURR-CYC-CREDIT
             "currentCycleDebit",   // ACCT-CURR-CYC-DEBIT
             "addressZip",          // ACCT-ADDR-ZIP
-            "groupId"              // ACCT-GROUP-ID
+            "groupId",             // ACCT-GROUP-ID
+            "filler"               // FILLER (padding to 300 bytes)
         );
         
         // Set column ranges matching COBOL copybook structure (1-indexed positions)
@@ -286,8 +287,8 @@ public class AccountDataReader {
             new Range(79, 90),     // currentCycleCredit: positions 79-90 (12 bytes)
             new Range(91, 102),    // currentCycleDebit: positions 91-102 (12 bytes)
             new Range(103, 112),   // addressZip: positions 103-112 (10 bytes)
-            new Range(113, 122)    // groupId: positions 113-122 (10 bytes)
-            // Positions 123-300 are FILLER (padding), not mapped
+            new Range(113, 122),   // groupId: positions 113-122 (10 bytes)
+            new Range(123, 300)    // filler: positions 123-300 (178 bytes FILLER padding)
         );
         
         tokenizer.setStrict(true);
@@ -411,9 +412,10 @@ public class AccountDataReader {
          * 
          * <p><strong>Example Transformations:</strong></p>
          * <ul>
-         *   <li>"00000001940{" → "000000019400" → "0000000194.00" → BigDecimal(19.40)</li>
-         *   <li>"00000020200{" → "000000202000" → "0000002020.00" → BigDecimal(202.00)</li>
-         *   <li>"00000123456}" → "000001234566" → "0000012345.66" → BigDecimal(-12345.66)</li>
+         *   <li>"00000001940{" → "000000019400" → "0000000194.00" → BigDecimal(194.00)</li>
+         *   <li>"00000020200{" → "000000202000" → "0000002020.00" → BigDecimal(2020.00)</li>
+         *   <li>"00000123456}" → "000001234560" → "0000012345.60" → BigDecimal(-12345.60)</li>
+         *   <li>"00000001234A" → "000000012341" → "0000001234.10" → BigDecimal(1234.10)</li>
          * </ul>
          * 
          * @param cobolValue COBOL display format monetary value (12 characters)
@@ -438,7 +440,7 @@ public class AccountDataReader {
                 int lastDigit;
                 boolean isNegative;
 
-                if (lastChar >= '{' && lastChar <= 'I') {
+                if (lastChar == '{' || (lastChar >= 'A' && lastChar <= 'I')) {
                     // Positive values: '{' = 0, 'A' = 1, 'B' = 2, ..., 'I' = 9
                     if (lastChar == '{') {
                         lastDigit = 0;
@@ -446,7 +448,7 @@ public class AccountDataReader {
                         lastDigit = lastChar - 'A' + 1;
                     }
                     isNegative = false;
-                } else if (lastChar >= '}' && lastChar <= 'R') {
+                } else if (lastChar == '}' || (lastChar >= 'J' && lastChar <= 'R')) {
                     // Negative values: '}' = 0, 'J' = 1, 'K' = 2, ..., 'R' = 9
                     if (lastChar == '}') {
                         lastDigit = 0;
@@ -468,13 +470,9 @@ public class AccountDataReader {
                 // Replace the last character with the actual digit
                 String numericPart = trimmedValue.substring(0, trimmedValue.length() - 1) + lastDigit;
 
-                // Remove leading zeros but keep at least one digit before decimal
-                numericPart = numericPart.replaceFirst("^0+(?!$)", "");
-                if (numericPart.isEmpty()) {
-                    numericPart = "0";
-                }
-
                 // Insert decimal point 2 positions from the end (V99 = 2 decimal places)
+                // IMPORTANT: Do NOT remove leading zeros before inserting decimal, as this is a
+                // fixed-width field with implied decimal point. The position is fixed, not relative.
                 String withDecimal;
                 if (numericPart.length() <= 2) {
                     // Less than 3 digits - pad with leading zeros
