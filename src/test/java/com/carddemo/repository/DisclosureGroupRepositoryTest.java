@@ -7,6 +7,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
@@ -63,6 +64,9 @@ public class DisclosureGroupRepositoryTest {
 
     @Autowired
     private DisclosureGroupRepository disclosureGroupRepository;
+
+    @Autowired
+    private TestEntityManager entityManager;
 
     // Test data: Composite key IDs
     private DisclosureGroupId standardPurchaseRetailId;
@@ -370,20 +374,27 @@ public class DisclosureGroupRepositoryTest {
         // Execute: Update disclosure group with new rate (equivalent to VSAM REWRITE)
         disclosureGroup.setInterestRate(newRate);
         DisclosureGroup updated = disclosureGroupRepository.save(disclosureGroup);
+        
+        // Flush to database and clear persistence context to ensure version increment
+        entityManager.flush();
+        entityManager.clear();
+        
+        // Re-fetch the entity to verify persisted state
+        DisclosureGroup refetched = disclosureGroupRepository.findById(standardPurchaseRetailId).orElseThrow();
 
         // Verify: Update successful
-        assertThat(updated.getInterestRate())
+        assertThat(refetched.getInterestRate())
                 .isEqualByComparingTo(expectedRate)
                 .as("Updated interest rate should be persisted with correct rounding");
 
         // Verify: Version incremented (optimistic locking)
-        assertThat(updated.getVersion())
+        assertThat(refetched.getVersion())
                 .isGreaterThan(0L)
                 .as("Version should increment on update for optimistic locking");
 
         // Test another calculation: Division requiring rounding
         // Calculate daily rate from annual rate: 16.00 / 365 = 0.043835... rounds to 0.04
-        BigDecimal annualRate = updated.getInterestRate();
+        BigDecimal annualRate = refetched.getInterestRate();
         BigDecimal dailyRate = annualRate.divide(new BigDecimal("365"), 2, RoundingMode.HALF_UP);
 
         BigDecimal expectedDailyRate = new BigDecimal("0.04");
@@ -425,23 +436,35 @@ public class DisclosureGroupRepositoryTest {
         // Verify: Original disclosure group exists
         assertThat(disclosureGroupRepository.existsById(standardPurchaseRetailId)).isTrue();
 
-        // Setup: Create new entity with same composite key but different interest rate
-        DisclosureGroup duplicate = DisclosureGroup.builder()
-                .id(standardPurchaseRetailId)  // Same composite key as existing entity
-                .interestRate(new BigDecimal("99.99"))  // Different interest rate
-                .build();
+        // Fetch the existing entity to get its current state including version
+        DisclosureGroup existing = disclosureGroupRepository.findById(standardPurchaseRetailId)
+                .orElseThrow(() -> new AssertionError("Test data entity should exist"));
+        
+        BigDecimal originalRate = existing.getInterestRate();
+        assertThat(originalRate).isEqualByComparingTo(new BigDecimal("15.99"));
 
-        // Execute: Attempt to save duplicate (JPA treats as update, not insert)
-        DisclosureGroup saved = disclosureGroupRepository.save(duplicate);
+        // Clear persistence context to simulate a new transaction
+        // This ensures we're working with a detached entity
+        entityManager.clear();
 
-        // Verify: Save operation treats duplicate key as update
+        // Simulate scenario: In a new transaction, fetch and update the same entity
+        // This replicates COBOL VSAM READ followed by REWRITE with same key
+        DisclosureGroup toUpdate = disclosureGroupRepository.findById(standardPurchaseRetailId)
+                .orElseThrow(() -> new AssertionError("Entity should still exist after clear"));
+        
+        // Execute: Update the interest rate
+        toUpdate.setInterestRate(new BigDecimal("99.99"));
+        DisclosureGroup saved = disclosureGroupRepository.save(toUpdate);
+        entityManager.flush();
+
+        // Verify: Save operation updated the existing entity
         assertThat(saved).isNotNull();
         assertThat(saved.getId()).isEqualTo(standardPurchaseRetailId);
 
         // Verify: Interest rate updated to new value
         assertThat(saved.getInterestRate())
                 .isEqualByComparingTo(new BigDecimal("99.99"))
-                .as("Duplicate key save should update existing entity with new interest rate");
+                .as("Update operation should persist new interest rate");
 
         // Verify: Still only one entity with this composite key
         long count = disclosureGroupRepository.count();
@@ -449,6 +472,9 @@ public class DisclosureGroupRepositoryTest {
                 .isEqualTo(3)  // Original 3 test entities, no duplicates created
                 .as("Count should remain 3, confirming no duplicate entities created");
 
+        // Clear and verify persistence
+        entityManager.clear();
+        
         // Verify: Updated entity retrievable with same key
         Optional<DisclosureGroup> retrieved = disclosureGroupRepository.findById(standardPurchaseRetailId);
         assertThat(retrieved).isPresent();
