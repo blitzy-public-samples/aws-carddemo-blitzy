@@ -221,7 +221,7 @@ export const getCards = async (page = 1, pageSize = CARDS_PER_PAGE) => {
     });
 
     // Extract pagination data from Spring Boot PagedModel response
-    const { content, totalPages, totalElements, number, last, first } = response.data;
+    const { content, totalPages, totalElements, last, first } = response.data;
 
     // Transform card data: mask card numbers in list view for security
     const cards = content.map(card => ({
