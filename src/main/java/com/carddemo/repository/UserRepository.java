@@ -19,6 +19,8 @@ package com.carddemo.repository;
 
 import com.carddemo.entity.User;
 import com.carddemo.entity.User.UserType;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -310,4 +312,108 @@ public interface UserRepository extends JpaRepository<User, String> {
      * @return List of active users with specified type
      */
     List<User> findByUserTypeAndDeletedFalse(UserType userType);
+
+    /**
+     * Find users by user type with pagination support
+     * 
+     * <p>Pageable version of findByUserType for efficient handling of large user bases.
+     * Replaces COBOL browse operation with type filtering and supports Spring Data pagination:</p>
+     * <pre>
+     * EXEC CICS STARTBR
+     *   DATASET('USRSEC')
+     * END-EXEC
+     * 
+     * PERFORM UNTIL USER-SEC-EOF OR WS-REC-COUNT >= 10
+     *   EXEC CICS READNEXT
+     *     DATASET('USRSEC')
+     *     INTO(SEC-USER-DATA)
+     *   END-EXEC
+     *   
+     *   IF SEC-USR-TYPE = 'A'  [or 'U']
+     *     ADD 1 TO WS-REC-COUNT
+     *     [store user record]
+     *   END-IF
+     * END-PERFORM
+     * </pre>
+     * 
+     * <p>Usage example from UserListService:</p>
+     * <pre>
+     * Pageable pageable = PageRequest.of(0, 10, Sort.by("userId"));
+     * Page&lt;User&gt; userPage = userRepository.findByUserType(UserType.ADMIN, pageable);
+     * </pre>
+     * 
+     * <p>Generates SQL query:</p>
+     * <pre>
+     * SELECT * FROM app_user 
+     * WHERE user_type = ? 
+     * ORDER BY user_id 
+     * LIMIT 10 OFFSET 0
+     * </pre>
+     * 
+     * @param userType User type to filter by (ADMIN or USER)
+     * @param pageable Pagination and sorting parameters
+     * @return Page of users with specified type, includes total count and navigation info
+     */
+    Page<User> findByUserType(UserType userType, Pageable pageable);
+
+    /**
+     * Find users whose user ID starts with the given pattern (prefix search)
+     * 
+     * <p>Implements wildcard search functionality for user ID partial matching with pagination.
+     * Replaces COBOL STARTBR with partial key positioning using LOW-VALUES/HIGH-VALUES pattern:</p>
+     * <pre>
+     * * COBOL pattern for partial key search:
+     * MOVE 'ABC' TO WS-SEARCH-KEY
+     * STRING WS-SEARCH-KEY DELIMITED BY SIZE
+     *        LOW-VALUES DELIMITED BY SIZE
+     *        INTO SEC-USR-ID
+     * 
+     * EXEC CICS STARTBR
+     *   DATASET('USRSEC')
+     *   RIDFLD(SEC-USR-ID)
+     *   GTEQ
+     * END-EXEC
+     * 
+     * PERFORM UNTIL USER-SEC-EOF OR WS-REC-COUNT >= 10
+     *   EXEC CICS READNEXT
+     *     DATASET('USRSEC')
+     *     INTO(SEC-USER-DATA)
+     *   END-EXEC
+     *   
+     *   IF SEC-USR-ID NOT STARTS WITH WS-SEARCH-KEY
+     *     SET USER-SEC-EOF TO TRUE
+     *   ELSE
+     *     ADD 1 TO WS-REC-COUNT
+     *     [store user record]
+     *   END-IF
+     * END-PERFORM
+     * </pre>
+     * 
+     * <p>Usage example from UserListService for searching users starting with "ADM":</p>
+     * <pre>
+     * Pageable pageable = PageRequest.of(0, 10, Sort.by("userId"));
+     * Page&lt;User&gt; userPage = userRepository.findByUserIdStartingWith("ADM", pageable);
+     * // Returns: ADMIN001, ADMIN002, ADM123, etc.
+     * </pre>
+     * 
+     * <p>Generates SQL query with LIKE clause:</p>
+     * <pre>
+     * SELECT * FROM app_user 
+     * WHERE user_id LIKE 'ADM%' 
+     * ORDER BY user_id 
+     * LIMIT 10 OFFSET 0
+     * </pre>
+     * 
+     * <p>Performance Considerations:</p>
+     * <ul>
+     *   <li>Uses index on user_id column for efficient prefix search</li>
+     *   <li>Prefix search is index-friendly (unlike %pattern% or %pattern)</li>
+     *   <li>Pagination prevents loading entire result set into memory</li>
+     * </ul>
+     * 
+     * @param userIdPattern Prefix string to match user IDs against (e.g., "ADM", "USR")
+     * @param pageable Pagination and sorting parameters
+     * @return Page of users whose user ID starts with the given pattern
+     */
+    Page<User> findByUserIdStartingWith(String userIdPattern, Pageable pageable);
 }
