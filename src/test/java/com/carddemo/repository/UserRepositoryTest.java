@@ -19,6 +19,7 @@ package com.carddemo.repository;
 
 import com.carddemo.entity.User;
 import com.carddemo.entity.User.UserType;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -93,6 +94,9 @@ public class UserRepositoryTest {
 
     @Autowired
     private UserRepository userRepository;
+
+    @Autowired
+    private EntityManager entityManager;
 
     private User adminUser;
     private User regularUser;
@@ -371,6 +375,10 @@ public class UserRepositoryTest {
         savedUser.setFirstName("UpdatedJohn");
         savedUser.setLastName("UpdatedAdmin");
         User updatedUser = userRepository.save(savedUser);
+        
+        // Flush to ensure version field is incremented and changes are synchronized
+        entityManager.flush();
+        entityManager.clear();
 
         // Then: User is updated with new values
         assertThat(updatedUser.getUserId()).isEqualTo("ADMIN001"); // Primary key unchanged
