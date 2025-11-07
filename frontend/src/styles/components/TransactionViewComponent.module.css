@@ -1,0 +1,723 @@
+/**
+ * TransactionViewComponent.module.css
+ * 
+ * CSS Module for Transaction View Component
+ * Transformed from COTRN01.bms BMS mapset
+ * 
+ * Provides styling for transaction detail display including:
+ * - Transaction ID input field for search
+ * - Read-only transaction detail fields
+ * - Monetary amount formatting
+ * - Date field display
+ * - Merchant information display
+ * - Error message styling
+ * 
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * Licensed under the Apache License, Version 2.0
+ */
+
+/* ============================================
+   Container and Layout Styles
+   ============================================ */
+
+.transactionViewContainer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: 'Courier New', Courier, monospace;
+  background-color: #000000;
+  color: #00ff00;
+  min-height: 600px;
+}
+
+/* Header Section */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding: 10px;
+  border-bottom: 2px solid #00ffff;
+}
+
+.headerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.headerRight {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  text-align: right;
+}
+
+.transactionName {
+  color: #0099ff;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.programName {
+  color: #0099ff;
+  font-size: 14px;
+}
+
+.title {
+  color: #ffff00;
+  font-weight: bold;
+  font-size: 16px;
+  text-align: center;
+}
+
+.currentDate,
+.currentTime {
+  color: #0099ff;
+  font-size: 14px;
+}
+
+/* Page Title Section */
+.pageTitle {
+  text-align: center;
+  font-size: 18px;
+  font-weight: bold;
+  color: #ffffff;
+  margin: 20px 0;
+  padding: 10px;
+  background-color: #1a1a1a;
+  border-radius: 4px;
+}
+
+/* ============================================
+   Transaction ID Input Section (Search)
+   ============================================ */
+
+.searchSection {
+  margin: 20px 0;
+  padding: 15px;
+  background-color: #0a0a0a;
+  border: 1px solid #00ffff;
+  border-radius: 4px;
+}
+
+.searchLabel {
+  display: inline-block;
+  color: #00ffff;
+  font-weight: bold;
+  margin-right: 10px;
+  font-size: 14px;
+}
+
+/* TRNIDIN field - Transaction ID input with IC (initial cursor) and UNPROT */
+.transactionIdInput {
+  background-color: #1a1a1a;
+  color: #00ff00;
+  border: 1px solid #00ff00;
+  border-bottom: 2px solid #00ff00;
+  padding: 8px 12px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  width: 200px;
+  outline: none;
+  transition: all 0.3s ease;
+}
+
+.transactionIdInput:focus {
+  background-color: #0f2f0f;
+  border-color: #00ff00;
+  box-shadow: 0 0 8px rgba(0, 255, 0, 0.5);
+}
+
+.transactionIdInput::placeholder {
+  color: #006600;
+  font-style: italic;
+}
+
+/* ============================================
+   Transaction Detail Section
+   ============================================ */
+
+.detailSection {
+  margin: 30px 0;
+  padding: 20px;
+  background-color: #0a0a0a;
+  border: 2px solid #00ffff;
+  border-radius: 4px;
+}
+
+.separator {
+  border: 0;
+  border-top: 1px solid #00ffff;
+  margin: 20px 0;
+}
+
+/* Field Groups */
+.fieldGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin-bottom: 15px;
+  padding: 10px;
+}
+
+.fieldRow {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12px;
+  width: 100%;
+}
+
+.fieldRowSplit {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 12px;
+  width: 100%;
+}
+
+.fieldItem {
+  display: flex;
+  align-items: center;
+  flex: 1;
+}
+
+.fieldLabel {
+  color: #00ffff;
+  font-weight: bold;
+  margin-right: 10px;
+  min-width: 140px;
+  font-size: 14px;
+}
+
+/* ============================================
+   Read-Only Display Fields (ASKIP styling)
+   ============================================ */
+
+/* Base read-only field styling - applies to all ASKIP fields */
+.readOnlyField {
+  background-color: #1a1a1a;
+  color: #0099ff;
+  padding: 6px 10px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  border: 1px solid #004466;
+  border-radius: 2px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* TRNID - Transaction ID display field */
+.transactionIdDisplay {
+  composes: readOnlyField;
+  width: 200px;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+
+/* CARDNUM - Card number display with potential HILIGHT */
+.cardNumberDisplay {
+  composes: readOnlyField;
+  width: 200px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  color: #0099ff;
+}
+
+/* TTYPCD - Transaction type code (2 chars) */
+.typeCodeDisplay {
+  composes: readOnlyField;
+  width: 60px;
+  text-align: center;
+  font-weight: bold;
+}
+
+/* TCATCD - Transaction category code (4 chars) */
+.categoryCodeDisplay {
+  composes: readOnlyField;
+  width: 80px;
+  text-align: center;
+  font-weight: bold;
+}
+
+/* TRNSRC - Transaction source (10 chars) */
+.sourceDisplay {
+  composes: readOnlyField;
+  width: 120px;
+}
+
+/* TDESC - Transaction description (60 chars) */
+.descriptionDisplay {
+  composes: readOnlyField;
+  width: 100%;
+  max-width: 600px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ============================================
+   Monetary Amount Field (TRNAMT with special formatting)
+   ============================================ */
+
+.amountDisplay {
+  composes: readOnlyField;
+  width: 150px;
+  text-align: right;
+  font-weight: bold;
+  color: #0099ff;
+  font-size: 15px;
+  letter-spacing: 1px;
+  font-family: 'Courier New', Courier, monospace;
+  padding-right: 15px;
+}
+
+.amountDisplay::before {
+  content: '$';
+  margin-right: 5px;
+  color: #00ffff;
+}
+
+/* Negative amount styling */
+.amountNegative {
+  composes: amountDisplay;
+  color: #ff4444;
+}
+
+.amountNegative::before {
+  content: '-$';
+}
+
+/* ============================================
+   Date Fields (TORIGDT, TPROCDT)
+   ============================================ */
+
+.dateDisplay {
+  composes: readOnlyField;
+  width: 130px;
+  text-align: center;
+  font-family: 'Courier New', Courier, monospace;
+  letter-spacing: 1px;
+}
+
+/* TORIGDT - Original transaction date */
+.originalDateDisplay {
+  composes: dateDisplay;
+}
+
+/* TPROCDT - Processing date */
+.processingDateDisplay {
+  composes: dateDisplay;
+}
+
+/* ============================================
+   Merchant Information Fields
+   ============================================ */
+
+/* MID - Merchant ID (9 chars) */
+.merchantIdDisplay {
+  composes: readOnlyField;
+  width: 120px;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+/* MNAME - Merchant name (30 chars) */
+.merchantNameDisplay {
+  composes: readOnlyField;
+  width: 350px;
+  max-width: 100%;
+}
+
+/* MCITY - Merchant city (25 chars) */
+.merchantCityDisplay {
+  composes: readOnlyField;
+  width: 280px;
+}
+
+/* MZIP - Merchant ZIP (10 chars) */
+.merchantZipDisplay {
+  composes: readOnlyField;
+  width: 120px;
+  text-align: center;
+  letter-spacing: 1px;
+}
+
+/* ============================================
+   Error Message Section (ERRMSG)
+   ============================================ */
+
+.errorSection {
+  margin: 20px 0;
+  padding: 12px 15px;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+}
+
+/* ERRMSG field - ASKIP, BRT, FSET with COLOR=RED */
+.errorMessage {
+  color: #ff0000;
+  font-weight: bold;
+  font-size: 14px;
+  background-color: #1a0000;
+  border: 1px solid #ff0000;
+  padding: 10px 15px;
+  border-radius: 4px;
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  animation: errorPulse 2s infinite;
+}
+
+@keyframes errorPulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.errorMessage:empty {
+  display: none;
+}
+
+/* ============================================
+   Footer Section (Function Keys)
+   ============================================ */
+
+.footer {
+  margin-top: auto;
+  padding: 15px;
+  background-color: #1a1a1a;
+  border-top: 2px solid #00ffff;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.footerText {
+  color: #ffff00;
+  font-size: 14px;
+  font-weight: bold;
+  text-align: center;
+}
+
+.functionKeys {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.functionKey {
+  color: #ffff00;
+  font-weight: bold;
+  padding: 5px 10px;
+  background-color: #2a2a0a;
+  border: 1px solid #ffff00;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+/* ============================================
+   Loading and Empty States
+   ============================================ */
+
+.loadingContainer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 400px;
+  color: #00ffff;
+  font-size: 16px;
+}
+
+.loadingSpinner {
+  border: 4px solid #0a0a0a;
+  border-top: 4px solid #00ffff;
+  border-radius: 50%;
+  width: 50px;
+  height: 50px;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 20px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.emptyState {
+  text-align: center;
+  padding: 40px;
+  color: #00ffff;
+  font-size: 16px;
+  background-color: #0a0a0a;
+  border: 1px dashed #00ffff;
+  border-radius: 4px;
+  margin: 20px 0;
+}
+
+.emptyStateIcon {
+  font-size: 48px;
+  margin-bottom: 20px;
+  color: #006666;
+}
+
+.emptyStateText {
+  color: #00ffff;
+  font-size: 16px;
+  margin-bottom: 10px;
+}
+
+.emptyStateSubtext {
+  color: #006666;
+  font-size: 14px;
+}
+
+/* ============================================
+   Button Styles
+   ============================================ */
+
+.buttonGroup {
+  display: flex;
+  gap: 15px;
+  margin-top: 20px;
+  justify-content: center;
+}
+
+.primaryButton {
+  background-color: #00ffff;
+  color: #000000;
+  border: 2px solid #00ffff;
+  padding: 10px 25px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.3s ease;
+}
+
+.primaryButton:hover {
+  background-color: #00cccc;
+  border-color: #00cccc;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 255, 255, 0.3);
+}
+
+.primaryButton:active {
+  transform: translateY(0);
+}
+
+.primaryButton:disabled {
+  background-color: #003333;
+  border-color: #003333;
+  color: #006666;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.secondaryButton {
+  background-color: transparent;
+  color: #00ffff;
+  border: 2px solid #00ffff;
+  padding: 10px 25px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.3s ease;
+}
+
+.secondaryButton:hover {
+  background-color: #00ffff;
+  color: #000000;
+}
+
+.secondaryButton:disabled {
+  border-color: #003333;
+  color: #003333;
+  cursor: not-allowed;
+}
+
+/* ============================================
+   Responsive Design
+   ============================================ */
+
+@media screen and (max-width: 768px) {
+  .transactionViewContainer {
+    padding: 10px;
+    font-size: 12px;
+  }
+
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .headerRight {
+    text-align: left;
+  }
+
+  .fieldRowSplit {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .fieldLabel {
+    min-width: 120px;
+    font-size: 13px;
+  }
+
+  .transactionIdInput {
+    width: 100%;
+    max-width: 300px;
+  }
+
+  .amountDisplay,
+  .dateDisplay,
+  .merchantNameDisplay,
+  .merchantCityDisplay {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .buttonGroup {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .primaryButton,
+  .secondaryButton {
+    width: 100%;
+  }
+
+  .functionKeys {
+    gap: 10px;
+  }
+
+  .functionKey {
+    font-size: 11px;
+    padding: 4px 8px;
+  }
+}
+
+@media screen and (max-width: 480px) {
+  .transactionViewContainer {
+    padding: 5px;
+    font-size: 11px;
+  }
+
+  .pageTitle {
+    font-size: 16px;
+  }
+
+  .fieldLabel {
+    min-width: 100px;
+    font-size: 12px;
+  }
+
+  .readOnlyField {
+    font-size: 12px;
+    padding: 5px 8px;
+  }
+
+  .amountDisplay {
+    font-size: 13px;
+  }
+}
+
+/* ============================================
+   Print Styles
+   ============================================ */
+
+@media print {
+  .transactionViewContainer {
+    background-color: white;
+    color: black;
+  }
+
+  .header,
+  .footer {
+    border-color: black;
+  }
+
+  .readOnlyField {
+    background-color: #f5f5f5;
+    color: black;
+    border-color: #cccccc;
+  }
+
+  .errorMessage {
+    border-color: black;
+    color: black;
+  }
+
+  .buttonGroup,
+  .functionKeys {
+    display: none;
+  }
+
+  .searchSection {
+    display: none;
+  }
+}
+
+/* ============================================
+   Accessibility Enhancements
+   ============================================ */
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Focus visible for keyboard navigation */
+.transactionIdInput:focus-visible,
+.primaryButton:focus-visible,
+.secondaryButton:focus-visible {
+  outline: 3px solid #00ffff;
+  outline-offset: 2px;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .transactionViewContainer {
+    border: 2px solid currentColor;
+  }
+
+  .readOnlyField {
+    border-width: 2px;
+  }
+
+  .errorMessage {
+    border-width: 2px;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
