@@ -16,7 +16,7 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
@@ -163,7 +163,7 @@ const UserUpdateComponent = () => {
       changePassword: false,
     },
     validationSchema: updateValidationSchema,
-    onSubmit: (values) => {
+    onSubmit: () => {
       // Show confirmation dialog before submitting
       setConfirmDialog(true);
     },
@@ -178,6 +178,7 @@ const UserUpdateComponent = () => {
       searchFormik.setFieldValue('userId', urlUserId);
       handleUserSearch(urlUserId);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlUserId]);
   
   /**
@@ -367,7 +368,7 @@ const UserUpdateComponent = () => {
       }
       
       // Call PUT /api/admin/users/:id endpoint
-      const response = await axios.put(
+      await axios.put(
         `/api/admin/users/${updateFormik.values.userId}`,
         updatePayload,
         {
