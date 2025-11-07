@@ -342,6 +342,7 @@ const UserUpdateComponent = () => {
       // Check if any fields were actually modified
       // Implements COBOL WS-USR-MODIFIED flag logic
       let isModified = false;
+      
       if (userData) {
         if (userData.firstName !== updatePayload.firstName ||
             userData.lastName !== updatePayload.lastName ||
