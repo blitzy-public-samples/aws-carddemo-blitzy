@@ -21,7 +21,7 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -41,7 +41,6 @@ import {
   TablePagination,
   TextField,
   Typography,
-  Toolbar,
   Tooltip
 } from '@mui/material';
 import {
@@ -66,7 +65,6 @@ const UserListComponent = () => {
   const [users, setUsers] = useState([]); // User list data
   const [loading, setLoading] = useState(true); // Loading state for async operations
   const [error, setError] = useState(''); // Error messages (replaces ERRMSG field)
-  const [success, setSuccess] = useState(''); // Success messages
   const [searchUserId, setSearchUserId] = useState(''); // Search input (replaces USRIDIN field)
   const [filteredUsers, setFilteredUsers] = useState([]); // Filtered results
   
@@ -104,7 +102,8 @@ const UserListComponent = () => {
     
     // Load user list if authenticated and authorized
     fetchUsers();
-  }, []); // Empty dependency array = run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array = run once on mount for authentication check
 
   /**
    * Fetch users from the REST API endpoint.
@@ -598,7 +597,7 @@ const UserListComponent = () => {
         {/* Help Text - Replaces BMS screen instruction text */}
         <Paper elevation={1} sx={{ p: 2, mt: 3, bgcolor: 'info.light' }}>
           <Typography variant="body2" color="text.secondary">
-            <strong>Instructions:</strong> Type 'U' to Update or 'D' to Delete a User from the list.
+            <strong>Instructions:</strong> Type &apos;U&apos; to Update or &apos;D&apos; to Delete a User from the list.
             Use the Edit (pencil) icon to update a user or the Delete (trash) icon to remove a user.
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
