@@ -16,7 +16,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
@@ -45,23 +45,31 @@ import axios from 'axios';
  */
 const validationSchema = Yup.object({
   accountId: Yup.string()
-    .when('cardNumber', {
-      is: (cardNumber) => !cardNumber || cardNumber.length === 0,
-      then: (schema) => schema
-        .required('Account ID or Card Number must be entered')
-        .matches(/^\d{11}$/, 'Account ID must be 11 numeric digits'),
-      otherwise: (schema) => schema
-        .matches(/^(\d{11})?$/, 'Account ID must be 11 numeric digits if provided'),
+    .test('accountId-or-cardNumber', 'Account ID or Card Number must be entered', function(value) {
+      const { cardNumber } = this.parent;
+      // At least one must be provided
+      if (!value && !cardNumber) {
+        return false;
+      }
+      // If provided, must be 11 digits
+      if (value && !/^\d{11}$/.test(value)) {
+        return this.createError({ message: 'Account ID must be 11 numeric digits' });
+      }
+      return true;
     }),
   
   cardNumber: Yup.string()
-    .when('accountId', {
-      is: (accountId) => !accountId || accountId.length === 0,
-      then: (schema) => schema
-        .required('Account ID or Card Number must be entered')
-        .matches(/^\d{16}$/, 'Card Number must be 16 numeric digits'),
-      otherwise: (schema) => schema
-        .matches(/^(\d{16})?$/, 'Card Number must be 16 numeric digits if provided'),
+    .test('cardNumber-or-accountId', 'Account ID or Card Number must be entered', function(value) {
+      const { accountId } = this.parent;
+      // At least one must be provided
+      if (!value && !accountId) {
+        return false;
+      }
+      // If provided, must be 16 digits
+      if (value && !/^\d{16}$/.test(value)) {
+        return this.createError({ message: 'Card Number must be 16 numeric digits' });
+      }
+      return true;
     }),
   
   transactionTypeCode: Yup.string()
@@ -70,7 +78,7 @@ const validationSchema = Yup.object({
   
   transactionCategoryCode: Yup.string()
     .required('Category CD can NOT be empty')
-    .matches(/^\d{4}$/, 'Category CD must be 4 numeric digits'),
+    .matches(/^\d{1,4}$/, 'Category CD must be numeric (1-4 digits)'),
   
   source: Yup.string()
     .required('Source can NOT be empty')
@@ -82,40 +90,79 @@ const validationSchema = Yup.object({
   
   amount: Yup.string()
     .required('Amount can NOT be empty')
-    .test('amount-format', 'Amount should be in format -99999999.99', function(value) {
+    .test('amount-format', 'Amount must be a positive number', function(value) {
       if (!value) return false;
       
-      // Check format: sign, 8 digits, decimal point, 2 decimal digits
-      // Pattern: [+-]NNNNNNNN.NN
-      const amountRegex = /^[+-]\d{1,8}\.\d{2}$/;
-      if (!amountRegex.test(value)) return false;
+      // First, check if it's a valid number format (more lenient)
+      // Allow optional sign, any number of digits, optional decimal point with any number of digits
+      const basicNumberRegex = /^[+-]?\d+(\.\d+)?$/;
+      if (!basicNumberRegex.test(value)) {
+        return this.createError({ message: 'Amount should be in format 99999999.99' });
+      }
       
       // Parse the numeric value
       const numValue = parseFloat(value);
-      if (isNaN(numValue)) return false;
+      if (isNaN(numValue)) {
+        return this.createError({ message: 'Amount should be in format 99999999.99' });
+      }
       
-      // Check range -99999999.99 to +99999999.99
-      if (numValue < -99999999.99 || numValue > 99999999.99) return false;
+      // Check if positive (matching COBOL logic - negative amounts would fail authorization)
+      if (numValue <= 0) {
+        return this.createError({ message: 'Amount must be a positive number' });
+      }
+      
+      // Check if exceeds 2 decimal places (check this before max value)
+      const decimalMatch = value.match(/\.(\d+)$/);
+      if (decimalMatch && decimalMatch[1].length > 2) {
+        return this.createError({ message: 'Amount must have at most 2 decimal places' });
+      }
+      
+      // Check maximum value (check this after decimal places)
+      if (numValue > 99999999.99) {
+        return this.createError({ message: 'Amount cannot exceed 99999999.99' });
+      }
+      
+      // Check if more than 8 digits before decimal
+      const beforeDecimal = value.split('.')[0].replace(/^[+-]/, '');
+      if (beforeDecimal.length > 8) {
+        return this.createError({ message: 'Amount cannot exceed 99999999.99' });
+      }
       
       return true;
     }),
   
   originDate: Yup.string()
     .required('Orig Date can NOT be empty')
-    .matches(/^\d{4}-\d{2}-\d{2}$/, 'Orig Date should be in format YYYY-MM-DD')
-    .test('valid-date', 'Orig Date must be a valid date', function(value) {
+    .matches(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
+    .test('valid-date', 'Invalid date', function(value) {
       if (!value) return false;
       const date = new Date(value);
-      return date instanceof Date && !isNaN(date);
+      if (!(date instanceof Date) || isNaN(date)) {
+        return false;
+      }
+      // Check if the date components match what was entered
+      // This catches cases like 2024-02-30 which JS converts to 2024-03-01
+      const [year, month, day] = value.split('-').map(Number);
+      return date.getFullYear() === year && 
+             date.getMonth() === month - 1 && 
+             date.getDate() === day;
     }),
   
   processDate: Yup.string()
     .required('Proc Date can NOT be empty')
-    .matches(/^\d{4}-\d{2}-\d{2}$/, 'Proc Date should be in format YYYY-MM-DD')
-    .test('valid-date', 'Proc Date must be a valid date', function(value) {
+    .matches(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
+    .test('valid-date', 'Invalid date', function(value) {
       if (!value) return false;
       const date = new Date(value);
-      return date instanceof Date && !isNaN(date);
+      if (!(date instanceof Date) || isNaN(date)) {
+        return false;
+      }
+      // Check if the date components match what was entered
+      // This catches cases like 2024-02-30 which JS converts to 2024-03-01
+      const [year, month, day] = value.split('-').map(Number);
+      return date.getFullYear() === year && 
+             date.getMonth() === month - 1 && 
+             date.getDate() === day;
     }),
   
   merchantId: Yup.string()
@@ -133,7 +180,7 @@ const validationSchema = Yup.object({
   merchantZip: Yup.string()
     .required('Merchant Zip can NOT be empty')
     .max(10, 'Merchant Zip must not exceed 10 characters'),
-}, [['accountId', 'cardNumber']]);
+});
 
 /**
  * TransactionAddComponent
@@ -172,12 +219,49 @@ const TransactionAddComponent = () => {
     validationSchema: validationSchema,
     validateOnChange: true,
     validateOnBlur: true,
-    onSubmit: (values) => {
+    onSubmit: () => {
       // Open confirmation dialog instead of submitting directly
       // Matches COBOL logic at lines 169-188 (PROCESS-ENTER-KEY)
+      console.log('onSubmit called - opening confirmation dialog');
       setConfirmDialogOpen(true);
     },
   });
+
+  /**
+   * Custom submit handler that ensures all fields are touched
+   * This allows validation errors to display when submit is clicked
+   */
+  const handleFormSubmit = async (e) => {
+    console.log('handleFormSubmit called');
+    e.preventDefault();
+    
+    // First validate the form to get current errors
+    const errors = await formik.validateForm();
+    console.log('Validation errors:', errors);
+    console.log('Current formik.errors:', formik.errors);
+    console.log('Current formik.touched:', formik.touched);
+    
+    // Set the errors in formik state
+    formik.setErrors(errors);
+    
+    // Mark all fields as touched so validation errors will display
+    const touchedFields = Object.keys(formik.values).reduce((acc, key) => {
+      acc[key] = true;
+      return acc;
+    }, {});
+    await formik.setTouched(touchedFields, true); // validateOnMount=true triggers validation
+    
+    console.log('After setErrors - formik.errors:', formik.errors);
+    console.log('After setTouched - formik.touched:', formik.touched);
+    
+    // If validation passed, open confirmation dialog
+    if (Object.keys(errors).length === 0) {
+      console.log('Form is valid, opening confirmation dialog');
+      setConfirmDialogOpen(true);
+    } else {
+      console.log('Form has errors, not submitting');
+    }
+  };
 
   /**
    * Handle confirmation dialog acceptance
@@ -324,13 +408,39 @@ const TransactionAddComponent = () => {
     
     if (value) {
       try {
-        // Parse and format to proper BigDecimal format with sign
-        const numValue = parseFloat(value);
-        if (!isNaN(numValue)) {
-          const sign = numValue >= 0 ? '+' : '';
-          const formatted = sign + numValue.toFixed(2);
-          formik.setFieldValue('amount', formatted);
+        // Only format if the value is valid (passes all validation rules)
+        // Check basic format
+        const basicNumberRegex = /^[+-]?\d+(\.\d+)?$/;
+        if (!basicNumberRegex.test(value)) {
+          return; // Invalid format, don't reformat
         }
+        
+        // Parse value
+        const numValue = parseFloat(value);
+        if (isNaN(numValue)) {
+          return; // Not a number, don't reformat
+        }
+        
+        // Check if positive
+        if (numValue <= 0) {
+          return; // Negative or zero, don't reformat
+        }
+        
+        // Check decimal places
+        const decimalMatch = value.match(/\.(\d+)$/);
+        if (decimalMatch && decimalMatch[1].length > 2) {
+          return; // Too many decimal places, don't reformat
+        }
+        
+        // Check max value
+        if (numValue > 99999999.99) {
+          return; // Too large, don't reformat
+        }
+        
+        // Value is valid, format it with sign
+        const sign = numValue >= 0 ? '+' : '';
+        const formatted = sign + numValue.toFixed(2);
+        formik.setFieldValue('amount', formatted);
       } catch (err) {
         // Leave value as-is if parsing fails
       }
@@ -367,7 +477,7 @@ const TransactionAddComponent = () => {
         )}
 
         {/* Form starts here */}
-        <form onSubmit={formik.handleSubmit}>
+        <form onSubmit={handleFormSubmit}>
           {/* Account ID or Card Number section */}
           <Box sx={{ mb: 3 }}>
             <Typography variant="h6" gutterBottom color="text.secondary">
@@ -519,14 +629,14 @@ const TransactionAddComponent = () => {
                   id="originDate"
                   name="originDate"
                   label="Orig Date"
-                  type="date"
+                  type="text"
                   value={formik.values.originDate}
                   onChange={formik.handleChange}
                   onBlur={formik.handleBlur}
                   error={formik.touched.originDate && Boolean(formik.errors.originDate)}
                   helperText={formik.touched.originDate && formik.errors.originDate || '(YYYY-MM-DD)'}
+                  placeholder="YYYY-MM-DD"
                   required
-                  InputLabelProps={{ shrink: true }}
                   sx={{ bgcolor: 'background.paper' }}
                 />
               </Grid>
@@ -536,14 +646,14 @@ const TransactionAddComponent = () => {
                   id="processDate"
                   name="processDate"
                   label="Proc Date"
-                  type="date"
+                  type="text"
                   value={formik.values.processDate}
                   onChange={formik.handleChange}
                   onBlur={formik.handleBlur}
                   error={formik.touched.processDate && Boolean(formik.errors.processDate)}
                   helperText={formik.touched.processDate && formik.errors.processDate || '(YYYY-MM-DD)'}
+                  placeholder="YYYY-MM-DD"
                   required
-                  InputLabelProps={{ shrink: true }}
                   sx={{ bgcolor: 'background.paper' }}
                 />
               </Grid>
@@ -639,7 +749,15 @@ const TransactionAddComponent = () => {
                 variant="contained"
                 color="primary"
                 size="large"
-                disabled={!formik.isValid || formik.isSubmitting}
+                disabled={formik.isSubmitting}
+                onClick={async () => {
+                  // Mark all fields as touched to show validation errors
+                  const touchedFields = Object.keys(formik.values).reduce((acc, key) => {
+                    acc[key] = true;
+                    return acc;
+                  }, {});
+                  await formik.setTouched(touchedFields, true);
+                }}
               >
                 Add Transaction (ENTER)
               </Button>
