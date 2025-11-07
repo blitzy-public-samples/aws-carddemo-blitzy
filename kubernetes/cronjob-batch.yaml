@@ -1,0 +1,323 @@
+# CardDemo Spring Boot Application - Batch Processing CronJobs
+# This file defines Kubernetes CronJob resources for scheduling Spring Batch jobs
+# Replaces mainframe JCL batch processing with cloud-native scheduling
+#
+# Batch Jobs Schedule:
+# - Interest Calculation: Daily at 2 AM (replaces CBACT04C)
+# - Daily Transaction Processing: Daily at 3 AM (replaces CBTRN02C)
+# - Statement Generation: Monthly on 1st at 4 AM (replaces CBSTM03A/B)
+#
+# All jobs must complete within 4-hour processing window (2 AM - 6 AM)
+
+---
+# Interest Calculation Job - Daily at 2 AM
+# Replaces mainframe batch program CBACT04C
+# Calculates interest on account balances using BigDecimal precision
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: interest-calculation-job
+  namespace: carddemo
+  labels:
+    app: carddemo
+    component: batch
+    job-type: interest-calculation
+    legacy-program: CBACT04C
+spec:
+  # Schedule: Daily at 2:00 AM UTC
+  schedule: "0 2 * * *"
+  
+  # Concurrency policy: Forbid prevents overlapping job executions
+  # Critical for financial calculations to avoid duplicate processing
+  concurrencyPolicy: Forbid
+  
+  # Keep history of last 3 successful and failed jobs for audit trail
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  
+  # Start job within 5 minutes of scheduled time or consider it failed
+  startingDeadlineSeconds: 300
+  
+  # Suspend flag - set to true to temporarily disable job
+  suspend: false
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job-type: interest-calculation
+    spec:
+      # Job execution configuration
+      parallelism: 1
+      completions: 1
+      backoffLimit: 3
+      
+      # Active deadline: 3 hours (within 4-hour batch window)
+      activeDeadlineSeconds: 10800
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job-type: interest-calculation
+        spec:
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: interest-calculation
+            image: carddemo-spring:1.0.0
+            imagePullPolicy: IfNotPresent
+            
+            # Command override to execute specific Spring Batch job
+            command:
+              - "java"
+              - "-jar"
+              - "/app/app.jar"
+              - "--spring.batch.job.names=InterestCalculationJob"
+            
+            # Environment variable specifying which batch job to run
+            env:
+            - name: SPRING_BATCH_JOB
+              value: "InterestCalculationJob"
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: JAVA_OPTS
+              value: "-Xms1024m -Xmx1792m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+            
+            # Load configuration from ConfigMap and secrets
+            envFrom:
+            - configMapRef:
+                name: carddemo-config
+            - secretRef:
+                name: carddemo-secrets
+            
+            # Resource limits for batch processing
+            # Higher limits than online processing for bulk operations
+            resources:
+              limits:
+                cpu: "2"
+                memory: "2Gi"
+              requests:
+                cpu: "1"
+                memory: "1Gi"
+            
+            # Volume mounts for batch processing logs
+            volumeMounts:
+            - name: batch-logs
+              mountPath: /app/logs
+          
+          volumes:
+          - name: batch-logs
+            emptyDir: {}
+
+---
+# Daily Transaction Processing Job - Daily at 3 AM
+# Replaces mainframe batch program CBTRN02C
+# Posts daily transactions and updates account balances
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-transaction-processing-job
+  namespace: carddemo
+  labels:
+    app: carddemo
+    component: batch
+    job-type: transaction-processing
+    legacy-program: CBTRN02C
+spec:
+  # Schedule: Daily at 3:00 AM UTC (after interest calculation)
+  schedule: "0 3 * * *"
+  
+  # Concurrency policy: Forbid prevents overlapping job executions
+  # Critical to avoid duplicate transaction posting
+  concurrencyPolicy: Forbid
+  
+  # Keep history of last 3 successful and failed jobs for audit trail
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  
+  # Start job within 5 minutes of scheduled time or consider it failed
+  startingDeadlineSeconds: 300
+  
+  # Suspend flag - set to true to temporarily disable job
+  suspend: false
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job-type: transaction-processing
+    spec:
+      # Job execution configuration
+      parallelism: 1
+      completions: 1
+      backoffLimit: 3
+      
+      # Active deadline: 3 hours (within 4-hour batch window)
+      activeDeadlineSeconds: 10800
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job-type: transaction-processing
+        spec:
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: transaction-processing
+            image: carddemo-spring:1.0.0
+            imagePullPolicy: IfNotPresent
+            
+            # Command override to execute specific Spring Batch job
+            command:
+              - "java"
+              - "-jar"
+              - "/app/app.jar"
+              - "--spring.batch.job.names=DailyTransactionProcessingJob"
+            
+            # Environment variable specifying which batch job to run
+            env:
+            - name: SPRING_BATCH_JOB
+              value: "DailyTransactionProcessingJob"
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: JAVA_OPTS
+              value: "-Xms1024m -Xmx1792m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+            
+            # Load configuration from ConfigMap and secrets
+            envFrom:
+            - configMapRef:
+                name: carddemo-config
+            - secretRef:
+                name: carddemo-secrets
+            
+            # Resource limits for batch processing
+            # Higher limits for transaction volume processing
+            resources:
+              limits:
+                cpu: "2"
+                memory: "2Gi"
+              requests:
+                cpu: "1"
+                memory: "1Gi"
+            
+            # Volume mounts for batch processing logs
+            volumeMounts:
+            - name: batch-logs
+              mountPath: /app/logs
+          
+          volumes:
+          - name: batch-logs
+            emptyDir: {}
+
+---
+# Statement Generation Job - Monthly on 1st at 4 AM
+# Replaces mainframe batch programs CBSTM03A and CBSTM03B
+# Generates monthly account statements
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: statement-generation-job
+  namespace: carddemo
+  labels:
+    app: carddemo
+    component: batch
+    job-type: statement-generation
+    legacy-program: CBSTM03A-CBSTM03B
+spec:
+  # Schedule: Monthly on 1st day at 4:00 AM UTC
+  schedule: "0 4 1 * *"
+  
+  # Concurrency policy: Forbid prevents overlapping job executions
+  # Critical to avoid duplicate statement generation
+  concurrencyPolicy: Forbid
+  
+  # Keep history of last 3 successful and failed jobs for audit trail
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  
+  # Start job within 5 minutes of scheduled time or consider it failed
+  startingDeadlineSeconds: 300
+  
+  # Suspend flag - set to true to temporarily disable job
+  suspend: false
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: carddemo
+        component: batch
+        job-type: statement-generation
+    spec:
+      # Job execution configuration
+      parallelism: 1
+      completions: 1
+      backoffLimit: 3
+      
+      # Active deadline: 3 hours (within 4-hour batch window)
+      activeDeadlineSeconds: 10800
+      
+      template:
+        metadata:
+          labels:
+            app: carddemo
+            component: batch
+            job-type: statement-generation
+        spec:
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: statement-generation
+            image: carddemo-spring:1.0.0
+            imagePullPolicy: IfNotPresent
+            
+            # Command override to execute specific Spring Batch job
+            command:
+              - "java"
+              - "-jar"
+              - "/app/app.jar"
+              - "--spring.batch.job.names=StatementGenerationJob"
+            
+            # Environment variable specifying which batch job to run
+            env:
+            - name: SPRING_BATCH_JOB
+              value: "StatementGenerationJob"
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: JAVA_OPTS
+              value: "-Xms1024m -Xmx1792m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+            
+            # Load configuration from ConfigMap and secrets
+            envFrom:
+            - configMapRef:
+                name: carddemo-config
+            - secretRef:
+                name: carddemo-secrets
+            
+            # Resource limits for batch processing
+            # Higher limits for statement generation (PDF creation)
+            resources:
+              limits:
+                cpu: "2"
+                memory: "2Gi"
+              requests:
+                cpu: "1"
+                memory: "1Gi"
+            
+            # Volume mounts for batch processing logs and statement output
+            volumeMounts:
+            - name: batch-logs
+              mountPath: /app/logs
+            - name: statement-output
+              mountPath: /app/statements
+          
+          volumes:
+          - name: batch-logs
+            emptyDir: {}
+          - name: statement-output
+            emptyDir: {}
