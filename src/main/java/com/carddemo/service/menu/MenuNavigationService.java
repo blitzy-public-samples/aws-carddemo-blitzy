@@ -196,6 +196,7 @@ public class MenuNavigationService {
          * Option 2: Account Update
          * COBOL: Lines 31-35 in COMEN02Y.cpy
          * PIC 9(02) VALUE 2, PIC X(35) VALUE 'Account Update', PIC X(08) VALUE 'COACTUPC', PIC X(01) VALUE 'U'
+         * Admin-only: Requires ROLE_ADMIN for credit limit modifications
          */
         ACCOUNT_UPDATE(
             2,
@@ -204,7 +205,7 @@ public class MenuNavigationService {
             "COACTUPC",
             "/accounts/update",
             "Update credit limit and account settings",
-            false
+            true
         ),
 
         /**
@@ -223,42 +224,28 @@ public class MenuNavigationService {
         ),
 
         /**
-         * Option 4: Credit Card View
-         * COBOL: Lines 43-47 in COMEN02Y.cpy
-         * PIC 9(02) VALUE 4, PIC X(35) VALUE 'Credit Card View', PIC X(08) VALUE 'COCRDSLC', PIC X(01) VALUE 'U'
-         */
-        CARD_VIEW(
-            4,
-            "CARD_VIEW",
-            "Credit Card View",
-            "COCRDSLC",
-            "/cards/view",
-            "Display credit card details and transaction history",
-            false
-        ),
-
-        /**
-         * Option 5: Credit Card Update
+         * Option 4: Credit Card Update
          * COBOL: Lines 49-53 in COMEN02Y.cpy
-         * PIC 9(02) VALUE 5, PIC X(35) VALUE 'Credit Card Update', PIC X(08) VALUE 'COCRDUPC', PIC X(01) VALUE 'U'
+         * PIC 9(02) VALUE 4, PIC X(35) VALUE 'Credit Card Update', PIC X(08) VALUE 'COCRDUPC', PIC X(01) VALUE 'U'
+         * Admin-only: Requires ROLE_ADMIN for card status and expiration modifications
          */
         CARD_UPDATE(
-            5,
+            4,
             "CARD_UPDATE",
             "Credit Card Update",
             "COCRDUPC",
             "/cards/update",
             "Update card status and expiration date",
-            false
+            true
         ),
 
         /**
-         * Option 6: Transaction List
+         * Option 5: Transaction List
          * COBOL: Lines 55-59 in COMEN02Y.cpy
-         * PIC 9(02) VALUE 6, PIC X(35) VALUE 'Transaction List', PIC X(08) VALUE 'COTRN00C', PIC X(01) VALUE 'U'
+         * PIC 9(02) VALUE 5, PIC X(35) VALUE 'Transaction List', PIC X(08) VALUE 'COTRN00C', PIC X(01) VALUE 'U'
          */
         TRANSACTION_LIST(
-            6,
+            5,
             "TRANS_LIST",
             "Transaction List",
             "COTRN00C",
@@ -268,64 +255,81 @@ public class MenuNavigationService {
         ),
 
         /**
-         * Option 7: Transaction View
-         * COBOL: Lines 61-65 in COMEN02Y.cpy
-         * PIC 9(02) VALUE 7, PIC X(35) VALUE 'Transaction View', PIC X(08) VALUE 'COTRN01C', PIC X(01) VALUE 'U'
-         */
-        TRANSACTION_VIEW(
-            7,
-            "TRANS_VIEW",
-            "Transaction View",
-            "COTRN01C",
-            "/transactions/view",
-            "Display single transaction detail with merchant information",
-            false
-        ),
-
-        /**
-         * Option 8: Transaction Add
+         * Option 6: Transaction Add
          * COBOL: Lines 67-72 in COMEN02Y.cpy
-         * PIC 9(02) VALUE 8, PIC X(35) VALUE 'Transaction Add', PIC X(08) VALUE 'COTRN02C', PIC X(01) VALUE 'U'
+         * PIC 9(02) VALUE 6, PIC X(35) VALUE 'Transaction Add', PIC X(08) VALUE 'COTRN02C', PIC X(01) VALUE 'U'
          * Note: Comment in line 69 shows this was originally "Transaction Add (Admin Only)" but changed to 'U' access
+         * Admin-only: Requires ROLE_ADMIN for manual transaction creation
          */
         TRANSACTION_ADD(
-            8,
+            6,
             "TRANS_ADD",
             "Transaction Add",
             "COTRN02C",
             "/transactions/add",
             "Add new transaction with validation and authorization",
-            false
+            true
         ),
 
         /**
-         * Option 9: Transaction Reports
-         * COBOL: Lines 74-78 in COMEN02Y.cpy
-         * PIC 9(02) VALUE 9, PIC X(35) VALUE 'Transaction Reports', PIC X(08) VALUE 'CORPT00C', PIC X(01) VALUE 'U'
-         */
-        TRANSACTION_REPORTS(
-            9,
-            "REPORT",
-            "Transaction Reports",
-            "CORPT00C",
-            "/reports/transactions",
-            "Generate transaction reports with filtering and export",
-            false
-        ),
-
-        /**
-         * Option 10: Bill Payment
+         * Option 7: Bill Payment
          * COBOL: Lines 80-84 in COMEN02Y.cpy
-         * PIC 9(02) VALUE 10, PIC X(35) VALUE 'Bill Payment', PIC X(08) VALUE 'COBIL00C', PIC X(01) VALUE 'U'
+         * PIC 9(02) VALUE 7, PIC X(35) VALUE 'Bill Payment', PIC X(08) VALUE 'COBIL00C', PIC X(01) VALUE 'U'
          */
         BILL_PAYMENT(
-            10,
+            7,
             "BILL_PAY",
             "Bill Payment",
             "COBIL00C",
             "/billing/payment",
             "Process customer bill payments",
             false
+        ),
+
+        /**
+         * Option 8: Transaction Reports
+         * COBOL: Lines 74-78 in COMEN02Y.cpy
+         * PIC 9(02) VALUE 8, PIC X(35) VALUE 'Transaction Reports', PIC X(08) VALUE 'CORPT00C', PIC X(01) VALUE 'U'
+         * Admin-only: Requires ROLE_ADMIN for report generation and data export
+         */
+        TRANSACTION_REPORTS(
+            8,
+            "REPORT",
+            "Transaction Reports",
+            "CORPT00C",
+            "/reports/transactions",
+            "Generate transaction reports with filtering and export",
+            true
+        ),
+
+        /**
+         * Option 9: Admin Menu
+         * COBOL: COADM01C.cbl - Administrative functions menu
+         * Admin-only: Requires ROLE_ADMIN for accessing administrative menu
+         */
+        ADMIN_MENU(
+            9,
+            "ADMIN_MENU",
+            "Admin Menu",
+            "COADM01C",
+            "/admin/menu",
+            "Access administrative functions",
+            true
+        ),
+
+        /**
+         * Option 10: User List
+         * COBOL: COUSR00C.cbl - User management functions
+         * Admin-only: Requires ROLE_ADMIN for user management operations
+         */
+        USER_LIST(
+            10,
+            "USER_LIST",
+            "User List",
+            "COUSR00C",
+            "/admin/users",
+            "Manage system users",
+            true
         );
 
         private final int displayOrder;
