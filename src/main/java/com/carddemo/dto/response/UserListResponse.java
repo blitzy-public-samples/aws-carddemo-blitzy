@@ -240,7 +240,9 @@ public class UserListResponse {
                 String userId = getFieldValue(user, "userId", String.class);
                 String firstName = getFieldValue(user, "firstName", String.class);
                 String lastName = getFieldValue(user, "lastName", String.class);
-                String userType = getFieldValue(user, "userType", String.class);
+                
+                // Extract userType - handle both enum and String cases
+                String userType = extractUserType(user);
 
                 // Construct full name
                 String fullName = null;
@@ -271,6 +273,78 @@ public class UserListResponse {
                 System.err.println("Error converting User entity to UserSummaryDTO: " 
                     + e.getMessage());
                 return null;
+            }
+        }
+        
+        /**
+         * Helper method to extract userType field value, handling enum types.
+         * 
+         * The User entity stores userType as an enum (UserType.ADMIN or UserType.USER),
+         * but the DTO needs the string code ('A' or 'U'). This method extracts the enum
+         * and calls its getCode() method to get the single character code.
+         * 
+         * @param obj The entity object
+         * @return User type code ('A' or 'U') or null if not found
+         */
+        private static String extractUserType(Object obj) {
+            try {
+                // Try getter method first (e.g., getUserType())
+                java.lang.reflect.Method getter = 
+                    obj.getClass().getMethod("getUserType");
+                Object value = getter.invoke(obj);
+                
+                if (value == null) {
+                    return null;
+                }
+                
+                // Check if it's an enum with a getCode() method
+                if (value.getClass().isEnum()) {
+                    try {
+                        java.lang.reflect.Method getCodeMethod = 
+                            value.getClass().getMethod("getCode");
+                        Object codeValue = getCodeMethod.invoke(value);
+                        return codeValue != null ? codeValue.toString() : null;
+                    } catch (NoSuchMethodException e) {
+                        // Enum doesn't have getCode method, use enum name or toString
+                        return value.toString();
+                    }
+                }
+                
+                // If it's already a String, return it
+                return value.toString();
+                
+            } catch (Exception e) {
+                try {
+                    // Try direct field access as fallback
+                    java.lang.reflect.Field field = 
+                        obj.getClass().getDeclaredField("userType");
+                    field.setAccessible(true);
+                    Object value = field.get(obj);
+                    
+                    if (value == null) {
+                        return null;
+                    }
+                    
+                    // Check if it's an enum with a getCode() method
+                    if (value.getClass().isEnum()) {
+                        try {
+                            java.lang.reflect.Method getCodeMethod = 
+                                value.getClass().getMethod("getCode");
+                            Object codeValue = getCodeMethod.invoke(value);
+                            return codeValue != null ? codeValue.toString() : null;
+                        } catch (NoSuchMethodException ex) {
+                            // Enum doesn't have getCode method, use enum name or toString
+                            return value.toString();
+                        }
+                    }
+                    
+                    // If it's already a String, return it
+                    return value.toString();
+                    
+                } catch (Exception ex) {
+                    // Field not found or not accessible
+                    return null;
+                }
             }
         }
 
