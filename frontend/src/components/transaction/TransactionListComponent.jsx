@@ -16,7 +16,7 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   Paper,
@@ -68,9 +68,6 @@ const TransactionListComponent = () => {
   const [searchTransactionId, setSearchTransactionId] = useState('');
   const [searchInput, setSearchInput] = useState('');
   
-  // Selection state (matching BMS SEL field functionality)
-  const [selectedTransactionId, setSelectedTransactionId] = useState('');
-  
   // Error handling state
   const [errorMessage, setErrorMessage] = useState('');
   const [validationError, setValidationError] = useState('');
@@ -86,16 +83,8 @@ const TransactionListComponent = () => {
   const API_BASE_URL = '/api/transactions';
   
   // ============================================================================
-  // Data Fetching - useEffect Hook
+  // Data Fetching Functions
   // ============================================================================
-  
-  /**
-   * Fetch transactions when component mounts or when page/search changes
-   * Matches COBOL PROCESS-ENTER-KEY and pagination logic
-   */
-  useEffect(() => {
-    fetchTransactions();
-  }, [pageNumber, searchTransactionId]);
   
   /**
    * fetchTransactions
@@ -109,7 +98,7 @@ const TransactionListComponent = () => {
    *   - size: Number of records per page (10)
    *   - transactionId: Optional search filter
    */
-  const fetchTransactions = async () => {
+  const fetchTransactions = useCallback(async () => {
     setLoading(true);
     setErrorMessage('');
     setValidationError('');
@@ -148,7 +137,15 @@ const TransactionListComponent = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [pageNumber, searchTransactionId]);
+  
+  /**
+   * Fetch transactions when component mounts or when page/search changes
+   * Matches COBOL PROCESS-ENTER-KEY and pagination logic
+   */
+  useEffect(() => {
+    fetchTransactions();
+  }, [fetchTransactions]);
   
   /**
    * handleApiError
