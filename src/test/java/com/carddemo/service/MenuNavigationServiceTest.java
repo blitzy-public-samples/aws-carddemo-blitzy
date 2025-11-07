@@ -38,6 +38,7 @@ import java.util.Collection;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.*;
@@ -183,6 +184,7 @@ class MenuNavigationServiceTest {
         authorities.add(new SimpleGrantedAuthority("ROLE_ADMIN"));
         
         when(authentication.getAuthorities()).thenReturn((Collection) authorities);
+        when(authentication.isAuthenticated()).thenReturn(true);
         when(securityContext.getAuthentication()).thenReturn(authentication);
         SecurityContextHolder.setContext(securityContext);
 
@@ -253,6 +255,7 @@ class MenuNavigationServiceTest {
         authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
         
         when(authentication.getAuthorities()).thenReturn((Collection) authorities);
+        when(authentication.isAuthenticated()).thenReturn(true);
         when(securityContext.getAuthentication()).thenReturn(authentication);
         SecurityContextHolder.setContext(securityContext);
 
@@ -321,6 +324,7 @@ class MenuNavigationServiceTest {
         authorities.add(new SimpleGrantedAuthority("ROLE_ADMIN"));
         
         when(authentication.getAuthorities()).thenReturn((Collection) authorities);
+        when(authentication.isAuthenticated()).thenReturn(true);
         when(securityContext.getAuthentication()).thenReturn(authentication);
         SecurityContextHolder.setContext(securityContext);
 
@@ -328,7 +332,7 @@ class MenuNavigationServiceTest {
         for (int option = 1; option <= 10; option++) {
             final int optionToTest = option;
             // Each valid option should be accepted without throwing ValidationException
-            assertThat(menuNavigationService.validateMenuOption(optionToTest))
+            assertThatCode(() -> menuNavigationService.validateMenuOption(optionToTest))
                     .as("Menu option %d should be valid", optionToTest)
                     .doesNotThrowAnyException();
         }
@@ -354,13 +358,8 @@ class MenuNavigationServiceTest {
     @Test
     @DisplayName("Test: Validate menu option with zero throws ValidationException")
     void testValidateMenuOption_ZeroOption_ThrowsValidationException() {
-        // Arrange: Setup authentication context
-        Collection<GrantedAuthority> authorities = new ArrayList<>();
-        authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
-        
-        when(authentication.getAuthorities()).thenReturn((Collection) authorities);
-        when(securityContext.getAuthentication()).thenReturn(authentication);
-        SecurityContextHolder.setContext(securityContext);
+        // Arrange: No authentication setup needed - range validation happens before auth check
+        // validateMenuOption checks range (MenuNavigationService line 523) before checking user role (line 539)
 
         // Act & Assert: Validate option 0 should throw ValidationException
         ValidationException exception = assertThrows(ValidationException.class, () -> {
@@ -382,13 +381,8 @@ class MenuNavigationServiceTest {
     @Test
     @DisplayName("Test: Validate menu option with negative number throws ValidationException")
     void testValidateMenuOption_NegativeOption_ThrowsValidationException() {
-        // Arrange: Setup authentication context
-        Collection<GrantedAuthority> authorities = new ArrayList<>();
-        authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
-        
-        when(authentication.getAuthorities()).thenReturn((Collection) authorities);
-        when(securityContext.getAuthentication()).thenReturn(authentication);
-        SecurityContextHolder.setContext(securityContext);
+        // Arrange: No authentication setup needed - range validation happens before auth check
+        // validateMenuOption checks range (MenuNavigationService line 523) before checking user role (line 539)
 
         // Act & Assert: Validate negative option should throw ValidationException
         ValidationException exception = assertThrows(ValidationException.class, () -> {
@@ -419,13 +413,8 @@ class MenuNavigationServiceTest {
     @Test
     @DisplayName("Test: Validate menu option exceeding range throws ValidationException")
     void testValidateMenuOption_OptionExceedingRange_ThrowsValidationException() {
-        // Arrange: Setup authentication context
-        Collection<GrantedAuthority> authorities = new ArrayList<>();
-        authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
-        
-        when(authentication.getAuthorities()).thenReturn((Collection) authorities);
-        when(securityContext.getAuthentication()).thenReturn(authentication);
-        SecurityContextHolder.setContext(securityContext);
+        // Arrange: No authentication setup needed - range validation happens before auth check
+        // validateMenuOption checks range (MenuNavigationService line 523) before checking user role (line 539)
 
         // Act & Assert: Validate option > 10 should throw ValidationException
         ValidationException exception = assertThrows(ValidationException.class, () -> {
@@ -464,6 +453,7 @@ class MenuNavigationServiceTest {
         authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
         
         when(authentication.getAuthorities()).thenReturn((Collection) authorities);
+        when(authentication.isAuthenticated()).thenReturn(true);
         when(securityContext.getAuthentication()).thenReturn(authentication);
         SecurityContextHolder.setContext(securityContext);
 
@@ -500,6 +490,7 @@ class MenuNavigationServiceTest {
         authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
         
         when(authentication.getAuthorities()).thenReturn((Collection) authorities);
+        when(authentication.isAuthenticated()).thenReturn(true);
         when(securityContext.getAuthentication()).thenReturn(authentication);
         SecurityContextHolder.setContext(securityContext);
 
@@ -530,20 +521,16 @@ class MenuNavigationServiceTest {
     @Test
     @DisplayName("Test: Regular user can access all user-level options")
     void testValidateMenuOption_RegularUserAccessingUserOptions_Success() {
-        // Arrange: Setup regular user authentication with ROLE_USER only
-        Collection<GrantedAuthority> authorities = new ArrayList<>();
-        authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
-        
-        when(authentication.getAuthorities()).thenReturn((Collection) authorities);
-        when(securityContext.getAuthentication()).thenReturn(authentication);
-        SecurityContextHolder.setContext(securityContext);
+        // Arrange: No authentication setup needed - user options have adminOnly=false
+        // validateMenuOption checks adminOnly flag (line 539), which is false for user options,
+        // so isAdminUser() is never called and auth mocks are unnecessary
 
         // Define user-accessible option numbers based on COMEN02Y.cpy structure
         int[] userAccessibleOptions = {1, 3, 5, 7};
         
         // Act & Assert: Verify each user option is accepted without exception
         for (int userOption : userAccessibleOptions) {
-            assertThat(menuNavigationService.validateMenuOption(userOption))
+            assertThatCode(() -> menuNavigationService.validateMenuOption(userOption))
                     .as("User option %d should be accessible to regular user", userOption)
                     .doesNotThrowAnyException();
         }
@@ -613,6 +600,7 @@ class MenuNavigationServiceTest {
         authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
         
         when(authentication.getAuthorities()).thenReturn((Collection) authorities);
+        when(authentication.isAuthenticated()).thenReturn(true);
         when(securityContext.getAuthentication()).thenReturn(authentication);
         SecurityContextHolder.setContext(securityContext);
 
@@ -654,17 +642,13 @@ class MenuNavigationServiceTest {
     @Test
     @DisplayName("Test: Menu navigation on reentry processes user selection")
     void testMenuNavigationReentry_ProcessesSelection() {
-        // Arrange: Setup authenticated admin user
-        Collection<GrantedAuthority> authorities = new ArrayList<>();
-        authorities.add(new SimpleGrantedAuthority("ROLE_ADMIN"));
-        
-        when(authentication.getAuthorities()).thenReturn((Collection) authorities);
-        when(securityContext.getAuthentication()).thenReturn(authentication);
-        SecurityContextHolder.setContext(securityContext);
+        // Arrange: No authentication setup needed - option 1 (Account View) has adminOnly=false
+        // validateMenuOption checks adminOnly flag (line 539), which is false for option 1,
+        // so isAdminUser() is never called and auth mocks are unnecessary
 
         // Act: Validate menu option (simulates ENTER key with option selection)
-        // Option 1 = Account View - should be valid for admin
-        assertThat(menuNavigationService.validateMenuOption(1))
+        // Option 1 = Account View - accessible to all authenticated users
+        assertThatCode(() -> menuNavigationService.validateMenuOption(1))
                 .doesNotThrowAnyException();
 
         // Assert: Validation succeeds without exception (COBOL would XCTL to COACTVWC)
@@ -693,28 +677,29 @@ class MenuNavigationServiceTest {
         authorities.add(new SimpleGrantedAuthority("ROLE_ADMIN"));
         
         when(authentication.getAuthorities()).thenReturn((Collection) authorities);
+        when(authentication.isAuthenticated()).thenReturn(true);
         when(securityContext.getAuthentication()).thenReturn(authentication);
         SecurityContextHolder.setContext(securityContext);
 
         // Act & Assert: Test various valid options routing
         // Option 1 -> COACTVWC (Account View)
-        assertThat(menuNavigationService.validateMenuOption(1))
+        assertThatCode(() -> menuNavigationService.validateMenuOption(1))
                 .doesNotThrowAnyException();
         
         // Option 2 -> COACTUPC (Account Update) - Admin can access
-        assertThat(menuNavigationService.validateMenuOption(2))
+        assertThatCode(() -> menuNavigationService.validateMenuOption(2))
                 .doesNotThrowAnyException();
         
         // Option 3 -> COCRDLIC (Card List)
-        assertThat(menuNavigationService.validateMenuOption(3))
+        assertThatCode(() -> menuNavigationService.validateMenuOption(3))
                 .doesNotThrowAnyException();
         
         // Option 5 -> COTRN00C (Transaction List)
-        assertThat(menuNavigationService.validateMenuOption(5))
+        assertThatCode(() -> menuNavigationService.validateMenuOption(5))
                 .doesNotThrowAnyException();
         
         // Option 7 -> COBIL00C (Bill Payment)
-        assertThat(menuNavigationService.validateMenuOption(7))
+        assertThatCode(() -> menuNavigationService.validateMenuOption(7))
                 .doesNotThrowAnyException();
     }
 
@@ -742,13 +727,8 @@ class MenuNavigationServiceTest {
     @Test
     @DisplayName("Test: PF3 key press conceptually returns to signon (logout)")
     void testProcessPF3KeyReturnsToSignon_LogoutFlow() {
-        // Arrange: Setup authenticated user
-        Collection<GrantedAuthority> authorities = new ArrayList<>();
-        authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
-        
-        when(authentication.getAuthorities()).thenReturn((Collection) authorities);
-        when(securityContext.getAuthentication()).thenReturn(authentication);
-        SecurityContextHolder.setContext(securityContext);
+        // Arrange: No authentication setup needed - test only verifies SecurityContextHolder behavior
+        // Test doesn't call menuNavigationService, so mocks would be unnecessary stubs
 
         // Act: Simulate PF3 key press by clearing security context (logout)
         SecurityContextHolder.clearContext();
@@ -810,6 +790,7 @@ class MenuNavigationServiceTest {
         authorities.add(new SimpleGrantedAuthority("ROLE_ADMIN"));
         
         when(authentication.getAuthorities()).thenReturn((Collection) authorities);
+        when(authentication.isAuthenticated()).thenReturn(true);
         when(securityContext.getAuthentication()).thenReturn(authentication);
         SecurityContextHolder.setContext(securityContext);
 
@@ -833,6 +814,7 @@ class MenuNavigationServiceTest {
         authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
         
         when(authentication.getAuthorities()).thenReturn((Collection) authorities);
+        when(authentication.isAuthenticated()).thenReturn(true);
         when(securityContext.getAuthentication()).thenReturn(authentication);
         SecurityContextHolder.setContext(securityContext);
 
@@ -880,6 +862,7 @@ class MenuNavigationServiceTest {
         authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
         
         when(authentication.getAuthorities()).thenReturn((Collection) authorities);
+        when(authentication.isAuthenticated()).thenReturn(true);
         when(securityContext.getAuthentication()).thenReturn(authentication);
         SecurityContextHolder.setContext(securityContext);
 
@@ -888,7 +871,7 @@ class MenuNavigationServiceTest {
         MenuResponse firstResponse = menuNavigationService.getMainMenu();
         
         // Second call: Validate option (reentry with selection)
-        assertThat(menuNavigationService.validateMenuOption(1))
+        assertThatCode(() -> menuNavigationService.validateMenuOption(1))
                 .doesNotThrowAnyException();
         
         // Third call: Get menu again (another reentry)
