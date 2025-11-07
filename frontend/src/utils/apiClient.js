@@ -21,12 +21,11 @@ import axios from 'axios';
 
 /**
  * Base URL Configuration
- * Supports both Create React App (REACT_APP_) and Vite (VITE_) environment variable prefixes
+ * Uses Vite environment variable (VITE_API_BASE_URL)
  * Falls back to localhost:8080 for local development if not specified
  */
 const API_BASE_URL = 
-  process.env.REACT_APP_API_BASE_URL || 
-  process.env.VITE_API_BASE_URL || 
+  import.meta.env.VITE_API_BASE_URL || 
   'http://localhost:8080/api';
 
 /**
@@ -95,7 +94,7 @@ apiClient.interceptors.request.use(
     }
     
     // Log request for debugging (can be disabled in production)
-    if (process.env.NODE_ENV === 'development') {
+    if (import.meta.env.MODE === 'development') {
       console.log(`[API Request] ${config.method?.toUpperCase()} ${config.url}`, {
         params: config.params,
         data: config.data,
@@ -118,7 +117,7 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
   (response) => {
     // Log successful response for debugging
-    if (process.env.NODE_ENV === 'development') {
+    if (import.meta.env.MODE === 'development') {
       console.log(`[API Response] ${response.config.method?.toUpperCase()} ${response.config.url}`, {
         status: response.status,
         data: response.data,
