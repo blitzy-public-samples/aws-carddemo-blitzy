@@ -400,8 +400,13 @@ public class MenuController {
         // Transforms COBOL SEND-MENU-SCREEN paragraph (lines 182-194 in COMEN01C.cbl)
         MenuResponse menuResponse = menuNavigationService.getRegularUserMenu();
         
-        log.info("MenuController.getRegularMenu() - Successfully retrieved {} menu items",
-                 menuResponse.getMenuItems().size());
+        // Add null safety check for menu response and menu items list
+        if (menuResponse != null && menuResponse.getMenuItems() != null) {
+            log.info("MenuController.getRegularMenu() - Successfully retrieved {} menu items",
+                     menuResponse.getMenuItems().size());
+        } else {
+            log.warn("MenuController.getRegularMenu() - Menu response or menu items is null");
+        }
         log.debug("MenuController.getRegularMenu() - Returning MenuResponse with HTTP 200 OK");
         
         // Return ResponseEntity with HTTP 200 OK status
@@ -626,8 +631,13 @@ public class MenuController {
         // AdminMenuService validates ROLE_ADMIN authority and builds 4-option menu
         MenuResponse menuResponse = adminMenuService.getAdminMenu();
         
-        log.info("MenuController.getAdminMenu() - Successfully retrieved {} admin menu items",
-                 menuResponse.getMenuItems().size());
+        // Add null safety check for menu response and menu items list
+        if (menuResponse != null && menuResponse.getMenuItems() != null) {
+            log.info("MenuController.getAdminMenu() - Successfully retrieved {} admin menu items",
+                     menuResponse.getMenuItems().size());
+        } else {
+            log.warn("MenuController.getAdminMenu() - Menu response or menu items is null");
+        }
         log.debug("MenuController.getAdminMenu() - Returning MenuResponse with HTTP 200 OK");
         log.debug("MenuController.getAdminMenu() - Admin menu options: User List, User Add, User Update, User Delete");
         
