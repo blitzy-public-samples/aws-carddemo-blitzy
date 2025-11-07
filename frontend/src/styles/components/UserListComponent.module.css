@@ -1,0 +1,766 @@
+/*
+ * UserListComponent.module.css
+ * 
+ * CSS Module for User List Component
+ * Transformed from COUSR00.bms BMS mapset
+ * 
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * Licensed under the Apache License, Version 2.0
+ * 
+ * This CSS module provides styling for the User List screen,
+ * transforming the COBOL/CICS BMS 3270 terminal layout into
+ * a modern, responsive web interface while preserving the
+ * original screen's functional layout and user interaction patterns.
+ */
+
+/* ============================================================================
+ * CONTAINER AND LAYOUT
+ * ============================================================================ */
+
+/**
+ * Main container for the user list component
+ * Provides consistent padding and maximum width
+ */
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================================================
+ * HEADER SECTION
+ * ============================================================================ */
+
+/**
+ * Header section containing transaction info and metadata
+ * Maps to lines 1-2 of BMS screen (TRNNAME, TITLE01, CURDATE, etc.)
+ */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+  padding: 15px;
+  background-color: #f8f9fa;
+  border-radius: 4px;
+  border-left: 4px solid #0066cc;
+}
+
+.headerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.headerRight {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  text-align: right;
+}
+
+.transactionInfo {
+  font-size: 14px;
+  color: #0066cc;
+  font-weight: 500;
+}
+
+.programInfo {
+  font-size: 14px;
+  color: #0066cc;
+  font-weight: 500;
+}
+
+.dateTime {
+  font-size: 14px;
+  color: #495057;
+}
+
+/* ============================================================================
+ * TITLE AND PAGE NUMBER SECTION
+ * ============================================================================ */
+
+/**
+ * Title area with page number
+ * Maps to line 4 of BMS screen (List Users title and PAGENUM)
+ */
+.titleSection {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 25px;
+  padding-bottom: 10px;
+  border-bottom: 2px solid #dee2e6;
+}
+
+.title {
+  font-size: 24px;
+  font-weight: 600;
+  color: #212529;
+  margin: 0;
+}
+
+.pageInfo {
+  font-size: 16px;
+  color: #17a2b8;
+  font-weight: 500;
+}
+
+/* ============================================================================
+ * SEARCH SECTION
+ * ============================================================================ */
+
+/**
+ * Search section for user ID filtering
+ * Maps to line 6 of BMS screen (USRIDIN field)
+ */
+.searchSection {
+  margin-bottom: 25px;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.searchLabel {
+  font-size: 14px;
+  color: #17a2b8;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.searchInput {
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 2px solid #28a745;
+  border-radius: 4px;
+  background-color: #ffffff;
+  color: #212529;
+  width: 200px;
+  transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+}
+
+.searchInput:focus {
+  outline: none;
+  border-color: #218838;
+  box-shadow: 0 0 0 3px rgba(40, 167, 69, 0.25);
+}
+
+.searchInput::placeholder {
+  color: #6c757d;
+  opacity: 0.7;
+}
+
+/* ============================================================================
+ * TABLE STRUCTURE
+ * ============================================================================ */
+
+/**
+ * Table container with responsive scrolling
+ */
+.tableContainer {
+  overflow-x: auto;
+  margin-bottom: 20px;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/**
+ * Main table element
+ * Transforms BMS repeating row structure (lines 8-19) to HTML table
+ */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background-color: #ffffff;
+  font-size: 14px;
+}
+
+/* ============================================================================
+ * TABLE HEADER
+ * ============================================================================ */
+
+/**
+ * Table header styling
+ * Maps to line 8-9 of BMS screen (column headers and separator)
+ */
+.tableHeader {
+  background-color: #495057;
+  color: #ffffff;
+  border-bottom: 3px solid #343a40;
+}
+
+.tableHeader th {
+  padding: 12px 8px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+/* Column-specific header styling */
+.headerSelect {
+  width: 60px;
+  text-align: center;
+}
+
+.headerUserId {
+  width: 150px;
+}
+
+.headerFirstName {
+  width: 250px;
+}
+
+.headerLastName {
+  width: 250px;
+}
+
+.headerUserType {
+  width: 100px;
+  text-align: center;
+}
+
+/* ============================================================================
+ * TABLE BODY AND ROWS
+ * ============================================================================ */
+
+/**
+ * Table body with alternating row colors
+ */
+.tableBody {
+  background-color: #ffffff;
+}
+
+/**
+ * Individual table row styling
+ * Maps to repeating user data rows (SEL0001-SEL0010, USRID01-USRID10, etc.)
+ */
+.tableRow {
+  border-bottom: 1px solid #dee2e6;
+  transition: background-color 0.2s ease-in-out;
+}
+
+/* Alternating row background for better readability */
+.tableRow:nth-child(even) {
+  background-color: #f8f9fa;
+}
+
+/**
+ * Row hover effect for better user interaction
+ * Improves usability compared to static BMS screen
+ */
+.tableRow:hover {
+  background-color: #e3f2fd;
+  cursor: pointer;
+}
+
+.tableRow:focus-within {
+  background-color: #e3f2fd;
+  outline: 2px solid #0066cc;
+  outline-offset: -2px;
+}
+
+/* Empty state row */
+.emptyRow {
+  border-bottom: 1px solid #dee2e6;
+}
+
+.emptyRow td {
+  padding: 40px 20px;
+  text-align: center;
+  color: #6c757d;
+  font-style: italic;
+}
+
+/* ============================================================================
+ * TABLE CELLS
+ * ============================================================================ */
+
+/**
+ * Base table cell styling
+ */
+.tableRow td {
+  padding: 12px 8px;
+  vertical-align: middle;
+  color: #212529;
+}
+
+/**
+ * Selection field cell
+ * Maps to SEL0001-SEL0010 fields in BMS (UNPROT, underlined, green)
+ */
+.selectCell {
+  text-align: center;
+  width: 60px;
+}
+
+.selectInput {
+  width: 40px;
+  height: 32px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  border: 2px solid #28a745;
+  border-radius: 4px;
+  background-color: #ffffff;
+  color: #212529;
+  text-transform: uppercase;
+  transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+}
+
+.selectInput:focus {
+  outline: none;
+  border-color: #218838;
+  box-shadow: 0 0 0 3px rgba(40, 167, 69, 0.25);
+  background-color: #f0fff4;
+}
+
+.selectInput::placeholder {
+  color: #adb5bd;
+}
+
+/**
+ * User ID cell
+ * Maps to USRID01-USRID10 fields in BMS (blue text)
+ */
+.userIdCell {
+  font-family: 'Courier New', Courier, monospace;
+  font-weight: 500;
+  color: #0066cc;
+  width: 150px;
+}
+
+/**
+ * First name cell
+ * Maps to FNAME01-FNAME10 fields in BMS (blue text)
+ */
+.firstNameCell {
+  color: #0066cc;
+  width: 250px;
+}
+
+/**
+ * Last name cell
+ * Maps to LNAME01-LNAME10 fields in BMS (blue text)
+ */
+.lastNameCell {
+  color: #0066cc;
+  width: 250px;
+}
+
+/**
+ * User type cell
+ * Maps to UTYPE01-UTYPE10 fields in BMS (blue text, displays A or U)
+ */
+.userTypeCell {
+  text-align: center;
+  width: 100px;
+}
+
+/**
+ * User type badge styling
+ * Transforms single-character type indicator to readable badge
+ */
+.userTypeBadge {
+  display: inline-block;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-radius: 12px;
+  letter-spacing: 0.5px;
+}
+
+/* Admin user type badge */
+.userTypeBadge.admin {
+  background-color: #dc3545;
+  color: #ffffff;
+}
+
+/* Regular user type badge */
+.userTypeBadge.user {
+  background-color: #0066cc;
+  color: #ffffff;
+}
+
+/* ============================================================================
+ * INSTRUCTIONS SECTION
+ * ============================================================================ */
+
+/**
+ * Instructions for user interaction
+ * Maps to line 21 of BMS screen (Type 'U' to Update or 'D' to Delete)
+ */
+.instructions {
+  margin-top: 15px;
+  margin-bottom: 20px;
+  padding: 12px 16px;
+  background-color: #f8f9fa;
+  border-left: 4px solid #17a2b8;
+  border-radius: 4px;
+  font-size: 14px;
+  color: #495057;
+}
+
+.instructions strong {
+  color: #212529;
+  font-weight: 600;
+}
+
+/* ============================================================================
+ * PAGINATION CONTROLS
+ * ============================================================================ */
+
+/**
+ * Pagination controls section
+ * Maps to PAGENUM field and F7/F8 navigation keys in BMS
+ */
+.pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 15px;
+  margin-top: 20px;
+  margin-bottom: 20px;
+}
+
+.paginationButton {
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #ffffff;
+  background-color: #0066cc;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s ease-in-out, transform 0.1s ease-in-out;
+}
+
+.paginationButton:hover:not(:disabled) {
+  background-color: #0052a3;
+  transform: translateY(-1px);
+}
+
+.paginationButton:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.paginationButton:disabled {
+  background-color: #adb5bd;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.paginationInfo {
+  font-size: 14px;
+  color: #495057;
+  font-weight: 500;
+  min-width: 120px;
+  text-align: center;
+}
+
+/* ============================================================================
+ * ERROR MESSAGE SECTION
+ * ============================================================================ */
+
+/**
+ * Error message display area
+ * Maps to ERRMSG field in BMS (line 23, red text, bright)
+ */
+.errorMessage {
+  margin-top: 20px;
+  margin-bottom: 20px;
+  padding: 12px 16px;
+  background-color: #f8d7da;
+  border: 1px solid #f5c6cb;
+  border-left: 4px solid #dc3545;
+  border-radius: 4px;
+  color: #721c24;
+  font-size: 14px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.errorMessage::before {
+  content: '⚠';
+  font-size: 18px;
+  font-weight: bold;
+}
+
+/* Success message variant */
+.successMessage {
+  margin-top: 20px;
+  margin-bottom: 20px;
+  padding: 12px 16px;
+  background-color: #d4edda;
+  border: 1px solid #c3e6cb;
+  border-left: 4px solid #28a745;
+  border-radius: 4px;
+  color: #155724;
+  font-size: 14px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.successMessage::before {
+  content: '✓';
+  font-size: 18px;
+  font-weight: bold;
+}
+
+/* ============================================================================
+ * FOOTER SECTION
+ * ============================================================================ */
+
+/**
+ * Footer with function key instructions
+ * Maps to line 24 of BMS screen (ENTER=Continue F3=Back F7=Backward F8=Forward)
+ */
+.footer {
+  margin-top: 30px;
+  padding: 15px 20px;
+  background-color: #ffc107;
+  border-radius: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  justify-content: center;
+  align-items: center;
+}
+
+.footerKey {
+  font-size: 14px;
+  color: #212529;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.footerKey kbd {
+  display: inline-block;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: #212529;
+  background-color: #ffffff;
+  border: 1px solid #ced4da;
+  border-radius: 3px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+  font-family: 'Courier New', Courier, monospace;
+}
+
+/* ============================================================================
+ * LOADING STATE
+ * ============================================================================ */
+
+/**
+ * Loading state styling
+ */
+.loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 60px 20px;
+  color: #6c757d;
+  font-size: 16px;
+}
+
+.loadingSpinner {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  margin-right: 10px;
+  border: 3px solid #f3f3f3;
+  border-top: 3px solid #0066cc;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* ============================================================================
+ * RESPONSIVE DESIGN
+ * ============================================================================ */
+
+/**
+ * Tablet and mobile responsive adjustments
+ */
+@media (max-width: 992px) {
+  .container {
+    padding: 15px;
+  }
+
+  .header {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .headerRight {
+    text-align: left;
+  }
+
+  .titleSection {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .table {
+    font-size: 13px;
+  }
+
+  .tableHeader th {
+    padding: 10px 6px;
+    font-size: 12px;
+  }
+
+  .tableRow td {
+    padding: 10px 6px;
+  }
+
+  /* Hide first and last name labels on smaller screens, show full names */
+  .headerFirstName,
+  .headerLastName {
+    display: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .title {
+    font-size: 20px;
+  }
+
+  .searchSection {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .searchInput {
+    width: 100%;
+  }
+
+  /* Stack table for very small screens */
+  .tableContainer {
+    overflow-x: auto;
+  }
+
+  .table {
+    min-width: 600px;
+  }
+
+  .footer {
+    gap: 10px;
+  }
+
+  .footerKey {
+    font-size: 13px;
+  }
+}
+
+/* ============================================================================
+ * ACCESSIBILITY ENHANCEMENTS
+ * ============================================================================ */
+
+/**
+ * Focus visible styles for keyboard navigation
+ */
+.selectInput:focus-visible,
+.searchInput:focus-visible,
+.paginationButton:focus-visible {
+  outline: 3px solid #0066cc;
+  outline-offset: 2px;
+}
+
+/**
+ * Screen reader only content
+ */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/**
+ * High contrast mode support
+ */
+@media (prefers-contrast: high) {
+  .table {
+    border: 2px solid #000000;
+  }
+
+  .tableRow {
+    border-bottom: 2px solid #000000;
+  }
+
+  .selectInput,
+  .searchInput {
+    border-width: 3px;
+  }
+}
+
+/**
+ * Reduced motion support for accessibility
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================================
+ * PRINT STYLES
+ * ============================================================================ */
+
+/**
+ * Print-friendly styles
+ */
+@media print {
+  .container {
+    max-width: 100%;
+    padding: 0;
+  }
+
+  .footer,
+  .pagination,
+  .searchSection {
+    display: none;
+  }
+
+  .table {
+    border: 1px solid #000000;
+  }
+
+  .tableRow:hover {
+    background-color: transparent;
+  }
+
+  .selectCell {
+    display: none;
+  }
+}
