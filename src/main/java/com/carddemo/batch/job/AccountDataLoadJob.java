@@ -14,26 +14,32 @@ import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
 import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
+import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.item.database.JpaItemWriter;
+import org.springframework.batch.item.ItemReader;
 import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
 import org.springframework.batch.item.file.mapping.DefaultLineMapper;
 import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
 
-import javax.persistence.EntityManagerFactory;
+import jakarta.persistence.EntityManagerFactory;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -171,6 +177,7 @@ public class AccountDataLoadJob {
     private final AccountRepository accountRepository;
     private final CustomerRepository customerRepository;
     private final EntityManagerFactory entityManagerFactory;
+    private final PlatformTransactionManager transactionManager;
 
     /**
      * Default chunk size for batch processing (1000 records per transaction).
@@ -188,19 +195,13 @@ public class AccountDataLoadJob {
     private static final int DEFAULT_RETRY_LIMIT = 3;
 
     /**
-     * CSV field names matching account table columns.
+     * CSV field names matching actual CSV file columns (snake_case from seed data).
      */
     private static final String[] CSV_FIELD_NAMES = {
-        "accountId", "customerId", "activeStatus", "currentBalance", "creditLimit",
-        "cashCreditLimit", "openDate", "expirationDate", "reissueDate",
-        "currentCycleCredit", "currentCycleDebit", "addressZip", "groupId"
+        "account_id", "active_status", "current_balance", "credit_limit",
+        "cash_credit_limit", "open_date", "expiration_date", "reissue_date",
+        "current_cycle_credit", "current_cycle_debit", "postal_code", "group_id", "customer_id"
     };
-
-    /**
-     * Account data input file path (injected from job parameters or application.properties).
-     */
-    @Value("${batch.account.data.file:classpath:seed/accounts.csv}")
-    private String accountDataFilePath;
 
     /**
      * Chunk size for batch processing (injected from application.properties).
@@ -252,14 +253,15 @@ public class AccountDataLoadJob {
      * restart from last committed chunk on job failure. This matches COBOL JCL restart
      * functionality from Section 0.10.</p>
      * 
+     * @param reader the account reader bean (injected by Spring with @StepScope)
      * @return configured Job bean for account data loading
      */
     @Bean
-    public Job accountDataLoadJob() {
+    public Job accountDataLoadBatchJob(@Qualifier("csvAccountReader") ItemReader<Account> reader) {
         return jobBuilderFactory.get("accountDataLoadJob")
                 .incrementer(new RunIdIncrementer())
                 .listener(jobExecutionListener())
-                .flow(accountDataLoadStep())
+                .flow(accountDataLoadStep(reader))
                 .end()
                 .build();
     }
@@ -322,15 +324,17 @@ public class AccountDataLoadJob {
      *   <li>Chunk size balanced between throughput and rollback granularity</li>
      * </ul>
      * 
+     * @param reader the account reader bean (injected by Spring with @StepScope)
      * @return configured Step bean for account data loading
      */
     @Bean
-    public Step accountDataLoadStep() {
+    public Step accountDataLoadStep(@Qualifier("csvAccountReader") ItemReader<Account> reader) {
         return stepBuilderFactory.get("accountDataLoadStep")
                 .<Account, Account>chunk(chunkSize)
-                .reader(accountDataReader())
+                .reader(reader)
                 .processor(accountDataProcessor)
-                .writer(accountDataWriter())
+                .writer(accountWriter())
+                .transactionManager(transactionManager)
                 .faultTolerant()
                 .skipLimit(skipLimit)
                 .skip(ValidationException.class)
@@ -338,165 +342,6 @@ public class AccountDataLoadJob {
                 .retryLimit(DEFAULT_RETRY_LIMIT)
                 .retry(org.springframework.dao.TransientDataAccessException.class)
                 .build();
-    }
-
-    /**
-     * Create the Account Data Reader bean.
-     * 
-     * <p>This bean configures a FlatFileItemReader to read account data from CSV input
-     * files, parsing each line into an Account entity. Replaces COBOL PERFORM
-     * 1000-ACCTFILE-GET-NEXT sequential read operation.</p>
-     * 
-     * <p><strong>Reader Configuration:</strong></p>
-     * <ul>
-     *   <li><strong>Resource:</strong> CSV file path from job parameter or application.properties</li>
-     *   <li><strong>Line Mapper:</strong> DefaultLineMapper with DelimitedLineTokenizer</li>
-     *   <li><strong>Tokenizer:</strong> Comma-delimited with field name mapping</li>
-     *   <li><strong>Field Set Mapper:</strong> BeanWrapperFieldSetMapper for Account entity</li>
-     *   <li><strong>Lines to Skip:</strong> 1 (assumes CSV header row)</li>
-     * </ul>
-     * 
-     * <p><strong>CSV Format:</strong></p>
-     * <p>Expected comma-delimited CSV with header row:</p>
-     * <pre>
-     * accountId,customerId,activeStatus,currentBalance,creditLimit,cashCreditLimit,
-     * openDate,expirationDate,reissueDate,currentCycleCredit,currentCycleDebit,
-     * addressZip,groupId
-     * </pre>
-     * 
-     * <p><strong>Type Conversion:</strong></p>
-     * <p>BeanWrapperFieldSetMapper automatically converts CSV string fields to proper
-     * Java types using Spring's PropertyEditors:</p>
-     * <ul>
-     *   <li>String → Long (accountId, customerId)</li>
-     *   <li>String → BigDecimal (all monetary fields with scale=2)</li>
-     *   <li>String → LocalDate (all date fields in ISO format YYYY-MM-DD)</li>
-     *   <li>String → String (alphanumeric fields)</li>
-     * </ul>
-     * 
-     * <p><strong>Error Handling:</strong></p>
-     * <ul>
-     *   <li><strong>Malformed CSV:</strong> Throws FlatFileParseException, fails job</li>
-     *   <li><strong>Type Conversion Error:</strong> Throws BindException, caught by
-     *       skip policy if configured</li>
-     *   <li><strong>File Not Found:</strong> Throws IOException, caught by listener</li>
-     * </ul>
-     * 
-     * <p><strong>COBOL Transformation:</strong></p>
-     * <p>This reader replaces COBOL code:</p>
-     * <pre>
-     * PERFORM 1000-ACCTFILE-GET-NEXT
-     *     READ ACCTFILE-FILE INTO ACCOUNT-RECORD
-     *     IF ACCTFILE-STATUS = '00'
-     *         MOVE 0 TO APPL-RESULT
-     *     ELSE
-     *         IF ACCTFILE-STATUS = '10'
-     *             MOVE 16 TO APPL-RESULT (EOF)
-     * </pre>
-     * <p>The reader's read() method returns null when EOF is reached, equivalent to
-     * COBOL APPL-EOF condition (ACCTFILE-STATUS = '10').</p>
-     * 
-     * @return configured FlatFileItemReader bean
-     */
-    @Bean
-    public FlatFileItemReader<Account> accountDataReader() {
-        FlatFileItemReader<Account> reader = new FlatFileItemReader<>();
-        
-        try {
-            // Resolve input file path to Resource
-            PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
-            Resource resource = resolver.getResource(accountDataFilePath);
-            reader.setResource(resource);
-            
-            log.info("Configured account data reader with input file: {}", accountDataFilePath);
-        } catch (Exception e) {
-            log.error("Failed to resolve account data file: {}", accountDataFilePath, e);
-            throw new IllegalArgumentException("Account data file not found: " + accountDataFilePath, e);
-        }
-
-        // Skip header row (assumes CSV has header)
-        reader.setLinesToSkip(1);
-        reader.setName("accountDataReader");
-
-        // Configure line mapper with tokenizer and field set mapper
-        DefaultLineMapper<Account> lineMapper = new DefaultLineMapper<>();
-
-        // Configure delimited line tokenizer (comma-separated values)
-        DelimitedLineTokenizer tokenizer = new DelimitedLineTokenizer();
-        tokenizer.setDelimiter(",");
-        tokenizer.setNames(CSV_FIELD_NAMES);
-        tokenizer.setStrict(false); // Allow lines with fewer fields
-
-        // Configure bean wrapper field set mapper
-        BeanWrapperFieldSetMapper<Account> fieldSetMapper = new BeanWrapperFieldSetMapper<>();
-        fieldSetMapper.setTargetType(Account.class);
-
-        lineMapper.setLineTokenizer(tokenizer);
-        lineMapper.setFieldSetMapper(fieldSetMapper);
-
-        reader.setLineMapper(lineMapper);
-
-        return reader;
-    }
-
-    /**
-     * Create the Account Data Writer bean.
-     * 
-     * <p>This bean configures a JpaItemWriter to persist validated Account entities to
-     * the PostgreSQL account table. Replaces COBOL WRITE ACCTFILE-FILE operation.</p>
-     * 
-     * <p><strong>Writer Configuration:</strong></p>
-     * <ul>
-     *   <li><strong>Entity Manager Factory:</strong> Injected from Spring JPA context</li>
-     *   <li><strong>Transaction:</strong> Participates in Spring @Transactional boundaries</li>
-     *   <li><strong>Batch Size:</strong> Matches chunk size (1000 records per transaction)</li>
-     * </ul>
-     * 
-     * <p><strong>Write Strategy:</strong></p>
-     * <p>Uses JPA EntityManager.persist() or EntityManager.merge() based on entity state:</p>
-     * <ul>
-     *   <li><strong>New Account (ID not exists):</strong> INSERT INTO account</li>
-     *   <li><strong>Existing Account (ID exists):</strong> UPDATE account (upsert behavior)</li>
-     *   <li><strong>Duplicate Key:</strong> Throws DataIntegrityViolationException, handled
-     *       by skip policy</li>
-     * </ul>
-     * 
-     * <p><strong>Transaction Management:</strong></p>
-     * <p>Writer operations are executed within Spring @Transactional boundaries:</p>
-     * <ul>
-     *   <li>Transaction started by Spring Batch before chunk processing</li>
-     *   <li>All write operations buffered in transaction</li>
-     *   <li>COMMIT at chunk completion (all 1000 records persisted)</li>
-     *   <li>ROLLBACK on exception (entire chunk discarded)</li>
-     * </ul>
-     * 
-     * <p><strong>Performance Optimization:</strong></p>
-     * <ul>
-     *   <li>Batch INSERT operations reduce database round-trips</li>
-     *   <li>JDBC batch size configured in application.properties
-     *       (spring.jpa.properties.hibernate.jdbc.batch_size)</li>
-     *   <li>Entity state managed by JPA first-level cache during chunk</li>
-     * </ul>
-     * 
-     * <p><strong>COBOL Transformation:</strong></p>
-     * <p>This writer replaces COBOL code:</p>
-     * <pre>
-     * WRITE ACCTFILE-FILE FROM ACCOUNT-RECORD
-     * IF ACCTFILE-STATUS = '00'
-     *     MOVE 0 TO APPL-RESULT
-     * ELSE
-     *     MOVE 12 TO APPL-RESULT (error)
-     * </pre>
-     * <p>Exceptions during write are propagated to Spring Batch error handling,
-     * equivalent to COBOL APPL-RESULT error codes.</p>
-     * 
-     * @return configured JpaItemWriter bean
-     */
-    @Bean
-    public JpaItemWriter<Account> accountDataWriter() {
-        JpaItemWriter<Account> writer = new JpaItemWriter<>();
-        writer.setEntityManagerFactory(entityManagerFactory);
-        return writer;
     }
 
     /**
@@ -579,7 +424,14 @@ public class AccountDataLoadJob {
                 log.info("Job Name: {}", jobExecution.getJobInstance().getJobName());
                 log.info("Job ID: {}", jobExecution.getJobId());
                 log.info("Job Parameters: {}", jobExecution.getJobParameters());
-                log.info("Input File: {}", accountDataFilePath);
+                
+                // Log input file from job parameters (with default fallback)
+                String inputFile = jobExecution.getJobParameters().getString("accountDataFile");
+                if (inputFile == null || inputFile.isEmpty()) {
+                    inputFile = "classpath:seed/accounts.csv (default)";
+                }
+                log.info("Input File: {}", inputFile);
+                
                 log.info("Chunk Size: {}", chunkSize);
                 log.info("Skip Limit: {}", skipLimit);
                 
@@ -698,6 +550,141 @@ public class AccountDataLoadJob {
                 }
             }
         };
+    }
+
+    /**
+     * Create the Account CSV File Reader bean.
+     * 
+     * <p>This bean configures a FlatFileItemReader to parse account data from CSV files.
+     * The reader transforms CSV records to Account entities with proper data type conversions,
+     * particularly ensuring BigDecimal monetary fields maintain scale=2 precision matching
+     * COBOL COMP-3 packed decimal format.</p>
+     * 
+     * <p><strong>@StepScope Configuration:</strong></p>
+     * <p>This bean uses @StepScope to enable late binding of job parameters, allowing the
+     * input file path to be dynamically specified at job execution time via the
+     * 'accountDataFile' job parameter. This supports flexible batch execution scenarios
+     * where different input files can be processed by the same job configuration.</p>
+     * 
+     * <p><strong>CSV Format:</strong></p>
+     * <pre>
+     * account_id,active_status,current_balance,credit_limit,cash_credit_limit,
+     * open_date,expiration_date,reissue_date,current_cycle_credit,current_cycle_debit,
+     * postal_code,group_id,customer_id
+     * </pre>
+     * 
+     * @param accountDataFile the account data file path from job parameters, or default classpath resource
+     * @return configured FlatFileItemReader for Account entities
+     * @throws IOException if default resource file cannot be resolved
+     */
+    @Bean(name = "csvAccountReader")
+    @StepScope
+    public FlatFileItemReader<Account> csvAccountReader(
+            @Value("#{jobParameters['accountDataFile'] ?: 'classpath:seed/accounts.csv'}") String accountDataFile) throws IOException {
+        FlatFileItemReader<Account> reader = new FlatFileItemReader<>();
+        
+        // Resolve the resource file path (supports classpath: and file: protocols)
+        PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
+        Resource resource = resolver.getResource(accountDataFile);
+        reader.setResource(resource);
+        
+        // Configure to skip header line if present
+        reader.setLinesToSkip(1);
+        
+        // Set strict mode to false to allow file to not exist during bean creation
+        reader.setStrict(false);
+        
+        // Configure line mapper with delimited tokenizer
+        DefaultLineMapper<Account> lineMapper = new DefaultLineMapper<>();
+        
+        DelimitedLineTokenizer tokenizer = new DelimitedLineTokenizer();
+        tokenizer.setDelimiter(",");
+        tokenizer.setNames(CSV_FIELD_NAMES);
+        tokenizer.setStrict(false);
+        
+        // Use custom field set mapper to handle CSV field name to Account property mapping
+        CustomAccountFieldSetMapper fieldSetMapper = new CustomAccountFieldSetMapper(customerRepository);
+        
+        lineMapper.setLineTokenizer(tokenizer);
+        lineMapper.setFieldSetMapper(fieldSetMapper);
+        
+        reader.setLineMapper(lineMapper);
+        
+        return reader;
+    }
+    
+    /**
+     * Custom FieldSetMapper for Account entities.
+     * 
+     * <p>This custom mapper handles the mismatch between CSV field names and Account entity
+     * property names, specifically:</p>
+     * <ul>
+     *   <li>CSV field "postal_code" maps to Account property "addressZip"</li>
+     *   <li>CSV field "customer_id" maps to Account property "customer" (Customer object)</li>
+     * </ul>
+     * 
+     * <p>The mapper also handles the Customer foreign key relationship by looking up the
+     * Customer entity from the repository based on the customer_id value in the CSV.</p>
+     */
+    private static class CustomAccountFieldSetMapper implements org.springframework.batch.item.file.mapping.FieldSetMapper<Account> {
+        
+        private final CustomerRepository customerRepository;
+        
+        public CustomAccountFieldSetMapper(CustomerRepository customerRepository) {
+            this.customerRepository = customerRepository;
+        }
+        
+        @Override
+        public Account mapFieldSet(org.springframework.batch.item.file.transform.FieldSet fieldSet) {
+            Account account = new Account();
+            
+            // Map standard fields
+            account.setAccountId(fieldSet.readLong("account_id"));
+            account.setActiveStatus(fieldSet.readString("active_status"));
+            account.setCurrentBalance(fieldSet.readBigDecimal("current_balance"));
+            account.setCreditLimit(fieldSet.readBigDecimal("credit_limit"));
+            account.setCashCreditLimit(fieldSet.readBigDecimal("cash_credit_limit"));
+            account.setOpenDate(LocalDate.parse(fieldSet.readString("open_date")));
+            account.setExpirationDate(LocalDate.parse(fieldSet.readString("expiration_date")));
+            account.setReissueDate(LocalDate.parse(fieldSet.readString("reissue_date")));
+            account.setCurrentCycleCredit(fieldSet.readBigDecimal("current_cycle_credit"));
+            account.setCurrentCycleDebit(fieldSet.readBigDecimal("current_cycle_debit"));
+            account.setGroupId(fieldSet.readString("group_id"));
+            
+            // Map postal_code to addressZip
+            account.setAddressZip(fieldSet.readString("postal_code"));
+            
+            // Map customer_id to Customer object (lookup from repository)
+            Long customerId = fieldSet.readLong("customer_id");
+            if (customerId != null) {
+                customerRepository.findById(customerId).ifPresent(account::setCustomer);
+            }
+            
+            return account;
+        }
+    }
+
+    /**
+     * Create the Account JPA Writer bean.
+     * 
+     * <p>This bean configures a JpaItemWriter to persist validated Account entities to
+     * the PostgreSQL database using JPA. The writer supports upsert operations through
+     * EntityManager merge functionality, allowing both inserts and updates.</p>
+     * 
+     * <p><strong>Transaction Management:</strong></p>
+     * <ul>
+     *   <li>Writes occur within chunk transaction boundaries (1000 records per commit)</li>
+     *   <li>EntityManager.merge() handles both insert and update operations</li>
+     *   <li>Failures trigger automatic rollback of entire chunk</li>
+     * </ul>
+     * 
+     * @return configured JpaItemWriter for Account entities
+     */
+    @Bean
+    public ItemWriter<Account> accountWriter() {
+        JpaItemWriter<Account> writer = new JpaItemWriter<>();
+        writer.setEntityManagerFactory(entityManagerFactory);
+        return writer;
     }
 
     /**

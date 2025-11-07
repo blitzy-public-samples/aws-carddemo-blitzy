@@ -1,6 +1,9 @@
 package com.carddemo.batch.processor;
 
 import com.carddemo.entity.Account;
+import com.carddemo.entity.Customer;
+import com.carddemo.repository.CustomerRepository;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.stereotype.Component;
@@ -78,7 +81,13 @@ import java.util.Objects;
  */
 @Component
 @Slf4j
+@RequiredArgsConstructor
 public class AccountDataProcessor implements ItemProcessor<Account, Account> {
+
+    /**
+     * Repository for customer data access to validate customer_id foreign key references.
+     */
+    private final CustomerRepository customerRepository;
 
     /**
      * Maximum valid credit limit value (matching COBOL validation range).
@@ -172,6 +181,11 @@ public class AccountDataProcessor implements ItemProcessor<Account, Account> {
 
         // Validate group ID (non-null)
         if (!validateGroupId(item)) {
+            return null;
+        }
+
+        // Validate customer ID exists (referential integrity)
+        if (!validateCustomerId(item)) {
             return null;
         }
 
@@ -455,6 +469,53 @@ public class AccountDataProcessor implements ItemProcessor<Account, Account> {
             return false;
         }
 
+        return true;
+    }
+
+    /**
+     * Validate customer ID exists in the database.
+     * 
+     * <p>Validates that the customer_id field references an existing customer record,
+     * ensuring referential integrity per CBACT01C.cbl requirements. This validation
+     * prevents orphaned account records with non-existent customer foreign keys.</p>
+     * 
+     * <p><strong>Validation Rules:</strong></p>
+     * <ul>
+     *   <li>Customer object and its ID must not be null</li>
+     *   <li>Customer ID must reference an existing customer in the customer table</li>
+     * </ul>
+     * 
+     * <p>If validation fails, the account record is filtered (null returned) to allow
+     * the batch job to continue processing other records according to the skip policy.</p>
+     * 
+     * @param account the Account entity to validate
+     * @return true if customer ID is valid and customer exists, false otherwise
+     */
+    private boolean validateCustomerId(Account account) {
+        Customer customer = account.getCustomer();
+
+        if (Objects.isNull(customer)) {
+            log.error("Customer validation failed: customer is null for accountId={}",
+                      account.getAccountId());
+            return false;
+        }
+
+        Long customerId = customer.getCustomerId();
+        if (Objects.isNull(customerId)) {
+            log.error("Customer ID validation failed: customer.customerId is null for accountId={}",
+                      account.getAccountId());
+            return false;
+        }
+
+        // Check if customer exists in the database (referential integrity)
+        if (!customerRepository.existsById(customerId)) {
+            log.error("Customer ID validation failed: customer with customerId={} does not exist " +
+                      "for accountId={}", customerId, account.getAccountId());
+            return false;
+        }
+
+        log.debug("Customer ID validation passed: customerId={} exists for accountId={}",
+                  customerId, account.getAccountId());
         return true;
     }
 

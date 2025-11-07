@@ -3,9 +3,12 @@ package com.carddemo.config;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
+import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
+import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
 import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -112,6 +115,42 @@ public class BatchConfig {
         
         log.debug("Batch transaction manager configured successfully");
         return transactionManager;
+    }
+
+    /**
+     * Configure JobBuilderFactory for creating Spring Batch jobs.
+     * 
+     * Note: This class is deprecated in Spring Batch 5.x but included here for
+     * compatibility with existing job definitions. New jobs should use JobBuilder
+     * with JobRepository directly.
+     * 
+     * @param jobRepository Spring Batch job repository
+     * @return JobBuilderFactory instance
+     */
+    @Bean
+    @SuppressWarnings("deprecation")
+    public org.springframework.batch.core.configuration.annotation.JobBuilderFactory jobBuilderFactory(
+            JobRepository jobRepository) {
+        log.info("Configuring JobBuilderFactory (deprecated, for compatibility)");
+        return new org.springframework.batch.core.configuration.annotation.JobBuilderFactory(jobRepository);
+    }
+
+    /**
+     * Configure StepBuilderFactory for creating Spring Batch steps.
+     * 
+     * Note: This class is deprecated in Spring Batch 5.x but included here for
+     * compatibility with existing step definitions. New steps should use StepBuilder
+     * with JobRepository and PlatformTransactionManager directly.
+     * 
+     * @param jobRepository Spring Batch job repository
+     * @return StepBuilderFactory instance
+     */
+    @Bean
+    @SuppressWarnings("deprecation")
+    public org.springframework.batch.core.configuration.annotation.StepBuilderFactory stepBuilderFactory(
+            JobRepository jobRepository) {
+        log.info("Configuring StepBuilderFactory (deprecated, for compatibility)");
+        return new org.springframework.batch.core.configuration.annotation.StepBuilderFactory(jobRepository);
     }
 
     /**
