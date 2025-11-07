@@ -16,7 +16,7 @@
  * Source: app/cbl/CORPT00C.cbl, app/bms/CORPT00.bms
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
@@ -125,8 +125,8 @@ const TransactionReportComponent = () => {
       category: ''
     },
     validationSchema: validationSchema,
-    onSubmit: (values) => {
-      handleConfirmOpen(values);
+    onSubmit: () => {
+      handleConfirmOpen();
     }
   });
 
@@ -203,7 +203,7 @@ const TransactionReportComponent = () => {
    * Open confirmation dialog before report generation
    * Implements COBOL CONFIRM field logic (lines 464-474)
    */
-  const handleConfirmOpen = (values) => {
+  const handleConfirmOpen = () => {
     setConfirmDialogOpen(true);
   };
 
@@ -577,7 +577,7 @@ const TransactionReportComponent = () => {
                       displayEmpty
                       error={formik.touched.transactionType && Boolean(formik.errors.transactionType)}
                     >
-                      <MenuItem value="">
+                      <MenuItem key="empty-transaction-type" value="">
                         <em>All Transaction Types</em>
                       </MenuItem>
                       {transactionTypes.map((type) => (
@@ -604,7 +604,7 @@ const TransactionReportComponent = () => {
                       displayEmpty
                       error={formik.touched.category && Boolean(formik.errors.category)}
                     >
-                      <MenuItem value="">
+                      <MenuItem key="empty-category" value="">
                         <em>All Categories</em>
                       </MenuItem>
                       {categories.map((cat) => (
