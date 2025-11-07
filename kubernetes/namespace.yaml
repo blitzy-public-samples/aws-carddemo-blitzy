@@ -1,0 +1,96 @@
+# Kubernetes Namespace Definition for CardDemo Application
+# 
+# This namespace provides isolated environment for all CardDemo Spring Boot
+# application resources, replacing mainframe LPAR/region isolation with
+# cloud-native multi-tenancy and resource boundaries.
+#
+# Purpose:
+# - Provides logical isolation for CardDemo application components
+# - Enables resource quotas and limits at namespace level
+# - Facilitates RBAC access control boundaries
+# - Supports environment separation (dev, test, prod)
+# - Organizes related Kubernetes resources (deployments, services, configmaps, secrets)
+#
+# Migration Context:
+# Replaces: Mainframe LPAR (Logical Partition) and CICS region isolation
+# Provides: Cloud-native resource isolation and multi-tenant deployment model
+#
+# Dependencies:
+# - None (this is the foundational resource; all other resources depend on this namespace)
+#
+# Related Resources:
+# - kubernetes/configmap.yaml (deployed in this namespace)
+# - kubernetes/secret.yaml (deployed in this namespace)
+# - kubernetes/deployment.yaml (deployed in this namespace)
+# - kubernetes/service.yaml (deployed in this namespace)
+# - kubernetes/ingress.yaml (deployed in this namespace)
+# - kubernetes/cronjob-batch.yaml (deployed in this namespace)
+#
+# Deployment:
+# kubectl apply -f kubernetes/namespace.yaml
+#
+# Verification:
+# kubectl get namespace carddemo
+# kubectl describe namespace carddemo
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  # Namespace name must match all resource definitions across the application
+  name: carddemo
+  
+  # Labels for resource identification, monitoring, and organization
+  labels:
+    # Application identifier for grouping resources
+    app: carddemo
+    
+    # Application component type
+    component: namespace
+    
+    # Environment designation (production, staging, development)
+    # Note: Can be overridden per deployment environment
+    environment: production
+    
+    # Application version for tracking deployments
+    version: "1.0.0"
+    
+    # Team or business unit ownership
+    team: digital-banking
+    
+    # Migration source identification
+    migration-source: mainframe-cobol
+    
+    # Project identifier
+    project: carddemo-modernization
+  
+  # Annotations provide additional metadata and configuration hints
+  annotations:
+    # Human-readable description
+    description: "Isolated namespace for CardDemo credit card management application migrated from IBM mainframe COBOL/CICS to Java Spring Boot microservices architecture"
+    
+    # Ownership and contact information
+    owner: "Platform Engineering Team"
+    contact: "platform-team@example.com"
+    
+    # Migration metadata
+    migration-date: "2024-01"
+    source-system: "IBM z/OS CICS"
+    target-system: "Kubernetes Java Spring Boot"
+    
+    # Documentation reference
+    documentation: "https://wiki.example.com/carddemo/kubernetes-deployment"
+    
+    # Change tracking
+    created-by: "CardDemo Migration Project"
+    managed-by: "Kubernetes"
+    
+    # Compliance and security tags
+    data-classification: "confidential"
+    compliance-scope: "PCI-DSS"
+    
+    # Resource quota hints (actual quotas defined in separate ResourceQuota objects)
+    resource-tier: "production"
+    
+    # Monitoring and alerting configuration
+    monitoring-enabled: "true"
+    alerting-channel: "#carddemo-alerts"
