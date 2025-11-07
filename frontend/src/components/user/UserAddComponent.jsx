@@ -12,7 +12,7 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
@@ -23,10 +23,7 @@ import {
   Typography,
   Paper,
   Grid,
-  Select,
-  MenuItem,
   FormControl,
-  InputLabel,
   FormHelperText,
   CircularProgress,
   Snackbar,
@@ -177,10 +174,10 @@ const UserAddComponent = () => {
         if (error.response.status === 409) {
           errorMessage = 'User ID already exist...';
           setFieldError('userId', errorMessage);
-        } else if (error.response.data && error.response.data.message) {
-          errorMessage = error.response.data.message;
         } else if (error.response.status === 401 || error.response.status === 403) {
           errorMessage = 'Unauthorized access. Admin privileges required.';
+        } else if (error.response.data && error.response.data.message) {
+          errorMessage = error.response.data.message;
         }
       } else if (error.request) {
         errorMessage = 'Network error. Please check your connection.';
@@ -240,7 +237,9 @@ const UserAddComponent = () => {
     validationSchema: validationSchema,
     onSubmit: handleSubmit,
     validateOnChange: true,
-    validateOnBlur: true
+    validateOnBlur: true,
+    validateOnMount: true,  // Ensure validation runs on mount
+    isInitialValid: false  // Form is invalid initially (empty required fields)
   });
 
   return (
