@@ -113,6 +113,22 @@ public class DatabaseConfig {
     private long leakDetectionThreshold;
 
     /**
+     * JDBC driver class name - configurable for test environments
+     * Default: PostgreSQL driver for production
+     * Test override: H2 driver via application-test.properties
+     */
+    @Value("${spring.datasource.driver-class-name:org.postgresql.Driver}")
+    private String driverClassName;
+
+    /**
+     * Hibernate dialect - configurable for test environments
+     * Default: PostgreSQL dialect for production
+     * Test override: H2 dialect via application-test.properties
+     */
+    @Value("${spring.jpa.database-platform:org.hibernate.dialect.PostgreSQLDialect}")
+    private String hibernateDialect;
+
+    /**
      * Configures HikariCP DataSource with PostgreSQL database connectivity
      * replacing VSAM KSDS file access patterns with relational database operations.
      * 
@@ -144,7 +160,7 @@ public class DatabaseConfig {
         hikariConfig.setJdbcUrl(jdbcUrl);
         hikariConfig.setUsername(dbUsername);
         hikariConfig.setPassword(dbPassword);
-        hikariConfig.setDriverClassName("org.postgresql.Driver");
+        hikariConfig.setDriverClassName(driverClassName);
 
         // Connection pool sizing for 150+ concurrent users
         hikariConfig.setMinimumIdle(minimumIdle);
@@ -242,9 +258,9 @@ public class DatabaseConfig {
         // TransactionCategory, TransactionType, DisclosureGroup, TransactionCategoryBalance
         entityManagerFactory.setPackagesToScan("com.carddemo.entity");
 
-        // Configure Hibernate as JPA vendor adapter with PostgreSQL database
+        // Configure Hibernate as JPA vendor adapter (database type determined by dialect)
         HibernateJpaVendorAdapter vendorAdapter = new HibernateJpaVendorAdapter();
-        vendorAdapter.setDatabase(Database.POSTGRESQL);
+        // Database type omitted - determined by hibernate.dialect property for flexibility
         vendorAdapter.setGenerateDdl(false); // Flyway manages DDL
         vendorAdapter.setShowSql(false); // Disabled for production performance
         
@@ -291,8 +307,8 @@ public class DatabaseConfig {
 
         Properties properties = new Properties();
 
-        // Hibernate Dialect for PostgreSQL
-        properties.setProperty("hibernate.dialect", "org.hibernate.dialect.PostgreSQLDialect");
+        // Hibernate Dialect - configurable (PostgreSQL for prod, H2 for tests)
+        properties.setProperty("hibernate.dialect", hibernateDialect);
 
         // Schema Management - Flyway controls DDL, Hibernate only validates
         properties.setProperty("hibernate.ddl-auto", "validate");

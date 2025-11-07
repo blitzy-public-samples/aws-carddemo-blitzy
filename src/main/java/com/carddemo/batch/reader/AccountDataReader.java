@@ -241,7 +241,7 @@ public class AccountDataReader {
      * 
      * @return Configured FlatFileItemReader for Account entities
      */
-    @Bean
+    @Bean(name = "accountReader")
     public FlatFileItemReader<Account> accountDataReader() {
         // Determine resource location - try classpath first, then file system
         org.springframework.core.io.Resource resource;

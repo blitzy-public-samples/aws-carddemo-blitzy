@@ -32,6 +32,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.Period;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -262,7 +263,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * private JobLauncher jobLauncher;
  * 
  * @Autowired
- * @Qualifier("customerDataLoadJob")
+ * @Qualifier("customerLoadJob")
  * private Job customerDataLoadJob;
  * 
  * public void loadCustomerData() throws Exception {
@@ -366,16 +367,22 @@ public class CustomerDataLoadJob {
      * from that point, avoiding duplicate inserts through merge semantics in the writer.</p>
      * 
      * @param jobRepository Spring Batch JobRepository for execution metadata persistence
-     * @param customerDataLoadStep Configured step for customer data processing
+     * @param transactionManager Platform transaction manager for chunk transaction boundaries
+     * @param reader FlatFileItemReader for parsing customer CSV records
+     * @param processor CustomerDataProcessor for validation and transformation
+     * @param writer ItemWriter for persisting customer entities to database
      * @return Job bean configured with listener and step
      * @see JobRepository for execution state tracking
      * @see RunIdIncrementer for unique job instance generation
      * @see JobExecutionListener for lifecycle callback hooks
      */
-    @Bean(name = "customerDataLoadJob")
-    public Job customerDataLoadJob(
+    @Bean(name = "customerLoadJob")
+    public Job customerJob(
             JobRepository jobRepository,
-            Step customerDataLoadStep) {
+            PlatformTransactionManager transactionManager,
+            FlatFileItemReader<Customer> reader,
+            CustomerDataProcessor processor,
+            ItemWriter<Customer> writer) {
         
         log.info("Configuring customerDataLoadJob with chunk-oriented processing");
         
@@ -452,7 +459,7 @@ public class CustomerDataLoadJob {
                         log.info("End Time: {}", jobExecution.getEndTime());
                         
                         // Calculate processing duration
-                        long durationMillis = jobExecution.getEndTime().getTime() - jobExecution.getStartTime().getTime();
+                        long durationMillis = ChronoUnit.MILLIS.between(jobExecution.getStartTime(), jobExecution.getEndTime());
                         double durationSeconds = durationMillis / 1000.0;
                         
                         log.info("Processing Duration: {} seconds", String.format("%.2f", durationSeconds));
@@ -572,7 +579,7 @@ public class CustomerDataLoadJob {
                         log.info("==============================================================================");
                     }
                 })
-                .start(customerDataLoadStep)
+                .start(customerDataLoadStep(jobRepository, transactionManager, reader, processor, writer))
                 .build();
     }
     

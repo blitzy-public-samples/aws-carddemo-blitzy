@@ -358,7 +358,7 @@ public class CustomerDataReader {
      * @see BeanWrapperFieldSetMapper
      * @see Customer
      */
-    @Bean
+    @Bean(name = "customerReader")
     public FlatFileItemReader<Customer> customerDataReader() {
         
         // Configure the FixedLengthTokenizer with exact field ranges from COBOL copybook
