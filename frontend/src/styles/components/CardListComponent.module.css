@@ -1,0 +1,654 @@
+/*
+ * CardDemo - Card List Component CSS Module
+ * 
+ * Transformed from: app/bms/COCRDLI.bms (COBOL BMS mapset)
+ * Original Screen: CCRDLIA - List Credit Cards (24x80 3270 terminal screen)
+ * 
+ * This CSS module preserves the visual layout and interaction patterns from the 
+ * original BMS mapset including:
+ * - Seven-row table structure (7 cards per page pagination requirement)
+ * - NEUTRAL color for table headers
+ * - GREEN color with HILIGHT=UNDERLINE for search input fields
+ * - Selection fields with underline styling
+ * - Row hover effects for enhanced usability
+ * - Page number display
+ * - Function key footer (F3=Exit, F7=Backward, F8=Forward)
+ * 
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * Licensed under the Apache License, Version 2.0
+ */
+
+/* ============================================================
+ * Container and Layout Styles
+ * ============================================================ */
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: 'Courier New', Courier, monospace;
+  background-color: #f5f5f5;
+  min-height: 100vh;
+}
+
+/* ============================================================
+ * Header Section Styles (Transaction name, Titles, Date/Time)
+ * ============================================================ */
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+  padding: 10px 15px;
+  background-color: #ffffff;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+}
+
+.headerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.headerCenter {
+  flex: 1;
+  text-align: center;
+  margin: 0 20px;
+}
+
+.headerRight {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  text-align: right;
+}
+
+.transactionInfo {
+  color: #0000ff; /* BLUE - matches BMS COLOR=BLUE */
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.programInfo {
+  color: #0000ff; /* BLUE - matches BMS COLOR=BLUE */
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.title {
+  color: #ffff00; /* YELLOW - matches BMS COLOR=YELLOW */
+  background-color: #333333;
+  padding: 2px 8px;
+  font-size: 14px;
+  font-weight: bold;
+  display: inline-block;
+}
+
+.dateInfo {
+  color: #0000ff; /* BLUE - matches BMS COLOR=BLUE */
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.timeInfo {
+  color: #0000ff; /* BLUE - matches BMS COLOR=BLUE */
+  font-size: 12px;
+  font-weight: normal;
+}
+
+/* ============================================================
+ * Screen Title and Page Number
+ * ============================================================ */
+
+.screenTitle {
+  text-align: center;
+  margin: 20px 0 10px 0;
+  position: relative;
+}
+
+.screenTitleText {
+  color: #808080; /* NEUTRAL - matches BMS COLOR=NEUTRAL */
+  font-size: 16px;
+  font-weight: bold;
+  display: inline-block;
+}
+
+.pageNumber {
+  position: absolute;
+  right: 0;
+  top: 0;
+  color: #000000;
+  font-size: 12px;
+}
+
+/* ============================================================
+ * Search Section Styles (Account Number and Card Number inputs)
+ * ============================================================ */
+
+.searchSection {
+  background-color: #ffffff;
+  padding: 15px;
+  margin-bottom: 20px;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+}
+
+.searchRow {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.searchRow:last-child {
+  margin-bottom: 0;
+}
+
+.searchLabel {
+  color: #00ffff; /* TURQUOISE - matches BMS COLOR=TURQUOISE */
+  font-size: 13px;
+  width: 180px;
+  text-align: right;
+  padding-right: 10px;
+  font-weight: bold;
+}
+
+.searchInput {
+  color: #00ff00; /* GREEN - matches BMS COLOR=GREEN, ATTRB=UNPROT */
+  background-color: #ffffff;
+  border: none;
+  border-bottom: 2px solid #00ff00; /* HILIGHT=UNDERLINE */
+  padding: 4px 8px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 13px;
+  outline: none;
+  width: 200px;
+  transition: border-bottom-color 0.2s ease;
+}
+
+.searchInput:focus {
+  border-bottom-color: #00aa00;
+  background-color: #f0fff0;
+}
+
+.searchInput::placeholder {
+  color: #888888;
+  font-style: italic;
+}
+
+/* Account Number input - 11 characters */
+.searchInput.accountNumberInput {
+  max-width: 150px;
+  letter-spacing: 1px;
+}
+
+/* Card Number input - 16 characters */
+.searchInput.cardNumberInput {
+  max-width: 220px;
+  letter-spacing: 1px;
+}
+
+/* ============================================================
+ * Table Container and Structure
+ * ============================================================ */
+
+.tableContainer {
+  background-color: #ffffff;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin-bottom: 20px;
+}
+
+.cardTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  table-layout: fixed;
+}
+
+/* ============================================================
+ * Table Header Styles
+ * ============================================================ */
+
+.cardTable thead {
+  background-color: #f8f8f8;
+  border-bottom: 2px solid #808080;
+}
+
+.cardTable thead tr {
+  border-bottom: 1px solid #d0d0d0;
+}
+
+.cardTable th {
+  color: #808080; /* NEUTRAL - matches BMS COLOR=NEUTRAL */
+  font-weight: bold;
+  text-align: left;
+  padding: 12px 10px;
+  border-bottom: 2px solid #d0d0d0;
+  font-size: 13px;
+}
+
+/* Column-specific widths matching BMS field lengths */
+.selectColumn {
+  width: 10%; /* Select - 1 character field */
+  text-align: center;
+}
+
+.accountColumn {
+  width: 30%; /* Account Number - 11 characters */
+}
+
+.cardNumberColumn {
+  width: 40%; /* Card Number - 16 characters */
+}
+
+.statusColumn {
+  width: 20%; /* Active - 1 character (Y/N) */
+  text-align: center;
+}
+
+/* Header separator row */
+.cardTable thead tr:last-child th {
+  padding: 0;
+  height: 2px;
+  background-color: #808080;
+}
+
+/* ============================================================
+ * Table Body Styles (Seven Repeating Rows)
+ * ============================================================ */
+
+.cardTable tbody tr {
+  border-bottom: 1px solid #e0e0e0;
+  transition: background-color 0.15s ease;
+}
+
+/* Alternating row colors for better readability */
+.cardTable tbody tr:nth-child(odd) {
+  background-color: #ffffff;
+}
+
+.cardTable tbody tr:nth-child(even) {
+  background-color: #fafafa;
+}
+
+/* Row hover effect - matches interactive terminal behavior */
+.cardTable tbody tr:hover {
+  background-color: #e6f7ff;
+  cursor: pointer;
+}
+
+.cardTable tbody tr.selectedRow {
+  background-color: #d6f0ff;
+  font-weight: bold;
+}
+
+.cardTable td {
+  padding: 10px;
+  color: #000000; /* DEFAULT - matches BMS COLOR=DEFAULT */
+  font-size: 13px;
+}
+
+/* ============================================================
+ * Selection Field Styles (CRDSEL1-7 fields with HILIGHT=UNDERLINE)
+ * ============================================================ */
+
+.selectionField {
+  text-align: center;
+  font-weight: bold;
+  text-decoration: underline; /* HILIGHT=UNDERLINE */
+  color: #0000ff;
+  cursor: pointer;
+  width: 100%;
+  display: inline-block;
+}
+
+.selectionField:hover {
+  color: #0000cc;
+  text-decoration: underline;
+}
+
+.selectionField.selected {
+  color: #ff0000;
+  font-weight: bold;
+}
+
+/* ============================================================
+ * Account Number Column Styles (ACCTNO1-7 fields)
+ * ============================================================ */
+
+.accountNumber {
+  font-family: 'Courier New', Courier, monospace;
+  letter-spacing: 1px;
+  color: #000000;
+}
+
+/* ============================================================
+ * Card Number Column Styles (CRDNUM1-7 fields)
+ * ============================================================ */
+
+.cardNumber {
+  font-family: 'Courier New', Courier, monospace;
+  letter-spacing: 1px;
+  color: #000000;
+}
+
+/* Masked card number display (show last 4 digits) */
+.cardNumberMasked {
+  font-family: 'Courier New', Courier, monospace;
+  letter-spacing: 1px;
+  color: #000000;
+}
+
+/* ============================================================
+ * Active Status Column Styles (CRDSTS1-7 fields)
+ * ============================================================ */
+
+.statusField {
+  text-align: center;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.statusField.active {
+  color: #00aa00; /* Green for active (Y) */
+}
+
+.statusField.inactive {
+  color: #cc0000; /* Red for inactive (N) */
+}
+
+/* ============================================================
+ * Pagination Controls
+ * ============================================================ */
+
+.paginationContainer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px;
+  background-color: #ffffff;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+  margin-bottom: 20px;
+}
+
+.paginationInfo {
+  color: #000000;
+  font-size: 13px;
+}
+
+.paginationInfo .currentPage {
+  font-weight: bold;
+  color: #0000ff;
+}
+
+.paginationInfo .totalPages {
+  font-weight: bold;
+}
+
+.paginationButtons {
+  display: flex;
+  gap: 10px;
+}
+
+.pageButton {
+  padding: 8px 16px;
+  background-color: #f0f0f0;
+  border: 1px solid #c0c0c0;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 12px;
+  transition: all 0.2s ease;
+  color: #000000;
+}
+
+.pageButton:hover:not(:disabled) {
+  background-color: #e0e0e0;
+  border-color: #a0a0a0;
+}
+
+.pageButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: #f8f8f8;
+}
+
+.pageButton.active {
+  background-color: #0000ff;
+  color: #ffffff;
+  border-color: #0000cc;
+}
+
+/* ============================================================
+ * Info and Error Message Styles
+ * ============================================================ */
+
+.messageContainer {
+  margin-bottom: 20px;
+}
+
+.infoMessage {
+  color: #808080; /* NEUTRAL - matches BMS COLOR=NEUTRAL */
+  background-color: #f0f0f0;
+  padding: 10px 15px;
+  border-radius: 3px;
+  font-size: 13px;
+  text-align: center;
+  border: 1px solid #d0d0d0;
+}
+
+.errorMessage {
+  color: #ff0000; /* RED - matches BMS COLOR=RED, ATTRB=BRT */
+  background-color: #fff0f0;
+  padding: 10px 15px;
+  border-radius: 3px;
+  font-size: 13px;
+  font-weight: bold; /* ATTRB=BRT */
+  text-align: center;
+  border: 1px solid #ff9999;
+}
+
+/* ============================================================
+ * Function Key Footer (F3=Exit, F7=Backward, F8=Forward)
+ * ============================================================ */
+
+.functionKeyFooter {
+  background-color: #00ffff; /* TURQUOISE - matches BMS COLOR=TURQUOISE */
+  color: #000000;
+  padding: 10px 15px;
+  text-align: left;
+  font-size: 12px;
+  border-radius: 3px;
+  font-family: 'Courier New', Courier, monospace;
+  margin-top: 20px;
+  border: 1px solid #00cccc;
+}
+
+.functionKey {
+  display: inline-block;
+  margin-right: 20px;
+  font-weight: bold;
+}
+
+.functionKey .keyName {
+  color: #0000ff;
+  font-weight: bold;
+}
+
+.functionKey .keyDescription {
+  color: #000000;
+}
+
+/* ============================================================
+ * Empty State (No Cards Found)
+ * ============================================================ */
+
+.emptyState {
+  text-align: center;
+  padding: 40px 20px;
+  color: #808080;
+  font-size: 14px;
+}
+
+.emptyState .emptyIcon {
+  font-size: 48px;
+  margin-bottom: 15px;
+  opacity: 0.5;
+}
+
+.emptyState .emptyMessage {
+  font-size: 16px;
+  margin-bottom: 10px;
+}
+
+.emptyState .emptyHint {
+  font-size: 13px;
+  color: #999999;
+}
+
+/* ============================================================
+ * Loading State
+ * ============================================================ */
+
+.loadingContainer {
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.loadingSpinner {
+  display: inline-block;
+  width: 40px;
+  height: 40px;
+  border: 4px solid #f0f0f0;
+  border-top-color: #0000ff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loadingText {
+  margin-top: 15px;
+  color: #808080;
+  font-size: 14px;
+}
+
+/* ============================================================
+ * Responsive Design Adjustments
+ * ============================================================ */
+
+@media (max-width: 768px) {
+  .container {
+    padding: 10px;
+  }
+
+  .header {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .headerRight {
+    text-align: left;
+  }
+
+  .searchRow {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .searchLabel {
+    text-align: left;
+    width: 100%;
+    margin-bottom: 5px;
+  }
+
+  .searchInput {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .cardTable {
+    font-size: 11px;
+  }
+
+  .cardTable th,
+  .cardTable td {
+    padding: 8px 5px;
+  }
+
+  .paginationContainer {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .functionKeyFooter {
+    font-size: 10px;
+  }
+
+  .functionKey {
+    display: block;
+    margin-bottom: 5px;
+  }
+}
+
+/* ============================================================
+ * Accessibility Enhancements
+ * ============================================================ */
+
+.cardTable tbody tr:focus-within {
+  outline: 2px solid #0000ff;
+  outline-offset: -2px;
+}
+
+.selectionField:focus {
+  outline: 2px solid #0000ff;
+  outline-offset: 2px;
+}
+
+.searchInput:focus {
+  outline: 2px solid #00ff00;
+  outline-offset: 2px;
+}
+
+/* Screen reader only text */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* ============================================================
+ * Print Styles
+ * ============================================================ */
+
+@media print {
+  .container {
+    background-color: #ffffff;
+  }
+
+  .functionKeyFooter {
+    display: none;
+  }
+
+  .paginationContainer {
+    display: none;
+  }
+
+  .cardTable tbody tr:hover {
+    background-color: inherit;
+  }
+}
