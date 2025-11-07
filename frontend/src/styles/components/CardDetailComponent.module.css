@@ -1,0 +1,654 @@
+/**
+ * CardDetailComponent.module.css
+ * 
+ * CSS Module for Card Detail Component
+ * Transformed from COCRDSL.bms BMS mapset
+ * 
+ * Original BMS Screen: Card Selection/Detail View (COCRDSL)
+ * Screen Size: 80 columns x 24 rows
+ * 
+ * Color Scheme (BMS to CSS):
+ * - BLUE: #0066CC (Transaction/Program info, labels)
+ * - YELLOW: #FFD700 (Titles, function keys)
+ * - TURQUOISE: #40E0D0 (Field labels)
+ * - RED: #DC143C (Error messages)
+ * - NEUTRAL: #CCCCCC (Info messages)
+ * - DEFAULT: #000000 (Input text)
+ * 
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * Licensed under the Apache License, Version 2.0
+ */
+
+/* =============================================================================
+   Container and Layout
+   ============================================================================= */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  background-color: #000000;
+  color: #FFFFFF;
+  min-height: 600px;
+}
+
+/* =============================================================================
+   Header Section (Rows 1-2 from BMS)
+   ============================================================================= */
+
+.header {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 20px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #333333;
+}
+
+.headerRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 5px;
+}
+
+.transactionInfo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #0066CC;
+}
+
+.transactionLabel {
+  font-weight: bold;
+  color: #0066CC;
+}
+
+.transactionName {
+  color: #0066CC;
+  font-weight: normal;
+}
+
+.headerTitle {
+  flex: 1;
+  text-align: center;
+  color: #FFD700;
+  font-weight: bold;
+  font-size: 16px;
+}
+
+.dateTimeInfo {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #0066CC;
+}
+
+.dateLabel,
+.timeLabel {
+  font-weight: bold;
+  color: #0066CC;
+}
+
+.dateValue,
+.timeValue {
+  color: #0066CC;
+}
+
+.programInfo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #0066CC;
+}
+
+.programLabel {
+  font-weight: bold;
+  color: #0066CC;
+}
+
+.programName {
+  color: #0066CC;
+}
+
+/* =============================================================================
+   Screen Title Section (Row 4 from BMS)
+   ============================================================================= */
+
+.screenTitle {
+  text-align: center;
+  color: #CCCCCC;
+  font-size: 18px;
+  font-weight: bold;
+  margin: 20px 0;
+  padding: 10px 0;
+  letter-spacing: 1px;
+}
+
+/* =============================================================================
+   Card Detail Form Section
+   ============================================================================= */
+
+.cardDetailForm {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px 40px;
+  flex: 1;
+}
+
+/* Field Group - Generic field container */
+.fieldGroup {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 15px;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+/* Field Labels (TURQUOISE color from BMS) */
+.fieldLabel {
+  color: #40E0D0;
+  font-weight: normal;
+  text-align: right;
+  padding-right: 10px;
+  white-space: nowrap;
+}
+
+/* Field Value Container */
+.fieldValue {
+  display: flex;
+  align-items: center;
+}
+
+/* =============================================================================
+   Account Number Field (ACCTSID - Position 7,45)
+   ============================================================================= */
+
+.accountNumberField {
+  border: none;
+  border-bottom: 2px solid #FFFFFF;
+  background-color: transparent;
+  color: #FFFFFF;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  padding: 4px 8px;
+  width: 150px;
+  outline: none;
+  transition: border-bottom-color 0.3s ease;
+}
+
+.accountNumberField:focus {
+  border-bottom-color: #FFD700;
+  background-color: rgba(255, 215, 0, 0.1);
+}
+
+.accountNumberField::placeholder {
+  color: #666666;
+}
+
+/* =============================================================================
+   Card Number Field (CARDSID - Position 8,45, Length 16)
+   ============================================================================= */
+
+.cardNumberField {
+  border: none;
+  border-bottom: 2px solid #FFFFFF;
+  background-color: transparent;
+  color: #FFFFFF;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  padding: 4px 8px;
+  width: 220px;
+  outline: none;
+  letter-spacing: 2px;
+  transition: border-bottom-color 0.3s ease;
+}
+
+.cardNumberField:focus {
+  border-bottom-color: #FFD700;
+  background-color: rgba(255, 215, 0, 0.1);
+}
+
+.cardNumberField::placeholder {
+  color: #666666;
+  letter-spacing: normal;
+}
+
+/* =============================================================================
+   Cardholder Name Field (CRDNAME - Position 11,25, Length 50)
+   ============================================================================= */
+
+.cardholderNameField {
+  border: none;
+  border-bottom: 2px solid #FFFFFF;
+  background-color: transparent;
+  color: #FFFFFF;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  padding: 4px 8px;
+  width: 100%;
+  max-width: 500px;
+  outline: none;
+  transition: border-bottom-color 0.3s ease;
+}
+
+.cardholderNameField:focus {
+  border-bottom-color: #FFD700;
+  background-color: rgba(255, 215, 0, 0.1);
+}
+
+.cardholderNameField::placeholder {
+  color: #666666;
+}
+
+/* =============================================================================
+   Read-Only Fields (ASKIP attribute in BMS)
+   ============================================================================= */
+
+.readOnlyField {
+  border: none;
+  border-bottom: 2px solid #666666;
+  background-color: #1A1A1A;
+  color: #CCCCCC;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  padding: 4px 8px;
+  cursor: not-allowed;
+  outline: none;
+}
+
+.readOnlyField:focus {
+  border-bottom-color: #666666;
+}
+
+/* Card Active Status Field (CRDSTCD - Position 13,25, Length 1) */
+.cardStatusField {
+  border: none;
+  border-bottom: 2px solid #666666;
+  background-color: #1A1A1A;
+  color: #CCCCCC;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  padding: 4px 8px;
+  width: 40px;
+  text-align: center;
+  cursor: not-allowed;
+  outline: none;
+}
+
+/* =============================================================================
+   Expiration Date Fields (EXPMON/EXPYEAR - Position 15,25 and 15,30)
+   ============================================================================= */
+
+.expirationDateContainer {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.expirationMonthField {
+  border: none;
+  border-bottom: 2px solid #666666;
+  background-color: #1A1A1A;
+  color: #CCCCCC;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  padding: 4px 8px;
+  width: 40px;
+  text-align: center;
+  cursor: not-allowed;
+  outline: none;
+}
+
+.expirationSeparator {
+  color: #FFFFFF;
+  font-weight: bold;
+  font-size: 16px;
+}
+
+.expirationYearField {
+  border: none;
+  border-bottom: 2px solid #666666;
+  background-color: #1A1A1A;
+  color: #CCCCCC;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  padding: 4px 8px;
+  width: 60px;
+  text-align: center;
+  cursor: not-allowed;
+  outline: none;
+}
+
+/* Expiration Date Display Format (MM/YYYY) */
+.expirationDateDisplay {
+  color: #CCCCCC;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  letter-spacing: 1px;
+}
+
+/* =============================================================================
+   Message Areas
+   ============================================================================= */
+
+/* Info Message Area (INFOMSG - Position 20,25, Length 40) */
+.infoMessage {
+  text-align: center;
+  color: #CCCCCC;
+  font-size: 14px;
+  padding: 15px;
+  margin: 20px 0;
+  min-height: 30px;
+  background-color: transparent;
+}
+
+.infoMessage.visible {
+  animation: fadeIn 0.5s ease-in;
+}
+
+/* Error Message Area (ERRMSG - Position 23,1, Length 80) */
+.errorMessage {
+  color: #DC143C;
+  font-weight: bold;
+  font-size: 14px;
+  padding: 10px;
+  margin: 10px 0;
+  text-align: center;
+  min-height: 30px;
+  background-color: rgba(220, 20, 60, 0.1);
+  border: 1px solid #DC143C;
+  border-radius: 4px;
+  display: none;
+}
+
+.errorMessage.visible {
+  display: block;
+  animation: shake 0.5s ease-in-out;
+}
+
+/* =============================================================================
+   Footer Section (Function Keys - Row 24 from BMS)
+   ============================================================================= */
+
+.footer {
+  margin-top: auto;
+  padding-top: 20px;
+  border-top: 1px solid #333333;
+}
+
+.functionKeys {
+  color: #FFD700;
+  font-size: 13px;
+  text-align: left;
+  padding: 10px;
+  background-color: #1A1A1A;
+  border-radius: 4px;
+}
+
+.functionKey {
+  display: inline-block;
+  margin-right: 20px;
+  white-space: nowrap;
+}
+
+.functionKey:last-child {
+  margin-right: 0;
+}
+
+.keyName {
+  font-weight: bold;
+  color: #FFD700;
+}
+
+.keyDescription {
+  color: #CCCCCC;
+}
+
+/* =============================================================================
+   Card Information Display Sections
+   ============================================================================= */
+
+.cardInfoSection {
+  background-color: #0D0D0D;
+  padding: 20px;
+  border-radius: 8px;
+  border: 1px solid #333333;
+  margin: 20px 0;
+}
+
+.cardInfoHeader {
+  color: #40E0D0;
+  font-size: 16px;
+  font-weight: bold;
+  margin-bottom: 15px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #333333;
+}
+
+.cardInfoGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 15px;
+}
+
+.cardInfoItem {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.cardInfoItemLabel {
+  color: #40E0D0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.cardInfoItemValue {
+  color: #FFFFFF;
+  font-size: 14px;
+  padding: 5px 0;
+  border-bottom: 1px solid #333333;
+}
+
+/* =============================================================================
+   Field Highlighting and Validation States
+   ============================================================================= */
+
+.fieldError {
+  border-bottom-color: #DC143C !important;
+  background-color: rgba(220, 20, 60, 0.1) !important;
+}
+
+.fieldSuccess {
+  border-bottom-color: #32CD32 !important;
+}
+
+.fieldWarning {
+  border-bottom-color: #FFA500 !important;
+  background-color: rgba(255, 165, 0, 0.1) !important;
+}
+
+/* =============================================================================
+   Responsive Design
+   ============================================================================= */
+
+@media screen and (max-width: 768px) {
+  .container {
+    padding: 10px;
+    font-size: 12px;
+  }
+
+  .headerRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .headerTitle {
+    text-align: left;
+    font-size: 14px;
+  }
+
+  .screenTitle {
+    font-size: 16px;
+  }
+
+  .cardDetailForm {
+    padding: 10px 20px;
+    gap: 15px;
+  }
+
+  .fieldGroup {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .fieldLabel {
+    text-align: left;
+    padding-right: 0;
+    padding-bottom: 5px;
+  }
+
+  .cardNumberField {
+    width: 100%;
+    max-width: 220px;
+  }
+
+  .accountNumberField {
+    width: 100%;
+    max-width: 150px;
+  }
+
+  .cardholderNameField {
+    width: 100%;
+  }
+
+  .cardInfoGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .functionKeys {
+    font-size: 11px;
+  }
+
+  .functionKey {
+    display: block;
+    margin-bottom: 5px;
+    margin-right: 0;
+  }
+}
+
+/* =============================================================================
+   Animations
+   ============================================================================= */
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  10%, 30%, 50%, 70%, 90% {
+    transform: translateX(-5px);
+  }
+  20%, 40%, 60%, 80% {
+    transform: translateX(5px);
+  }
+}
+
+/* =============================================================================
+   Print Styles
+   ============================================================================= */
+
+@media print {
+  .container {
+    background-color: #FFFFFF;
+    color: #000000;
+  }
+
+  .functionKeys {
+    display: none;
+  }
+
+  .header {
+    border-bottom-color: #000000;
+  }
+
+  .fieldLabel,
+  .fieldValue,
+  .readOnlyField {
+    color: #000000;
+  }
+
+  .errorMessage,
+  .infoMessage {
+    display: none;
+  }
+}
+
+/* =============================================================================
+   Accessibility Enhancements
+   ============================================================================= */
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Focus visible for keyboard navigation */
+.accountNumberField:focus-visible,
+.cardNumberField:focus-visible,
+.cardholderNameField:focus-visible {
+  outline: 2px solid #FFD700;
+  outline-offset: 2px;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .container {
+    border: 2px solid #FFFFFF;
+  }
+
+  .fieldLabel {
+    font-weight: bold;
+  }
+
+  .readOnlyField {
+    border: 1px solid #666666;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
