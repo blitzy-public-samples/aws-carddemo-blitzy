@@ -201,6 +201,14 @@ public class UserUpdateService {
         log.info("Starting user update operation for userId: {}", userId);
         
         try {
+            // Step 0: Validate user ID consistency (path vs request body)
+            if (request.getUserId() != null && !userId.equals(request.getUserId())) {
+                log.warn("User ID mismatch: path={}, request={}", userId, request.getUserId());
+                throw new ValidationException(
+                    "User ID mismatch. Path userId: " + userId + ", Request userId: " + request.getUserId()
+                );
+            }
+            
             // Step 1: Retrieve existing user (COBOL READ-USER-SEC-FILE paragraph, lines 253-270)
             // EXEC CICS READ DATASET('USRSEC') UPDATE RIDFLD(SEC-USR-ID)
             User existingUser = userRepository.findById(userId)
@@ -381,8 +389,6 @@ public class UserUpdateService {
             .firstName(user.getFirstName())
             .lastName(user.getLastName())
             .userType(user.getUserType().toString())
-            .createdDate(user.getCreatedDate())
-            .updatedDate(user.getUpdatedDate())
             .build();
     }
 }
