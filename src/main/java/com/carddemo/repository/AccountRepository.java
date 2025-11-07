@@ -278,10 +278,23 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * <p><strong>SQL Query Generation:</strong></p>
      * <p>Spring Data JPA generates optimized SQL with indexed access:</p>
      * <pre>
-     * SELECT a.* FROM account a WHERE a.customer_id = ?
+     * SELECT a.* FROM account a 
+     * INNER JOIN customer c ON a.customer_id = c.customer_id 
+     * WHERE c.customer_id = ?
      * ORDER BY a.account_id
      * </pre>
      * <p>Uses INDEX on customer_id column for efficient lookup.</p>
+     * 
+     * <p><strong>Method Name Convention:</strong></p>
+     * <p>The method name uses underscore notation (findByCustomer_CustomerId) to properly
+     * traverse the entity relationship path. Spring Data JPA interprets this as:</p>
+     * <ul>
+     *   <li><strong>customer</strong> - Navigate to the customer property on Account entity</li>
+     *   <li><strong>_</strong> - Path separator indicating property traversal</li>
+     *   <li><strong>customerId</strong> - Access the customerId property on Customer entity</li>
+     * </ul>
+     * <p>This is necessary because the Customer entity's ID field is named 'customerId', 
+     * not 'id'. Without the underscore, Spring Data would look for a non-existent 'id' field.</p>
      * 
      * <p><strong>Database Relationship:</strong></p>
      * <p>The Account entity has a @ManyToOne relationship to Customer entity, with
@@ -299,7 +312,7 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * 
      * <p><strong>Usage Pattern:</strong></p>
      * <pre>{@code
-     * List<Account> accounts = accountRepository.findByCustomerId(customerId);
+     * List<Account> accounts = accountRepository.findByCustomer_CustomerId(customerId);
      * if (accounts.isEmpty()) {
      *     // Handle no accounts found for customer
      *     throw new ResourceNotFoundException("No accounts for customer: " + customerId);
@@ -352,5 +365,5 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      *         (never returns null)
      * @throws IllegalArgumentException if customerId is null
      */
-    List<Account> findByCustomerId(Long customerId);
+    List<Account> findByCustomer_CustomerId(Long customerId);
 }
