@@ -50,6 +50,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.time.temporal.ChronoUnit;
 
 /**
@@ -395,8 +396,14 @@ public class DateUtility {
         }
         
         try {
-            // Attempt to parse the date using the specified format
-            DateTimeFormatter formatter = DateTimeFormatter.ofPattern(formatPattern);
+            // Attempt to parse the date using the specified format with STRICT resolver style
+            // STRICT mode ensures invalid dates (e.g., Feb 29 in non-leap years) throw exceptions
+            // rather than being silently corrected, matching COBOL CEEDAYS strict validation
+            // Note: Replace 'yyyy' with 'uuuu' for STRICT mode compatibility
+            // 'yyyy' = year-of-era (requires era), 'uuuu' = proleptic year (works with STRICT)
+            String strictPattern = formatPattern.replace("yyyy", "uuuu").replace("YYYY", "uuuu");
+            DateTimeFormatter formatter = DateTimeFormatter.ofPattern(strictPattern)
+                .withResolverStyle(ResolverStyle.STRICT);
             LocalDate parsedDate = LocalDate.parse(dateString, formatter);
             
             // Validate century restriction (only 19xx and 20xx allowed, matching COBOL validation)
