@@ -322,7 +322,7 @@ class TransactionCategoryRepositoryTest {
         // When: Update description and save (replicates VSAM REWRITE)
         TransactionCategory toUpdate = existing.get();
         toUpdate.setCategoryDescription("Updated Debit Merchandise");
-        TransactionCategory updated = transactionCategoryRepository.save(toUpdate);
+        TransactionCategory updated = transactionCategoryRepository.saveAndFlush(toUpdate);
 
         // Then: Verify description updated, key unchanged, version incremented
         assertThat(updated.getCategoryDescription()).isEqualTo("Updated Debit Merchandise");
