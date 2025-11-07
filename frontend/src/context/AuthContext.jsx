@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 /**
  * Authentication Context Provider
  * 
@@ -47,8 +48,8 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { createContext, useState, useEffect, useCallback, useContext } from 'react';
-import { jwtDecode } from 'jwt-decode';
+import { createContext, useState, useEffect, useCallback, useContext } from 'react';
+import PropTypes from 'prop-types';
 import authService from '../services/authService.js';
 
 /**
@@ -413,6 +414,11 @@ export function AuthProvider({ children }) {
     </AuthContext.Provider>
   );
 }
+
+// PropTypes validation for AuthProvider component
+AuthProvider.propTypes = {
+  children: PropTypes.node.isRequired,
+};
 
 /**
  * useAuth Custom Hook
