@@ -5,7 +5,6 @@
  * Provides menu options for authenticated users.
  */
 
-import React from 'react';
 import PropTypes from 'prop-types';
 import {
   Box,

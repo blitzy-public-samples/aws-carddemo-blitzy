@@ -29,7 +29,7 @@
  * </ErrorBoundary>
  */
 
-import React, { Component } from 'react';
+import { Component } from 'react';
 import PropTypes from 'prop-types';
 import { Alert, Button, Box, Typography, Container } from '@mui/material';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
@@ -191,11 +191,11 @@ class ErrorBoundary extends Component {
               </Typography>
               <Typography variant="body2" component="div" paragraph>
                 We encountered an unexpected error. The application has been notified
-                and we're working to fix the issue.
+                and we&apos;re working to fix the issue.
               </Typography>
               
               {/* Display error message in development mode */}
-              {process.env.NODE_ENV === 'development' && this.state.error && (
+              {import.meta.env.MODE === 'development' && this.state.error && (
                 <Box
                   sx={{
                     mt: 2,

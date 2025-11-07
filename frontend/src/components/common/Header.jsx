@@ -4,7 +4,6 @@
  * Application header component displaying the CardDemo branding and navigation.
  */
 
-import React from 'react';
 import PropTypes from 'prop-types';
 import {
   AppBar,

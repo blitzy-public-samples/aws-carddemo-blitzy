@@ -5,7 +5,6 @@
  * Wraps the application with ErrorBoundary for error handling.
  */
 
-import React from 'react';
 import { ThemeProvider, createTheme, CssBaseline, Box, Container } from '@mui/material';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import Header from './components/common/Header';
