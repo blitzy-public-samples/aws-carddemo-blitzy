@@ -167,8 +167,10 @@ public final class MessageConstants {
     /**
      * Wrong password error message.
      * <p>Displayed during login when password does not match.</p>
+     * <p>Original COBOL message from COSGN00C.cbl line 242:</p>
+     * <pre>MOVE 'Wrong Password. Try again ...' TO WS-MESSAGE</pre>
      */
-    public static final String MSG_WRONG_PASSWORD = "Incorrect password. Please try again";
+    public static final String MSG_WRONG_PASSWORD = "Wrong Password. Try again ...";
 
     /**
      * User not found error message.
