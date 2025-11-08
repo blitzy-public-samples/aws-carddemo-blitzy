@@ -3,6 +3,7 @@ package com.carddemo.batch.job;
 import com.carddemo.batch.processor.AccountDataProcessor;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Customer;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CustomerRepository;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +21,7 @@ import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.item.database.JpaItemWriter;
 import org.springframework.batch.item.ItemReader;
 import org.springframework.batch.item.file.FlatFileItemReader;
+import org.springframework.batch.item.file.FlatFileParseException;
 import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
 import org.springframework.batch.item.file.mapping.DefaultLineMapper;
 import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
@@ -339,6 +341,7 @@ public class AccountDataLoadJob {
                 .skipLimit(skipLimit)
                 .skip(ValidationException.class)
                 .skip(DataIntegrityViolationException.class)
+                .skip(FlatFileParseException.class)
                 .retryLimit(DEFAULT_RETRY_LIMIT)
                 .retry(org.springframework.dao.TransientDataAccessException.class)
                 .build();
