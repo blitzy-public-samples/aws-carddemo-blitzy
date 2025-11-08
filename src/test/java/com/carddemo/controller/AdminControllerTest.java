@@ -138,7 +138,7 @@ public class AdminControllerTest {
                 .userId("ADMIN01")
                 .firstName("Admin")
                 .lastName("User")
-                .password(passwordEncoder.encode("admin123"))
+                .password(passwordEncoder.encode("Admin123!"))
                 .userType(UserType.ADMIN)
                 .deleted(false)
                 .build();
@@ -150,7 +150,7 @@ public class AdminControllerTest {
                 .userId("USER0001")
                 .firstName("Regular")
                 .lastName("User")
-                .password(passwordEncoder.encode("user1234"))
+                .password(passwordEncoder.encode("User123!"))
                 .userType(UserType.USER)
                 .deleted(false)
                 .build();
@@ -184,13 +184,13 @@ public class AdminControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$", isA(Object.class)))
-                .andExpect(jsonPath("$.content", isA(java.util.List.class)))
-                .andExpect(jsonPath("$.content", hasSize(greaterThanOrEqualTo(2))))
-                .andExpect(jsonPath("$.content[0].userId", notNullValue()))
-                .andExpect(jsonPath("$.content[0].firstName", notNullValue()))
-                .andExpect(jsonPath("$.content[0].lastName", notNullValue()))
-                .andExpect(jsonPath("$.content[0].userType", notNullValue()))
-                .andExpect(jsonPath("$.content[0].password").doesNotExist());
+                .andExpect(jsonPath("$.users", isA(java.util.List.class)))
+                .andExpect(jsonPath("$.users", hasSize(greaterThanOrEqualTo(2))))
+                .andExpect(jsonPath("$.users[0].userId", notNullValue()))
+                .andExpect(jsonPath("$.users[0].firstName", notNullValue()))
+                .andExpect(jsonPath("$.users[0].lastName", notNullValue()))
+                .andExpect(jsonPath("$.users[0].userType", notNullValue()))
+                .andExpect(jsonPath("$.users[0].password").doesNotExist());
     }
 
     /**
@@ -239,9 +239,9 @@ public class AdminControllerTest {
                         .param("size", "10")
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content", isA(java.util.List.class)))
-                .andExpect(jsonPath("$.pageable.pageNumber", is(0)))
-                .andExpect(jsonPath("$.pageable.pageSize", is(10)))
+                .andExpect(jsonPath("$.users", isA(java.util.List.class)))
+                .andExpect(jsonPath("$.currentPage", is(0)))
+                .andExpect(jsonPath("$.pageSize", is(10)))
                 .andExpect(jsonPath("$.totalElements", greaterThanOrEqualTo(2)));
     }
 
@@ -263,11 +263,11 @@ public class AdminControllerTest {
     @DisplayName("GET /api/admin/users supports filtering by userType parameter")
     public void testListUsersSupportsUserTypeFilter() throws Exception {
         mockMvc.perform(get("/api/admin/users")
-                        .param("userType", "A")
+                        .param("userTypeFilter", "A")
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content", isA(java.util.List.class)))
-                .andExpect(jsonPath("$.content[*].userType", everyItem(is("ADMIN"))));
+                .andExpect(jsonPath("$.users", isA(java.util.List.class)))
+                .andExpect(jsonPath("$.users[*].userType", everyItem(is("Admin"))));
     }
 
     // ========================================================================
@@ -299,7 +299,7 @@ public class AdminControllerTest {
                 .andExpect(jsonPath("$.userId", is("ADMIN01")))
                 .andExpect(jsonPath("$.firstName", is("Admin")))
                 .andExpect(jsonPath("$.lastName", is("User")))
-                .andExpect(jsonPath("$.userType", is("ADMIN")))
+                .andExpect(jsonPath("$.userType", is("Admin")))
                 .andExpect(jsonPath("$.password").doesNotExist());
     }
 
@@ -374,7 +374,7 @@ public class AdminControllerTest {
                 .userId("TESTUSER")
                 .firstName("Test")
                 .lastName("User")
-                .password("test1234")
+                .password("Test123!")  // 8 characters max per COBOL PIC X(08)
                 .userType("U")
                 .build();
 
@@ -391,7 +391,7 @@ public class AdminControllerTest {
                 .andExpect(jsonPath("$.userId", is("TESTUSER")))
                 .andExpect(jsonPath("$.firstName", is("Test")))
                 .andExpect(jsonPath("$.lastName", is("User")))
-                .andExpect(jsonPath("$.userType", is("USER")))
+                .andExpect(jsonPath("$.userType", is("U")))
                 .andExpect(jsonPath("$.password").doesNotExist());
     }
 
@@ -416,7 +416,7 @@ public class AdminControllerTest {
                 .userId("")  // Empty userId violates @NotBlank
                 .firstName("Test")
                 .lastName("User")
-                .password("test1234")
+                .password("Test123!")  // Valid 8 characters per COBOL PIC X(08)
                 .userType("U")
                 .build();
 
@@ -427,9 +427,8 @@ public class AdminControllerTest {
                         .content(requestJson)
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors", notNullValue()))
-                .andExpect(jsonPath("$.errors[*].field", hasItem("userId")))
-                .andExpect(jsonPath("$.errors[*].message", hasItem(containsString("required"))));
+                .andExpect(jsonPath("$.fieldErrors", notNullValue()))
+                .andExpect(jsonPath("$.fieldErrors.userId", containsString("required")));
     }
 
     /**
@@ -453,7 +452,7 @@ public class AdminControllerTest {
                 .userId("TOOLONGID")  // 9 characters exceeds max=8
                 .firstName("Test")
                 .lastName("User")
-                .password("test1234")
+                .password("Test123!")  // Valid 8 characters per COBOL PIC X(08)
                 .userType("U")
                 .build();
 
@@ -464,8 +463,7 @@ public class AdminControllerTest {
                         .content(requestJson)
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors[*].field", hasItem("userId")))
-                .andExpect(jsonPath("$.errors[*].message", hasItem(containsString("between 1 and 8"))));
+                .andExpect(jsonPath("$.fieldErrors.userId", containsString("between 1 and 8")));
     }
 
     /**
@@ -489,7 +487,7 @@ public class AdminControllerTest {
                 .userId("TESTUSER")
                 .firstName("Test")
                 .lastName("User")
-                .password("test1234")
+                .password("Test123!")  // Valid 8 characters per COBOL PIC X(08)
                 .userType("X")  // Invalid userType (not 'A' or 'U')
                 .build();
 
@@ -500,8 +498,7 @@ public class AdminControllerTest {
                         .content(requestJson)
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors[*].field", hasItem("userType")))
-                .andExpect(jsonPath("$.errors[*].message", hasItem(containsString("'A' (Admin) or 'U' (User)"))));
+                .andExpect(jsonPath("$.fieldErrors.userType", containsString("'A' (Admin) or 'U' (User)")));
     }
 
     /**
@@ -525,7 +522,7 @@ public class AdminControllerTest {
                 .userId("ADMIN01")  // Already exists in test fixtures
                 .firstName("Another")
                 .lastName("Admin")
-                .password("pass1234")
+                .password("Pass123!")  // Valid 8 characters per COBOL PIC X(08)
                 .userType("A")
                 .build();
 
@@ -559,7 +556,7 @@ public class AdminControllerTest {
                 .userId("TESTUSER")
                 .firstName("Test")
                 .lastName("User")
-                .password("")  // Empty password violates @NotBlank
+                .password("")  // Empty password violates @Size constraint
                 .userType("U")
                 .build();
 
@@ -570,8 +567,7 @@ public class AdminControllerTest {
                         .content(requestJson)
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors[*].field", hasItem("password")))
-                .andExpect(jsonPath("$.errors[*].message", hasItem(containsString("required"))));
+                .andExpect(jsonPath("$.fieldErrors.password", containsString("required")));
     }
 
     /**
@@ -594,7 +590,7 @@ public class AdminControllerTest {
                 .userId("TESTUSER")
                 .firstName("Test")
                 .lastName("User")
-                .password("test1234")
+                .password("Test123!")  // Valid 8 characters per COBOL PIC X(08)
                 .userType("U")
                 .build();
 
@@ -634,7 +630,7 @@ public class AdminControllerTest {
                 .userId("USER0001")
                 .firstName("Updated")
                 .lastName("Name")
-                .password("newpass1")
+                .password("NewPas1!")  // 8 characters max per COBOL PIC X(08)
                 .userType("U")
                 .build();
 
@@ -649,7 +645,7 @@ public class AdminControllerTest {
                 .andExpect(jsonPath("$.userId", is("USER0001")))
                 .andExpect(jsonPath("$.firstName", is("Updated")))
                 .andExpect(jsonPath("$.lastName", is("Name")))
-                .andExpect(jsonPath("$.userType", is("USER")))
+                .andExpect(jsonPath("$.userType", is("U")))
                 .andExpect(jsonPath("$.password").doesNotExist());
     }
 
@@ -674,7 +670,7 @@ public class AdminControllerTest {
                 .userId("NOEXIST")
                 .firstName("Test")
                 .lastName("User")
-                .password("test1234")
+                .password("Test123!")  // Valid 8 characters per COBOL PIC X(08)
                 .userType("U")
                 .build();
 
@@ -708,7 +704,7 @@ public class AdminControllerTest {
                 .userId("USER0001")
                 .firstName("ThisFirstNameIsWayTooLongForValidation")  // Exceeds 20 chars
                 .lastName("User")
-                .password("test1234")
+                .password("Test123!")  // Valid 8 characters per COBOL PIC X(08)
                 .userType("U")
                 .build();
 
@@ -719,8 +715,7 @@ public class AdminControllerTest {
                         .content(requestJson)
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors[*].field", hasItem("firstName")))
-                .andExpect(jsonPath("$.errors[*].message", hasItem(containsString("between 1 and 20"))));
+                .andExpect(jsonPath("$.fieldErrors.firstName", containsString("between 1 and 20")));
     }
 
     /**
@@ -742,7 +737,7 @@ public class AdminControllerTest {
                 .userId("USER0001")
                 .firstName("Updated")
                 .lastName("Name")
-                .password("newpass1")
+                .password("NewPas1!")  // Valid 8 characters per COBOL PIC X(08)
                 .userType("U")
                 .build();
 
@@ -776,7 +771,7 @@ public class AdminControllerTest {
                 .userId("USER0001")
                 .firstName("Regular")
                 .lastName("User")
-                .password("user1234")
+                .password("User123!")  // 8 characters max per COBOL PIC X(08)
                 .userType("A")  // Promote to ADMIN
                 .build();
 
@@ -788,7 +783,7 @@ public class AdminControllerTest {
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.userId", is("USER0001")))
-                .andExpect(jsonPath("$.userType", is("ADMIN")));
+                .andExpect(jsonPath("$.userType", is("A")));
     }
 
     // ========================================================================
@@ -931,9 +926,12 @@ public class AdminControllerTest {
                         .content(requestJson)
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors", isA(java.util.List.class)))
-                .andExpect(jsonPath("$.errors", hasSize(greaterThanOrEqualTo(4))))
-                .andExpect(jsonPath("$.errors[*].field", hasItems("userId", "firstName", "lastName", "password", "userType")));
+                .andExpect(jsonPath("$.fieldErrors", isA(java.util.Map.class)))
+                .andExpect(jsonPath("$.fieldErrors.userId", notNullValue()))
+                .andExpect(jsonPath("$.fieldErrors.firstName", notNullValue()))
+                .andExpect(jsonPath("$.fieldErrors.lastName", notNullValue()))
+                .andExpect(jsonPath("$.fieldErrors.password", notNullValue()))
+                .andExpect(jsonPath("$.fieldErrors.userType", notNullValue()));
     }
 
     /**
@@ -949,14 +947,16 @@ public class AdminControllerTest {
      */
     @Test
     @WithMockUser(username = "ADMIN01", roles = {"ADMIN"})
-    @DisplayName("GET /api/admin/users supports sorting by lastName")
+    @DisplayName("GET /api/admin/users supports sorting by userId")
     public void testListUsersSupportsSorting() throws Exception {
         mockMvc.perform(get("/api/admin/users")
-                        .param("sort", "lastName,asc")
+                        .param("sortBy", "userId")
+                        .param("sortDirection", "asc")
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content", isA(java.util.List.class)))
-                .andExpect(jsonPath("$.sort.sorted", is(true)));
+                .andExpect(jsonPath("$.users", isA(java.util.List.class)))
+                .andExpect(jsonPath("$.sortedBy", is("userId")))
+                .andExpect(jsonPath("$.sortDirection", is("ASC")));
     }
 
     /**
@@ -980,7 +980,7 @@ public class AdminControllerTest {
                 .userId("SECTEST1")
                 .firstName("Security")
                 .lastName("Test")
-                .password("plain123")
+                .password("Plain12!")  // 8 characters max per COBOL PIC X(08)
                 .userType("U")
                 .build();
 
@@ -996,7 +996,7 @@ public class AdminControllerTest {
         User savedUser = userRepository.findById("SECTEST1").orElse(null);
         assert savedUser != null;
         assert savedUser.getPassword().startsWith("$2a$") || savedUser.getPassword().startsWith("$2b$");
-        assert !savedUser.getPassword().equals("plain123");
+        assert !savedUser.getPassword().equals("Plain123");
     }
 
     /**
