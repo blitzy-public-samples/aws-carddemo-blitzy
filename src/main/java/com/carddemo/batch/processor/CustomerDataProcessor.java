@@ -215,6 +215,16 @@ public class CustomerDataProcessor implements ItemProcessor<Customer, Customer> 
             return null;
         }
 
+        // Validate name field lengths (COBOL PIC X(25) constraints)
+        if (!validateNameLength(item)) {
+            return null;
+        }
+
+        // Validate address field lengths (COBOL PIC X(50) constraints)
+        if (!validateAddressLength(item)) {
+            return null;
+        }
+
         log.debug("Customer record {} successfully validated", item.getCustomerId());
         return item;
     }
@@ -226,8 +236,13 @@ public class CustomerDataProcessor implements ItemProcessor<Customer, Customer> 
      * This prevents duplicate customer insertion and maintains primary key uniqueness constraint
      * matching VSAM KSDS primary key behavior from COBOL CUSTDAT file.</p>
      * 
+     * <p>For duplicate customer IDs, throws IllegalArgumentException which is configured as a
+     * skippable exception in the batch job. This causes the item to be skipped (incrementing
+     * skipCount) rather than filtered, matching the expected batch job error handling behavior.</p>
+     * 
      * @param customer Customer entity to validate
-     * @return true if customer ID is unique (does not exist), false if duplicate
+     * @return true if customer ID is unique (does not exist)
+     * @throws IllegalArgumentException if customer ID already exists (duplicate record)
      */
     protected boolean validateCustomerId(Customer customer) {
         Long customerId = customer.getCustomerId();
@@ -242,7 +257,8 @@ public class CustomerDataProcessor implements ItemProcessor<Customer, Customer> 
                      "Duplicate customer records are not allowed. " +
                      "Violation: CUST-ID uniqueness constraint (VSAM KSDS primary key)", 
                      customerId);
-            return false;
+            throw new IllegalArgumentException("Duplicate customer ID: " + customerId + 
+                    ". Customer already exists in database. VSAM KSDS primary key uniqueness constraint violation.");
         }
 
         return true;
@@ -295,8 +311,13 @@ public class CustomerDataProcessor implements ItemProcessor<Customer, Customer> 
      * matching COBOL CUST-SSN (PIC 9(09)) field format. Also checks SSN uniqueness to prevent
      * duplicate SSN entries as SSN must be unique per regulatory requirements.</p>
      * 
+     * <p>For invalid SSN formats, throws IllegalArgumentException which is configured as a
+     * skippable exception in the batch job. This causes the item to be skipped (incrementing
+     * skipCount) rather than filtered.</p>
+     * 
      * @param customer Customer entity to validate
-     * @return true if SSN format is valid and unique, false otherwise
+     * @return true if SSN format is valid and unique
+     * @throws IllegalArgumentException if SSN is null or format is invalid (not 9 digits)
      */
     protected boolean validateSsn(Customer customer) {
         Long customerId = customer.getCustomerId();
@@ -307,7 +328,8 @@ public class CustomerDataProcessor implements ItemProcessor<Customer, Customer> 
             log.error("Validation failure - Customer ID {}: SSN is null. " +
                      "Field: CUST-SSN (PIC 9(09)) is required", 
                      customerId);
-            return false;
+            throw new IllegalArgumentException("Customer ID " + customerId + 
+                    ": SSN is null. CUST-SSN (PIC 9(09)) is a required field.");
         }
 
         // Validate SSN format - exactly 9 digits
@@ -316,7 +338,9 @@ public class CustomerDataProcessor implements ItemProcessor<Customer, Customer> 
                      "Expected format: 9 numeric digits (e.g., '123456789'). " +
                      "Violation: CUST-SSN (PIC 9(09)) format constraint", 
                      customerId, ssn);
-            return false;
+            throw new IllegalArgumentException("Customer ID " + customerId + 
+                    ": SSN '" + ssn + "' is not exactly 9 digits. " +
+                    "Expected format: 9 numeric digits. CUST-SSN (PIC 9(09)) format constraint violation.");
         }
 
         // Validate SSN uniqueness
@@ -350,8 +374,13 @@ public class CustomerDataProcessor implements ItemProcessor<Customer, Customer> 
      * and credit card eligibility rules. Matches COBOL CUST-DOB-YYYY-MM-DD (PIC X(10)) field
      * validation from customer copybook.</p>
      * 
+     * <p>For invalid date of birth values, throws IllegalArgumentException which is configured as a
+     * skippable exception in the batch job. This causes the item to be skipped (incrementing
+     * skipCount) rather than filtered.</p>
+     * 
      * @param customer Customer entity to validate
-     * @return true if date of birth is valid and customer meets minimum age, false otherwise
+     * @return true if date of birth is valid and customer meets minimum age
+     * @throws IllegalArgumentException if date of birth is null, in the future, or age < 18
      */
     protected boolean validateDateOfBirth(Customer customer) {
         Long customerId = customer.getCustomerId();
@@ -362,7 +391,8 @@ public class CustomerDataProcessor implements ItemProcessor<Customer, Customer> 
             log.error("Validation failure - Customer ID {}: date_of_birth is null. " +
                      "Field: CUST-DOB-YYYY-MM-DD (PIC X(10)) is required", 
                      customerId);
-            return false;
+            throw new IllegalArgumentException("Customer ID " + customerId + 
+                    ": date_of_birth is null. CUST-DOB-YYYY-MM-DD (PIC X(10)) is a required field.");
         }
 
         // Validate date is not in the future
@@ -371,7 +401,9 @@ public class CustomerDataProcessor implements ItemProcessor<Customer, Customer> 
                      "Date of birth cannot be after current date. " +
                      "Violation: CUST-DOB-YYYY-MM-DD logical constraint", 
                      customerId, dateOfBirth);
-            return false;
+            throw new IllegalArgumentException("Customer ID " + customerId + 
+                    ": date_of_birth '" + dateOfBirth + "' is in the future. " +
+                    "Date of birth cannot be after current date. CUST-DOB-YYYY-MM-DD logical constraint violation.");
         }
 
         // Calculate age and validate minimum age requirement
@@ -383,7 +415,10 @@ public class CustomerDataProcessor implements ItemProcessor<Customer, Customer> 
                      "Date of birth: {}. " +
                      "Violation: Credit card holder age eligibility requirement", 
                      customerId, age, MINIMUM_AGE, dateOfBirth);
-            return false;
+            throw new IllegalArgumentException("Customer ID " + customerId + 
+                    ": Customer age is " + age + " years, but minimum required age is " + 
+                    MINIMUM_AGE + " years. Date of birth: " + dateOfBirth + 
+                    ". Credit card holder age eligibility requirement violation.");
         }
 
         return true;
@@ -396,8 +431,13 @@ public class CustomerDataProcessor implements ItemProcessor<Customer, Customer> 
      * This matches credit score validation rules and COBOL CUST-FICO-CREDIT-SCORE (PIC 9(03))
      * field constraints from customer copybook.</p>
      * 
+     * <p>For invalid FICO scores, throws IllegalArgumentException which is configured as a
+     * skippable exception in the batch job. This causes the item to be skipped (incrementing
+     * skipCount) rather than filtered.</p>
+     * 
      * @param customer Customer entity to validate
-     * @return true if FICO score is within valid range, false otherwise
+     * @return true if FICO score is within valid range or null
+     * @throws IllegalArgumentException if FICO score is outside the valid range 300-850
      */
     protected boolean validateFicoScore(Customer customer) {
         Long customerId = customer.getCustomerId();
@@ -415,7 +455,10 @@ public class CustomerDataProcessor implements ItemProcessor<Customer, Customer> 
                      "Valid range: {}-{} (standard FICO credit score range). " +
                      "Violation: CUST-FICO-CREDIT-SCORE (PIC 9(03)) range constraint", 
                      customerId, ficoScore, FICO_SCORE_MIN, FICO_SCORE_MAX);
-            return false;
+            throw new IllegalArgumentException("Customer ID " + customerId + 
+                    ": FICO score " + ficoScore + " is out of valid range. " +
+                    "Valid range: " + FICO_SCORE_MIN + "-" + FICO_SCORE_MAX + " (standard FICO credit score range). " +
+                    "CUST-FICO-CREDIT-SCORE (PIC 9(03)) range constraint violation.");
         }
 
         return true;
@@ -482,6 +525,114 @@ public class CustomerDataProcessor implements ItemProcessor<Customer, Customer> 
                      "Violation: CUST-ADDR-STATE-CD (PIC X(02)) data quality constraint", 
                      customerId, stateCode);
             return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Validate name field lengths match COBOL PIC X(25) constraints.
+     * 
+     * <p>Validates that customer name fields (firstName, middleName, lastName) do not exceed
+     * 25 characters as defined by COBOL copybook field definitions:
+     * CUST-FIRST-NAME PIC X(25), CUST-MIDDLE-NAME PIC X(25), CUST-LAST-NAME PIC X(25).</p>
+     * 
+     * <p>For names exceeding length limits, throws IllegalArgumentException which is configured
+     * as a skippable exception in the batch job. This causes the item to be skipped (incrementing
+     * skipCount) rather than filtered.</p>
+     * 
+     * @param customer Customer entity to validate
+     * @return true if all name fields are within length constraints
+     * @throws IllegalArgumentException if any name field exceeds 25 characters
+     */
+    protected boolean validateNameLength(Customer customer) {
+        Long customerId = customer.getCustomerId();
+
+        // Validate first name length
+        if (customer.getFirstName() != null && customer.getFirstName().length() > 25) {
+            log.error("Validation failure - Customer ID {}: first_name length {} exceeds maximum 25 characters. " +
+                     "Value: '{}'. " +
+                     "Violation: CUST-FIRST-NAME (PIC X(25)) length constraint", 
+                     customerId, customer.getFirstName().length(), customer.getFirstName());
+            throw new IllegalArgumentException("Customer ID " + customerId + 
+                    ": first_name length " + customer.getFirstName().length() + 
+                    " exceeds maximum 25 characters. CUST-FIRST-NAME (PIC X(25)) length constraint violation.");
+        }
+
+        // Validate middle name length (middle name is optional)
+        if (customer.getMiddleName() != null && customer.getMiddleName().length() > 25) {
+            log.error("Validation failure - Customer ID {}: middle_name length {} exceeds maximum 25 characters. " +
+                     "Value: '{}'. " +
+                     "Violation: CUST-MIDDLE-NAME (PIC X(25)) length constraint", 
+                     customerId, customer.getMiddleName().length(), customer.getMiddleName());
+            throw new IllegalArgumentException("Customer ID " + customerId + 
+                    ": middle_name length " + customer.getMiddleName().length() + 
+                    " exceeds maximum 25 characters. CUST-MIDDLE-NAME (PIC X(25)) length constraint violation.");
+        }
+
+        // Validate last name length
+        if (customer.getLastName() != null && customer.getLastName().length() > 25) {
+            log.error("Validation failure - Customer ID {}: last_name length {} exceeds maximum 25 characters. " +
+                     "Value: '{}'. " +
+                     "Violation: CUST-LAST-NAME (PIC X(25)) length constraint", 
+                     customerId, customer.getLastName().length(), customer.getLastName());
+            throw new IllegalArgumentException("Customer ID " + customerId + 
+                    ": last_name length " + customer.getLastName().length() + 
+                    " exceeds maximum 25 characters. CUST-LAST-NAME (PIC X(25)) length constraint violation.");
+        }
+
+        return true;
+    }
+
+    /**
+     * Validate address field lengths match COBOL PIC X(50) constraints.
+     * 
+     * <p>Validates that customer address fields (addressLine1, addressLine2, addressLine3) do not
+     * exceed 50 characters as defined by COBOL copybook field definitions:
+     * CUST-ADDR-LINE-1 PIC X(50), CUST-ADDR-LINE-2 PIC X(50), CUST-ADDR-LINE-3 PIC X(50).</p>
+     * 
+     * <p>For addresses exceeding length limits, throws IllegalArgumentException which is configured
+     * as a skippable exception in the batch job. This causes the item to be skipped (incrementing
+     * skipCount) rather than filtered.</p>
+     * 
+     * @param customer Customer entity to validate
+     * @return true if all address fields are within length constraints
+     * @throws IllegalArgumentException if any address field exceeds 50 characters
+     */
+    protected boolean validateAddressLength(Customer customer) {
+        Long customerId = customer.getCustomerId();
+
+        // Validate address line 1 length
+        if (customer.getAddressLine1() != null && customer.getAddressLine1().length() > 50) {
+            log.error("Validation failure - Customer ID {}: address_line1 length {} exceeds maximum 50 characters. " +
+                     "Value: '{}'. " +
+                     "Violation: CUST-ADDR-LINE-1 (PIC X(50)) length constraint", 
+                     customerId, customer.getAddressLine1().length(), customer.getAddressLine1());
+            throw new IllegalArgumentException("Customer ID " + customerId + 
+                    ": address_line1 length " + customer.getAddressLine1().length() + 
+                    " exceeds maximum 50 characters. CUST-ADDR-LINE-1 (PIC X(50)) length constraint violation.");
+        }
+
+        // Validate address line 2 length (optional)
+        if (customer.getAddressLine2() != null && customer.getAddressLine2().length() > 50) {
+            log.error("Validation failure - Customer ID {}: address_line2 length {} exceeds maximum 50 characters. " +
+                     "Value: '{}'. " +
+                     "Violation: CUST-ADDR-LINE-2 (PIC X(50)) length constraint", 
+                     customerId, customer.getAddressLine2().length(), customer.getAddressLine2());
+            throw new IllegalArgumentException("Customer ID " + customerId + 
+                    ": address_line2 length " + customer.getAddressLine2().length() + 
+                    " exceeds maximum 50 characters. CUST-ADDR-LINE-2 (PIC X(50)) length constraint violation.");
+        }
+
+        // Validate address line 3 length (optional)
+        if (customer.getAddressLine3() != null && customer.getAddressLine3().length() > 50) {
+            log.error("Validation failure - Customer ID {}: address_line3 length {} exceeds maximum 50 characters. " +
+                     "Value: '{}'. " +
+                     "Violation: CUST-ADDR-LINE-3 (PIC X(50)) length constraint", 
+                     customerId, customer.getAddressLine3().length(), customer.getAddressLine3());
+            throw new IllegalArgumentException("Customer ID " + customerId + 
+                    ": address_line3 length " + customer.getAddressLine3().length() + 
+                    " exceeds maximum 50 characters. CUST-ADDR-LINE-3 (PIC X(50)) length constraint violation.");
         }
 
         return true;

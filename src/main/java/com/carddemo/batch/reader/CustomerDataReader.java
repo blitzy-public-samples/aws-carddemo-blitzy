@@ -1,18 +1,24 @@
 package com.carddemo.batch.reader;
 
 import com.carddemo.entity.Customer;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.batch.item.file.builder.FlatFileItemReaderBuilder;
 import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
 import org.springframework.batch.item.file.transform.FixedLengthTokenizer;
 import org.springframework.batch.item.file.transform.Range;
+import org.springframework.batch.core.configuration.annotation.StepScope;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.convert.ConversionService;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.core.convert.support.DefaultConversionService;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 
+import java.io.IOException;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 
@@ -259,6 +265,7 @@ import java.time.format.DateTimeFormatter;
  * @version 1.0
  * @since 1.0
  */
+@Slf4j
 @Configuration
 public class CustomerDataReader {
 
@@ -349,17 +356,28 @@ public class CustomerDataReader {
      *   <li>Maintaining data validation and error handling semantics</li>
      * </ul>
      * 
+     * <p><strong>@StepScope Configuration:</strong></p>
+     * <p>This bean uses @StepScope to enable late binding of job parameters, allowing the
+     * input file path to be dynamically specified at job execution time via the
+     * 'customerDataFile' job parameter. This supports flexible batch execution scenarios
+     * where different input files (including test data files) can be processed by the same
+     * job configuration without recompilation or Spring context restart.</p>
+     * 
+     * @param customerDataFile path to the customer data file, injected from job parameters with default fallback
      * @return FlatFileItemReader configured to read Customer entities from fixed-width text files
-     * @throws IllegalStateException if the data file cannot be located on the classpath
+     * @throws IOException if the specified data file cannot be located or accessed
      * 
      * @see FlatFileItemReader
      * @see FlatFileItemReaderBuilder
      * @see FixedLengthTokenizer
      * @see BeanWrapperFieldSetMapper
      * @see Customer
+     * @see StepScope
      */
     @Bean(name = "customerReader")
-    public FlatFileItemReader<Customer> customerDataReader() {
+    @StepScope
+    public FlatFileItemReader<Customer> customerDataReader(
+            @Value("#{jobParameters['customerDataFile'] ?: 'classpath:data/custdata.txt'}") String customerDataFile) throws IOException {
         
         // Configure the FixedLengthTokenizer with exact field ranges from COBOL copybook
         FixedLengthTokenizer tokenizer = new FixedLengthTokenizer();
@@ -430,15 +448,27 @@ public class CustomerDataReader {
                 if (source == null || source.trim().isEmpty()) {
                     return null;
                 }
-                return LocalDate.parse(source.trim(), formatter);
+                try {
+                    return LocalDate.parse(source.trim(), formatter);
+                } catch (java.time.format.DateTimeParseException e) {
+                    // Return null for invalid date formats - will be caught by processor validation
+                    // This allows the record to be processed and skipped with proper error logging
+                    log.warn("Invalid date format in source data: '{}'. Expected format: yyyy-MM-dd. " +
+                            "Record will be validated by processor.", source.trim());
+                    return null;
+                }
             }
         });
         fieldSetMapper.setConversionService(conversionService);
         
+        // Resolve the customer data file from the job parameter (supports both classpath and file system paths)
+        PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
+        Resource resource = resolver.getResource(customerDataFile);
+        
         // Build and configure the FlatFileItemReader using the fluent builder API
         return new FlatFileItemReaderBuilder<Customer>()
             .name("customerDataReader")
-            .resource(new ClassPathResource("data/custdata.txt"))
+            .resource(resource)
             .encoding("UTF-8")
             .linesToSkip(0)
             .lineTokenizer(tokenizer)

@@ -43,13 +43,14 @@ import org.springframework.context.annotation.Configuration;
  *   <li><strong>EntityManagerFactory Injection:</strong> Provides JPA persistence context
  *       for database operations, configured in DatabaseConfig with PostgreSQL DataSource,
  *       Hibernate dialect, and connection pooling (HikariCP).</li>
- *   <li><strong>usePersist(false):</strong> Enables merge operations instead of persist,
- *       allowing the writer to handle both INSERT and UPDATE scenarios. This is critical
- *       for data correction scenarios where customer records may need to be reloaded or
- *       updated during batch processing without causing constraint violations.</li>
- *   <li><strong>Merge Semantics:</strong> EntityManager.merge() checks if entity exists
- *       by primary key (customerId). If found, performs UPDATE; if not found, performs
- *       INSERT. This replicates VSAM REWRITE/WRITE behavior from COBOL batch programs.</li>
+ *   <li><strong>usePersist(true):</strong> Enables persist operations for INSERT-only behavior,
+ *       matching mainframe VSAM WRITE semantics where duplicate keys cause file status '22' errors.
+ *       When a duplicate customer_id is encountered, EntityManager.persist() throws
+ *       javax.persistence.EntityExistsException (wrapped as DataIntegrityViolationException),
+ *       which is caught by the fault-tolerant step configuration for proper skip handling.</li>
+ *   <li><strong>Persist Semantics:</strong> EntityManager.persist() attempts to INSERT the entity.
+ *       If primary key (customerId) already exists, throws exception which triggers skip logic
+ *       in the batch step. This preserves COBOL VSAM behavior where duplicate WRITE operations fail.</li>
  * </ul>
  * 
  * <h2>Source Transformation Context</h2>
@@ -188,14 +189,15 @@ public class CustomerDataWriter {
      *       creates EntityManager instances that manage Customer entity lifecycle,
      *       execute JPQL queries, and perform database operations within the persistence
      *       context.</li>
-     *   <li><strong>usePersist(false):</strong> Configures the writer to use
-     *       EntityManager.merge() instead of EntityManager.persist(). This is critical
-     *       for supporting both INSERT and UPDATE operations:<ul>
-     *       <li>merge() checks if the entity exists in database by primary key (customerId)</li>
-     *       <li>If entity exists: performs UPDATE operation, preserving existing data</li>
-     *       <li>If entity does not exist: performs INSERT operation, creating new record</li>
-     *       <li>This replicates VSAM REWRITE behavior from COBOL batch programs where
-     *           records can be overwritten or created dynamically</li>
+     *   <li><strong>usePersist(true):</strong> Configures the writer to use
+     *       EntityManager.persist() instead of EntityManager.merge(). This preserves
+     *       mainframe VSAM WRITE semantics where duplicate keys cause errors:<ul>
+     *       <li>persist() attempts INSERT operation (equivalent to COBOL WRITE)</li>
+     *       <li>If entity with same primary key exists: throws EntityExistsException</li>
+     *       <li>Exception is wrapped as DataIntegrityViolationException by Spring</li>
+     *       <li>Fault-tolerant step catches exception and increments skip count</li>
+     *       <li>This preserves COBOL file status '22' (duplicate key) behavior where
+     *           records with duplicate keys are rejected, not updated</li>
      *       </ul></li>
      *   <li><strong>build():</strong> Constructs the configured JpaItemWriter instance
      *       ready for injection into batch step configuration.</li>
@@ -358,7 +360,7 @@ public class CustomerDataWriter {
     public JpaItemWriter<Customer> customerWriter(EntityManagerFactory entityManagerFactory) {
         return new JpaItemWriterBuilder<Customer>()
                 .entityManagerFactory(entityManagerFactory)
-                .usePersist(false)
+                .usePersist(true)
                 .build();
     }
 }

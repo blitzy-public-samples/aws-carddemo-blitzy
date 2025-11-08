@@ -3,7 +3,6 @@ package com.carddemo.batch.job;
 import com.carddemo.entity.Customer;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.batch.processor.CustomerDataProcessor;
-import com.carddemo.batch.reader.CustomerDataReader;
 import com.carddemo.batch.writer.CustomerDataWriter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -24,6 +23,7 @@ import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
+import jakarta.persistence.EntityExistsException;
 
 import java.io.BufferedWriter;
 import java.io.FileWriter;
@@ -160,7 +160,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li><strong>Skip Policy:</strong> Allows up to 100 validation failures without job failure
  *       <ul>
  *         <li>Configurable via skipLimit job parameter (default: 100)</li>
- *         <li>Skips DataIntegrityViolationException (constraint violations)</li>
+ *         <li>Skips DataIntegrityViolationException (database constraint violations)</li>
+ *         <li>Skips EntityExistsException (duplicate keys within chunk)</li>
  *         <li>Skips IllegalArgumentException (validation failures)</li>
  *         <li>Exceeding skip limit causes job failure with detailed error report</li>
  *       </ul>
@@ -313,7 +314,6 @@ public class CustomerDataLoadJob {
     
     // Injected dependencies from Spring container
     private final CustomerRepository customerRepository;
-    private final CustomerDataReader customerDataReader;
     private final CustomerDataProcessor customerDataProcessor;
     private final CustomerDataWriter customerDataWriter;
     
@@ -620,7 +620,7 @@ public class CustomerDataLoadJob {
      * <ul>
      *   <li><strong>Skip Policy:</strong>
      *       <ul>
-     *         <li>Skippable Exceptions: DataIntegrityViolationException, IllegalArgumentException</li>
+     *         <li>Skippable Exceptions: DataIntegrityViolationException, EntityExistsException, IllegalArgumentException</li>
      *         <li>Skip Limit: 100 records (configurable via job parameter)</li>
      *         <li>Behavior: Continue processing after skip, log to error file</li>
      *       </ul>
@@ -687,6 +687,7 @@ public class CustomerDataLoadJob {
                 .faultTolerant()
                 .skip(DataIntegrityViolationException.class)
                 .skip(IllegalArgumentException.class)
+                .skip(EntityExistsException.class)
                 .skipLimit(100)
                 .listener(new SkipListener<Customer, Customer>() {
                     
@@ -751,7 +752,7 @@ public class CustomerDataLoadJob {
                         customersSkipped.incrementAndGet();
                         
                         // Check if it's a constraint violation (duplicate)
-                        if (t instanceof DataIntegrityViolationException) {
+                        if (t instanceof DataIntegrityViolationException || t instanceof EntityExistsException) {
                             duplicateCustomers.incrementAndGet();
                         }
                         
