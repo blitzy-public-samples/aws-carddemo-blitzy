@@ -21,6 +21,7 @@ import com.carddemo.dto.request.UserRequest;
 import com.carddemo.dto.response.UserResponse;
 import com.carddemo.entity.User;
 import com.carddemo.entity.User.UserType;
+import com.carddemo.exception.BusinessLogicException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.UserRepository;
 import com.carddemo.service.user.UserCreateService;
@@ -429,7 +430,7 @@ public class UserCreateServiceTest {
      * </ul>
      */
     @Test
-    @DisplayName("Should throw ValidationException when user ID already exists")
+    @DisplayName("Should throw BusinessLogicException when user ID already exists")
     public void testCreateUserWithDuplicateUserId() {
         // Arrange: Create request with duplicate user ID
         UserRequest request = UserRequest.builder()
@@ -443,9 +444,9 @@ public class UserCreateServiceTest {
         // Mock repository: user ID exists (simulates DUPKEY/DUPREC condition)
         when(userRepository.existsByUserId("ADMIN001")).thenReturn(true);
 
-        // Act & Assert: Verify ValidationException is thrown with correct message
+        // Act & Assert: Verify BusinessLogicException is thrown with correct message
         assertThatThrownBy(() -> userCreateService.createUser(request))
-                .isInstanceOf(ValidationException.class)
+                .isInstanceOf(BusinessLogicException.class)
                 .hasMessageContaining("User ID already exist")
                 .hasMessageContaining("ADMIN001");
 
