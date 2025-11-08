@@ -388,7 +388,7 @@ public class UserUpdateService {
             .userId(user.getUserId())
             .firstName(user.getFirstName())
             .lastName(user.getLastName())
-            .userType(user.getUserType().toString())
+            .userType(user.getUserType().getCode())
             .build();
     }
 }
