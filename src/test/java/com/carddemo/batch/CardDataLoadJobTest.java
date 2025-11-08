@@ -3,20 +3,24 @@ package com.carddemo.batch;
 import com.carddemo.batch.job.CardDataLoadJob;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
+import com.carddemo.entity.Customer;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CustomerRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.TestPropertySource;
 
@@ -180,6 +184,16 @@ public class CardDataLoadJobTest {
     private JobLauncherTestUtils jobLauncherTestUtils;
 
     /**
+     * Card Data Load Job Bean
+     * 
+     * <p>The specific Job bean being tested. Must be injected and configured on
+     * JobLauncherTestUtils to enable job execution in tests.</p>
+     */
+    @Autowired
+    @Qualifier("cardDataLoadBatchJob")
+    private Job cardDataLoadJob;
+
+    /**
      * CardRepository - Spring Data JPA Repository for Card Entity
      * 
      * <p>Used in tests to validate that Card entities are correctly persisted
@@ -214,6 +228,23 @@ public class CardDataLoadJobTest {
     private AccountRepository accountRepository;
 
     /**
+     * CustomerRepository - Spring Data JPA Repository for Customer Entity
+     * 
+     * <p>Used in tests to create test Customer entities that serve as foreign key
+     * references for Account entities. Required to satisfy Account.customer foreign key
+     * constraint that replicates VSAM cross-reference file CVACT03Y.cpy integrity.</p>
+     * 
+     * <p>Methods used in tests:</p>
+     * <ul>
+     *   <li>save(Customer) - create individual test customer</li>
+     *   <li>saveAll(List&lt;Customer&gt;) - create multiple test customers</li>
+     *   <li>deleteAll() - cleanup test customers after test execution</li>
+     * </ul>
+     */
+    @Autowired
+    private CustomerRepository customerRepository;
+
+    /**
      * Test Data File Path
      * 
      * <p>Temporary file path for test CSV files created during test execution.
@@ -230,6 +261,24 @@ public class CardDataLoadJobTest {
      */
     private static final DateTimeFormatter EXPIRATION_DATE_FORMATTER = 
         DateTimeFormatter.ofPattern("MM/yyyy");
+    
+    /**
+     * CSV header row matching FIELD_NAMES in CardDataLoadJob.
+     * 
+     * <p>This header row defines the expected column order for the CSV file:</p>
+     * <ol>
+     *   <li>cardNumber - 16 alphanumeric characters</li>
+     *   <li>accountId - 11-digit account ID</li>
+     *   <li>cardType - CC or DC</li>
+     *   <li>expirationDate - MM/yyyy format</li>
+     *   <li>embossedName - Name on card (max 50 chars)</li>
+     *   <li>cvvCode - 3-digit CVV</li>
+     *   <li>activeStatus - Y or N</li>
+     *   <li>openDate - yyyy-MM-dd format</li>
+     *   <li>lastUsedDate - yyyy-MM-dd format (optional)</li>
+     * </ol>
+     */
+    private static final String CSV_HEADER = "cardNumber,accountId,cardType,expirationDate,embossedName,cvvCode,activeStatus,openDate,lastUsedDate\n";
 
     /**
      * Test Setup Method
@@ -243,15 +292,20 @@ public class CardDataLoadJobTest {
      * <ol>
      *   <li>Delete all Card entities first (due to foreign key dependency)</li>
      *   <li>Delete all Account entities second (referenced by cards)</li>
+     *   <li>Delete all Customer entities third (referenced by accounts)</li>
      * </ol>
      * 
      * @throws Exception if database cleanup fails
      */
     @BeforeEach
     public void setUp() throws Exception {
+        // Configure JobLauncherTestUtils with the specific job to test
+        jobLauncherTestUtils.setJob(cardDataLoadJob);
+        
         // Clean database state before each test
         cardRepository.deleteAll();
         accountRepository.deleteAll();
+        customerRepository.deleteAll();
         
         // Initialize test data file path
         testDataFilePath = System.getProperty("java.io.tmpdir") + File.separator + 
@@ -269,6 +323,7 @@ public class CardDataLoadJobTest {
      * <ol>
      *   <li>Delete all Card entities from database</li>
      *   <li>Delete all Account entities from database</li>
+     *   <li>Delete all Customer entities from database</li>
      *   <li>Delete temporary test CSV file from filesystem</li>
      * </ol>
      * 
@@ -279,6 +334,7 @@ public class CardDataLoadJobTest {
         // Clean database state after each test
         cardRepository.deleteAll();
         accountRepository.deleteAll();
+        customerRepository.deleteAll();
         
         // Delete temporary test data file
         File testFile = new File(testDataFilePath);
@@ -338,9 +394,31 @@ public class CardDataLoadJobTest {
     @Test
     @DisplayName("Card Data Load Job - Successful Execution")
     public void testCardDataLoadJob_Success() throws Exception {
+        // Setup: Create test customers for foreign key references
+        Customer customer1 = Customer.builder()
+            .customerId(100000001L)
+            .firstName("John")
+            .lastName("Doe")
+            .dateOfBirth(LocalDate.of(1980, 1, 15))
+            .ssn("123456789")
+            .ficoScore(750)
+            .build();
+        
+        Customer customer2 = Customer.builder()
+            .customerId(100000002L)
+            .firstName("Jane")
+            .lastName("Smith")
+            .dateOfBirth(LocalDate.of(1985, 3, 20))
+            .ssn("987654321")
+            .ficoScore(700)
+            .build();
+        
+        customerRepository.saveAll(Arrays.asList(customer1, customer2));
+        
         // Setup: Create test accounts for foreign key references
         Account account1 = Account.builder()
             .accountId(1000000001L)
+            .customer(customer1)
             .activeStatus("Y")
             .currentBalance(BigDecimal.valueOf(1500.00))
             .creditLimit(BigDecimal.valueOf(10000.00))
@@ -353,6 +431,7 @@ public class CardDataLoadJobTest {
         
         Account account2 = Account.builder()
             .accountId(1000000002L)
+            .customer(customer2)
             .activeStatus("Y")
             .currentBalance(BigDecimal.valueOf(500.00))
             .creditLimit(BigDecimal.valueOf(5000.00))
@@ -370,15 +449,17 @@ public class CardDataLoadJobTest {
         LocalDate futureExpiration2 = LocalDate.now().plusYears(1).plusMonths(6);
         LocalDate futureExpiration3 = LocalDate.now().plusMonths(6);
         
-        String csvContent = "4111111111111111,1000000001,123,JOHN DOE," + 
-                          futureExpiration1.format(EXPIRATION_DATE_FORMATTER) + ",Y,CC," +
-                          LocalDate.now().minusYears(1).toString() + "\n" +
-                          "5500000000000004,1000000002,456,JANE SMITH," + 
-                          futureExpiration2.format(EXPIRATION_DATE_FORMATTER) + ",N,DC," +
-                          LocalDate.now().minusYears(2).toString() + "\n" +
-                          "340000000000009,1000000001,789,ROBERT JOHNSON," + 
-                          futureExpiration3.format(EXPIRATION_DATE_FORMATTER) + ",Y,CC," +
-                          LocalDate.now().minusMonths(6).toString() + "\n";
+        // CSV format: cardNumber,accountId,cardType,expirationDate,embossedName,cvvCode,activeStatus,openDate,lastUsedDate
+        String csvContent = CSV_HEADER +
+                          "4111111111111111,1000000001,CC," + 
+                          futureExpiration1.format(EXPIRATION_DATE_FORMATTER) + ",JOHN DOE,123,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n" +
+                          "5500000000000004,1000000002,DC," + 
+                          futureExpiration2.format(EXPIRATION_DATE_FORMATTER) + ",JANE SMITH,456,N," +
+                          LocalDate.now().minusYears(2).toString() + ",\n" +
+                          "3400000000000009,1000000001,CC," + 
+                          futureExpiration3.format(EXPIRATION_DATE_FORMATTER) + ",ROBERT JOHNSON,789,Y," +
+                          LocalDate.now().minusMonths(6).toString() + ",\n";
         
         createTestDataFile(csvContent);
         
@@ -417,8 +498,8 @@ public class CardDataLoadJobTest {
         assertThat(card2.getCardType()).isEqualTo("DC");
         
         // Validate: Verify third card entity
-        Card card3 = cardRepository.findById("340000000000009").orElseThrow();
-        assertThat(card3.getCardNumber()).isEqualTo("340000000000009");
+        Card card3 = cardRepository.findById("3400000000000009").orElseThrow();
+        assertThat(card3.getCardNumber()).isEqualTo("3400000000000009");
         assertThat(card3.getAccount().getAccountId()).isEqualTo(1000000001L);
         assertThat(card3.getCvvCode()).isEqualTo("789");
         assertThat(card3.getActiveStatus()).isEqualTo("Y");
@@ -472,9 +553,22 @@ public class CardDataLoadJobTest {
     @Test
     @DisplayName("Card Data Load Job - Foreign Key Constraint Validation")
     public void testCardDataLoadJob_ForeignKeyConstraint() throws Exception {
+        // Setup: Create test customer for foreign key reference
+        Customer customer = Customer.builder()
+            .customerId(100000001L)
+            .firstName("John")
+            .lastName("Doe")
+            .dateOfBirth(LocalDate.of(1980, 1, 15))
+            .ssn("123456789")
+            .ficoScore(750)
+            .build();
+        
+        customerRepository.save(customer);
+        
         // Setup: Create only one test account
         Account validAccount = Account.builder()
             .accountId(1000000001L)
+            .customer(customer)
             .activeStatus("Y")
             .currentBalance(BigDecimal.valueOf(1000.00))
             .creditLimit(BigDecimal.valueOf(10000.00))
@@ -490,12 +584,14 @@ public class CardDataLoadJobTest {
         // Create test CSV with one valid and one invalid (non-existent account) card
         LocalDate futureExpiration = LocalDate.now().plusYears(2);
         
-        String csvContent = "4111111111111111,1000000001,123,JOHN DOE," + 
-                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",Y,CC," +
-                          LocalDate.now().minusYears(1).toString() + "\n" +
-                          "5500000000000004,9999999999,456,INVALID USER," + 
-                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",Y,DC," +
-                          LocalDate.now().minusYears(1).toString() + "\n";
+        // CSV format: cardNumber,accountId,cardType,expirationDate,embossedName,cvvCode,activeStatus,openDate,lastUsedDate
+        String csvContent = CSV_HEADER +
+                          "4111111111111111,1000000001,CC," + 
+                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",JOHN DOE,123,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n" +
+                          "5500000000000004,9999999999,DC," + 
+                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",INVALID USER,456,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n";
         
         createTestDataFile(csvContent);
         
@@ -568,9 +664,22 @@ public class CardDataLoadJobTest {
     @Test
     @DisplayName("Card Data Load Job - Expiration Date Parsing")
     public void testCardDataLoadJob_ExpirationDateParsing() throws Exception {
+        // Setup: Create test customer for foreign key reference
+        Customer customer = Customer.builder()
+            .customerId(100000001L)
+            .firstName("Test")
+            .lastName("User")
+            .dateOfBirth(LocalDate.of(1985, 5, 15))
+            .ssn("555555555")
+            .ficoScore(720)
+            .build();
+        
+        customerRepository.save(customer);
+        
         // Setup: Create test account
         Account testAccount = Account.builder()
             .accountId(1000000001L)
+            .customer(customer)
             .activeStatus("Y")
             .currentBalance(BigDecimal.valueOf(500.00))
             .creditLimit(BigDecimal.valueOf(10000.00))
@@ -588,15 +697,17 @@ public class CardDataLoadJobTest {
         LocalDate expiration2 = LocalDate.now().plusMonths(6); // 6 months from now
         LocalDate expiration3 = LocalDate.now().plusYears(5); // 5 years from now
         
-        String csvContent = "4111111111111111,1000000001,123,JOHN DOE," + 
-                          expiration1.format(EXPIRATION_DATE_FORMATTER) + ",Y,CC," +
-                          LocalDate.now().minusYears(1).toString() + "\n" +
-                          "5500000000000004,1000000001,456,JANE SMITH," + 
-                          expiration2.format(EXPIRATION_DATE_FORMATTER) + ",Y,DC," +
-                          LocalDate.now().minusYears(1).toString() + "\n" +
-                          "340000000000009,1000000001,789,ROBERT JOHNSON," + 
-                          expiration3.format(EXPIRATION_DATE_FORMATTER) + ",Y,CC," +
-                          LocalDate.now().minusYears(1).toString() + "\n";
+        // CSV format: cardNumber,accountId,cardType,expirationDate,embossedName,cvvCode,activeStatus,openDate,lastUsedDate
+        String csvContent = CSV_HEADER +
+                          "4111111111111111,1000000001,CC," + 
+                          expiration1.format(EXPIRATION_DATE_FORMATTER) + ",JOHN DOE,123,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n" +
+                          "5500000000000004,1000000001,DC," + 
+                          expiration2.format(EXPIRATION_DATE_FORMATTER) + ",JANE SMITH,456,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n" +
+                          "3400000000000009,1000000001,CC," + 
+                          expiration3.format(EXPIRATION_DATE_FORMATTER) + ",ROBERT JOHNSON,789,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n";
         
         createTestDataFile(csvContent);
         
@@ -625,7 +736,7 @@ public class CardDataLoadJobTest {
         assertThat(card2.getExpirationDate()).isAfter(LocalDate.now());
         
         // Validate: Check third card expiration date
-        Card card3 = cardRepository.findById("340000000000009").orElseThrow();
+        Card card3 = cardRepository.findById("3400000000000009").orElseThrow();
         assertThat(card3.getExpirationDate().getYear()).isEqualTo(expiration3.getYear());
         assertThat(card3.getExpirationDate().getMonthValue()).isEqualTo(expiration3.getMonthValue());
         assertThat(card3.getExpirationDate()).isAfter(LocalDate.now());
@@ -681,9 +792,22 @@ public class CardDataLoadJobTest {
     @Test
     @DisplayName("Card Data Load Job - CVV Validation")
     public void testCardDataLoadJob_CVVValidation() throws Exception {
+        // Setup: Create test customer for foreign key reference
+        Customer customer = Customer.builder()
+            .customerId(100000001L)
+            .firstName("CVV")
+            .lastName("Test")
+            .dateOfBirth(LocalDate.of(1982, 7, 20))
+            .ssn("777777777")
+            .ficoScore(680)
+            .build();
+        
+        customerRepository.save(customer);
+        
         // Setup: Create test account
         Account testAccount = Account.builder()
             .accountId(1000000001L)
+            .customer(customer)
             .activeStatus("Y")
             .currentBalance(BigDecimal.valueOf(1000.00))
             .creditLimit(BigDecimal.valueOf(10000.00))
@@ -699,15 +823,17 @@ public class CardDataLoadJobTest {
         // Create test CSV with various CVV codes including leading zeros
         LocalDate futureExpiration = LocalDate.now().plusYears(2);
         
-        String csvContent = "4111111111111111,1000000001,007,JOHN DOE," + 
-                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",Y,CC," +
-                          LocalDate.now().minusYears(1).toString() + "\n" +
-                          "5500000000000004,1000000001,000,JANE SMITH," + 
-                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",Y,DC," +
-                          LocalDate.now().minusYears(1).toString() + "\n" +
-                          "340000000000009,1000000001,999,ROBERT JOHNSON," + 
-                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",Y,CC," +
-                          LocalDate.now().minusYears(1).toString() + "\n";
+        // CSV format: cardNumber,accountId,cardType,expirationDate,embossedName,cvvCode,activeStatus,openDate,lastUsedDate
+        String csvContent = CSV_HEADER +
+                          "4111111111111111,1000000001,CC," + 
+                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",JOHN DOE,007,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n" +
+                          "5500000000000004,1000000001,DC," + 
+                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",JANE SMITH,000,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n" +
+                          "3400000000000009,1000000001,CC," + 
+                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",ROBERT JOHNSON,999,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n";
         
         createTestDataFile(csvContent);
         
@@ -734,7 +860,7 @@ public class CardDataLoadJobTest {
         assertThat(card2.getCvvCode()).hasSize(3);
         
         // Validate: Check maximum CVV value
-        Card card3 = cardRepository.findById("340000000000009").orElseThrow();
+        Card card3 = cardRepository.findById("3400000000000009").orElseThrow();
         assertThat(card3.getCvvCode()).isEqualTo("999");
         assertThat(card3.getCvvCode()).hasSize(3);
     }
@@ -788,9 +914,22 @@ public class CardDataLoadJobTest {
     @Test
     @DisplayName("Card Data Load Job - Card Number Format Validation")
     public void testCardDataLoadJob_CardNumberFormat() throws Exception {
+        // Setup: Create test customer for foreign key reference
+        Customer customer = Customer.builder()
+            .customerId(100000001L)
+            .firstName("Format")
+            .lastName("Validator")
+            .dateOfBirth(LocalDate.of(1990, 3, 10))
+            .ssn("888888888")
+            .ficoScore(790)
+            .build();
+        
+        customerRepository.save(customer);
+        
         // Setup: Create test account
         Account testAccount = Account.builder()
             .accountId(1000000001L)
+            .customer(customer)
             .activeStatus("Y")
             .currentBalance(BigDecimal.valueOf(1000.00))
             .creditLimit(BigDecimal.valueOf(10000.00))
@@ -806,15 +945,17 @@ public class CardDataLoadJobTest {
         // Create test CSV with valid 16-character card numbers
         LocalDate futureExpiration = LocalDate.now().plusYears(2);
         
-        String csvContent = "4111111111111111,1000000001,123,JOHN DOE," + 
-                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",Y,CC," +
-                          LocalDate.now().minusYears(1).toString() + "\n" +
-                          "5500000000000004,1000000001,456,JANE SMITH," + 
-                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",Y,DC," +
-                          LocalDate.now().minusYears(1).toString() + "\n" +
-                          "340000000000009X,1000000001,789,ROBERT JOHNSON," + 
-                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",Y,CC," +
-                          LocalDate.now().minusYears(1).toString() + "\n";
+        // CSV format: cardNumber,accountId,cardType,expirationDate,embossedName,cvvCode,activeStatus,openDate,lastUsedDate
+        String csvContent = CSV_HEADER +
+                          "4111111111111111,1000000001,CC," + 
+                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",JOHN DOE,123,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n" +
+                          "5500000000000004,1000000001,DC," + 
+                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",JANE SMITH,456,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n" +
+                          "3400000000000009,1000000001,CC," + 
+                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",ROBERT JOHNSON,789,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n";
         
         createTestDataFile(csvContent);
         
@@ -839,7 +980,7 @@ public class CardDataLoadJobTest {
         assertThat(card2.getCardNumber()).hasSize(16);
         assertThat(card2.getCardNumber()).startsWith("5"); // Mastercard
         
-        Card card3 = cardRepository.findById("340000000000009X").orElseThrow();
+        Card card3 = cardRepository.findById("3400000000000009").orElseThrow();
         assertThat(card3.getCardNumber()).hasSize(16);
         assertThat(card3.getCardNumber()).startsWith("3"); // American Express (padded)
     }
@@ -902,9 +1043,22 @@ public class CardDataLoadJobTest {
     @Test
     @DisplayName("Card Data Load Job - Active Status Mapping")
     public void testCardDataLoadJob_ActiveStatusMapping() throws Exception {
+        // Setup: Create test customer for foreign key reference
+        Customer customer = Customer.builder()
+            .customerId(100000001L)
+            .firstName("Status")
+            .lastName("Mapper")
+            .dateOfBirth(LocalDate.of(1988, 11, 25))
+            .ssn("999999999")
+            .ficoScore(810)
+            .build();
+        
+        customerRepository.save(customer);
+        
         // Setup: Create test account
         Account testAccount = Account.builder()
             .accountId(1000000001L)
+            .customer(customer)
             .activeStatus("Y")
             .currentBalance(BigDecimal.valueOf(1000.00))
             .creditLimit(BigDecimal.valueOf(10000.00))
@@ -920,15 +1074,17 @@ public class CardDataLoadJobTest {
         // Create test CSV with mixed active/inactive status
         LocalDate futureExpiration = LocalDate.now().plusYears(2);
         
-        String csvContent = "4111111111111111,1000000001,123,JOHN DOE," + 
-                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",Y,CC," +
-                          LocalDate.now().minusYears(1).toString() + "\n" +
-                          "5500000000000004,1000000001,456,JANE SMITH," + 
-                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",N,DC," +
-                          LocalDate.now().minusYears(1).toString() + "\n" +
-                          "340000000000009,1000000001,789,ROBERT JOHNSON," + 
-                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",Y,CC," +
-                          LocalDate.now().minusYears(1).toString() + "\n";
+        // CSV format: cardNumber,accountId,cardType,expirationDate,embossedName,cvvCode,activeStatus,openDate,lastUsedDate
+        String csvContent = CSV_HEADER +
+                          "4111111111111111,1000000001,CC," + 
+                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",JOHN DOE,123,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n" +
+                          "5500000000000004,1000000001,DC," + 
+                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",JANE SMITH,456,N," +
+                          LocalDate.now().minusYears(1).toString() + ",\n" +
+                          "3400000000000009,1000000001,CC," + 
+                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",ROBERT JOHNSON,789,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n";
         
         createTestDataFile(csvContent);
         
@@ -955,7 +1111,7 @@ public class CardDataLoadJobTest {
         assertThat(card2.getActiveStatus()).hasSize(1);
         
         // Validate: Check another active card status
-        Card card3 = cardRepository.findById("340000000000009").orElseThrow();
+        Card card3 = cardRepository.findById("3400000000000009").orElseThrow();
         assertThat(card3.getActiveStatus()).isEqualTo("Y");
         assertThat(card3.getActiveStatus()).hasSize(1);
     }
@@ -1070,9 +1226,30 @@ public class CardDataLoadJobTest {
     @Test
     @DisplayName("Card Data Load Job - Malformed Data Handling")
     public void testCardDataLoadJob_MalformedData() throws Exception {
+        // Setup: Create test customer for foreign key reference
+        Customer customer = Customer.builder()
+            .customerId(1000000001L)
+            .firstName("John")
+            .middleName("A")
+            .lastName("Doe")
+            .addressLine1("123 Main St")
+            .addressLine2("Apt 4B")
+            .addressLine3("New York")
+            .addressStateCode("NY")
+            .addressZip("10001")
+            .addressCountryCode("USA")
+            .phoneNumber1("555-1234")
+            .ssn("123456789")
+            .dateOfBirth(LocalDate.of(1980, 1, 1))
+            .ficoScore(750)
+            .build();
+        
+        customerRepository.save(customer);
+        
         // Setup: Create test account
         Account testAccount = Account.builder()
             .accountId(1000000001L)
+            .customer(customer)
             .activeStatus("Y")
             .currentBalance(BigDecimal.valueOf(1000.00))
             .creditLimit(BigDecimal.valueOf(10000.00))
@@ -1088,14 +1265,16 @@ public class CardDataLoadJobTest {
         // Create test CSV with one valid, one malformed (invalid expiration date), one valid
         LocalDate futureExpiration = LocalDate.now().plusYears(2);
         
-        String csvContent = "4111111111111111,1000000001,123,JOHN DOE," + 
-                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",Y,CC," +
-                          LocalDate.now().minusYears(1).toString() + "\n" +
-                          "5500000000000004,1000000001,456,JANE SMITH,INVALID-DATE,Y,DC," +
-                          LocalDate.now().minusYears(1).toString() + "\n" +
-                          "340000000000009,1000000001,789,ROBERT JOHNSON," + 
-                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",Y,CC," +
-                          LocalDate.now().minusYears(1).toString() + "\n";
+        // CSV format: cardNumber,accountId,cardType,expirationDate,embossedName,cvvCode,activeStatus,openDate,lastUsedDate
+        String csvContent = CSV_HEADER +
+                          "4111111111111111,1000000001,CC," + 
+                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",JOHN DOE,123,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n" +
+                          "5500000000000004,1000000001,DC,INVALID-DATE,JANE SMITH,456,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n" +
+                          "3400000000000009,1000000001,CC," + 
+                          futureExpiration.format(EXPIRATION_DATE_FORMATTER) + ",ROBERT JOHNSON,789,Y," +
+                          LocalDate.now().minusYears(1).toString() + ",\n";
         
         createTestDataFile(csvContent);
         
@@ -1115,7 +1294,7 @@ public class CardDataLoadJobTest {
         
         // Validate: Check that the valid cards exist
         assertThat(cardRepository.existsById("4111111111111111")).isTrue();
-        assertThat(cardRepository.existsById("340000000000009")).isTrue();
+        assertThat(cardRepository.existsById("3400000000000009")).isTrue();
         
         // Validate: Check that the malformed card was not persisted
         assertThat(cardRepository.existsById("5500000000000004")).isFalse();
