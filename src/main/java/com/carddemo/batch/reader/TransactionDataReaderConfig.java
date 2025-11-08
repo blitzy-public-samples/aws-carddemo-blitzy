@@ -151,7 +151,7 @@ import java.time.format.DateTimeFormatter;
  * @see <a href="Section 0.10">Special Instructions - COBOL COMP-3 to Java BigDecimal Precision</a>
  */
 @Configuration
-public class TransactionDataReader {
+public class TransactionDataReaderConfig {
 
     /**
      * DateTimeFormatter for parsing COBOL timestamp format.
@@ -319,16 +319,15 @@ public class TransactionDataReader {
          * 
          * <p><strong>Error Handling:</strong></p>
          * <p>If any field conversion fails (e.g., invalid amount format, unparseable
-         * timestamp), the method throws an exception that will be handled by the
+         * timestamp), the method throws a runtime exception that will be handled by the
          * batch job's skip policy.</p>
          * 
          * @param fieldSet Parsed fields from one fixed-width record line
          * @return Transaction entity populated with converted field values
-         * @throws Exception if field conversion fails (amount decoding, timestamp parsing, etc.)
+         * @throws IllegalArgumentException if field conversion fails (amount decoding, timestamp parsing, etc.)
          */
         @Override
-        public Transaction mapFieldSet(org.springframework.batch.item.file.transform.FieldSet fieldSet) 
-                throws Exception {
+        public Transaction mapFieldSet(org.springframework.batch.item.file.transform.FieldSet fieldSet) {
             
             // Extract raw field values
             String transactionId = fieldSet.readString("transactionId").trim();
