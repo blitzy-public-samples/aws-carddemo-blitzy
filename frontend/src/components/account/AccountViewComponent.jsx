@@ -57,12 +57,11 @@
  * @module AccountViewComponent
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Divider } from '@mui/material';
-import PropTypes from 'prop-types';
 import { getAccountById } from '../../services/accountService.js';
-import { MSG_SERVER_ERROR, DATE_FORMAT_DISPLAY } from '../../utils/constants.js';
+import { MSG_SERVER_ERROR } from '../../utils/constants.js';
 
 /**
  * Formats a date string from ISO 8601 (YYYY-MM-DD) to display format (MM/DD/YYYY)
@@ -483,15 +482,7 @@ const AccountViewComponent = () => {
   );
 };
 
-/**
- * PropTypes validation
- * 
- * Currently no props expected as component reads accountId from URL parameters.
- * PropTypes included for future extensibility if props are needed.
- */
-AccountViewComponent.propTypes = {
-  // No props expected - component uses URL parameters
-};
+
 
 /**
  * Inline styles matching BMS screen layout and color attributes
