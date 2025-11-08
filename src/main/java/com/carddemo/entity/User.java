@@ -255,6 +255,25 @@ public class User implements Serializable {
         }
 
         /**
+         * Gets the display name for this user type matching COBOL screen display format.
+         * 
+         * <p>This method provides the short display label used in the COBOL COUSR00C.cbl
+         * list screen, matching the COBOL pattern:</p>
+         * <pre>
+         * IF SEC-USR-TYPE = 'A'
+         *   MOVE 'Admin   ' TO USER-TYPE
+         * ELSE IF SEC-USR-TYPE = 'U'
+         *   MOVE 'User    ' TO USER-TYPE
+         * END-IF.
+         * </pre>
+         * 
+         * @return "Admin" for ADMIN type, "User" for USER type
+         */
+        public String getDisplayName() {
+            return this == ADMIN ? "Admin" : "User";
+        }
+
+        /**
          * Finds UserType enum by code value
          * Useful for converting COBOL character codes to enum
          * 
