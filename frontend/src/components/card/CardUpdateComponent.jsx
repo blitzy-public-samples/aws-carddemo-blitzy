@@ -92,12 +92,9 @@ import {
 import { updateCard, getCardByNumber } from '../../services/cardService.js';
 import Header from '../common/Header.jsx';
 import Footer from '../common/Footer.jsx';
-import { useAuth } from '../../context/AuthContext.js';
+import { useAuth } from '../../context/AuthContext.jsx';
 import { 
   CARD_STATUS, 
-  ERROR_REQUIRED, 
-  ERROR_INVALID_FORMAT, 
-  DATE_FORMAT_API, 
   MSG_SERVER_ERROR 
 } from '../../utils/constants.js';
 
@@ -114,7 +111,8 @@ const CardUpdateComponent = () => {
   // Replaces COBOL: EXEC CICS RECEIVE MAP('CCRDUPA') MAPSET('COCRDUP') INTO(CCRDUPAI)
   const { cardNumber } = useParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  // eslint-disable-next-line no-unused-vars
+  const { user } = useAuth(); // User context available for future enhancements
 
   // Component state management
   // Replaces COBOL WORKING-STORAGE SECTION variables
@@ -197,7 +195,7 @@ const CardUpdateComponent = () => {
     validationSchema: validationSchema,
     validateOnChange: true,
     validateOnBlur: true,
-    onSubmit: async (values) => {
+    onSubmit: async () => {
       // Show confirmation dialog before submitting
       setConfirmDialogOpen(true);
     }
@@ -259,7 +257,19 @@ const CardUpdateComponent = () => {
     };
 
     fetchCardDetails();
-  }, [cardNumber]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cardNumber]); // formik.setValues is stable and doesn't need to be in dependencies
+
+  /**
+   * Clear error message when form values change
+   * This provides better UX by removing error messages as user corrects the form
+   */
+  useEffect(() => {
+    if (errorMessage && formik.dirty) {
+      setErrorMessage('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formik.values]);
 
   /**
    * Handle confirmed form submission
