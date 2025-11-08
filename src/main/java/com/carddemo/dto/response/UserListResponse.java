@@ -216,4 +216,26 @@ public class UserListResponse {
     public boolean isLastPage() {
         return hasNext != null && !hasNext;
     }
+
+    /**
+     * Checks if a next page is available for navigation.
+     * Convenience method wrapping hasNext field check.
+     * Replaces COBOL CDEMO-CU00-NEXT-PAGE-FLG = 'Y' check
+     * 
+     * @return true if next page exists, false otherwise
+     */
+    public boolean isNextPageAvailable() {
+        return hasNext != null && hasNext;
+    }
+
+    /**
+     * Checks if a previous page is available for navigation.
+     * Convenience method wrapping hasPrevious field check.
+     * Used for backward navigation (PF7 key replacement)
+     * 
+     * @return true if previous page exists, false otherwise
+     */
+    public boolean isPreviousPageAvailable() {
+        return hasPrevious != null && hasPrevious;
+    }
 }
