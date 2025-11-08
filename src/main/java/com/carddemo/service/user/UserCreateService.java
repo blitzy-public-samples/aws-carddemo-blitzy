@@ -21,6 +21,7 @@ import com.carddemo.dto.request.UserRequest;
 import com.carddemo.dto.response.UserResponse;
 import com.carddemo.entity.User;
 import com.carddemo.entity.User.UserType;
+import com.carddemo.exception.BusinessLogicException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -309,9 +310,11 @@ public class UserCreateService {
      *                defined in UserRequest class.
      * @return UserResponse DTO containing created user profile data excluding password
      *         for security. Includes userId, firstName, lastName, userType.
-     * @throws ValidationException if user ID already exists (DUPKEY), password strength
-     *         requirements not met, or user type is invalid. Exception message provides
-     *         specific validation failure details for client-side error display.
+     * @throws BusinessLogicException with DUPLICATE_KEY error code if user ID already exists
+     *         (matching COBOL DFHRESP(DUPKEY) from lines 260-268), returns HTTP 409 Conflict
+     * @throws ValidationException if password strength requirements not met, user type is
+     *         invalid, or required fields are missing. Exception message provides specific
+     *         validation failure details for client-side error display.
      * @throws org.springframework.security.access.AccessDeniedException if authenticated
      *         user does not have ADMIN role (thrown by Spring Security before method execution)
      */
@@ -338,9 +341,16 @@ public class UserCreateService {
 
         // Step 3: Validate user ID uniqueness (after all field validations pass)
         // Replaces COBOL DFHRESP(DUPKEY) check from WRITE-USER-SEC-FILE paragraph (line 260)
+        // COBOL code (lines 260-268):
+        //   WHEN DFHRESP(DUPKEY)
+        //   WHEN DFHRESP(DUPREC)
+        //     MOVE 'User ID already exist...' TO WS-MESSAGE
+        //     MOVE 'N' TO WS-FLAG
+        // Throws BusinessLogicException with DUPLICATE_KEY error code for HTTP 409 Conflict
         if (userRepository.existsByUserId(request.getUserId())) {
             log.warn("User creation failed - User ID already exists: {}", request.getUserId());
-            throw new ValidationException("User ID already exist: " + request.getUserId());
+            throw new BusinessLogicException("DUPLICATE_KEY", 
+                "User ID already exists: " + request.getUserId());
         }
 
         // Step 4: Hash password using BCrypt
