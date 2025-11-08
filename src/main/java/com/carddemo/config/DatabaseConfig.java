@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.orm.jpa.JpaTransactionManager;
 import org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean;
@@ -127,6 +128,22 @@ public class DatabaseConfig {
      */
     @Value("${spring.jpa.database-platform:org.hibernate.dialect.PostgreSQLDialect}")
     private String hibernateDialect;
+
+    /**
+     * Hibernate DDL auto mode - configurable for different environments
+     * Default: validate (Flyway manages schema in production)
+     * Test override: create-drop (automatically create/drop schema for tests)
+     */
+    @Value("${spring.jpa.hibernate.ddl-auto:validate}")
+    private String ddlAuto;
+
+    /**
+     * Whether to generate DDL from entity annotations
+     * Default: false (Flyway manages DDL in production)
+     * Test override: true (generate schema from entities for in-memory H2)
+     */
+    @Value("${spring.jpa.generate-ddl:false}")
+    private boolean generateDdl;
 
     /**
      * Configures HikariCP DataSource with PostgreSQL database connectivity
@@ -261,7 +278,7 @@ public class DatabaseConfig {
         // Configure Hibernate as JPA vendor adapter (database type determined by dialect)
         HibernateJpaVendorAdapter vendorAdapter = new HibernateJpaVendorAdapter();
         // Database type omitted - determined by hibernate.dialect property for flexibility
-        vendorAdapter.setGenerateDdl(false); // Flyway manages DDL
+        vendorAdapter.setGenerateDdl(generateDdl); // Configurable: false for prod (Flyway), true for tests
         vendorAdapter.setShowSql(false); // Disabled for production performance
         
         entityManagerFactory.setJpaVendorAdapter(vendorAdapter);
@@ -310,8 +327,8 @@ public class DatabaseConfig {
         // Hibernate Dialect - configurable (PostgreSQL for prod, H2 for tests)
         properties.setProperty("hibernate.dialect", hibernateDialect);
 
-        // Schema Management - Flyway controls DDL, Hibernate only validates
-        properties.setProperty("hibernate.ddl-auto", "validate");
+        // Schema Management - Configurable: validate for prod (Flyway), create-drop for tests
+        properties.setProperty("hibernate.ddl-auto", ddlAuto);
 
         // SQL Logging - Disabled for production performance
         properties.setProperty("hibernate.show_sql", "false");
@@ -394,6 +411,7 @@ public class DatabaseConfig {
      * @return configured PlatformTransactionManager for Spring transaction management
      */
     @Bean
+    @Primary
     public PlatformTransactionManager transactionManager(EntityManagerFactory entityManagerFactory) {
         log.info("Configuring JPA Transaction Manager");
 
