@@ -710,7 +710,7 @@ public class CrossReferenceLoadJobTest {
         assertThat(verifiedCard3.get().getAccount().getAccountId()).isEqualTo(10000000002L);
 
         // Verify multiple cards can reference same account (one-to-many)
-        List<Card> account1Cards = cardRepository.findByAccountId(10000000001L);
+        List<Card> account1Cards = cardRepository.findByAccount_AccountId(10000000001L);
         assertThat(account1Cards).hasSize(2);
         assertThat(account1Cards).extracting(Card::getCardNumber)
                 .containsExactlyInAnyOrder("4111111111111111", "4222222222222222");
@@ -834,7 +834,7 @@ public class CrossReferenceLoadJobTest {
         assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
         // Verify composite index enables efficient retrieval of all cards for account
-        List<Card> accountCards = cardRepository.findByAccountId(10000000001L);
+        List<Card> accountCards = cardRepository.findByAccount_AccountId(10000000001L);
         assertThat(accountCards).hasSize(5);
         
         // Verify all retrieved cards belong to the correct account
@@ -969,7 +969,7 @@ public class CrossReferenceLoadJobTest {
         assertThat(verifiedCard2.get().getAccount().getAccountId()).isEqualTo(10000000001L);
 
         // Verify referential integrity is maintained for valid records
-        List<Card> allCards = cardRepository.findByAccountId(10000000001L);
+        List<Card> allCards = cardRepository.findByAccount_AccountId(10000000001L);
         assertThat(allCards).hasSize(2);
         assertThat(allCards).allMatch(card -> 
                 card.getAccount() != null && 
