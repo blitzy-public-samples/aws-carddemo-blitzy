@@ -23,7 +23,7 @@
  * @module components/common/Navigation
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   Box,
@@ -43,7 +43,6 @@ import {
 } from '@mui/material';
 import {
   Home as HomeIcon,
-  AccountBalance as AccountBalanceIcon,
   CreditCard as CreditCardIcon,
   Receipt as ReceiptIcon,
   Assessment as AssessmentIcon,
@@ -162,7 +161,7 @@ const Navigation = () => {
     },
     {
       text: 'Add Transaction',
-      icon: <Receipt as ReceiptIcon />,
+      icon: <ReceiptIcon />,
       path: '/transactions/add',
       transactionId: 'CT02', // CICS Transaction ID from COTRN02C.cbl
       description: 'Add new transaction',
@@ -250,7 +249,7 @@ const Navigation = () => {
     const crumbs = [{ label: 'Home', path: '/' }];
 
     let currentPath = '';
-    pathParts.forEach((part, index) => {
+    pathParts.forEach((part) => {
       currentPath += `/${part}`;
       
       // Find matching menu item for breadcrumb label
