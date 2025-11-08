@@ -22,6 +22,7 @@ import com.carddemo.entity.User.UserType;
 import com.carddemo.repository.UserRepository;
 import com.carddemo.exception.ResourceNotFoundException;
 import com.carddemo.exception.BusinessLogicException;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.dto.response.UserResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -389,7 +390,7 @@ public class UserDeleteService {
         // Check if user is already deleted
         if (user.isDeleted()) {
             log.warn("User deletion failed: User already deleted: {}", userId);
-            throw new BusinessLogicException("User is already deleted");
+            throw new ValidationException("User is already deleted");
         }
 
         // Validation 3: Prevent Last Admin Deletion
@@ -401,7 +402,7 @@ public class UserDeleteService {
             if (activeAdminCount <= 1) {
                 log.warn("User deletion failed: Cannot delete last admin user. Admin count: {}", 
                         activeAdminCount);
-                throw new BusinessLogicException(
+                throw new ValidationException(
                         "Cannot delete last admin user");
             }
             log.debug("Admin deletion allowed: {} active admins will remain", activeAdminCount - 1);
@@ -411,7 +412,7 @@ public class UserDeleteService {
         // Enhanced business rule not present in COBOL to maintain session integrity
         if (userId.equals(authenticatedAdminId)) {
             log.warn("User deletion failed: Admin attempted to delete own account: {}", userId);
-            throw new BusinessLogicException(
+            throw new ValidationException(
                     "You cannot delete your own user account");
         }
         log.debug("Self-deletion check passed: target user {} differs from admin {}", 
