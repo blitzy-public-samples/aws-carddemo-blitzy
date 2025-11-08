@@ -414,17 +414,26 @@ public class AccountUpdateService {
         Map<String, String> validationErrors = new HashMap<>();
 
         // Validate credit limit (COBOL: 1250-EDIT-SIGNED-9V2 paragraph)
-        if (request.getCreditLimit() != null) {
+        if (request.getCreditLimit() == null) {
+            validationErrors.put("creditLimit", "Credit limit is required and cannot be null");
+            log.debug("Credit limit validation failed: null value");
+        } else {
             validateCreditLimit(request.getCreditLimit(), validationErrors);
         }
 
         // Validate cash credit limit (COBOL: 1250-EDIT-SIGNED-9V2 paragraph)
-        if (request.getCashCreditLimit() != null) {
+        if (request.getCashCreditLimit() == null) {
+            validationErrors.put("cashCreditLimit", "Cash credit limit is required and cannot be null");
+            log.debug("Cash credit limit validation failed: null value");
+        } else {
             validateCashCreditLimit(request.getCreditLimit(), request.getCashCreditLimit(), validationErrors);
         }
 
         // Validate active status (COBOL: 1225-EDIT-ALPHA-REQD paragraph)
-        if (request.getActiveStatus() != null) {
+        if (request.getActiveStatus() == null) {
+            validationErrors.put("activeStatus", "Active status is required and cannot be null");
+            log.debug("Active status validation failed: null value");
+        } else {
             validateActiveStatus(request.getActiveStatus(), validationErrors);
         }
 
@@ -699,10 +708,15 @@ public class AccountUpdateService {
             return savedAccount;
             
         } catch (OptimisticLockException e) {
-            log.error("Concurrent modification detected for account ID: {} - Record changed by another user",
+            log.error("Concurrent modification detected for account ID: {} - Record modified by another user",
                     account.getAccountId(), e);
             throw new BusinessLogicException(
-                    "Record changed by someone else. Please refresh the data and try again.", e);
+                    "Record was modified by another user. Please refresh the data and try again.", e);
+        } catch (org.springframework.orm.ObjectOptimisticLockingFailureException e) {
+            log.error("Concurrent modification detected for account ID: {} - Record modified by another user (Spring exception)",
+                    account.getAccountId(), e);
+            throw new BusinessLogicException(
+                    "Record was modified by another user. Please refresh the data and try again.", e);
         }
     }
 
