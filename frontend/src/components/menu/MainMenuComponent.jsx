@@ -35,7 +35,7 @@
  * @module MainMenuComponent
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   Box, 
@@ -53,7 +53,6 @@ import {
 } from '@mui/material';
 import { useAuth } from '../../context/AuthContext';
 import Header from '../common/Header';
-import { MSG_INVALID_KEY } from '../../utils/constants';
 import apiClient from '../../utils/apiClient';
 
 /**
@@ -99,8 +98,12 @@ const MainMenuComponent = () => {
    * COBOL Equivalent:
    * - EXEC CICS RETRIEVE INTO(DFHCOMMAREA) LENGTH(COMM-AREA-LEN)
    * - IF CDEMO-USER-ID = SPACES THEN return to signon
+   * 
+   * Note: Only isAuthenticated is used here for session validation.
+   * User details (userId, userType, firstName, lastName) are accessed
+   * directly by the Header component via its own useAuth hook call.
    */
-  const { user, isAuthenticated, isAdmin } = useAuth();
+  const { isAuthenticated } = useAuth();
   
   /**
    * React Router navigation hook
@@ -417,22 +420,25 @@ const MainMenuComponent = () => {
   };
   
   /**
-   * Handle invalid key press event
+   * Note on COBOL invalid key handling:
    * 
-   * COBOL Equivalent:
-   * - Lines 100-106 in COMEN01C.cbl
+   * COBOL Equivalent (Lines 100-106 in COMEN01C.cbl):
    * - IF EIBAID NOT = DFHENTER AND NOT = DFHPF3
    * - MOVE CCDA-MSG-INVALID-KEY TO WS-MESSAGE
    * 
-   * Displays error message from CSMSG01Y.cpy: MSG_INVALID_KEY
-   * Used when user presses keys other than ENTER or F3
+   * In the mainframe 3270 terminal, users could press various keys
+   * (PF1-PF24, CLEAR, etc.) that would trigger error messages.
    * 
-   * Note: In web interface, this is less relevant as we use buttons
-   * Included for functional equivalence with mainframe behavior
+   * In the modern web interface, this functionality is not needed because:
+   * - Form submission handles ENTER key automatically
+   * - Buttons handle specific actions (Continue, Exit)
+   * - Browser prevents invalid key handling that would break UX
+   * 
+   * Functional equivalence is maintained through:
+   * - Form validation (handleSubmit)
+   * - Explicit button handlers (handleExit)
+   * - Error state management (errorMessage)
    */
-  const handleInvalidKey = () => {
-    setErrorMessage(MSG_INVALID_KEY);
-  };
   
   // ===========================================================================
   // Loading State Rendering
