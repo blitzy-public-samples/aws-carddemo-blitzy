@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS card (
     -- Replaces CXACAIX VSAM alternate index cross-reference from CVACT03Y.cpy
     account_id BIGINT NOT NULL,
     
+    -- CARD-TYPE - 2-character card type code (Enhanced field for modernized system)
+    -- 'DC' = Debit Card, 'CC' = Credit Card
+    -- Not present in original COBOL but required per Agent Action Plan section 0.6
+    -- Used for transaction authorization logic differentiation
+    card_type VARCHAR(2) NOT NULL,
+    
     -- CARD-CVV-CD PIC 9(03) - 3-digit card verification value
     -- CVV/CVC code printed on card for security verification
     cvv_code SMALLINT NOT NULL,
@@ -39,6 +45,19 @@ CREATE TABLE IF NOT EXISTS card (
     -- 'Y' = Active card, can be used for transactions
     -- 'N' = Inactive card, blocked from transactions
     active_status CHAR(1) NOT NULL DEFAULT 'Y',
+    
+    -- CARD-OPEN-DATE - Date card was first issued and activated
+    -- Enhanced field for modernized system (not present in original COBOL)
+    -- Required per Agent Action Plan section 0.6 for audit trail and analytics
+    -- Used for card lifecycle tracking, reissuance planning, and compliance
+    open_date DATE NOT NULL,
+    
+    -- CARD-LAST-USED-DATE - Date card was last used for a transaction
+    -- Enhanced field for modernized system (not present in original COBOL)
+    -- Required per Agent Action Plan section 0.6 for dormant card identification
+    -- Nullable since newly issued cards may not have been used yet
+    -- Updated by transaction processing batch jobs on card usage
+    last_used_date DATE,
     
     -- Audit trail columns for tracking record lifecycle
     -- Not present in COBOL structure but required for cloud-native application
@@ -59,6 +78,11 @@ CREATE TABLE IF NOT EXISTS card (
     -- Check constraint for active_status valid values
     -- Enforces data integrity matching COBOL 88-level condition name pattern
     CONSTRAINT chk_card_active_status CHECK (active_status IN ('Y', 'N')),
+    
+    -- Check constraint for card_type valid values
+    -- 'DC' = Debit Card, 'CC' = Credit Card
+    -- Enforces data integrity for card type as specified in Agent Action Plan
+    CONSTRAINT chk_card_type CHECK (card_type IN ('DC', 'CC')),
     
     -- Check constraint for CVV code range (3-digit value)
     -- Ensures CVV is between 0 and 999
