@@ -431,9 +431,11 @@ public class CardUpdateService {
         } catch (OptimisticLockException e) {
             // Catch optimistic lock exception and transform to business exception
             // Matches COBOL LOCKED-BUT-UPDATE-FAILED condition (line 1491 in COCRDUPC.cbl)
+            // and DATA-WAS-CHANGED-BEFORE-UPDATE condition (line 1511 in COCRDUPC.cbl)
             log.error("Optimistic lock failure for card: {}", cardNumber, e);
             throw new BusinessLogicException(
-                "Card has been modified by another user. Please refresh and try again.", e);
+                "CONCURRENT_MODIFICATION",
+                "Card has been modified by another user. Please refresh and try again.");
         }
     }
 
