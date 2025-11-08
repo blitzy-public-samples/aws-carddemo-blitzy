@@ -416,4 +416,99 @@ public interface UserRepository extends JpaRepository<User, String> {
      * @return Page of users whose user ID starts with the given pattern
      */
     Page<User> findByUserIdStartingWith(String userIdPattern, Pageable pageable);
+
+    /**
+     * Find active (non-deleted) users whose user ID starts with the given pattern
+     * 
+     * <p>Combines prefix search with soft delete filtering for user search functionality.
+     * Used in COUSR00C user listing with search filter excluding deleted users.</p>
+     * 
+     * <p>Generates SQL query:</p>
+     * <pre>
+     * SELECT * FROM app_user 
+     * WHERE user_id LIKE ? AND deleted = false
+     * ORDER BY user_id 
+     * LIMIT ? OFFSET ?
+     * </pre>
+     * 
+     * @param userIdPattern Prefix string to match user IDs against
+     * @param pageable Pagination and sorting parameters
+     * @return Page of active users whose user ID starts with the given pattern
+     */
+    Page<User> findByUserIdStartingWithAndDeletedFalse(String userIdPattern, Pageable pageable);
+
+    /**
+     * Find active users by user type with pagination support
+     * 
+     * <p>Pageable version of findByUserTypeAndDeletedFalse for efficient handling
+     * of large user lists excluding soft-deleted users.</p>
+     * 
+     * <p>Generates SQL query:</p>
+     * <pre>
+     * SELECT * FROM app_user 
+     * WHERE user_type = ? AND deleted = false
+     * ORDER BY user_id 
+     * LIMIT ? OFFSET ?
+     * </pre>
+     * 
+     * @param userType User type to filter by (ADMIN or USER)
+     * @param pageable Pagination and sorting parameters
+     * @return Page of active users with specified type
+     */
+    Page<User> findByUserTypeAndDeletedFalse(UserType userType, Pageable pageable);
+
+    /**
+     * Find active user by user ID
+     * 
+     * <p>Retrieves a single active (non-deleted) user by user ID.
+     * Used for user detail views and updates where deleted users should not be accessible.</p>
+     * 
+     * <p>Generates SQL query:</p>
+     * <pre>
+     * SELECT * FROM app_user 
+     * WHERE user_id = ? AND deleted = false
+     * </pre>
+     * 
+     * @param userId User identifier to search for
+     * @return Optional containing active User if found, empty if user not found or deleted
+     */
+    Optional<User> findByUserIdAndDeletedFalse(String userId);
+
+    /**
+     * Find all active (non-deleted) users with pagination support
+     * 
+     * <p>Pageable version of findByDeletedFalse for efficient handling
+     * of large user lists excluding soft-deleted users.</p>
+     * 
+     * <p>Replaces COBOL browse operation retrieving all active users:</p>
+     * <pre>
+     * EXEC CICS STARTBR
+     *   DATASET('USRSEC')
+     * END-EXEC
+     * 
+     * PERFORM UNTIL USER-SEC-EOF OR WS-REC-COUNT >= 10
+     *   EXEC CICS READNEXT
+     *     DATASET('USRSEC')
+     *     INTO(SEC-USER-DATA)
+     *   END-EXEC
+     *   
+     *   IF SEC-USR-DELETED-FLAG = 'N'
+     *     ADD 1 TO WS-REC-COUNT
+     *     [store user record]
+     *   END-IF
+     * END-PERFORM
+     * </pre>
+     * 
+     * <p>Generates SQL query:</p>
+     * <pre>
+     * SELECT * FROM app_user 
+     * WHERE deleted = false
+     * ORDER BY user_id 
+     * LIMIT ? OFFSET ?
+     * </pre>
+     * 
+     * @param pageable Pagination and sorting parameters
+     * @return Page of all active users
+     */
+    Page<User> findAllByDeletedFalse(Pageable pageable);
 }
