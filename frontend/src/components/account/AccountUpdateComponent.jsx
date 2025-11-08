@@ -44,7 +44,7 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useFormik } from 'formik';
 import * as yup from 'yup';
@@ -78,17 +78,11 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 
 // Internal imports from depends_on_files
 import { getAccountById, updateAccount } from '../../services/accountService.js';
-import { useAuth } from '../../context/AuthContext.js';
+import { useAuth } from '../../context/AuthContext.jsx';
 import {
   validateAccountId,
   validateCreditLimit,
-  validateDate,
-  validateName,
-  validateSSN,
-  validatePhoneNumber,
-  validateStateCode,
-  validateZipCode,
-  validateRequired
+  validateDate
 } from '../../utils/validators.js';
 import Header from '../common/Header.jsx';
 import Footer from '../common/Footer.jsx';
@@ -97,12 +91,6 @@ import {
   ERROR_INVALID_FORMAT,
   MAX_LENGTH_ACCOUNT_ID,
   MAX_LENGTH_NAME,
-  MAX_LENGTH_ADDRESS,
-  MAX_LENGTH_PHONE,
-  MAX_LENGTH_SSN,
-  MAX_LENGTH_ZIP,
-  DATE_FORMAT_DISPLAY,
-  DATE_FORMAT_API,
   MSG_SERVER_ERROR
 } from '../../utils/constants.js';
 
@@ -224,7 +212,7 @@ const AccountUpdateComponent = () => {
   const navigate = useNavigate();
   
   // Authentication context
-  const { isAuthenticated, isAdmin } = useAuth();
+  const { isAuthenticated } = useAuth();
   
   // Component state
   const [loading, setLoading] = useState(true);
@@ -304,6 +292,8 @@ const AccountUpdateComponent = () => {
       setError('Account ID is required');
       setLoading(false);
     }
+    // formik.setValues is stable and doesn't need to be in dependencies
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, isAuthenticated]);
   
   /**
@@ -1042,7 +1032,7 @@ const AccountUpdateComponent = () => {
         </DialogTitle>
         <DialogContent>
           <DialogContentText id="confirm-dialog-description">
-            Are you sure you want to update this account? This action will modify the account's credit limits and status.
+            Are you sure you want to update this account? This action will modify the account&apos;s credit limits and status.
           </DialogContentText>
         </DialogContent>
         <DialogActions>
