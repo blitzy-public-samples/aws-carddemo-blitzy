@@ -365,17 +365,17 @@ public class UserListService {
             // Only wildcard search
             // COBOL equivalent: STARTBR FILE('USRSEC') RIDFLD(SEC-USR-ID) with partial key
             log.debug("Querying with userIdPattern only: {}", userIdPattern);
-            userPage = userRepository.findByUserIdStartingWith(userIdPattern.trim(), pageable);
+            userPage = userRepository.findByUserIdStartingWithAndDeletedFalse(userIdPattern.trim(), pageable);
         } else if (userTypeEnum != null) {
             // Only type filter
             // COBOL equivalent: READNEXT with IF SEC-USR-TYPE = 'A' or 'U' check
             log.debug("Querying with userType filter only: {}", userTypeEnum);
-            userPage = userRepository.findByUserType(userTypeEnum, pageable);
+            userPage = userRepository.findByUserTypeAndDeletedFalse(userTypeEnum, pageable);
         } else {
             // No filters: retrieve all users
             // COBOL equivalent: STARTBR with LOW-VALUES (start from beginning)
             log.debug("Querying all users without filters");
-            userPage = userRepository.findAll(pageable);
+            userPage = userRepository.findAllByDeletedFalse(pageable);
         }
 
         log.info("Retrieved {} users out of {} total users for page {} of {}",
@@ -476,7 +476,7 @@ public class UserListService {
         // Query repository and throw ResourceNotFoundException if not found
         // Maps to COBOL: EXEC CICS READ ... RESP(WS-RESP-CD)
         // WHEN DFHRESP(NOTFND) → ResourceNotFoundException
-        User user = userRepository.findById(userId.trim())
+        User user = userRepository.findByUserIdAndDeletedFalse(userId.trim())
                 .orElseThrow(() -> {
                     String errorMsg = "User not found: " + userId;
                     log.error(errorMsg);
@@ -536,7 +536,7 @@ public class UserListService {
         log.debug("Finding users by pattern '{}' and type '{}'", userIdPattern, userType);
         
         // Query by userIdPattern first (database-level filtering)
-        Page<User> usersByPattern = userRepository.findByUserIdStartingWith(userIdPattern, pageable);
+        Page<User> usersByPattern = userRepository.findByUserIdStartingWithAndDeletedFalse(userIdPattern, pageable);
         
         // Filter by userType in-memory (stream filtering)
         // This preserves pagination metadata while filtering content
