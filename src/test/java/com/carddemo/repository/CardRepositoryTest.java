@@ -341,9 +341,10 @@ public class CardRepositoryTest {
     @DisplayName("Find cards by account ID with pagination returns 7 cards per page")
     void testFindByAccountId_ReturnsPaginatedCards() {
         // Setup: Create additional cards to test pagination (need at least 8 for 2 pages)
+        // Using format with 4-digit padding to ensure exactly 16 characters (CARD-NUM PIC X(16))
         for (int i = 4; i <= 10; i++) {
             Card additionalCard = Card.builder()
-                    .cardNumber(String.format("411111111111111%d", i))
+                    .cardNumber(String.format("411111111111%04d", i))
                     .account(testAccount)
                     .cvvCode("000")
                     .embossedName("JOHN SMITH")
