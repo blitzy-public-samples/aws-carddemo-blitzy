@@ -23,6 +23,7 @@ import org.springframework.batch.item.file.LineMapper;
 import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
 import org.springframework.batch.item.file.mapping.DefaultLineMapper;
 import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -166,8 +167,8 @@ public class CardDataLoadJob {
     private static final int CHUNK_SIZE = 1000;
     private static final int DEFAULT_SKIP_LIMIT = 100;
     private static final int RETRY_LIMIT = 3;
-    private static final String JOB_NAME = "cardDataLoadJob";
-    private static final String STEP_NAME = "cardDataLoadStep";
+    private static final String JOB_NAME = "cardDataLoadBatchJob";
+    private static final String STEP_NAME = "cardDataLoadBatchStep";
     
     // CSV field names matching CVACT02Y.cpy CARD-RECORD structure
     private static final String[] FIELD_NAMES = {
@@ -223,16 +224,16 @@ public class CardDataLoadJob {
      * records and resume from last commit point, matching JCL checkpoint/restart functionality.</p>
      * 
      * @param jobRepository Spring Batch repository for job metadata persistence
-     * @param cardDataLoadStep The step containing read-process-write logic
+     * @param step The step containing read-process-write logic
      * @return Configured Job bean for card data loading
      */
     @Bean(name = JOB_NAME)
-    public Job cardDataLoadJob(JobRepository jobRepository, Step cardDataLoadStep) {
+    public Job cardDataLoadJobBean(JobRepository jobRepository, @Qualifier(STEP_NAME) Step step) {
         log.info("Configuring Card Data Load Job: {}", JOB_NAME);
         
         return new JobBuilder(JOB_NAME, jobRepository)
                 .incrementer(new RunIdIncrementer())
-                .start(cardDataLoadStep)
+                .start(step)
                 .listener(new CardDataLoadJobListener(cardRepository))
                 .build();
     }
@@ -274,12 +275,12 @@ public class CardDataLoadJob {
      * @return Configured Step bean for card data processing
      */
     @Bean(name = STEP_NAME)
-    public Step cardDataLoadStep(JobRepository jobRepository,
-                                  PlatformTransactionManager transactionManager,
-                                  FlatFileItemReader<CardCsvRecord> cardDataReader,
-                                  ItemProcessor<CardCsvRecord, Card> cardProcessor,
-                                  JpaItemWriter<Card> cardWriter,
-                                  @Value("#{jobParameters['skipLimit'] ?: 100}") Integer skipLimit) {
+    public Step cardDataLoadStepBean(JobRepository jobRepository,
+                                      PlatformTransactionManager transactionManager,
+                                      FlatFileItemReader<CardCsvRecord> cardDataReader,
+                                      ItemProcessor<CardCsvRecord, Card> cardProcessor,
+                                      JpaItemWriter<Card> cardWriter,
+                                      @Value("${batch.card.skip-limit:100}") Integer skipLimit) {
         
         log.info("Configuring Card Data Load Step: {} with chunk size {} and skip limit {}", 
                  STEP_NAME, CHUNK_SIZE, skipLimit);
@@ -508,10 +509,13 @@ public class CardDataLoadJob {
                 Card card = Card.builder()
                         .cardNumber(csvRecord.getCardNumber())
                         .account(account)
+                        .cardType(csvRecord.getCardType())
                         .cvvCode(csvRecord.getCvvCode())
                         .embossedName(csvRecord.getEmbossedName().trim())
                         .expirationDate(expirationDate)
                         .activeStatus(csvRecord.getActiveStatus())
+                        .openDate(openDate)
+                        .lastUsedDate(lastUsedDate)
                         .build();
                 
                 log.debug("Successfully validated and constructed Card entity for card number: {}", card.getCardNumber());
