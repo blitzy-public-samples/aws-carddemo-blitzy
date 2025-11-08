@@ -21,6 +21,7 @@ import com.carddemo.dto.request.LoginRequest;
 import com.carddemo.dto.response.LoginResponse;
 import com.carddemo.entity.User;
 import com.carddemo.exception.AuthenticationException;
+import com.carddemo.exception.ResourceNotFoundException;
 import com.carddemo.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -30,7 +31,6 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -167,10 +167,10 @@ public class AuthenticationService {
      * <ol>
      *   <li>Extract userId and password from LoginRequest (validated by Bean Validation)</li>
      *   <li>Query User entity using UserRepository.findByUserId() [replaces EXEC CICS READ]</li>
-     *   <li>Throw ResourceNotFoundException if user not found [replaces RESP-CD 13]</li>
+     *   <li>Throw ResourceNotFoundException if user not found [replaces RESP-CD 13] → HTTP 404</li>
      *   <li>Verify password using PasswordEncoder.matches() [replaces plain text comparison]</li>
-     *   <li>Throw AuthenticationException if password mismatch [replaces error message]</li>
-     *   <li>Check user deleted flag (soft delete validation)</li>
+     *   <li>Throw BadCredentialsException if password mismatch [replaces error message] → HTTP 401</li>
+     *   <li>Check user deleted flag (soft delete validation) throws DisabledException → HTTP 401</li>
      *   <li>Generate JWT token with userId and userType [replaces COMMAREA population]</li>
      *   <li>Create Spring Security Authentication with granted authorities</li>
      *   <li>Set SecurityContext for request [replaces CICS user context]</li>
@@ -187,9 +187,9 @@ public class AuthenticationService {
      * 
      * @param loginRequest Login credentials containing userId and password
      * @return LoginResponse with JWT token, user details, and expiration timestamp
-     * @throws UsernameNotFoundException if user ID not found in database (COBOL RESP-CD=13)
-     * @throws BadCredentialsException if password is incorrect (COBOL wrong password flow)
-     * @throws DisabledException if user account is deleted or disabled
+     * @throws ResourceNotFoundException if user ID not found in database (COBOL RESP-CD=13) - returns HTTP 404
+     * @throws BadCredentialsException if password is incorrect (COBOL wrong password flow) - returns HTTP 401
+     * @throws DisabledException if user account is deleted or disabled - returns HTTP 401
      * @throws IllegalArgumentException if loginRequest is null
      */
     @Transactional
@@ -202,11 +202,12 @@ public class AuthenticationService {
 
         log.info("Authentication attempt for userId: {}", loginRequest.getUserId());
 
-        // Step 1: Extract credentials from request
-        // Replaces: MOVE USERIDI OF COSGN0AI TO WS-USER-ID
+        // Step 1: Extract and normalize credentials from request
+        // Replaces: MOVE FUNCTION UPPER-CASE(USERIDI OF COSGN0AI) TO WS-USER-ID (COBOL lines 132-136)
         //          MOVE PASSWDI OF COSGN0AI TO WS-USER-PWD
-        String userId = loginRequest.getUserId();
-        String password = loginRequest.getPassword();
+        // Trim whitespace and convert userId to uppercase to match COBOL behavior
+        String userId = loginRequest.getUserId().trim().toUpperCase();
+        String password = loginRequest.getPassword().trim();
 
         // Step 2: Retrieve user from database
         // Replaces: EXEC CICS READ FILE(WS-USRSEC-FILE) INTO(SEC-USER-DATA) RIDFLD(WS-USER-ID)
@@ -215,10 +216,10 @@ public class AuthenticationService {
         // Step 3: Handle user not found scenario
         // Replaces: IF WS-RESP-CD = DFHRESP(NOTFND)
         //              MOVE 'User not found. Try again ...' TO WS-MESSAGE
-        // Using Spring Security UsernameNotFoundException as specified in Agent Action Plan
+        // Using ResourceNotFoundException to return HTTP 404 as per COBOL error semantics
         User user = userOptional.orElseThrow(() -> {
             log.warn("Authentication failed: User not found - userId: {}", userId);
-            return new UsernameNotFoundException(MessageConstants.MSG_USER_NOT_FOUND + ": " + userId);
+            return new ResourceNotFoundException(MessageConstants.MSG_USER_NOT_FOUND + ": " + userId);
         });
 
         // Step 4: Check if user account is deleted (soft delete check)
