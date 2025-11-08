@@ -1,5 +1,6 @@
 package com.carddemo.batch.processor;
 
+import com.carddemo.dto.DailyTransactionInput;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
 import com.carddemo.entity.Transaction;
@@ -119,7 +120,7 @@ public class TransactionProcessor implements ItemProcessor<DailyTransactionInput
         Transaction transaction = postTransaction(item, validationResult.getCard(), validationResult.getAccount());
         
         log.info("Transaction processed successfully: transactionId={}, cardNumber={}, amount={}",
-                transaction.getTransactionId(), transaction.getCardNumber(), transaction.getAmount());
+                transaction.getTransactionId(), transaction.getCard().getCardNumber(), transaction.getAmount());
         
         return transaction;
     }
@@ -149,7 +150,7 @@ public class TransactionProcessor implements ItemProcessor<DailyTransactionInput
         Card card = cardOpt.get();
         
         // 1500-B-LOOKUP-ACCT: Account lookup (lines 393-422)
-        Optional<Account> accountOpt = accountRepository.findByAccountId(card.getAccountId());
+        Optional<Account> accountOpt = accountRepository.findByAccountId(card.getAccount().getAccountId());
         
         if (!accountOpt.isPresent()) {
             // COBOL lines 396-399: INVALID KEY, code 101
@@ -182,7 +183,7 @@ public class TransactionProcessor implements ItemProcessor<DailyTransactionInput
         // Convert transaction timestamp to LocalDate for comparison
         LocalDateTime transactionTimestamp = item.getOriginationTimestamp();
         if (transactionTimestamp != null && account.getExpirationDate() != null) {
-            if (account.getExpirationDate().toLocalDate().isBefore(transactionTimestamp.toLocalDate())) {
+            if (account.getExpirationDate().isBefore(transactionTimestamp.toLocalDate())) {
                 // COBOL lines 417-419: Expired account, code 103
                 return ValidationResult.failure(
                         103,
@@ -227,11 +228,11 @@ public class TransactionProcessor implements ItemProcessor<DailyTransactionInput
                 .transactionSource(item.getTransactionSource())      // DALYTRAN-SOURCE TO TRAN-SOURCE (line 428)
                 .description(item.getDescription())                  // DALYTRAN-DESC TO TRAN-DESC (line 429)
                 .amount(item.getAmount())                            // DALYTRAN-AMT TO TRAN-AMT (line 430)
-                .merchantId(item.getMerchantId())                    // DALYTRAN-MERCHANT-ID TO TRAN-MERCHANT-ID (line 431)
+                .merchantId(Long.parseLong(item.getMerchantId()))    // DALYTRAN-MERCHANT-ID TO TRAN-MERCHANT-ID (line 431)
                 .merchantName(item.getMerchantName())                // DALYTRAN-MERCHANT-NAME TO TRAN-MERCHANT-NAME (line 432)
                 .merchantCity(item.getMerchantCity())                // DALYTRAN-MERCHANT-CITY TO TRAN-MERCHANT-CITY (line 433)
                 .merchantZip(item.getMerchantZip())                  // DALYTRAN-MERCHANT-ZIP TO TRAN-MERCHANT-ZIP (line 434)
-                .cardNumber(item.getCardNumber())                    // DALYTRAN-CARD-NUM TO TRAN-CARD-NUM (line 435)
+                .card(card)                                          // DALYTRAN-CARD-NUM TO TRAN-CARD-NUM (line 435) - set Card object
                 .originationTimestamp(item.getOriginationTimestamp()) // DALYTRAN-ORIG-TS TO TRAN-ORIG-TS (line 436)
                 .processingTimestamp(processingTimestamp)            // DB2-FORMAT-TS TO TRAN-PROC-TS (line 438)
                 .build();
@@ -271,11 +272,18 @@ public class TransactionProcessor implements ItemProcessor<DailyTransactionInput
             
             // 2700-A-CREATE-TCATBAL-REC (lines 503-524)
             // INITIALIZE TRAN-CAT-BAL-RECORD (line 504)
-            balance = new TransactionCategoryBalance();
-            balance.setAccountId(accountId);                      // XREF-ACCT-ID TO TRANCAT-ACCT-ID (line 505)
-            balance.setTransactionTypeCode(typeCode);             // DALYTRAN-TYPE-CD TO TRANCAT-TYPE-CD (line 506)
-            balance.setCategoryCode(categoryCode);                // DALYTRAN-CAT-CD TO TRANCAT-CD (line 507)
-            balance.setBalance(item.getAmount().setScale(2, RoundingMode.HALF_UP));  // ADD DALYTRAN-AMT (line 508)
+            // Create composite key with account ID, transaction type code, and category code
+            TransactionCategoryBalance.TransactionCategoryBalanceId compositeId = 
+                    TransactionCategoryBalance.TransactionCategoryBalanceId.builder()
+                            .accountId(accountId)                      // XREF-ACCT-ID TO TRANCAT-ACCT-ID (line 505)
+                            .transactionTypeCode(typeCode)             // DALYTRAN-TYPE-CD TO TRANCAT-TYPE-CD (line 506)
+                            .categoryCode(categoryCode)                // DALYTRAN-CAT-CD TO TRANCAT-CD (line 507)
+                            .build();
+            
+            balance = TransactionCategoryBalance.builder()
+                    .id(compositeId)
+                    .balance(item.getAmount().setScale(2, RoundingMode.HALF_UP))  // ADD DALYTRAN-AMT (line 508)
+                    .build();
         } else {
             // Record exists: update (COBOL lines 497-498)
             // 2700-B-UPDATE-TCATBAL-REC (lines 526-542)
@@ -401,123 +409,4 @@ public class TransactionProcessor implements ItemProcessor<DailyTransactionInput
         }
     }
 
-    /**
-     * Input DTO for daily transaction processing.
-     * 
-     * Represents the structure of daily transaction input records read from
-     * DALYTRAN-FILE in COBOL (CVTRA06Y.cpy copybook).
-     * 
-     * Maps COBOL DALYTRAN-RECORD fields to Java properties with proper data types.
-     */
-    public static class DailyTransactionInput {
-        private String transactionId;           // DALYTRAN-ID PIC X(16)
-        private String typeCode;                // DALYTRAN-TYPE-CD PIC X(02)
-        private String categoryCode;            // DALYTRAN-CAT-CD PIC 9(04)
-        private String transactionSource;       // DALYTRAN-SOURCE PIC X(10)
-        private String description;             // DALYTRAN-DESC PIC X(100)
-        private BigDecimal amount;              // DALYTRAN-AMT PIC S9(09)V99
-        private String merchantId;              // DALYTRAN-MERCHANT-ID PIC 9(09)
-        private String merchantName;            // DALYTRAN-MERCHANT-NAME PIC X(50)
-        private String merchantCity;            // DALYTRAN-MERCHANT-CITY PIC X(50)
-        private String merchantZip;             // DALYTRAN-MERCHANT-ZIP PIC X(10)
-        private String cardNumber;              // DALYTRAN-CARD-NUM PIC X(16)
-        private LocalDateTime originationTimestamp; // DALYTRAN-ORIG-TS PIC X(26)
-
-        // Getters and setters
-        public String getTransactionId() {
-            return transactionId;
-        }
-
-        public void setTransactionId(String transactionId) {
-            this.transactionId = transactionId;
-        }
-
-        public String getTypeCode() {
-            return typeCode;
-        }
-
-        public void setTypeCode(String typeCode) {
-            this.typeCode = typeCode;
-        }
-
-        public String getCategoryCode() {
-            return categoryCode;
-        }
-
-        public void setCategoryCode(String categoryCode) {
-            this.categoryCode = categoryCode;
-        }
-
-        public String getTransactionSource() {
-            return transactionSource;
-        }
-
-        public void setTransactionSource(String transactionSource) {
-            this.transactionSource = transactionSource;
-        }
-
-        public String getDescription() {
-            return description;
-        }
-
-        public void setDescription(String description) {
-            this.description = description;
-        }
-
-        public BigDecimal getAmount() {
-            return amount;
-        }
-
-        public void setAmount(BigDecimal amount) {
-            this.amount = amount;
-        }
-
-        public String getMerchantId() {
-            return merchantId;
-        }
-
-        public void setMerchantId(String merchantId) {
-            this.merchantId = merchantId;
-        }
-
-        public String getMerchantName() {
-            return merchantName;
-        }
-
-        public void setMerchantName(String merchantName) {
-            this.merchantName = merchantName;
-        }
-
-        public String getMerchantCity() {
-            return merchantCity;
-        }
-
-        public void setMerchantCity(String merchantCity) {
-            this.merchantCity = merchantCity;
-        }
-
-        public String getMerchantZip() {
-            return merchantZip;
-        }
-
-        public void setMerchantZip(String merchantZip) {
-            this.merchantZip = merchantZip;
-        }
-
-        public String getCardNumber() {
-            return cardNumber;
-        }
-
-        public void setCardNumber(String cardNumber) {
-            this.cardNumber = cardNumber;
-        }
-
-        public LocalDateTime getOriginationTimestamp() {
-            return originationTimestamp;
-        }
-
-        public void setOriginationTimestamp(LocalDateTime originationTimestamp) {
-            this.originationTimestamp = originationTimestamp;
-        }
-    }
 }
