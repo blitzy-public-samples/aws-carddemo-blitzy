@@ -249,19 +249,19 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionCa
     @Override
     public Transaction process(TransactionCategoryBalance item) throws Exception {
         log.debug("Processing interest calculation for account: {}, type: {}, category: {}",
-                item.getAccountId(), item.getTransactionTypeCode(), item.getCategoryCode());
+                item.getId().getAccountId(), item.getId().getTransactionTypeCode(), item.getId().getCategoryCode());
 
         // Step 1: Retrieve interest rate for this category balance
         // Replicates COBOL 1200-GET-INTEREST-RATE paragraph (lines 415-440)
         DisclosureGroup disclosureGroup = retrieveInterestRate(
-                item.getAccountId(),
-                item.getTransactionTypeCode(),
-                item.getCategoryCode()
+                String.valueOf(item.getId().getAccountId()),
+                item.getId().getTransactionTypeCode(),
+                item.getId().getCategoryCode()
         );
 
         if (disclosureGroup == null) {
             log.warn("No disclosure group found for account: {}, type: {}, category: {} - skipping interest calculation",
-                    item.getAccountId(), item.getTransactionTypeCode(), item.getCategoryCode());
+                    item.getId().getAccountId(), item.getId().getTransactionTypeCode(), item.getId().getCategoryCode());
             return null; // Skip this item
         }
 
@@ -269,7 +269,7 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionCa
         // If zero, skip creating interest transaction
         if (disclosureGroup.getInterestRate().compareTo(BigDecimal.ZERO) == 0) {
             log.debug("Interest rate is zero for account: {} - skipping transaction creation",
-                    item.getAccountId());
+                    item.getId().getAccountId());
             return null; // Skip this item
         }
 
@@ -278,14 +278,14 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionCa
         BigDecimal monthlyInterest = calculateMonthlyInterest(item, disclosureGroup);
 
         log.debug("Calculated monthly interest: {} for account: {}, balance: {}, rate: {}",
-                monthlyInterest, item.getAccountId(), item.getBalance(), disclosureGroup.getInterestRate());
+                monthlyInterest, item.getId().getAccountId(), item.getBalance(), disclosureGroup.getInterestRate());
 
         // Step 4: Build interest transaction entity
         // Replicates COBOL 1300-B-WRITE-TX paragraph (lines 473-515)
         Transaction interestTransaction = buildInterestTransaction(item, monthlyInterest);
 
         log.info("Generated interest transaction: {} for account: {}, amount: {}",
-                interestTransaction.getTransactionId(), item.getAccountId(), monthlyInterest);
+                interestTransaction.getTransactionId(), item.getId().getAccountId(), monthlyInterest);
 
         return interestTransaction;
     }
@@ -499,10 +499,10 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionCa
 
         // Step 2: Retrieve card number for this account
         // Replicates COBOL 1110-GET-XREF-DATA paragraph (line 495)
-        String cardNumber = retrieveCardNumber(balance.getAccountId());
+        String cardNumber = retrieveCardNumber(String.valueOf(balance.getId().getAccountId()));
 
         if (cardNumber == null) {
-            log.warn("No card found for account: {} - using placeholder card number", balance.getAccountId());
+            log.warn("No card found for account: {} - using placeholder card number", balance.getId().getAccountId());
             cardNumber = "0000000000000000"; // Placeholder if no card found
         }
 
@@ -512,7 +512,7 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionCa
 
         // Step 4: Build transaction description
         // Replicates COBOL STRING 'Int. for a/c ', ACCT-ID INTO TRAN-DESC (lines 485-489)
-        String description = String.format("Int. for a/c %s", balance.getAccountId());
+        String description = String.format("Int. for a/c %s", balance.getId().getAccountId());
 
         // Step 5: Build complete Transaction entity using Builder pattern
         // Matches all MOVE statements in COBOL 1300-B-WRITE-TX paragraph (lines 473-515)
