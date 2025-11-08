@@ -21,7 +21,7 @@ import com.carddemo.entity.User;
 import com.carddemo.entity.User.UserType;
 import com.carddemo.repository.UserRepository;
 import com.carddemo.exception.ResourceNotFoundException;
-import com.carddemo.exception.ValidationException;
+import com.carddemo.exception.BusinessLogicException;
 import com.carddemo.dto.response.UserResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -365,7 +365,7 @@ public class UserDeleteService {
         // Replaces: WHEN USRIDINI = SPACES OR LOW-VALUES
         if (userId == null || userId.trim().isEmpty()) {
             log.warn("User deletion failed: User ID is empty");
-            throw new ValidationException("User ID can NOT be empty...");
+            throw new IllegalArgumentException("User ID cannot be null or empty");
         }
 
         // Get authenticated admin user for audit trail
@@ -389,7 +389,7 @@ public class UserDeleteService {
         // Check if user is already deleted
         if (user.isDeleted()) {
             log.warn("User deletion failed: User already deleted: {}", userId);
-            throw new ValidationException("User has already been deleted");
+            throw new BusinessLogicException("User is already deleted");
         }
 
         // Validation 3: Prevent Last Admin Deletion
@@ -401,9 +401,8 @@ public class UserDeleteService {
             if (activeAdminCount <= 1) {
                 log.warn("User deletion failed: Cannot delete last admin user. Admin count: {}", 
                         activeAdminCount);
-                throw new ValidationException(
-                        "Cannot delete last admin user. At least one admin must remain in the system " +
-                        "to prevent administrative lockout.");
+                throw new BusinessLogicException(
+                        "Cannot delete last admin user");
             }
             log.debug("Admin deletion allowed: {} active admins will remain", activeAdminCount - 1);
         }
@@ -412,9 +411,8 @@ public class UserDeleteService {
         // Enhanced business rule not present in COBOL to maintain session integrity
         if (userId.equals(authenticatedAdminId)) {
             log.warn("User deletion failed: Admin attempted to delete own account: {}", userId);
-            throw new ValidationException(
-                    "Cannot delete currently logged-in user. Please logout first or have another " +
-                    "administrator perform the deletion.");
+            throw new BusinessLogicException(
+                    "You cannot delete your own user account");
         }
         log.debug("Self-deletion check passed: target user {} differs from admin {}", 
                 userId, authenticatedAdminId);
