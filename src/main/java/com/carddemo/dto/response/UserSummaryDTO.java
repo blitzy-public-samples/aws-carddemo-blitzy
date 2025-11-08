@@ -181,7 +181,7 @@ public class UserSummaryDTO {
                 .userId(user.getUserId())
                 .firstName(user.getFirstName())
                 .lastName(user.getLastName())
-                .userType(user.getUserType().getCode())
+                .userType(user.getUserType().getDisplayName())
                 .build();
         // Password field explicitly excluded - never include SEC-USR-PWD in response DTOs
     }
