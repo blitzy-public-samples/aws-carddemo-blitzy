@@ -548,7 +548,7 @@ public class DailyTransactionProcessingJob {
             PlatformTransactionManager transactionManager,
             @Qualifier("dailyTransactionReader") ItemReader<DailyTransactionInput> reader,
             ItemProcessor<DailyTransactionInput, Transaction> processor,
-            ItemWriter<Transaction> writer) {
+            @Qualifier("transactionWriter") ItemWriter<Transaction> writer) {
         
         log.info("Configuring dailyTransactionProcessingStep bean with chunk size 1000");
         

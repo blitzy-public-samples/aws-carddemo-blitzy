@@ -205,10 +205,13 @@ public class InterestCalculationJob {
      * enabling JobRepository to track execution history and support restart from
      * last successful chunk on failure per Section 0.6 requirement 6.</p>
      * 
+     * <p><strong>Note:</strong> Bean method name is "interestCalculationBatchJob" to avoid 
+     * circular reference with configuration class name "InterestCalculationJob".</p>
+     * 
      * @return Configured Job instance for interest calculation batch processing
      */
     @Bean
-    public Job interestCalculationJob() {
+    public Job interestCalculationBatchJob() {
         log.info("Configuring Interest Calculation Job (CBACT04C transformation)");
         
         return new JobBuilder("interestCalculationJob", jobRepository)
