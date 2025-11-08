@@ -33,6 +33,7 @@ package com.carddemo.exception;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
@@ -46,7 +47,9 @@ import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -261,6 +264,41 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Handles Spring Security AccessDeniedException when authorization fails.
+     * 
+     * <p>This handler catches Spring Security's AccessDeniedException thrown when
+     * a user attempts to access a resource or perform an operation they are not
+     * authorized to access based on role-based access control (@PreAuthorize annotations).</p>
+     * 
+     * <p><b>COBOL Pattern Replaced:</b> RACF authorization checks where user type
+     * (SEC-USR-TYPE) determines access to administrative functions in COUSR00C, 
+     * COUSR01C, COUSR02C, COUSR03C programs.</p>
+     * 
+     * <p><b>HTTP Response:</b> 403 Forbidden with structured error details</p>
+     * 
+     * @param ex the AccessDeniedException from Spring Security
+     * @param request the HTTP request that caused the exception
+     * @return ResponseEntity containing structured error details with HTTP 403 status
+     */
+    @ExceptionHandler(org.springframework.security.access.AccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleAccessDeniedException(
+            org.springframework.security.access.AccessDeniedException ex,
+            HttpServletRequest request) {
+        
+        logger.warn("Access denied: {} - Request path: {}", ex.getMessage(), request.getRequestURI());
+        
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.FORBIDDEN.value())
+                .error(HttpStatus.FORBIDDEN.getReasonPhrase())
+                .message("Access denied. You do not have permission to access this resource.")
+                .path(request.getRequestURI())
+                .build();
+        
+        return new ResponseEntity<>(errorResponse, HttpStatus.FORBIDDEN);
+    }
+
+    /**
      * Handles BusinessLogicException thrown when business rules are violated.
      * 
      * <p><b>COBOL Pattern Replaced:</b> Business logic error patterns from:</p>
@@ -268,10 +306,11 @@ public class GlobalExceptionHandler {
      *   <li>COTRN02C.cbl: Transaction validation failures (credit limit, card status)</li>
      *   <li>COACTUPC.cbl: Optimistic locking failures and concurrent modifications</li>
      *   <li>COBIL00C.cbl: Payment processing failures</li>
+     *   <li>COUSR01C.cbl: VSAM DUPKEY/DUPREC errors (lines 260-268) for duplicate user IDs</li>
      * </ul>
      * 
      * <p><b>HTTP Response:</b> 500 Internal Server Error (general), or 409 Conflict
-     * (concurrent modification detected)</p>
+     * (concurrent modification or duplicate key detected)</p>
      * 
      * @param ex the BusinessLogicException containing business rule violation details
      * @param request the HTTP request that caused the exception
@@ -282,11 +321,24 @@ public class GlobalExceptionHandler {
             BusinessLogicException ex,
             HttpServletRequest request) {
         
-        // Check if this is a concurrent modification error for HTTP 409 response
-        HttpStatus status = (ex.getErrorCode() != null && 
-                            ex.getErrorCode().contains("CONCURRENT_MODIFICATION"))
-                ? HttpStatus.CONFLICT
-                : HttpStatus.INTERNAL_SERVER_ERROR;
+        // Check if this is a concurrent modification or duplicate key error for HTTP 409 response
+        // CONCURRENT_MODIFICATION: Optimistic locking failures (COACTUPC.cbl)
+        // DUPLICATE_KEY: VSAM DUPKEY/DUPREC errors (COUSR01C.cbl lines 260-268)
+        // Message patterns: "already exist" matches COBOL error messages
+        HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
+        
+        if (ex.getErrorCode() != null) {
+            if (ex.getErrorCode().contains("CONCURRENT_MODIFICATION") ||
+                ex.getErrorCode().contains("DUPLICATE_KEY") ||
+                ex.getErrorCode().contains("DUPLICATE")) {
+                status = HttpStatus.CONFLICT;
+            }
+        } else if (ex.getMessage() != null && 
+                   (ex.getMessage().toLowerCase().contains("already exist") ||
+                    ex.getMessage().toLowerCase().contains("duplicate"))) {
+            // Also check message content for duplicate scenarios
+            status = HttpStatus.CONFLICT;
+        }
         
         logger.warn("Business logic error [{}]: {} - Request path: {}", 
                 status.value(), ex.getMessage(), request.getRequestURI());
@@ -324,10 +376,34 @@ public class GlobalExceptionHandler {
             MethodArgumentNotValidException ex,
             HttpServletRequest request) {
         
-        // Extract field errors from Spring's BindingResult
+        // Extract field errors from Spring's BindingResult with priority handling
+        // Prioritize "required" constraints (@NotBlank, @NotNull, @NotEmpty) over others
+        // to ensure blank/null fields show "required" messages instead of size/pattern errors
         Map<String, String> fieldErrors = new HashMap<>();
+        Map<String, List<String>> allFieldErrors = new HashMap<>();
+        
+        // Collect all errors for each field
         for (FieldError fieldError : ex.getBindingResult().getFieldErrors()) {
-            fieldErrors.put(fieldError.getField(), fieldError.getDefaultMessage());
+            allFieldErrors.computeIfAbsent(fieldError.getField(), k -> new ArrayList<>())
+                    .add(fieldError.getDefaultMessage());
+        }
+        
+        // For each field, select the most appropriate error message
+        for (Map.Entry<String, List<String>> entry : allFieldErrors.entrySet()) {
+            String field = entry.getKey();
+            List<String> messages = entry.getValue();
+            
+            // Priority 1: "required" or "must not be blank/null/empty" messages
+            String selectedMessage = messages.stream()
+                    .filter(msg -> msg != null && (
+                            msg.toLowerCase().contains("required") ||
+                            msg.toLowerCase().contains("must not be blank") ||
+                            msg.toLowerCase().contains("must not be null") ||
+                            msg.toLowerCase().contains("must not be empty")))
+                    .findFirst()
+                    .orElse(messages.get(0)); // Fallback to first message if no priority match
+            
+            fieldErrors.put(field, selectedMessage);
         }
         
         String message = String.format("Validation failed for %d field%s: %s",
@@ -488,6 +564,7 @@ public class GlobalExceptionHandler {
          * Optional map of field-level validation errors.
          * Only included in response when validation failures occur.
          */
+        @JsonProperty("fieldErrors")
         @JsonInclude(JsonInclude.Include.NON_NULL)
         private Map<String, String> fieldErrors;
 
