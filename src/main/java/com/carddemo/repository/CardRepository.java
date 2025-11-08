@@ -281,7 +281,7 @@ public interface CardRepository extends JpaRepository<Card, String> {
      * 
      * <p><strong>Usage Pattern (Without Pagination):</strong></p>
      * <pre>
-     * List&lt;Card&gt; cards = cardRepository.findByAccountId(accountId);
+     * List&lt;Card&gt; cards = cardRepository.findByAccount_AccountId(accountId);
      * if (cards.isEmpty()) {
      *     // No cards found for account (RESP = ENDFILE)
      *     // ... handle no cards scenario ...
@@ -321,7 +321,7 @@ public interface CardRepository extends JpaRepository<Card, String> {
      * @return List of Card entities associated with the account, empty list if no cards found
      * @throws org.springframework.dao.DataAccessException if database access error occurs
      */
-    List<Card> findByAccountId(Long accountId);
+    List<Card> findByAccount_AccountId(Long accountId);
 
     /**
      * Find all cards by account ID with pagination support (Paginated Foreign Key Lookup)
@@ -343,11 +343,11 @@ public interface CardRepository extends JpaRepository<Card, String> {
      * <pre>
      * // First page (page 0, size 7)
      * Pageable pageable = PageRequest.of(0, 7, Sort.by("cardNumber"));
-     * List&lt;Card&gt; firstPage = cardRepository.findByAccountId(accountId, pageable);
+     * List&lt;Card&gt; firstPage = cardRepository.findByAccount_AccountId(accountId, pageable);
      * 
      * // Next page (page 1, size 7) - simulates PF8 key press
      * Pageable nextPageable = PageRequest.of(1, 7, Sort.by("cardNumber"));
-     * List&lt;Card&gt; secondPage = cardRepository.findByAccountId(accountId, nextPageable);
+     * List&lt;Card&gt; secondPage = cardRepository.findByAccount_AccountId(accountId, nextPageable);
      * 
      * // Check if more pages exist (CA-NEXT-PAGE-EXISTS flag)
      * boolean hasMorePages = secondPage.size() == 7;
@@ -358,7 +358,7 @@ public interface CardRepository extends JpaRepository<Card, String> {
      * public CardListResponse getCardsByAccount(Long accountId, int pageNumber) {
      *     // Create Pageable with 7 cards per page matching COBOL screen size
      *     Pageable pageable = PageRequest.of(pageNumber, 7, Sort.by("cardNumber"));
-     *     List&lt;Card&gt; cards = cardRepository.findByAccountId(accountId, pageable);
+     *     List&lt;Card&gt; cards = cardRepository.findByAccount_AccountId(accountId, pageable);
      *     
      *     // Determine if next page exists (WS-CA-NEXT-PAGE-IND)
      *     boolean hasNextPage = cards.size() == 7;
@@ -435,5 +435,5 @@ public interface CardRepository extends JpaRepository<Card, String> {
      *         or page exceeds available data
      * @throws org.springframework.dao.DataAccessException if database access error occurs
      */
-    List<Card> findByAccountId(Long accountId, Pageable pageable);
+    List<Card> findByAccount_AccountId(Long accountId, Pageable pageable);
 }
