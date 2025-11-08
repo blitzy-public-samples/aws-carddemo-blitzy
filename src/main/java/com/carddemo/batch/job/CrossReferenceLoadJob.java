@@ -30,6 +30,7 @@ import org.springframework.core.io.FileSystemResource;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import jakarta.persistence.EntityManagerFactory;
+import java.time.Duration;
 import java.util.Optional;
 
 /**
@@ -186,19 +187,21 @@ public class CrossReferenceLoadJob {
      * 
      * @param jobRepository Spring Batch JobRepository for persisting job execution metadata,
      *                      enabling restart capability and execution history tracking
+     * @param transactionManager PlatformTransactionManager for step transaction boundaries
      * @return configured Job bean for cross-reference relationship validation
      * @see RunIdIncrementer
      * @see JobExecutionListener
      */
     @Bean
-    public Job crossReferenceLoadJob(JobRepository jobRepository) {
+    public Job crossReferenceLoadJobBean(JobRepository jobRepository,
+                                          PlatformTransactionManager transactionManager) {
         log.info("Configuring crossReferenceLoadJob bean with chunk size {} and skip limit {}", 
                  chunkSize, skipLimit);
         
         return new JobBuilder("crossReferenceLoadJob", jobRepository)
                 .incrementer(new RunIdIncrementer())
                 .listener(crossReferenceJobExecutionListener())
-                .start(crossReferenceLoadStep(jobRepository, null))
+                .start(crossReferenceLoadStep(jobRepository, transactionManager))
                 .build();
     }
 
@@ -526,8 +529,9 @@ public class CrossReferenceLoadJob {
                 log.info("Performance Metrics:");
                 log.info("  Start Time: {}", jobExecution.getStartTime());
                 log.info("  End Time: {}", jobExecution.getEndTime());
-                log.info("  Duration: {} ms", 
-                         jobExecution.getEndTime().getTime() - jobExecution.getStartTime().getTime());
+                long durationMs = Duration.between(jobExecution.getStartTime(), 
+                                                   jobExecution.getEndTime()).toMillis();
+                log.info("  Duration: {} ms", durationMs);
                 log.info("========================================");
                 
                 if (skipCount > 0) {
