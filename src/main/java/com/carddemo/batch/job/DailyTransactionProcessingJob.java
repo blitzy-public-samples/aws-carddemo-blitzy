@@ -1,11 +1,9 @@
 package com.carddemo.batch.job;
 
 import com.carddemo.batch.processor.TransactionProcessor;
-import com.carddemo.batch.reader.TransactionDataReader;
 import com.carddemo.batch.writer.TransactionDataWriter;
 import com.carddemo.dto.DailyTransactionInput;
 import com.carddemo.entity.Transaction;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
@@ -19,6 +17,7 @@ import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.batch.item.ItemReader;
 import org.springframework.batch.item.ItemWriter;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -75,7 +74,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * <pre>
  * {@code
  * @Bean
- * public Job dailyTransactionProcessingJob(JobRepository jobRepository, Step step) {
+ * public Job dailyTransactionProcessingBatchJob(JobRepository jobRepository, Step step) {
  *     return new JobBuilder("dailyTransactionProcessingJob", jobRepository)
  *         .start(step)                           // Execute chunk-oriented step
  *         .incrementer(new RunIdIncrementer())   // Unique instance per run
@@ -326,7 +325,6 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 @Slf4j
 @Configuration
-@RequiredArgsConstructor
 public class DailyTransactionProcessingJob {
 
     /**
@@ -393,12 +391,12 @@ public class DailyTransactionProcessingJob {
      * @return configured Job instance ready for execution
      */
     @Bean
-    public Job dailyTransactionProcessingJob(JobRepository jobRepository,
-                                              Step dailyTransactionProcessingStep) {
-        log.info("Configuring dailyTransactionProcessingJob bean");
+    public Job dailyTransactionProcessingBatchJob(JobRepository jobRepository,
+                                              @Qualifier("dailyTransactionProcessingStep") Step processingStep) {
+        log.info("Configuring dailyTransactionProcessingBatchJob bean");
         
         return new JobBuilder("dailyTransactionProcessingJob", jobRepository)
-                .start(dailyTransactionProcessingStep)
+                .start(processingStep)
                 .incrementer(new RunIdIncrementer())
                 .listener(new JobExecutionListener() {
                     @Override
@@ -548,7 +546,7 @@ public class DailyTransactionProcessingJob {
     public Step dailyTransactionProcessingStep(
             JobRepository jobRepository,
             PlatformTransactionManager transactionManager,
-            ItemReader<DailyTransactionInput> reader,
+            @Qualifier("dailyTransactionReader") ItemReader<DailyTransactionInput> reader,
             ItemProcessor<DailyTransactionInput, Transaction> processor,
             ItemWriter<Transaction> writer) {
         
