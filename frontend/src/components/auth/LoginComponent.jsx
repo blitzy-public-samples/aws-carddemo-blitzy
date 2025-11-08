@@ -41,7 +41,7 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Formik } from 'formik';
 import { object as yupObject, string as yupString } from 'yup';
@@ -250,6 +250,25 @@ const LoginComponent = () => {
       setIsLoading(false);
       setSubmitting(false);
     }
+  };
+  
+  /**
+   * Handle Input Change
+   * 
+   * Wraps Formik's handleChange to also clear error messages when user types.
+   * This provides immediate feedback and allows user to correct mistakes.
+   * 
+   * @param {Function} formikHandleChange - Formik's handleChange function
+   * @returns {Function} Enhanced onChange handler
+   */
+  const handleInputChange = (formikHandleChange) => (event) => {
+    // Clear error message when user starts typing
+    if (errorMessage) {
+      setErrorMessage('');
+    }
+    
+    // Call Formik's handleChange to update form values
+    formikHandleChange(event);
   };
   
   /**
@@ -549,7 +568,7 @@ const LoginComponent = () => {
                 name="userId"
                 className="form-input"
                 value={values.userId}
-                onChange={handleChange}
+                onChange={handleInputChange(handleChange)}
                 onBlur={handleBlur}
                 maxLength={8}
                 autoFocus
@@ -577,7 +596,7 @@ const LoginComponent = () => {
                 name="password"
                 className="form-input"
                 value={values.password}
-                onChange={handleChange}
+                onChange={handleInputChange(handleChange)}
                 onBlur={handleBlur}
                 maxLength={8}
                 disabled={isLoading}
