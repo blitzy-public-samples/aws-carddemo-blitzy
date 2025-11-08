@@ -1,6 +1,7 @@
 package com.carddemo.repository;
 
 import com.carddemo.entity.Card;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
@@ -343,32 +344,30 @@ public interface CardRepository extends JpaRepository<Card, String> {
      * <pre>
      * // First page (page 0, size 7)
      * Pageable pageable = PageRequest.of(0, 7, Sort.by("cardNumber"));
-     * List&lt;Card&gt; firstPage = cardRepository.findByAccount_AccountId(accountId, pageable);
+     * Page&lt;Card&gt; firstPage = cardRepository.findByAccount_AccountId(accountId, pageable);
      * 
      * // Next page (page 1, size 7) - simulates PF8 key press
      * Pageable nextPageable = PageRequest.of(1, 7, Sort.by("cardNumber"));
-     * List&lt;Card&gt; secondPage = cardRepository.findByAccount_AccountId(accountId, nextPageable);
+     * Page&lt;Card&gt; secondPage = cardRepository.findByAccount_AccountId(accountId, nextPageable);
      * 
      * // Check if more pages exist (CA-NEXT-PAGE-EXISTS flag)
-     * boolean hasMorePages = secondPage.size() == 7;
+     * boolean hasMorePages = secondPage.hasNext();
      * </pre>
      * 
      * <p><strong>Service Layer Implementation Example:</strong></p>
      * <pre>
-     * public CardListResponse getCardsByAccount(Long accountId, int pageNumber) {
+     * public Page&lt;CardResponse&gt; getCardsByAccount(Long accountId, int pageNumber) {
      *     // Create Pageable with 7 cards per page matching COBOL screen size
      *     Pageable pageable = PageRequest.of(pageNumber, 7, Sort.by("cardNumber"));
-     *     List&lt;Card&gt; cards = cardRepository.findByAccount_AccountId(accountId, pageable);
+     *     Page&lt;Card&gt; cardPage = cardRepository.findByAccount_AccountId(accountId, pageable);
      *     
-     *     // Determine if next page exists (WS-CA-NEXT-PAGE-IND)
-     *     boolean hasNextPage = cards.size() == 7;
+     *     // Page object provides all pagination metadata
+     *     // hasNext() replaces WS-CA-NEXT-PAGE-IND flag
+     *     // getTotalPages() provides total page count
+     *     // getTotalElements() provides total card count
      *     
-     *     // Map to response DTO
-     *     return CardListResponse.builder()
-     *         .cards(cards.stream().map(this::mapToDto).collect(Collectors.toList()))
-     *         .pageNumber(pageNumber)
-     *         .hasNextPage(hasNextPage)
-     *         .build();
+     *     // Map to response DTO preserving pagination metadata
+     *     return cardPage.map(this::mapToCardResponse);
      * }
      * </pre>
      * 
@@ -423,17 +422,17 @@ public interface CardRepository extends JpaRepository<Card, String> {
      * 
      * <p><strong>Edge Cases:</strong></p>
      * <ul>
-     *   <li><strong>No Cards:</strong> Returns empty list (not null)</li>
+     *   <li><strong>No Cards:</strong> Returns empty Page (hasContent() = false)</li>
      *   <li><strong>Partial Page:</strong> Last page may have fewer than 7 cards</li>
-     *   <li><strong>Single Card:</strong> List with single element</li>
-     *   <li><strong>Invalid Page:</strong> Returns empty list for pages beyond last page</li>
+     *   <li><strong>Single Card:</strong> Page with single element</li>
+     *   <li><strong>Invalid Page:</strong> Returns empty Page for pages beyond last page</li>
      * </ul>
      * 
      * @param accountId the account identifier (CARD-ACCT-ID PIC 9(11) / Account.accountId)
      * @param pageable pagination parameters (page number, page size of 7, sort order)
-     * @return List of Card entities for the requested page, empty list if no cards found
-     *         or page exceeds available data
+     * @return Page of Card entities for the requested page with pagination metadata,
+     *         empty Page if no cards found or page exceeds available data
      * @throws org.springframework.dao.DataAccessException if database access error occurs
      */
-    List<Card> findByAccount_AccountId(Long accountId, Pageable pageable);
+    Page<Card> findByAccount_AccountId(Long accountId, Pageable pageable);
 }
