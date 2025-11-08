@@ -22,14 +22,14 @@ import java.util.Optional;
  * <ul>
  *   <li><strong>COTRN00C.cbl</strong> - Transaction list display with STARTBR/READNEXT
  *       sequential access for pagination (10 transactions per page). Maps to
- *       findByCardNumber() and findByCardNumberOrderByOriginationTimestampDesc()
+ *       findByCard_CardNumber() and findByCard_CardNumberOrderByOriginationTimestampDesc()
  *       methods with Pageable parameter.</li>
  *   <li><strong>COTRN01C.cbl</strong> - Transaction detail view using EXEC CICS READ
  *       with transaction ID key. Maps to findById() method inherited from JpaRepository.</li>
  *   <li><strong>COTRN02C.cbl</strong> - Transaction add/validate using EXEC CICS WRITE.
  *       Maps to save() method with @Transactional boundaries matching CICS SYNCPOINT.</li>
  *   <li><strong>CBTRN02C.cbl</strong> - Daily transaction batch posting using sequential
- *       file processing. Maps to saveAll() for bulk inserts and findByCardNumber() for
+ *       file processing. Maps to saveAll() for bulk inserts and findByCard_CardNumber() for
  *       card-specific transaction lookups during validation.</li>
  *   <li><strong>CORPT00C.cbl</strong> - Transaction report generation with date range
  *       filtering. Maps to findByCardNumberAndTransactionDateBetween() method.</li>
@@ -66,7 +66,7 @@ import java.util.Optional;
  *     <td>EXEC CICS STARTBR FILE('TRANSACT') RIDFLD(TRAN-CARD-NUM)<br>
  *         PERFORM UNTIL WS-IDX > 10<br>
  *         &nbsp;&nbsp;EXEC CICS READNEXT FILE('TRANSACT')</td>
- *     <td>findByCardNumber(String cardNumber, Pageable.ofSize(10))</td>
+ *     <td>findByCard_CardNumber(String cardNumber, Pageable.ofSize(10))</td>
  *     <td>Browse transactions by card number with pagination</td>
  *   </tr>
  * </table>
@@ -98,7 +98,7 @@ import java.util.Optional;
  *         
  *         // Retrieve page of transactions - replaces COBOL STARTBR/READNEXT loop
  *         Page&lt;Transaction&gt; transactionPage = transactionRepository
- *             .findByCardNumberOrderByOriginationTimestampDesc(cardNumber, pageable);
+ *             .findByCard_CardNumberOrderByOriginationTimestampDesc(cardNumber, pageable);
  *         
  *         // Check if more pages exist (equivalent to COBOL NEXT-PAGE-YES flag)
  *         boolean hasNextPage = transactionPage.hasNext();
@@ -246,7 +246,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * 
      * <p><strong>Sorting:</strong></p>
      * <p>Natural ordering by transaction_id (chronological). For date-sorted results,
-     * use findByCardNumberOrderByOriginationTimestampDesc() instead.</p>
+     * use findByCard_CardNumberOrderByOriginationTimestampDesc() instead.</p>
      * 
      * <p><strong>Usage Example:</strong></p>
      * <pre>
@@ -254,14 +254,14 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * Pageable pageable = PageRequest.of(0, 10);
      * 
      * // Fetch first page of transactions for card
-     * Page&lt;Transaction&gt; page1 = transactionRepository.findByCardNumber(
+     * Page&lt;Transaction&gt; page1 = transactionRepository.findByCard_CardNumber(
      *     "4111111111111111", pageable);
      * 
      * // Check if more pages exist
      * if (page1.hasNext()) {
      *     // Fetch next page
      *     Pageable nextPageable = PageRequest.of(1, 10);
-     *     Page&lt;Transaction&gt; page2 = transactionRepository.findByCardNumber(
+     *     Page&lt;Transaction&gt; page2 = transactionRepository.findByCard_CardNumber(
      *         "4111111111111111", nextPageable);
      * }
      * </pre>
@@ -281,7 +281,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *           <li>Empty page if card has no transactions (not null)</li>
      *         </ul>
      */
-    Page<Transaction> findByCardNumber(String cardNumber, Pageable pageable);
+    Page<Transaction> findByCard_CardNumber(String cardNumber, Pageable pageable);
 
     /**
      * Find transactions for a card within a specific date range with pagination.
@@ -366,7 +366,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *         by origination timestamp descending. Empty page if no matches found.
      */
     @Query("SELECT t FROM Transaction t WHERE t.card.cardNumber = :cardNumber " +
-           "AND FUNCTION('DATE', t.originationTimestamp) BETWEEN :startDate AND :endDate " +
+           "AND CAST(t.originationTimestamp AS date) BETWEEN :startDate AND :endDate " +
            "ORDER BY t.originationTimestamp DESC")
     Page<Transaction> findByCardNumberAndTransactionDateBetween(
             String cardNumber, LocalDate startDate, LocalDate endDate, Pageable pageable);
@@ -420,10 +420,10 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * transaction lists. It replaces COTRN00C.cbl sequential browsing with
      * automatic descending date sort.</p>
      * 
-     * <p><strong>Difference from findByCardNumber():</strong></p>
+     * <p><strong>Difference from findByCard_CardNumber():</strong></p>
      * <ul>
-     *   <li>findByCardNumber(): Natural ordering by transaction_id</li>
-     *   <li>findByCardNumberOrderByOriginationTimestampDesc(): Date-sorted descending</li>
+     *   <li>findByCard_CardNumber(): Natural ordering by transaction_id</li>
+     *   <li>findByCard_CardNumberOrderByOriginationTimestampDesc(): Date-sorted descending</li>
      *   <li>This method is preferred for user-facing transaction history displays</li>
      *   <li>Most recent transactions appear first (matching user expectations)</li>
      * </ul>
@@ -446,7 +446,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * Pageable pageable = PageRequest.of(0, 10);
      * 
      * Page&lt;Transaction&gt; recentTransactions = transactionRepository
-     *     .findByCardNumberOrderByOriginationTimestampDesc(
+     *     .findByCard_CardNumberOrderByOriginationTimestampDesc(
      *         "4111111111111111", pageable);
      * 
      * // First transaction in page is the most recent
@@ -473,6 +473,6 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * @return Page of transactions for the card, sorted by origination timestamp
      *         descending (most recent first). Empty page if card has no transactions.
      */
-    Page<Transaction> findByCardNumberOrderByOriginationTimestampDesc(
+    Page<Transaction> findByCard_CardNumberOrderByOriginationTimestampDesc(
             String cardNumber, Pageable pageable);
 }
