@@ -7,7 +7,8 @@ import org.springframework.batch.item.file.mapping.FieldSetMapper;
 import org.springframework.batch.item.file.transform.FixedLengthTokenizer;
 import org.springframework.batch.item.file.transform.Range;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+// DISABLED: @Configuration annotation removed to prevent bean definition conflicts with TransactionDataReader.java
+// import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
 
 import java.math.BigDecimal;
@@ -16,6 +17,14 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
 /**
+ * LEGACY FILE - NOT ACTIVELY USED
+ * 
+ * This file was created during refactoring but is superseded by TransactionDataReader.java.
+ * The @Configuration annotation has been removed to prevent Spring bean definition conflicts.
+ * This class is retained for reference purposes only.
+ * 
+ * USE TransactionDataReader.java instead for daily transaction file reading.
+ * 
  * Spring Batch FlatFileItemReader configuration for reading daily transaction data files.
  * 
  * <p>This reader processes fixed-width transaction records migrated from mainframe VSAM KSDS 
@@ -150,7 +159,7 @@ import java.time.format.DateTimeFormatter;
  * @see <a href="Section 0.6">File-by-File Transformation Plan - CBTRN02C to DailyTransactionProcessingJob</a>
  * @see <a href="Section 0.10">Special Instructions - COBOL COMP-3 to Java BigDecimal Precision</a>
  */
-@Configuration
+// @Configuration - DISABLED to prevent bean definition conflicts with TransactionDataReader.java
 public class TransactionDataReaderConfig {
 
     /**
