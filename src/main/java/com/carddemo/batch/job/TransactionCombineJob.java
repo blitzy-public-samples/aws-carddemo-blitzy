@@ -164,15 +164,15 @@ public class TransactionCombineJob {
      *   <li>afterJob() logs statistics (replacing COBOL totals display logic)</li>
      * </ul>
      * 
-     * @param listener JobExecutionListener for pre/post processing
+     * @param transactionCombineJobListener JobExecutionListener for pre/post processing
      * @param transactionCombineStep Step that executes SQL-based transaction consolidation
      * @return Configured Job bean for transaction combination
      */
     @Bean
-    public Job transactionCombineJob(JobExecutionListener listener, 
-                                     Step transactionCombineStep) {
+    public Job transactionCombineBatchJob(JobExecutionListener transactionCombineJobListener, 
+                                          Step transactionCombineStep) {
         return new JobBuilder("transactionCombineJob", jobRepository)
-                .listener(listener)
+                .listener(transactionCombineJobListener)
                 .start(transactionCombineStep)
                 .build();
     }
