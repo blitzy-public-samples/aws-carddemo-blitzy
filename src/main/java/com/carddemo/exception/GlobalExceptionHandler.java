@@ -39,6 +39,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
@@ -200,6 +201,66 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Handles Spring Security UsernameNotFoundException when user authentication fails.
+     * 
+     * <p>This handler catches Spring Security's UsernameNotFoundException thrown during
+     * authentication attempts when the specified user cannot be found in the system.</p>
+     * 
+     * <p><b>HTTP Response:</b> 401 Unauthorized with structured error details</p>
+     * 
+     * @param ex the UsernameNotFoundException from Spring Security
+     * @param request the HTTP request that caused the exception
+     * @return ResponseEntity containing structured error details with HTTP 401 status
+     */
+    @ExceptionHandler(org.springframework.security.core.userdetails.UsernameNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleUsernameNotFoundException(
+            org.springframework.security.core.userdetails.UsernameNotFoundException ex,
+            HttpServletRequest request) {
+        
+        logger.warn("User not found during authentication: {} - Request path: {}", ex.getMessage(), request.getRequestURI());
+        
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.UNAUTHORIZED.value())
+                .error(HttpStatus.UNAUTHORIZED.getReasonPhrase())
+                .message(ex.getMessage())
+                .path(request.getRequestURI())
+                .build();
+        
+        return new ResponseEntity<>(errorResponse, HttpStatus.UNAUTHORIZED);
+    }
+
+    /**
+     * Handles Spring Security BadCredentialsException when authentication credentials are invalid.
+     * 
+     * <p>This handler catches Spring Security's BadCredentialsException thrown when
+     * authentication fails due to incorrect password or invalid credentials.</p>
+     * 
+     * <p><b>HTTP Response:</b> 401 Unauthorized with structured error details</p>
+     * 
+     * @param ex the BadCredentialsException from Spring Security
+     * @param request the HTTP request that caused the exception
+     * @return ResponseEntity containing structured error details with HTTP 401 status
+     */
+    @ExceptionHandler(org.springframework.security.authentication.BadCredentialsException.class)
+    public ResponseEntity<ErrorResponse> handleBadCredentialsException(
+            org.springframework.security.authentication.BadCredentialsException ex,
+            HttpServletRequest request) {
+        
+        logger.warn("Bad credentials during authentication: {} - Request path: {}", ex.getMessage(), request.getRequestURI());
+        
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.UNAUTHORIZED.value())
+                .error(HttpStatus.UNAUTHORIZED.getReasonPhrase())
+                .message(ex.getMessage())
+                .path(request.getRequestURI())
+                .build();
+        
+        return new ResponseEntity<>(errorResponse, HttpStatus.UNAUTHORIZED);
+    }
+
+    /**
      * Handles BusinessLogicException thrown when business rules are violated.
      * 
      * <p><b>COBOL Pattern Replaced:</b> Business logic error patterns from:</p>
@@ -284,6 +345,52 @@ public class GlobalExceptionHandler {
                 .message(message)
                 .path(request.getRequestURI())
                 .fieldErrors(fieldErrors)
+                .build();
+        
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+    }
+
+    /**
+     * Handles HttpMessageNotReadableException thrown when request body cannot be parsed.
+     * 
+     * <p>This handler catches Spring's HttpMessageNotReadableException thrown when the
+     * HTTP request body contains malformed JSON, invalid syntax, or cannot be deserialized
+     * into the expected object type.</p>
+     * 
+     * <p><b>Common causes:</b></p>
+     * <ul>
+     *   <li>Invalid JSON syntax (missing braces, quotes, commas)</li>
+     *   <li>Type mismatch (string where number expected, etc.)</li>
+     *   <li>Empty request body when content is required</li>
+     * </ul>
+     * 
+     * <p><b>HTTP Response:</b> 400 Bad Request with structured error details</p>
+     * 
+     * @param ex the HttpMessageNotReadableException from Spring MVC
+     * @param request the HTTP request that caused the exception
+     * @return ResponseEntity containing structured error details with HTTP 400 status
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleHttpMessageNotReadable(
+            HttpMessageNotReadableException ex,
+            HttpServletRequest request) {
+        
+        logger.warn("Malformed JSON request body: {} - Request path: {}", ex.getMessage(), request.getRequestURI());
+        
+        // Extract the most relevant error message
+        String message = "Malformed JSON request";
+        if (ex.getCause() != null) {
+            message = "Invalid request body: " + ex.getCause().getMessage();
+        } else if (ex.getMessage() != null && ex.getMessage().contains("Required request body is missing")) {
+            message = "Required request body is missing";
+        }
+        
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error(HttpStatus.BAD_REQUEST.getReasonPhrase())
+                .message(message)
+                .path(request.getRequestURI())
                 .build();
         
         return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
