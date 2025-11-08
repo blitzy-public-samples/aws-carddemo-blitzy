@@ -47,15 +47,13 @@
  * Licensed under the Apache License, Version 2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import { Grid } from '@mui/material';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { 
-  TIME_FORMAT, 
   SCREEN_TITLE_MAIN, 
   SCREEN_TITLE_APP,
-  DATE_FORMAT_SHORT,
   USER_TYPE
 } from '../../utils/constants.js';
 
@@ -129,7 +127,7 @@ const formatTimeBMS = (date) => {
  * @param {string} props.programName - Program name (PGMNAME)
  * @returns {JSX.Element} Header component with BMS-style layout
  */
-const Header = ({ transactionName, programName }) => {
+const Header = ({ transactionName = '', programName = '' }) => {
   // ====================================================================
   // State Management
   // ====================================================================
@@ -445,17 +443,6 @@ Header.propTypes = {
    * Example: "COSGN00C", "COMEN01C", "COACTVWC"
    */
   programName: PropTypes.string,
-};
-
-/**
- * Default Props
- * 
- * Provides default values for optional props when not specified.
- * Ensures component renders without errors when props are omitted.
- */
-Header.defaultProps = {
-  transactionName: '',
-  programName: '',
 };
 
 /**
