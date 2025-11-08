@@ -73,12 +73,9 @@ import Footer from '../common/Footer.jsx';
 
 // Utility imports
 import {
-  ERROR_REQUIRED,
-  ERROR_INVALID_FORMAT,
   MSG_SERVER_ERROR,
   MAX_LENGTH_ACCOUNT_ID,
   MAX_LENGTH_CARD_NUMBER,
-  MAX_LENGTH_EMBOSSED_NAME,
   CARD_STATUS
 } from '../../utils/constants.js';
 import {
@@ -89,7 +86,7 @@ import {
 // Auth context import with fallback for undefined context
 let useAuth;
 try {
-  const authModule = await import('../../context/AuthContext.js');
+  const authModule = await import('../../context/AuthContext.jsx');
   useAuth = authModule.useAuth;
 } catch (error) {
   // Fallback if AuthContext doesn't exist yet
@@ -125,6 +122,8 @@ const CardDetailComponent = () => {
 
   const navigate = useNavigate();
   const location = useLocation();
+  // Auth context available for future authentication checks if needed
+  // eslint-disable-next-line no-unused-vars
   const auth = useAuth();
 
   // Search input state - corresponds to BMS input fields ACCTSID and CARDSID
@@ -166,6 +165,9 @@ const CardDetailComponent = () => {
       setCardNumber(urlCardNumber);
       fetchCardByNumber(urlCardNumber);
     }
+    // ESLint warning disabled: This effect should only run once on component mount
+    // to load initial data from URL/state. Adding dependencies would cause unnecessary re-runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ============================================================================
@@ -342,6 +344,7 @@ const CardDetailComponent = () => {
     if (value === '' || /^\d{0,11}$/.test(value)) {
       setAccountNumber(value);
       setAccountNumberError('');
+      setErrorMessage(''); // Clear general error message when user types
       
       // Clear card number when account number is entered
       if (value) {
@@ -362,6 +365,7 @@ const CardDetailComponent = () => {
     if (value === '' || /^[\dA-Za-z]{0,16}$/.test(value)) {
       setCardNumber(value);
       setCardNumberError('');
+      setErrorMessage(''); // Clear general error message when user types
       
       // Clear account number when card number is entered
       if (value) {

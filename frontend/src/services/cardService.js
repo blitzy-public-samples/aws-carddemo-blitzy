@@ -701,7 +701,7 @@ export const searchCards = async (criteria = {}) => {
     const response = await apiClient.get('/cards', { params });
 
     // Extract pagination data from Spring Boot PagedModel response
-    const { content, totalPages, totalElements, last, first, number } = response.data;
+    const { content, totalPages, totalElements, last, first } = response.data;
 
     // Transform card data with masked card numbers
     const transformedCards = content.map(card => ({
