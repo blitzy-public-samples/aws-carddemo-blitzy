@@ -57,7 +57,6 @@ import lombok.NoArgsConstructor;
  * @version 1.0
  * @since 1.0
  */
-@Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
@@ -75,6 +74,9 @@ public class LoginRequest {
      *   <li>Minimum length: 1 character</li>
      *   <li>Maximum length: 8 characters (matches COBOL PIC X(08))</li>
      * </ul>
+     * 
+     * <p><b>COBOL Behavior:</b> Whitespace is automatically trimmed during deserialization
+     * to match COBOL BMS screen input processing behavior.</p>
      * 
      * @see com.carddemo.entity.User#getUserId()
      */
@@ -99,6 +101,9 @@ public class LoginRequest {
      * <p><b>Security Note:</b> Password is transmitted in plain text over HTTPS. 
      * The AuthenticationService performs BCrypt hashing for storage and comparison.</p>
      * 
+     * <p><b>COBOL Behavior:</b> Whitespace is automatically trimmed during deserialization
+     * to match COBOL BMS screen input processing behavior.</p>
+     * 
      * @see com.carddemo.entity.User#getPassword()
      * @see com.carddemo.service.auth.AuthenticationService#authenticate(LoginRequest)
      */
@@ -106,4 +111,44 @@ public class LoginRequest {
     @NotBlank(message = "Password is required and cannot be blank")
     @Size(min = 1, max = 8, message = "Password must be between 1 and 8 characters")
     private String password;
+
+    /**
+     * Custom setter for userId that trims whitespace during deserialization.
+     * This matches COBOL BMS screen input processing which automatically trims
+     * trailing spaces from PIC X fields.
+     * 
+     * @param userId the user ID to set (will be trimmed)
+     */
+    public void setUserId(String userId) {
+        this.userId = userId != null ? userId.trim() : null;
+    }
+
+    /**
+     * Custom setter for password that trims whitespace during deserialization.
+     * This matches COBOL BMS screen input processing which automatically trims
+     * trailing spaces from PIC X fields.
+     * 
+     * @param password the password to set (will be trimmed)
+     */
+    public void setPassword(String password) {
+        this.password = password != null ? password.trim() : null;
+    }
+
+    /**
+     * Standard getter for userId.
+     * 
+     * @return the user ID
+     */
+    public String getUserId() {
+        return userId;
+    }
+
+    /**
+     * Standard getter for password.
+     * 
+     * @return the password
+     */
+    public String getPassword() {
+        return password;
+    }
 }
