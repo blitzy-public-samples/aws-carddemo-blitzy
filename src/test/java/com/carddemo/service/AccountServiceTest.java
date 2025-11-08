@@ -100,16 +100,15 @@ public class AccountServiceTest {
         // Create test account entity matching COBOL ACCOUNT-RECORD from CVACT01Y.cpy
         testAccount = Account.builder()
                 .accountId(TEST_ACCOUNT_ID)
-                .customerId(TEST_CUSTOMER_ID)
-                .accountStatus("A")  // Active status
+                .activeStatus("Y")  // Active status (Y=active, N=inactive per COBOL validation)
                 .creditLimit(VALID_CREDIT_LIMIT.setScale(2, RoundingMode.HALF_UP))
                 .cashCreditLimit(VALID_CASH_CREDIT_LIMIT.setScale(2, RoundingMode.HALF_UP))
                 .currentBalance(CURRENT_BALANCE.setScale(2, RoundingMode.HALF_UP))
                 .openDate(LocalDate.of(2023, 1, 15))
                 .expirationDate(LocalDate.of(2028, 1, 31))
                 .reissueDate(LocalDate.of(2023, 1, 15))
-                .currCycleCredit(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
-                .currCycleDebit(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
+                .currentCycleCredit(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
+                .currentCycleDebit(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
                 .version(1L)  // Version for optimistic locking
                 .build();
 
@@ -118,7 +117,7 @@ public class AccountServiceTest {
                 .accountId(TEST_ACCOUNT_ID)
                 .creditLimit(new BigDecimal("75000.00").setScale(2, RoundingMode.HALF_UP))
                 .cashCreditLimit(new BigDecimal("7500.00").setScale(2, RoundingMode.HALF_UP))
-                .accountStatus("A")
+                .activeStatus("Y")  // Y=active per COBOL validation
                 .build();
     }
 
@@ -186,8 +185,8 @@ public class AccountServiceTest {
                 .isEqualByComparingTo(validUpdateRequest.getCashCreditLimit());
         assertThat(response.getCashCreditLimit().scale()).isEqualTo(2);
         
-        // Verify account status preserved
-        assertThat(response.getAccountStatus()).isEqualTo("A");
+        // Verify account status preserved (Y=active per COBOL validation)
+        assertThat(response.getActiveStatus()).isEqualTo("Y");
         
         // Verify repository interactions matching COBOL CICS operations
         verify(accountRepository, times(1)).findByAccountId(TEST_ACCOUNT_ID);
@@ -218,11 +217,11 @@ public class AccountServiceTest {
      * </pre>
      * <p>
      * JPA @Version annotation provides equivalent VSAM exclusive record locking behavior.
-     * When version mismatch detected, OptimisticLockException thrown matching COBOL
-     * concurrent update error condition.
+     * When version mismatch detected, OptimisticLockException is caught by the service
+     * and wrapped in BusinessLogicException with user-friendly message.
      */
     @Test
-    @DisplayName("Should throw OptimisticLockException when version mismatch detected (concurrent update)")
+    @DisplayName("Should throw BusinessLogicException when version mismatch detected (concurrent update)")
     void testUpdateAccountOptimisticLocking() {
         // Arrange - Simulate concurrent modification scenario
         when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
@@ -232,10 +231,10 @@ public class AccountServiceTest {
         when(accountRepository.save(any(Account.class)))
                 .thenThrow(new OptimisticLockException("Record changed by someone else"));
 
-        // Act & Assert - Verify exception thrown matching COBOL error condition
+        // Act & Assert - Verify BusinessLogicException thrown (service wraps OptimisticLockException)
         assertThatThrownBy(() -> accountUpdateService.updateAccount(validUpdateRequest))
-                .isInstanceOf(OptimisticLockException.class)
-                .hasMessageContaining("Record changed");
+                .isInstanceOf(BusinessLogicException.class)
+                .hasMessageContaining("modified by another user");
 
         // Verify account was retrieved but save failed due to version conflict
         verify(accountRepository, times(1)).findByAccountId(TEST_ACCOUNT_ID);
@@ -243,36 +242,42 @@ public class AccountServiceTest {
     }
 
     /**
-     * Test credit limit must be positive validation.
-     * Replicates COBOL COACTUPC.cbl FLG-CRED-LIMIT-NOT-OK validation.
+     * Test credit limit must be at least minimum value validation.
+     * Replicates COBOL COACTUPC.cbl 1250-EDIT-SIGNED-9V2 validation.
      * <p>
      * COBOL Logic Tested:
      * <pre>
-     * IF ACCT-UPD-CREDIT-LIMIT <= ZERO THEN
-     *     SET FLG-CRED-LIMIT-NOT-OK TO TRUE
-     *     MOVE 'Credit limit must be positive' TO WS-ERROR-MSG
-     *     PERFORM RETURN-WITH-ERROR
-     * END-IF.
+     * 1250-EDIT-SIGNED-9V2.
+     *     IF WS-EDIT-SIGNED-NUMBER-9V2-N >= 1000 AND
+     *        WS-EDIT-SIGNED-NUMBER-9V2-N <= 999999999
+     *         CONTINUE
+     *     ELSE
+     *         SET FLG-SIGNED-NUMBER-NOT-OK TO TRUE
+     *         MOVE 'CRED-LIMIT-IS-NOT-VALID' TO WS-MESSAGE
      * </pre>
      */
     @Test
-    @DisplayName("Should reject credit limit <= 0 matching COBOL FLG-CRED-LIMIT-NOT-OK validation")
+    @DisplayName("Should reject credit limit < minimum matching COBOL 1250-EDIT-SIGNED-9V2 validation")
     void testUpdateAccountCreditLimitMustBePositive() {
-        // Arrange - Create request with invalid credit limit (zero)
+        // Arrange - Create request with invalid credit limit (below $1000 minimum)
         AccountUpdateRequest invalidRequest = AccountUpdateRequest.builder()
                 .accountId(TEST_ACCOUNT_ID)
-                .creditLimit(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
-                .cashCreditLimit(VALID_CASH_CREDIT_LIMIT)
-                .accountStatus("A")
+                .creditLimit(new BigDecimal("500.00"))
+                .cashCreditLimit(new BigDecimal("250.00"))
+                .activeStatus("Y")
                 .build();
         
         when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
                 .thenReturn(Optional.of(testAccount));
 
-        // Act & Assert - Verify ValidationException thrown
+        // Act & Assert - Verify ValidationException thrown with field errors
         assertThatThrownBy(() -> accountUpdateService.updateAccount(invalidRequest))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("Credit limit must be positive");
+                .satisfies(e -> {
+                    ValidationException ve = (ValidationException) e;
+                    assertThat(ve.getFieldErrors()).containsKey("creditLimit");
+                    assertThat(ve.getFieldErrors().get("creditLimit")).contains("must be at least");
+                });
 
         // Verify repository not saved due to validation failure
         verify(accountRepository, never()).save(any(Account.class));
@@ -297,16 +302,20 @@ public class AccountServiceTest {
                 .accountId(TEST_ACCOUNT_ID)
                 .creditLimit(excessiveLimit)
                 .cashCreditLimit(VALID_CASH_CREDIT_LIMIT)
-                .accountStatus("A")
+                .activeStatus("Y")
                 .build();
         
         when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
                 .thenReturn(Optional.of(testAccount));
 
-        // Act & Assert - Verify ValidationException thrown
+        // Act & Assert - Verify ValidationException thrown with field errors
         assertThatThrownBy(() -> accountUpdateService.updateAccount(invalidRequest))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("Credit limit cannot exceed");
+                .satisfies(e -> {
+                    ValidationException ve = (ValidationException) e;
+                    assertThat(ve.getFieldErrors()).containsKey("creditLimit");
+                    assertThat(ve.getFieldErrors().get("creditLimit")).contains("cannot exceed");
+                });
 
         // Verify repository not saved due to validation failure
         verify(accountRepository, never()).save(any(Account.class));
@@ -333,16 +342,20 @@ public class AccountServiceTest {
                 .accountId(TEST_ACCOUNT_ID)
                 .creditLimit(new BigDecimal("10000.00"))
                 .cashCreditLimit(new BigDecimal("15000.00")) // Exceeds credit limit
-                .accountStatus("A")
+                .activeStatus("Y")
                 .build();
         
         when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
                 .thenReturn(Optional.of(testAccount));
 
-        // Act & Assert - Verify ValidationException thrown
+        // Act & Assert - Verify ValidationException thrown with field errors
         assertThatThrownBy(() -> accountUpdateService.updateAccount(invalidRequest))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("Cash credit limit cannot exceed credit limit");
+                .satisfies(e -> {
+                    ValidationException ve = (ValidationException) e;
+                    assertThat(ve.getFieldErrors()).containsKey("cashCreditLimit");
+                    assertThat(ve.getFieldErrors().get("cashCreditLimit")).contains("cannot exceed");
+                });
 
         // Verify repository not saved due to validation failure
         verify(accountRepository, never()).save(any(Account.class));
@@ -405,16 +418,20 @@ public class AccountServiceTest {
                 .accountId(TEST_ACCOUNT_ID)
                 .creditLimit(VALID_CREDIT_LIMIT)
                 .cashCreditLimit(VALID_CASH_CREDIT_LIMIT)
-                .accountStatus("X") // Invalid status (must be A or C)
+                .activeStatus("X") // Invalid status (must be Y or N per COBOL validation)
                 .build();
         
         when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
                 .thenReturn(Optional.of(testAccount));
 
-        // Act & Assert - Verify ValidationException thrown
+        // Act & Assert - Verify ValidationException thrown with field errors
         assertThatThrownBy(() -> accountUpdateService.updateAccount(invalidRequest))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("Invalid account status");
+                .satisfies(e -> {
+                    ValidationException ve = (ValidationException) e;
+                    assertThat(ve.getFieldErrors()).containsKey("activeStatus");
+                    assertThat(ve.getFieldErrors().get("activeStatus")).contains("must be");
+                });
 
         // Verify repository not saved due to validation failure
         verify(accountRepository, never()).save(any(Account.class));
@@ -478,7 +495,7 @@ public class AccountServiceTest {
                 .accountId(TEST_ACCOUNT_ID)
                 .creditLimit(preciseCreditLimit.setScale(2, RoundingMode.HALF_UP))
                 .cashCreditLimit(preciseCashLimit.setScale(2, RoundingMode.HALF_UP))
-                .accountStatus("A")
+                .activeStatus("Y")
                 .build();
         
         when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
@@ -535,16 +552,20 @@ public class AccountServiceTest {
                 .accountId(TEST_ACCOUNT_ID)
                 .creditLimit(new BigDecimal("999.99")) // Below minimum $1,000
                 .cashCreditLimit(new BigDecimal("99.99"))
-                .accountStatus("A")
+                .activeStatus("Y")
                 .build();
         
         when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
                 .thenReturn(Optional.of(testAccount));
 
-        // Act & Assert - Verify ValidationException thrown
+        // Act & Assert - Verify ValidationException thrown with field errors
         assertThatThrownBy(() -> accountUpdateService.updateAccount(invalidRequest))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("Credit limit must be at least");
+                .satisfies(e -> {
+                    ValidationException ve = (ValidationException) e;
+                    assertThat(ve.getFieldErrors()).containsKey("creditLimit");
+                    assertThat(ve.getFieldErrors().get("creditLimit")).contains("must be at least");
+                });
 
         // Verify repository not saved due to validation failure
         verify(accountRepository, never()).save(any(Account.class));
@@ -575,55 +596,60 @@ public class AccountServiceTest {
                 .accountId(TEST_ACCOUNT_ID)
                 .creditLimit(VALID_CREDIT_LIMIT)
                 .cashCreditLimit(VALID_CASH_CREDIT_LIMIT)
-                .accountStatus("") // Blank status (invalid)
+                .activeStatus("") // Blank status (invalid)
                 .build();
         
         when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
                 .thenReturn(Optional.of(testAccount));
 
-        // Act & Assert - Verify ValidationException thrown
+        // Act & Assert - Verify ValidationException thrown with field errors
         assertThatThrownBy(() -> accountUpdateService.updateAccount(invalidRequest))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("Account status");
+                .satisfies(e -> {
+                    ValidationException ve = (ValidationException) e;
+                    assertThat(ve.getFieldErrors()).containsKey("activeStatus");
+                    assertThat(ve.getFieldErrors().get("activeStatus")).contains("status");
+                });
 
         // Verify repository not saved due to validation failure
         verify(accountRepository, never()).save(any(Account.class));
     }
 
     /**
-     * Test that no changes result in no database update.
-     * Replicates COBOL COACTUPC.cbl optimization for unchanged records.
+     * Test that no changes result in validation error.
+     * Replicates COBOL COACTUPC.cbl NO-CHANGES-DETECTED error handling.
      * <p>
      * COBOL Logic Tested:
      * <pre>
      * PERFORM CHECK-IF-DATA-CHANGED.
      * IF NOT FLG-DATA-CHANGED THEN
-     *     MOVE 'No changes detected' TO WS-INFO-MSG
-     *     PERFORM RETURN-SUCCESS
+     *     MOVE 'No changes detected' TO WS-ERROR-MSG
+     *     PERFORM RETURN-WITH-ERROR
      * END-IF.
      * </pre>
      */
     @Test
-    @DisplayName("Should detect no changes and skip database update matching COBOL optimization")
+    @DisplayName("Should reject update with no changes matching COBOL NO-CHANGES-DETECTED validation")
     void testUpdateAccountNoChanges() {
         // Arrange - Create request with same values as existing account
         AccountUpdateRequest noChangeRequest = AccountUpdateRequest.builder()
                 .accountId(TEST_ACCOUNT_ID)
                 .creditLimit(testAccount.getCreditLimit())
                 .cashCreditLimit(testAccount.getCashCreditLimit())
-                .accountStatus(testAccount.getAccountStatus())
+                .activeStatus(testAccount.getActiveStatus())
                 .build();
         
         when(accountRepository.findByAccountId(TEST_ACCOUNT_ID))
                 .thenReturn(Optional.of(testAccount));
 
-        // Act
-        AccountResponse response = accountUpdateService.updateAccount(noChangeRequest);
+        // Act & Assert - Verify ValidationException thrown for no changes
+        assertThatThrownBy(() -> accountUpdateService.updateAccount(noChangeRequest))
+                .isInstanceOf(ValidationException.class)
+                .satisfies(e -> {
+                    ValidationException ve = (ValidationException) e;
+                    assertThat(ve.getMessage()).contains("No changes detected");
+                });
 
-        // Assert - Verify response returned but no save performed (optimization)
-        assertThat(response).isNotNull();
-        assertThat(response.getAccountId()).isEqualTo(TEST_ACCOUNT_ID);
-        
         // Verify no save operation (no changes detected)
         verify(accountRepository, times(1)).findByAccountId(TEST_ACCOUNT_ID);
         verify(accountRepository, never()).save(any(Account.class));
