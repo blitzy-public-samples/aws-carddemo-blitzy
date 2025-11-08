@@ -168,7 +168,7 @@ class UserListServiceTest {
                     .userType(i % 3 == 0 ? UserType.ADMIN : UserType.USER)
                     .createdDate(now.minusDays(30 - i))
                     .updatedDate(now.minusDays(i))
-                    .isDeleted(false)
+                    .deleted(false)
                     .version(1L)
                     .build();
             testUsers.add(user);
@@ -214,7 +214,7 @@ class UserListServiceTest {
                 .sortDirection("ASC")
                 .build();
         
-        when(userRepository.findAll(any(Pageable.class))).thenReturn(mockPage);
+        when(userRepository.findAllByDeletedFalse(any(Pageable.class))).thenReturn(mockPage);
         
         // Act: Call service method
         UserListResponse response = userListService.listUsers(request);
@@ -239,7 +239,7 @@ class UserListServiceTest {
         
         // Verify repository interaction
         ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
-        verify(userRepository).findAll(pageableCaptor.capture());
+        verify(userRepository).findAllByDeletedFalse(pageableCaptor.capture());
         assertThat(pageableCaptor.getValue().getPageSize()).isEqualTo(10);
         assertThat(pageableCaptor.getValue().getPageNumber()).isEqualTo(0);
     }
@@ -278,7 +278,7 @@ class UserListServiceTest {
                 .sortDirection("ASC")
                 .build();
         
-        when(userRepository.findAll(any(Pageable.class))).thenReturn(mockPage);
+        when(userRepository.findAllByDeletedFalse(any(Pageable.class))).thenReturn(mockPage);
         
         // Act
         UserListResponse response = userListService.listUsers(request);
@@ -327,15 +327,15 @@ class UserListServiceTest {
                 .size(10)
                 .build();
         
-        when(userRepository.findAll(any(Pageable.class))).thenReturn(emptyPage);
+        when(userRepository.findAllByDeletedFalse(any(Pageable.class))).thenReturn(emptyPage);
         
         // Act
         UserListResponse response = userListService.listUsers(request);
         
         // Assert: Empty result handling
         assertThat(response.getUsers())
-                .isEmpty()
-                .as("USER-SEC-EOF='Y' - empty list when no users found");
+                .as("USER-SEC-EOF='Y' - empty list when no users found")
+                .isEmpty();
         assertThat(response.getTotalElements())
                 .isEqualTo(0)
                 .as("WS-REC-COUNT = 0");
@@ -383,7 +383,7 @@ class UserListServiceTest {
                 .size(10)
                 .build();
         
-        when(userRepository.findByUserIdStartingWithAndIsDeletedFalse(
+        when(userRepository.findByUserIdStartingWithAndDeletedFalse(
                 eq("USER001"), any(Pageable.class))).thenReturn(mockPage);
         
         // Act
@@ -396,7 +396,7 @@ class UserListServiceTest {
                 .as("All returned users match wildcard pattern USER001*");
         
         // Verify correct repository method called
-        verify(userRepository).findByUserIdStartingWithAndIsDeletedFalse(
+        verify(userRepository).findByUserIdStartingWithAndDeletedFalse(
                 eq("USER001"), any(Pageable.class));
     }
 
@@ -433,12 +433,12 @@ class UserListServiceTest {
         Page<User> mockPage = new PageImpl<>(adminUsers, pageable, adminUsers.size());
         
         UserListRequest request = UserListRequest.builder()
-                .userTypeFilter(UserType.ADMIN)
+                .userTypeFilter(UserType.ADMIN.getCode())
                 .page(0)
                 .size(10)
                 .build();
         
-        when(userRepository.findByUserTypeAndIsDeletedFalse(
+        when(userRepository.findByUserTypeAndDeletedFalse(
                 eq(UserType.ADMIN), any(Pageable.class))).thenReturn(mockPage);
         
         // Act
@@ -449,7 +449,7 @@ class UserListServiceTest {
                 .allMatch(user -> user.getUserType().equals("Admin"))
                 .as("All users have type 'Admin' (converted from 'A')");
         
-        verify(userRepository).findByUserTypeAndIsDeletedFalse(
+        verify(userRepository).findByUserTypeAndDeletedFalse(
                 eq(UserType.ADMIN), any(Pageable.class));
     }
 
@@ -476,12 +476,12 @@ class UserListServiceTest {
         Page<User> mockPage = new PageImpl<>(regularUsers, pageable, regularUsers.size());
         
         UserListRequest request = UserListRequest.builder()
-                .userTypeFilter(UserType.USER)
+                .userTypeFilter(UserType.USER.getCode())
                 .page(0)
                 .size(10)
                 .build();
         
-        when(userRepository.findByUserTypeAndIsDeletedFalse(
+        when(userRepository.findByUserTypeAndDeletedFalse(
                 eq(UserType.USER), any(Pageable.class))).thenReturn(mockPage);
         
         // Act
@@ -492,7 +492,7 @@ class UserListServiceTest {
                 .allMatch(user -> user.getUserType().equals("User"))
                 .as("All users have type 'User' (converted from 'U')");
         
-        verify(userRepository).findByUserTypeAndIsDeletedFalse(
+        verify(userRepository).findByUserTypeAndDeletedFalse(
                 eq(UserType.USER), any(Pageable.class));
     }
 
@@ -536,7 +536,7 @@ class UserListServiceTest {
                 .size(10)
                 .build();
         
-        when(userRepository.findAll(any(Pageable.class))).thenReturn(mockPage);
+        when(userRepository.findAllByDeletedFalse(any(Pageable.class))).thenReturn(mockPage);
         
         // Act
         UserListResponse response = userListService.listUsers(request);
@@ -587,7 +587,7 @@ class UserListServiceTest {
                 .size(10) // Explicit size matching COBOL OCCURS 10
                 .build();
         
-        when(userRepository.findAll(any(Pageable.class))).thenReturn(mockPage);
+        when(userRepository.findAllByDeletedFalse(any(Pageable.class))).thenReturn(mockPage);
         
         // Act
         UserListResponse response = userListService.listUsers(request);
@@ -602,7 +602,7 @@ class UserListServiceTest {
         
         // Verify repository called with correct page size
         ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
-        verify(userRepository).findAll(pageableCaptor.capture());
+        verify(userRepository).findAllByDeletedFalse(pageableCaptor.capture());
         assertThat(pageableCaptor.getValue().getPageSize())
                 .isEqualTo(10)
                 .as("Repository query must request page size of 10");
@@ -642,7 +642,7 @@ class UserListServiceTest {
                 .size(10)
                 .build();
         
-        when(userRepository.findAll(any(Pageable.class))).thenReturn(mockPage);
+        when(userRepository.findAllByDeletedFalse(any(Pageable.class))).thenReturn(mockPage);
         
         // Act
         UserListResponse response = userListService.listUsers(request);
@@ -663,7 +663,7 @@ class UserListServiceTest {
         Pageable lastPageable = PageRequest.of(2, 10);
         Page<User> lastPage = new PageImpl<>(lastPageUsers, lastPageable, testUsers.size());
         
-        when(userRepository.findAll(any(Pageable.class))).thenReturn(lastPage);
+        when(userRepository.findAllByDeletedFalse(any(Pageable.class))).thenReturn(lastPage);
         
         UserListRequest lastPageRequest = UserListRequest.builder()
                 .page(2)
@@ -700,7 +700,7 @@ class UserListServiceTest {
     void testGetUserById_Success() {
         // Arrange: Single user lookup
         User testUser = testUsers.get(0);
-        when(userRepository.findByUserIdAndIsDeletedFalse("USER0001"))
+        when(userRepository.findByUserIdAndDeletedFalse("USER0001"))
                 .thenReturn(Optional.of(testUser));
         
         // Act
@@ -713,7 +713,7 @@ class UserListServiceTest {
         assertThat(result.getLastName()).isEqualTo("LastName1");
         
         // Verify repository called with correct userId
-        verify(userRepository).findByUserIdAndIsDeletedFalse("USER0001");
+        verify(userRepository).findByUserIdAndDeletedFalse("USER0001");
     }
 
     /**
@@ -740,7 +740,7 @@ class UserListServiceTest {
     @DisplayName("Test getUserById throws exception for not found (RESP=NOTFND)")
     void testGetUserById_NotFound_ThrowsException() {
         // Arrange: User doesn't exist
-        when(userRepository.findByUserIdAndIsDeletedFalse("INVALID"))
+        when(userRepository.findByUserIdAndDeletedFalse("INVALID"))
                 .thenReturn(Optional.empty());
         
         // Act & Assert: Exception thrown matching COBOL error handling
@@ -749,7 +749,7 @@ class UserListServiceTest {
                 .hasMessageContaining("User not found")
                 .as("RESP=NOTFND must throw exception with 'User not found' message");
         
-        verify(userRepository).findByUserIdAndIsDeletedFalse("INVALID");
+        verify(userRepository).findByUserIdAndDeletedFalse("INVALID");
     }
 
     /**
@@ -780,7 +780,7 @@ class UserListServiceTest {
                 .size(10)
                 .build();
         
-        when(userRepository.findAll(any(Pageable.class))).thenReturn(mockPage);
+        when(userRepository.findAllByDeletedFalse(any(Pageable.class))).thenReturn(mockPage);
         
         // Act
         UserListResponse response = userListService.listUsers(request);
@@ -791,8 +791,8 @@ class UserListServiceTest {
                     .isIn("Admin", "User")
                     .as("UserType must be converted to readable label 'Admin' or 'User'");
             assertThat(userDto.getUserType())
-                    .doesNotContain("A", "U")
-                    .as("Internal codes 'A'/'U' must not appear in display");
+                    .isNotIn("A", "U")
+                    .as("Internal codes 'A'/'U' must not appear as the value (must be 'Admin' or 'User')");
         });
         
         // Verify specific conversions
@@ -833,7 +833,7 @@ class UserListServiceTest {
                 .sortDirection("ASC")
                 .build();
         
-        when(userRepository.findAll(any(Pageable.class))).thenReturn(mockPage);
+        when(userRepository.findAllByDeletedFalse(any(Pageable.class))).thenReturn(mockPage);
         
         // Act
         UserListResponse response = userListService.listUsers(request);
@@ -845,7 +845,7 @@ class UserListServiceTest {
         
         // Verify sort parameters passed to repository
         ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
-        verify(userRepository).findAll(pageableCaptor.capture());
+        verify(userRepository).findAllByDeletedFalse(pageableCaptor.capture());
         assertThat(pageableCaptor.getValue().getSort().isSorted()).isTrue();
     }
 }
