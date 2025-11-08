@@ -84,6 +84,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
+
+import java.net.URI;
 
 /**
  * REST controller for user administration operations.
@@ -617,8 +620,15 @@ public class AdminController {
 
         log.info("AdminController.createUser completed successfully for userId={}", response.getUserId());
 
+        // Build Location header URI pointing to the newly created resource
+        URI location = ServletUriComponentsBuilder
+                .fromCurrentRequest()
+                .path("/{id}")
+                .buildAndExpand(response.getUserId())
+                .toUri();
+
         // Return HTTP 201 Created with Location header pointing to new resource
-        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        return ResponseEntity.created(location).body(response);
     }
 
     /**
