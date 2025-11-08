@@ -84,7 +84,6 @@
  */
 
 import { useState, useEffect } from 'react';
-import PropTypes from 'prop-types';
 import { useNavigate } from 'react-router-dom';
 import {
   Container,
@@ -181,7 +180,7 @@ const BillPaymentComponent = () => {
 
   // Authentication context for user session data
   // Replaces COBOL COMMAREA CDEMO-USER-ID, CDEMO-USER-TYPE
-  const { user, isAuthenticated } = useAuth();
+  const { isAuthenticated } = useAuth();
 
   // Component state management
   // Replaces COBOL WORKING-STORAGE SECTION variables
@@ -191,7 +190,6 @@ const BillPaymentComponent = () => {
   const [error, setError] = useState(''); // WS-MESSAGE (error) equivalent
   const [success, setSuccess] = useState(''); // Success message display
   const [loading, setLoading] = useState(false); // Async operation indicator
-  const [transactionId, setTransactionId] = useState(''); // WS-TRAN-ID-NUM equivalent
 
   /**
    * Component initialization effect
@@ -378,7 +376,6 @@ const BillPaymentComponent = () => {
       // Extract transaction ID from response
       // Matches COBOL lines 216-217: MOVE TRAN-ID TO WS-TRAN-ID-NUM
       const txnId = response.data.transactionId || '';
-      setTransactionId(txnId);
 
       // Display success message
       setSuccess(
@@ -442,7 +439,6 @@ const BillPaymentComponent = () => {
     setConfirmation('');
     setError('');
     setSuccess('');
-    setTransactionId('');
   };
 
   return (
@@ -561,7 +557,7 @@ const BillPaymentComponent = () => {
                       const value = e.target.value.slice(0, 1).toUpperCase();
                       setConfirmation(value);
                     }}
-                    disabled={loading || !balance || parseFloat(balance) <= 0}
+                    disabled={loading}
                     inputProps={{
                       maxLength: 1,
                       style: { 
@@ -599,7 +595,7 @@ const BillPaymentComponent = () => {
                     type="submit"
                     variant="contained"
                     color="primary"
-                    disabled={loading || !accountId || !balance || parseFloat(balance) <= 0}
+                    disabled={loading}
                     sx={{ minWidth: 150 }}
                   >
                     {loading ? <CircularProgress size={24} /> : 'Submit Payment'}
@@ -675,12 +671,6 @@ const BillPaymentComponent = () => {
       />
     </Box>
   );
-};
-
-// PropTypes validation for component props
-BillPaymentComponent.propTypes = {
-  // No external props expected for this component
-  // All state managed internally and via context
 };
 
 // Export as default export per schema requirements
