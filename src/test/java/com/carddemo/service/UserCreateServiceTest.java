@@ -981,7 +981,8 @@ public class UserCreateServiceTest {
                 .userType("A")
                 .build();
 
-        when(userRepository.existsByUserId("ADMIN001")).thenReturn(false);
+        // Note: No need to mock userRepository.existsByUserId() because password validation
+        // fails before the duplicate check is reached (validation order: fields -> type -> password -> duplicate)
 
         // Act & Assert: Verify ValidationException is thrown for weak password
         assertThatThrownBy(() -> userCreateService.createUser(request))

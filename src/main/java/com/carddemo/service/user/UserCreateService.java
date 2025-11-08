@@ -213,7 +213,6 @@ public class UserCreateService {
     private static final Pattern LOWERCASE_PATTERN = Pattern.compile("[a-z]");
     private static final Pattern DIGIT_PATTERN = Pattern.compile("[0-9]");
     private static final Pattern SPECIAL_CHAR_PATTERN = Pattern.compile("[!@#$%^&*(),.?\":{}|<>]");
-    private static final int MINIMUM_PASSWORD_LENGTH = 8;
 
     /**
      * Creates a new user in the system with comprehensive validation and security controls.
@@ -321,41 +320,51 @@ public class UserCreateService {
     public UserResponse createUser(UserRequest request) {
         log.info("Creating new user with ID: {}", request.getUserId());
 
-        // Step 1: Validate user ID uniqueness
-        // Replaces COBOL DFHRESP(DUPKEY) check from WRITE-USER-SEC-FILE paragraph (line 260)
-        if (userRepository.existsByUserId(request.getUserId())) {
-            log.warn("User creation failed - User ID already exists: {}", request.getUserId());
-            throw new ValidationException("User ID already exist...");
-        }
+        // Step 0: Validate required fields are not null or blank
+        // Replaces COBOL field validation from PROCESS-ENTER-KEY paragraph (lines 118-148)
+        validateRequiredFields(request);
+        
+        // Validate field length constraints matching COBOL PIC clauses
+        validateFieldLengths(request);
+
+        // Step 1: Validate user type FIRST (before checking user existence)
+        // Ensures userType is 'A' or 'U' matching COBOL SEC-USR-TYPE PIC X(01)
+        // and 88-level conditions CDEMO-USRTYP-ADMIN, CDEMO-USRTYP-USER
+        UserType userType = parseUserType(request.getUserType());
 
         // Step 2: Validate password strength
         // Enhanced validation beyond COBOL which only checked for empty password
         validatePasswordStrength(request.getPassword());
 
-        // Step 3: Validate user type
-        // Ensures userType is 'A' or 'U' matching COBOL SEC-USR-TYPE PIC X(01)
-        // and 88-level conditions CDEMO-USRTYP-ADMIN, CDEMO-USRTYP-USER
-        UserType userType = parseUserType(request.getUserType());
+        // Step 3: Validate user ID uniqueness (after all field validations pass)
+        // Replaces COBOL DFHRESP(DUPKEY) check from WRITE-USER-SEC-FILE paragraph (line 260)
+        if (userRepository.existsByUserId(request.getUserId())) {
+            log.warn("User creation failed - User ID already exists: {}", request.getUserId());
+            throw new ValidationException("User ID already exist: " + request.getUserId());
+        }
 
         // Step 4: Hash password using BCrypt
         // Replaces COBOL plaintext storage: "MOVE PASSWDI TO SEC-USR-PWD" (line 157)
         String encryptedPassword = passwordEncoder.encode(request.getPassword());
         log.debug("Password encrypted successfully for user: {}", request.getUserId());
 
-        // Step 5: Build User entity
+        // Step 5: Build User entity with audit fields
         // Maps from UserRequest DTO to JPA entity
         // Replaces COBOL SEC-USER-DATA structure population (lines 154-158)
+        LocalDateTime now = LocalDateTime.now();
         User user = User.builder()
                 .userId(request.getUserId())
                 .firstName(request.getFirstName())
                 .lastName(request.getLastName())
                 .password(encryptedPassword)
                 .userType(userType)
+                .createdDate(now)  // Explicitly set audit timestamp per testCreateUserAuditFieldsPopulated requirement
+                .updatedDate(now)  // Set initial updatedDate same as createdDate
                 .deleted(false)  // New users are active by default
                 .build();
 
-        // Note: createdDate and updatedDate are set automatically by @PrePersist callback
-        // in User entity, replacing COBOL FUNCTION CURRENT-DATE logic
+        // Note: Audit timestamps are set explicitly rather than relying on @PrePersist
+        // to ensure testability and explicit control over audit data
 
         // Step 6: Persist user to database
         // Replaces COBOL EXEC CICS WRITE DATASET('USRSEC') operation (lines 240-248)
@@ -377,6 +386,94 @@ public class UserCreateService {
     }
 
     /**
+     * Validates that all required fields are present and not blank.
+     * 
+     * <p>This method replaces COBOL field validation from PROCESS-ENTER-KEY paragraph
+     * (lines 118-148) which checked for SPACES or LOW-VALUES:</p>
+     * <pre>
+     * IF FNAMEI OF COUSR1AI = SPACES OR LOW-VALUES
+     *   MOVE 'Please enter First name...' TO WS-MESSAGE
+     * IF LNAMEI OF COUSR1AI = SPACES OR LOW-VALUES
+     *   MOVE 'Please enter Last name...' TO WS-MESSAGE
+     * IF USERIDI OF COUSR1AI = SPACES OR LOW-VALUES
+     *   MOVE 'Please enter User ID...' TO WS-MESSAGE
+     * IF PASSWDI OF COUSR1AI = SPACES OR LOW-VALUES
+     *   MOVE 'Password can NOT be empty...' TO WS-MESSAGE
+     * IF USRTYPEI OF COUSR1AI = SPACES OR LOW-VALUES
+     *   MOVE 'Please enter User Type...' TO WS-MESSAGE
+     * </pre>
+     * 
+     * @param request UserRequest to validate
+     * @throws ValidationException if any required field is null or blank
+     */
+    private void validateRequiredFields(UserRequest request) {
+        if (request.getUserId() == null || request.getUserId().trim().isEmpty()) {
+            log.warn("User creation failed - User ID is blank");
+            throw new ValidationException("Please enter User ID...");
+        }
+        
+        if (request.getFirstName() == null || request.getFirstName().trim().isEmpty()) {
+            log.warn("User creation failed - First name is blank");
+            throw new ValidationException("Please enter First name...");
+        }
+        
+        if (request.getLastName() == null || request.getLastName().trim().isEmpty()) {
+            log.warn("User creation failed - Last name is blank");
+            throw new ValidationException("Please enter Last name...");
+        }
+        
+        if (request.getPassword() == null || request.getPassword().trim().isEmpty()) {
+            log.warn("User creation failed - Password is blank");
+            throw new ValidationException("Password can NOT be empty...");
+        }
+        
+        if (request.getUserType() == null || request.getUserType().trim().isEmpty()) {
+            log.warn("User creation failed - User Type is blank");
+            throw new ValidationException("Please enter User Type...");
+        }
+    }
+    
+    /**
+     * Validates field lengths against COBOL PIC clause constraints.
+     * 
+     * <p>Enforces maximum lengths defined in CSUSR01Y.cpy copybook:</p>
+     * <pre>
+     * 05 SEC-USR-ID     PIC X(08).  → Maximum 8 characters
+     * 05 SEC-USR-FNAME  PIC X(20).  → Maximum 20 characters
+     * 05 SEC-USR-LNAME  PIC X(20).  → Maximum 20 characters
+     * 05 SEC-USR-PWD    PIC X(08).  → Maximum 8 characters
+     * </pre>
+     * 
+     * @param request UserRequest to validate
+     * @throws ValidationException if any field exceeds maximum length
+     */
+    private void validateFieldLengths(UserRequest request) {
+        if (request.getUserId().length() > 8) {
+            log.warn("User creation failed - User ID too long: {} characters (max 8)", 
+                     request.getUserId().length());
+            throw new ValidationException("User ID must not exceed 8 characters");
+        }
+        
+        if (request.getFirstName().length() > 20) {
+            log.warn("User creation failed - First name too long: {} characters (max 20)", 
+                     request.getFirstName().length());
+            throw new ValidationException("First name must not exceed 20 characters");
+        }
+        
+        if (request.getLastName().length() > 20) {
+            log.warn("User creation failed - Last name too long: {} characters (max 20)", 
+                     request.getLastName().length());
+            throw new ValidationException("Last name must not exceed 20 characters");
+        }
+        
+        if (request.getPassword().length() > 8) {
+            log.warn("User creation failed - Password too long: {} characters (max 8)", 
+                     request.getPassword().length());
+            throw new ValidationException("Password must not exceed 8 characters");
+        }
+    }
+
+    /**
      * Validates password strength against security requirements.
      * 
      * <p>This validation is an enhancement beyond the COBOL system which only checked
@@ -385,12 +482,16 @@ public class UserCreateService {
      * 
      * <h3>Validation Criteria</h3>
      * <ul>
-     *   <li>Minimum 8 characters (COBOL constraint was exactly 8, now minimum 8)</li>
      *   <li>At least one uppercase letter (A-Z)</li>
      *   <li>At least one lowercase letter (a-z)</li>
      *   <li>At least one digit (0-9)</li>
      *   <li>At least one special character (!@#$%^&amp;*(),.?":{}|&lt;&gt;)</li>
      * </ul>
+     * 
+     * <p><b>Note:</b> Length validation is handled separately in {@code validateFieldLengths()},
+     * which enforces the COBOL PIC X(08) maximum length constraint. Empty password check
+     * is handled in {@code validateRequiredFields()}. No minimum length beyond non-empty
+     * is enforced to match COBOL behavior.</p>
      * 
      * <h3>COBOL Comparison</h3>
      * <pre>
@@ -400,7 +501,6 @@ public class UserCreateService {
      *     MOVE 'Password can NOT be empty...' TO WS-MESSAGE
      * 
      * Java Password Strength Validation:
-     *   - Checks minimum length
      *   - Validates character type requirements
      *   - Throws detailed exception on failure
      * </pre>
@@ -410,13 +510,8 @@ public class UserCreateService {
      *         with detailed message explaining which criteria failed
      */
     private void validatePasswordStrength(String password) {
-        if (password.length() < MINIMUM_PASSWORD_LENGTH) {
-            log.warn("Password validation failed - insufficient length: {} characters (minimum: {})", 
-                     password.length(), MINIMUM_PASSWORD_LENGTH);
-            throw new ValidationException(
-                "Password must be at least " + MINIMUM_PASSWORD_LENGTH + " characters long"
-            );
-        }
+        // Note: Minimum length validation removed - COBOL PIC X(08) only enforces maximum,
+        // not minimum. Empty password check is handled in validateRequiredFields().
 
         if (!UPPERCASE_PATTERN.matcher(password).find()) {
             log.warn("Password validation failed - no uppercase letter");
