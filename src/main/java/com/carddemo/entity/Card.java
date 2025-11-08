@@ -252,6 +252,76 @@ public class Card implements Serializable {
     private String activeStatus;
 
     /**
+     * Card Type
+     * 
+     * <p>Enhanced field for modernized card system (not present in original COBOL).</p>
+     * <p>2-character code indicating the type of card:</p>
+     * <ul>
+     *   <li>'DC' - Debit Card</li>
+     *   <li>'CC' - Credit Card</li>
+     * </ul>
+     * 
+     * <p><strong>Business Rules:</strong></p>
+     * <ul>
+     *   <li>Debit cards draw from available balance only</li>
+     *   <li>Credit cards allow charges up to credit limit</li>
+     *   <li>Transaction authorization logic varies by card type</li>
+     * </ul>
+     * 
+     * <p>This field is required for proper transaction processing in the
+     * modernized cloud-native system as specified in Agent Action Plan section 0.6.</p>
+     */
+    @Column(name = "card_type", length = 2)
+    private String cardType;
+
+    /**
+     * Card Open Date
+     * 
+     * <p>Enhanced field for modernized card system (not present in original COBOL).</p>
+     * <p>Date when the card was first issued and activated for use.</p>
+     * <p>Used for audit trail, card lifecycle tracking, and analytics.</p>
+     * 
+     * <p><strong>Business Use Cases:</strong></p>
+     * <ul>
+     *   <li>Calculate card age for reissuance planning</li>
+     *   <li>Track time from card issuance to first transaction</li>
+     *   <li>Support regulatory compliance and audit requirements</li>
+     *   <li>Generate card lifecycle reports</li>
+     * </ul>
+     * 
+     * <p>This field is required as specified in Agent Action Plan section 0.6
+     * for enhanced audit and tracking capabilities in the cloud-native system.</p>
+     */
+    @Column(name = "open_date")
+    private LocalDate openDate;
+
+    /**
+     * Last Used Date
+     * 
+     * <p>Enhanced field for modernized card system (not present in original COBOL).</p>
+     * <p>Date when the card was last used for a transaction. Null if card has
+     * never been used.</p>
+     * <p>Used for dormant card identification, fraud detection, and analytics.</p>
+     * 
+     * <p><strong>Business Use Cases:</strong></p>
+     * <ul>
+     *   <li>Identify inactive/dormant cards for automatic deactivation</li>
+     *   <li>Fraud detection - unusual activity after long dormancy</li>
+     *   <li>Customer engagement - reactivate dormant cardholders</li>
+     *   <li>Regulatory compliance for inactive account monitoring</li>
+     * </ul>
+     * 
+     * <p><strong>Update Pattern:</strong> This field is updated by transaction
+     * processing batch jobs whenever a card is used for a purchase, withdrawal,
+     * or other transaction.</p>
+     * 
+     * <p>This field is optional (nullable) as specified in Agent Action Plan
+     * section 0.6, since newly issued cards may not have been used yet.</p>
+     */
+    @Column(name = "last_used_date")
+    private LocalDate lastUsedDate;
+
+    /**
      * Version - Optimistic Locking
      * 
      * <p>JPA version field for optimistic locking support, replicating VSAM
