@@ -38,6 +38,7 @@ import com.carddemo.entity.User;
 import com.carddemo.entity.User.UserType;
 import com.carddemo.exception.BusinessLogicException;
 import com.carddemo.exception.ResourceNotFoundException;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.UserRepository;
 import com.carddemo.service.user.UserDeleteService;
 
@@ -287,13 +288,13 @@ public class UserDeleteServiceTest {
      * <ul>
      *   <li>Current authenticated user ID retrieved from SecurityContext</li>
      *   <li>Comparison performed between authenticated user and target deletion user</li>
-     *   <li>BusinessLogicException thrown if IDs match</li>
+     *   <li>ValidationException thrown if IDs match</li>
      *   <li>Exception message contains "cannot delete your own"</li>
      *   <li>No database modification performed</li>
      * </ul>
      */
     @Test
-    @DisplayName("Should throw BusinessLogicException when admin attempts to delete their own account")
+    @DisplayName("Should throw ValidationException when admin attempts to delete their own account")
     public void testDeleteUserPreventsSelfDeletion() {
         // Arrange: Setup admin user attempting to delete themselves
         User adminUser = User.builder()
@@ -311,7 +312,7 @@ public class UserDeleteServiceTest {
 
         // Act & Assert: Verify self-deletion prevention
         assertThatThrownBy(() -> userDeleteService.deleteUser(ADMIN_USER_ID))
-                .isInstanceOf(BusinessLogicException.class)
+                .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("cannot delete your own");
 
         // Verify no database modification
@@ -333,13 +334,13 @@ public class UserDeleteServiceTest {
      * <ul>
      *   <li>Repository query counts active admin users</li>
      *   <li>If count equals 1 and target user is admin, deletion prevented</li>
-     *   <li>BusinessLogicException thrown with appropriate message</li>
+     *   <li>ValidationException thrown with appropriate message</li>
      *   <li>Exception message contains "Cannot delete last admin user"</li>
      *   <li>No database modification performed</li>
      * </ul>
      */
     @Test
-    @DisplayName("Should throw BusinessLogicException when attempting to delete last admin user")
+    @DisplayName("Should throw ValidationException when attempting to delete last admin user")
     public void testDeleteUserPreventsLastAdminDeletion() {
         // Arrange: Setup last remaining admin user
         User lastAdminUser = User.builder()
@@ -357,7 +358,7 @@ public class UserDeleteServiceTest {
 
         // Act & Assert: Verify last admin deletion prevention
         assertThatThrownBy(() -> userDeleteService.deleteUser(ADMIN_USER_ID))
-                .isInstanceOf(BusinessLogicException.class)
+                .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Cannot delete last admin user");
 
         // Verify no database modification
@@ -416,12 +417,12 @@ public class UserDeleteServiceTest {
      * <p>Expected behavior:</p>
      * <ul>
      *   <li>User lookup succeeds but user has deleted flag = true</li>
-     *   <li>BusinessLogicException thrown indicating user already deleted</li>
+     *   <li>ValidationException thrown indicating user already deleted</li>
      *   <li>No database modification attempted</li>
      * </ul>
      */
     @Test
-    @DisplayName("Should throw BusinessLogicException when attempting to delete already deleted user")
+    @DisplayName("Should throw ValidationException when attempting to delete already deleted user")
     public void testDeleteUserAlreadyDeleted() {
         // Arrange: Setup already deleted user
         User deletedUser = User.builder()
@@ -440,7 +441,7 @@ public class UserDeleteServiceTest {
 
         // Act & Assert: Verify already deleted user handling
         assertThatThrownBy(() -> userDeleteService.deleteUser(TEST_USER_ID))
-                .isInstanceOf(BusinessLogicException.class)
+                .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("already deleted");
 
         // Verify no additional save operation
