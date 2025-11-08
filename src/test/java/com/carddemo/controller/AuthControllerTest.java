@@ -40,6 +40,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 
 import static org.hamcrest.Matchers.*;
@@ -86,8 +87,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <h2>Test Data Setup</h2>
  * <p>Creates test users in database matching USRSEC file structure:</p>
  * <ul>
- *   <li><b>Admin user</b>: userId="ADMIN001", userType='A', password=BCrypt("Password1")</li>
- *   <li><b>Regular user</b>: userId="USER0001", userType='U', password=BCrypt("Password2")</li>
+ *   <li><b>Admin user</b>: userId="ADMIN001", userType='A', password=BCrypt("Pass1234")</li>
+ *   <li><b>Regular user</b>: userId="USER0001", userType='U', password=BCrypt("Pass5678")</li>
  *   <li><b>Test cleanup</b>: @AfterEach ensures test isolation by deleting all users</li>
  * </ul>
  * 
@@ -147,9 +148,9 @@ public class AuthControllerTest {
 
     // Test user credentials
     private static final String ADMIN_USER_ID = "ADMIN001";
-    private static final String ADMIN_PASSWORD = "Password1";
+    private static final String ADMIN_PASSWORD = "Pass1234";
     private static final String REGULAR_USER_ID = "USER0001";
-    private static final String REGULAR_PASSWORD = "Password2";
+    private static final String REGULAR_PASSWORD = "Pass5678";
 
     /**
      * Set up test data before each test method.
@@ -167,7 +168,7 @@ public class AuthControllerTest {
         User adminUser = User.builder()
                 .userId(ADMIN_USER_ID)
                 .password(passwordEncoder.encode(ADMIN_PASSWORD))
-                .userType("A")
+                .userType(User.UserType.ADMIN)
                 .firstName("Admin")
                 .lastName("User")
                 .build();
@@ -177,7 +178,7 @@ public class AuthControllerTest {
         User regularUser = User.builder()
                 .userId(REGULAR_USER_ID)
                 .password(passwordEncoder.encode(REGULAR_PASSWORD))
-                .userType("U")
+                .userType(User.UserType.USER)
                 .firstName("Regular")
                 .lastName("User")
                 .build();
@@ -250,7 +251,7 @@ public class AuthControllerTest {
                     "Token should not be expired immediately after generation");
 
             // Verify expiration time is approximately 24 hours from now
-            Instant expiresAt = loginResponse.getExpiresAt();
+            Instant expiresAt = loginResponse.getExpiresAt().atZone(ZoneId.systemDefault()).toInstant();
             Instant expectedExpiration = Instant.now().plus(24, ChronoUnit.HOURS);
             long differenceMinutes = Math.abs(ChronoUnit.MINUTES.between(expiresAt, expectedExpiration));
             assertTrue(differenceMinutes < 5, 
@@ -447,7 +448,7 @@ public class AuthControllerTest {
             // Arrange: Create login request with wrong password
             LoginRequest loginRequest = LoginRequest.builder()
                     .userId(ADMIN_USER_ID)
-                    .password("WrongPassword123")
+                    .password("Wrong123")  // 8 characters max
                     .build();
 
             // Act & Assert: POST /api/auth/login should return 401 Unauthorized
@@ -466,7 +467,7 @@ public class AuthControllerTest {
             // Arrange: Create login request with nonexistent user ID
             LoginRequest loginRequest = LoginRequest.builder()
                     .userId("NOUSER99")
-                    .password("SomePassword")
+                    .password("SomePass")  // 8 characters max
                     .build();
 
             // Act & Assert: POST /api/auth/login should return 404 Not Found
@@ -690,7 +691,7 @@ public class AuthControllerTest {
             LoginResponse loginResponse = objectMapper.readValue(responseJson, LoginResponse.class);
 
             // Assert: Expiration time should be approximately 24 hours from now
-            Instant expiresAt = loginResponse.getExpiresAt();
+            Instant expiresAt = loginResponse.getExpiresAt().atZone(ZoneId.systemDefault()).toInstant();
             Instant now = Instant.now();
             Instant expectedExpiration = now.plus(24, ChronoUnit.HOURS);
 
@@ -791,7 +792,7 @@ public class AuthControllerTest {
             User testUser = User.builder()
                     .userId("TESTSP01")
                     .password(passwordEncoder.encode(specialPassword))
-                    .userType("U")
+                    .userType(User.UserType.USER)
                     .firstName("Test")
                     .lastName("Special")
                     .build();
@@ -835,8 +836,8 @@ public class AuthControllerTest {
         void testSqlInjectionPrevention() throws Exception {
             // Arrange: Create login request with SQL injection attempt
             LoginRequest loginRequest = LoginRequest.builder()
-                    .userId("' OR '1'='1")
-                    .password("anything")
+                    .userId("'OR'1'=1")  // 8 characters max SQL injection attempt
+                    .password("Pass1234")
                     .build();
 
             // Act & Assert: Should safely return 404 Not Found without executing malicious SQL
@@ -874,10 +875,21 @@ public class AuthControllerTest {
         @DisplayName("Should trim whitespace from userId and password")
         void testTrimWhitespaceFromCredentials() throws Exception {
             // Arrange: Create login request with leading/trailing whitespace
+            // Note: Keeping within 8 char limit after trim (7 chars + 2 spaces = 9, but after trim = 7)
             LoginRequest loginRequest = LoginRequest.builder()
-                    .userId("  " + ADMIN_USER_ID + "  ")
-                    .password("  " + ADMIN_PASSWORD + "  ")
+                    .userId(" USER001 ")  // 9 chars with spaces, 7 after trim
+                    .password(" Pass123 ")  // 9 chars with spaces, 7 after trim
                     .build();
+            
+            // Create a test user with the trimmed userId
+            User testUser = User.builder()
+                    .userId("USER001")
+                    .password(passwordEncoder.encode("Pass123"))
+                    .userType(User.UserType.USER)
+                    .firstName("Test")
+                    .lastName("User")
+                    .build();
+            userRepository.save(testUser);
 
             // Act & Assert: Should authenticate successfully after trimming
             mockMvc.perform(post("/api/auth/login")
@@ -885,7 +897,7 @@ public class AuthControllerTest {
                             .content(objectMapper.writeValueAsString(loginRequest)))
                     .andDo(print())
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.userId", is(ADMIN_USER_ID)));
+                    .andExpect(jsonPath("$.userId", is("USER001")));
         }
 
         @Test
@@ -896,7 +908,7 @@ public class AuthControllerTest {
             User testUser = User.builder()
                     .userId(maxLengthUserId)
                     .password(passwordEncoder.encode("Pass1234"))
-                    .userType("U")
+                    .userType(User.UserType.USER)
                     .firstName("Test")
                     .lastName("User")
                     .build();
@@ -924,7 +936,7 @@ public class AuthControllerTest {
             User testUser = User.builder()
                     .userId("TESTMAX1")
                     .password(passwordEncoder.encode(maxLengthPassword))
-                    .userType("U")
+                    .userType(User.UserType.USER)
                     .firstName("Test")
                     .lastName("MaxPass")
                     .build();
