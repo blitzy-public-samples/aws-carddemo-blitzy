@@ -686,34 +686,25 @@ export const searchCards = async (criteria = {}) => {
       params.customerId = criteria.customerId;
     }
 
-    // Add pagination defaults if not specified
-    if (!params.page) {
-      params.page = 0; // Spring Boot 0-indexed
-    }
-
-    if (!params.size) {
-      params.size = 50; // Larger default for search results
-    }
+    // Add pagination parameters from criteria, with defaults
+    // Spring Boot pagination is 0-indexed
+    const page = criteria.page !== undefined ? criteria.page : 1;
+    const size = criteria.size || CARDS_PER_PAGE;
+    
+    // Convert to Spring Boot 0-indexed page if needed
+    const springBootPage = page >= 1 ? page - 1 : page;
+    
+    params.page = springBootPage;
+    params.size = size;
 
     // Make API request
     const response = await apiClient.get('/cards', { params });
 
-    // Handle both paginated and non-paginated responses
-    let cards = [];
-    let totalElements = 0;
-
-    if (Array.isArray(response.data)) {
-      // Direct array response
-      cards = response.data;
-      totalElements = cards.length;
-    } else if (response.data.content) {
-      // Paginated response
-      cards = response.data.content;
-      totalElements = response.data.totalElements || cards.length;
-    }
+    // Extract pagination data from Spring Boot PagedModel response
+    const { content, totalPages, totalElements, last, first, number } = response.data;
 
     // Transform card data with masked card numbers
-    const transformedCards = cards.map(card => ({
+    const transformedCards = content.map(card => ({
       cardNumber: maskCardNumber(card.cardNumber),
       fullCardNumber: card.cardNumber,
       accountId: card.accountId,
@@ -726,10 +717,20 @@ export const searchCards = async (criteria = {}) => {
       activeStatus: card.activeStatus
     }));
 
+    // Build pagination metadata matching getCards pattern
+    const pagination = {
+      totalPages: totalPages || 0,
+      currentPage: page, // Return 1-indexed page to caller
+      totalCards: totalElements || 0,
+      hasNext: !last,
+      hasPrevious: !first,
+      pageSize: size
+    };
+
     return {
       cards: transformedCards,
-      criteria: criteria,
-      count: totalElements
+      pagination,
+      criteria: criteria
     };
 
   } catch (error) {
@@ -737,13 +738,24 @@ export const searchCards = async (criteria = {}) => {
     if (error.response) {
       const status = error.response.status;
       const message = error.response.data?.message || 'Failed to search cards';
+      
+      // Get page and size for error responses
+      const page = criteria.page !== undefined ? criteria.page : 1;
+      const size = criteria.size || CARDS_PER_PAGE;
 
       if (status === 404 || status === 204) {
-        // No cards found - return empty result
+        // No cards found - return empty result with pagination
         return {
           cards: [],
-          criteria: criteria,
-          count: 0
+          pagination: {
+            totalPages: 0,
+            currentPage: page,
+            totalCards: 0,
+            hasNext: false,
+            hasPrevious: false,
+            pageSize: size
+          },
+          criteria: criteria
         };
       } else if (status === 400) {
         throw new Error(`Invalid search criteria: ${message}`);

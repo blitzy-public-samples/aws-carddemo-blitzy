@@ -19,7 +19,7 @@
  * @component
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -34,7 +34,6 @@ import {
   Button,
   Typography,
   Checkbox,
-  CircularProgress,
   Alert,
   Container,
   Grid,
@@ -47,7 +46,7 @@ import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import NavigateBeforeIcon from '@mui/icons-material/NavigateBefore';
 
 // Internal imports - cardService for API calls
-import { cardService } from '../../services/cardService';
+import cardService from '../../services/cardService';
 
 // Common components replicating BMS screen layout
 import Header from '../common/Header';
@@ -153,7 +152,7 @@ const CardListComponent = () => {
 
   /**
    * Fetch cards from API with pagination and filters
-   * Calls cardService.getCards with page, size=7, accountNumber, cardNumber parameters
+   * Calls cardService.searchCards with criteria object containing page, size, accountId, cardNumber
    * Matches GET /api/cards REST endpoint from CardListService.java
    * 
    * @param {number} page - Zero-based page number
@@ -166,28 +165,32 @@ const CardListComponent = () => {
       setErrorMessage('');
       setInfoMessage('');
 
-      // Build filter object for API call
-      const filters = {};
+      // Build criteria object for API call
+      const criteria = {
+        page: page + 1, // searchCards expects 1-indexed pages
+        size: CARDS_PER_PAGE
+      };
+      
       if (acctFilter && acctFilter.trim() !== '') {
-        filters.accountNumber = acctFilter.trim();
+        criteria.accountId = acctFilter.trim();
       }
       if (crdFilter && crdFilter.trim() !== '') {
-        filters.cardNumber = crdFilter.trim();
+        criteria.cardNumber = crdFilter.trim();
       }
 
-      // Call cardService.getCards with pagination and filters
-      // Returns { content: [], totalPages, totalElements, number }
-      const response = await cardService.getCards(page, CARDS_PER_PAGE, filters);
+      // Call cardService.searchCards with criteria
+      // Returns { cards: [], pagination: { totalPages, currentPage, totalCards, ... }, criteria }
+      const response = await cardService.searchCards(criteria);
 
-      setCards(response.content || []);
-      setTotalPages(response.totalPages || 0);
-      setTotalElements(response.totalElements || 0);
-      setCurrentPage(response.number || 0);
+      setCards(response.cards || []);
+      setTotalPages(response.pagination?.totalPages || 0);
+      setTotalElements(response.pagination?.totalCards || 0);
+      setCurrentPage(response.pagination?.currentPage ? response.pagination.currentPage - 1 : 0); // Convert back to 0-indexed
 
       // Set info message showing results count (maps to INFOMSG field)
-      if (response.content && response.content.length > 0) {
+      if (response.cards && response.cards.length > 0) {
         const filterText = (acctFilter || crdFilter) ? ' matching filters' : '';
-        setInfoMessage(`${response.totalElements} card${response.totalElements !== 1 ? 's' : ''} found${filterText}`);
+        setInfoMessage(`${response.pagination?.totalCards || 0} card${response.pagination?.totalCards !== 1 ? 's' : ''} found${filterText}`);
       } else {
         setInfoMessage('No cards found. Try adjusting your search criteria.');
       }
@@ -232,7 +235,7 @@ const CardListComponent = () => {
    */
   useEffect(() => {
     fetchCards(currentPage, accountFilter, cardFilter);
-  }, []);
+  }, [fetchCards, currentPage, accountFilter, cardFilter]);
 
   /**
    * Handle search button click
@@ -597,7 +600,7 @@ const CardListComponent = () => {
                           Protects CARD-NUM PII per section 0.4 security requirements */}
                       <TableCell>
                         <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                          {cardService.maskCardNumber(card.cardNumber)}
+                          {card.cardNumber}
                         </Typography>
                       </TableCell>
 
