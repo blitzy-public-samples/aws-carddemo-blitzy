@@ -425,17 +425,17 @@ public class StatementDetailProcessor implements ItemProcessor<Transaction, Stat
         // Step 1: Look up card details using transaction's card number
         // Replaces COBOL: 2000-XREFFILE-PROC sequential read (lines 164-167)
         // Maps: READ XREF-FILE INTO LK-M03B-FLDT → CardRepository.findByCardNumber()
-        Card card = lookupCard(transaction.getCardNumber());
+        Card card = lookupCard(transaction.getCard().getCardNumber());
 
         // Step 2: Look up account details using card's account ID
         // Replaces COBOL: 4000-ACCTFILE-PROC keyed read (lines 213-217)
         // Maps: MOVE LK-M03B-KEY TO FD-ACCT-ID; READ ACCT-FILE → AccountRepository.findByAccountId()
-        Account account = lookupAccount(card.getAccountId());
+        Account account = lookupAccount(card.getAccount().getAccountId());
 
         // Step 3: Look up customer information using account's customer ID
         // Replaces COBOL: 3000-CUSTFILE-PROC keyed read (lines 188-192)
         // Maps: MOVE LK-M03B-KEY TO FD-CUST-ID; READ CUST-FILE → CustomerRepository.findByCustomerId()
-        Customer customer = lookupCustomer(account.getCustomerId());
+        Customer customer = lookupCustomer(account.getCustomer().getCustomerId());
 
         // Step 4: Format transaction date from origination timestamp
         // Format: yyyy-MM-dd (ISO 8601 date format)
@@ -451,7 +451,7 @@ public class StatementDetailProcessor implements ItemProcessor<Transaction, Stat
 
         // Step 7: Mask card number showing only last 4 digits
         // Format: "************1234" (12 asterisks + last 4 digits)
-        String maskedCardNumber = maskCardNumber(transaction.getCardNumber());
+        String maskedCardNumber = maskCardNumber(transaction.getCard().getCardNumber());
 
         // Step 8: Get account balance as running balance
         // Represents account balance after this transaction posts
@@ -499,7 +499,8 @@ public class StatementDetailProcessor implements ItemProcessor<Transaction, Stat
                     "Transaction ID is null or empty - cannot generate statement line item");
         }
 
-        if (transaction.getCardNumber() == null || transaction.getCardNumber().trim().isEmpty()) {
+        if (transaction.getCard() == null || transaction.getCard().getCardNumber() == null 
+                || transaction.getCard().getCardNumber().trim().isEmpty()) {
             throw new BusinessLogicException(
                     "Card number is null or empty for transaction " + transaction.getTransactionId());
         }
