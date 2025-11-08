@@ -21,6 +21,7 @@ import com.carddemo.dto.request.LoginRequest;
 import com.carddemo.dto.response.LoginResponse;
 import com.carddemo.entity.User;
 import com.carddemo.entity.User.UserType;
+import com.carddemo.exception.ResourceNotFoundException;
 import com.carddemo.repository.UserRepository;
 import com.carddemo.service.auth.AuthenticationService;
 import com.carddemo.service.auth.JwtService;
@@ -34,7 +35,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.DisabledException;
-import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.time.LocalDateTime;
@@ -344,7 +344,8 @@ public class AuthenticationServiceTest {
      *     MOVE -1 TO USERIDL OF COSGN0AI
      *     PERFORM SEND-SIGNON-SCREEN
      * 
-     * Java Flow: Throws UsernameNotFoundException when UserRepository.findByUserId() returns empty Optional
+     * Java Flow: Throws ResourceNotFoundException when UserRepository.findByUserId() returns empty Optional
+     *            This results in HTTP 404 (Not Found) status as per COBOL error semantics
      */
     @Test
     @DisplayName("Test authentication failure with invalid user ID (COBOL RESP-CD 13)")
@@ -352,9 +353,9 @@ public class AuthenticationServiceTest {
         // Arrange: Configure mock to return empty Optional (user not found)
         when(userRepository.findByUserId(VALID_USER_ID)).thenReturn(Optional.empty());
 
-        // Act & Assert: Verify UsernameNotFoundException thrown
+        // Act & Assert: Verify ResourceNotFoundException thrown (returns HTTP 404)
         assertThatThrownBy(() -> authenticationService.authenticate(loginRequest))
-                .isInstanceOf(UsernameNotFoundException.class)
+                .isInstanceOf(ResourceNotFoundException.class)
                 .hasMessageContaining("User not found");
 
         // Verify: Repository called once
