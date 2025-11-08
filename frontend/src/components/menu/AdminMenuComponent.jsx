@@ -72,7 +72,6 @@ import { useNavigate } from 'react-router-dom';
 import { CircularProgress } from '@mui/material';
 import { useAuth } from '../../context/AuthContext.jsx';
 import Header from '../common/Header.jsx';
-import { USER_TYPE } from '../../utils/constants.js';
 
 /**
  * Admin Menu Options Configuration
