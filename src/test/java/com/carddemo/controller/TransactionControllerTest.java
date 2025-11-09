@@ -4,9 +4,11 @@ import com.carddemo.dto.request.TransactionRequest;
 import com.carddemo.dto.response.TransactionResponse;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
+import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.hamcrest.Matchers;
@@ -19,8 +21,10 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.MediaType;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
+import org.springframework.test.web.servlet.result.MockMvcResultHandlers;
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -211,7 +215,16 @@ public class TransactionControllerTest {
     @Autowired
     private AccountRepository accountRepository;
 
+    /**
+     * CustomerRepository for test customer data setup.
+     * Used to create test customers that are required for account relationships
+     * due to NOT NULL constraint on account.customer_id foreign key.
+     */
+    @Autowired
+    private CustomerRepository customerRepository;
+
     // Test data objects - initialized in @BeforeEach
+    private Customer testCustomer;
     private Account testAccount;
     private Card testCard;
     private String testCardNumber;
@@ -233,11 +246,30 @@ public class TransactionControllerTest {
         transactionRepository.deleteAll();
         cardRepository.deleteAll();
         accountRepository.deleteAll();
+        customerRepository.deleteAll();
+        
+        // Create test customer first (required for account relationship)
+        // Matches CVCUS01Y.cpy CUSTOMER-RECORD structure
+        testCustomer = Customer.builder()
+                .customerId(100000001L)
+                .firstName("John")
+                .lastName("Doe")
+                .dateOfBirth(LocalDate.of(1980, 1, 1))
+                .ssn("123456789")
+                .ficoScore(720)
+                .addressLine1("123 Main St")
+                .addressStateCode("CA")
+                .addressCountryCode("USA")
+                .addressZip("90001")
+                .phoneNumber1("555-123-4567")
+                .build();
+        testCustomer = customerRepository.save(testCustomer);
         
         // Create test account with sufficient credit limit and balance
         // Matches CVACT01Y.cpy ACCOUNT-RECORD structure
         testAccount = Account.builder()
                 .accountId(1000000001L)
+                .customer(testCustomer)  // Associate with the customer
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP))
                 .creditLimit(new BigDecimal("10000.00").setScale(2, RoundingMode.HALF_UP))
@@ -260,7 +292,7 @@ public class TransactionControllerTest {
                 .embossedName("TEST CARDHOLDER")
                 .expirationDate(LocalDate.now().plusYears(2))
                 .activeStatus("Y")
-                .cardType("VISA")
+                .cardType("CC")  // Credit Card (2-character code as per Card entity)
                 .openDate(LocalDate.now().minusYears(1))
                 .lastUsedDate(LocalDate.now().minusDays(7))
                 .build();
@@ -270,14 +302,26 @@ public class TransactionControllerTest {
     /**
      * Cleanup method executed after each test.
      * Deletes all test data to ensure clean state for subsequent tests.
-     * Note: @Transactional annotation provides automatic rollback, but explicit
-     * cleanup is documented for clarity.
+     * 
+     * Note: @Transactional annotation at class level provides automatic rollback,
+     * making explicit cleanup technically unnecessary. However, this method is
+     * retained for documentation and to handle edge cases.
+     * 
+     * Catches UnexpectedRollbackException that occurs when test transactions are
+     * rolled back (e.g., in business logic validation tests expecting HTTP 422).
+     * In these cases, the automatic transaction rollback already cleaned up the data.
      */
     @AfterEach
     public void tearDown() {
-        transactionRepository.deleteAll();
-        cardRepository.deleteAll();
-        accountRepository.deleteAll();
+        try {
+            transactionRepository.deleteAll();
+            cardRepository.deleteAll();
+            accountRepository.deleteAll();
+            customerRepository.deleteAll();
+        } catch (org.springframework.transaction.UnexpectedRollbackException e) {
+            // Expected when test transaction was rolled back (e.g., business rule violations)
+            // The automatic rollback already cleaned up the data, so we can safely ignore this
+        }
     }
 
     // ========================================================================
@@ -308,6 +352,7 @@ public class TransactionControllerTest {
      * </ul>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("GET /api/transactions returns paginated list with 10 transactions per page")
     public void testGetTransactionList_WithPagination_Returns10PerPage() throws Exception {
         // Create 15 test transactions for pagination testing
@@ -325,8 +370,8 @@ public class TransactionControllerTest {
             // Verify pagination structure
             .andExpect(MockMvcResultMatchers.jsonPath("$.content").isArray())
             .andExpect(MockMvcResultMatchers.jsonPath("$.content.length()").value(10))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.totalElements").value(15))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.totalPages").value(2))
+            .andExpect(MockMvcResultMatchers.jsonPath("$.total_elements").value(15))
+            .andExpect(MockMvcResultMatchers.jsonPath("$.total_pages").value(2))
             .andExpect(MockMvcResultMatchers.jsonPath("$.number").value(0))
             .andExpect(MockMvcResultMatchers.jsonPath("$.size").value(10))
             .andExpect(MockMvcResultMatchers.jsonPath("$.first").value(true))
@@ -353,6 +398,7 @@ public class TransactionControllerTest {
      * </ul>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("GET /api/transactions filters by date range correctly")
     public void testGetTransactionList_WithDateRange_FiltersCorrectly() throws Exception {
         // Create transactions across different dates
@@ -362,13 +408,18 @@ public class TransactionControllerTest {
         
         // Create older transaction (should be excluded)
         Transaction oldTransaction = createSingleTransaction(testCard, "100.00", thirtyDaysAgo);
+        // Generate unique ID for old transaction
+        oldTransaction.setTransactionId(String.format("TXN%013d", System.currentTimeMillis()));
         transactionRepository.save(oldTransaction);
         
         // Create recent transactions (should be included)
         List<Transaction> recentTransactions = new ArrayList<>();
+        long baseTimestamp = System.currentTimeMillis();
         for (int i = 0; i < 5; i++) {
             Transaction txn = createSingleTransaction(testCard, "50.00", 
                 now.minusDays(i).minusHours(i));
+            // Ensure unique transaction ID by adding counter to timestamp
+            txn.setTransactionId(String.format("TXN%013d", baseTimestamp + i + 1));
             recentTransactions.add(txn);
         }
         transactionRepository.saveAll(recentTransactions);
@@ -384,7 +435,7 @@ public class TransactionControllerTest {
             .andExpect(MockMvcResultMatchers.status().isOk())
             .andExpect(MockMvcResultMatchers.jsonPath("$.content").isArray())
             .andExpect(MockMvcResultMatchers.jsonPath("$.content.length()").value(5))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.totalElements").value(5));
+            .andExpect(MockMvcResultMatchers.jsonPath("$.total_elements").value(5));
     }
 
     /**
@@ -394,6 +445,7 @@ public class TransactionControllerTest {
      * NOTFND condition after EXEC CICS READ operation.</p>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("GET /api/transactions returns empty list for non-existent card")
     public void testGetTransactionList_NonExistentCard_ReturnsEmptyList() throws Exception {
         mockMvc.perform(MockMvcRequestBuilders.get("/api/transactions")
@@ -404,7 +456,7 @@ public class TransactionControllerTest {
             .andExpect(MockMvcResultMatchers.status().isOk())
             .andExpect(MockMvcResultMatchers.jsonPath("$.content").isArray())
             .andExpect(MockMvcResultMatchers.jsonPath("$.content.length()").value(0))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.totalElements").value(0));
+            .andExpect(MockMvcResultMatchers.jsonPath("$.total_elements").value(0));
     }
 
     // ========================================================================
@@ -434,6 +486,7 @@ public class TransactionControllerTest {
      * </ul>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("GET /api/transactions/{id} returns transaction detail")
     public void testGetTransactionDetail_ValidId_ReturnsTransactionDetail() throws Exception {
         // Create test transaction
@@ -460,6 +513,7 @@ public class TransactionControllerTest {
      * returning proper HTTP 404 status.</p>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("GET /api/transactions/{id} returns 404 for non-existent transaction")
     public void testGetTransactionDetail_NonExistentId_Returns404() throws Exception {
         mockMvc.perform(MockMvcRequestBuilders.get("/api/transactions/{id}", "INVALID_TXN_ID_99")
@@ -509,6 +563,7 @@ public class TransactionControllerTest {
      * </ul>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions creates transaction successfully with balance update")
     public void testCreateTransaction_ValidRequest_CreatesSuccessfully() throws Exception {
         // Create transaction request
@@ -517,8 +572,14 @@ public class TransactionControllerTest {
                 .amount(new BigDecimal("250.50").setScale(2, RoundingMode.HALF_UP))
                 .merchantId(1001L)
                 .description("Test Purchase")
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")  // 2-digit code for purchase
+                .categoryCode("5732")  // 4-digit category code for electronics
+                .merchantName("Test Merchant")
+                .merchantCity("New York")
+                .merchantZip("10001")
+                .transactionSource("ONLINE")
+                .origDate(LocalDate.now().toString())
+                .procDate(LocalDate.now().toString())
                 .build();
 
         // Store initial balance for verification
@@ -533,7 +594,7 @@ public class TransactionControllerTest {
             .andExpect(MockMvcResultMatchers.jsonPath("$.transactionId").exists())
             .andExpect(MockMvcResultMatchers.jsonPath("$.amount").value(250.50))
             .andExpect(MockMvcResultMatchers.jsonPath("$.cardNumber").value(Matchers.containsString("****")))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.typeCode").value("PURCHASE"));
+            .andExpect(MockMvcResultMatchers.jsonPath("$.typeCode").value("01"));
 
         // Verify transaction was created in database
         List<Transaction> transactions = transactionRepository.findByCard_CardNumber(
@@ -554,6 +615,7 @@ public class TransactionControllerTest {
      * matching COBOL field validation rules.</p>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions returns 400 for missing required fields")
     public void testCreateTransaction_MissingFields_Returns400() throws Exception {
         // Create request with missing required fields
@@ -575,6 +637,7 @@ public class TransactionControllerTest {
      * "IF TRAN-AMT NOT > ZERO THEN MOVE 'Invalid Amount' TO WS-MESSAGE"</p>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions returns 400 for zero amount")
     public void testCreateTransaction_ZeroAmount_Returns400() throws Exception {
         TransactionRequest request = TransactionRequest.builder()
@@ -582,8 +645,14 @@ public class TransactionControllerTest {
                 .amount(BigDecimal.ZERO)
                 .merchantId(1001L)
                 .description("Test Purchase")
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")
+                .categoryCode("5732")
+                .merchantName("Test Merchant")
+                .merchantCity("New York")
+                .merchantZip("10001")
+                .transactionSource("ONLINE")
+                .origDate(LocalDate.now().toString())
+                .procDate(LocalDate.now().toString())
                 .build();
 
         mockMvc.perform(MockMvcRequestBuilders.post("/api/transactions")
@@ -598,6 +667,7 @@ public class TransactionControllerTest {
      * <p>This test validates amount validation matching COBOL positive value check.</p>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions returns 400 for negative amount")
     public void testCreateTransaction_NegativeAmount_Returns400() throws Exception {
         TransactionRequest request = TransactionRequest.builder()
@@ -605,8 +675,14 @@ public class TransactionControllerTest {
                 .amount(new BigDecimal("-50.00"))
                 .merchantId(1001L)
                 .description("Test Purchase")
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")
+                .categoryCode("5732")
+                .merchantName("Test Merchant")
+                .merchantCity("New York")
+                .merchantZip("10001")
+                .transactionSource("ONLINE")
+                .origDate(LocalDate.now().toString())
+                .procDate(LocalDate.now().toString())
                 .build();
 
         mockMvc.perform(MockMvcRequestBuilders.post("/api/transactions")
@@ -621,6 +697,7 @@ public class TransactionControllerTest {
      * <p>This test validates card existence check matching COBOL NOTFND condition.</p>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions returns 404 for non-existent card")
     public void testCreateTransaction_NonExistentCard_Returns404() throws Exception {
         TransactionRequest request = TransactionRequest.builder()
@@ -628,8 +705,14 @@ public class TransactionControllerTest {
                 .amount(new BigDecimal("100.00"))
                 .merchantId(1001L)
                 .description("Test Purchase")
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")
+                .categoryCode("5732")
+                .merchantName("Test Merchant")
+                .merchantCity("New York")
+                .merchantZip("10001")
+                .transactionSource("ONLINE")
+                .origDate(LocalDate.now().toString())
+                .procDate(LocalDate.now().toString())
                 .build();
 
         mockMvc.perform(MockMvcRequestBuilders.post("/api/transactions")
@@ -645,6 +728,7 @@ public class TransactionControllerTest {
      * "IF CARD-EXPIRY-DATE < CURRENT-DATE THEN MOVE 'Card Expired' TO WS-MESSAGE"</p>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions returns 422 for expired card")
     public void testCreateTransaction_ExpiredCard_Returns422() throws Exception {
         // Create expired card
@@ -655,7 +739,7 @@ public class TransactionControllerTest {
                 .embossedName("EXPIRED CARD")
                 .expirationDate(LocalDate.now().minusDays(1)) // Expired yesterday
                 .activeStatus("Y")
-                .cardType("VISA")
+                .cardType("CC")  // Credit Card (2-character code as per Card entity)
                 .openDate(LocalDate.now().minusYears(2))
                 .build();
         cardRepository.save(expiredCard);
@@ -665,8 +749,14 @@ public class TransactionControllerTest {
                 .amount(new BigDecimal("100.00"))
                 .merchantId(1001L)
                 .description("Test Purchase")
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")
+                .categoryCode("5732")
+                .merchantName("Test Merchant")
+                .merchantCity("New York")
+                .merchantZip("10001")
+                .transactionSource("ONLINE")
+                .origDate(LocalDate.now().toString())
+                .procDate(LocalDate.now().toString())
                 .build();
 
         mockMvc.perform(MockMvcRequestBuilders.post("/api/transactions")
@@ -682,6 +772,7 @@ public class TransactionControllerTest {
      * "IF CARD-STATUS = 'B' THEN MOVE 'Card Blocked' TO WS-MESSAGE"</p>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions returns 422 for blocked card")
     public void testCreateTransaction_BlockedCard_Returns422() throws Exception {
         // Update card to blocked status
@@ -693,8 +784,14 @@ public class TransactionControllerTest {
                 .amount(new BigDecimal("100.00"))
                 .merchantId(1001L)
                 .description("Test Purchase")
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")
+                .categoryCode("5732")
+                .merchantName("Test Merchant")
+                .merchantCity("New York")
+                .merchantZip("10001")
+                .transactionSource("ONLINE")
+                .origDate(LocalDate.now().toString())
+                .procDate(LocalDate.now().toString())
                 .build();
 
         mockMvc.perform(MockMvcRequestBuilders.post("/api/transactions")
@@ -715,6 +812,7 @@ public class TransactionControllerTest {
      * </pre>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions returns 422 for insufficient credit")
     public void testCreateTransaction_InsufficientCredit_Returns422() throws Exception {
         // Transaction amount exceeds available credit
@@ -727,8 +825,14 @@ public class TransactionControllerTest {
                 .amount(excessiveAmount.setScale(2, RoundingMode.HALF_UP))
                 .merchantId(1001L)
                 .description("Large Purchase")
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")
+                .categoryCode("5732")
+                .merchantName("Test Merchant")
+                .merchantCity("New York")
+                .merchantZip("10001")
+                .transactionSource("ONLINE")
+                .origDate(LocalDate.now().toString())
+                .procDate(LocalDate.now().toString())
                 .build();
 
         mockMvc.perform(MockMvcRequestBuilders.post("/api/transactions")
@@ -749,6 +853,7 @@ public class TransactionControllerTest {
      * </pre>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions preserves BigDecimal precision with scale=2")
     public void testCreateTransaction_BigDecimalPrecision_PreservesScale() throws Exception {
         // Test amount with multiple decimal places - should round to 2
@@ -757,8 +862,14 @@ public class TransactionControllerTest {
                 .amount(new BigDecimal("123.456")) // 3 decimal places
                 .merchantId(1001L)
                 .description("Precision Test")
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")
+                .categoryCode("5732")
+                .merchantName("Test Merchant")
+                .merchantCity("New York")
+                .merchantZip("10001")
+                .transactionSource("ONLINE")
+                .origDate(LocalDate.now().toString())
+                .procDate(LocalDate.now().toString())
                 .build();
 
         mockMvc.perform(MockMvcRequestBuilders.post("/api/transactions")
@@ -775,6 +886,7 @@ public class TransactionControllerTest {
      * PIC S9(9)V99 = maximum 999,999,999.99</p>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions returns 400 for amount exceeding maximum")
     public void testCreateTransaction_ExcessiveAmount_Returns400() throws Exception {
         // Amount exceeds PIC S9(9)V99 maximum
@@ -783,8 +895,14 @@ public class TransactionControllerTest {
                 .amount(new BigDecimal("1000000000.00")) // Exceeds 999,999,999.99
                 .merchantId(1001L)
                 .description("Excessive Purchase")
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")
+                .categoryCode("5732")
+                .merchantName("Test Merchant")
+                .merchantCity("New York")
+                .merchantZip("10001")
+                .transactionSource("ONLINE")
+                .origDate(LocalDate.now().toString())
+                .procDate(LocalDate.now().toString())
                 .build();
 
         mockMvc.perform(MockMvcRequestBuilders.post("/api/transactions")
@@ -800,6 +918,7 @@ public class TransactionControllerTest {
      * PIC X(16) with numeric content validation.</p>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions returns 400 for invalid card number format")
     public void testCreateTransaction_InvalidCardNumberFormat_Returns400() throws Exception {
         TransactionRequest request = TransactionRequest.builder()
@@ -807,8 +926,14 @@ public class TransactionControllerTest {
                 .amount(new BigDecimal("100.00"))
                 .merchantId(1001L)
                 .description("Test Purchase")
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")
+                .categoryCode("5732")
+                .merchantName("Test Merchant")
+                .merchantCity("New York")
+                .merchantZip("10001")
+                .transactionSource("ONLINE")
+                .origDate(LocalDate.now().toString())
+                .procDate(LocalDate.now().toString())
                 .build();
 
         mockMvc.perform(MockMvcRequestBuilders.post("/api/transactions")
@@ -837,6 +962,7 @@ public class TransactionControllerTest {
      * testing requires mocking repository to throw exceptions.</p>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions ensures transactional rollback on error")
     public void testCreateTransaction_DatabaseError_RollsBackTransaction() throws Exception {
         // This test validates that @Transactional annotation ensures atomic operations
@@ -849,8 +975,14 @@ public class TransactionControllerTest {
                 .amount(new BigDecimal("100.00"))
                 .merchantId(1001L)
                 .description("Rollback Test")
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")
+                .categoryCode("5732")
+                .merchantName("Test Merchant")
+                .merchantCity("New York")
+                .merchantZip("10001")
+                .transactionSource("ONLINE")
+                .origDate(LocalDate.now().toString())
+                .procDate(LocalDate.now().toString())
                 .build();
 
         // Store initial state
@@ -878,6 +1010,7 @@ public class TransactionControllerTest {
      * matching COBOL current timestamp capture.</p>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions creates transaction with accurate timestamp")
     public void testCreateTransaction_TimestampAccuracy_WithinOneSecond() throws Exception {
         LocalDateTime beforeRequest = LocalDateTime.now();
@@ -887,8 +1020,14 @@ public class TransactionControllerTest {
                 .amount(new BigDecimal("75.25"))
                 .merchantId(1001L)
                 .description("Timestamp Test")
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")
+                .categoryCode("5732")
+                .merchantName("Test Merchant")
+                .merchantCity("New York")
+                .merchantZip("10001")
+                .transactionSource("ONLINE")
+                .origDate(LocalDate.now().toString())
+                .procDate(LocalDate.now().toString())
                 .build();
 
         mockMvc.perform(MockMvcRequestBuilders.post("/api/transactions")
@@ -914,6 +1053,7 @@ public class TransactionControllerTest {
      * PIC S9(9)V99 minimum positive value.</p>
      */
     @Test
+    @WithMockUser(roles = "USER")
     @DisplayName("POST /api/transactions accepts minimum valid amount 0.01")
     public void testCreateTransaction_MinimumAmount_AcceptsOneCent() throws Exception {
         TransactionRequest request = TransactionRequest.builder()
@@ -921,8 +1061,14 @@ public class TransactionControllerTest {
                 .amount(new BigDecimal("0.01").setScale(2, RoundingMode.HALF_UP))
                 .merchantId(1001L)
                 .description("Minimum Amount Test")
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")
+                .categoryCode("5732")
+                .merchantName("Test Merchant")
+                .merchantCity("New York")
+                .merchantZip("10001")
+                .transactionSource("ONLINE")
+                .origDate(LocalDate.now().toString())
+                .procDate(LocalDate.now().toString())
                 .build();
 
         mockMvc.perform(MockMvcRequestBuilders.post("/api/transactions")
@@ -951,8 +1097,8 @@ public class TransactionControllerTest {
             Transaction transaction = Transaction.builder()
                     .transactionId(String.format("TXN%013d", System.currentTimeMillis() + i))
                     .card(card)
-                    .typeCode("PURCHASE")
-                    .categoryCode("RETAIL")
+                    .typeCode("01")  // Purchase type (2-character code as per Transaction entity)
+                    .categoryCode(1)
                     .amount(new BigDecimal("100.00").add(new BigDecimal(i))
                             .setScale(2, RoundingMode.HALF_UP))
                     .merchantId((long) (1001 + i))
@@ -981,8 +1127,8 @@ public class TransactionControllerTest {
         return Transaction.builder()
                 .transactionId(String.format("TXN%013d", System.currentTimeMillis()))
                 .card(card)
-                .typeCode("PURCHASE")
-                .categoryCode("RETAIL")
+                .typeCode("01")  // Purchase type (2-character code as per Transaction entity)
+                .categoryCode(1)
                 .amount(new BigDecimal(amount).setScale(2, RoundingMode.HALF_UP))
                 .merchantId(1001L)
                 .merchantName("Test Merchant")
