@@ -185,7 +185,7 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionCa
      * Fixed value '05' identifying this as an interest charge category.
      * Matches COBOL MOVE '05' TO TRAN-CAT-CD in line 483 of CBACT04C.cbl.
      */
-    private static final String INTEREST_CATEGORY_CODE = "05";
+    private static final Integer INTEREST_CATEGORY_CODE = 5;
 
     /**
      * Transaction source for system-generated interest transactions.

@@ -28,7 +28,7 @@ import java.time.LocalDateTime;
  * <ul>
  *   <li>TRAN-ID (PIC X(16)) → String transactionId (Primary Key)</li>
  *   <li>TRAN-TYPE-CD (PIC X(02)) → String typeCode</li>
- *   <li>TRAN-CAT-CD (PIC 9(04)) → String categoryCode</li>
+ *   <li>TRAN-CAT-CD (PIC 9(04)) → Integer categoryCode</li>
  *   <li>TRAN-SOURCE (PIC X(10)) → String transactionSource</li>
  *   <li>TRAN-DESC (PIC X(100)) → String description</li>
  *   <li>TRAN-AMT (PIC S9(09)V99) → BigDecimal amount with precision=12, scale=2</li>
@@ -295,8 +295,8 @@ public class Transaction implements Serializable {
      * <p>Used for spending analysis, rewards program calculation, and merchant
      * category reporting.</p>
      */
-    @Column(name = "transaction_category_code", length = 4)
-    private String categoryCode;
+    @Column(name = "transaction_category_code")
+    private Integer categoryCode;
 
     /**
      * Transaction Source

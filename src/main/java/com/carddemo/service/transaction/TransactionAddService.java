@@ -478,7 +478,7 @@ public class TransactionAddService {
         Transaction transaction = Transaction.builder()
                 .transactionId(transactionId)
                 .typeCode(request.getTypeCode())
-                .categoryCode(request.getCategoryCode())
+                .categoryCode(Integer.parseInt(request.getCategoryCode()))
                 .transactionSource(request.getTransactionSource())
                 .description(request.getDescription())
                 .amount(request.getAmount().setScale(DECIMAL_SCALE, DECIMAL_ROUNDING))
@@ -616,9 +616,8 @@ public class TransactionAddService {
     private TransactionResponse buildResponse(Transaction transaction) {
         log.debug("Building transaction response");
         
-        // Convert categoryCode from String to Integer for DTO
-        Integer categoryCodeInt = transaction.getCategoryCode() != null ? 
-                Integer.parseInt(transaction.getCategoryCode()) : null;
+        // categoryCode is already an Integer in the entity
+        Integer categoryCodeInt = transaction.getCategoryCode();
         
         return TransactionResponse.builder()
                 .transactionId(transaction.getTransactionId())

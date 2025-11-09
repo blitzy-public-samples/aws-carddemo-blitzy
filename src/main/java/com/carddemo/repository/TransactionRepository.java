@@ -4,6 +4,7 @@ import com.carddemo.entity.Transaction;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
@@ -203,7 +204,7 @@ import java.util.Optional;
  * @see <a href="Section 0.10">Special Instructions - Transaction Boundaries</a>
  */
 @Repository
-public interface TransactionRepository extends JpaRepository<Transaction, String> {
+public interface TransactionRepository extends JpaRepository<Transaction, String>, JpaSpecificationExecutor<Transaction> {
 
     /**
      * Find all transactions for a specific card number with pagination support.

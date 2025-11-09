@@ -177,7 +177,7 @@ public class BillPaymentService {
      * <pre>MOVE 2 TO TRAN-CAT-CD</pre>
      * </p>
      */
-    private static final String PAYMENT_CATEGORY_CODE = "2";
+    private static final Integer PAYMENT_CATEGORY_CODE = 2;
 
     /**
      * Transaction source identifier for payment transactions.

@@ -420,17 +420,17 @@ class StatementGenerationJobTest {
         // Transactions for Card 1
         // Using Type 01 = Purchase, Category 1 = Regular Sales Draft (from seed data)
         createTransaction("TX00001", card1, new BigDecimal("100.50"), 
-                LocalDateTime.of(2024, 1, 5, 10, 30), "Store A", "New York", "01", "1");
+                LocalDateTime.of(2024, 1, 5, 10, 30), "Store A", "New York", "01", 1);
         createTransaction("TX00002", card1, new BigDecimal("250.00"), 
-                LocalDateTime.of(2024, 1, 10, 14, 45), "Store B", "New York", "01", "1");
+                LocalDateTime.of(2024, 1, 10, 14, 45), "Store B", "New York", "01", 1);
         createTransaction("TX00003", card1, new BigDecimal("75.25"), 
-                LocalDateTime.of(2024, 1, 15, 9, 15), "Store C", "New York", "01", "1");
+                LocalDateTime.of(2024, 1, 15, 9, 15), "Store C", "New York", "01", 1);
 
         // Transactions for Card 2
         createTransaction("TX00004", card2, new BigDecimal("500.00"), 
-                LocalDateTime.of(2024, 1, 7, 11, 20), "Store D", "Boston", "01", "1");
+                LocalDateTime.of(2024, 1, 7, 11, 20), "Store D", "Boston", "01", 1);
         createTransaction("TX00005", card2, new BigDecimal("125.50"), 
-                LocalDateTime.of(2024, 1, 12, 16, 30), "Store E", "Boston", "01", "1");
+                LocalDateTime.of(2024, 1, 12, 16, 30), "Store E", "Boston", "01", 1);
     }
 
     /**
@@ -440,7 +440,7 @@ class StatementGenerationJobTest {
      */
     private void createTransaction(String txId, Card card, BigDecimal amount, 
                                   LocalDateTime timestamp, String merchantName, 
-                                  String merchantCity, String typeCode, String categoryCode) {
+                                  String merchantCity, String typeCode, Integer categoryCode) {
         Transaction tx = new Transaction();
         tx.setTransactionId(txId);
         tx.setCard(card);

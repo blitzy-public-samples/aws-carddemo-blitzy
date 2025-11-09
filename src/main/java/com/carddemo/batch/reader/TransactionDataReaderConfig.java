@@ -341,7 +341,7 @@ public class TransactionDataReaderConfig {
             // Extract raw field values
             String transactionId = fieldSet.readString("transactionId").trim();
             String typeCode = fieldSet.readString("typeCode").trim();
-            String categoryCode = fieldSet.readString("categoryCode").trim();
+            Integer categoryCode = Integer.parseInt(fieldSet.readString("categoryCode").trim());
             String transactionSource = fieldSet.readString("transactionSource").trim();
             String description = fieldSet.readString("description").trim();
             String amountString = fieldSet.readString("amount"); // Do NOT trim - fixed 11 chars

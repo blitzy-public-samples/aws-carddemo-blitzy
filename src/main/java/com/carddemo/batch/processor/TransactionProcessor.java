@@ -224,7 +224,7 @@ public class TransactionProcessor implements ItemProcessor<DailyTransactionInput
         Transaction transaction = Transaction.builder()
                 .transactionId(item.getTransactionId())              // DALYTRAN-ID TO TRAN-ID (line 425)
                 .typeCode(item.getTypeCode())                        // DALYTRAN-TYPE-CD TO TRAN-TYPE-CD (line 426)
-                .categoryCode(item.getCategoryCode())                // DALYTRAN-CAT-CD TO TRAN-CAT-CD (line 427)
+                .categoryCode(Integer.parseInt(item.getCategoryCode()))  // DALYTRAN-CAT-CD TO TRAN-CAT-CD (line 427)
                 .transactionSource(item.getTransactionSource())      // DALYTRAN-SOURCE TO TRAN-SOURCE (line 428)
                 .description(item.getDescription())                  // DALYTRAN-DESC TO TRAN-DESC (line 429)
                 .amount(item.getAmount())                            // DALYTRAN-AMT TO TRAN-AMT (line 430)

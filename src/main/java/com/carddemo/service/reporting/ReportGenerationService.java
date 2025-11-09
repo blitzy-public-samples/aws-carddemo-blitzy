@@ -980,12 +980,12 @@ public class ReportGenerationService {
      * grouping and reduction operations.</p>
      */
     private List<ReportResponse.CategoryBreakdown> calculateCategoryBreakdown(List<Transaction> transactions) {
-        Map<String, List<Transaction>> categoryGroups = transactions.stream()
+        Map<Integer, List<Transaction>> categoryGroups = transactions.stream()
                 .collect(Collectors.groupingBy(Transaction::getCategoryCode));
 
         return categoryGroups.entrySet().stream()
                 .map(entry -> {
-                    String categoryCode = entry.getKey();
+                    Integer categoryCode = entry.getKey();
                     List<Transaction> categoryTransactions = entry.getValue();
 
                     BigDecimal categoryTotal = categoryTransactions.stream()
@@ -996,14 +996,15 @@ public class ReportGenerationService {
                     // Look up category name from reference table
                     // Use findByIdCategoryCode since we only have categoryCode, not full composite key
                     // All categories with same code share the same description, so take first match
-                    String categoryName = transactionCategoryRepository.findByIdCategoryCode(categoryCode)
+                    String categoryCodeStr = categoryCode != null ? categoryCode.toString() : "";
+                    String categoryName = transactionCategoryRepository.findByIdCategoryCode(categoryCodeStr)
                             .stream()
                             .findFirst()
                             .map(TransactionCategory::getCategoryDescription)
                             .orElse("Unknown Category");
 
                     return ReportResponse.CategoryBreakdown.builder()
-                            .categoryCode(categoryCode)
+                            .categoryCode(categoryCodeStr)
                             .categoryName(categoryName)
                             .transactionCount((long) categoryTransactions.size())
                             .totalAmount(categoryTotal)
@@ -1119,7 +1120,7 @@ public class ReportGenerationService {
                         .merchantCity(transaction.getMerchantCity())
                         .amount(transaction.getAmount())
                         .typeCode(transaction.getTypeCode())
-                        .categoryCode(transaction.getCategoryCode())
+                        .categoryCode(transaction.getCategoryCode() != null ? transaction.getCategoryCode().toString() : null)
                         .description(transaction.getDescription())
                         .build())
                 .collect(Collectors.toList());

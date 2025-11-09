@@ -645,23 +645,16 @@ public class TransactionViewService {
         
         // Lookup category description via categoryCode (optional)
         String categoryDescription = null;
-        String categoryCodeStr = transaction.getCategoryCode();
-        Integer categoryCode = null;
+        Integer categoryCode = transaction.getCategoryCode();
         
-        // Convert String categoryCode to Integer for DTO
-        if (categoryCodeStr != null && !categoryCodeStr.trim().isEmpty()) {
-            try {
-                categoryCode = Integer.parseInt(categoryCodeStr);
-                log.debug("Looking up category description for categoryCode: {}", categoryCode);
-                // TransactionCategory has composite key, but we'll try to find it
-                // Note: The actual findById may need both typeCode and categoryCode
-                // For now, we'll attempt lookup and handle if not found
-                // Since we don't have the full composite key structure visible, we'll gracefully handle
-                categoryDescription = null; // Will be enriched when repository method signature is confirmed
-            } catch (NumberFormatException e) {
-                log.warn("Invalid categoryCode format, cannot convert to Integer: {}", categoryCodeStr);
-                categoryCode = null;
-            }
+        // Lookup category description if categoryCode is present
+        if (categoryCode != null) {
+            log.debug("Looking up category description for categoryCode: {}", categoryCode);
+            // TransactionCategory has composite key, but we'll try to find it
+            // Note: The actual findById may need both typeCode and categoryCode
+            // For now, we'll attempt lookup and handle if not found
+            // Since we don't have the full composite key structure visible, we'll gracefully handle
+            categoryDescription = null; // Will be enriched when repository method signature is confirmed
         }
         
         // Lookup type description via typeCode (optional)
