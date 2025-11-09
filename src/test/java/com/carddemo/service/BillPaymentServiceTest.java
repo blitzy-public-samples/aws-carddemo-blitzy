@@ -67,6 +67,8 @@ import org.springframework.dao.DataIntegrityViolationException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -177,7 +179,7 @@ public class BillPaymentServiceTest {
                 .transactionSource("POS TERM")
                 .description(PAYMENT_DESCRIPTION)
                 .amount(new BigDecimal("500.00").setScale(2, RoundingMode.HALF_UP))
-                .cardNumber(TEST_CARD_NUMBER)
+                .card(mockCard)
                 .merchantId(999999999L)
                 .merchantName("BILL PAYMENT")
                 .originationTimestamp(LocalDateTime.now())
@@ -227,7 +229,7 @@ public class BillPaymentServiceTest {
 
         // Mock repository behaviors
         when(accountRepository.findById(TEST_ACCOUNT_ID)).thenReturn(Optional.of(mockAccount));
-        when(cardRepository.findByAccount_AccountId(TEST_ACCOUNT_ID)).thenReturn(Optional.of(mockCard));
+        when(cardRepository.findByAccount_AccountId(TEST_ACCOUNT_ID)).thenReturn(Collections.singletonList(mockCard));
         when(transactionRepository.findTopByOrderByTransactionIdDesc())
                 .thenReturn(Optional.of(mockTransaction));
         when(accountRepository.save(any(Account.class))).thenReturn(mockAccount);
@@ -266,7 +268,7 @@ public class BillPaymentServiceTest {
         assertThat(savedTransaction.getTypeCode()).isEqualTo(PAYMENT_TYPE_CODE);
         assertThat(savedTransaction.getCategoryCode()).isEqualTo(PAYMENT_CATEGORY_CODE);
         assertThat(savedTransaction.getDescription()).isEqualTo(PAYMENT_DESCRIPTION);
-        assertThat(savedTransaction.getCardNumber()).isEqualTo(TEST_CARD_NUMBER);
+        assertThat(savedTransaction.getCard().getCardNumber()).isEqualTo(TEST_CARD_NUMBER);
         assertThat(savedTransaction.getOriginationTimestamp()).isNotNull();
         assertThat(savedTransaction.getProcessingTimestamp()).isNotNull();
 
@@ -324,8 +326,11 @@ public class BillPaymentServiceTest {
         // Act & Assert
         assertThatThrownBy(() -> billPaymentService.processBillPayment(request))
                 .isInstanceOf(BusinessLogicException.class)
-                .hasMessageContaining("INSUFFICIENT_BALANCE")
-                .hasMessageContaining("nothing to pay");
+                .satisfies(exception -> {
+                    BusinessLogicException ble = (BusinessLogicException) exception;
+                    assertThat(ble.getErrorCode()).isEqualTo("INSUFFICIENT_BALANCE");
+                    assertThat(ble.getMessage()).containsIgnoringCase("nothing to pay");
+                });
 
         // Verify no updates performed when validation fails
         verify(accountRepository, never()).save(any(Account.class));
@@ -367,7 +372,10 @@ public class BillPaymentServiceTest {
         // Act & Assert
         assertThatThrownBy(() -> billPaymentService.processBillPayment(request))
                 .isInstanceOf(BusinessLogicException.class)
-                .hasMessageContaining("INSUFFICIENT_BALANCE");
+                .satisfies(exception -> {
+                    BusinessLogicException ble = (BusinessLogicException) exception;
+                    assertThat(ble.getErrorCode()).isEqualTo("INSUFFICIENT_BALANCE");
+                });
 
         // Verify no updates performed
         verify(accountRepository, never()).save(any(Account.class));
@@ -507,7 +515,7 @@ public class BillPaymentServiceTest {
                 .build();
 
         when(accountRepository.findById(TEST_ACCOUNT_ID)).thenReturn(Optional.of(precisionAccount));
-        when(cardRepository.findByAccount_AccountId(TEST_ACCOUNT_ID)).thenReturn(Optional.of(mockCard));
+        when(cardRepository.findByAccount_AccountId(TEST_ACCOUNT_ID)).thenReturn(Collections.singletonList(mockCard));
         when(transactionRepository.findTopByOrderByTransactionIdDesc())
                 .thenReturn(Optional.of(mockTransaction));
         when(accountRepository.save(any(Account.class))).thenReturn(precisionAccount);
@@ -581,7 +589,7 @@ public class BillPaymentServiceTest {
                 .build();
 
         when(accountRepository.findById(TEST_ACCOUNT_ID)).thenReturn(Optional.of(mockAccount));
-        when(cardRepository.findByAccount_AccountId(TEST_ACCOUNT_ID)).thenReturn(Optional.of(mockCard));
+        when(cardRepository.findByAccount_AccountId(TEST_ACCOUNT_ID)).thenReturn(Collections.singletonList(mockCard));
         when(transactionRepository.findTopByOrderByTransactionIdDesc())
                 .thenReturn(Optional.of(mockTransaction));
         
@@ -592,7 +600,10 @@ public class BillPaymentServiceTest {
         // Act & Assert
         assertThatThrownBy(() -> billPaymentService.processBillPayment(request))
                 .isInstanceOf(BusinessLogicException.class)
-                .hasMessageContaining("DUPLICATE_TRANSACTION_ID");
+                .satisfies(exception -> {
+                    BusinessLogicException ble = (BusinessLogicException) exception;
+                    assertThat(ble.getErrorCode()).isEqualTo("DUPLICATE_TRANSACTION_ID");
+                });
 
         // Verify account save NOT called when transaction save fails
         // This validates that rollback occurs before account update in transaction boundary
@@ -651,7 +662,7 @@ public class BillPaymentServiceTest {
                 .build();
 
         when(accountRepository.findById(TEST_ACCOUNT_ID)).thenReturn(Optional.of(testAccount));
-        when(cardRepository.findByAccount_AccountId(TEST_ACCOUNT_ID)).thenReturn(Optional.of(mockCard));
+        when(cardRepository.findByAccount_AccountId(TEST_ACCOUNT_ID)).thenReturn(Collections.singletonList(mockCard));
         when(transactionRepository.findTopByOrderByTransactionIdDesc())
                 .thenReturn(Optional.of(mockTransaction));
         when(accountRepository.save(any(Account.class))).thenReturn(testAccount);
@@ -681,7 +692,7 @@ public class BillPaymentServiceTest {
         assertThat(savedTransaction.getAmount().scale()).isEqualTo(2);
 
         // Verify card number from cross-reference (line 225)
-        assertThat(savedTransaction.getCardNumber()).isEqualTo(TEST_CARD_NUMBER);
+        assertThat(savedTransaction.getCard().getCardNumber()).isEqualTo(TEST_CARD_NUMBER);
 
         // Verify merchant information (lines 226-227)
         assertThat(savedTransaction.getMerchantId()).isEqualTo(999999999L);
@@ -765,7 +776,7 @@ public class BillPaymentServiceTest {
         reset(accountRepository, transactionRepository, cardRepository);
         
         when(accountRepository.findById(TEST_ACCOUNT_ID)).thenReturn(Optional.of(scenarioAccount));
-        when(cardRepository.findByAccount_AccountId(TEST_ACCOUNT_ID)).thenReturn(Optional.of(mockCard));
+        when(cardRepository.findByAccount_AccountId(TEST_ACCOUNT_ID)).thenReturn(Collections.singletonList(mockCard));
         when(transactionRepository.findTopByOrderByTransactionIdDesc())
                 .thenReturn(Optional.of(mockTransaction));
         when(accountRepository.save(any(Account.class))).thenReturn(scenarioAccount);
