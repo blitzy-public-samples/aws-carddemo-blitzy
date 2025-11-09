@@ -255,15 +255,15 @@ public class AccountDataLoadJob {
      * restart from last committed chunk on job failure. This matches COBOL JCL restart
      * functionality from Section 0.10.</p>
      * 
-     * @param reader the account reader bean (injected by Spring with @StepScope)
+     * @param step the account data load step bean (injected by Spring)
      * @return configured Job bean for account data loading
      */
     @Bean
-    public Job accountDataLoadBatchJob(@Qualifier("csvAccountReader") ItemReader<Account> reader) {
+    public Job accountDataLoadBatchJob(@Qualifier("accountDataLoadStep") Step step) {
         return jobBuilderFactory.get("accountDataLoadJob")
                 .incrementer(new RunIdIncrementer())
                 .listener(jobExecutionListener())
-                .flow(accountDataLoadStep(reader))
+                .flow(step)
                 .end()
                 .build();
     }
@@ -326,10 +326,15 @@ public class AccountDataLoadJob {
      *   <li>Chunk size balanced between throughput and rollback granularity</li>
      * </ul>
      * 
+     * <p><strong>@StepScope Bean Resolution:</strong></p>
+     * <p>The csvAccountReader is a @StepScope bean that is injected by Spring at step
+     * execution time, allowing proper management of the @StepScope lifecycle and runtime
+     * injection of job parameters.</p>
+     * 
      * @param reader the account reader bean (injected by Spring with @StepScope)
      * @return configured Step bean for account data loading
      */
-    @Bean
+    @Bean(name = "accountDataLoadStep")
     public Step accountDataLoadStep(@Qualifier("csvAccountReader") ItemReader<Account> reader) {
         return stepBuilderFactory.get("accountDataLoadStep")
                 .<Account, Account>chunk(chunkSize)

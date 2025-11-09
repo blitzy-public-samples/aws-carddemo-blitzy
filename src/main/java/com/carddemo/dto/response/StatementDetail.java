@@ -73,14 +73,14 @@ import java.time.format.DateTimeFormatter;
  * @see <a href="https://docs.spring.io/spring-batch/docs/current/reference/html/index.html">Spring Batch Documentation</a>
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public record StatementDetail(
+public class StatementDetail {
     
     /**
      * Transaction identifier (16 characters).
      * Maps from TRAN-ID field in CVTRA05Y.cpy.
      * Format: Alphanumeric, padded with spaces if needed.
      */
-    String transactionId,
+    private final String transactionId;
     
     /**
      * Transaction origination date.
@@ -88,14 +88,14 @@ public record StatementDetail(
      * Format: yyyy-MM-dd (ISO 8601 date format).
      */
     @JsonFormat(pattern = "yyyy-MM-dd")
-    LocalDate transactionDate,
+    private final LocalDate transactionDate;
     
     /**
      * Transaction description combining merchant name and transaction details.
      * Concatenated from TRAN-MERCHANT-NAME and TRAN-DESC fields.
      * Format: "Merchant Name - Description"
      */
-    String description,
+    private final String description;
     
     /**
      * Transaction amount with 2 decimal precision.
@@ -104,21 +104,21 @@ public record StatementDetail(
      * Format: "-9999999999.99" (negative sign prefix for debits).
      */
     @JsonFormat(shape = JsonFormat.Shape.STRING)
-    BigDecimal amount,
+    private final BigDecimal amount;
     
     /**
      * Formatted merchant information concatenating name, city, and zip.
      * Format: "Merchant Name, City, ZIP"
      * Example: "Amazon.com, Seattle, 98101"
      */
-    String merchantInfo,
+    private final String merchantInfo;
     
     /**
      * Masked card number showing only last 4 digits.
      * Maps from TRAN-CARD-NUM with masking applied.
      * Format: "************1234" (12 asterisks + last 4 digits)
      */
-    String cardNumber,
+    private final String cardNumber;
     
     /**
      * Running account balance after this transaction posts.
@@ -128,12 +128,64 @@ public record StatementDetail(
      * Format: "9999999999.99" (10 integer digits, 2 decimal places)
      */
     @JsonFormat(shape = JsonFormat.Shape.STRING)
-    BigDecimal accountBalance
-    
-) {
+    private final BigDecimal accountBalance;
     
     /**
-     * Compact constructor for validation and normalization.
+     * Account identifier for this statement.
+     * Maps from ACCT-ID field in CVACT01Y.cpy.
+     * Format: 11-digit numeric account number.
+     */
+    private final Long accountId;
+    
+    /**
+     * Customer full name for statement header.
+     * Concatenated from customer first name, middle name (if present), and last name.
+     * Maps from CUST-FIRST-NAME, CUST-MIDDLE-NAME, CUST-LAST-NAME in CVCUS01Y.cpy.
+     * Format: "FirstName MiddleName LastName" or "FirstName LastName"
+     */
+    private final String customerName;
+    
+    /**
+     * Customer address line 1 for statement mailing address.
+     * Maps from CUST-ADDR-LINE-1 field in CVCUS01Y.cpy (50 characters).
+     */
+    private final String addressLine1;
+    
+    /**
+     * Customer address line 2 for statement mailing address.
+     * Maps from CUST-ADDR-LINE-2 field in CVCUS01Y.cpy (50 characters).
+     * May be null or empty if customer has single-line address.
+     */
+    private final String addressLine2;
+    
+    /**
+     * Customer address line 3 for statement mailing address (city, state, zip).
+     * Maps from CUST-ADDR-LINE-3 field in CVCUS01Y.cpy (50 characters).
+     * Typically contains: "City, ST ZIP"
+     */
+    private final String addressLine3;
+    
+    /**
+     * Account current balance for statement summary.
+     * Same as accountBalance field but kept separate for clarity.
+     * Maps from ACCT-CURR-BAL field in CVACT01Y.cpy.
+     * Serialized as string to prevent JavaScript Number precision loss.
+     * Format: "9999999999.99" (10 integer digits, 2 decimal places)
+     */
+    @JsonFormat(shape = JsonFormat.Shape.STRING)
+    private final BigDecimal currentBalance;
+    
+    /**
+     * Account credit limit for statement summary.
+     * Maps from ACCT-CREDIT-LIMIT field in CVACT01Y.cpy (PIC S9(10)V99 COMP-3).
+     * Serialized as string to prevent JavaScript Number precision loss.
+     * Format: "9999999999.99" (10 integer digits, 2 decimal places)
+     */
+    @JsonFormat(shape = JsonFormat.Shape.STRING)
+    private final BigDecimal creditLimit;
+    
+    /**
+     * Constructor for validation and normalization.
      * Ensures all BigDecimal values have consistent scale of 2 decimal places
      * matching COBOL COMP-3 precision from mainframe source.
      * 
@@ -144,15 +196,103 @@ public record StatementDetail(
      * @param merchantInfo Formatted merchant information (required, non-null)
      * @param cardNumber Masked card number (required, non-null)
      * @param accountBalance Running balance with 2 decimal scale (required, non-null)
+     * @param accountId Account identifier (required, non-null)
+     * @param customerName Customer full name (required, non-null)
+     * @param addressLine1 Customer address line 1 (required, non-null)
+     * @param addressLine2 Customer address line 2 (may be null)
+     * @param addressLine3 Customer address line 3 (may be null)
+     * @param currentBalance Account current balance with 2 decimal scale (required, non-null)
+     * @param creditLimit Account credit limit with 2 decimal scale (required, non-null)
      */
-    public StatementDetail {
+    public StatementDetail(
+            String transactionId,
+            LocalDate transactionDate,
+            String description,
+            BigDecimal amount,
+            String merchantInfo,
+            String cardNumber,
+            BigDecimal accountBalance,
+            Long accountId,
+            String customerName,
+            String addressLine1,
+            String addressLine2,
+            String addressLine3,
+            BigDecimal currentBalance,
+            BigDecimal creditLimit) {
+        this.transactionId = transactionId;
+        this.transactionDate = transactionDate;
+        this.description = description;
+        this.merchantInfo = merchantInfo;
+        this.cardNumber = cardNumber;
+        this.accountId = accountId;
+        this.customerName = customerName;
+        this.addressLine1 = addressLine1;
+        this.addressLine2 = addressLine2;
+        this.addressLine3 = addressLine3;
+        
         // Ensure amounts have consistent 2 decimal place scale (COBOL COMP-3 precision)
-        if (amount != null) {
-            amount = amount.setScale(2, RoundingMode.HALF_UP);
-        }
-        if (accountBalance != null) {
-            accountBalance = accountBalance.setScale(2, RoundingMode.HALF_UP);
-        }
+        this.amount = (amount != null) ? amount.setScale(2, RoundingMode.HALF_UP) : null;
+        this.accountBalance = (accountBalance != null) ? accountBalance.setScale(2, RoundingMode.HALF_UP) : null;
+        this.currentBalance = (currentBalance != null) ? currentBalance.setScale(2, RoundingMode.HALF_UP) : null;
+        this.creditLimit = (creditLimit != null) ? creditLimit.setScale(2, RoundingMode.HALF_UP) : null;
+    }
+    
+    // JavaBean-style getters for JasperReports compatibility
+    
+    public String getTransactionId() {
+        return transactionId;
+    }
+    
+    public LocalDate getTransactionDate() {
+        return transactionDate;
+    }
+    
+    public String getDescription() {
+        return description;
+    }
+    
+    public BigDecimal getAmount() {
+        return amount;
+    }
+    
+    public String getMerchantInfo() {
+        return merchantInfo;
+    }
+    
+    public String getCardNumber() {
+        return cardNumber;
+    }
+    
+    public BigDecimal getAccountBalance() {
+        return accountBalance;
+    }
+    
+    public Long getAccountId() {
+        return accountId;
+    }
+    
+    public String getCustomerName() {
+        return customerName;
+    }
+    
+    public String getAddressLine1() {
+        return addressLine1;
+    }
+    
+    public String getAddressLine2() {
+        return addressLine2;
+    }
+    
+    public String getAddressLine3() {
+        return addressLine3;
+    }
+    
+    public BigDecimal getCurrentBalance() {
+        return currentBalance;
+    }
+    
+    public BigDecimal getCreditLimit() {
+        return creditLimit;
     }
     
     /**
@@ -170,6 +310,7 @@ public record StatementDetail(
      *   <li>Format merchant information (name, city, zip)</li>
      *   <li>Mask card number (show last 4 digits only)</li>
      *   <li>Calculate running balance by applying transaction to previous balance</li>
+     *   <li>Format customer and account information for statement header</li>
      * </ol>
      * 
      * @param transactionId Transaction identifier (16 characters)
@@ -181,6 +322,13 @@ public record StatementDetail(
      * @param merchantZip Merchant ZIP code
      * @param cardNumber Full card number (16 digits)
      * @param previousBalance Account balance before this transaction
+     * @param accountId Account identifier
+     * @param customerName Customer full name
+     * @param addressLine1 Customer address line 1
+     * @param addressLine2 Customer address line 2
+     * @param addressLine3 Customer address line 3
+     * @param currentBalance Account current balance
+     * @param creditLimit Account credit limit
      * @return Fully formatted StatementDetail instance ready for report rendering
      */
     public static StatementDetail fromTransactionData(
@@ -192,7 +340,14 @@ public record StatementDetail(
             String merchantCity,
             String merchantZip,
             String cardNumber,
-            BigDecimal previousBalance) {
+            BigDecimal previousBalance,
+            Long accountId,
+            String customerName,
+            String addressLine1,
+            String addressLine2,
+            String addressLine3,
+            BigDecimal currentBalance,
+            BigDecimal creditLimit) {
         
         LocalDate txnDate = parseTransactionDate(transactionTimestamp);
         String description = formatDescription(merchantName, transactionDescription);
@@ -208,7 +363,14 @@ public record StatementDetail(
             amount,
             merchantInfo,
             maskedCard,
-            balance
+            balance,
+            accountId,
+            customerName,
+            addressLine1,
+            addressLine2,
+            addressLine3,
+            formatAmount(currentBalance),
+            formatAmount(creditLimit)
         );
     }
     
@@ -249,6 +411,13 @@ public record StatementDetail(
         private String merchantInfo;
         private String cardNumber;
         private BigDecimal accountBalance;
+        private Long accountId;
+        private String customerName;
+        private String addressLine1;
+        private String addressLine2;
+        private String addressLine3;
+        private BigDecimal currentBalance;
+        private BigDecimal creditLimit;
         
         private Builder() {}
         
@@ -287,6 +456,41 @@ public record StatementDetail(
             return this;
         }
         
+        public Builder accountId(Long accountId) {
+            this.accountId = accountId;
+            return this;
+        }
+        
+        public Builder customerName(String customerName) {
+            this.customerName = customerName;
+            return this;
+        }
+        
+        public Builder addressLine1(String addressLine1) {
+            this.addressLine1 = addressLine1;
+            return this;
+        }
+        
+        public Builder addressLine2(String addressLine2) {
+            this.addressLine2 = addressLine2;
+            return this;
+        }
+        
+        public Builder addressLine3(String addressLine3) {
+            this.addressLine3 = addressLine3;
+            return this;
+        }
+        
+        public Builder currentBalance(BigDecimal currentBalance) {
+            this.currentBalance = currentBalance;
+            return this;
+        }
+        
+        public Builder creditLimit(BigDecimal creditLimit) {
+            this.creditLimit = creditLimit;
+            return this;
+        }
+        
         /**
          * Builds the immutable StatementDetail instance.
          * 
@@ -301,7 +505,14 @@ public record StatementDetail(
                 amount,
                 merchantInfo,
                 cardNumber,
-                accountBalance
+                accountBalance,
+                accountId,
+                customerName,
+                addressLine1,
+                addressLine2,
+                addressLine3,
+                currentBalance,
+                creditLimit
             );
         }
     }

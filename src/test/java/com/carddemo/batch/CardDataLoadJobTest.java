@@ -7,6 +7,7 @@ import com.carddemo.entity.Customer;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.CustomerRepository;
+import com.carddemo.repository.TransactionRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -245,6 +246,16 @@ public class CardDataLoadJobTest {
     private CustomerRepository customerRepository;
 
     /**
+     * TransactionRepository - Spring Data JPA Repository for Transaction Entity
+     * 
+     * <p>Used in tests to clean up test Transaction entities. Required because
+     * Transaction entities may reference Card entities through foreign keys,
+     * requiring deletion before cards can be deleted.</p>
+     */
+    @Autowired
+    private TransactionRepository transactionRepository;
+
+    /**
      * Test Data File Path
      * 
      * <p>Temporary file path for test CSV files created during test execution.
@@ -284,16 +295,20 @@ public class CardDataLoadJobTest {
      * Test Setup Method
      * 
      * <p>Executed before each test method. Initializes test data file path and
-     * ensures clean database state by deleting all cards and accounts from previous
+     * ensures clean database state by deleting all entities from previous
      * tests. This prevents test pollution and ensures each test starts with a clean
      * slate matching H2 in-memory database initialization.</p>
      * 
      * <p><strong>Database Cleanup Order:</strong></p>
      * <ol>
-     *   <li>Delete all Card entities first (due to foreign key dependency)</li>
-     *   <li>Delete all Account entities second (referenced by cards)</li>
-     *   <li>Delete all Customer entities third (referenced by accounts)</li>
+     *   <li>Delete all Transaction entities first (may reference cards)</li>
+     *   <li>Delete all Card entities second (due to foreign key dependency)</li>
+     *   <li>Delete all Account entities third (referenced by cards)</li>
+     *   <li>Delete all Customer entities fourth (referenced by accounts)</li>
      * </ol>
+     * 
+     * <p>Uses deleteAllInBatch() to execute direct SQL DELETE statements without loading entities,
+     * avoiding EntityNotFoundException when orphaned foreign key references exist from previous test failures.</p>
      * 
      * @throws Exception if database cleanup fails
      */
@@ -303,9 +318,12 @@ public class CardDataLoadJobTest {
         jobLauncherTestUtils.setJob(cardDataLoadJob);
         
         // Clean database state before each test
-        cardRepository.deleteAll();
-        accountRepository.deleteAll();
-        customerRepository.deleteAll();
+        // Use deleteAllInBatch() to avoid loading entities with broken FK references
+        // Delete in order respecting foreign key constraints
+        transactionRepository.deleteAllInBatch();
+        cardRepository.deleteAllInBatch();
+        accountRepository.deleteAllInBatch();
+        customerRepository.deleteAllInBatch();
         
         // Initialize test data file path
         testDataFilePath = System.getProperty("java.io.tmpdir") + File.separator + 
@@ -321,20 +339,27 @@ public class CardDataLoadJobTest {
      * 
      * <p><strong>Cleanup Steps:</strong></p>
      * <ol>
+     *   <li>Delete all Transaction entities from database</li>
      *   <li>Delete all Card entities from database</li>
      *   <li>Delete all Account entities from database</li>
      *   <li>Delete all Customer entities from database</li>
      *   <li>Delete temporary test CSV file from filesystem</li>
      * </ol>
      * 
+     * <p>Uses deleteAllInBatch() to execute direct SQL DELETE statements without loading entities,
+     * avoiding EntityNotFoundException when orphaned foreign key references exist.</p>
+     * 
      * @throws Exception if cleanup operations fail
      */
     @AfterEach
     public void tearDown() throws Exception {
         // Clean database state after each test
-        cardRepository.deleteAll();
-        accountRepository.deleteAll();
-        customerRepository.deleteAll();
+        // Use deleteAllInBatch() to avoid loading entities with broken FK references
+        // Delete in order respecting foreign key constraints
+        transactionRepository.deleteAllInBatch();
+        cardRepository.deleteAllInBatch();
+        accountRepository.deleteAllInBatch();
+        customerRepository.deleteAllInBatch();
         
         // Delete temporary test data file
         File testFile = new File(testDataFilePath);

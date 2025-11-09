@@ -460,8 +460,15 @@ public class StatementDetailProcessor implements ItemProcessor<Transaction, Stat
         // Step 9: Build description combining merchant and transaction description
         String description = buildDescription(transaction);
 
-        // Step 10: Construct immutable StatementDetail record
-        // Returns formatted data ready for PDF/HTML statement generation
+        // Step 10: Format customer name (concatenate first, middle, last names)
+        String customerName = buildCustomerName(customer);
+        
+        // Step 11: Format account and customer information for statement header
+        BigDecimal currentBalance = formatAmount(account.getCurrentBalance());
+        BigDecimal creditLimit = formatAmount(account.getCreditLimit());
+        
+        // Step 12: Construct immutable StatementDetail record
+        // Returns formatted data ready for PDF/HTML statement generation with enriched customer/account data
         return StatementDetail.builder()
                 .transactionId(transaction.getTransactionId())
                 .transactionDate(transactionDate)
@@ -470,6 +477,13 @@ public class StatementDetailProcessor implements ItemProcessor<Transaction, Stat
                 .merchantInfo(merchantInfo)
                 .cardNumber(maskedCardNumber)
                 .accountBalance(accountBalance)
+                .accountId(account.getAccountId())
+                .customerName(customerName)
+                .addressLine1(customer.getAddressLine1())
+                .addressLine2(customer.getAddressLine2())
+                .addressLine3(customer.getAddressLine3())
+                .currentBalance(currentBalance)
+                .creditLimit(creditLimit)
                 .build();
     }
 
@@ -812,5 +826,69 @@ public class StatementDetailProcessor implements ItemProcessor<Transaction, Stat
         } else {
             return "Transaction";
         }
+    }
+
+    /**
+     * Builds customer full name by concatenating first, middle, and last names.
+     * 
+     * <p>Formats customer name for statement header display:</p>
+     * <ul>
+     *   <li>Format with middle name: "FirstName MiddleName LastName"</li>
+     *   <li>Format without middle name: "FirstName LastName"</li>
+     *   <li>Handles missing or empty middle name gracefully</li>
+     * </ul>
+     * 
+     * <p>Maps from COBOL copybook CVCUS01Y.cpy:</p>
+     * <ul>
+     *   <li>CUST-FIRST-NAME (PIC X(25)) → firstName</li>
+     *   <li>CUST-MIDDLE-NAME (PIC X(25)) → middleName (optional)</li>
+     *   <li>CUST-LAST-NAME (PIC X(25)) → lastName</li>
+     * </ul>
+     * 
+     * <p>Example outputs:</p>
+     * <ul>
+     *   <li>"John Michael Smith" (with middle name)</li>
+     *   <li>"Jane Doe" (without middle name)</li>
+     *   <li>"Robert" (only first name present, rare edge case)</li>
+     * </ul>
+     * 
+     * @param customer The customer entity containing name fields
+     * 
+     * @return Formatted customer full name for statement header
+     * 
+     * @throws BusinessLogicException If customer is null or all name fields are null/empty
+     */
+    private String buildCustomerName(Customer customer) {
+        if (customer == null) {
+            throw new BusinessLogicException(
+                    "Cannot build customer name from null customer entity");
+        }
+
+        String firstName = customer.getFirstName();
+        String middleName = customer.getMiddleName();
+        String lastName = customer.getLastName();
+
+        // Validate at least first name is present
+        if (firstName == null || firstName.trim().isEmpty()) {
+            throw new BusinessLogicException(
+                    "Customer first name is null or empty - cannot generate statement header for customer ID: " 
+                    + customer.getCustomerId());
+        }
+
+        // Build full name with optional middle name
+        StringBuilder fullName = new StringBuilder();
+        fullName.append(firstName.trim());
+
+        // Add middle name if present
+        if (middleName != null && !middleName.trim().isEmpty()) {
+            fullName.append(" ").append(middleName.trim());
+        }
+
+        // Add last name if present
+        if (lastName != null && !lastName.trim().isEmpty()) {
+            fullName.append(" ").append(lastName.trim());
+        }
+
+        return fullName.toString();
     }
 }

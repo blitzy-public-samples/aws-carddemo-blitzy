@@ -65,7 +65,6 @@ package com.carddemo;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
 
 /**
  * CardDemoApplication - Main Spring Boot application class
@@ -87,8 +86,8 @@ import org.springframework.batch.core.configuration.annotation.EnableBatchProces
  *       @Controller, and @Configuration classes</li>
  * </ul>
  * 
- * <p>The @EnableBatchProcessing annotation activates Spring Batch infrastructure 
- * including:
+ * <p>Spring Batch infrastructure is configured via BatchConfig.java with 
+ * @EnableBatchProcessing, providing:
  * <ul>
  *   <li>JobRepository: Persistence mechanism for batch job execution metadata</li>
  *   <li>JobLauncher: Interface for launching batch jobs</li>
@@ -212,7 +211,6 @@ import org.springframework.batch.core.configuration.annotation.EnableBatchProces
  * @since 2024
  */
 @SpringBootApplication
-@EnableBatchProcessing
 public class CardDemoApplication {
 
     /**

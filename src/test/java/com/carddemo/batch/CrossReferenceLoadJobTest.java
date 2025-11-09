@@ -7,16 +7,19 @@ import com.carddemo.entity.Customer;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.CustomerRepository;
+import com.carddemo.repository.TransactionRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -166,32 +169,64 @@ public class CrossReferenceLoadJobTest {
     @Autowired
     private CardRepository cardRepository;
 
+    @Autowired
+    private TransactionRepository transactionRepository;
+
+    /**
+     * CrossReferenceLoadJob - Spring Batch Job Bean
+     * 
+     * <p>The Spring Batch job that establishes and validates cross-reference relationships
+     * between Customer, Account, and Card entities. This job replaces COBOL CBTRN01C.cbl
+     * batch program XREF-FILE processing logic.</p>
+     * 
+     * <p>Required for configuring JobLauncherTestUtils in @BeforeEach setup method to specify
+     * which job to execute during test execution. Qualified by bean name "crossReferenceLoadJobBean"
+     * to disambiguate from other Job beans in the application context.</p>
+     */
+    @Autowired
+    @Qualifier("crossReferenceLoadJobBean")
+    private Job crossReferenceLoadJobBean;
+
     /**
      * Test data setup method executed before each test.
      * 
      * <p>Cleans up any existing test data to ensure isolated test execution environment.
      * Each test method creates its own specific test data appropriate for its validation scenario.</p>
+     * 
+     * <p>Uses deleteAllInBatch() to execute direct SQL DELETE statements without loading entities,
+     * avoiding EntityNotFoundException when orphaned foreign key references exist from previous test failures.
+     * Deletion order respects foreign key constraints: Transaction → Card → Account → Customer.</p>
      */
     @BeforeEach
     public void setUp() {
+        // Configure JobLauncherTestUtils with the specific job to test
+        jobLauncherTestUtils.setJob(crossReferenceLoadJobBean);
+        
         // Clean up any existing test data for test isolation
-        cardRepository.deleteAll();
-        accountRepository.deleteAll();
-        customerRepository.deleteAll();
+        // Use deleteAllInBatch() to avoid loading entities with broken FK references
+        // Delete in order respecting foreign key constraints
+        transactionRepository.deleteAllInBatch();
+        cardRepository.deleteAllInBatch();
+        accountRepository.deleteAllInBatch();
+        customerRepository.deleteAllInBatch();
     }
 
     /**
      * Test data cleanup method executed after each test.
      * 
      * <p>Removes all test data to prevent test pollution and ensure database returns to clean state.
-     * Deletion order respects foreign key constraints: Card → Account → Customer.</p>
+     * Deletion order respects foreign key constraints: Transaction → Card → Account → Customer.</p>
+     * 
+     * <p>Uses deleteAllInBatch() to execute direct SQL DELETE statements without loading entities.</p>
      */
     @AfterEach
     public void tearDown() {
         // Clean up test data in order respecting foreign key constraints
-        cardRepository.deleteAll();
-        accountRepository.deleteAll();
-        customerRepository.deleteAll();
+        // Use deleteAllInBatch() to avoid loading entities with broken FK references
+        transactionRepository.deleteAllInBatch();
+        cardRepository.deleteAllInBatch();
+        accountRepository.deleteAllInBatch();
+        customerRepository.deleteAllInBatch();
     }
 
     /**
@@ -325,6 +360,7 @@ public class CrossReferenceLoadJobTest {
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(
                 new JobParametersBuilder()
                         .addLong("run.id", System.currentTimeMillis())
+                        .addString("crossReferenceFile", "app/data/ASCII/cardxref.txt")
                         .toJobParameters()
         );
 
@@ -443,6 +479,7 @@ public class CrossReferenceLoadJobTest {
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(
                 new JobParametersBuilder()
                         .addLong("run.id", System.currentTimeMillis())
+                        .addString("crossReferenceFile", "app/data/ASCII/cardxref.txt")
                         .toJobParameters()
         );
 
@@ -562,6 +599,7 @@ public class CrossReferenceLoadJobTest {
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(
                 new JobParametersBuilder()
                         .addLong("run.id", System.currentTimeMillis())
+                        .addString("crossReferenceFile", "app/data/ASCII/cardxref.txt")
                         .toJobParameters()
         );
 
@@ -687,6 +725,7 @@ public class CrossReferenceLoadJobTest {
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(
                 new JobParametersBuilder()
                         .addLong("run.id", System.currentTimeMillis())
+                        .addString("crossReferenceFile", "app/data/ASCII/cardxref.txt")
                         .toJobParameters()
         );
 
@@ -827,6 +866,7 @@ public class CrossReferenceLoadJobTest {
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(
                 new JobParametersBuilder()
                         .addLong("run.id", System.currentTimeMillis())
+                        .addString("crossReferenceFile", "app/data/ASCII/cardxref.txt")
                         .toJobParameters()
         );
 
@@ -951,6 +991,7 @@ public class CrossReferenceLoadJobTest {
         JobExecution jobExecution = jobLauncherTestUtils.launchJob(
                 new JobParametersBuilder()
                         .addLong("run.id", System.currentTimeMillis())
+                        .addString("crossReferenceFile", "app/data/ASCII/cardxref.txt")
                         .toJobParameters()
         );
 

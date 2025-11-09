@@ -268,7 +268,7 @@ public class Transaction implements Serializable {
      * <p>Used for transaction categorization, reporting, and business logic
      * (e.g., different authorization rules for purchase vs cash advance).</p>
      */
-    @Column(name = "type_code", length = 2)
+    @Column(name = "transaction_type_code", length = 2)
     private String typeCode;
 
     /**
@@ -295,7 +295,7 @@ public class Transaction implements Serializable {
      * <p>Used for spending analysis, rewards program calculation, and merchant
      * category reporting.</p>
      */
-    @Column(name = "category_code", length = 4)
+    @Column(name = "transaction_category_code", length = 4)
     private String categoryCode;
 
     /**

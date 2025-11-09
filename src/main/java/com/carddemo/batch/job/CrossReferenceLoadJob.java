@@ -12,7 +12,7 @@ import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.Step;
-import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
 import org.springframework.batch.core.repository.JobRepository;
@@ -22,7 +22,7 @@ import org.springframework.batch.item.database.JpaItemWriter;
 import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.batch.item.file.builder.FlatFileItemReaderBuilder;
 import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
-import org.springframework.batch.item.file.transform.DelimitedLineTokenizer;
+import org.springframework.batch.item.file.transform.Range;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -117,7 +117,6 @@ import java.util.Optional;
  */
 @Slf4j
 @Configuration
-@EnableBatchProcessing
 @RequiredArgsConstructor
 public class CrossReferenceLoadJob {
 
@@ -194,14 +193,15 @@ public class CrossReferenceLoadJob {
      */
     @Bean
     public Job crossReferenceLoadJobBean(JobRepository jobRepository,
-                                          PlatformTransactionManager transactionManager) {
+                                          PlatformTransactionManager transactionManager,
+                                          FlatFileItemReader<CardXrefRecord> crossReferenceReader) {
         log.info("Configuring crossReferenceLoadJob bean with chunk size {} and skip limit {}", 
                  chunkSize, skipLimit);
         
         return new JobBuilder("crossReferenceLoadJob", jobRepository)
                 .incrementer(new RunIdIncrementer())
                 .listener(crossReferenceJobExecutionListener())
-                .start(crossReferenceLoadStep(jobRepository, transactionManager))
+                .start(crossReferenceLoadStep(jobRepository, transactionManager, crossReferenceReader))
                 .build();
     }
 
@@ -250,12 +250,13 @@ public class CrossReferenceLoadJob {
      */
     @Bean
     public Step crossReferenceLoadStep(JobRepository jobRepository, 
-                                        PlatformTransactionManager transactionManager) {
+                                        PlatformTransactionManager transactionManager,
+                                        FlatFileItemReader<CardXrefRecord> crossReferenceReader) {
         log.info("Configuring crossReferenceLoadStep with chunk size {}", chunkSize);
         
         return new StepBuilder("crossReferenceLoadStep", jobRepository)
                 .<CardXrefRecord, Card>chunk(chunkSize, transactionManager)
-                .reader(crossReferenceReader())
+                .reader(crossReferenceReader)
                 .processor(crossReferenceProcessor())
                 .writer(crossReferenceWriter())
                 .faultTolerant()
@@ -266,55 +267,60 @@ public class CrossReferenceLoadJob {
     }
 
     /**
-     * Creates FlatFileItemReader for parsing CSV cross-reference input file.
+     * Creates FlatFileItemReader for parsing fixed-width cross-reference input file.
      * 
      * <p>This reader transforms COBOL CBTRN01C.cbl DALYTRAN-FILE sequential read operations
      * (ORGANIZATION IS SEQUENTIAL, ACCESS MODE IS SEQUENTIAL lines 29-32) to Spring Batch
-     * FlatFileItemReader with CSV parsing, mapping input records to CardXrefRecord DTO.</p>
+     * FlatFileItemReader with fixed-width parsing, mapping input records to CardXrefRecord DTO.</p>
      * 
      * <p><strong>Input File Format:</strong></p>
-     * <p>CSV format matching XREF-FILE structure from CVACT03Y.cpy copybook:</p>
+     * <p>Fixed-width format matching XREF-FILE structure from CVACT03Y.cpy copybook:</p>
      * <pre>
-     * card_number,customer_id,account_id
-     * 4000123456780001,123456789,12345678901
-     * 4000123456780002,123456789,12345678901
+     * 050002445376574000000005000000000050
+     * 068358619817151600000002700000000027
      * </pre>
      * 
      * <p><strong>Field Mapping:</strong></p>
      * <ul>
-     *   <li><strong>card_number:</strong> PIC X(16) - 16 character card number matching
+     *   <li><strong>card_number:</strong> PIC X(16) positions 1-16 - 16 character card number matching
      *       FD-XREF-CARD-NUM from COBOL XREF-FILE record key</li>
-     *   <li><strong>customer_id:</strong> PIC 9(09) - 9 digit customer ID for relationship
-     *       validation matching FD-CUST-ID from CUSTOMER-FILE</li>
-     *   <li><strong>account_id:</strong> PIC 9(11) - 11 digit account ID for relationship
+     *   <li><strong>account_id:</strong> PIC 9(11) positions 17-27 - 11 digit account ID for relationship
      *       validation matching FD-ACCT-ID from ACCOUNT-FILE</li>
+     *   <li><strong>customer_id:</strong> PIC 9(09) positions 28-36 - 9 digit customer ID for relationship
+     *       validation matching FD-CUST-ID from CUSTOMER-FILE</li>
      * </ul>
      * 
      * <p><strong>Parsing Configuration:</strong></p>
      * <ul>
-     *   <li><strong>Line Tokenizer:</strong> DelimitedLineTokenizer with comma delimiter</li>
+     *   <li><strong>Line Tokenizer:</strong> FixedLengthTokenizer with defined column ranges</li>
      *   <li><strong>Field Set Mapper:</strong> BeanWrapperFieldSetMapper creating
      *       CardXrefRecord instances from parsed fields</li>
-     *   <li><strong>Lines to Skip:</strong> 1 (header row with column names)</li>
+     *   <li><strong>Lines to Skip:</strong> 0 (no header row)</li>
      *   <li><strong>Strict Mode:</strong> true - throws exception on malformed records</li>
      * </ul>
      * 
-     * @return configured FlatFileItemReader for cross-reference CSV input
+     * @param crossReferenceFile path to the input fixed-width file, accepts job parameter with default fallback
+     * @return configured FlatFileItemReader for cross-reference fixed-width input
      * @see CardXrefRecord
-     * @see DelimitedLineTokenizer
+     * @see Range
      * @see BeanWrapperFieldSetMapper
      */
     @Bean
-    public FlatFileItemReader<CardXrefRecord> crossReferenceReader() {
-        log.info("Configuring crossReferenceReader for file: {}", defaultInputFile);
+    @StepScope
+    public FlatFileItemReader<CardXrefRecord> crossReferenceReader(
+            @Value("#{jobParameters['crossReferenceFile'] ?: 'app/data/ASCII/cardxref.txt'}") String crossReferenceFile) {
+        log.info("Configuring crossReferenceReader for file: {}", crossReferenceFile);
         
         return new FlatFileItemReaderBuilder<CardXrefRecord>()
                 .name("crossReferenceReader")
-                .resource(new FileSystemResource(defaultInputFile))
-                .linesToSkip(1)
-                .delimited()
-                .delimiter(",")
-                .names("cardNumber", "customerId", "accountId")
+                .resource(new FileSystemResource(crossReferenceFile))
+                .fixedLength()
+                .columns(new org.springframework.batch.item.file.transform.Range[] {
+                    new org.springframework.batch.item.file.transform.Range(1, 16),   // cardNumber
+                    new org.springframework.batch.item.file.transform.Range(17, 27),  // accountId  
+                    new org.springframework.batch.item.file.transform.Range(28, 36)   // customerId
+                })
+                .names("cardNumber", "accountId", "customerId")
                 .fieldSetMapper(new BeanWrapperFieldSetMapper<>() {{
                     setTargetType(CardXrefRecord.class);
                 }})

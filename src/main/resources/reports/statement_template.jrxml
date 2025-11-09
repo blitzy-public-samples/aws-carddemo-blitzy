@@ -1,0 +1,267 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 
+    CardDemo Statement Template
+    Generates PDF statements for credit card accounts
+    Transformed from CBSTM03A.cbl COBOL batch program
+-->
+<jasperReport xmlns="http://jasperreports.sourceforge.net/jasperreports"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="http://jasperreports.sourceforge.net/jasperreports http://jasperreports.sourceforge.net/xsd/jasperreport.xsd"
+              name="statement_template"
+              pageWidth="595"
+              pageHeight="842"
+              columnWidth="535"
+              leftMargin="30"
+              rightMargin="30"
+              topMargin="20"
+              bottomMargin="20"
+              uuid="4eedbb89-b4f6-4469-9ab6-f642a1688327">
+    
+    <!-- Report Properties -->
+    <property name="ireport.zoom" value="1.0"/>
+    <property name="ireport.x" value="0"/>
+    <property name="ireport.y" value="0"/>
+    
+    <!-- Parameters - Customer and Account Information -->
+    <parameter name="customerName" class="java.lang.String">
+        <defaultValueExpression><![CDATA["Customer Name"]]></defaultValueExpression>
+    </parameter>
+    
+    <parameter name="customerAddress" class="java.lang.String">
+        <defaultValueExpression><![CDATA["Customer Address"]]></defaultValueExpression>
+    </parameter>
+    
+    <parameter name="accountNumber" class="java.lang.String">
+        <defaultValueExpression><![CDATA["0000000000"]]></defaultValueExpression>
+    </parameter>
+    
+    <parameter name="statementPeriod" class="java.lang.String">
+        <defaultValueExpression><![CDATA["Statement Period"]]></defaultValueExpression>
+    </parameter>
+    
+    <parameter name="transactions" class="net.sf.jasperreports.engine.data.JRBeanCollectionDataSource">
+        <defaultValueExpression><![CDATA[new net.sf.jasperreports.engine.data.JRBeanCollectionDataSource(new java.util.ArrayList())]]></defaultValueExpression>
+    </parameter>
+    
+    <!-- Fields for transaction details -->
+    <field name="transactionDate" class="java.time.LocalDate">
+        <fieldDescription><![CDATA[transactionDate]]></fieldDescription>
+    </field>
+    
+    <field name="transactionId" class="java.lang.String">
+        <fieldDescription><![CDATA[transactionId]]></fieldDescription>
+    </field>
+    
+    <field name="merchantInfo" class="java.lang.String">
+        <fieldDescription><![CDATA[merchantInfo]]></fieldDescription>
+    </field>
+    
+    <field name="amount" class="java.math.BigDecimal">
+        <fieldDescription><![CDATA[amount]]></fieldDescription>
+    </field>
+    
+    <!-- Variables -->
+    <variable name="totalAmount" class="java.math.BigDecimal" calculation="Sum">
+        <variableExpression><![CDATA[$F{amount}]]></variableExpression>
+        <initialValueExpression><![CDATA[new java.math.BigDecimal(0)]]></initialValueExpression>
+    </variable>
+    
+    <!-- Title Band -->
+    <title>
+        <band height="120" splitType="Stretch">
+            <staticText>
+                <reportElement x="0" y="0" width="535" height="30" uuid="e0e3b6c9-7e7f-4a6d-9c8b-1f8e7c5d6a3b"/>
+                <textElement textAlignment="Center" verticalAlignment="Middle">
+                    <font size="18" isBold="true"/>
+                </textElement>
+                <text><![CDATA[CARDDEMO CREDIT CARD STATEMENT]]></text>
+            </staticText>
+            
+            <textField>
+                <reportElement x="0" y="40" width="535" height="20" uuid="a1b2c3d4-e5f6-7890-abcd-ef1234567890"/>
+                <textElement textAlignment="Center">
+                    <font size="12"/>
+                </textElement>
+                <textFieldExpression><![CDATA["Statement Period: " + $P{statementPeriod}]]></textFieldExpression>
+            </textField>
+            
+            <staticText>
+                <reportElement x="0" y="70" width="100" height="20" uuid="b2c3d4e5-f6a7-8901-bcde-f12345678901"/>
+                <textElement>
+                    <font size="10" isBold="true"/>
+                </textElement>
+                <text><![CDATA[Customer Name:]]></text>
+            </staticText>
+            
+            <textField>
+                <reportElement x="110" y="70" width="425" height="20" uuid="c3d4e5f6-a7b8-9012-cdef-123456789012"/>
+                <textElement>
+                    <font size="10"/>
+                </textElement>
+                <textFieldExpression><![CDATA[$P{customerName}]]></textFieldExpression>
+            </textField>
+            
+            <staticText>
+                <reportElement x="0" y="90" width="100" height="20" uuid="d4e5f6a7-b8c9-0123-def1-234567890123"/>
+                <textElement>
+                    <font size="10" isBold="true"/>
+                </textElement>
+                <text><![CDATA[Address:]]></text>
+            </staticText>
+            
+            <textField>
+                <reportElement x="110" y="90" width="425" height="20" uuid="e5f6a7b8-c9d0-1234-ef12-345678901234"/>
+                <textElement>
+                    <font size="10"/>
+                </textElement>
+                <textFieldExpression><![CDATA[$P{customerAddress}]]></textFieldExpression>
+            </textField>
+        </band>
+    </title>
+    
+    <!-- Page Header -->
+    <pageHeader>
+        <band height="40" splitType="Stretch">
+            <staticText>
+                <reportElement x="0" y="10" width="100" height="20" uuid="f6a7b8c9-d0e1-2345-f123-456789012345"/>
+                <textElement>
+                    <font size="10" isBold="true"/>
+                </textElement>
+                <text><![CDATA[Account Number:]]></text>
+            </staticText>
+            
+            <textField>
+                <reportElement x="110" y="10" width="425" height="20" uuid="a7b8c9d0-e1f2-3456-1234-567890123456"/>
+                <textElement>
+                    <font size="10"/>
+                </textElement>
+                <textFieldExpression><![CDATA[$P{accountNumber}]]></textFieldExpression>
+            </textField>
+        </band>
+    </pageHeader>
+    
+    <!-- Column Header -->
+    <columnHeader>
+        <band height="30" splitType="Stretch">
+            <staticText>
+                <reportElement mode="Opaque" x="0" y="0" width="80" height="30" backcolor="#CCCCCC" uuid="b8c9d0e1-f2a3-4567-2345-678901234567"/>
+                <box>
+                    <pen lineWidth="0.5"/>
+                </box>
+                <textElement textAlignment="Center" verticalAlignment="Middle">
+                    <font size="10" isBold="true"/>
+                </textElement>
+                <text><![CDATA[Date]]></text>
+            </staticText>
+            
+            <staticText>
+                <reportElement mode="Opaque" x="80" y="0" width="120" height="30" backcolor="#CCCCCC" uuid="c9d0e1f2-a3b4-5678-3456-789012345678"/>
+                <box>
+                    <pen lineWidth="0.5"/>
+                </box>
+                <textElement textAlignment="Center" verticalAlignment="Middle">
+                    <font size="10" isBold="true"/>
+                </textElement>
+                <text><![CDATA[Transaction ID]]></text>
+            </staticText>
+            
+            <staticText>
+                <reportElement mode="Opaque" x="200" y="0" width="235" height="30" backcolor="#CCCCCC" uuid="d0e1f2a3-b4c5-6789-4567-890123456789"/>
+                <box>
+                    <pen lineWidth="0.5"/>
+                </box>
+                <textElement textAlignment="Center" verticalAlignment="Middle">
+                    <font size="10" isBold="true"/>
+                </textElement>
+                <text><![CDATA[Merchant Name]]></text>
+            </staticText>
+            
+            <staticText>
+                <reportElement mode="Opaque" x="435" y="0" width="100" height="30" backcolor="#CCCCCC" uuid="e1f2a3b4-c5d6-7890-5678-901234567890"/>
+                <box>
+                    <pen lineWidth="0.5"/>
+                </box>
+                <textElement textAlignment="Center" verticalAlignment="Middle">
+                    <font size="10" isBold="true"/>
+                </textElement>
+                <text><![CDATA[Amount]]></text>
+            </staticText>
+        </band>
+    </columnHeader>
+    
+    <!-- Detail Band - Transaction Lines -->
+    <detail>
+        <band height="20" splitType="Stretch">
+            <textField pattern="MM/dd/yyyy">
+                <reportElement x="0" y="0" width="80" height="20" uuid="f2a3b4c5-d6e7-8901-6789-012345678901"/>
+                <box>
+                    <pen lineWidth="0.5"/>
+                </box>
+                <textElement textAlignment="Center" verticalAlignment="Middle">
+                    <font size="9"/>
+                </textElement>
+                <textFieldExpression><![CDATA[$F{transactionDate}]]></textFieldExpression>
+            </textField>
+            
+            <textField>
+                <reportElement x="80" y="0" width="120" height="20" uuid="a3b4c5d6-e7f8-9012-7890-123456789012"/>
+                <box>
+                    <pen lineWidth="0.5"/>
+                </box>
+                <textElement textAlignment="Center" verticalAlignment="Middle">
+                    <font size="9"/>
+                </textElement>
+                <textFieldExpression><![CDATA[$F{transactionId}]]></textFieldExpression>
+            </textField>
+            
+            <textField>
+                <reportElement x="200" y="0" width="235" height="20" uuid="b4c5d6e7-f8a9-0123-8901-234567890123"/>
+                <box leftPadding="5">
+                    <pen lineWidth="0.5"/>
+                </box>
+                <textElement verticalAlignment="Middle">
+                    <font size="9"/>
+                </textElement>
+                <textFieldExpression><![CDATA[$F{merchantInfo}]]></textFieldExpression>
+            </textField>
+            
+            <textField pattern="$#,##0.00">
+                <reportElement x="435" y="0" width="100" height="20" uuid="c5d6e7f8-a9b0-1234-9012-345678901234"/>
+                <box rightPadding="5">
+                    <pen lineWidth="0.5"/>
+                </box>
+                <textElement textAlignment="Right" verticalAlignment="Middle">
+                    <font size="9"/>
+                </textElement>
+                <textFieldExpression><![CDATA[$F{amount}]]></textFieldExpression>
+            </textField>
+        </band>
+    </detail>
+    
+    <!-- Summary Band - Total -->
+    <summary>
+        <band height="50" splitType="Stretch">
+            <staticText>
+                <reportElement mode="Opaque" x="335" y="10" width="100" height="30" backcolor="#EEEEEE" uuid="d6e7f8a9-b0c1-2345-0123-456789012345"/>
+                <box>
+                    <pen lineWidth="0.5"/>
+                </box>
+                <textElement textAlignment="Right" verticalAlignment="Middle">
+                    <font size="11" isBold="true"/>
+                </textElement>
+                <text><![CDATA[Total Amount:]]></text>
+            </staticText>
+            
+            <textField pattern="$#,##0.00">
+                <reportElement mode="Opaque" x="435" y="10" width="100" height="30" backcolor="#EEEEEE" uuid="e7f8a9b0-c1d2-3456-1234-567890123456"/>
+                <box rightPadding="5">
+                    <pen lineWidth="0.5"/>
+                </box>
+                <textElement textAlignment="Right" verticalAlignment="Middle">
+                    <font size="11" isBold="true"/>
+                </textElement>
+                <textFieldExpression><![CDATA[$V{totalAmount}]]></textFieldExpression>
+            </textField>
+        </band>
+    </summary>
+</jasperReport>

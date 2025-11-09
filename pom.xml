@@ -236,6 +236,20 @@
 
         <!-- 
             ============================================================================
+            REPORTING DEPENDENCIES
+            ============================================================================
+        -->
+
+        <!-- JasperReports - PDF Report Generation -->
+        <dependency>
+            <groupId>net.sf.jasperreports</groupId>
+            <artifactId>jasperreports</artifactId>
+            <version>6.21.2</version>
+            <!-- PDF statement generation from JRXML templates -->
+        </dependency>
+
+        <!-- 
+            ============================================================================
             API DOCUMENTATION DEPENDENCIES
             ============================================================================
         -->

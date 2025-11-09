@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -170,6 +171,7 @@ public class BatchConfig {
      * @throws Exception if launcher configuration fails
      */
     @Bean
+    @Profile("!test")
     public JobLauncher jobLauncher(JobRepository jobRepository) throws Exception {
         log.info("Configuring job launcher with async task executor");
         

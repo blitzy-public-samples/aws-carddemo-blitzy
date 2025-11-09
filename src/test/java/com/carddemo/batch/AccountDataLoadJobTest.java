@@ -22,7 +22,9 @@ import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
+import com.carddemo.config.TestBatchConfig;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -130,6 +132,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBatchTest
 @SpringBootTest
 @ActiveProfiles("test")
+@Import(TestBatchConfig.class)
 @DisplayName("Account Data Load Job Tests")
 public class AccountDataLoadJobTest {
 

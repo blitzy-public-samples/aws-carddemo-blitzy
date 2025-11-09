@@ -24,7 +24,7 @@ import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
-import org.springframework.batch.core.configuration.annotation.JobScope;
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.item.database.JpaPagingItemReader;
@@ -185,7 +185,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * private JobLauncher jobLauncher;
  * 
  * {@literal @}Autowired
- * {@literal @}Qualifier("statementGenerationJob")
+ * {@literal @}Qualifier("monthlyStatementGenerationJob")
  * private Job statementGenerationJob;
  * 
  * public void generateMonthlyStatements(LocalDate startDate, LocalDate endDate) throws Exception {
@@ -254,16 +254,20 @@ public class StatementGenerationJob implements JobExecutionListener {
      * 
      * <p><b>COBOL Equivalent:</b> JCL job definition for CREASTMT batch job with step execution</p>
      * 
+     * <p><b>Dependency Injection:</b> The statementGenerationStep bean is called via method
+     * reference, allowing Spring to create the proper dependency graph without circular
+     * dependencies.</p>
+     * 
      * @return configured Job instance ready for execution by JobLauncher
      */
-    @Bean(name = "statementGenerationJob")
-    public Job statementGenerationJob() {
-        log.info("Initializing statementGenerationJob bean");
+    @Bean
+    public Job monthlyStatementGenerationJob(Step statementGenerationStep) {
+        log.info("Initializing monthlyStatementGenerationJob bean");
         
         return new JobBuilder("statementGenerationJob", jobRepository)
                 .incrementer(new RunIdIncrementer())
                 .listener(this)
-                .start(statementGenerationStep())
+                .start(statementGenerationStep)
                 .build();
     }
 
@@ -273,9 +277,9 @@ public class StatementGenerationJob implements JobExecutionListener {
      * <p>This method defines the core processing step with:</p>
      * <ul>
      *   <li><b>Chunk Size: 50</b> - Process 50 transactions per commit interval</li>
-     *   <li><b>Reader:</b> transactionReader() - JpaPagingItemReader with JPQL query</li>
+     *   <li><b>Reader:</b> transactionReader - JpaPagingItemReader with JPQL query</li>
      *   <li><b>Processor:</b> statementDetailProcessor - Enriches transaction data</li>
-     *   <li><b>Writer:</b> statementWriter() - Generates PDF statements</li>
+     *   <li><b>Writer:</b> statementWriter - Generates PDF statements</li>
      *   <li><b>Fault Tolerance:</b> Skip limit 10 for transactions with missing data</li>
      * </ul>
      * 
@@ -286,17 +290,23 @@ public class StatementGenerationJob implements JobExecutionListener {
      * after each WRITE operation to STMT-FILE, preserving ACID properties per Section 0.10
      * transaction management requirements.</p>
      * 
+     * <p><b>Step-Scoped Beans:</b> The reader and writer are called via method references,
+     * allowing Spring to create proper proxies for @StepScope beans that receive runtime
+     * job parameters. This avoids circular dependency issues at configuration time.</p>
+     * 
      * @return configured Step instance for statement generation processing
      */
     @Bean
-    public Step statementGenerationStep() {
+    public Step statementGenerationStep(JpaPagingItemReader<Transaction> transactionReader,
+                                       ItemWriter<StatementDetail> statementWriter) {
+        
         log.info("Initializing statementGenerationStep bean with chunk size 50");
         
         return new StepBuilder("statementGenerationStep", jobRepository)
                 .<Transaction, StatementDetail>chunk(50, transactionManager)
-                .reader(transactionReader(null, null))
+                .reader(transactionReader)
                 .processor(statementDetailProcessor)
-                .writer(statementWriter(null))
+                .writer(statementWriter)
                 .faultTolerant()
                 .skipLimit(10)
                 .skip(Exception.class)
@@ -315,8 +325,8 @@ public class StatementGenerationJob implements JobExecutionListener {
      * JOIN FETCH t.card c 
      * JOIN FETCH c.account a 
      * JOIN FETCH a.customer 
-     * WHERE t.transactionDate BETWEEN :startDate AND :endDate 
-     * ORDER BY c.cardNumber, t.transactionDate
+     * WHERE t.originationTimestamp BETWEEN :startDateTime AND :endDateTime 
+     * ORDER BY c.cardNumber, t.originationTimestamp
      * </pre>
      * 
      * <p><b>Query Optimization:</b></p>
@@ -334,7 +344,7 @@ public class StatementGenerationJob implements JobExecutionListener {
      *   <li>PERFORM UNTIL END-OF-FILE='Y' loop for record processing</li>
      * </ul>
      * 
-     * <p><b>Job Scope:</b> This bean is job-scoped allowing dynamic parameter injection
+     * <p><b>Step Scope:</b> This bean is step-scoped allowing dynamic parameter injection
      * for startDate and endDate from JobParameters, enabling configurable statement periods
      * for each job execution (monthly, quarterly, ad-hoc date ranges).</p>
      * 
@@ -343,7 +353,7 @@ public class StatementGenerationJob implements JobExecutionListener {
      * @return configured JpaPagingItemReader for transaction data retrieval
      */
     @Bean
-    @JobScope
+    @StepScope
     public JpaPagingItemReader<Transaction> transactionReader(
             @Value("#{jobParameters['startDate']}") LocalDate startDate,
             @Value("#{jobParameters['endDate']}") LocalDate endDate) {
@@ -354,19 +364,21 @@ public class StatementGenerationJob implements JobExecutionListener {
         reader.setEntityManagerFactory(entityManagerFactory);
         
         // JPQL query with JOIN FETCH for relationship loading
+        // Note: Transaction entity uses originationTimestamp (LocalDateTime), not transactionDate
         String queryString = "SELECT t FROM Transaction t " +
                 "JOIN FETCH t.card c " +
                 "JOIN FETCH c.account a " +
                 "JOIN FETCH a.customer " +
-                "WHERE t.transactionDate BETWEEN :startDate AND :endDate " +
-                "ORDER BY c.cardNumber, t.transactionDate";
+                "WHERE t.originationTimestamp BETWEEN :startDateTime AND :endDateTime " +
+                "ORDER BY c.cardNumber, t.originationTimestamp";
         
         reader.setQueryString(queryString);
         
         // Parameter binding for date range filtering
+        // Convert LocalDate to LocalDateTime for timestamp comparison
         Map<String, Object> parameterValues = new HashMap<>();
-        parameterValues.put("startDate", startDate);
-        parameterValues.put("endDate", endDate);
+        parameterValues.put("startDateTime", startDate.atStartOfDay());
+        parameterValues.put("endDateTime", endDate.plusDays(1).atStartOfDay());
         reader.setParameterValues(parameterValues);
         
         // Page size for memory-efficient processing
@@ -419,7 +431,7 @@ public class StatementGenerationJob implements JobExecutionListener {
      *   <li>PDF generation errors: Log error details and throw exception for transaction rollback</li>
      * </ul>
      * 
-     * <p><b>Job Scope:</b> This bean is job-scoped allowing dynamic parameter injection
+     * <p><b>Step Scope:</b> This bean is step-scoped allowing dynamic parameter injection
      * for outputPath from JobParameters, enabling configurable output directory for each
      * job execution.</p>
      * 
@@ -427,7 +439,7 @@ public class StatementGenerationJob implements JobExecutionListener {
      * @return configured ItemWriter for PDF statement generation
      */
     @Bean
-    @JobScope
+    @StepScope
     public ItemWriter<StatementDetail> statementWriter(
             @Value("#{jobParameters['outputPath'] ?: '${batch.output.statement-directory:./statements}'}") String outputPath) {
         
@@ -492,7 +504,7 @@ public class StatementGenerationJob implements JobExecutionListener {
         
         // Calculate statement total with BigDecimal precision matching COBOL COMP-3 WS-TOTAL-AMT
         BigDecimal statementTotal = statementDetails.stream()
-                .map(StatementDetail::getTransactionAmount)
+                .map(StatementDetail::getAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .setScale(2, RoundingMode.HALF_UP);
         
