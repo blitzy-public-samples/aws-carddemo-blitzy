@@ -179,7 +179,6 @@ public class CardServiceTest {
         // Create test card 1 - Active card with future expiration
         testCard1 = Card.builder()
                 .cardNumber("4000123456789010") // CARD-NUM PIC X(16)
-                .accountId(12345678901L)
                 .account(testAccount)
                 .cvvCode("123") // CARD-CVV-CD PIC 9(03)
                 .embossedName("TEST USER ONE") // CARD-EMBOSSED-NAME PIC X(50)
@@ -191,7 +190,6 @@ public class CardServiceTest {
         // Create test card 2 - Inactive card
         testCard2 = Card.builder()
                 .cardNumber("4000123456789027")
-                .accountId(12345678901L)
                 .account(testAccount)
                 .cvvCode("456")
                 .embossedName("TEST USER TWO")
@@ -203,7 +201,6 @@ public class CardServiceTest {
         // Create test card 3 - Another active card
         testCard3 = Card.builder()
                 .cardNumber("4000123456789034")
-                .accountId(12345678901L)
                 .account(testAccount)
                 .cvvCode("789")
                 .embossedName("TEST USER THREE")
@@ -221,19 +218,19 @@ public class CardServiceTest {
                 Transaction.builder()
                         .transactionId("TXN001") // TRAN-ID PIC X(16)
                         .amount(new BigDecimal("100.50").setScale(2, RoundingMode.HALF_UP)) // TRAN-AMT PIC S9(09)V99 COMP-3
-                        .cardNumber("4000123456789010")
+                        .card(testCard1)
                         .merchantName("Test Merchant 1")
                         .build(),
                 Transaction.builder()
                         .transactionId("TXN002")
                         .amount(new BigDecimal("250.75").setScale(2, RoundingMode.HALF_UP))
-                        .cardNumber("4000123456789010")
+                        .card(testCard1)
                         .merchantName("Test Merchant 2")
                         .build(),
                 Transaction.builder()
                         .transactionId("TXN003")
                         .amount(new BigDecimal("75.25").setScale(2, RoundingMode.HALF_UP))
-                        .cardNumber("4000123456789010")
+                        .card(testCard1)
                         .merchantName("Test Merchant 3")
                         .build()
         );
@@ -263,7 +260,6 @@ public class CardServiceTest {
         for (int i = 0; i < 7; i++) {
             sevenCards.add(Card.builder()
                     .cardNumber("400012345678" + String.format("%04d", i))
-                    .accountId(12345678901L)
                     .account(testAccount)
                     .cvvCode("123")
                     .embossedName("TEST USER " + (i + 1))
@@ -278,7 +274,7 @@ public class CardServiceTest {
         Page<Card> cardPage = new PageImpl<>(sevenCards, pageRequest, sevenCards.size());
 
         // Mock repository to return page with 7 cards
-        when(cardRepository.findByAccountId(eq(12345678901L), any(Pageable.class)))
+        when(cardRepository.findByAccount_AccountId(eq(12345678901L), any(Pageable.class)))
                 .thenReturn(cardPage);
 
         // Act - Call service method matching COBOL PERFORM VARYING loop
@@ -293,7 +289,7 @@ public class CardServiceTest {
 
         // Verify repository called with correct page size
         ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
-        verify(cardRepository).findByAccountId(eq(12345678901L), pageableCaptor.capture());
+        verify(cardRepository).findByAccount_AccountId(eq(12345678901L), pageableCaptor.capture());
         assertThat(pageableCaptor.getValue().getPageSize()).isEqualTo(7);
     }
 
@@ -317,7 +313,7 @@ public class CardServiceTest {
         PageRequest pageRequest = PageRequest.of(0, 7);
         Page<Card> cardPage = new PageImpl<>(testCardList, pageRequest, testCardList.size());
 
-        when(cardRepository.findByAccountId(eq(12345678901L), any(Pageable.class)))
+        when(cardRepository.findByAccount_AccountId(eq(12345678901L), any(Pageable.class)))
                 .thenReturn(cardPage);
 
         // Act
@@ -329,7 +325,7 @@ public class CardServiceTest {
         assertThat(result.getContent()).allMatch(card -> card.getAccountId().equals(12345678901L));
 
         // Verify correct repository method called with account ID filter
-        verify(cardRepository).findByAccountId(eq(12345678901L), any(Pageable.class));
+        verify(cardRepository).findByAccount_AccountId(eq(12345678901L), any(Pageable.class));
         verify(cardRepository, never()).findAll(any(Pageable.class));
     }
 
@@ -346,7 +342,7 @@ public class CardServiceTest {
         PageRequest pageRequest = PageRequest.of(0, 7);
         Page<Card> emptyPage = new PageImpl<>(new ArrayList<>(), pageRequest, 0);
 
-        when(cardRepository.findByAccountId(eq(99999999999L), any(Pageable.class)))
+        when(cardRepository.findByAccount_AccountId(eq(99999999999L), any(Pageable.class)))
                 .thenReturn(emptyPage);
 
         // Act
@@ -373,7 +369,7 @@ public class CardServiceTest {
         PageRequest pageRequest = PageRequest.of(0, 7);
         Page<Card> cardPage = new PageImpl<>(testCardList, pageRequest, testCardList.size());
 
-        when(cardRepository.findByAccountId(eq(12345678901L), any(Pageable.class)))
+        when(cardRepository.findByAccount_AccountId(eq(12345678901L), any(Pageable.class)))
                 .thenReturn(cardPage);
 
         // Act
@@ -419,8 +415,8 @@ public class CardServiceTest {
         // Arrange
         when(cardRepository.findByCardNumber("4000123456789010"))
                 .thenReturn(Optional.of(testCard1));
-        when(transactionRepository.findByCardNumber("4000123456789010"))
-                .thenReturn(testTransactionList);
+        when(transactionRepository.findByCard_CardNumber(eq("4000123456789010"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(testTransactionList));
 
         // Act
         CardResponse result = cardDetailService.getCardDetail("4000123456789010");
@@ -434,7 +430,7 @@ public class CardServiceTest {
 
         // Verify repository method called with correct card number
         verify(cardRepository).findByCardNumber("4000123456789010");
-        verify(transactionRepository).findByCardNumber("4000123456789010");
+        verify(transactionRepository).findByCard_CardNumber(eq("4000123456789010"), any(Pageable.class));
     }
 
     /**
@@ -452,8 +448,8 @@ public class CardServiceTest {
         // Arrange
         when(cardRepository.findByCardNumber("4000123456789010"))
                 .thenReturn(Optional.of(testCard1));
-        when(transactionRepository.findByCardNumber("4000123456789010"))
-                .thenReturn(testTransactionList);
+        when(transactionRepository.findByCard_CardNumber(eq("4000123456789010"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(testTransactionList));
 
         // Act
         CardResponse result = cardDetailService.getCardDetail("4000123456789010");
@@ -464,7 +460,7 @@ public class CardServiceTest {
 
         // Note: Actual transaction summary verification depends on CardResponse structure
         // If CardResponse includes transaction count and total, verify them
-        verify(transactionRepository).findByCardNumber("4000123456789010");
+        verify(transactionRepository).findByCard_CardNumber(eq("4000123456789010"), any(Pageable.class));
     }
 
     /**
@@ -503,8 +499,8 @@ public class CardServiceTest {
         // Arrange
         when(cardRepository.findByCardNumber("4000123456789010"))
                 .thenReturn(Optional.of(testCard1));
-        when(transactionRepository.findByCardNumber("4000123456789010"))
-                .thenReturn(testTransactionList);
+        when(transactionRepository.findByCard_CardNumber(eq("4000123456789010"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(testTransactionList));
 
         // Act
         CardResponse result = cardDetailService.getCardDetail("4000123456789010");
