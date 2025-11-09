@@ -74,7 +74,9 @@ package com.carddemo.controller;
 import com.carddemo.dto.request.AccountUpdateRequest;
 import com.carddemo.dto.response.AccountResponse;
 import com.carddemo.entity.Account;
+import com.carddemo.entity.Customer;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CustomerRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
@@ -95,7 +97,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 
-import static org.hamcrest.Matchers.comparesEqualTo;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
@@ -136,7 +137,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 
  * <p><strong>Data Precision Testing:</strong></p>
  * <ul>
- *   <li>All BigDecimal assertions use comparesEqualTo matcher for exact precision</li>
+ *   <li>All BigDecimal assertions use .doubleValue() for numeric comparison in JSON responses</li>
  *   <li>Validates scale=2 for all monetary fields matching COBOL COMP-3 V99</li>
  *   <li>Tests RoundingMode.HALF_UP behavior matching COBOL arithmetic</li>
  * </ul>
@@ -162,9 +163,13 @@ public class AccountControllerTest {
     @Autowired
     private AccountRepository accountRepository;
 
+    @Autowired
+    private CustomerRepository customerRepository;
+
     // Test data constants matching COBOL CVACT01Y copybook field constraints
     private static final Long TEST_ACCOUNT_ID = 11111111111L; // PIC 9(11)
     private static final Long NON_EXISTENT_ACCOUNT_ID = 99999999999L;
+    private static final Long TEST_CUSTOMER_ID = 100000001L; // PIC 9(09) - Customer ID for test account
     private static final String ACTIVE_STATUS_ACTIVE = "Y"; // ACCT-ACTIVE-STATUS PIC X(01)
     private static final String ACTIVE_STATUS_INACTIVE = "N";
     
@@ -190,24 +195,40 @@ public class AccountControllerTest {
     private static final String ADDRESS_ZIP = "10001";
     private static final String GROUP_ID = "GROUP001";
 
+    private Customer testCustomer;
     private Account testAccount;
 
     /**
      * Setup method executed before each test.
      * 
-     * <p>Creates and persists a test account in the database with all fields
-     * populated matching CVACT01Y ACCOUNT-RECORD copybook structure. Uses
-     * BigDecimal with scale=2 for all monetary fields to match COBOL COMP-3
+     * <p>Creates and persists a test customer and account in the database with all fields
+     * populated matching CVCUS01Y CUSTOMER-RECORD and CVACT01Y ACCOUNT-RECORD copybook
+     * structures. The customer is created first to satisfy the foreign key constraint from
+     * account.customer_id to customer.customer_id.</p>
+     * 
+     * <p>Uses BigDecimal with scale=2 for all monetary fields to match COBOL COMP-3
      * precision requirements.</p>
      * 
-     * <p>This simulates the VSAM ACCTDAT file record used by COBOL programs
-     * COACTVWC and COACTUPC for account operations.</p>
+     * <p>This simulates the VSAM CUSTDAT and ACCTDAT file records used by COBOL programs
+     * COACTVWC and COACTUPC for account operations with cross-reference relationships.</p>
      */
     @BeforeEach
     public void setUp() {
+        // Create test customer matching COBOL CUSTOMER-RECORD structure from CVCUS01Y.cpy
+        // Customer must be created first to satisfy foreign key constraint
+        testCustomer = Customer.builder()
+                .customerId(TEST_CUSTOMER_ID) // CUST-ID PIC 9(09)
+                .firstName("John") // CUST-FIRST-NAME PIC X(25) - Required field
+                .lastName("Doe") // CUST-LAST-NAME PIC X(25) - Required field
+                .build();
+        
+        // Persist test customer to database (replaces EXEC CICS WRITE DATASET('CUSTDAT'))
+        customerRepository.save(testCustomer);
+        
         // Create test account matching COBOL ACCOUNT-RECORD structure from CVACT01Y.cpy
         testAccount = Account.builder()
                 .accountId(TEST_ACCOUNT_ID) // ACCT-ID PIC 9(11)
+                .customer(testCustomer) // Foreign key relationship to customer table
                 .activeStatus(ACTIVE_STATUS_ACTIVE) // ACCT-ACTIVE-STATUS PIC X(01)
                 .currentBalance(CURRENT_BALANCE) // ACCT-CURR-BAL PIC S9(10)V99
                 .creditLimit(CREDIT_LIMIT) // ACCT-CREDIT-LIMIT PIC S9(10)V99
@@ -228,7 +249,8 @@ public class AccountControllerTest {
     /**
      * Teardown method executed after each test.
      * 
-     * <p>Cleans up test data by deleting all accounts from the test database.
+     * <p>Cleans up test data by deleting all accounts and customers from the test database.
+     * Accounts must be deleted first due to foreign key constraint to customer table.
      * This ensures test isolation and prevents data contamination between tests.</p>
      * 
      * <p>Note: @Transactional on individual test methods also provides rollback,
@@ -236,8 +258,12 @@ public class AccountControllerTest {
      */
     @AfterEach
     public void tearDown() {
-        // Clean up test data (replaces EXEC CICS DELETE DATASET('ACCTDAT'))
+        // Clean up test data - accounts first due to foreign key constraint
+        // (replaces EXEC CICS DELETE DATASET('ACCTDAT'))
         accountRepository.deleteAll();
+        
+        // Then delete customers (replaces EXEC CICS DELETE DATASET('CUSTDAT'))
+        customerRepository.deleteAll();
     }
 
     /**
@@ -279,16 +305,16 @@ public class AccountControllerTest {
                     .contentType(MediaType.APPLICATION_JSON))
                     .andExpect(status().isOk())
                     .andExpect(content().contentType(MediaType.APPLICATION_JSON))
-                    // Verify ACCT-ID field (PIC 9(11))
-                    .andExpect(jsonPath("$.accountId", is(TEST_ACCOUNT_ID.intValue())))
+                    // Verify ACCT-ID field (PIC 9(11)) - use Long value directly to avoid overflow
+                    .andExpect(jsonPath("$.accountId").value(TEST_ACCOUNT_ID))
                     // Verify ACCT-ACTIVE-STATUS field (PIC X(01) - 'Y' or 'N')
                     .andExpect(jsonPath("$.activeStatus", is(ACTIVE_STATUS_ACTIVE)))
                     // Verify ACCT-CURR-BAL field (PIC S9(10)V99) - BigDecimal with scale=2
-                    .andExpect(jsonPath("$.currentBalance", comparesEqualTo(CURRENT_BALANCE)))
+                    .andExpect(jsonPath("$.currentBalance").value(CURRENT_BALANCE.doubleValue()))
                     // Verify ACCT-CREDIT-LIMIT field (PIC S9(10)V99) - BigDecimal with scale=2
-                    .andExpect(jsonPath("$.creditLimit", comparesEqualTo(CREDIT_LIMIT)))
+                    .andExpect(jsonPath("$.creditLimit").value(CREDIT_LIMIT.doubleValue()))
                     // Verify ACCT-CASH-CREDIT-LIMIT field (PIC S9(10)V99) - BigDecimal with scale=2
-                    .andExpect(jsonPath("$.cashCreditLimit", comparesEqualTo(CASH_CREDIT_LIMIT)))
+                    .andExpect(jsonPath("$.cashCreditLimit").value(CASH_CREDIT_LIMIT.doubleValue()))
                     // Verify ACCT-OPEN-DATE field (PIC X(10) - ISO-8601 format)
                     .andExpect(jsonPath("$.openDate", is(OPEN_DATE.toString())))
                     // Verify ACCT-EXPIRAION-DATE field (PIC X(10) - ISO-8601 format)
@@ -296,9 +322,9 @@ public class AccountControllerTest {
                     // Verify ACCT-REISSUE-DATE field (PIC X(10) - ISO-8601 format)
                     .andExpect(jsonPath("$.reissueDate", is(REISSUE_DATE.toString())))
                     // Verify ACCT-CURR-CYC-CREDIT field (PIC S9(10)V99) - BigDecimal with scale=2
-                    .andExpect(jsonPath("$.currentCycleCredit", comparesEqualTo(CURRENT_CYCLE_CREDIT)))
+                    .andExpect(jsonPath("$.currentCycleCredit").value(CURRENT_CYCLE_CREDIT.doubleValue()))
                     // Verify ACCT-CURR-CYC-DEBIT field (PIC S9(10)V99) - BigDecimal with scale=2
-                    .andExpect(jsonPath("$.currentCycleDebit", comparesEqualTo(CURRENT_CYCLE_DEBIT)))
+                    .andExpect(jsonPath("$.currentCycleDebit").value(CURRENT_CYCLE_DEBIT.doubleValue()))
                     // Verify ACCT-ADDR-ZIP field (PIC X(10))
                     .andExpect(jsonPath("$.addressZip", is(ADDRESS_ZIP)))
                     // Verify ACCT-GROUP-ID field (PIC X(10))
@@ -379,7 +405,8 @@ public class AccountControllerTest {
             mockMvc.perform(get("/api/accounts/{id}", TEST_ACCOUNT_ID)
                     .contentType(MediaType.APPLICATION_JSON))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.accountId", is(TEST_ACCOUNT_ID.intValue())))
+                    // Verify ACCT-ID field (PIC 9(11)) - use Long value directly to avoid overflow
+                    .andExpect(jsonPath("$.accountId").value(TEST_ACCOUNT_ID))
                     .andExpect(jsonPath("$.activeStatus", is(ACTIVE_STATUS_ACTIVE)));
         }
     }
@@ -435,9 +462,10 @@ public class AccountControllerTest {
                     .content(objectMapper.writeValueAsString(updateRequest)))
                     .andExpect(status().isOk())
                     .andExpect(content().contentType(MediaType.APPLICATION_JSON))
-                    .andExpect(jsonPath("$.accountId", is(TEST_ACCOUNT_ID.intValue())))
-                    .andExpect(jsonPath("$.creditLimit", comparesEqualTo(newCreditLimit)))
-                    .andExpect(jsonPath("$.cashCreditLimit", comparesEqualTo(newCashCreditLimit)))
+                    // Verify ACCT-ID field (PIC 9(11)) - use Long value directly to avoid overflow
+                    .andExpect(jsonPath("$.accountId").value(TEST_ACCOUNT_ID))
+                    .andExpect(jsonPath("$.creditLimit").value(newCreditLimit.doubleValue()))
+                    .andExpect(jsonPath("$.cashCreditLimit").value(newCashCreditLimit.doubleValue()))
                     .andExpect(jsonPath("$.activeStatus", is(ACTIVE_STATUS_ACTIVE)));
             
             // Verify database state after update
@@ -582,7 +610,7 @@ public class AccountControllerTest {
             AccountUpdateRequest updateRequest = AccountUpdateRequest.builder()
                     .accountId(TEST_ACCOUNT_ID)
                     .creditLimit(MIN_CREDIT_LIMIT) // Exactly $1,000.00
-                    .cashCreditLimit(CASH_CREDIT_LIMIT)
+                    .cashCreditLimit(new BigDecimal("500.00")) // Must be <= creditLimit
                     .activeStatus(ACTIVE_STATUS_ACTIVE)
                     .build();
             
@@ -590,7 +618,7 @@ public class AccountControllerTest {
                     .contentType(MediaType.APPLICATION_JSON)
                     .content(objectMapper.writeValueAsString(updateRequest)))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.creditLimit", comparesEqualTo(MIN_CREDIT_LIMIT)));
+                    .andExpect(jsonPath("$.creditLimit").value(MIN_CREDIT_LIMIT.doubleValue()));
         }
 
         /**
@@ -625,7 +653,7 @@ public class AccountControllerTest {
                     .contentType(MediaType.APPLICATION_JSON)
                     .content(objectMapper.writeValueAsString(updateRequest)))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.creditLimit", comparesEqualTo(MAX_CREDIT_LIMIT)));
+                    .andExpect(jsonPath("$.creditLimit").value(MAX_CREDIT_LIMIT.doubleValue()));
         }
 
         /**
@@ -805,7 +833,7 @@ public class AccountControllerTest {
                     .contentType(MediaType.APPLICATION_JSON)
                     .content(objectMapper.writeValueAsString(updateRequest)))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.creditLimit", comparesEqualTo(preciseValue)));
+                    .andExpect(jsonPath("$.creditLimit").value(preciseValue.doubleValue()));
             
             // Verify database precision
             Account updatedAccount = accountRepository.findByAccountId(TEST_ACCOUNT_ID)
@@ -846,9 +874,21 @@ public class AccountControllerTest {
         @Transactional
         @DisplayName("Should handle account with zero balance")
         public void testGetAccount_ZeroBalance() throws Exception {
+            // Create customer for account (required foreign key)
+            Customer zeroBalanceCustomer = Customer.builder()
+                    .customerId(22222222222L)
+                    .firstName("Zero")
+                    .lastName("Balance")
+                    .ssn("222222222")
+                    .dateOfBirth(LocalDate.of(1985, 5, 15))
+                    .ficoScore(700)
+                    .build();
+            customerRepository.save(zeroBalanceCustomer);
+            
             // Create account with zero balance
             Account zeroBalanceAccount = Account.builder()
                     .accountId(22222222222L)
+                    .customer(zeroBalanceCustomer)  // Associate with customer object
                     .activeStatus(ACTIVE_STATUS_ACTIVE)
                     .currentBalance(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
                     .creditLimit(CREDIT_LIMIT)
@@ -867,7 +907,7 @@ public class AccountControllerTest {
             mockMvc.perform(get("/api/accounts/{id}", 22222222222L)
                     .contentType(MediaType.APPLICATION_JSON))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.currentBalance", comparesEqualTo(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))));
+                    .andExpect(jsonPath("$.currentBalance").value(0.0));
         }
 
         /**

@@ -572,6 +572,41 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Handles IllegalArgumentException thrown for invalid request parameters.
+     * 
+     * <p>This handler catches IllegalArgumentException instances thrown when request
+     * parameters or arguments fail business logic validation, such as ID mismatches
+     * between path variables and request body fields.</p>
+     * 
+     * <p><b>COBOL Pattern Replaced:</b> Input validation flag checks in WORKING-STORAGE
+     * section (COACTUPC.cbl: validation for ACCT-ID consistency).</p>
+     * 
+     * <p><b>HTTP Response:</b> 400 Bad Request with error message</p>
+     * 
+     * @param ex the IllegalArgumentException containing validation error details
+     * @param request the HTTP request that triggered the exception
+     * @return ResponseEntity with error details and HTTP 400 status
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalArgumentException(
+            IllegalArgumentException ex,
+            HttpServletRequest request) {
+        
+        logger.warn("Invalid argument - Request path: {} - Error: {}", 
+                request.getRequestURI(), ex.getMessage());
+        
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error(HttpStatus.BAD_REQUEST.getReasonPhrase())
+                .message(ex.getMessage())
+                .path(request.getRequestURI())
+                .build();
+        
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+    }
+
+    /**
      * Handles all other unexpected exceptions not caught by specific handlers.
      * 
      * <p>This is the catch-all handler for any RuntimeException or checked Exception
