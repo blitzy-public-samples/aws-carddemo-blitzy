@@ -11,6 +11,7 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -198,7 +199,7 @@ import java.util.List;
 @AllArgsConstructor
 @Builder
 @JsonInclude(JsonInclude.Include.NON_NULL)
-@JsonPropertyOrder({"reportTitle", "reportDate", "filterCriteria", "transactionSummary", "categoryBreakdown", "transactionList", "exportFormat"})
+@JsonPropertyOrder({"reportTitle", "reportDate", "filterCriteria", "transactionSummary", "categoryBreakdown", "typeBreakdown", "transactions", "totalPages", "currentPage", "totalElements", "monthlyAggregates", "exportFormat"})
 public class ReportResponse {
 
     /**
@@ -216,16 +217,16 @@ public class ReportResponse {
     private String reportTitle;
 
     /**
-     * Date when the report was generated for audit trail and version tracking.
+     * Date and time when the report was generated for audit trail and version tracking.
      * 
-     * <p>Formatted as ISO 8601 date string "yyyy-MM-dd" in JSON serialization.
-     * Always set to current date at report generation time using LocalDate.now()
+     * <p>Formatted as ISO 8601 date-time string "yyyy-MM-dd'T'HH:mm:ss" in JSON serialization.
+     * Always set to current timestamp at report generation time using LocalDateTime.now()
      * in ReportGenerationService, enabling users to identify report freshness and
      * maintain report history with generation timestamps.</p>
      */
     @JsonProperty("reportDate")
-    @JsonFormat(pattern = "yyyy-MM-dd")
-    private LocalDate reportDate;
+    @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
+    private LocalDateTime reportDate;
 
     /**
      * Filter criteria applied to generate this report, enabling client to understand report scope.
@@ -287,31 +288,86 @@ public class ReportResponse {
     @JsonProperty("categoryBreakdown")
     private List<CategoryBreakdown> categoryBreakdown;
 
+
+
+    /**
+     * Per-type transaction breakdown for transaction type analysis.
+     * 
+     * <p>List of TypeBreakdown objects, one per transaction type found in report dataset.
+     * Each entry contains:</p>
+     * <ul>
+     *   <li>typeCode: Transaction type identifier (e.g., "01" for Purchase, "02" for Payment)</li>
+     *   <li>typeName: Human-readable type name from transaction_type table</li>
+     *   <li>transactionCount: Number of transactions of this type</li>
+     *   <li>totalAmount: Sum of transaction amounts for this type</li>
+     * </ul>
+     * 
+     * <p>Ordered by totalAmount descending to show highest transaction type volumes first,
+     * enabling type-based analysis matching COBOL report sections for type subtotals.</p>
+     * 
+     * <p>Null if report does not include type breakdown.</p>
+     */
+    @JsonProperty("typeBreakdown")
+    private List<TypeBreakdown> typeBreakdown;
+
     /**
      * Detailed transaction records included in the report.
      * 
-     * <p>List of TransactionResponse DTOs containing full transaction details for each
-     * transaction matching report filter criteria. Limited to maximum 1000 records to
-     * prevent response payload overflow. For larger datasets, transactionSummary and
-     * categoryBreakdown provide aggregate statistics, and exportFormat enables full
-     * report download as PDF or CSV file.</p>
+     * <p>List of TransactionDetail DTOs containing full transaction details for each
+     * transaction matching report filter criteria. Supports pagination with totalPages,
+     * currentPage, and totalElements fields for efficient large dataset handling.</p>
      * 
-     * <p>Each TransactionResponse includes:</p>
-     * <ul>
-     *   <li>transactionId, typeCode, categoryCode, source, description</li>
-     *   <li>amount (BigDecimal with scale=2 as JSON string)</li>
-     *   <li>merchant information (merchantId, merchantName, merchantCity, merchantZip)</li>
-     *   <li>cardNumber (masked for PCI DSS compliance)</li>
-     *   <li>originationTimestamp and processingTimestamp</li>
-     * </ul>
+     * <p>Each TransactionDetail includes transaction ID, card number, amount, merchant
+     * details, timestamps, and transaction metadata.</p>
      * 
      * <p>Ordered by originationTimestamp descending (most recent first) matching BMS
-     * transaction list screen display order from COTRN00C.cbl program logic.</p>
+     * transaction list screen display order.</p>
      * 
      * <p>Null if report is summary-only without transaction detail list.</p>
      */
-    @JsonProperty("transactionList")
-    private List<TransactionResponse> transactionList;
+    @JsonProperty("transactions")
+    private List<TransactionDetail> transactions;
+
+    /**
+     * Total number of pages available for pagination.
+     * 
+     * <p>Calculated as Math.ceil(totalElements / pageSize) by Spring Data Pageable.
+     * Enables client pagination controls to display page range and navigation.</p>
+     */
+    @JsonProperty("totalPages")
+    private int totalPages;
+
+    /**
+     * Current page number (zero-based) for pagination.
+     * 
+     * <p>Matches Spring Data Pageable page number parameter, enabling client to
+     * track current position in paginated result set.</p>
+     */
+    @JsonProperty("currentPage")
+    private int currentPage;
+
+    /**
+     * Total number of transaction records matching filter criteria.
+     * 
+     * <p>Total count across all pages, enabling client to display "Showing X of Y results"
+     * information and calculate pagination boundaries.</p>
+     */
+    @JsonProperty("totalElements")
+    private long totalElements;
+
+    /**
+     * Monthly aggregation of transactions for trend analysis.
+     * 
+     * <p>List of MonthlyAggregate objects containing transaction statistics grouped
+     * by month, enabling time-series analysis and trend visualization.</p>
+     * 
+     * <p>Each entry contains month identifier, transaction count, total amount, and
+     * average amount for that month period.</p>
+     * 
+     * <p>Null if monthly aggregation not requested or date range spans less than one month.</p>
+     */
+    @JsonProperty("monthlyAggregates")
+    private List<MonthlyAggregate> monthlyAggregates;
 
     /**
      * Report output format indicator for export functionality.
@@ -393,6 +449,26 @@ public class ReportResponse {
         private String cardNumber;
 
         /**
+         * Customer ID filter for customer-specific reports.
+         * 
+         * <p>Long integer customer identifier from customer table enabling targeted
+         * customer reports across all accounts and cards belonging to this customer.
+         * Null if no customer filter applied.</p>
+         */
+        @JsonProperty("customerId")
+        private Long customerId;
+
+        /**
+         * Account ID filter for account-specific reports.
+         * 
+         * <p>Long integer account identifier from account table enabling targeted
+         * account reports for specific account and all cards under that account.
+         * Null if no account filter applied.</p>
+         */
+        @JsonProperty("accountId")
+        private Long accountId;
+
+        /**
          * Transaction type filter for type-based reporting.
          * 
          * <p>2-character transaction type code matching transaction_type table:</p>
@@ -405,8 +481,36 @@ public class ReportResponse {
          * 
          * <p>Null if no type filter applied (all transaction types included).</p>
          */
-        @JsonProperty("transactionType")
-        private String transactionType;
+        @JsonProperty("typeCode")
+        private String typeCode;
+
+        /**
+         * Merchant name filter for merchant-specific reporting.
+         * 
+         * <p>Merchant name substring for partial name matching using SQL LIKE wildcard
+         * search. Service layer constructs query with '%' + merchantName + '%' pattern
+         * enabling flexible merchant search. Null if no merchant filter applied.</p>
+         */
+        @JsonProperty("merchantName")
+        private String merchantName;
+
+        /**
+         * Minimum transaction amount filter.
+         * 
+         * <p>BigDecimal with scale=2 representing minimum transaction amount for range filtering.
+         * Filters transactions with amount >= minAmount. Null if no minimum amount filter applied.</p>
+         */
+        @JsonProperty("minAmount")
+        private BigDecimal minAmount;
+
+        /**
+         * Maximum transaction amount filter.
+         * 
+         * <p>BigDecimal with scale=2 representing maximum transaction amount for range filtering.
+         * Filters transactions with amount <= maxAmount. Null if no maximum amount filter applied.</p>
+         */
+        @JsonProperty("maxAmount")
+        private BigDecimal maxAmount;
 
         /**
          * Category filter for category-specific reporting.
@@ -450,8 +554,8 @@ public class ReportResponse {
          * ADD 1 TO WS-TRAN-COUNT
          * </pre>
          */
-        @JsonProperty("totalCount")
-        private Long totalCount;
+        @JsonProperty("transactionCount")
+        private Long transactionCount;
 
         /**
          * Total sum of all transaction amounts in the report.
@@ -566,8 +670,8 @@ public class ReportResponse {
          * report dataset. Computed using SQL COUNT(*) with GROUP BY category_code or Java
          * Stream groupingBy with counting collector. Never negative.</p>
          */
-        @JsonProperty("count")
-        private Long count;
+        @JsonProperty("transactionCount")
+        private Long transactionCount;
 
         /**
          * Total sum of transaction amounts for this category.
@@ -583,5 +687,235 @@ public class ReportResponse {
         @JsonProperty("totalAmount")
         @JsonFormat(shape = JsonFormat.Shape.STRING)
         private BigDecimal totalAmount;
+    }
+
+    /**
+     * Transaction type breakdown nested class for type-level aggregation.
+     * 
+     * <p>Represents aggregated transaction statistics grouped by transaction type code, enabling
+     * analysis of spending patterns by transaction type (purchases, payments, refunds, fees). This
+     * breakdown complements CategoryBreakdown by providing a different aggregation dimension focused
+     * on transaction type rather than merchant category.</p>
+     * 
+     * <p>Replaces COBOL nested loop type accumulation logic in statement generation programs with
+     * SQL GROUP BY type_code aggregation or Java Stream groupingBy collector for efficient type-based
+     * summarization matching mainframe report type subtotals.</p>
+     */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class TypeBreakdown {
+
+        /**
+         * Transaction type code identifier.
+         * 
+         * <p>2-digit type code from transaction_type table (e.g., "01" for Purchase, "02" for Payment).
+         * References TransactionType.typeCode primary key enabling join for type description lookup.
+         * Matches TRAN-TYPE-CD field from CVTRA03Y.cpy transaction type reference data.</p>
+         */
+        @JsonProperty("typeCode")
+        private String typeCode;
+
+        /**
+         * Human-readable type description for display.
+         * 
+         * <p>Descriptive type name from transaction_type table joined by typeCode. Examples: "Purchase",
+         * "Payment", "Refund", "Fee", "Interest Charge", "Cash Advance". Enables user-friendly report
+         * display without requiring client-side type code lookup.</p>
+         */
+        @JsonProperty("typeName")
+        private String typeName;
+
+        /**
+         * Count of transactions of this type.
+         * 
+         * <p>Long integer representing number of transactions with this typeCode in the report dataset.
+         * Computed using SQL COUNT(*) with GROUP BY type_code or Java Stream groupingBy with counting
+         * collector. Never negative. Enables analysis of transaction type frequency.</p>
+         */
+        @JsonProperty("transactionCount")
+        private Long transactionCount;
+
+        /**
+         * Total sum of transaction amounts for this type.
+         * 
+         * <p>BigDecimal with scale=2 and RoundingMode.HALF_UP representing sum of all transaction
+         * amounts for this type. Computed using SQL SUM(amount) with GROUP BY or Java Stream groupingBy
+         * with reduce(BigDecimal.ZERO, BigDecimal::add) collector.</p>
+         * 
+         * <p>Serialized as JSON string preventing precision loss. Enables type-wise spending analysis
+         * showing breakdown between purchases, payments, and other transaction types, matching COBOL
+         * type subtotal logic in mainframe statement generation.</p>
+         */
+        @JsonProperty("totalAmount")
+        @JsonFormat(shape = JsonFormat.Shape.STRING)
+        private BigDecimal totalAmount;
+    }
+
+    /**
+     * Individual transaction detail nested class for transaction-level reporting.
+     * 
+     * <p>Represents a single transaction record with all relevant fields for detailed transaction
+     * listing in reports. This class enables generation of detailed transaction reports showing
+     * individual transaction records with full details including card number, merchant information,
+     * amounts, and categorization.</p>
+     * 
+     * <p>Replaces COBOL transaction record layout from CVTRA05Y.cpy TRAN-RECORD structure with
+     * Java DTO pattern, transforming fixed-length COBOL fields to flexible JSON representation
+     * for REST API responses and report generation.</p>
+     */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class TransactionDetail {
+
+        /**
+         * Unique transaction identifier.
+         * 
+         * <p>Primary key from transaction table, typically 16-character alphanumeric identifier
+         * matching TRAN-ID field from CVTRA05Y.cpy. Enables transaction lookup and cross-reference
+         * with other transaction records.</p>
+         */
+        @JsonProperty("transactionId")
+        private String transactionId;
+
+        /**
+         * Transaction date (without time component).
+         * 
+         * <p>Date portion of transaction origination timestamp, formatted as ISO 8601 "yyyy-MM-dd"
+         * in JSON. Matches TRAN-PROC-DT field from COBOL transaction record. Used for date-based
+         * sorting and filtering in detailed transaction reports.</p>
+         */
+        @JsonProperty("transactionDate")
+        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
+        private LocalDate transactionDate;
+
+        /**
+         * Card number associated with transaction.
+         * 
+         * <p>16-digit card number from card table via transaction.card relationship. Matches
+         * TRAN-CARD-NUM PIC X(16) field from CVTRA05Y.cpy. May be masked or partially displayed
+         * based on security requirements (e.g., showing only last 4 digits).</p>
+         */
+        @JsonProperty("cardNumber")
+        private String cardNumber;
+
+        /**
+         * Merchant name where transaction occurred.
+         * 
+         * <p>Merchant business name from transaction record, matching TRAN-MERCHANT-NAME field.
+         * Used for merchant-based filtering and reporting. Essential field for transaction
+         * identification and categorization.</p>
+         */
+        @JsonProperty("merchantName")
+        private String merchantName;
+
+        /**
+         * Merchant city location.
+         * 
+         * <p>City where merchant is located, matching TRAN-MERCHANT-CITY field from COBOL record.
+         * Provides geographic context for transaction analysis and fraud detection patterns.</p>
+         */
+        @JsonProperty("merchantCity")
+        private String merchantCity;
+
+        /**
+         * Transaction amount with exact decimal precision.
+         * 
+         * <p>BigDecimal with scale=2 matching TRAN-AMT PIC S9(09)V99 COMP-3 field from CVTRA05Y.cpy.
+         * Positive amounts represent charges/purchases, negative amounts represent credits/refunds.
+         * Serialized as JSON string to prevent JavaScript Number precision loss.</p>
+         */
+        @JsonProperty("amount")
+        @JsonFormat(shape = JsonFormat.Shape.STRING)
+        private BigDecimal amount;
+
+        /**
+         * Transaction type code.
+         * 
+         * <p>2-digit type code referencing transaction_type table, matching TRAN-TYPE-CD field.
+         * Examples: "01" (Purchase), "02" (Payment), "03" (Refund), "04" (Fee). Used for
+         * type-based filtering and breakdown aggregation.</p>
+         */
+        @JsonProperty("typeCode")
+        private String typeCode;
+
+        /**
+         * Transaction category code.
+         * 
+         * <p>4-digit category code referencing transaction_category table, matching TRAN-CAT-CD
+         * field from CVTRA04Y.cpy. Examples: "0001" (Retail), "0002" (Grocery), "0003" (Gas/Fuel).
+         * Used for category-based filtering and breakdown aggregation.</p>
+         */
+        @JsonProperty("categoryCode")
+        private String categoryCode;
+
+        /**
+         * Transaction description or notes.
+         * 
+         * <p>Free-text description field providing additional transaction details, matching
+         * TRAN-DESC field from COBOL record. May contain merchant-provided description, authorization
+         * notes, or other contextual information.</p>
+         */
+        @JsonProperty("description")
+        private String description;
+    }
+
+    /**
+     * Monthly aggregate nested class for time-series transaction analysis.
+     * 
+     * <p>Represents aggregated transaction statistics grouped by month, enabling trend analysis
+     * and time-series visualization of transaction patterns. Each MonthlyAggregate object contains
+     * statistics for a single month period within the report date range.</p>
+     * 
+     * <p>Replaces COBOL monthly report option with SQL date truncation functions (DATE_TRUNC('month'))
+     * for efficient time-based grouping and aggregation, enabling flexible time-period analysis
+     * without rigid monthly/yearly report distinctions from mainframe batch programs.</p>
+     */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class MonthlyAggregate {
+
+        /**
+         * Month identifier in YYYY-MM format.
+         * 
+         * <p>String representation of the month in ISO format (e.g., "2024-01", "2024-02").
+         * Enables chronological sorting and grouping of monthly statistics for trend analysis.</p>
+         */
+        @JsonProperty("month")
+        private String month;
+
+        /**
+         * Count of transactions in this month.
+         * 
+         * <p>Long integer representing number of transactions that occurred during this month.
+         * Computed using SQL COUNT(*) with GROUP BY DATE_TRUNC('month', transaction_date).</p>
+         */
+        @JsonProperty("transactionCount")
+        private long transactionCount;
+
+        /**
+         * Total sum of transaction amounts for this month.
+         * 
+         * <p>BigDecimal with scale=2 representing sum of all transaction amounts during this month.
+         * Serialized as JSON string to preserve exact decimal precision.</p>
+         */
+        @JsonProperty("totalAmount")
+        @JsonFormat(shape = JsonFormat.Shape.STRING)
+        private BigDecimal totalAmount;
+
+        /**
+         * Average transaction amount for this month.
+         * 
+         * <p>BigDecimal with scale=2 calculated as totalAmount / transactionCount with
+         * RoundingMode.HALF_UP. Serialized as JSON string to preserve precision.</p>
+         */
+        @JsonProperty("averageAmount")
+        @JsonFormat(shape = JsonFormat.Shape.STRING)
+        private BigDecimal averageAmount;
     }
 }

@@ -994,7 +994,11 @@ public class ReportGenerationService {
                             .setScale(2, RoundingMode.HALF_UP);
 
                     // Look up category name from reference table
-                    String categoryName = transactionCategoryRepository.findById(categoryCode)
+                    // Use findByIdCategoryCode since we only have categoryCode, not full composite key
+                    // All categories with same code share the same description, so take first match
+                    String categoryName = transactionCategoryRepository.findByIdCategoryCode(categoryCode)
+                            .stream()
+                            .findFirst()
                             .map(TransactionCategory::getCategoryDescription)
                             .orElse("Unknown Category");
 
