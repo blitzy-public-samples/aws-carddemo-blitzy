@@ -391,6 +391,7 @@ public class ReportGenerationService {
             LocalDate endDate,
             Long customerId,
             Long accountId,
+            String cardNumber,
             String typeCode,
             String merchantName,
             BigDecimal minAmount,
@@ -398,8 +399,10 @@ public class ReportGenerationService {
             Pageable pageable) {
 
         log.info("Generating transaction report: startDate={}, endDate={}, customerId={}, accountId={}, " +
-                "typeCode={}, merchantName={}, minAmount={}, maxAmount={}, page={}, size={}",
-                startDate, endDate, customerId, accountId, typeCode, merchantName, minAmount, maxAmount,
+                "cardNumber={}, typeCode={}, merchantName={}, minAmount={}, maxAmount={}, page={}, size={}",
+                startDate, endDate, customerId, accountId, 
+                cardNumber != null ? "****" + cardNumber.substring(Math.max(0, cardNumber.length() - 4)) : null,
+                typeCode, merchantName, minAmount, maxAmount,
                 pageable.isUnpaged() ? "unpaged" : pageable.getPageNumber(),
                 pageable.isUnpaged() ? "all" : pageable.getPageSize());
 
@@ -412,11 +415,11 @@ public class ReportGenerationService {
 
         // Build filter criteria for response
         ReportResponse.FilterCriteria filterCriteria = buildFilterCriteria(
-                startDate, endDate, customerId, accountId, typeCode, merchantName, minAmount, maxAmount);
+                startDate, endDate, customerId, accountId, cardNumber, typeCode, merchantName, minAmount, maxAmount);
 
         // Query transactions with filters
         List<Transaction> allTransactions = queryTransactionsWithFilters(
-                startDateTime, endDateTime, customerId, accountId, typeCode, merchantName, minAmount, maxAmount);
+                startDateTime, endDateTime, customerId, accountId, cardNumber, typeCode, merchantName, minAmount, maxAmount);
 
         if (allTransactions.isEmpty()) {
             log.warn("No transactions found matching filter criteria");
@@ -524,13 +527,13 @@ public class ReportGenerationService {
         // Generate standard report with all transactions
         Pageable pageable = Pageable.unpaged();
         ReportResponse baseReport = generateTransactionReport(
-                startDate, endDate, null, null, null, null, null, null, pageable);
+                startDate, endDate, null, null, null, null, null, null, null, pageable);
 
         // Query all transactions for monthly grouping
         LocalDateTime startDateTime = startDate.atStartOfDay();
         LocalDateTime endDateTime = endDate.atTime(23, 59, 59, 999999999);
         List<Transaction> allTransactions = queryTransactionsWithFilters(
-                startDateTime, endDateTime, null, null, null, null, null, null);
+                startDateTime, endDateTime, null, null, null, null, null, null, null);
 
         // Group transactions by month
         Map<YearMonth, List<Transaction>> monthlyGroups = allTransactions.stream()
@@ -885,13 +888,14 @@ public class ReportGenerationService {
      */
     private ReportResponse.FilterCriteria buildFilterCriteria(
             LocalDate startDate, LocalDate endDate, Long customerId, Long accountId,
-            String typeCode, String merchantName, BigDecimal minAmount, BigDecimal maxAmount) {
+            String cardNumber, String typeCode, String merchantName, BigDecimal minAmount, BigDecimal maxAmount) {
 
         return ReportResponse.FilterCriteria.builder()
                 .startDate(startDate)
                 .endDate(endDate)
                 .customerId(customerId)
                 .accountId(accountId)
+                .cardNumber(cardNumber)
                 .typeCode(typeCode)
                 .merchantName(merchantName)
                 .minAmount(minAmount)
@@ -907,7 +911,7 @@ public class ReportGenerationService {
      */
     private List<Transaction> queryTransactionsWithFilters(
             LocalDateTime startDateTime, LocalDateTime endDateTime, Long customerId, Long accountId,
-            String typeCode, String merchantName, BigDecimal minAmount, BigDecimal maxAmount) {
+            String cardNumber, String typeCode, String merchantName, BigDecimal minAmount, BigDecimal maxAmount) {
 
         // In a real implementation, this would use JPA Criteria API or Spring Data Specifications
         // for dynamic query building. For this demonstration, we use repository method with parameters.
@@ -936,6 +940,12 @@ public class ReportGenerationService {
             if (accountId != null && transaction.getCard() != null && 
                 transaction.getCard().getAccount() != null &&
                 !accountId.equals(transaction.getCard().getAccount().getAccountId())) {
+                return;
+            }
+
+            // Card number filter
+            if (cardNumber != null && transaction.getCard() != null &&
+                !cardNumber.equals(transaction.getCard().getCardNumber())) {
                 return;
             }
 

@@ -321,6 +321,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 null, // accountId
+                null, // cardNumber
                 null, // typeCode
                 null, // merchantName
                 null, // minAmount
@@ -360,6 +361,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 testAccountId, 
+                null, // cardNumber
                 null, // typeCode
                 null, // merchantName
                 null, // minAmount
@@ -396,6 +398,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 null, // accountId
+                null, // cardNumber
                 typeCodeFilter, 
                 null, // merchantName
                 null, // minAmount
@@ -443,6 +446,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 null, // accountId
+                null, // cardNumber
                 null, // typeCode
                 null, // merchantName
                 null, // minAmount
@@ -489,6 +493,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 null, // accountId
+                null, // cardNumber
                 null, // typeCode
                 null, // merchantName
                 null, // minAmount
@@ -532,6 +537,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 null, // accountId
+                null, // cardNumber
                 null, // typeCode
                 null, // merchantName
                 null, // minAmount
@@ -587,6 +593,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 null, // accountId
+                null, // cardNumber
                 null, // typeCode
                 null, // merchantName
                 null, // minAmount
@@ -605,6 +612,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 null, // accountId
+                null, // cardNumber
                 null, // typeCode
                 null, // merchantName
                 null, // minAmount
@@ -639,6 +647,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 null, // accountId
+                null, // cardNumber
                 null, // typeCode
                 null, // merchantName
                 null, // minAmount
@@ -697,6 +706,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 null, // accountId
+                null, // cardNumber
                 null, // typeCode
                 null, // merchantName
                 null, // minAmount
@@ -739,6 +749,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 null, // accountId
+                null, // cardNumber
                 null, // typeCode
                 null, // merchantName
                 null, // minAmount
@@ -845,6 +856,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 null, // accountId
+                null, // cardNumber
                 null, // typeCode
                 null, // merchantName
                 null, // minAmount
@@ -901,6 +913,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 null, // accountId
+                null, // cardNumber
                 null, // typeCode
                 null, // merchantName
                 minAmount, 
@@ -954,6 +967,7 @@ public class ReportGenerationServiceTest {
                 endDate, 
                 null, // customerId
                 null, // accountId
+                null, // cardNumber
                 null, // typeCode
                 null, // merchantName
                 null, // minAmount

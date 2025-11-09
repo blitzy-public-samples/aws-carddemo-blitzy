@@ -44,7 +44,13 @@
 package com.carddemo.controller;
 
 import com.carddemo.dto.response.ReportResponse;
+import com.carddemo.entity.Account;
+import com.carddemo.entity.Card;
+import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
+import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.util.DateTimeUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -183,6 +189,54 @@ public class ReportControllerTest {
     private TransactionRepository transactionRepository;
 
     /**
+     * AccountRepository for test account data setup and cleanup.
+     * 
+     * <p>Provides database access methods for Account entities:</p>
+     * <ul>
+     *   <li>saveAll(List&lt;Account&gt;) - Batch insert test accounts in @BeforeEach</li>
+     *   <li>deleteAll() - Bulk delete all accounts in @AfterEach for test isolation</li>
+     * </ul>
+     * 
+     * <p>Required because Card entity has @ManyToOne relationship with Account,
+     * so Account entities must exist before creating Card entities to satisfy
+     * foreign key constraints.</p>
+     */
+    @Autowired
+    private AccountRepository accountRepository;
+
+    /**
+     * CardRepository for test card data setup and cleanup.
+     * 
+     * <p>Provides database access methods for Card entities:</p>
+     * <ul>
+     *   <li>saveAll(List&lt;Card&gt;) - Batch insert test cards in @BeforeEach</li>
+     *   <li>deleteAll() - Bulk delete all cards in @AfterEach for test isolation</li>
+     * </ul>
+     * 
+     * <p>Required because Transaction entity has @ManyToOne relationship with Card,
+     * so Card entities must exist before creating Transaction entities to satisfy
+     * foreign key constraints.</p>
+     */
+    @Autowired
+    private CardRepository cardRepository;
+
+    /**
+     * CustomerRepository for test customer data setup and cleanup.
+     * 
+     * <p>Provides database access methods for Customer entities:</p>
+     * <ul>
+     *   <li>saveAll(List&lt;Customer&gt;) - Batch insert test customers in @BeforeEach</li>
+     *   <li>deleteAll() - Bulk delete all customers in @AfterEach for test isolation</li>
+     * </ul>
+     * 
+     * <p>Required because Account entity has @ManyToOne relationship with Customer,
+     * so Customer entities must exist before creating Account entities to satisfy
+     * foreign key constraints.</p>
+     */
+    @Autowired
+    private CustomerRepository customerRepository;
+
+    /**
      * Test data fixture holding transactions for current test method.
      * 
      * <p>Populated in @BeforeEach setupTestData() method with Transaction entities
@@ -200,6 +254,42 @@ public class ReportControllerTest {
      * </ul>
      */
     private List<Transaction> testTransactions;
+
+    /**
+     * Test data fixture holding accounts for current test method.
+     * 
+     * <p>Populated in @BeforeEach setupTestData() method with Account entities
+     * using builder pattern, persisted to database via AccountRepository.saveAll()
+     * before creating Card entities.</p>
+     * 
+     * <p>Accounts are created first to satisfy foreign key constraint from Card
+     * to Account entity (@ManyToOne relationship).</p>
+     */
+    private List<Account> testAccounts;
+
+    /**
+     * Test data fixture holding cards for current test method.
+     * 
+     * <p>Populated in @BeforeEach setupTestData() method with Card entities
+     * using builder pattern, persisted to database via CardRepository.saveAll()
+     * before creating Transaction entities.</p>
+     * 
+     * <p>Cards are created first to satisfy foreign key constraint from Transaction
+     * to Card entity (@ManyToOne relationship).</p>
+     */
+    private List<Card> testCards;
+
+    /**
+     * Test data fixture holding customers for current test method.
+     * 
+     * <p>Populated in @BeforeEach setupTestData() method with Customer entities
+     * using builder pattern, persisted to database via CustomerRepository.saveAll()
+     * before creating Account entities.</p>
+     * 
+     * <p>Customers are created first to satisfy foreign key constraint from Account
+     * to Customer entity (@ManyToOne relationship).</p>
+     */
+    private List<Customer> testCustomers;
 
     /**
      * Sets up test data before each test method execution.
@@ -226,10 +316,93 @@ public class ReportControllerTest {
      */
     @BeforeEach
     public void setupTestData() {
-        // Clear any existing transactions from previous tests to ensure clean state
+        // Clear any existing data from previous tests to ensure clean state
+        // Order matters: delete transactions first, then cards, then accounts, then customers (foreign key constraints)
         transactionRepository.deleteAll();
+        cardRepository.deleteAll();
+        accountRepository.deleteAll();
+        customerRepository.deleteAll();
         
-        // Initialize test transactions list
+        // Step 1: Create test customers
+        testCustomers = new ArrayList<>();
+        
+        Customer customer1 = Customer.builder()
+                .customerId(1000000001L)
+                .firstName("John")
+                .middleName("M")
+                .lastName("Doe")
+                .addressLine1("123 Main Street")
+                .addressLine2("Apt 4B")
+                .addressStateCode("NY")
+                .addressCountryCode("USA")
+                .addressZip("10001")
+                .build();
+        
+        Customer customer2 = Customer.builder()
+                .customerId(1000000002L)
+                .firstName("Jane")
+                .middleName("A")
+                .lastName("Smith")
+                .addressLine1("456 Oak Avenue")
+                .addressLine2("Suite 200")
+                .addressStateCode("CA")
+                .addressCountryCode("USA")
+                .addressZip("90210")
+                .build();
+        
+        testCustomers.add(customer1);
+        testCustomers.add(customer2);
+        customerRepository.saveAll(testCustomers);
+        
+        // Step 2: Create test accounts associated with customers
+        testAccounts = new ArrayList<>();
+        
+        Account account1 = Account.builder()
+                .accountId(100000000001L)
+                .customer(customer1)
+                .activeStatus("Y")
+                .currentBalance(new BigDecimal("1500.00").setScale(2, RoundingMode.HALF_UP))
+                .creditLimit(new BigDecimal("10000.00").setScale(2, RoundingMode.HALF_UP))
+                .build();
+        
+        Account account2 = Account.builder()
+                .accountId(100000000002L)
+                .customer(customer2)
+                .activeStatus("Y")
+                .currentBalance(new BigDecimal("500.00").setScale(2, RoundingMode.HALF_UP))
+                .creditLimit(new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP))
+                .build();
+        
+        testAccounts.add(account1);
+        testAccounts.add(account2);
+        accountRepository.saveAll(testAccounts);
+        
+        // Step 3: Create test cards associated with accounts
+        testCards = new ArrayList<>();
+        
+        Card card1 = Card.builder()
+                .cardNumber("4111111111111111")
+                .account(account1)
+                .cvvCode("123")
+                .embossedName("JOHN DOE")
+                .expirationDate(LocalDate.of(2026, 12, 31))
+                .activeStatus("Y")
+                .build();
+        
+        Card card2 = Card.builder()
+                .cardNumber("4222222222222222")
+                .account(account2)
+                .cvvCode("456")
+                .embossedName("JANE SMITH")
+                .expirationDate(LocalDate.of(2025, 6, 30))
+                .activeStatus("Y")
+                .build();
+        
+        testCards.add(card1);
+        testCards.add(card2);
+        cardRepository.saveAll(testCards);
+        
+        // Step 4: Create test transactions associated with cards
         testTransactions = new ArrayList<>();
         
         // Create transactions for January 2024 (primary test month)
@@ -245,7 +418,7 @@ public class ReportControllerTest {
                 .merchantName("Best Electronics")
                 .merchantCity("New York")
                 .merchantZip("10001")
-                .cardNumber("4111111111111111")
+                .card(card1)
                 .originationTimestamp(LocalDateTime.of(2024, 1, 15, 10, 30, 0))
                 .processingTimestamp(LocalDateTime.of(2024, 1, 15, 10, 30, 5))
                 .build());
@@ -262,7 +435,7 @@ public class ReportControllerTest {
                 .merchantName("Fine Dining Restaurant")
                 .merchantCity("New York")
                 .merchantZip("10002")
-                .cardNumber("4111111111111111")
+                .card(card1)
                 .originationTimestamp(LocalDateTime.of(2024, 1, 20, 19, 45, 0))
                 .processingTimestamp(LocalDateTime.of(2024, 1, 20, 19, 45, 3))
                 .build());
@@ -279,7 +452,7 @@ public class ReportControllerTest {
                 .merchantName("Global Airlines")
                 .merchantCity("Chicago")
                 .merchantZip("60601")
-                .cardNumber("4111111111111111")
+                .card(card1)
                 .originationTimestamp(LocalDateTime.of(2024, 1, 25, 14, 15, 0))
                 .processingTimestamp(LocalDateTime.of(2024, 1, 25, 14, 15, 8))
                 .build());
@@ -296,7 +469,7 @@ public class ReportControllerTest {
                 .merchantName("ATM Network")
                 .merchantCity("New York")
                 .merchantZip("10003")
-                .cardNumber("4111111111111111")
+                .card(card1)
                 .originationTimestamp(LocalDateTime.of(2024, 1, 28, 9, 0, 0))
                 .processingTimestamp(LocalDateTime.of(2024, 1, 28, 9, 0, 2))
                 .build());
@@ -313,7 +486,7 @@ public class ReportControllerTest {
                 .merchantName("Fashion Boutique Online")
                 .merchantCity("Los Angeles")
                 .merchantZip("90001")
-                .cardNumber("4222222222222222")
+                .card(card2)
                 .originationTimestamp(LocalDateTime.of(2024, 1, 18, 15, 30, 0))
                 .processingTimestamp(LocalDateTime.of(2024, 1, 18, 15, 30, 10))
                 .build());
@@ -330,7 +503,7 @@ public class ReportControllerTest {
                 .merchantName("SuperMart Grocery")
                 .merchantCity("New York")
                 .merchantZip("10004")
-                .cardNumber("4111111111111111")
+                .card(card1)
                 .originationTimestamp(LocalDateTime.of(2024, 2, 5, 11, 20, 0))
                 .processingTimestamp(LocalDateTime.of(2024, 2, 5, 11, 20, 4))
                 .build());
@@ -347,7 +520,7 @@ public class ReportControllerTest {
                 .merchantName("Celebration Restaurant")
                 .merchantCity("New York")
                 .merchantZip("10005")
-                .cardNumber("4111111111111111")
+                .card(card1)
                 .originationTimestamp(LocalDateTime.of(2023, 12, 28, 20, 0, 0))
                 .processingTimestamp(LocalDateTime.of(2023, 12, 28, 20, 0, 5))
                 .build());
@@ -371,12 +544,25 @@ public class ReportControllerTest {
      */
     @AfterEach
     public void cleanup() {
-        // Delete all transactions to ensure clean state for next test
+        // Delete all data to ensure clean state for next test
+        // Order matters: delete transactions first, then cards, then accounts, then customers (foreign key constraints)
         transactionRepository.deleteAll();
+        cardRepository.deleteAll();
+        accountRepository.deleteAll();
+        customerRepository.deleteAll();
         
-        // Clear test transactions list
+        // Clear test data lists
         if (testTransactions != null) {
             testTransactions.clear();
+        }
+        if (testCards != null) {
+            testCards.clear();
+        }
+        if (testAccounts != null) {
+            testAccounts.clear();
+        }
+        if (testCustomers != null) {
+            testCustomers.clear();
         }
     }
 

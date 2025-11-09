@@ -473,6 +473,78 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Handles MethodArgumentTypeMismatchException thrown when request parameter type conversion fails.
+     * 
+     * <p>This handler catches Spring's MethodArgumentTypeMismatchException thrown when a
+     * request parameter (like a date in @RequestParam) cannot be converted to the expected
+     * Java type. Common examples include:</p>
+     * <ul>
+     *   <li>Invalid date format (e.g., "01/01/2024" when ISO 8601 "2024-01-01" is expected)</li>
+     *   <li>Non-numeric value where numeric type expected</li>
+     *   <li>Malformed enum value</li>
+     * </ul>
+     * 
+     * <p><b>COBOL Pattern Replaced:</b> Date format validation from CORPT00C.cbl lines 236-354
+     * which validated date component ranges and formats before processing.</p>
+     * 
+     * <p><b>HTTP Response:</b> 400 Bad Request with structured error details</p>
+     * 
+     * @param ex the MethodArgumentTypeMismatchException from Spring MVC
+     * @param request the HTTP request that caused the exception
+     * @return ResponseEntity containing structured error details with HTTP 400 status
+     */
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleMethodArgumentTypeMismatch(
+            org.springframework.web.method.annotation.MethodArgumentTypeMismatchException ex,
+            HttpServletRequest request) {
+        
+        // Extract meaningful error message based on the parameter type
+        String parameterName = ex.getName();
+        String requiredType = ex.getRequiredType() != null ? ex.getRequiredType().getSimpleName() : "unknown";
+        String providedValue = ex.getValue() != null ? ex.getValue().toString() : "null";
+        
+        String message = String.format("Invalid value '%s' for parameter '%s'. Expected format: %s",
+                providedValue,
+                parameterName,
+                getExpectedFormatMessage(requiredType));
+        
+        logger.warn("Parameter type conversion error: {} - Request path: {} - Parameter: {} - Value: {} - Required type: {}",
+                message, request.getRequestURI(), parameterName, providedValue, requiredType);
+        
+        // Build field errors map for structured error response
+        Map<String, String> fieldErrors = new HashMap<>();
+        fieldErrors.put(parameterName, message);
+        
+        ErrorResponse errorResponse = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error(HttpStatus.BAD_REQUEST.getReasonPhrase())
+                .message("Invalid request parameter: " + parameterName)
+                .path(request.getRequestURI())
+                .fieldErrors(fieldErrors)
+                .build();
+        
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+    }
+
+    /**
+     * Helper method to generate user-friendly expected format messages for different parameter types.
+     * 
+     * @param typeName the simple name of the required Java type
+     * @return user-friendly format description
+     */
+    private String getExpectedFormatMessage(String typeName) {
+        return switch (typeName) {
+            case "LocalDate" -> "ISO 8601 date format (YYYY-MM-DD), e.g., 2024-01-31";
+            case "LocalDateTime" -> "ISO 8601 date-time format (YYYY-MM-DDTHH:MM:SS), e.g., 2024-01-31T14:30:00";
+            case "Integer", "Long" -> "numeric value";
+            case "BigDecimal" -> "decimal number";
+            case "Boolean" -> "true or false";
+            default -> typeName;
+        };
+    }
+
+    /**
      * Handles all other unexpected exceptions not caught by specific handlers.
      * 
      * <p>This is the catch-all handler for any RuntimeException or checked Exception
