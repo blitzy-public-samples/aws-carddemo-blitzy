@@ -28,10 +28,12 @@ package com.carddemo.service.account;
 
 import com.carddemo.dto.response.AccountResponse;
 import com.carddemo.entity.Account;
+import com.carddemo.entity.Card;
 import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
 import com.carddemo.exception.ResourceNotFoundException;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionRepository;
 import lombok.RequiredArgsConstructor;
@@ -43,6 +45,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -234,6 +237,18 @@ public class AccountViewService {
      * <p>Injected via constructor by Spring dependency injection framework.</p>
      */
     private final CustomerRepository customerRepository;
+
+    /**
+     * Card repository for database operations.
+     * 
+     * <p>Replaces COBOL VSAM file operations on CARDXREF (Card Cross-Reference File).
+     * Provides findByAccount_AccountId() method matching COBOL READ operation to
+     * retrieve all cards associated with an account, enabling transaction history
+     * retrieval via card linkage.</p>
+     * 
+     * <p>Injected via constructor by Spring dependency injection framework.</p>
+     */
+    private final CardRepository cardRepository;
 
     /**
      * Transaction repository for database operations.
@@ -541,26 +556,37 @@ public class AccountViewService {
         log.debug("Account {} verified, retrieving transaction history", accountId);
 
         // Retrieve paginated transactions for all cards associated with this account
-        // Replaces COBOL: EXEC CICS STARTBR/READNEXT loop from COTRN00C.cbl
-        // Note: In the actual system, transactions are linked to cards, and cards are linked to accounts
-        // For simplicity, we'll retrieve transactions via the card's card number
+        // Replaces COBOL: EXEC CICS READ DATASET('CARDXREF') RIDFLD(ACCT-ID)
+        // This matches procedure 9200-GETCARDXREF-BYACCT from COACTVWC.cbl
+        List<Card> cards = cardRepository.findByAccount_AccountId(accountId);
         
-        // Get the first card associated with this account (if any)
-        // In a real scenario, you might want to retrieve transactions for all cards on the account
-        if (account.getCustomer() != null && account.getCustomer().getCustomerId() != null) {
-            // For this implementation, we'll need to query transactions through the card relationship
-            // Since Card entities have the account relationship, and Transaction has card relationship
-            // We can use a custom query or traverse the relationships
-            
-            // For now, we'll return an empty page if no direct card number is available
-            // In a complete implementation, you would join through Card entities
-            log.debug("Transaction retrieval requires card number linkage");
+        if (cards.isEmpty()) {
+            log.debug("No cards found for account {}, returning empty transaction page", accountId);
+            return Page.empty(pageable);
         }
+        
+        // Get the first card associated with this account
+        // In COBOL, the CARDXREF file provides the CARD-NUM linked to the account
+        // For multi-card accounts, this retrieves transactions for the primary card
+        Card primaryCard = cards.get(0);
+        String cardNumber = primaryCard.getCardNumber();
+        
+        log.debug("Found {} card(s) for account {}, retrieving transactions for card: {}", 
+                cards.size(), accountId, cardNumber);
 
-        // Return empty page as transactions require card number for lookup
-        // In production, this would query transactions through card relationships
-        log.info("Returning empty transaction page for account: {}", accountId);
-        return Page.empty(pageable);
+        // Retrieve paginated transactions using card number
+        // Replaces COBOL: EXEC CICS STARTBR/READNEXT loop from COTRN00C.cbl
+        // The transactionRepository.findByCard_CardNumber performs the equivalent of
+        // sequential VSAM KSDS read with pagination (10 transactions per page)
+        Page<Transaction> transactions = transactionRepository.findByCard_CardNumber(cardNumber, pageable);
+        
+        log.info("Retrieved {} transactions for account {} (page {}/{})", 
+                transactions.getNumberOfElements(), 
+                accountId, 
+                transactions.getNumber() + 1, 
+                transactions.getTotalPages());
+        
+        return transactions;
     }
 
     /**
