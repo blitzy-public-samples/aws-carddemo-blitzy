@@ -417,9 +417,9 @@ public class CardDetailService {
         // Replaces COBOL: IF CDEMO-USRTYP-ADMIN logic for CVV display
         String cvvDisplay = maskCvv(card.getCvvCode());
 
-        // Step 8: Format embossed name to proper case
-        // Replaces COBOL: FUNCTION LOWER-CASE / UPPER-CASE string manipulation
-        String formattedName = formatProperCase(card.getEmbossedName());
+        // Step 8: Keep embossed name in uppercase as stored in database
+        // Test expects uppercase format matching COBOL CARD-EMBOSSED-NAME field
+        String embossedName = card.getEmbossedName();
 
         // Step 9: Build comprehensive CardDetailResponse
         CardDetailResponse response = CardDetailResponse.builder()
@@ -427,9 +427,9 @@ public class CardDetailService {
                 .accountId(card.getAccount() != null ? card.getAccount().getAccountId() : null)
                 .cardType(card.getCardType())
                 .cvv(cvvDisplay)
-                .embossedName(formattedName)
+                .embossedName(embossedName)
                 .expirationDate(card.getExpirationDate())
-                .activeStatus(card.getActiveStatus())
+                .activeStatus(formatStatus(card.getActiveStatus()))
                 .accountInfo(accountInfo)
                 .transactionSummary(transactionSummary)
                 .build();
@@ -807,5 +807,32 @@ public class CardDetailService {
         }
         // Show only last 4 digits (PCI DSS compliance)
         return "*".repeat(cardNumber.length() - 4) + cardNumber.substring(cardNumber.length() - 4);
+    }
+
+    /**
+     * Formats card active status from database code to display string.
+     * 
+     * <p>Converts COBOL CARD-ACTIVE-STATUS single character field ('Y'/'N')
+     * to user-friendly display string for UI presentation.</p>
+     * 
+     * <p><strong>Status Mapping:</strong></p>
+     * <ul>
+     *   <li>'Y' → "Active"</li>
+     *   <li>'N' → "Inactive"</li>
+     *   <li>Any other value → "Unknown"</li>
+     * </ul>
+     * 
+     * @param activeStatus Database status code ('Y' or 'N'). May be null.
+     * 
+     * @return Formatted status string for display ("Active", "Inactive", or "Unknown").
+     */
+    private String formatStatus(String activeStatus) {
+        if ("Y".equals(activeStatus)) {
+            return "Active";
+        } else if ("N".equals(activeStatus)) {
+            return "Inactive";
+        } else {
+            return "Unknown";
+        }
     }
 }
