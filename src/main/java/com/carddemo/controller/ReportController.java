@@ -326,18 +326,24 @@ public class ReportController {
         // Service performs date range validation, database queries, aggregation, and formatting
         // Throws ValidationException if date range invalid (startDate > endDate)
         // Throws ResourceNotFoundException if no transactions found for criteria
+        // Note: cardNumber parameter from controller not directly supported by service -
+        // pass null for unsupported filters (customerId, typeCode, merchantName, minAmount, maxAmount)
         ReportResponse response = reportGenerationService.generateTransactionReport(
                 effectiveStartDate,
                 effectiveEndDate,
+                null,  // customerId - not provided by controller
                 accountId,
-                cardNumber,
+                null,  // typeCode - not provided by controller
+                null,  // merchantName - not provided by controller
+                null,  // minAmount - not provided by controller
+                null,  // maxAmount - not provided by controller
                 pageable
         );
         
         // Log successful report generation with record count for monitoring
         log.info("Successfully generated transaction report - total transactions: {}, " +
                  "total amount: {}, date range: {} to {}",
-                response.getTransactionSummary().getTotalCount(),
+                response.getTransactionSummary().getTransactionCount(),
                 response.getTransactionSummary().getTotalAmount(),
                 effectiveStartDate, effectiveEndDate);
         
