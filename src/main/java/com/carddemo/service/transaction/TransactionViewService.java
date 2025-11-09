@@ -520,6 +520,14 @@ public class TransactionViewService {
     public TransactionDetailResponse getTransactionDetail(String transactionId) {
         log.info("Retrieving transaction detail for transactionId: {}", transactionId);
 
+        // Validate input parameter - replaces COBOL validation logic
+        // COBOL: TRNIDINI OF COTRN1AI = SPACES OR LOW-VALUES check
+        // COBOL error handling: ERR-FLG-ON with message 'Tran ID can NOT be empty'
+        if (transactionId == null || transactionId.trim().isEmpty()) {
+            log.warn("Invalid transactionId parameter: transactionId cannot be null or empty");
+            throw new IllegalArgumentException("Transaction ID cannot be null or empty");
+        }
+
         // Step 1: Retrieve transaction by ID (required - throw exception if not found)
         // Replaces COBOL: EXEC CICS READ DATASET('TRANSACT') RIDFLD(TRAN-ID)
         Transaction transaction = transactionRepository.findById(transactionId)
@@ -530,60 +538,49 @@ public class TransactionViewService {
 
         log.debug("Transaction found: {}", transactionId);
 
-        // Step 2: Retrieve card information via cardNumber foreign key (optional)
+        // Step 2: Retrieve card information via card foreign key relationship (optional)
         // Replaces COBOL: EXEC CICS READ DATASET('CARDDAT') RIDFLD(TRAN-CARD-NUM)
         TransactionDetailResponse.CardInfo cardInfo = null;
-        String cardNumber = transaction.getCardNumber();
+        TransactionDetailResponse.AccountInfo accountInfo = null;
+        Card card = transaction.getCard();
         
-        if (cardNumber != null) {
-            Optional<Card> cardOptional = cardRepository.findByCardNumber(cardNumber);
+        if (card != null) {
+            String cardNumber = card.getCardNumber();
+            log.debug("Card found for transaction, cardNumber: {}", cardNumber);
             
-            if (cardOptional.isPresent()) {
-                Card card = cardOptional.get();
-                log.debug("Card found for cardNumber: {}", cardNumber);
+            // Build CardInfo nested object from Card entity
+            cardInfo = TransactionDetailResponse.CardInfo.builder()
+                    .embossedName(card.getEmbossedName())
+                    .expirationDate(card.getExpirationDate())
+                    .activeStatus(card.getActiveStatus())
+                    .build();
+            
+            // Step 3: Retrieve account information via card-account relationship chain (optional)
+            // Replaces COBOL: READ CXACAIX (xref) then EXEC CICS READ DATASET('ACCTDAT')
+            Account account = card.getAccount();
+            
+            if (account != null) {
+                Long accountId = account.getAccountId();
+                log.debug("Account found for card, accountId: {}", accountId);
                 
-                // Build CardInfo nested object from Card entity
-                cardInfo = TransactionDetailResponse.CardInfo.builder()
-                        .embossedName(card.getEmbossedName())
-                        .expirationDate(card.getExpirationDate())
-                        .activeStatus(card.getActiveStatus())
+                // Build AccountInfo nested object from Account entity
+                accountInfo = TransactionDetailResponse.AccountInfo.builder()
+                        .accountId(account.getAccountId())
+                        .currentBalance(account.getCurrentBalance())
+                        .creditLimit(account.getCreditLimit())
+                        .activeStatus(account.getActiveStatus())
                         .build();
-                
-                // Step 3: Retrieve account information via card.accountId foreign key (optional)
-                // Replaces COBOL: READ CXACAIX (xref) then EXEC CICS READ DATASET('ACCTDAT')
-                Long accountId = card.getAccountId();
-                
-                if (accountId != null) {
-                    Optional<Account> accountOptional = accountRepository.findById(accountId);
-                    
-                    if (accountOptional.isPresent()) {
-                        Account account = accountOptional.get();
-                        log.debug("Account found for accountId: {}", accountId);
-                        
-                        // Build AccountInfo nested object from Account entity
-                        TransactionDetailResponse.AccountInfo accountInfo = 
-                                TransactionDetailResponse.AccountInfo.builder()
-                                        .accountId(account.getAccountId())
-                                        .currentBalance(account.getCurrentBalance())
-                                        .creditLimit(account.getCreditLimit())
-                                        .activeStatus(account.getActiveStatus())
-                                        .build();
-                        
-                        // Build complete response with card and account information
-                        return buildTransactionDetailResponse(transaction, cardInfo, accountInfo);
-                    } else {
-                        log.warn("Account not found for accountId: {}", accountId);
-                        // Continue without account info - graceful degradation
-                    }
-                }
             } else {
-                log.warn("Card not found for cardNumber: {}", cardNumber);
-                // Continue without card info - graceful degradation
+                log.warn("Account not found for card: {}", cardNumber);
+                // Continue without account info - graceful degradation
             }
+        } else {
+            log.warn("Card not found for transaction: {}", transactionId);
+            // Continue without card info - graceful degradation
         }
         
-        // Build response without account info (either card not found or account not found)
-        return buildTransactionDetailResponse(transaction, cardInfo, null);
+        // Build complete response with available card and account information
+        return buildTransactionDetailResponse(transaction, cardInfo, accountInfo);
     }
 
     /**
@@ -648,15 +645,23 @@ public class TransactionViewService {
         
         // Lookup category description via categoryCode (optional)
         String categoryDescription = null;
-        Integer categoryCode = transaction.getCategoryCode();
+        String categoryCodeStr = transaction.getCategoryCode();
+        Integer categoryCode = null;
         
-        if (categoryCode != null) {
-            // TransactionCategory has composite key, but we'll try to find it
-            // Note: The actual findById may need both typeCode and categoryCode
-            // For now, we'll attempt lookup and handle if not found
-            log.debug("Looking up category description for categoryCode: {}", categoryCode);
-            // Since we don't have the full composite key structure visible, we'll gracefully handle
-            categoryDescription = null; // Will be enriched when repository method signature is confirmed
+        // Convert String categoryCode to Integer for DTO
+        if (categoryCodeStr != null && !categoryCodeStr.trim().isEmpty()) {
+            try {
+                categoryCode = Integer.parseInt(categoryCodeStr);
+                log.debug("Looking up category description for categoryCode: {}", categoryCode);
+                // TransactionCategory has composite key, but we'll try to find it
+                // Note: The actual findById may need both typeCode and categoryCode
+                // For now, we'll attempt lookup and handle if not found
+                // Since we don't have the full composite key structure visible, we'll gracefully handle
+                categoryDescription = null; // Will be enriched when repository method signature is confirmed
+            } catch (NumberFormatException e) {
+                log.warn("Invalid categoryCode format, cannot convert to Integer: {}", categoryCodeStr);
+                categoryCode = null;
+            }
         }
         
         // Lookup type description via typeCode (optional)
@@ -677,11 +682,14 @@ public class TransactionViewService {
         
         // Build enriched TransactionDetailResponse using SuperBuilder pattern
         // This builder supports inheritance from TransactionResponse base class
+        // Get cardNumber from the card relationship if available
+        String cardNumber = transaction.getCard() != null ? transaction.getCard().getCardNumber() : null;
+        
         TransactionDetailResponse response = TransactionDetailResponse.builder()
                 // Base TransactionResponse fields (inherited)
                 .transactionId(transaction.getTransactionId())
                 .typeCode(transaction.getTypeCode())
-                .categoryCode(transaction.getCategoryCode())
+                .categoryCode(categoryCode) // Converted from String to Integer above
                 .source(transaction.getTransactionSource())
                 .description(transaction.getDescription())
                 .amount(transaction.getAmount()) // BigDecimal scale=2 preserved
@@ -689,7 +697,7 @@ public class TransactionViewService {
                 .merchantName(transaction.getMerchantName())
                 .merchantCity(transaction.getMerchantCity())
                 .merchantZip(transaction.getMerchantZip())
-                .cardNumber(transaction.getCardNumber()) // Should be masked at entity level
+                .cardNumber(cardNumber) // Retrieved from card relationship
                 .originationTimestamp(transaction.getOriginationTimestamp())
                 .processingTimestamp(transaction.getProcessingTimestamp())
                 // TransactionDetailResponse specific fields (child class)
