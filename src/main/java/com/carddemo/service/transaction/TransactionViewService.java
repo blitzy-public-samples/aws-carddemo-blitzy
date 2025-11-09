@@ -12,6 +12,7 @@ import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.TransactionTypeRepository;
+import com.carddemo.util.StringUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -675,8 +676,9 @@ public class TransactionViewService {
         
         // Build enriched TransactionDetailResponse using SuperBuilder pattern
         // This builder supports inheritance from TransactionResponse base class
-        // Get cardNumber from the card relationship if available
-        String cardNumber = transaction.getCard() != null ? transaction.getCard().getCardNumber() : null;
+        // Get cardNumber from the card relationship if available and mask it for security
+        String rawCardNumber = transaction.getCard() != null ? transaction.getCard().getCardNumber() : null;
+        String cardNumber = StringUtils.maskCardNumber(rawCardNumber);
         
         TransactionDetailResponse response = TransactionDetailResponse.builder()
                 // Base TransactionResponse fields (inherited)
