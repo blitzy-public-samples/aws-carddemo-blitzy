@@ -39,7 +39,7 @@
  * ReactDOM.render(<App />, document.getElementById('root'));
  */
 
-import React from 'react';
+import PropTypes from 'prop-types';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
 // Context Provider
@@ -105,6 +105,10 @@ const ProtectedRoute = ({ children }) => {
   return children;
 };
 
+ProtectedRoute.propTypes = {
+  children: PropTypes.node.isRequired,
+};
+
 /**
  * AdminRoute Component
  * 
@@ -134,6 +138,10 @@ const AdminRoute = ({ children }) => {
   return children;
 };
 
+AdminRoute.propTypes = {
+  children: PropTypes.node.isRequired,
+};
+
 /**
  * Layout Component
  * 
@@ -157,6 +165,10 @@ const Layout = ({ children }) => {
       <Footer />
     </div>
   );
+};
+
+Layout.propTypes = {
+  children: PropTypes.node.isRequired,
 };
 
 /**
