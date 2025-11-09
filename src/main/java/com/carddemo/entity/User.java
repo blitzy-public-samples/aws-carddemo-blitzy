@@ -117,6 +117,16 @@ public class User implements Serializable {
     private UserType userType;
 
     /**
+     * Customer ID - Links user to customer for authorization
+     * Optional field: Admin users (ADMIN type) may not be linked to a customer
+     * Regular users (USER type) should be linked to their customer account
+     * Enables card ownership verification for authorization checks
+     * NULL for admin users who can access all customer data
+     */
+    @Column(name = "customer_id", precision = 9)
+    private Long customerId;
+
+    /**
      * Created Date - Audit field
      * Timestamp when user record was created
      * Automatically set on insert

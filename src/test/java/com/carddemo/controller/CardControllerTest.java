@@ -32,10 +32,13 @@ import com.carddemo.dto.request.CardUpdateRequest;
 import com.carddemo.dto.response.CardResponse;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
+import com.carddemo.entity.Customer;
+import com.carddemo.entity.User;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CustomerRepository;
+import com.carddemo.repository.UserRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -51,6 +54,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -148,7 +152,15 @@ public class CardControllerTest {
     @Autowired
     private AccountRepository accountRepository;
 
+    @Autowired
+    private CustomerRepository customerRepository;
+
+    @Autowired
+    private UserRepository userRepository;
+
     // Test data
+    private Customer testCustomer1;
+    private Customer testCustomer2;
     private Account testAccount1;
     private Account testAccount2;
     private Card testCard1;
@@ -174,10 +186,98 @@ public class CardControllerTest {
         // Clean up any existing test data
         cardRepository.deleteAll();
         accountRepository.deleteAll();
+        userRepository.deleteAll();
+        customerRepository.deleteAll();
+
+        // Create test customers matching CUSTOMER-RECORD from CVCUS01Y.cpy
+        testCustomer1 = Customer.builder()
+                .customerId(100000001L)
+                .firstName("John")
+                .middleName("A")
+                .lastName("Doe")
+                .addressLine1("123 Main Street")
+                .addressLine2("Apt 101")
+                .addressLine3("Springfield")
+                .addressStateCode("IL")
+                .addressCountryCode("USA")
+                .addressZip("62701")
+                .phoneNumber1("217-555-0001")
+                .phoneNumber2("217-555-0002")
+                .ssn("123456789")
+                .governmentIssuedId("IL-DL-12345678")
+                .dateOfBirth(LocalDate.of(1980, 1, 15))
+                .eftAccountId("EFT0001")
+                .primaryCardHolderIndicator("Y")
+                .ficoScore(750)
+                .build();
+        testCustomer1 = customerRepository.save(testCustomer1);
+
+        testCustomer2 = Customer.builder()
+                .customerId(100000002L)
+                .firstName("Jane")
+                .middleName("B")
+                .lastName("Smith")
+                .addressLine1("456 Oak Avenue")
+                .addressLine2("Suite 200")
+                .addressLine3("Chicago")
+                .addressStateCode("IL")
+                .addressCountryCode("USA")
+                .addressZip("60601")
+                .phoneNumber1("312-555-0001")
+                .phoneNumber2("312-555-0002")
+                .ssn("987654321")
+                .governmentIssuedId("IL-DL-87654321")
+                .dateOfBirth(LocalDate.of(1985, 5, 20))
+                .eftAccountId("EFT0002")
+                .primaryCardHolderIndicator("Y")
+                .ficoScore(800)
+                .build();
+        testCustomer2 = customerRepository.save(testCustomer2);
+
+        // Create test users matching USER-RECORD from CSUSR01Y.cpy
+        // testUser1 linked to testCustomer1 - represents regular user "testuser"
+        User testUser1 = User.builder()
+                .userId("testuser")
+                .firstName("Test")
+                .lastName("User")
+                .password("$2a$10$dummyHashedPassword") // BCrypt format (not real hash for testing)
+                .userType(User.UserType.USER)
+                .customerId(testCustomer1.getCustomerId())
+                .createdDate(LocalDateTime.now().minusDays(30))
+                .lastLoginDate(LocalDateTime.now().minusDays(1))
+                .build();
+        userRepository.save(testUser1);
+
+        // testUser2 linked to testCustomer2 - represents another regular user "testuse2" (max 8 chars per CSUSR01Y.cpy)
+        User testUser2 = User.builder()
+                .userId("testuse2")
+                .firstName("Another")
+                .lastName("User")
+                .password("$2a$10$dummyHashedPassword2")
+                .userType(User.UserType.USER)
+                .customerId(testCustomer2.getCustomerId())
+                .createdDate(LocalDateTime.now().minusDays(60))
+                .lastLoginDate(LocalDateTime.now().minusDays(2))
+                .build();
+        userRepository.save(testUser2);
+
+        // Admin user not linked to any customer - can access all cards
+        User adminUser = User.builder()
+                .userId("admin")
+                .firstName("Admin")
+                .lastName("User")
+                .password("$2a$10$dummyAdminHashedPassword")
+                .userType(User.UserType.ADMIN)
+                .customerId(null) // Admin users are not linked to customers
+                .createdDate(LocalDateTime.now().minusDays(365))
+                .lastLoginDate(LocalDateTime.now())
+                .build();
+        userRepository.save(adminUser);
 
         // Create test accounts matching ACCT-RECORD from CVACT01Y.cpy
         testAccount1 = Account.builder()
                 .accountId(10000000001L)
+                .customer(testCustomer1)
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("5000.00"))
                 .creditLimit(new BigDecimal("10000.00"))
@@ -189,6 +289,7 @@ public class CardControllerTest {
 
         testAccount2 = Account.builder()
                 .accountId(10000000002L)
+                .customer(testCustomer2)
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("3000.00"))
                 .creditLimit(new BigDecimal("15000.00"))
@@ -265,16 +366,12 @@ public class CardControllerTest {
     }
 
     /**
-     * Clean up test data after each test method.
+     * No explicit tearDown needed.
      * 
-     * <p>Ensures database cleanup and test isolation matching @Transactional
-     * rollback behavior. This prevents test data pollution between test methods.</p>
+     * <p>The @Transactional annotation on the test class automatically rolls back
+     * all database changes after each test method, ensuring test isolation without
+     * manual cleanup. This matches Spring's standard test transaction behavior.</p>
      */
-    @AfterEach
-    public void tearDown() {
-        cardRepository.deleteAll();
-        accountRepository.deleteAll();
-    }
 
     // ========================================================================
     // GET /api/cards - Paginated Card List Tests
@@ -337,7 +434,9 @@ public class CardControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content").isArray())
                 .andExpect(jsonPath("$.content", not(empty())))
-                .andExpect(jsonPath("$.content[*].accountId", everyItem(is(testAccount1.getAccountId().intValue()))));
+                // Use Long comparison since account IDs exceed Integer.MAX_VALUE (2,147,483,647)
+                // 10000000001L.intValue() overflows to 1410065409
+                .andExpect(jsonPath("$.content[*].accountId", everyItem(is(testAccount1.getAccountId().longValue()))));
     }
 
     /**
@@ -415,7 +514,7 @@ public class CardControllerTest {
                 .andExpect(jsonPath("$.accountId").value(testAccount1.getAccountId().intValue()))
                 .andExpect(jsonPath("$.embossedName").value("JOHN DOE"))
                 .andExpect(jsonPath("$.expirationDate").exists())
-                .andExpect(jsonPath("$.activeStatus").value("Y"));
+                .andExpect(jsonPath("$.activeStatus").value("Active"));
     }
 
     /**
@@ -459,7 +558,7 @@ public class CardControllerTest {
         mockMvc.perform(get("/api/cards/{id}", "4111111111111110") // Expired card from setup
                         .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.activeStatus").value("N"))
+                .andExpect(jsonPath("$.activeStatus").value("Inactive"))
                 .andExpect(jsonPath("$.expirationDate").exists());
     }
 
@@ -500,7 +599,7 @@ public class CardControllerTest {
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.expirationDate").value(newExpirationDate.toString()))
-                .andExpect(jsonPath("$.activeStatus").value("N"));
+                .andExpect(jsonPath("$.activeStatus").value("Inactive"));
 
         // Verify database persistence
         Card updatedCard = cardRepository.findByCardNumber(testCard1.getCardNumber()).orElseThrow();
@@ -529,8 +628,8 @@ public class CardControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors").exists())
-                .andExpect(jsonPath("$.errors[*].field", hasItem("expirationDate")));
+                .andExpect(jsonPath("$.fieldErrors").exists())
+                .andExpect(jsonPath("$.fieldErrors.expirationDate").exists());
     }
 
     /**
@@ -551,8 +650,8 @@ public class CardControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors").exists())
-                .andExpect(jsonPath("$.errors[*].field", hasItem("status")));
+                .andExpect(jsonPath("$.fieldErrors").exists())
+                .andExpect(jsonPath("$.fieldErrors.status").exists());
     }
 
     /**
@@ -573,8 +672,8 @@ public class CardControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors").exists())
-                .andExpect(jsonPath("$.errors[*].field", hasItem("expirationDate")));
+                .andExpect(jsonPath("$.fieldErrors").exists())
+                .andExpect(jsonPath("$.fieldErrors.expirationDate").exists());
     }
 
     /**
@@ -605,7 +704,7 @@ public class CardControllerTest {
      * matching RACF security controls from mainframe.</p>
      */
     @Test
-    @WithMockUser(roles = "USER")
+    @WithMockUser(username = "testuser", roles = "USER")
     @DisplayName("PUT /api/cards/{id} - Returns 403 Forbidden for unauthorized user")
     public void testUpdateCard_UnauthorizedUser() throws Exception {
         CardUpdateRequest request = CardUpdateRequest.builder()
@@ -613,7 +712,8 @@ public class CardControllerTest {
                 .status("Y")
                 .build();
 
-        // Regular user trying to update card not associated with their customer ID
+        // testuser (linked to testCustomer1) trying to update testCard2 (belongs to testCustomer2)
+        // Should return 403 Forbidden per RACF security controls from mainframe
         mockMvc.perform(put("/api/cards/{id}", testCard2.getCardNumber())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
@@ -752,7 +852,7 @@ public class CardControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.activeStatus").value("Y"));
+                .andExpect(jsonPath("$.activeStatus").value("Active"));
     }
 
     /**
@@ -773,6 +873,6 @@ public class CardControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.activeStatus").value("N"));
+                .andExpect(jsonPath("$.activeStatus").value("Inactive"));
     }
 }

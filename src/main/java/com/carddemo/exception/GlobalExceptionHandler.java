@@ -162,7 +162,7 @@ public class GlobalExceptionHandler {
                 .error(HttpStatus.BAD_REQUEST.getReasonPhrase())
                 .message(ex.getMessage())
                 .path(request.getRequestURI())
-                .fieldErrors(ex.getFieldErrors().isEmpty() ? null : ex.getFieldErrors())
+                .fieldErrors(ex.getFieldErrors())
                 .build();
         
         return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
@@ -414,6 +414,7 @@ public class GlobalExceptionHandler {
         }
         
         // For each field, select the most appropriate error message
+        List<String> fieldNames = new ArrayList<>();
         for (Map.Entry<String, List<String>> entry : allFieldErrors.entrySet()) {
             String field = entry.getKey();
             List<String> messages = entry.getValue();
@@ -429,12 +430,13 @@ public class GlobalExceptionHandler {
                     .orElse(messages.get(0)); // Fallback to first message if no priority match
             
             fieldErrors.put(field, selectedMessage);
+            fieldNames.add(field);
         }
         
         String message = String.format("Validation failed for %d field%s: %s",
                 fieldErrors.size(),
                 fieldErrors.size() == 1 ? "" : "s",
-                String.join(", ", fieldErrors.keySet()));
+                String.join(", ", fieldNames));
         
         logger.warn("Bean validation error: {} - Request path: {} - Field errors: {}", 
                 message, request.getRequestURI(), fieldErrors);
@@ -537,8 +539,8 @@ public class GlobalExceptionHandler {
                 message, request.getRequestURI(), parameterName, providedValue, requiredType);
         
         // Build field errors map for structured error response
-        Map<String, String> fieldErrors = new HashMap<>();
-        fieldErrors.put(parameterName, message);
+        Map<String, String> fieldErrorsMap = new HashMap<>();
+        fieldErrorsMap.put(parameterName, message);
         
         ErrorResponse errorResponse = ErrorResponse.builder()
                 .timestamp(LocalDateTime.now())
@@ -546,7 +548,7 @@ public class GlobalExceptionHandler {
                 .error(HttpStatus.BAD_REQUEST.getReasonPhrase())
                 .message("Invalid request parameter: " + parameterName)
                 .path(request.getRequestURI())
-                .fieldErrors(fieldErrors)
+                .fieldErrors(fieldErrorsMap)
                 .build();
         
         return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
@@ -660,6 +662,7 @@ public class GlobalExceptionHandler {
         /**
          * Optional map of field-level validation errors.
          * Only included in response when validation failures occur.
+         * Key: field name, Value: error message
          */
         @JsonProperty("fieldErrors")
         @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -679,7 +682,7 @@ public class GlobalExceptionHandler {
          * @param error the HTTP status reason phrase
          * @param message the detailed error message
          * @param path the request URI path
-         * @param fieldErrors optional field-level validation errors
+         * @param fieldErrors optional map of field-level validation errors
          */
         public ErrorResponse(LocalDateTime timestamp, Integer status, String error, 
                            String message, String path, Map<String, String> fieldErrors) {

@@ -429,7 +429,7 @@ public class CardDetailService {
                 .cvv(cvvDisplay)
                 .embossedName(embossedName)
                 .expirationDate(card.getExpirationDate())
-                .activeStatus(formatStatus(card.getActiveStatus()))
+                .activeStatus(mapStatusToDisplay(card.getActiveStatus()))
                 .accountInfo(accountInfo)
                 .transactionSummary(transactionSummary)
                 .build();
@@ -810,29 +810,17 @@ public class CardDetailService {
     }
 
     /**
-     * Formats card active status from database code to display string.
+     * Maps database status values to user-friendly display values.
+     * Converts COBOL CARD-ACTIVE-STATUS values from CVACT02Y.cpy to display format.
      * 
-     * <p>Converts COBOL CARD-ACTIVE-STATUS single character field ('Y'/'N')
-     * to user-friendly display string for UI presentation.</p>
-     * 
-     * <p><strong>Status Mapping:</strong></p>
-     * <ul>
-     *   <li>'Y' → "Active"</li>
-     *   <li>'N' → "Inactive"</li>
-     *   <li>Any other value → "Unknown"</li>
-     * </ul>
-     * 
-     * @param activeStatus Database status code ('Y' or 'N'). May be null.
-     * 
-     * @return Formatted status string for display ("Active", "Inactive", or "Unknown").
+     * @param status Database status value ('Y' or 'N')
+     * @return Display value ("Active" or "Inactive")
      */
-    private String formatStatus(String activeStatus) {
-        if ("Y".equals(activeStatus)) {
-            return "Active";
-        } else if ("N".equals(activeStatus)) {
-            return "Inactive";
-        } else {
+    private String mapStatusToDisplay(String status) {
+        if (status == null) {
             return "Unknown";
         }
+        return "Y".equalsIgnoreCase(status) ? "Active" : "Inactive";
     }
+
 }

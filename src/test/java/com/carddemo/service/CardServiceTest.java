@@ -30,14 +30,18 @@ import com.carddemo.dto.request.CardUpdateRequest;
 import com.carddemo.dto.response.CardResponse;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
+import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
+import com.carddemo.entity.User;
 import com.carddemo.exception.ResourceNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.UserRepository;
 import com.carddemo.service.card.CardDetailService;
 import com.carddemo.service.card.CardListService;
 import com.carddemo.service.card.CardUpdateService;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -50,6 +54,11 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 import jakarta.persistence.OptimisticLockException;
 import java.math.BigDecimal;
@@ -57,6 +66,8 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -126,6 +137,9 @@ public class CardServiceTest {
     @Mock
     private TransactionRepository transactionRepository;
 
+    @Mock
+    private UserRepository userRepository;
+
     @InjectMocks
     private CardListService cardListService;
 
@@ -140,6 +154,8 @@ public class CardServiceTest {
     private Card testCard2;
     private Card testCard3;
     private Account testAccount;
+    private Customer testCustomer;
+    private User testUser;
     private List<Card> testCardList;
     private List<Transaction> testTransactionList;
     private LocalDate currentDate;
@@ -167,14 +183,32 @@ public class CardServiceTest {
         futureDate = currentDate.plusYears(2);
         pastDate = currentDate.minusYears(1);
 
+        // Create test customer matching COBOL CUSTOMER-RECORD from CVCUS01Y.cpy
+        testCustomer = Customer.builder()
+                .customerId(1000000001L) // CUST-ID PIC 9(09)
+                .firstName("JOHN")
+                .lastName("DOE")
+                .build();
+
+        // Create test user matching COBOL USER-RECORD from CSUSR01Y.cpy
+        testUser = User.builder()
+                .userId("USER001") // USR-ID PIC X(08)
+                .userType(User.UserType.USER) // USR-TYPE PIC X(01) - 'U' for regular user
+                .customerId(1000000001L) // Link to customer
+                .build();
+
         // Create test account matching COBOL ACCOUNT-RECORD from CVACT01Y.cpy
         testAccount = Account.builder()
                 .accountId(12345678901L) // ACCT-ID PIC 9(11)
+                .customer(testCustomer) // Link to customer
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("1500.75").setScale(2, RoundingMode.HALF_UP))
                 .creditLimit(new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP))
                 .cashCreditLimit(new BigDecimal("2000.00").setScale(2, RoundingMode.HALF_UP))
                 .build();
+
+        // Setup Spring Security context for authorization tests
+        setupSecurityContext("USER001", "ROLE_USER");
 
         // Create test card 1 - Active card with future expiration
         testCard1 = Card.builder()
@@ -234,6 +268,44 @@ public class CardServiceTest {
                         .merchantName("Test Merchant 3")
                         .build()
         );
+    }
+
+    /**
+     * Cleanup method executed after each test.
+     * Clears the Spring Security context to prevent test pollution.
+     */
+    @AfterEach
+    public void tearDown() {
+        SecurityContextHolder.clearContext();
+    }
+
+    /**
+     * Helper method to setup Spring Security context for tests.
+     * Mocks authentication and security context for authorization testing.
+     *
+     * @param username The username for the authenticated user
+     * @param role The role to grant (e.g., "ROLE_USER" or "ROLE_ADMIN")
+     */
+    private void setupSecurityContext(String username, String role) {
+        // Create mock authentication with the specified username and role
+        Authentication authentication = mock(Authentication.class);
+        lenient().when(authentication.getName()).thenReturn(username);
+        lenient().when(authentication.isAuthenticated()).thenReturn(true);
+        
+        // Use raw type to avoid generic type issues with Mockito
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        Collection authorities = Collections.singletonList(new SimpleGrantedAuthority(role));
+        lenient().when(authentication.getAuthorities()).thenReturn(authorities);
+
+        // Create mock security context and set the authentication
+        SecurityContext securityContext = mock(SecurityContext.class);
+        lenient().when(securityContext.getAuthentication()).thenReturn(authentication);
+
+        // Set the security context in the holder
+        SecurityContextHolder.setContext(securityContext);
+
+        // Mock UserRepository to return the test user when verifyCardOwnership is called
+        lenient().when(userRepository.findByUserId(username)).thenReturn(Optional.of(testUser));
     }
 
     // ==================================================================================

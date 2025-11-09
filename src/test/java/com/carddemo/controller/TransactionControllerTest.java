@@ -370,8 +370,8 @@ public class TransactionControllerTest {
             // Verify pagination structure
             .andExpect(MockMvcResultMatchers.jsonPath("$.content").isArray())
             .andExpect(MockMvcResultMatchers.jsonPath("$.content.length()").value(10))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.total_elements").value(15))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.total_pages").value(2))
+            .andExpect(MockMvcResultMatchers.jsonPath("$.totalElements").value(15))
+            .andExpect(MockMvcResultMatchers.jsonPath("$.totalPages").value(2))
             .andExpect(MockMvcResultMatchers.jsonPath("$.number").value(0))
             .andExpect(MockMvcResultMatchers.jsonPath("$.size").value(10))
             .andExpect(MockMvcResultMatchers.jsonPath("$.first").value(true))
@@ -435,7 +435,7 @@ public class TransactionControllerTest {
             .andExpect(MockMvcResultMatchers.status().isOk())
             .andExpect(MockMvcResultMatchers.jsonPath("$.content").isArray())
             .andExpect(MockMvcResultMatchers.jsonPath("$.content.length()").value(5))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.total_elements").value(5));
+            .andExpect(MockMvcResultMatchers.jsonPath("$.totalElements").value(5));
     }
 
     /**
@@ -456,7 +456,7 @@ public class TransactionControllerTest {
             .andExpect(MockMvcResultMatchers.status().isOk())
             .andExpect(MockMvcResultMatchers.jsonPath("$.content").isArray())
             .andExpect(MockMvcResultMatchers.jsonPath("$.content.length()").value(0))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.total_elements").value(0));
+            .andExpect(MockMvcResultMatchers.jsonPath("$.totalElements").value(0));
     }
 
     // ========================================================================

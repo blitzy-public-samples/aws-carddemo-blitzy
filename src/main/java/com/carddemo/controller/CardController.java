@@ -408,6 +408,15 @@ public class CardController {
     ) {
         log.info("Received card detail request for card: {}", maskCardNumberForLog(cardNumber));
         
+        // Validate card number format - must be exactly 16 digits
+        // Maps to COBOL PIC X(16) validation from CVACT02Y.cpy copybook
+        if (cardNumber == null || !cardNumber.matches("^[0-9]{16}$")) {
+            log.warn("Invalid card number format received: {}", 
+                    cardNumber != null ? maskCardNumberForLog(cardNumber) : "null");
+            throw new com.carddemo.exception.ValidationException(
+                    "Card number must be exactly 16 numeric digits");
+        }
+        
         // Delegate to service which performs authorization checks and retrieves full card details
         // Service implements ownership validation matching COBOL security checks in COCRDSLC.cbl
         // Returns CardResponse as specified in schema (service may return CardDetailResponse internally)

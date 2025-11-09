@@ -26,7 +26,9 @@
 package com.carddemo.service.card;
 
 import com.carddemo.entity.Card;
+import com.carddemo.entity.User;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.UserRepository;
 import com.carddemo.dto.request.CardUpdateRequest;
 import com.carddemo.dto.response.CardResponse;
 import com.carddemo.exception.ResourceNotFoundException;
@@ -36,6 +38,9 @@ import com.carddemo.exception.ValidationException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,6 +48,8 @@ import jakarta.persistence.OptimisticLockException;
 
 import java.time.LocalDate;
 import java.security.SecureRandom;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Card Update Service
@@ -222,6 +229,15 @@ public class CardUpdateService {
     private final CardRepository cardRepository;
 
     /**
+     * User Repository
+     *
+     * <p>Spring Data JPA repository for User entity providing user lookup operations.
+     * Used for authorization checks to verify card ownership through user-customer relationship.
+     * Injected via constructor using Lombok @RequiredArgsConstructor annotation.
+     */
+    private final UserRepository userRepository;
+
+    /**
      * Update Card
      *
      * <p>Updates card information with comprehensive validation, optimistic locking,
@@ -393,6 +409,10 @@ public class CardUpdateService {
 
         log.debug("Card found: {}", cardNumber);
 
+        // Verify card ownership - replaces RACF authorization checks
+        // Regular users can only update their own cards, admins can update all cards
+        verifyCardOwnership(card);
+
         // Validate and update expiration date if provided
         if (request.getExpirationDate() != null) {
             validateExpirationDate(request.getExpirationDate());
@@ -457,15 +477,17 @@ public class CardUpdateService {
         // Validate future date
         if (expirationDate.isBefore(today) || expirationDate.isEqual(today)) {
             log.warn("Invalid expiration date (past date): {}", expirationDate);
-            throw new ValidationException(
-                "Expiration date must be in the future. Provided: " + expirationDate);
+            Map<String, String> errors = new HashMap<>();
+            errors.put("expirationDate", "Expiration date must be in the future. Provided: " + expirationDate);
+            throw new ValidationException("Expiration date must be in the future", errors);
         }
 
         // Validate within 10-year range
         if (expirationDate.isAfter(maxExpirationDate)) {
             log.warn("Invalid expiration date (exceeds 10 years): {}", expirationDate);
-            throw new ValidationException(
-                "Expiration date cannot be more than 10 years in the future. Maximum: " + maxExpirationDate);
+            Map<String, String> errors = new HashMap<>();
+            errors.put("expirationDate", "Expiration date cannot be more than 10 years in the future. Maximum: " + maxExpirationDate);
+            throw new ValidationException("Expiration date cannot be more than 10 years in the future", errors);
         }
 
         log.debug("Expiration date validation passed: {}", expirationDate);
@@ -503,6 +525,108 @@ public class CardUpdateService {
         }
 
         log.debug("Status change validation passed for card: {}", card.getCardNumber());
+    }
+
+    /**
+     * Verify Card Ownership Authorization
+     *
+     * <p>Validates that the authenticated user has authorization to update the specified card.
+     * Implements ownership-based access control ensuring users can only update cards linked
+     * to their customer account.</p>
+     *
+     * <h3>Authorization Rules</h3>
+     * <ul>
+     *   <li><b>ADMIN Users:</b> Have full access to all cards (bypass ownership check)</li>
+     *   <li><b>Regular Users:</b> Can only update cards linked to their customer account</li>
+     *   <li><b>Unauthenticated:</b> Access denied (should be caught by Spring Security filter)</li>
+     * </ul>
+     *
+     * <h3>Ownership Chain Verification</h3>
+     * <p>Verifies ownership through the following entity relationship chain:</p>
+     * <pre>
+     * User.customerId → Customer.customerId ← Account.customerId ← Card.accountId
+     * </pre>
+     * <p>The method validates that the authenticated user's customerId matches the
+     * customerId of the customer who owns the account associated with the card.</p>
+     *
+     * <h3>COBOL Security Mapping</h3>
+     * <p>Replaces RACF security checks from mainframe COBOL programs:</p>
+     * <ul>
+     *   <li>COBOL: EXEC CICS ASSIGN USERID(WS-USERID) with RACF profile checks</li>
+     *   <li>Java: SecurityContextHolder.getContext().getAuthentication()</li>
+     *   <li>COBOL: User type flag (SEC-USR-TYPE 'A' for admin, 'U' for user)</li>
+     *   <li>Java: Spring Security GrantedAuthority with ROLE_ADMIN / ROLE_USER</li>
+     * </ul>
+     *
+     * <h3>Error Handling</h3>
+     * <ul>
+     *   <li><b>Missing Authentication:</b> Throws AccessDeniedException "User not authenticated"</li>
+     *   <li><b>User Not Found:</b> Throws ResourceNotFoundException "User not found: {userId}"</li>
+     *   <li><b>Ownership Mismatch:</b> Throws AccessDeniedException "Access denied: User {userId} 
+     *       does not own card {cardNumber}"</li>
+     * </ul>
+     *
+     * @param card the Card entity to verify ownership for
+     * @throws AccessDeniedException if user is not authenticated, not authorized, or does not own the card
+     * @throws ResourceNotFoundException if authenticated user does not exist in database
+     */
+    private void verifyCardOwnership(Card card) {
+        // Get authenticated user from Spring Security context
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        
+        if (authentication == null || !authentication.isAuthenticated()) {
+            log.warn("Unauthenticated access attempt to update card: {}", card.getCardNumber());
+            throw new AccessDeniedException("User not authenticated");
+        }
+        
+        String username = authentication.getName();
+        log.debug("Checking card ownership for user: {} on card: {}", username, card.getCardNumber());
+        
+        // Check if user has ADMIN role - admins can access all cards
+        boolean isAdmin = authentication.getAuthorities().stream()
+                .anyMatch(auth -> auth.getAuthority().equals("ROLE_ADMIN"));
+        
+        if (isAdmin) {
+            log.debug("Admin user {} has full access to card: {}", username, card.getCardNumber());
+            return;
+        }
+        
+        // For regular users, verify ownership through customer relationship
+        User user = userRepository.findByUserId(username)
+                .orElseThrow(() -> {
+                    log.error("Authenticated user not found in database: {}", username);
+                    return new ResourceNotFoundException("User not found: " + username);
+                });
+        
+        // Get customer ID from user
+        Long userCustomerId = user.getCustomerId();
+        
+        if (userCustomerId == null) {
+            log.warn("User {} has no linked customer - access denied to card: {}", 
+                    username, card.getCardNumber());
+            throw new AccessDeniedException("Access denied: User " + username + 
+                    " is not linked to a customer account");
+        }
+        
+        // Get customer ID from card through account relationship
+        Long cardCustomerId = card.getAccount() != null && card.getAccount().getCustomer() != null
+                ? card.getAccount().getCustomer().getCustomerId()
+                : null;
+        
+        if (cardCustomerId == null) {
+            log.error("Card {} has no customer relationship", card.getCardNumber());
+            throw new BusinessLogicException("Card has no associated customer");
+        }
+        
+        // Verify customer IDs match
+        if (!userCustomerId.equals(cardCustomerId)) {
+            log.warn("Authorization failed: User {} (customer {}) attempted to access card {} (customer {})",
+                    username, userCustomerId, card.getCardNumber(), cardCustomerId);
+            throw new AccessDeniedException("Access denied: User " + username + 
+                    " does not own card " + card.getCardNumber());
+        }
+        
+        log.debug("Card ownership verified: User {} owns card {}", username, card.getCardNumber());
     }
 
     /**
@@ -557,7 +681,7 @@ public class CardUpdateService {
                 .cvv(card.getCvvCode())
                 .embossedName(card.getEmbossedName())
                 .expirationDate(card.getExpirationDate())
-                .activeStatus(formatStatus(card.getActiveStatus()))
+                .activeStatus(mapStatusToDisplay(card.getActiveStatus()))
                 .build();
     }
 
@@ -597,29 +721,17 @@ public class CardUpdateService {
     }
 
     /**
-     * Formats card active status from database code to display string.
+     * Maps database status values to user-friendly display values.
+     * Converts COBOL CARD-ACTIVE-STATUS values from CVACT02Y.cpy to display format.
      * 
-     * <p>Converts COBOL CARD-ACTIVE-STATUS single character field ('Y'/'N')
-     * to user-friendly display string for UI presentation.</p>
-     * 
-     * <p><strong>Status Mapping:</strong></p>
-     * <ul>
-     *   <li>'Y' → "Active"</li>
-     *   <li>'N' → "Inactive"</li>
-     *   <li>Any other value → "Unknown"</li>
-     * </ul>
-     * 
-     * @param activeStatus Database status code ('Y' or 'N'). May be null.
-     * 
-     * @return Formatted status string for display ("Active", "Inactive", or "Unknown").
+     * @param status Database status value ('Y' or 'N')
+     * @return Display value ("Active" or "Inactive")
      */
-    private String formatStatus(String activeStatus) {
-        if ("Y".equals(activeStatus)) {
-            return "Active";
-        } else if ("N".equals(activeStatus)) {
-            return "Inactive";
-        } else {
+    private String mapStatusToDisplay(String status) {
+        if (status == null) {
             return "Unknown";
         }
+        return "Y".equalsIgnoreCase(status) ? "Active" : "Inactive";
     }
+
 }
