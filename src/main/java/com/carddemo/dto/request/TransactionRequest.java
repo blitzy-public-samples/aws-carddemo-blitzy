@@ -197,18 +197,18 @@ public class TransactionRequest {
      * <p><strong>COBOL Precision Mapping:</strong></p>
      * <ul>
      *   <li>COBOL: PIC S9(09)V99 = Signed, 9 integer digits, 2 decimal places</li>
-     *   <li>Java: BigDecimal with @Digits(integer=9, fraction=2)</li>
+     *   <li>Java: BigDecimal with @Digits(integer=9) - input rounded to 2 decimal places</li>
      *   <li>Range: -999,999,999.99 to +999,999,999.99</li>
-     *   <li>Scale: Always 2 decimal places (e.g., 125.50, not 125.5)</li>
+     *   <li>Storage Scale: Always 2 decimal places after service layer rounding</li>
      * </ul>
      * 
      * <p><strong>Validation Rules:</strong></p>
      * <ul>
      *   <li>Cannot be null (@NotNull)</li>
      *   <li>Must be positive (> 0) to prevent negative transactions (@Positive)</li>
-     *   <li>Maximum 9 integer digits and 2 fraction digits (@Digits)</li>
-     *   <li>Examples: 0.01, 125.50, 999999999.99</li>
-     *   <li>Invalid: -50.00, 0.00, 1234567890.00, 125.505</li>
+     *   <li>Maximum 9 integer digits (@Digits) - extra decimal places automatically rounded</li>
+     *   <li>Examples: 0.01, 125.50, 999999999.99, 123.456 (rounded to 123.46)</li>
+     *   <li>Invalid: -50.00, 0.00, 1234567890.00</li>
      * </ul>
      * 
      * <p><strong>Business Rule:</strong> Positive amount validation prevents fraudulent
@@ -216,7 +216,7 @@ public class TransactionRequest {
      */
     @NotNull(message = "Transaction amount is required")
     @Positive(message = "Transaction amount must be positive")
-    @Digits(integer = 9, fraction = 2, message = "Amount must have at most 9 integer digits and 2 decimal places")
+    @Digits(integer = 9, fraction = 10, message = "Amount must have at most 9 integer digits")
     @JsonProperty("amount")
     @JsonFormat(shape = JsonFormat.Shape.NUMBER, pattern = "#.##")
     private BigDecimal amount;
