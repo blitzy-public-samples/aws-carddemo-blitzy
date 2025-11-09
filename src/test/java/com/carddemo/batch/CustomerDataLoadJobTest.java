@@ -3,6 +3,9 @@ package com.carddemo.batch;
 import com.carddemo.batch.job.CustomerDataLoadJob;
 import com.carddemo.entity.Customer;
 import com.carddemo.repository.CustomerRepository;
+import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.TransactionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
@@ -210,12 +213,33 @@ public class CustomerDataLoadJobTest {
     private CustomerRepository customerRepository;
 
     /**
+     * Spring Data JPA repository for Account entity.
+     * <p>Required for test cleanup to avoid foreign key constraint violations.</p>
+     */
+    @Autowired
+    private AccountRepository accountRepository;
+
+    /**
+     * Spring Data JPA repository for Card entity.
+     * <p>Required for test cleanup to avoid foreign key constraint violations.</p>
+     */
+    @Autowired
+    private CardRepository cardRepository;
+
+    /**
+     * Spring Data JPA repository for Transaction entity.
+     * <p>Required for test cleanup to avoid foreign key constraint violations.</p>
+     */
+    @Autowired
+    private TransactionRepository transactionRepository;
+
+    /**
      * Test setup method executed before each test.
      * 
      * <p>Performs the following initialization:</p>
      * <ul>
      *   <li>Configures JobLauncherTestUtils with customerDataLoadJob bean</li>
-     *   <li>Clears customer table to ensure test isolation (deleteAll())</li>
+     *   <li>Clears all related tables to ensure test isolation</li>
      *   <li>Ensures each test starts with clean database state</li>
      * </ul>
      * 
@@ -225,18 +249,28 @@ public class CustomerDataLoadJobTest {
      * <p><strong>Test Isolation Strategy:</strong></p>
      * <p>The @DirtiesContext annotation at class level recreates the Spring context 
      * after each test method, preventing data accumulation that would cause false 
-     * positives/negatives in subsequent tests. The deleteAll() operation runs in its
-     * own transaction committed immediately, ensuring clean database state before
-     * each test execution.</p>
+     * positives/negatives in subsequent tests. All related tables are cleared in 
+     * dependency order to avoid foreign key constraint violations:
+     * <ol>
+     *   <li>Transactions (references cards)</li>
+     *   <li>Cards (references accounts)</li>
+     *   <li>Accounts (references customers)</li>
+     *   <li>Customers (no dependencies)</li>
+     * </ol>
+     * The deleteAll() operations run in their own transaction committed immediately, 
+     * ensuring clean database state before each test execution.</p>
      */
     @BeforeEach
     public void setUp() {
         // Set the job to test on JobLauncherTestUtils
         jobLauncherTestUtils.setJob(customerDataLoadJob);
         
-        // Clear customer table for test isolation
-        // This runs in its own transaction and commits immediately
-        customerRepository.deleteAll();
+        // Clear all related tables for test isolation
+        // Order matters: delete children before parents due to foreign key constraints
+        transactionRepository.deleteAll();  // Delete transactions first (references cards)
+        cardRepository.deleteAll();          // Delete cards (references accounts)
+        accountRepository.deleteAll();       // Delete accounts (references customers)
+        customerRepository.deleteAll();      // Delete customers last (no dependencies)
         
         // Verify clean state
         assertThat(customerRepository.count()).isZero();
