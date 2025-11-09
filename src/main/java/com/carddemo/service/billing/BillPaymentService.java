@@ -301,9 +301,20 @@ public class BillPaymentService {
         // Corresponds to COBIL00C.cbl lines 212-217: STARTBR/READPREV with HIGH-VALUES
         String nextTransactionId = generateNextTransactionId();
 
-        // Step 6: Get payment amount (full account balance)
-        // Corresponds to COBIL00C.cbl line 224: MOVE ACCT-CURR-BAL TO TRAN-AMT
-        BigDecimal paymentAmount = account.getCurrentBalance();
+        // Step 6: Get payment amount from request
+        // Enhanced from COBIL00C.cbl line 224 to support partial payments
+        // Original COBOL paid full balance; Java version allows specifying payment amount
+        BigDecimal paymentAmount = request.getAmount().setScale(2, RoundingMode.HALF_UP);
+
+        // Step 6a: Validate sufficient balance for payment amount
+        if (account.getCurrentBalance().compareTo(paymentAmount) < 0) {
+            log.error("Account {} has insufficient balance for payment. Balance: {}, Payment: {}",
+                    account.getAccountId(), account.getCurrentBalance(), paymentAmount);
+            throw new BusinessLogicException(
+                    "INSUFFICIENT_BALANCE",
+                    MessageConstants.MSG_INSUFFICIENT_BALANCE
+            );
+        }
 
         // Step 7: Create payment transaction record
         // Corresponds to COBIL00C.cbl lines 218-232: INITIALIZE TRAN-RECORD and field moves
@@ -399,7 +410,7 @@ public class BillPaymentService {
         if (!accountOpt.isPresent()) {
             // Corresponds to COBIL00C.cbl lines 359-364: WHEN DFHRESP(NOTFND)
             log.error("Account not found: {}", accountId);
-            throw new ResourceNotFoundException(MessageConstants.MSG_ACCOUNT_NOT_FOUND + ": " + accountId);
+            throw new ResourceNotFoundException(MessageConstants.MSG_ACCOUNT_NOT_FOUND);
         }
 
         Account account = accountOpt.get();
