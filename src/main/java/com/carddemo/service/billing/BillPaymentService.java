@@ -293,9 +293,9 @@ public class BillPaymentService {
         // Corresponds to COBIL00C.cbl lines 198-205: IF ACCT-CURR-BAL <= ZEROS
         validateAccountBalance(account);
 
-        // Step 4: Retrieve card number from account
+        // Step 4: Retrieve card from account
         // Corresponds to COBIL00C.cbl lines 211, 408-436: PERFORM READ-CXACAIX-FILE
-        String cardNumber = retrieveCardNumberForAccount(account.getAccountId());
+        Card card = retrieveCardForAccount(account.getAccountId());
 
         // Step 5: Generate next transaction ID
         // Corresponds to COBIL00C.cbl lines 212-217: STARTBR/READPREV with HIGH-VALUES
@@ -309,7 +309,7 @@ public class BillPaymentService {
         // Corresponds to COBIL00C.cbl lines 218-232: INITIALIZE TRAN-RECORD and field moves
         Transaction paymentTransaction = createPaymentTransaction(
                 nextTransactionId,
-                cardNumber,
+                card,
                 paymentAmount
         );
 
@@ -322,8 +322,7 @@ public class BillPaymentService {
             // Corresponds to COBIL00C.cbl lines 533-539: WHEN DFHRESP(DUPKEY)
             log.error("Duplicate transaction ID detected: {}", nextTransactionId, e);
             throw new BusinessLogicException("DUPLICATE_TRANSACTION_ID",
-                    "Transaction ID already exists. Please retry the payment.",
-                    e);
+                    "Transaction ID already exists. Please retry the payment.");
         }
 
         // Step 9: Reduce account balance by payment amount
@@ -400,7 +399,7 @@ public class BillPaymentService {
         if (!accountOpt.isPresent()) {
             // Corresponds to COBIL00C.cbl lines 359-364: WHEN DFHRESP(NOTFND)
             log.error("Account not found: {}", accountId);
-            throw new ResourceNotFoundException(MessageConstants.MSG_ACCOUNT_NOT_FOUND);
+            throw new ResourceNotFoundException(MessageConstants.MSG_ACCOUNT_NOT_FOUND + ": " + accountId);
         }
 
         Account account = accountOpt.get();
@@ -446,7 +445,7 @@ public class BillPaymentService {
     }
 
     /**
-     * Retrieves the card number associated with the payment account.
+     * Retrieves the card associated with the payment account.
      * <p>
      * Corresponds to COBOL cross-reference file lookup from COBIL00C.cbl lines 408-436:
      * </p>
@@ -463,15 +462,15 @@ public class BillPaymentService {
      * </pre>
      * <p>
      * The CXACAIX VSAM file cross-reference relationship is replaced by JPA foreign key
-     * relationships, querying Card entity by account ID to retrieve the associated card number.
+     * relationships, querying Card entity by account ID to retrieve the associated card.
      * </p>
      * 
      * @param accountId the account ID to lookup
-     * @return card number associated with the account
+     * @return Card entity associated with the account
      * @throws BusinessLogicException if no card is found for the account (RESP(NOTFND) equivalent)
      */
-    private String retrieveCardNumberForAccount(Long accountId) {
-        log.debug("Retrieving card number for account: {}", accountId);
+    private Card retrieveCardForAccount(Long accountId) {
+        log.debug("Retrieving card for account: {}", accountId);
 
         List<Card> cards = cardRepository.findByAccount_AccountId(accountId);
 
@@ -485,10 +484,10 @@ public class BillPaymentService {
         }
 
         // Use the first card if multiple cards exist for the account
-        String cardNumber = cards.get(0).getCardNumber();
-        log.debug("Card number retrieved: {} for account: {}", cardNumber, accountId);
+        Card card = cards.get(0);
+        log.debug("Card retrieved: {} for account: {}", card.getCardNumber(), accountId);
 
-        return cardNumber;
+        return card;
     }
 
     /**
@@ -567,15 +566,15 @@ public class BillPaymentService {
      * </p>
      * 
      * @param transactionId the generated transaction ID
-     * @param cardNumber the card number associated with the payment account
+     * @param card the Card entity associated with the payment account
      * @param paymentAmount the payment amount (full account balance)
      * @return Transaction entity populated with payment details
      */
     private Transaction createPaymentTransaction(String transactionId,
-                                                  String cardNumber,
+                                                  Card card,
                                                   BigDecimal paymentAmount) {
         log.debug("Creating payment transaction: ID={}, Card={}, Amount={}",
-                transactionId, cardNumber, paymentAmount);
+                transactionId, card.getCardNumber(), paymentAmount);
 
         // Corresponds to COBIL00C.cbl lines 218-232: INITIALIZE TRAN-RECORD and field moves
         LocalDateTime currentTimestamp = LocalDateTime.now();
@@ -587,7 +586,7 @@ public class BillPaymentService {
                 .transactionSource(PAYMENT_SOURCE)         // Line 222: 'POS TERM'
                 .description(PAYMENT_DESCRIPTION)          // Line 223: 'BILL PAYMENT - ONLINE'
                 .amount(paymentAmount)                     // Line 224: ACCT-CURR-BAL
-                .cardNumber(cardNumber)                    // Line 225: XREF-CARD-NUM
+                .card(card)                                // Line 225: XREF-CARD-NUM (via Card entity relationship)
                 .merchantId(PAYMENT_MERCHANT_ID)           // Line 226: 999999999
                 .merchantName(PAYMENT_MERCHANT_NAME)       // Line 227: 'BILL PAYMENT'
                 .originationTimestamp(currentTimestamp)    // Lines 230-231: TRAN-ORIG-TS
