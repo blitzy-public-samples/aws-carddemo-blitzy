@@ -203,10 +203,12 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionCa
 
     /**
      * Date/time formatter for transaction ID generation.
-     * Format: yyyyMMddHHmmss (14 characters) matching COBOL date format.
+     * Format: yyyyMMddHH (10 characters) + 6-digit sequence = 16 total characters
+     * matching COBOL TRAN-ID PIC X(16) from CVTRA05Y.cpy.
+     * This matches COBOL CBACT04C.cbl design: PARM-DATE PIC X(10) + WS-TRANID-SUFFIX PIC 9(06).
      */
     private static final DateTimeFormatter TRANSACTION_ID_DATE_FORMAT = 
-        DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+        DateTimeFormatter.ofPattern("yyyyMMddHH");
 
     /**
      * Process a single TransactionCategoryBalance item to calculate monthly interest
@@ -497,13 +499,15 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionCa
         // Replicates COBOL STRING PARM-DATE, WS-TRANID-SUFFIX INTO TRAN-ID (lines 476-480)
         String transactionId = generateTransactionId();
 
-        // Step 2: Retrieve card number for this account
+        // Step 2: Retrieve card for this account
         // Replicates COBOL 1110-GET-XREF-DATA paragraph (line 495)
-        String cardNumber = retrieveCardNumber(String.valueOf(balance.getId().getAccountId()));
+        Card card = retrieveCard(String.valueOf(balance.getId().getAccountId()));
 
-        if (cardNumber == null) {
-            log.warn("No card found for account: {} - using placeholder card number", balance.getId().getAccountId());
-            cardNumber = "0000000000000000"; // Placeholder if no card found
+        if (card == null) {
+            log.error("No card found for account: {} - cannot create transaction without valid card", 
+                     balance.getId().getAccountId());
+            throw new IllegalStateException("Cannot create interest transaction without valid card for account: " 
+                                          + balance.getId().getAccountId());
         }
 
         // Step 3: Get current timestamp for both origination and processing
@@ -527,7 +531,7 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionCa
                 .merchantName("")                                       // Empty for system transaction
                 .merchantCity("")                                       // Empty for system transaction
                 .merchantZip("")                                        // Empty for system transaction
-                .card(null)                                            // Will be set by relationship
+                .card(card)                                            // Card entity from cross-reference lookup
                 .originationTimestamp(currentTimestamp)                 // Line 496: TRAN-ORIG-TS
                 .processingTimestamp(currentTimestamp)                  // Line 498: TRAN-PROC-TS
                 .build();
@@ -543,19 +547,19 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionCa
      *        INTO TRAN-ID
      * </pre>
      * 
-     * <p><strong>Format:</strong> YYYYMMDDHHMMSS + 6-digit sequence (20 characters total)</p>
-     * <p><strong>Example:</strong> "20240115143022000001"</p>
+     * <p><strong>Format:</strong> YYYYMMDDHH + 6-digit sequence (16 characters total)</p>
+     * <p><strong>Example:</strong> "2024011514000001"</p>
      * 
      * <p><strong>Thread Safety:</strong></p>
      * <p>Uses AtomicLong for sequence counter to ensure thread-safe ID generation
      * in parallel chunk processing scenarios.</p>
      * 
-     * @return Unique transaction ID string (20 characters)
+     * @return Unique transaction ID string (16 characters matching COBOL TRAN-ID PIC X(16))
      */
     private String generateTransactionId() {
         String datePart = LocalDateTime.now().format(TRANSACTION_ID_DATE_FORMAT);
         long sequence = transactionIdSequence.incrementAndGet();
-        String sequencePart = String.format("%06d", sequence % 1000000); // 6-digit sequence
+        String sequencePart = String.format("%06d", sequence % 1000000); // 6-digit sequence (000000-999999)
         return datePart + sequencePart;
     }
 
@@ -573,13 +577,13 @@ public class InterestCalculationProcessor implements ItemProcessor<TransactionCa
      * @param accountId Account ID to look up card
      * @return Card number string, or null if no card found
      */
-    private String retrieveCardNumber(String accountId) {
+    private Card retrieveCard(String accountId) {
         Optional<Card> cardOpt = cardRepository.findByAccount_AccountId(Long.valueOf(accountId))
                 .stream()
                 .findFirst();
 
         if (cardOpt.isPresent()) {
-            return cardOpt.get().getCardNumber();
+            return cardOpt.get();
         }
 
         log.warn("No card found for account: {}", accountId);
