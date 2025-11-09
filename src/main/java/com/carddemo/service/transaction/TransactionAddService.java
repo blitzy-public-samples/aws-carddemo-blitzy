@@ -136,7 +136,7 @@ public class TransactionAddService {
             
             // Phase 3: Retrieve associated account
             // Replaces COBOL: READ CXACAIX FILE or READ ACCTDAT FILE
-            Account account = retrieveAccount(card.getAccountId());
+            Account account = retrieveAccount(card.getAccount().getAccountId());
             
             // Phase 4: Validate available credit
             // Replaces COBOL: COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL + TRAN-AMT
@@ -154,7 +154,7 @@ public class TransactionAddService {
             
             // Phase 7: Create transaction record
             // Replaces COBOL: MOVE statements populating TRAN-RECORD
-            Transaction transaction = buildTransaction(request, transactionId);
+            Transaction transaction = buildTransaction(request, transactionId, card);
             
             // Phase 8: Save transaction to database
             // Replaces COBOL: WRITE TRANSACT FILE
@@ -467,9 +467,10 @@ public class TransactionAddService {
      * 
      * @param request Transaction request with all details
      * @param transactionId Generated unique transaction ID
+     * @param card Card entity associated with this transaction
      * @return Transaction entity ready to persist
      */
-    private Transaction buildTransaction(TransactionRequest request, String transactionId) {
+    private Transaction buildTransaction(TransactionRequest request, String transactionId, Card card) {
         log.debug("Building transaction entity");
         
         LocalDateTime now = LocalDateTime.now();
@@ -485,7 +486,7 @@ public class TransactionAddService {
                 .merchantName(request.getMerchantName())
                 .merchantCity(request.getMerchantCity())
                 .merchantZip(request.getMerchantZip())
-                .cardNumber(request.getCardNumber())
+                .card(card)
                 .originationTimestamp(now)
                 .processingTimestamp(now)
                 .build();
@@ -555,7 +556,7 @@ public class TransactionAddService {
         
         // Find existing category balance or create new one
         Optional<TransactionCategoryBalance> existingBalance = 
-                categoryBalanceRepository.findByAccountIdAndTypeCodeAndCategoryCode(
+                categoryBalanceRepository.findByIdAccountIdAndIdTransactionTypeCodeAndIdCategoryCode(
                         accountId, typeCode, categoryCode);
         
         TransactionCategoryBalance categoryBalance;
@@ -574,10 +575,16 @@ public class TransactionAddService {
                     currentCategoryBalance, newCategoryBalance);
         } else {
             // Create new category balance entry
+            // Build composite key first
+            TransactionCategoryBalance.TransactionCategoryBalanceId balanceId = 
+                    TransactionCategoryBalance.TransactionCategoryBalanceId.builder()
+                            .accountId(accountId)
+                            .transactionTypeCode(typeCode)
+                            .categoryCode(categoryCode)
+                            .build();
+            
             categoryBalance = TransactionCategoryBalance.builder()
-                    .accountId(accountId)
-                    .transactionTypeCode(typeCode)
-                    .categoryCode(categoryCode)
+                    .id(balanceId)
                     .balance(transactionAmount.setScale(DECIMAL_SCALE, DECIMAL_ROUNDING))
                     .build();
             
@@ -609,18 +616,22 @@ public class TransactionAddService {
     private TransactionResponse buildResponse(Transaction transaction) {
         log.debug("Building transaction response");
         
+        // Convert categoryCode from String to Integer for DTO
+        Integer categoryCodeInt = transaction.getCategoryCode() != null ? 
+                Integer.parseInt(transaction.getCategoryCode()) : null;
+        
         return TransactionResponse.builder()
                 .transactionId(transaction.getTransactionId())
                 .typeCode(transaction.getTypeCode())
-                .categoryCode(transaction.getCategoryCode())
-                .transactionSource(transaction.getTransactionSource())
+                .categoryCode(categoryCodeInt)
+                .source(transaction.getTransactionSource())
                 .description(transaction.getDescription())
                 .amount(transaction.getAmount())
                 .merchantId(transaction.getMerchantId())
                 .merchantName(transaction.getMerchantName())
                 .merchantCity(transaction.getMerchantCity())
                 .merchantZip(transaction.getMerchantZip())
-                .cardNumber(maskCardNumber(transaction.getCardNumber()))
+                .cardNumber(maskCardNumber(transaction.getCard().getCardNumber()))
                 .originationTimestamp(transaction.getOriginationTimestamp())
                 .processingTimestamp(transaction.getProcessingTimestamp())
                 .build();

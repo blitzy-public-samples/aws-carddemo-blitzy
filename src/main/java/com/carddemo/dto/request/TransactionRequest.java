@@ -306,4 +306,120 @@ public class TransactionRequest {
     @Pattern(regexp = "^[0-9]{4}$", message = "Category code must be exactly 4 digits")
     @JsonProperty("categoryCode")
     private String categoryCode;
+
+    /**
+     * Transaction source identifier.
+     * 
+     * <p>Maps to COBOL field TRAN-SOURCE PIC X(10) from CVTRA05Y.cpy.</p>
+     * 
+     * <p>Identifies the channel or system source of the transaction (e.g., "ONLINE", "POS", "ATM").
+     * Used for transaction tracking and fraud detection.</p>
+     * 
+     * <p><strong>Validation Rules:</strong></p>
+     * <ul>
+     *   <li>Cannot be null or empty (@NotBlank)</li>
+     *   <li>Maximum length: 10 characters</li>
+     *   <li>Examples: "ONLINE", "POS", "ATM", "MOBILE"</li>
+     * </ul>
+     */
+    @NotBlank(message = "Transaction source is required")
+    @Size(max = 10, message = "Transaction source cannot exceed 10 characters")
+    @JsonProperty("transactionSource")
+    private String transactionSource;
+
+    /**
+     * Merchant name.
+     * 
+     * <p>Maps to COBOL field TRAN-MERCHANT-NAME PIC X(30) from CVTRA05Y.cpy.</p>
+     * 
+     * <p>The name of the merchant where the transaction occurred. This appears on
+     * customer statements and transaction history.</p>
+     * 
+     * <p><strong>Validation Rules:</strong></p>
+     * <ul>
+     *   <li>Cannot be null or empty (@NotBlank)</li>
+     *   <li>Maximum length: 30 characters</li>
+     *   <li>Example: "Best Buy Electronics"</li>
+     * </ul>
+     */
+    @NotBlank(message = "Merchant name is required")
+    @Size(max = 30, message = "Merchant name cannot exceed 30 characters")
+    @JsonProperty("merchantName")
+    private String merchantName;
+
+    /**
+     * Merchant city.
+     * 
+     * <p>Maps to COBOL field TRAN-MERCHANT-CITY PIC X(25) from CVTRA05Y.cpy.</p>
+     * 
+     * <p>The city where the merchant is located.</p>
+     * 
+     * <p><strong>Validation Rules:</strong></p>
+     * <ul>
+     *   <li>Cannot be null or empty (@NotBlank)</li>
+     *   <li>Maximum length: 25 characters</li>
+     *   <li>Example: "New York"</li>
+     * </ul>
+     */
+    @NotBlank(message = "Merchant city is required")
+    @Size(max = 25, message = "Merchant city cannot exceed 25 characters")
+    @JsonProperty("merchantCity")
+    private String merchantCity;
+
+    /**
+     * Merchant ZIP code.
+     * 
+     * <p>Maps to COBOL field TRAN-MERCHANT-ZIP PIC X(10) from CVTRA05Y.cpy.</p>
+     * 
+     * <p>The ZIP or postal code where the merchant is located.</p>
+     * 
+     * <p><strong>Validation Rules:</strong></p>
+     * <ul>
+     *   <li>Cannot be null or empty (@NotBlank)</li>
+     *   <li>Maximum length: 10 characters</li>
+     *   <li>Example: "10001" or "10001-1234"</li>
+     * </ul>
+     */
+    @NotBlank(message = "Merchant ZIP is required")
+    @Size(max = 10, message = "Merchant ZIP cannot exceed 10 characters")
+    @JsonProperty("merchantZip")
+    private String merchantZip;
+
+    /**
+     * Transaction origination date.
+     * 
+     * <p>Maps to COBOL field TRAN-ORIG-TS PIC X(26) from CVTRA05Y.cpy.</p>
+     * 
+     * <p>The date when the transaction originally occurred, in YYYY-MM-DD format.</p>
+     * 
+     * <p><strong>Validation Rules:</strong></p>
+     * <ul>
+     *   <li>Cannot be null or empty (@NotBlank)</li>
+     *   <li>Must be in YYYY-MM-DD format</li>
+     *   <li>Example: "2024-01-15"</li>
+     * </ul>
+     */
+    @NotBlank(message = "Origination date is required")
+    @Pattern(regexp = "^\\d{4}-\\d{2}-\\d{2}$", message = "Origination date must be in YYYY-MM-DD format")
+    @JsonProperty("origDate")
+    private String origDate;
+
+    /**
+     * Transaction processing date.
+     * 
+     * <p>Maps to COBOL field TRAN-PROC-TS PIC X(26) from CVTRA05Y.cpy.</p>
+     * 
+     * <p>The date when the transaction is processed by the system, in YYYY-MM-DD format.</p>
+     * 
+     * <p><strong>Validation Rules:</strong></p>
+     * <ul>
+     *   <li>Cannot be null or empty (@NotBlank)</li>
+     *   <li>Must be in YYYY-MM-DD format</li>
+     *   <li>Example: "2024-01-16"</li>
+     * </ul>
+     */
+    @NotBlank(message = "Processing date is required")
+    @Pattern(regexp = "^\\d{4}-\\d{2}-\\d{2}$", message = "Processing date must be in YYYY-MM-DD format")
+    @JsonProperty("procDate")
+    private String procDate;
 }
