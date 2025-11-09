@@ -34,6 +34,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+// OpenPDF imports for PDF generation (transitive dependency from JasperReports)
+import com.lowagie.text.Document;
+import com.lowagie.text.Element;
+import com.lowagie.text.Font;
+import com.lowagie.text.Paragraph;
+import com.lowagie.text.Phrase;
+import com.lowagie.text.pdf.PdfPTable;
+import com.lowagie.text.pdf.PdfWriter;
+
 /**
  * Spring service implementing comprehensive transaction report generation with filtering, aggregation,
  * and multi-format export capabilities.
@@ -391,7 +400,8 @@ public class ReportGenerationService {
         log.info("Generating transaction report: startDate={}, endDate={}, customerId={}, accountId={}, " +
                 "typeCode={}, merchantName={}, minAmount={}, maxAmount={}, page={}, size={}",
                 startDate, endDate, customerId, accountId, typeCode, merchantName, minAmount, maxAmount,
-                pageable.getPageNumber(), pageable.getPageSize());
+                pageable.isUnpaged() ? "unpaged" : pageable.getPageNumber(),
+                pageable.isUnpaged() ? "all" : pageable.getPageSize());
 
         // Validate required parameters
         validateReportParameters(startDate, endDate, minAmount, maxAmount, typeCode);
@@ -440,8 +450,8 @@ public class ReportGenerationService {
                 .categoryBreakdown(categoryBreakdowns)
                 .typeBreakdown(typeBreakdowns)
                 .transactions(transactionDetails)
-                .totalPages((int) Math.ceil((double) sortedTransactions.size() / pageable.getPageSize()))
-                .currentPage(pageable.getPageNumber())
+                .totalPages(pageable.isUnpaged() ? 1 : (int) Math.ceil((double) sortedTransactions.size() / pageable.getPageSize()))
+                .currentPage(pageable.isUnpaged() ? 0 : pageable.getPageNumber())
                 .totalElements((long) sortedTransactions.size())
                 .build();
 
@@ -623,74 +633,103 @@ public class ReportGenerationService {
                 reportResponse.getTransactionSummary().getTransactionCount());
 
         try {
-            // Note: In production deployment, this would use JasperReports
-            // For this migration, we provide a basic PDF structure that can be replaced
-            // with full JasperReports integration when template files are added
+            // Note: In production deployment, this would use JasperReports with JRXML templates
+            // For this migration, we use OpenPDF (available through JasperReports dependency)
+            // to generate valid PDF output that can be replaced with full JasperReports
+            // integration when template files are added
 
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-            PrintWriter writer = new PrintWriter(outputStream);
-
-            // Write PDF header (simplified text format - replace with JasperReports in production)
-            writer.println("TRANSACTION REPORT");
-            writer.println("==================");
-            writer.println();
-            writer.println("Report Date: " + reportResponse.getReportDate().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
-            writer.println();
             
-            // Write filter criteria
+            // Create PDF document using OpenPDF (transitive dependency from JasperReports)
+            Document document = new Document();
+            PdfWriter.getInstance(document, outputStream);
+            document.open();
+
+            // Add title
+            Font titleFont = new Font(Font.HELVETICA, 18, Font.BOLD);
+            Paragraph title = new Paragraph("TRANSACTION REPORT", titleFont);
+            title.setAlignment(Element.ALIGN_CENTER);
+            document.add(title);
+            document.add(new Paragraph(" ")); // Blank line
+
+            // Add report date
+            Font normalFont = new Font(Font.HELVETICA, 10);
+            document.add(new Paragraph("Report Date: " + 
+                    reportResponse.getReportDate().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME), normalFont));
+            document.add(new Paragraph(" ")); // Blank line
+            
+            // Add filter criteria
             ReportResponse.FilterCriteria criteria = reportResponse.getFilterCriteria();
-            writer.println("Filter Criteria:");
-            writer.println("  Date Range: " + criteria.getStartDate() + " to " + criteria.getEndDate());
+            Font boldFont = new Font(Font.HELVETICA, 12, Font.BOLD);
+            document.add(new Paragraph("Filter Criteria:", boldFont));
+            document.add(new Paragraph("  Date Range: " + criteria.getStartDate() + " to " + criteria.getEndDate(), normalFont));
             if (criteria.getAccountId() != null) {
-                writer.println("  Account ID: " + criteria.getAccountId());
+                document.add(new Paragraph("  Account ID: " + criteria.getAccountId(), normalFont));
             }
             if (criteria.getTypeCode() != null) {
-                writer.println("  Transaction Type: " + criteria.getTypeCode());
+                document.add(new Paragraph("  Transaction Type: " + criteria.getTypeCode(), normalFont));
             }
             if (criteria.getMerchantName() != null) {
-                writer.println("  Merchant: " + criteria.getMerchantName());
+                document.add(new Paragraph("  Merchant: " + criteria.getMerchantName(), normalFont));
             }
-            writer.println();
+            document.add(new Paragraph(" ")); // Blank line
 
-            // Write summary statistics
+            // Add summary statistics
             ReportResponse.TransactionSummary summary = reportResponse.getTransactionSummary();
-            writer.println("Summary Statistics:");
-            writer.println("  Total Transactions: " + summary.getTransactionCount());
-            writer.println("  Total Amount: $" + summary.getTotalAmount());
-            writer.println("  Average Amount: $" + summary.getAverageAmount());
-            writer.println("  Minimum Amount: $" + summary.getMinAmount());
-            writer.println("  Maximum Amount: $" + summary.getMaxAmount());
-            writer.println();
+            document.add(new Paragraph("Summary Statistics:", boldFont));
+            document.add(new Paragraph("  Total Transactions: " + summary.getTransactionCount(), normalFont));
+            document.add(new Paragraph("  Total Amount: $" + summary.getTotalAmount(), normalFont));
+            document.add(new Paragraph("  Average Amount: $" + summary.getAverageAmount(), normalFont));
+            document.add(new Paragraph("  Minimum Amount: $" + summary.getMinAmount(), normalFont));
+            document.add(new Paragraph("  Maximum Amount: $" + summary.getMaxAmount(), normalFont));
+            document.add(new Paragraph(" ")); // Blank line
 
-            // Write category breakdown
+            // Add category breakdown
             if (reportResponse.getCategoryBreakdown() != null && !reportResponse.getCategoryBreakdown().isEmpty()) {
-                writer.println("Category Breakdown:");
+                document.add(new Paragraph("Category Breakdown:", boldFont));
                 for (ReportResponse.CategoryBreakdown category : reportResponse.getCategoryBreakdown()) {
-                    writer.println(String.format("  %s (%s): %d transactions, $%s",
+                    document.add(new Paragraph(String.format("  %s (%s): %d transactions, $%s",
                             category.getCategoryName(),
                             category.getCategoryCode(),
                             category.getTransactionCount(),
-                            category.getTotalAmount()));
+                            category.getTotalAmount()), normalFont));
                 }
-                writer.println();
+                document.add(new Paragraph(" ")); // Blank line
             }
 
-            // Write transaction details
-            writer.println("Transaction Details:");
-            writer.println("Date       | Card Number      | Merchant                    | Amount      | Type | Category");
-            writer.println("-".repeat(100));
+            // Add transaction details header
+            document.add(new Paragraph("Transaction Details:", boldFont));
             
+            // Create table for transactions
+            PdfPTable table = new PdfPTable(6);
+            table.setWidthPercentage(100);
+            table.setSpacingBefore(10f);
+            
+            // Add table headers
+            Font headerFont = new Font(Font.HELVETICA, 8, Font.BOLD);
+            table.addCell(new Phrase("Date", headerFont));
+            table.addCell(new Phrase("Card Number", headerFont));
+            table.addCell(new Phrase("Merchant", headerFont));
+            table.addCell(new Phrase("Amount", headerFont));
+            table.addCell(new Phrase("Type", headerFont));
+            table.addCell(new Phrase("Category", headerFont));
+            
+            // Add transaction rows
+            Font cellFont = new Font(Font.HELVETICA, 7);
             for (ReportResponse.TransactionDetail transaction : reportResponse.getTransactions()) {
-                writer.println(String.format("%-10s | %-16s | %-27s | $%10s | %-4s | %-8s",
-                        transaction.getTransactionDate(),
-                        transaction.getCardNumber(),
-                        truncate(transaction.getMerchantName(), 27),
-                        transaction.getAmount(),
-                        transaction.getTypeCode(),
-                        transaction.getCategoryCode()));
+                table.addCell(new Phrase(String.valueOf(transaction.getTransactionDate()), cellFont));
+                table.addCell(new Phrase(transaction.getCardNumber(), cellFont));
+                table.addCell(new Phrase(truncate(transaction.getMerchantName(), 20), cellFont));
+                table.addCell(new Phrase("$" + transaction.getAmount(), cellFont));
+                table.addCell(new Phrase(transaction.getTypeCode(), cellFont));
+                table.addCell(new Phrase(transaction.getCategoryCode(), cellFont));
             }
-
-            writer.flush();
+            
+            document.add(table);
+            
+            // Close document
+            document.close();
+            
             byte[] pdfData = outputStream.toByteArray();
 
             log.info("PDF export completed: {} bytes", pdfData.length);
@@ -760,7 +799,7 @@ public class ReportGenerationService {
             PrintWriter writer = new PrintWriter(outputStream);
 
             // Write CSV header row
-            writer.println("Transaction ID,Date,Card Number,Merchant Name,Merchant City,Amount,Type Code,Category Code,Description");
+            writer.println("Transaction ID,Transaction Date,Card Number,Merchant,Merchant City,Amount,Type,Category,Description");
 
             // Write transaction data rows
             for (ReportResponse.TransactionDetail transaction : reportResponse.getTransactions()) {
@@ -882,6 +921,21 @@ public class ReportGenerationService {
             // Date range filter
             if (transaction.getOriginationTimestamp().isBefore(startDateTime) ||
                 transaction.getOriginationTimestamp().isAfter(endDateTime)) {
+                return;
+            }
+
+            // Customer ID filter (via Card -> Account -> Customer relationship)
+            if (customerId != null && transaction.getCard() != null && 
+                transaction.getCard().getAccount() != null && 
+                transaction.getCard().getAccount().getCustomer() != null &&
+                !customerId.equals(transaction.getCard().getAccount().getCustomer().getCustomerId())) {
+                return;
+            }
+
+            // Account ID filter (via Card -> Account relationship)
+            if (accountId != null && transaction.getCard() != null && 
+                transaction.getCard().getAccount() != null &&
+                !accountId.equals(transaction.getCard().getAccount().getAccountId())) {
                 return;
             }
 

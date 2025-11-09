@@ -23,10 +23,14 @@
 package com.carddemo.service;
 
 import com.carddemo.dto.response.ReportResponse;
+import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
 import com.carddemo.entity.Transaction;
+import com.carddemo.entity.TransactionType;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionTypeRepository;
 import com.carddemo.service.reporting.ReportGenerationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -51,6 +55,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,6 +63,7 @@ import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -103,6 +109,12 @@ public class ReportGenerationServiceTest {
     @Mock
     private CardRepository cardRepository;
 
+    @Mock
+    private TransactionTypeRepository transactionTypeRepository;
+
+    @Mock
+    private TransactionCategoryRepository transactionCategoryRepository;
+
     @InjectMocks
     private ReportGenerationService reportGenerationService;
 
@@ -140,6 +152,16 @@ public class ReportGenerationServiceTest {
         
         // Create test cards for account filtering scenarios
         testCards = createTestCards();
+        
+        // Setup default mocks for TransactionType validation
+        // Mock TransactionTypeRepository to return valid transaction types for all test codes
+        // Use lenient() to allow this mock to be unused in some tests (e.g., when no transactions are processed)
+        lenient().when(transactionTypeRepository.findById(anyString())).thenAnswer(invocation -> {
+            String typeCode = invocation.getArgument(0);
+            return Optional.of(TransactionType.builder()
+                    .typeCode(typeCode)
+                    .build());
+        });
     }
 
     /**
@@ -154,13 +176,17 @@ public class ReportGenerationServiceTest {
     private List<Transaction> createTestTransactions() {
         List<Transaction> transactions = new ArrayList<>();
         
+        // Create test card for relationships
+        Card testCard = createTestCards().get(0);
+        
         // Transaction 1: Large purchase on first day
         transactions.add(Transaction.builder()
                 .transactionId("TXN20240101001")
+                .card(testCard)
                 .amount(new BigDecimal("1250.75").setScale(2, RoundingMode.HALF_UP))
                 .originationTimestamp(LocalDateTime.of(2024, 1, 1, 10, 30, 0))
                 .processingTimestamp(LocalDateTime.of(2024, 1, 1, 10, 30, 15))
-                .categoryCode("0001") // Retail
+                .categoryCode(1) // Retail - Integer type
                 .typeCode("01") // Purchase
                 .merchantName("Electronics Store")
                 .merchantCity("New York")
@@ -170,10 +196,11 @@ public class ReportGenerationServiceTest {
         // Transaction 2: Medium purchase mid-month
         transactions.add(Transaction.builder()
                 .transactionId("TXN20240115002")
+                .card(testCard)
                 .amount(new BigDecimal("523.50").setScale(2, RoundingMode.HALF_UP))
                 .originationTimestamp(LocalDateTime.of(2024, 1, 15, 14, 15, 30))
                 .processingTimestamp(LocalDateTime.of(2024, 1, 15, 14, 15, 45))
-                .categoryCode("0002") // Grocery
+                .categoryCode(2) // Grocery - Integer type
                 .typeCode("01") // Purchase
                 .merchantName("Supermarket")
                 .merchantCity("Boston")
@@ -183,10 +210,11 @@ public class ReportGenerationServiceTest {
         // Transaction 3: Payment (negative amount) mid-month
         transactions.add(Transaction.builder()
                 .transactionId("TXN20240116003")
+                .card(testCard)
                 .amount(new BigDecimal("-500.00").setScale(2, RoundingMode.HALF_UP))
                 .originationTimestamp(LocalDateTime.of(2024, 1, 16, 9, 0, 0))
                 .processingTimestamp(LocalDateTime.of(2024, 1, 16, 9, 0, 10))
-                .categoryCode("0000") // Payment
+                .categoryCode(0) // Payment - Integer type
                 .typeCode("02") // Payment
                 .merchantName("Online Payment")
                 .merchantCity("N/A")
@@ -196,10 +224,11 @@ public class ReportGenerationServiceTest {
         // Transaction 4: Gas station purchase
         transactions.add(Transaction.builder()
                 .transactionId("TXN20240120004")
+                .card(testCard)
                 .amount(new BigDecimal("75.25").setScale(2, RoundingMode.HALF_UP))
                 .originationTimestamp(LocalDateTime.of(2024, 1, 20, 16, 45, 0))
                 .processingTimestamp(LocalDateTime.of(2024, 1, 20, 16, 45, 12))
-                .categoryCode("0003") // Gas/Fuel
+                .categoryCode(3) // Gas/Fuel - Integer type
                 .typeCode("01") // Purchase
                 .merchantName("Gas Station")
                 .merchantCity("Chicago")
@@ -209,10 +238,11 @@ public class ReportGenerationServiceTest {
         // Transaction 5: Dining purchase
         transactions.add(Transaction.builder()
                 .transactionId("TXN20240125005")
+                .card(testCard)
                 .amount(new BigDecimal("89.99").setScale(2, RoundingMode.HALF_UP))
                 .originationTimestamp(LocalDateTime.of(2024, 1, 25, 19, 30, 0))
                 .processingTimestamp(LocalDateTime.of(2024, 1, 25, 19, 30, 18))
-                .categoryCode("0004") // Dining
+                .categoryCode(4) // Dining - Integer type
                 .typeCode("01") // Purchase
                 .merchantName("Restaurant")
                 .merchantCity("San Francisco")
@@ -222,10 +252,11 @@ public class ReportGenerationServiceTest {
         // Transaction 6: Small purchase on last day
         transactions.add(Transaction.builder()
                 .transactionId("TXN20240131006")
+                .card(testCard)
                 .amount(new BigDecimal("25.50").setScale(2, RoundingMode.HALF_UP))
                 .originationTimestamp(LocalDateTime.of(2024, 1, 31, 11, 20, 0))
                 .processingTimestamp(LocalDateTime.of(2024, 1, 31, 11, 20, 8))
-                .categoryCode("0005") // Entertainment
+                .categoryCode(5) // Entertainment - Integer type
                 .typeCode("01") // Purchase
                 .merchantName("Movie Theater")
                 .merchantCity("Los Angeles")
@@ -243,12 +274,22 @@ public class ReportGenerationServiceTest {
     private List<Card> createTestCards() {
         List<Card> cards = new ArrayList<>();
         
+        // Create test account for card relationship
+        Account testAccount = Account.builder()
+                .accountId(testAccountId)
+                .activeStatus("Y")
+                .currentBalance(new BigDecimal("1500.00").setScale(2, RoundingMode.HALF_UP))
+                .creditLimit(new BigDecimal("10000.00").setScale(2, RoundingMode.HALF_UP))
+                .cashCreditLimit(new BigDecimal("2000.00").setScale(2, RoundingMode.HALF_UP))
+                .openDate(LocalDate.of(2020, 1, 1))
+                .build();
+        
         Card card = Card.builder()
                 .cardNumber(testCardNumber)
-                .accountId(testAccountId)
+                .account(testAccount)
                 .cardType("CREDIT")
                 .expirationDate(LocalDate.of(2026, 12, 31))
-                .cvv("123")
+                .cvvCode("123")
                 .activeStatus("Y")
                 .build();
         
@@ -269,25 +310,19 @@ public class ReportGenerationServiceTest {
     @Test
     @DisplayName("Generate report by date range - matches COBOL date range filtering")
     public void testGenerateReportByDateRange() {
-        // Arrange: Mock repository to return transactions within date range
-        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        Page<Transaction> mockPage = new PageImpl<>(testTransactions, pageable, testTransactions.size());
+        // Arrange: Mock repository to return all transactions (service filters in memory)
+        when(transactionRepository.findAll()).thenReturn(testTransactions);
         
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                any(Pageable.class)))
-            .thenReturn(mockPage);
+        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
         
         // Act: Generate report with date range filter
         ReportResponse report = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 null, // accountId
-                null, // cardNumber - will use testCardNumber internally if needed
-                testCardNumber, 
                 null, // typeCode
+                null, // merchantName
                 null, // minAmount
                 null, // maxAmount
                 pageable);
@@ -297,60 +332,46 @@ public class ReportGenerationServiceTest {
         assertThat(report.getFilterCriteria()).isNotNull();
         assertThat(report.getFilterCriteria().getStartDate()).isEqualTo(startDate);
         assertThat(report.getFilterCriteria().getEndDate()).isEqualTo(endDate);
-        assertThat(report.getTransactionList()).hasSize(testTransactions.size());
+        assertThat(report.getTransactions()).hasSize(testTransactions.size());
         
-        // Verify repository method called with correct date parameters
-        ArgumentCaptor<LocalDate> startDateCaptor = ArgumentCaptor.forClass(LocalDate.class);
-        ArgumentCaptor<LocalDate> endDateCaptor = ArgumentCaptor.forClass(LocalDate.class);
-        
-        verify(transactionRepository).findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                startDateCaptor.capture(), 
-                endDateCaptor.capture(), 
-                any(Pageable.class));
-        
-        assertThat(startDateCaptor.getValue()).isEqualTo(startDate);
-        assertThat(endDateCaptor.getValue()).isEqualTo(endDate);
+        // Verify repository method called
+        verify(transactionRepository).findAll();
     }
 
     /**
      * Tests transaction report generation with account ID filtering.
      * 
      * <p>Verifies that report generation correctly filters transactions by account via card
-     * relationships, using CardRepository.findByAccountId() to retrieve all cards for the account
+     * relationships, using CardRepository.findByAccount_AccountId() to retrieve all cards for the account
      * and then querying transactions for those cards, matching COBOL cross-reference file access
      * patterns from CVACT03Y.cpy XREF structure.</p>
      */
     @Test
     @DisplayName("Generate report by account - matches COBOL account cross-reference logic")
     public void testGenerateReportByAccount() {
-        // Arrange: Mock card repository to return cards for account
-        when(cardRepository.findByAccountId(eq(testAccountId))).thenReturn(testCards);
+        // Arrange: Mock repository to return all transactions (service filters by account in memory)
+        when(transactionRepository.findAll()).thenReturn(testTransactions);
         
         Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        Page<Transaction> mockPage = new PageImpl<>(testTransactions, pageable, testTransactions.size());
-        
-        when(transactionRepository.findByCardNumber(eq(testCardNumber), any(Pageable.class)))
-            .thenReturn(mockPage);
         
         // Act: Generate report with account ID filter
         ReportResponse report = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 testAccountId, 
-                null, // cardNumber will be resolved from account
-                null,
                 null, // typeCode
+                null, // merchantName
                 null, // minAmount
                 null, // maxAmount
                 pageable);
         
-        // Assert: Verify card repository called to resolve account to cards
-        verify(cardRepository).findByAccountId(eq(testAccountId));
-        
-        // Verify report contains transactions for account's cards
+        // Assert: Verify report contains transactions for account
         assertThat(report).isNotNull();
-        assertThat(report.getTransactionList()).isNotEmpty();
+        assertThat(report.getTransactions()).isNotEmpty();
+        
+        // Verify repository method called
+        verify(transactionRepository).findAll();
     }
 
     /**
@@ -363,40 +384,30 @@ public class ReportGenerationServiceTest {
     @Test
     @DisplayName("Generate report by transaction type - matches COBOL type code filtering")
     public void testGenerateReportByTransactionType() {
-        // Arrange: Filter to only "01" (Purchase) type transactions
+        // Arrange: Mock repository to return all transactions (service filters by type in memory)
         String typeCodeFilter = "01";
-        List<Transaction> purchaseTransactions = testTransactions.stream()
-                .filter(t -> typeCodeFilter.equals(t.getTypeCode()))
-                .collect(Collectors.toList());
+        when(transactionRepository.findAll()).thenReturn(testTransactions);
         
         Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        Page<Transaction> mockPage = new PageImpl<>(purchaseTransactions, pageable, purchaseTransactions.size());
-        
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                any(Pageable.class)))
-            .thenReturn(mockPage);
         
         // Act: Generate report with type code filter
         ReportResponse report = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 null, // accountId
-                null, // cardNumber
-                testCardNumber,
                 typeCodeFilter, 
+                null, // merchantName
                 null, // minAmount
                 null, // maxAmount
                 pageable);
         
         // Assert: Verify report contains only purchase transactions
         assertThat(report).isNotNull();
-        assertThat(report.getTransactionList()).isNotEmpty();
+        assertThat(report.getTransactions()).isNotEmpty();
         
         // Verify all transactions in report match the type filter
-        report.getTransactionList().forEach(txn -> 
+        report.getTransactions().forEach(txn -> 
             assertThat(txn.getTypeCode()).isEqualTo(typeCodeFilter));
     }
 
@@ -413,16 +424,10 @@ public class ReportGenerationServiceTest {
     @Test
     @DisplayName("Calculate total amount with BigDecimal precision - matches COBOL COMP-3 arithmetic")
     public void testGenerateReportCalculatesTotalAmount() {
-        // Arrange: Mock repository to return test transactions
-        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        Page<Transaction> mockPage = new PageImpl<>(testTransactions, pageable, testTransactions.size());
+        // Arrange: Mock repository to return all transactions (service filters in memory)
+        when(transactionRepository.findAll()).thenReturn(testTransactions);
         
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                any(Pageable.class)))
-            .thenReturn(mockPage);
+        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
         
         // Calculate expected total matching COBOL accumulation logic
         BigDecimal expectedTotal = testTransactions.stream()
@@ -436,10 +441,10 @@ public class ReportGenerationServiceTest {
         ReportResponse report = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 null, // accountId
-                null, // cardNumber
-                testCardNumber,
                 null, // typeCode
+                null, // merchantName
                 null, // minAmount
                 null, // maxAmount
                 pageable);
@@ -456,6 +461,9 @@ public class ReportGenerationServiceTest {
         
         // Verify scale is exactly 2 decimal places
         assertThat(report.getTransactionSummary().getTotalAmount().scale()).isEqualTo(2);
+        
+        // Verify repository method called
+        verify(transactionRepository).findAll();
     }
 
     /**
@@ -470,57 +478,37 @@ public class ReportGenerationServiceTest {
     @Test
     @DisplayName("Sort transactions by date descending - matches COBOL SORT utility order")
     public void testGenerateReportSortsByDateDescending() {
-        // Arrange: Create transactions with specific timestamps for sort verification
-        List<Transaction> unsortedTransactions = new ArrayList<>(testTransactions);
-        
-        // Sort in descending order matching expected service behavior
-        List<Transaction> sortedTransactions = new ArrayList<>(unsortedTransactions);
-        sortedTransactions.sort(Comparator.comparing(Transaction::getOriginationTimestamp).reversed());
+        // Arrange: Mock repository to return all transactions (service filters and sorts in memory)
+        when(transactionRepository.findAll()).thenReturn(testTransactions);
         
         Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        Page<Transaction> mockPage = new PageImpl<>(sortedTransactions, pageable, sortedTransactions.size());
-        
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                any(Pageable.class)))
-            .thenReturn(mockPage);
         
         // Act: Generate report with default descending sort
         ReportResponse report = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 null, // accountId
-                null, // cardNumber
-                testCardNumber,
                 null, // typeCode
+                null, // merchantName
                 null, // minAmount
                 null, // maxAmount
                 pageable);
         
         // Assert: Verify transactions are in descending date order
         assertThat(report).isNotNull();
-        assertThat(report.getTransactionList()).isNotEmpty();
+        assertThat(report.getTransactions()).isNotEmpty();
         
         // Verify descending sort by comparing first and last transaction timestamps
-        if (report.getTransactionList().size() > 1) {
-            LocalDate firstDate = report.getTransactionList().get(0).getTransactionDate();
-            LocalDate lastDate = report.getTransactionList().get(report.getTransactionList().size() - 1).getTransactionDate();
+        if (report.getTransactions().size() > 1) {
+            LocalDate firstDate = report.getTransactions().get(0).getTransactionDate();
+            LocalDate lastDate = report.getTransactions().get(report.getTransactions().size() - 1).getTransactionDate();
             
             assertThat(firstDate).isAfterOrEqualTo(lastDate);
         }
         
-        // Verify sort parameter passed to repository
-        ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
-        verify(transactionRepository).findByCardNumberAndTransactionDateBetween(
-                anyString(), 
-                any(LocalDate.class), 
-                any(LocalDate.class), 
-                pageableCaptor.capture());
-        
-        Pageable capturedPageable = pageableCaptor.getValue();
-        assertThat(capturedPageable.getSort().isSorted()).isTrue();
+        // Verify repository method called
+        verify(transactionRepository).findAll();
     }
 
     /**
@@ -534,24 +522,18 @@ public class ReportGenerationServiceTest {
     @DisplayName("Handle no transactions found - matches COBOL EOF condition handling")
     public void testGenerateReportHandlesNoTransactions() {
         // Arrange: Mock repository to return empty result set
-        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        Page<Transaction> emptyPage = new PageImpl<>(Collections.emptyList(), pageable, 0);
+        when(transactionRepository.findAll()).thenReturn(Collections.emptyList());
         
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                any(Pageable.class)))
-            .thenReturn(emptyPage);
+        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
         
         // Act: Generate report for date range with no transactions
         ReportResponse report = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 null, // accountId
-                null, // cardNumber
-                testCardNumber,
                 null, // typeCode
+                null, // merchantName
                 null, // minAmount
                 null, // maxAmount
                 pageable);
@@ -563,7 +545,10 @@ public class ReportGenerationServiceTest {
         assertThat(report.getTransactionSummary().getTotalAmount())
                 .usingComparator(BigDecimal::compareTo)
                 .isEqualTo(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
-        assertThat(report.getTransactionList()).isEmpty();
+        assertThat(report.getTransactions()).isEmpty();
+        
+        // Verify repository method called
+        verify(transactionRepository).findAll();
     }
 
     /**
@@ -584,7 +569,7 @@ public class ReportGenerationServiceTest {
                     .amount(new BigDecimal("100.00").setScale(2, RoundingMode.HALF_UP))
                     .originationTimestamp(LocalDateTime.of(2024, 1, 15, 10, i, 0))
                     .processingTimestamp(LocalDateTime.of(2024, 1, 15, 10, i, 10))
-                    .categoryCode("0001")
+                    .categoryCode(1)
                     .typeCode("01")
                     .merchantName("Test Merchant " + i)
                     .merchantCity("Test City")
@@ -592,75 +577,46 @@ public class ReportGenerationServiceTest {
                     .build());
         }
         
-        // Mock first page (transactions 0-9)
-        Pageable firstPageRequest = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        List<Transaction> firstPageTransactions = largeTransactionSet.subList(0, 10);
-        Page<Transaction> firstPage = new PageImpl<>(firstPageTransactions, firstPageRequest, largeTransactionSet.size());
-        
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                eq(firstPageRequest)))
-            .thenReturn(firstPage);
+        // Mock repository to return all transactions (service paginates in memory)
+        when(transactionRepository.findAll()).thenReturn(largeTransactionSet);
         
         // Act: Generate first page of report
+        Pageable firstPageRequest = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
         ReportResponse firstPageReport = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 null, // accountId
-                null, // cardNumber
-                testCardNumber,
                 null, // typeCode
+                null, // merchantName
                 null, // minAmount
                 null, // maxAmount
                 firstPageRequest);
         
         // Assert: Verify first page contains exactly 10 transactions
         assertThat(firstPageReport).isNotNull();
-        assertThat(firstPageReport.getTransactionList()).hasSize(10);
+        assertThat(firstPageReport.getTransactions()).hasSize(10);
         assertThat(firstPageReport.getTransactionSummary().getTransactionCount()).isEqualTo(25L);
         
-        // Mock second page (transactions 10-19)
-        Pageable secondPageRequest = PageRequest.of(1, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        List<Transaction> secondPageTransactions = largeTransactionSet.subList(10, 20);
-        Page<Transaction> secondPage = new PageImpl<>(secondPageTransactions, secondPageRequest, largeTransactionSet.size());
-        
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                eq(secondPageRequest)))
-            .thenReturn(secondPage);
-        
         // Act: Generate second page of report
+        Pageable secondPageRequest = PageRequest.of(1, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
         ReportResponse secondPageReport = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 null, // accountId
-                null, // cardNumber
-                testCardNumber,
                 null, // typeCode
+                null, // merchantName
                 null, // minAmount
                 null, // maxAmount
                 secondPageRequest);
         
         // Assert: Verify second page contains exactly 10 transactions
         assertThat(secondPageReport).isNotNull();
-        assertThat(secondPageReport.getTransactionList()).hasSize(10);
+        assertThat(secondPageReport.getTransactions()).hasSize(10);
         
-        // Verify pagination parameters passed to repository
-        verify(transactionRepository).findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                eq(firstPageRequest));
-        
-        verify(transactionRepository).findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                eq(secondPageRequest));
+        // Verify repository method called twice
+        verify(transactionRepository, times(2)).findAll();
     }
 
     /**
@@ -673,52 +629,52 @@ public class ReportGenerationServiceTest {
     @Test
     @DisplayName("Export report to CSV format - matches COBOL report file output")
     public void testGenerateReportExportCSV() {
-        // Arrange: Create report response with test data
-        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        Page<Transaction> mockPage = new PageImpl<>(testTransactions, pageable, testTransactions.size());
+        // Arrange: Mock repository to return all transactions (service filters in memory)
+        when(transactionRepository.findAll()).thenReturn(testTransactions);
         
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                any(Pageable.class)))
-            .thenReturn(mockPage);
+        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
         
         ReportResponse report = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 null, // accountId
-                null, // cardNumber
-                testCardNumber,
                 null, // typeCode
+                null, // merchantName
                 null, // minAmount
                 null, // maxAmount
                 pageable);
         
         // Act: Export report to CSV format
-        String csvOutput = reportGenerationService.exportToCSV(report);
+        byte[] csvOutput = reportGenerationService.exportToCSV(report);
         
         // Assert: Verify CSV output structure
         assertThat(csvOutput).isNotNull();
         assertThat(csvOutput).isNotEmpty();
         
+        // Convert byte array to string for content verification
+        String csvString = new String(csvOutput, java.nio.charset.StandardCharsets.UTF_8);
+        
         // Verify CSV contains header row
-        assertThat(csvOutput).contains("Transaction ID");
-        assertThat(csvOutput).contains("Transaction Date");
-        assertThat(csvOutput).contains("Card Number");
-        assertThat(csvOutput).contains("Merchant");
-        assertThat(csvOutput).contains("Amount");
-        assertThat(csvOutput).contains("Type");
-        assertThat(csvOutput).contains("Category");
+        assertThat(csvString).contains("Transaction ID");
+        assertThat(csvString).contains("Transaction Date");
+        assertThat(csvString).contains("Card Number");
+        assertThat(csvString).contains("Merchant");
+        assertThat(csvString).contains("Amount");
+        assertThat(csvString).contains("Type");
+        assertThat(csvString).contains("Category");
         
         // Verify CSV contains transaction data rows
-        assertThat(csvOutput).contains("TXN20240101001");
-        assertThat(csvOutput).contains("1250.75");
-        assertThat(csvOutput).contains("Electronics Store");
+        assertThat(csvString).contains("TXN20240101001");
+        assertThat(csvString).contains("1250.75");
+        assertThat(csvString).contains("Electronics Store");
         
         // Verify proper CSV escaping for fields with commas
-        String[] lines = csvOutput.split("\n");
+        String[] lines = csvString.split("\n");
         assertThat(lines.length).isGreaterThan(testTransactions.size()); // Header + data rows
+        
+        // Verify repository method called
+        verify(transactionRepository).findAll();
     }
 
     /**
@@ -731,24 +687,18 @@ public class ReportGenerationServiceTest {
     @Test
     @DisplayName("Export report to PDF format - matches COBOL batch statement generation")
     public void testGenerateReportExportPDF() {
-        // Arrange: Create report response with test data
-        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        Page<Transaction> mockPage = new PageImpl<>(testTransactions, pageable, testTransactions.size());
+        // Arrange: Mock repository to return all transactions (service filters in memory)
+        when(transactionRepository.findAll()).thenReturn(testTransactions);
         
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                any(Pageable.class)))
-            .thenReturn(mockPage);
+        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
         
         ReportResponse report = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 null, // accountId
-                null, // cardNumber
-                testCardNumber,
                 null, // typeCode
+                null, // merchantName
                 null, // minAmount
                 null, // maxAmount
                 pageable);
@@ -763,6 +713,9 @@ public class ReportGenerationServiceTest {
         // Verify PDF header signature (PDF files start with "%PDF-")
         String pdfHeader = new String(pdfOutput, 0, Math.min(4, pdfOutput.length));
         assertThat(pdfHeader).isEqualTo("%PDF");
+        
+        // Verify repository method called
+        verify(transactionRepository).findAll();
     }
 
     /**
@@ -775,35 +728,29 @@ public class ReportGenerationServiceTest {
     @Test
     @DisplayName("Format transaction dates for display - matches COBOL date formatting")
     public void testGenerateReportDateDisplay() {
-        // Arrange: Mock repository to return test transactions with specific dates
-        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        Page<Transaction> mockPage = new PageImpl<>(testTransactions, pageable, testTransactions.size());
+        // Arrange: Mock repository to return all transactions (service filters in memory)
+        when(transactionRepository.findAll()).thenReturn(testTransactions);
         
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                any(Pageable.class)))
-            .thenReturn(mockPage);
+        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
         
         // Act: Generate report with date formatting
         ReportResponse report = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 null, // accountId
-                null, // cardNumber
-                testCardNumber,
                 null, // typeCode
+                null, // merchantName
                 null, // minAmount
                 null, // maxAmount
                 pageable);
         
         // Assert: Verify transaction dates are properly formatted
         assertThat(report).isNotNull();
-        assertThat(report.getTransactionList()).isNotEmpty();
+        assertThat(report.getTransactions()).isNotEmpty();
         
         // Verify each transaction has valid date format
-        report.getTransactionList().forEach(txn -> {
+        report.getTransactions().forEach(txn -> {
             assertThat(txn.getTransactionDate()).isNotNull();
             assertThat(txn.getTransactionDate()).isBetween(startDate, endDate);
         });
@@ -832,7 +779,7 @@ public class ReportGenerationServiceTest {
                 .amount(new BigDecimal("500.00").setScale(2, RoundingMode.HALF_UP))
                 .originationTimestamp(LocalDateTime.of(2024, 1, 15, 10, 0, 0))
                 .processingTimestamp(LocalDateTime.of(2024, 1, 15, 10, 0, 10))
-                .categoryCode("0001")
+                .categoryCode(1)
                 .typeCode("01")
                 .merchantName("Merchant A")
                 .merchantCity("City A")
@@ -845,25 +792,18 @@ public class ReportGenerationServiceTest {
                 .amount(new BigDecimal("750.00").setScale(2, RoundingMode.HALF_UP))
                 .originationTimestamp(LocalDateTime.of(2024, 2, 15, 10, 0, 0))
                 .processingTimestamp(LocalDateTime.of(2024, 2, 15, 10, 0, 10))
-                .categoryCode("0001")
+                .categoryCode(1)
                 .typeCode("01")
                 .merchantName("Merchant B")
                 .merchantCity("City B")
                 .description("February purchase")
                 .build());
         
-        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        Page<Transaction> mockPage = new PageImpl<>(multiMonthTransactions, pageable, multiMonthTransactions.size());
+        // Mock repository to return all transactions (service filters in memory)
+        when(transactionRepository.findAll()).thenReturn(multiMonthTransactions);
         
         LocalDate multiMonthStart = LocalDate.of(2024, 1, 1);
         LocalDate multiMonthEnd = LocalDate.of(2024, 2, 29);
-        
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(multiMonthStart), 
-                eq(multiMonthEnd), 
-                any(Pageable.class)))
-            .thenReturn(mockPage);
         
         // Act: Generate monthly report
         ReportResponse monthlyReport = reportGenerationService.generateMonthlyReport(
@@ -872,6 +812,9 @@ public class ReportGenerationServiceTest {
         
         // Assert: Verify monthly aggregation structure
         assertThat(monthlyReport).isNotNull();
+        
+        // Verify repository method called (twice: once in generateTransactionReport, once in queryTransactionsWithFilters)
+        verify(transactionRepository, times(2)).findAll();
         
         // If service implements monthly aggregates, verify structure
         // This assumes ReportResponse has monthlyAggregates field
@@ -891,24 +834,19 @@ public class ReportGenerationServiceTest {
     @DisplayName("Generate category breakdown - matches COBOL category grouping logic")
     public void testGenerateReportCategoryBreakdown() {
         // Arrange: Mock repository to return test transactions with various categories
-        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        Page<Transaction> mockPage = new PageImpl<>(testTransactions, pageable, testTransactions.size());
+        // Mock repository to return all transactions (service filters in memory)
+        when(transactionRepository.findAll()).thenReturn(testTransactions);
         
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                any(Pageable.class)))
-            .thenReturn(mockPage);
+        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
         
         // Act: Generate report with category breakdown
         ReportResponse report = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 null, // accountId
-                null, // cardNumber
-                testCardNumber,
                 null, // typeCode
+                null, // merchantName
                 null, // minAmount
                 null, // maxAmount
                 pageable);
@@ -934,6 +872,9 @@ public class ReportGenerationServiceTest {
         assertThat(categoryBreakdownTotal)
                 .usingComparator(BigDecimal::compareTo)
                 .isEqualTo(report.getTransactionSummary().getTotalAmount());
+        
+        // Verify repository method called
+        verify(transactionRepository).findAll();
     }
 
     /**
@@ -949,39 +890,28 @@ public class ReportGenerationServiceTest {
         BigDecimal minAmount = new BigDecimal("50.00").setScale(2, RoundingMode.HALF_UP);
         BigDecimal maxAmount = new BigDecimal("600.00").setScale(2, RoundingMode.HALF_UP);
         
-        // Filter test transactions within amount range
-        List<Transaction> filteredTransactions = testTransactions.stream()
-                .filter(t -> t.getAmount().compareTo(minAmount) >= 0 && 
-                             t.getAmount().compareTo(maxAmount) <= 0)
-                .collect(Collectors.toList());
+        // Mock repository to return all transactions (service filters in memory)
+        when(transactionRepository.findAll()).thenReturn(testTransactions);
         
         Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        Page<Transaction> mockPage = new PageImpl<>(filteredTransactions, pageable, filteredTransactions.size());
-        
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                any(Pageable.class)))
-            .thenReturn(mockPage);
         
         // Act: Generate report with amount range filter
         ReportResponse report = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 null, // accountId
-                null, // cardNumber
-                testCardNumber,
                 null, // typeCode
+                null, // merchantName
                 minAmount, 
                 maxAmount, 
                 pageable);
         
         // Assert: Verify all transactions fall within amount range
         assertThat(report).isNotNull();
-        assertThat(report.getTransactionList()).isNotEmpty();
+        assertThat(report.getTransactions()).isNotEmpty();
         
-        report.getTransactionList().forEach(txn -> {
+        report.getTransactions().forEach(txn -> {
             assertThat(txn.getAmount()).isGreaterThanOrEqualTo(minAmount);
             assertThat(txn.getAmount()).isLessThanOrEqualTo(maxAmount);
         });
@@ -989,6 +919,9 @@ public class ReportGenerationServiceTest {
         // Verify filter criteria includes amount range
         assertThat(report.getFilterCriteria().getMinAmount()).isEqualTo(minAmount);
         assertThat(report.getFilterCriteria().getMaxAmount()).isEqualTo(maxAmount);
+        
+        // Verify repository method called
+        verify(transactionRepository).findAll();
     }
 
     /**
@@ -1001,16 +934,10 @@ public class ReportGenerationServiceTest {
     @Test
     @DisplayName("Calculate average transaction amount - matches COBOL average computation")
     public void testGenerateReportCalculatesAverageAmount() {
-        // Arrange: Mock repository to return test transactions
-        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
-        Page<Transaction> mockPage = new PageImpl<>(testTransactions, pageable, testTransactions.size());
+        // Arrange: Mock repository to return all transactions (service filters in memory)
+        when(transactionRepository.findAll()).thenReturn(testTransactions);
         
-        when(transactionRepository.findByCardNumberAndTransactionDateBetween(
-                eq(testCardNumber), 
-                eq(startDate), 
-                eq(endDate), 
-                any(Pageable.class)))
-            .thenReturn(mockPage);
+        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "originationTimestamp"));
         
         // Calculate expected average
         BigDecimal expectedTotal = testTransactions.stream()
@@ -1025,10 +952,10 @@ public class ReportGenerationServiceTest {
         ReportResponse report = reportGenerationService.generateTransactionReport(
                 startDate, 
                 endDate, 
+                null, // customerId
                 null, // accountId
-                null, // cardNumber
-                testCardNumber,
                 null, // typeCode
+                null, // merchantName
                 null, // minAmount
                 null, // maxAmount
                 pageable);
@@ -1045,5 +972,8 @@ public class ReportGenerationServiceTest {
         
         // Verify scale is exactly 2 decimal places
         assertThat(report.getTransactionSummary().getAverageAmount().scale()).isEqualTo(2);
+        
+        // Verify repository method called
+        verify(transactionRepository).findAll();
     }
 }
