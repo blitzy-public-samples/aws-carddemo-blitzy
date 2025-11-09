@@ -4,10 +4,13 @@ import com.carddemo.batch.job.DailyTransactionProcessingJob;
 import com.carddemo.batch.processor.TransactionProcessor;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
+import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
 import com.carddemo.entity.TransactionCategoryBalance;
+import com.carddemo.entity.TransactionCategoryBalance.TransactionCategoryBalanceId;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.repository.TransactionRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,15 +18,16 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.io.BufferedWriter;
 import java.io.FileWriter;
@@ -135,7 +139,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>@SpringBatchTest: Auto-configures JobLauncherTestUtils for job execution testing</li>
  *   <li>@SpringBootTest: Loads full application context with H2 in-memory database</li>
  *   <li>@ActiveProfiles("test"): Activates test profile with test database configuration</li>
- *   <li>@Transactional: Ensures test data cleanup with automatic rollback after each test</li>
  * </ul>
  * 
  * <h2>BigDecimal Precision Testing</h2>
@@ -158,12 +161,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBatchTest
 @SpringBootTest
 @ActiveProfiles("test")
-@Transactional
 @DisplayName("Daily Transaction Processing Job Tests - CBTRN02C.cbl Equivalent")
 public class DailyTransactionProcessingJobTest {
 
     @Autowired
     private JobLauncherTestUtils jobLauncherTestUtils;
+
+    @Autowired
+    @Qualifier("dailyTransactionProcessingBatchJob")
+    private Job dailyTransactionProcessingJob;
 
     @Autowired
     private TransactionRepository transactionRepository;
@@ -176,6 +182,9 @@ public class DailyTransactionProcessingJobTest {
 
     @Autowired
     private TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
+
+    @Autowired
+    private CustomerRepository customerRepository;
 
     private Path testTransactionFile;
     private Path testRejectFile;
@@ -196,11 +205,16 @@ public class DailyTransactionProcessingJobTest {
      */
     @BeforeEach
     void setUp() throws IOException {
+        // Set the job to test
+        jobLauncherTestUtils.setJob(dailyTransactionProcessingJob);
+        
         // Clear all test data for isolation
-        transactionRepository.deleteAll();
-        transactionCategoryBalanceRepository.deleteAll();
-        accountRepository.deleteAll();
-        cardRepository.deleteAll();
+        // Use deleteAllInBatch to avoid loading entities and triggering foreign key lookups
+        transactionRepository.deleteAllInBatch();
+        transactionCategoryBalanceRepository.deleteAllInBatch();
+        cardRepository.deleteAllInBatch();
+        accountRepository.deleteAllInBatch();
+        customerRepository.deleteAllInBatch();
 
         // Create temporary files for test execution
         testTransactionFile = Files.createTempFile("test_dailytran_", ".csv");
@@ -238,9 +252,13 @@ public class DailyTransactionProcessingJobTest {
     @Test
     @DisplayName("Test successful job execution posting all daily transactions with account balance updates")
     void testDailyTransactionProcessingJob_Success() throws Exception {
+        // Setup test customer (required for Account foreign key constraint)
+        Customer testCustomer = createTestCustomer(1000000001L);
+
         // Setup test account matching COBOL ACCOUNT-RECORD structure
         Account testAccount = Account.builder()
                 .accountId(10000000001L)
+                .customer(testCustomer)  // Set required customer relationship
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("1000.00"))  // ACCT-CURR-BAL (line 547)
                 .creditLimit(new BigDecimal("5000.00"))      // ACCT-CREDIT-LIMIT (line 407)
@@ -255,7 +273,7 @@ public class DailyTransactionProcessingJobTest {
         // Setup test card matching COBOL CARD-XREF-RECORD structure
         Card testCard = Card.builder()
                 .cardNumber("4111111111111111")  // DALYTRAN-CARD-NUM / XREF-CARD-NUM (line 382)
-                .accountId(testAccount.getAccountId())  // XREF-ACCT-ID (line 394)
+                .account(testAccount)  // XREF-ACCT-ID (line 394) - uses Account relationship
                 .cardType("01")
                 .expirationDate(LocalDate.now().plusYears(2))
                 .cvvCode("123")
@@ -343,9 +361,13 @@ public class DailyTransactionProcessingJobTest {
     @Test
     @DisplayName("Test multi-entity atomic commit ensuring Transaction save and Account update within @Transactional chunk")
     void testDailyTransactionProcessingJob_MultiEntityCommit() throws Exception {
+        // Setup test customer (required for Account foreign key constraint)
+        Customer testCustomer = createTestCustomer(1000000002L);
+
         // Setup test data
         Account testAccount = Account.builder()
                 .accountId(10000000002L)
+                .customer(testCustomer)  // Set required customer relationship
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("2000.00"))
                 .creditLimit(new BigDecimal("10000.00"))
@@ -359,7 +381,7 @@ public class DailyTransactionProcessingJobTest {
 
         Card testCard = Card.builder()
                 .cardNumber("4222222222222222")
-                .accountId(testAccount.getAccountId())
+                .account(testAccount)
                 .cardType("01")
                 .expirationDate(LocalDate.now().plusYears(2))
                 .cvvCode("456")
@@ -370,9 +392,11 @@ public class DailyTransactionProcessingJobTest {
 
         // Initialize transaction category balance (matches COBOL TRAN-CAT-BAL-RECORD)
         TransactionCategoryBalance initialBalance = TransactionCategoryBalance.builder()
-                .accountId(testAccount.getAccountId())
-                .typeCode("01")
-                .categoryCode(1000)
+                .id(TransactionCategoryBalanceId.builder()
+                        .accountId(testAccount.getAccountId())
+                        .transactionTypeCode("01")
+                        .categoryCode("1000")
+                        .build())
                 .balance(new BigDecimal("500.00"))
                 .build();
         transactionCategoryBalanceRepository.save(initialBalance);
@@ -413,7 +437,7 @@ public class DailyTransactionProcessingJobTest {
         // Verify TransactionCategoryBalance was updated atomically
         // Matches COBOL 2700-B-UPDATE-TCATBAL-REC: ADD DALYTRAN-AMT TO TRAN-CAT-BAL (line 527)
         Optional<TransactionCategoryBalance> updatedBalanceOpt = transactionCategoryBalanceRepository
-                .findByAccountIdAndTypeCodeAndCategoryCode(testAccount.getAccountId(), "01", 1000);
+                .findByIdAccountIdAndIdTransactionTypeCodeAndIdCategoryCode(testAccount.getAccountId(), "01", "1000");
         assertThat(updatedBalanceOpt).isPresent();
         TransactionCategoryBalance updatedBalance = updatedBalanceOpt.get();
         
@@ -456,9 +480,13 @@ public class DailyTransactionProcessingJobTest {
     @Test
     @DisplayName("Test credit limit validation rejecting transactions exceeding ACCT-CREDIT-LIMIT")
     void testDailyTransactionProcessingJob_CreditLimitValidation() throws Exception {
+        // Setup test customer (required for Account foreign key constraint)
+        Customer testCustomer = createTestCustomer(1000000003L);
+
         // Setup test account with credit limit = 1000.00
         Account testAccount = Account.builder()
                 .accountId(10000000003L)
+                .customer(testCustomer)  // Set required customer relationship
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("500.00"))
                 .creditLimit(new BigDecimal("1000.00"))  // ACCT-CREDIT-LIMIT
@@ -472,7 +500,7 @@ public class DailyTransactionProcessingJobTest {
 
         Card testCard = Card.builder()
                 .cardNumber("4333333333333333")
-                .accountId(testAccount.getAccountId())
+                .account(testAccount)
                 .cardType("01")
                 .expirationDate(LocalDate.now().plusYears(2))
                 .cvvCode("789")
@@ -547,9 +575,13 @@ public class DailyTransactionProcessingJobTest {
     @Test
     @DisplayName("Test card authorization validation rejecting transactions with invalid card numbers")
     void testDailyTransactionProcessingJob_CardAuthorization() throws Exception {
+        // Setup test customer (required for Account foreign key constraint)
+        Customer testCustomer = createTestCustomer(1000000004L);
+
         // Setup test account without creating card (simulates invalid card number)
         Account testAccount = Account.builder()
                 .accountId(10000000004L)
+                .customer(testCustomer)  // Set required customer relationship
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("1500.00"))
                 .creditLimit(new BigDecimal("5000.00"))
@@ -614,9 +646,13 @@ public class DailyTransactionProcessingJobTest {
     @Test
     @DisplayName("Test account expiration date validation rejecting transactions after ACCT-EXPIRAION-DATE")
     void testDailyTransactionProcessingJob_AccountExpiration() throws Exception {
+        // Setup test customer (required for Account foreign key constraint)
+        Customer testCustomer = createTestCustomer(1000000005L);
+
         // Setup test account with expiration date in the past
         Account expiredAccount = Account.builder()
                 .accountId(10000000005L)
+                .customer(testCustomer)  // Set required customer relationship
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("1000.00"))
                 .creditLimit(new BigDecimal("5000.00"))
@@ -630,7 +666,7 @@ public class DailyTransactionProcessingJobTest {
 
         Card testCard = Card.builder()
                 .cardNumber("4555555555555555")
-                .accountId(expiredAccount.getAccountId())
+                .account(expiredAccount)
                 .cardType("01")
                 .expirationDate(LocalDate.now().plusYears(1))  // Card not expired, but account is
                 .cvvCode("321")
@@ -703,9 +739,13 @@ public class DailyTransactionProcessingJobTest {
     @Test
     @DisplayName("Test BigDecimal precision for balance calculations with scale=2 and RoundingMode.HALF_UP")
     void testDailyTransactionProcessingJob_BigDecimalPrecision() throws Exception {
+        // Setup test customer (required for Account foreign key constraint)
+        Customer testCustomer = createTestCustomer(1000000006L);
+
         // Setup test account with precise decimal values
         Account testAccount = Account.builder()
                 .accountId(10000000006L)
+                .customer(testCustomer)  // Set required customer relationship
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("1234.56"))  // Exact two decimal places
                 .creditLimit(new BigDecimal("10000.00"))
@@ -719,7 +759,7 @@ public class DailyTransactionProcessingJobTest {
 
         Card testCard = Card.builder()
                 .cardNumber("4666666666666666")
-                .accountId(testAccount.getAccountId())
+                .account(testAccount)
                 .cardType("01")
                 .expirationDate(LocalDate.now().plusYears(2))
                 .cvvCode("654")
@@ -803,9 +843,13 @@ public class DailyTransactionProcessingJobTest {
     @Test
     @DisplayName("Test chunk processing validation with 1000 records per commit")
     void testDailyTransactionProcessingJob_ChunkProcessing() throws Exception {
+        // Setup test customer (required for Account foreign key constraint)
+        Customer testCustomer = createTestCustomer(1000000007L);
+
         // Setup test account for chunk processing
         Account testAccount = Account.builder()
                 .accountId(10000000007L)
+                .customer(testCustomer)  // Set required customer relationship
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("10000.00"))  // High starting balance
                 .creditLimit(new BigDecimal("50000.00"))     // High credit limit
@@ -819,7 +863,7 @@ public class DailyTransactionProcessingJobTest {
 
         Card testCard = Card.builder()
                 .cardNumber("4777777777777777")
-                .accountId(testAccount.getAccountId())
+                .account(testAccount)
                 .cardType("01")
                 .expirationDate(LocalDate.now().plusYears(2))
                 .cvvCode("987")
@@ -832,7 +876,7 @@ public class DailyTransactionProcessingJobTest {
         // Should create 2 chunks: first chunk 1000 records, second chunk 500 records
         List<String> transactions = new java.util.ArrayList<>();
         for (int i = 1; i <= 1500; i++) {
-            String txnId = String.format("TXN2024010700%04d", i);
+            String txnId = String.format("TXN20240107%05d", i);  // Fixed: 16 chars (TXN + 8 digits + 5 digits)
             transactions.add(createTransactionRecord(txnId, "01", 1000, "10.00", testCard.getCardNumber()));
         }
         createDailyTransactionFile(testTransactionFile, transactions);
@@ -897,9 +941,13 @@ public class DailyTransactionProcessingJobTest {
     @Test
     @DisplayName("Test transaction category balance updates matching COBOL 2700-UPDATE-TCATBAL logic")
     void testDailyTransactionProcessingJob_TransactionCategoryBalance() throws Exception {
+        // Setup test customer (required for Account foreign key constraint)
+        Customer testCustomer = createTestCustomer(1000000008L);
+
         // Setup test account
         Account testAccount = Account.builder()
                 .accountId(10000000008L)
+                .customer(testCustomer)  // Set required customer relationship
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("3000.00"))
                 .creditLimit(new BigDecimal("15000.00"))
@@ -913,7 +961,7 @@ public class DailyTransactionProcessingJobTest {
 
         Card testCard = Card.builder()
                 .cardNumber("4888888888888888")
-                .accountId(testAccount.getAccountId())
+                .account(testAccount)
                 .cardType("01")
                 .expirationDate(LocalDate.now().plusYears(2))
                 .cvvCode("147")
@@ -924,9 +972,11 @@ public class DailyTransactionProcessingJobTest {
 
         // Initialize existing category balance for category 1000
         TransactionCategoryBalance existingBalance = TransactionCategoryBalance.builder()
-                .accountId(testAccount.getAccountId())
-                .typeCode("01")
-                .categoryCode(1000)
+                .id(TransactionCategoryBalanceId.builder()
+                        .accountId(testAccount.getAccountId())
+                        .transactionTypeCode("01")
+                        .categoryCode("1000")
+                        .build())
                 .balance(new BigDecimal("1000.00"))
                 .build();
         transactionCategoryBalanceRepository.save(existingBalance);
@@ -949,7 +999,7 @@ public class DailyTransactionProcessingJobTest {
 
         // Verify existing category balance was updated (2700-B-UPDATE-TCATBAL-REC)
         Optional<TransactionCategoryBalance> updatedBalance1Opt = transactionCategoryBalanceRepository
-                .findByAccountIdAndTypeCodeAndCategoryCode(testAccount.getAccountId(), "01", 1000);
+                .findByIdAccountIdAndIdTransactionTypeCodeAndIdCategoryCode(testAccount.getAccountId(), "01", "1000");
         assertThat(updatedBalance1Opt).isPresent();
         TransactionCategoryBalance updatedBalance1 = updatedBalance1Opt.get();
         
@@ -960,7 +1010,7 @@ public class DailyTransactionProcessingJobTest {
 
         // Verify new category balance was created (2700-A-CREATE-TCATBAL-REC)
         Optional<TransactionCategoryBalance> newBalance2Opt = transactionCategoryBalanceRepository
-                .findByAccountIdAndTypeCodeAndCategoryCode(testAccount.getAccountId(), "01", 2000);
+                .findByIdAccountIdAndIdTransactionTypeCodeAndIdCategoryCode(testAccount.getAccountId(), "01", "2000");
         assertThat(newBalance2Opt).isPresent();
         TransactionCategoryBalance newBalance2 = newBalance2Opt.get();
         
@@ -995,9 +1045,13 @@ public class DailyTransactionProcessingJobTest {
     @Test
     @DisplayName("Test batch job performance matching 4-hour window requirement")
     void testDailyTransactionProcessingJob_Performance() throws Exception {
+        // Setup test customer (required for Account foreign key constraint)
+        Customer testCustomer = createTestCustomer(1000000009L);
+
         // Setup test account
         Account testAccount = Account.builder()
                 .accountId(10000000009L)
+                .customer(testCustomer)  // Set required customer relationship
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("50000.00"))
                 .creditLimit(new BigDecimal("100000.00"))
@@ -1011,7 +1065,7 @@ public class DailyTransactionProcessingJobTest {
 
         Card testCard = Card.builder()
                 .cardNumber("4999999999999999")
-                .accountId(testAccount.getAccountId())
+                .account(testAccount)
                 .cardType("01")
                 .expirationDate(LocalDate.now().plusYears(2))
                 .cvvCode("258")
@@ -1023,7 +1077,7 @@ public class DailyTransactionProcessingJobTest {
         // Create 5000 transactions for performance testing
         List<String> transactions = new java.util.ArrayList<>();
         for (int i = 1; i <= 5000; i++) {
-            String txnId = String.format("TXN2024010900%05d", i);
+            String txnId = String.format("TXN20240109%05d", i);  // Fixed: 16 chars (TXN + 8 digits + 5 digits)
             transactions.add(createTransactionRecord(txnId, "01", 1000, "5.00", testCard.getCardNumber()));
         }
         createDailyTransactionFile(testTransactionFile, transactions);
@@ -1092,6 +1146,8 @@ public class DailyTransactionProcessingJobTest {
      *    05 DALYTRAN-MERCHANT-ZIP  PIC X(10).
      *    05 DALYTRAN-CARD-NUM    PIC X(16).
      *    05 DALYTRAN-ORIG-TS     PIC X(26).
+     *    05 DALYTRAN-PROC-TS     PIC X(26).
+     *    05 FILLER               PIC X(20).
      * </pre>
      * 
      * @param transactionId transaction ID (16 characters)
@@ -1099,16 +1155,87 @@ public class DailyTransactionProcessingJobTest {
      * @param categoryCode transaction category code (4 digits)
      * @param amount transaction amount
      * @param cardNumber card number (16 characters)
-     * @return formatted transaction record string
+     * @return formatted transaction record string (350 characters fixed-length)
      */
     private String createTransactionRecord(String transactionId, String typeCode, int categoryCode, 
                                          String amount, String cardNumber) {
         LocalDateTime now = LocalDateTime.now();
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd-HH.mm.ss.SSSSSS");
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
         String originationTimestamp = now.format(formatter);
 
-        // CSV format: txnId,typeCode,categoryCode,source,description,amount,merchantId,merchantName,merchantCity,merchantZip,cardNumber,originationTimestamp
-        return String.format("%s,%s,%04d,ONLINE,Test Transaction,%s,123456789,Test Merchant,Test City,12345,%s,%s",
-                transactionId, typeCode, categoryCode, amount, cardNumber, originationTimestamp);
+        // Fixed-length format matching COBOL DALYTRAN-RECORD (350 bytes total)
+        StringBuilder record = new StringBuilder(350);
+        
+        // DALYTRAN-ID: PIC X(16) - positions 1-16
+        record.append(String.format("%-16s", transactionId));
+        
+        // DALYTRAN-TYPE-CD: PIC X(02) - positions 17-18
+        record.append(String.format("%-2s", typeCode));
+        
+        // DALYTRAN-CAT-CD: PIC 9(04) - positions 19-22
+        record.append(String.format("%04d", categoryCode));
+        
+        // DALYTRAN-SOURCE: PIC X(10) - positions 23-32
+        record.append(String.format("%-10s", "ONLINE"));
+        
+        // DALYTRAN-DESC: PIC X(100) - positions 33-132
+        record.append(String.format("%-100s", "Test Transaction"));
+        
+        // DALYTRAN-AMT: PIC S9(09)V99 - positions 133-143 (11 chars with sign overpunch)
+        // Format: 9 digits + decimal point implied + 2 decimals
+        // For testing, use standard format without overpunch (reader will handle)
+        BigDecimal amountValue = new BigDecimal(amount);
+        String formattedAmount = String.format("%011d", amountValue.multiply(new BigDecimal("100")).longValue());
+        record.append(formattedAmount);
+        
+        // DALYTRAN-MERCHANT-ID: PIC 9(09) - positions 144-152
+        record.append("123456789");
+        
+        // DALYTRAN-MERCHANT-NAME: PIC X(50) - positions 153-202
+        record.append(String.format("%-50s", "Test Merchant"));
+        
+        // DALYTRAN-MERCHANT-CITY: PIC X(50) - positions 203-252
+        record.append(String.format("%-50s", "Test City"));
+        
+        // DALYTRAN-MERCHANT-ZIP: PIC X(10) - positions 253-262
+        record.append(String.format("%-10s", "12345"));
+        
+        // DALYTRAN-CARD-NUM: PIC X(16) - positions 263-278
+        record.append(String.format("%-16s", cardNumber));
+        
+        // DALYTRAN-ORIG-TS: PIC X(26) - positions 279-304
+        record.append(String.format("%-26s", originationTimestamp));
+        
+        // DALYTRAN-PROC-TS: PIC X(26) - positions 305-330
+        record.append(String.format("%-26s", originationTimestamp));
+        
+        // FILLER: PIC X(20) - positions 331-350
+        record.append(String.format("%-20s", ""));
+        
+        return record.toString();
+    }
+
+    /**
+     * Create and save a test customer entity.
+     * Required for Account entities due to foreign key constraint.
+     * 
+     * @param customerId customer ID
+     * @return saved Customer entity
+     */
+    private Customer createTestCustomer(Long customerId) {
+        Customer customer = new Customer();
+        customer.setCustomerId(customerId);
+        customer.setFirstName("Test");
+        customer.setLastName("Customer");
+        customer.setDateOfBirth(LocalDate.of(1980, 1, 1));
+        customer.setSsn("123456789");
+        customer.setFicoScore(750);
+        customer.setAddressLine1("123 Test St");
+        customer.setAddressLine3("Test City");  // City field is addressLine3
+        customer.setAddressStateCode("TS");     // State field is addressStateCode
+        customer.setAddressZip("12345");        // Zip field is addressZip
+        customer.setAddressCountryCode("USA");  // Country field is addressCountryCode
+        customer.setPhoneNumber1("555-1234");   // Phone field is phoneNumber1
+        return customerRepository.save(customer);
     }
 }
