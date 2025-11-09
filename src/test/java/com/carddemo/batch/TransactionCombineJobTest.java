@@ -13,13 +13,17 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
@@ -132,6 +136,10 @@ public class TransactionCombineJobTest {
     private JobLauncherTestUtils jobLauncherTestUtils;
 
     @Autowired
+    @Qualifier("transactionCombineBatchJob")
+    private Job transactionCombineJob;
+
+    @Autowired
     private TransactionRepository transactionRepository;
 
     @Autowired
@@ -172,6 +180,9 @@ public class TransactionCombineJobTest {
      */
     @BeforeEach
     public void setUp() {
+        // Set the job to test on JobLauncherTestUtils (required when multiple Job beans exist)
+        jobLauncherTestUtils.setJob(transactionCombineJob);
+        
         // Clean all data before each test to ensure isolation
         transactionRepository.deleteAll();
         cardRepository.deleteAll();
@@ -197,7 +208,7 @@ public class TransactionCombineJobTest {
         // Create test account 1 (matching CVACT01Y.cpy structure)
         testAccount1 = Account.builder()
                 .accountId(10000000001L)
-                .customerId(testCustomer1.getCustomerId())
+                .customer(testCustomer1)
                 .currentBalance(new BigDecimal("5000.00"))
                 .creditLimit(new BigDecimal("10000.00"))
                 .cashCreditLimit(new BigDecimal("2000.00"))
@@ -207,7 +218,7 @@ public class TransactionCombineJobTest {
         // Create test account 2
         testAccount2 = Account.builder()
                 .accountId(10000000002L)
-                .customerId(testCustomer2.getCustomerId())
+                .customer(testCustomer2)
                 .currentBalance(new BigDecimal("3000.00"))
                 .creditLimit(new BigDecimal("7500.00"))
                 .cashCreditLimit(new BigDecimal("1500.00"))
@@ -217,14 +228,14 @@ public class TransactionCombineJobTest {
         // Create test card 1 (matching CVACT02Y.cpy structure)
         testCard1 = Card.builder()
                 .cardNumber("4000123456789001")
-                .accountId(testAccount1.getAccountId())
+                .account(testAccount1)
                 .build();
         testCard1 = cardRepository.save(testCard1);
 
         // Create test card 2
         testCard2 = Card.builder()
                 .cardNumber("4000123456789002")
-                .accountId(testAccount2.getAccountId())
+                .account(testAccount2)
                 .build();
         testCard2 = cardRepository.save(testCard2);
     }
@@ -280,7 +291,7 @@ public class TransactionCombineJobTest {
         for (int i = 1; i <= 5; i++) {
             Transaction tx = Transaction.builder()
                     .transactionId("TXN2024011500" + String.format("%02d", i))
-                    .cardNumber(testCard1.getCardNumber())
+                    .card(testCard1)
                     .amount(new BigDecimal("100.00").multiply(BigDecimal.valueOf(i)))
                     .typeCode("01")  // Purchase type
                     .categoryCode(1000)  // Retail category
@@ -299,7 +310,7 @@ public class TransactionCombineJobTest {
         for (int i = 6; i <= 10; i++) {
             Transaction tx = Transaction.builder()
                     .transactionId("TXN2024011500" + String.format("%02d", i))
-                    .cardNumber(testCard2.getCardNumber())
+                    .card(testCard2)
                     .amount(new BigDecimal("50.00").multiply(BigDecimal.valueOf(i - 5)))
                     .typeCode("02")  // Cash advance type
                     .categoryCode(2000)  // Cash category
@@ -336,12 +347,14 @@ public class TransactionCombineJobTest {
         assertThat(combinedTransactionCount).isEqualTo(10);
 
         // Verify transactions from both sources present
-        List<Transaction> card1Transactions = transactionRepository
-                .findByCard_CardNumber(testCard1.getCardNumber());
+        Page<Transaction> card1TransactionsPage = transactionRepository
+                .findByCard_CardNumber(testCard1.getCardNumber(), Pageable.unpaged());
+        List<Transaction> card1Transactions = card1TransactionsPage.getContent();
         assertThat(card1Transactions).hasSize(5);
 
-        List<Transaction> card2Transactions = transactionRepository
-                .findByCard_CardNumber(testCard2.getCardNumber());
+        Page<Transaction> card2TransactionsPage = transactionRepository
+                .findByCard_CardNumber(testCard2.getCardNumber(), Pageable.unpaged());
+        List<Transaction> card2Transactions = card2TransactionsPage.getContent();
         assertThat(card2Transactions).hasSize(5);
     }
 
@@ -379,11 +392,11 @@ public class TransactionCombineJobTest {
         // First transaction (will be kept)
         Transaction tx1 = Transaction.builder()
                 .transactionId("TXN2024011500001")
-                .cardNumber(testCard1.getCardNumber())
+                .card(testCard1)
                 .amount(new BigDecimal("100.00"))
                 .typeCode("01")
                 .categoryCode(1000)
-                .transactionSource("POS_SOURCE1")
+                .transactionSource("POS_SRC1")
                 .description("First occurrence")
                 .merchantName("Merchant A")
                 .originationTimestamp(baseTime)
@@ -394,11 +407,11 @@ public class TransactionCombineJobTest {
         // Additional unique transactions
         Transaction tx2 = Transaction.builder()
                 .transactionId("TXN2024011500002")
-                .cardNumber(testCard1.getCardNumber())
+                .card(testCard1)
                 .amount(new BigDecimal("200.00"))
                 .typeCode("01")
                 .categoryCode(1000)
-                .transactionSource("POS_SOURCE1")
+                .transactionSource("POS_SRC1")
                 .description("Unique transaction 2")
                 .merchantName("Merchant B")
                 .originationTimestamp(baseTime.plusHours(1))
@@ -408,11 +421,11 @@ public class TransactionCombineJobTest {
 
         Transaction tx3 = Transaction.builder()
                 .transactionId("TXN2024011500003")
-                .cardNumber(testCard2.getCardNumber())
+                .card(testCard2)
                 .amount(new BigDecimal("150.00"))
                 .typeCode("01")
                 .categoryCode(1000)
-                .transactionSource("POS_SOURCE2")
+                .transactionSource("POS_SRC2")
                 .description("Unique transaction 3")
                 .merchantName("Merchant C")
                 .originationTimestamp(baseTime.plusHours(2))
@@ -499,7 +512,7 @@ public class TransactionCombineJobTest {
         // Transaction 3 (latest timestamp, but created first)
         Transaction tx3 = Transaction.builder()
                 .transactionId("TXN2024011500003")
-                .cardNumber(testCard1.getCardNumber())
+                .card(testCard1)
                 .amount(new BigDecimal("300.00"))
                 .typeCode("01")
                 .categoryCode(1000)
@@ -514,7 +527,7 @@ public class TransactionCombineJobTest {
         // Transaction 1 (earliest timestamp)
         Transaction tx1 = Transaction.builder()
                 .transactionId("TXN2024011500001")
-                .cardNumber(testCard1.getCardNumber())
+                .card(testCard1)
                 .amount(new BigDecimal("100.00"))
                 .typeCode("01")
                 .categoryCode(1000)
@@ -529,7 +542,7 @@ public class TransactionCombineJobTest {
         // Transaction 2 (middle timestamp)
         Transaction tx2 = Transaction.builder()
                 .transactionId("TXN2024011500002")
-                .cardNumber(testCard1.getCardNumber())
+                .card(testCard1)
                 .amount(new BigDecimal("200.00"))
                 .typeCode("01")
                 .categoryCode(1000)
@@ -544,7 +557,7 @@ public class TransactionCombineJobTest {
         // Transaction 4 (second latest timestamp)
         Transaction tx4 = Transaction.builder()
                 .transactionId("TXN2024011500004")
-                .cardNumber(testCard2.getCardNumber())
+                .card(testCard2)
                 .amount(new BigDecimal("250.00"))
                 .typeCode("01")
                 .categoryCode(1000)
@@ -571,8 +584,9 @@ public class TransactionCombineJobTest {
         assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
         // Retrieve all transactions and verify chronological order (matching COBOL SORT)
-        List<Transaction> sortedTransactions = transactionRepository
-                .findByCard_CardNumberOrderByOriginationTimestampAsc(testCard1.getCardNumber());
+        Page<Transaction> sortedTransactionsPage = transactionRepository
+                .findByCard_CardNumberOrderByOriginationTimestampAsc(testCard1.getCardNumber(), Pageable.unpaged());
+        List<Transaction> sortedTransactions = sortedTransactionsPage.getContent();
         
         assertThat(sortedTransactions).hasSize(3);
         
@@ -631,7 +645,7 @@ public class TransactionCombineJobTest {
         for (int i = 1; i <= 3; i++) {
             Transaction tx = Transaction.builder()
                     .transactionId("POS202401150" + i)
-                    .cardNumber(testCard1.getCardNumber())
+                    .card(testCard1)
                     .amount(new BigDecimal("50.00").multiply(BigDecimal.valueOf(i)))
                     .typeCode("01")
                     .categoryCode(1000)
@@ -648,7 +662,7 @@ public class TransactionCombineJobTest {
         for (int i = 1; i <= 3; i++) {
             Transaction tx = Transaction.builder()
                     .transactionId("ATM202401150" + i)
-                    .cardNumber(testCard1.getCardNumber())
+                    .card(testCard1)
                     .amount(new BigDecimal("100.00").multiply(BigDecimal.valueOf(i)))
                     .typeCode("02")
                     .categoryCode(2000)
@@ -665,7 +679,7 @@ public class TransactionCombineJobTest {
         for (int i = 1; i <= 4; i++) {
             Transaction tx = Transaction.builder()
                     .transactionId("ONL202401150" + i)
-                    .cardNumber(testCard2.getCardNumber())
+                    .card(testCard2)
                     .amount(new BigDecimal("75.00").multiply(BigDecimal.valueOf(i)))
                     .typeCode("03")
                     .categoryCode(3000)
@@ -699,17 +713,20 @@ public class TransactionCombineJobTest {
         assertThat(totalCount).isEqualTo(10);  // 3 POS + 3 ATM + 4 Online
 
         // Verify POS transactions present
-        List<Transaction> posTransactions = transactionRepository.findByTransactionSource("POS");
+        Page<Transaction> posTransactionsPage = transactionRepository.findByTransactionSource("POS", Pageable.unpaged());
+        List<Transaction> posTransactions = posTransactionsPage.getContent();
         assertThat(posTransactions).hasSize(3);
         assertThat(posTransactions).allMatch(tx -> tx.getTypeCode().equals("01"));
 
         // Verify ATM transactions present
-        List<Transaction> atmTransactions = transactionRepository.findByTransactionSource("ATM");
+        Page<Transaction> atmTransactionsPage = transactionRepository.findByTransactionSource("ATM", Pageable.unpaged());
+        List<Transaction> atmTransactions = atmTransactionsPage.getContent();
         assertThat(atmTransactions).hasSize(3);
         assertThat(atmTransactions).allMatch(tx -> tx.getTypeCode().equals("02"));
 
         // Verify Online transactions present
-        List<Transaction> onlineTransactions = transactionRepository.findByTransactionSource("ONLINE");
+        Page<Transaction> onlineTransactionsPage = transactionRepository.findByTransactionSource("ONLINE", Pageable.unpaged());
+        List<Transaction> onlineTransactions = onlineTransactionsPage.getContent();
         assertThat(onlineTransactions).hasSize(4);
         assertThat(onlineTransactions).allMatch(tx -> tx.getTypeCode().equals("03"));
 
@@ -818,7 +835,7 @@ public class TransactionCombineJobTest {
         // Transaction on Jan 14 (should be excluded)
         Transaction txBefore = Transaction.builder()
                 .transactionId("TXN20240114001")
-                .cardNumber(testCard1.getCardNumber())
+                .card(testCard1)
                 .amount(new BigDecimal("100.00"))
                 .typeCode("01")
                 .categoryCode(1000)
@@ -832,7 +849,7 @@ public class TransactionCombineJobTest {
         // Transactions on Jan 15 (should be included)
         Transaction txInRange1 = Transaction.builder()
                 .transactionId("TXN20240115001")
-                .cardNumber(testCard1.getCardNumber())
+                .card(testCard1)
                 .amount(new BigDecimal("200.00"))
                 .typeCode("01")
                 .categoryCode(1000)
@@ -845,7 +862,7 @@ public class TransactionCombineJobTest {
 
         Transaction txInRange2 = Transaction.builder()
                 .transactionId("TXN20240115002")
-                .cardNumber(testCard2.getCardNumber())
+                .card(testCard2)
                 .amount(new BigDecimal("150.00"))
                 .typeCode("01")
                 .categoryCode(1000)
@@ -859,7 +876,7 @@ public class TransactionCombineJobTest {
         // Transaction on Jan 16 (should be excluded)
         Transaction txAfter = Transaction.builder()
                 .transactionId("TXN20240116001")
-                .cardNumber(testCard1.getCardNumber())
+                .card(testCard1)
                 .amount(new BigDecimal("300.00"))
                 .typeCode("01")
                 .categoryCode(1000)
@@ -938,7 +955,7 @@ public class TransactionCombineJobTest {
         for (int i = 1; i <= 1000; i++) {
             Transaction tx = Transaction.builder()
                     .transactionId("BULK2024" + String.format("%06d", i))
-                    .cardNumber(i % 2 == 0 ? testCard1.getCardNumber() : testCard2.getCardNumber())
+                    .card(i % 2 == 0 ? testCard1 : testCard2)
                     .amount(new BigDecimal("10.00").multiply(BigDecimal.valueOf(i % 100 + 1)))
                     .typeCode("01")
                     .categoryCode(1000)

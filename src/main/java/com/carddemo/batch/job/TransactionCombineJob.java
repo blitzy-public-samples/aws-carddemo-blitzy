@@ -371,7 +371,7 @@ public class TransactionCombineJob {
         sqlBuilder.append("customer_first_name, customer_last_name, ");
         sqlBuilder.append("type_code, type_description, category_code, category_description, ");
         sqlBuilder.append("transaction_source, amount, origination_timestamp, processing_timestamp, ");
-        sqlBuilder.append("merchant_name, merchant_city, merchant_zip, description) ");
+        sqlBuilder.append("merchant_name, merchant_city, merchant_zip, description, created_at) ");
         sqlBuilder.append("SELECT ");
         sqlBuilder.append("t.transaction_id, ");
         sqlBuilder.append("t.card_number, ");
@@ -379,9 +379,9 @@ public class TransactionCombineJob {
         sqlBuilder.append("a.customer_id, ");
         sqlBuilder.append("cust.first_name, ");
         sqlBuilder.append("cust.last_name, ");
-        sqlBuilder.append("t.type_code, ");
+        sqlBuilder.append("t.transaction_type_code, ");
         sqlBuilder.append("tt.type_description, ");
-        sqlBuilder.append("t.category_code, ");
+        sqlBuilder.append("t.transaction_category_code, ");
         sqlBuilder.append("tc.category_description, ");
         sqlBuilder.append("t.transaction_source, ");
         sqlBuilder.append("t.amount, ");
@@ -390,21 +390,22 @@ public class TransactionCombineJob {
         sqlBuilder.append("t.merchant_name, ");
         sqlBuilder.append("t.merchant_city, ");
         sqlBuilder.append("t.merchant_zip, ");
-        sqlBuilder.append("t.description ");
+        sqlBuilder.append("t.description, ");
+        sqlBuilder.append("CURRENT_TIMESTAMP ");
         sqlBuilder.append("FROM transaction t ");
         sqlBuilder.append("LEFT JOIN card c ON t.card_number = c.card_number ");
         sqlBuilder.append("LEFT JOIN account a ON c.account_id = a.account_id ");
         sqlBuilder.append("LEFT JOIN customer cust ON a.customer_id = cust.customer_id ");
-        sqlBuilder.append("LEFT JOIN transaction_type tt ON t.type_code = tt.type_code ");
-        sqlBuilder.append("LEFT JOIN transaction_category tc ON t.type_code = tc.type_code ");
-        sqlBuilder.append("AND t.category_code = tc.category_code ");
+        sqlBuilder.append("LEFT JOIN transaction_type tt ON t.transaction_type_code = tt.type_code ");
+        sqlBuilder.append("LEFT JOIN transaction_category tc ON t.transaction_type_code = tc.type_code ");
+        sqlBuilder.append("AND t.transaction_category_code = tc.category_code ");
         sqlBuilder.append("WHERE t.processing_timestamp >= :startDateTime ");
         sqlBuilder.append("AND t.processing_timestamp <= :endDateTime ");
 
         // Add type filter if specified
         if (typeFilter != null && !typeFilter.trim().isEmpty()) {
             String[] typeCodes = typeFilter.split(",");
-            sqlBuilder.append("AND t.type_code IN (");
+            sqlBuilder.append("AND t.transaction_type_code IN (");
             for (int i = 0; i < typeCodes.length; i++) {
                 sqlBuilder.append("'").append(typeCodes[i].trim()).append("'");
                 if (i < typeCodes.length - 1) {
