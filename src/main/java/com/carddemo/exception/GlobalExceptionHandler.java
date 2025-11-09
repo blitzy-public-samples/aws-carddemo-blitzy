@@ -324,6 +324,7 @@ public class GlobalExceptionHandler {
         // Check if this is a concurrent modification or duplicate key error for HTTP 409 response
         // CONCURRENT_MODIFICATION: Optimistic locking failures (COACTUPC.cbl)
         // DUPLICATE_KEY: VSAM DUPKEY/DUPREC errors (COUSR01C.cbl lines 260-268)
+        // INSUFFICIENT_BALANCE: Payment amount exceeds available balance (COBIL00C.cbl)
         // Message patterns: "already exist" matches COBOL error messages
         HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
         
@@ -332,12 +333,23 @@ public class GlobalExceptionHandler {
                 ex.getErrorCode().contains("DUPLICATE_KEY") ||
                 ex.getErrorCode().contains("DUPLICATE")) {
                 status = HttpStatus.CONFLICT;
+            } else if (ex.getErrorCode().contains("INSUFFICIENT_BALANCE") ||
+                       ex.getErrorCode().contains("INVALID_AMOUNT") ||
+                       ex.getErrorCode().contains("INVALID_ACCOUNT_STATUS")) {
+                // Business validation errors that are client errors (bad input)
+                status = HttpStatus.BAD_REQUEST;
             }
-        } else if (ex.getMessage() != null && 
-                   (ex.getMessage().toLowerCase().contains("already exist") ||
-                    ex.getMessage().toLowerCase().contains("duplicate"))) {
-            // Also check message content for duplicate scenarios
-            status = HttpStatus.CONFLICT;
+        } else if (ex.getMessage() != null) {
+            if (ex.getMessage().toLowerCase().contains("already exist") ||
+                ex.getMessage().toLowerCase().contains("duplicate")) {
+                // Also check message content for duplicate scenarios
+                status = HttpStatus.CONFLICT;
+            } else if (ex.getMessage().toLowerCase().contains("insufficient") ||
+                       ex.getMessage().toLowerCase().contains("invalid amount") ||
+                       ex.getMessage().toLowerCase().contains("inactive account")) {
+                // Check message content for validation scenarios
+                status = HttpStatus.BAD_REQUEST;
+            }
         }
         
         logger.warn("Business logic error [{}]: {} - Request path: {}", 
