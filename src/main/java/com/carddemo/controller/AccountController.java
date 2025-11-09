@@ -754,6 +754,12 @@ public class AccountController {
             );
         }
         
+        // Set accountId from path parameter if not already set in request body
+        // This ensures the service receives a complete request object
+        if (request.getAccountId() == null) {
+            request.setAccountId(accountId);
+        }
+        
         // Delegate to service layer for business logic execution
         // This replaces COBOL PROCEDURE DIVISION logic from COACTUPC.cbl including:
         // - READ operation to fetch current account data
@@ -763,7 +769,7 @@ public class AccountController {
         // - REWRITE operation to update account data
         // - SYNCPOINT commit (automatic via @Transactional)
         // All operations execute atomically within Spring transaction boundaries
-        AccountResponse updatedAccount = accountUpdateService.updateAccount(accountId, request);
+        AccountResponse updatedAccount = accountUpdateService.updateAccount(request);
         
         // Log successful update for audit trail
         log.info("Successfully updated account ID: {} with new credit limit: {}, cash credit limit: {}, status: {}", 
