@@ -261,8 +261,9 @@ public class TransactionDataReader {
      * @return configured ItemReader for DailyTransactionInput records
      */
     @Bean
+    @JobScope
     public FlatFileItemReader<DailyTransactionInput> dailyTransactionReader(
-            @Value("${batch.daily.transaction.file:batch-data/dailytran.txt}") String dailyTransactionFile) {
+            @Value("#{jobParameters['dailyTransactionFile'] ?: 'batch-data/dailytran.txt'}") String dailyTransactionFile) {
         
         log.info("Configuring dailyTransactionReader for file: {}", dailyTransactionFile);
         
@@ -280,11 +281,12 @@ public class TransactionDataReader {
             "merchantCity",         // DALYTRAN-MERCHANT-CITY
             "merchantZip",          // DALYTRAN-MERCHANT-ZIP
             "cardNumber",           // DALYTRAN-CARD-NUM
-            "originationTimestamp"  // DALYTRAN-ORIG-TS
-            // DALYTRAN-PROC-TS and FILLER are not mapped
+            "originationTimestamp", // DALYTRAN-ORIG-TS
+            "processingTimestamp",  // DALYTRAN-PROC-TS (not mapped to DTO)
+            "filler"                // FILLER (not mapped to DTO)
         );
         
-        // Set column ranges matching COBOL PIC clause positions
+        // Set column ranges matching COBOL PIC clause positions (full 350-byte record)
         tokenizer.setColumns(
             new Range(1, 16),       // transactionId: PIC X(16)
             new Range(17, 18),      // typeCode: PIC X(02)
@@ -297,7 +299,9 @@ public class TransactionDataReader {
             new Range(203, 252),    // merchantCity: PIC X(50)
             new Range(253, 262),    // merchantZip: PIC X(10)
             new Range(263, 278),    // cardNumber: PIC X(16)
-            new Range(279, 304)     // originationTimestamp: PIC X(26)
+            new Range(279, 304),    // originationTimestamp: PIC X(26)
+            new Range(305, 330),    // processingTimestamp: PIC X(26) (not mapped)
+            new Range(331, 350)     // filler: PIC X(20) (not mapped)
         );
         
         // Configure field set mapper with custom converters
