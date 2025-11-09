@@ -377,7 +377,8 @@ public class CardDetailService {
                     return new ResourceNotFoundException("Card not found: " + cardNumber);
                 });
 
-        log.debug("Card found: {}, Account ID: {}", maskCardNumber(cardNumber), card.getAccountId());
+        log.debug("Card found: {}, Account ID: {}", maskCardNumber(cardNumber), 
+                card.getAccount() != null ? card.getAccount().getAccountId() : null);
 
         // Step 2: Retrieve associated account information via JPA @ManyToOne relationship
         // Replaces COBOL: EXEC CICS READ FILE('ACCTDAT') using card's CARD-ACCT-ID
@@ -393,7 +394,8 @@ public class CardDetailService {
 
         // Step 3: Retrieve all transactions for this card
         // Replaces COBOL: EXEC CICS STARTBR FILE('TRANSACT') followed by READNEXT loop
-        List<Transaction> transactions = transactionRepository.findByCardNumber(cardNumber);
+        List<Transaction> transactions = transactionRepository.findByCard_CardNumber(
+                cardNumber, org.springframework.data.domain.Pageable.unpaged()).getContent();
         log.debug("Retrieved {} transactions for card: {}", transactions.size(), maskCardNumber(cardNumber));
 
         // Step 4: Calculate transaction summary using Stream aggregation
@@ -422,7 +424,7 @@ public class CardDetailService {
         // Step 9: Build comprehensive CardDetailResponse
         CardDetailResponse response = CardDetailResponse.builder()
                 .cardNumber(maskCardNumber(card.getCardNumber()))
-                .accountId(card.getAccountId())
+                .accountId(card.getAccount() != null ? card.getAccount().getAccountId() : null)
                 .cvv(cvvDisplay)
                 .embossedName(formattedName)
                 .expirationDate(card.getExpirationDate())
