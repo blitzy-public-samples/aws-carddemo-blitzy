@@ -309,47 +309,60 @@ public class GlobalExceptionHandler {
      *   <li>COUSR01C.cbl: VSAM DUPKEY/DUPREC errors (lines 260-268) for duplicate user IDs</li>
      * </ul>
      * 
-     * <p><b>HTTP Response:</b> 500 Internal Server Error (general), or 409 Conflict
-     * (concurrent modification or duplicate key detected)</p>
+     * <p><b>HTTP Response:</b> 422 Unprocessable Entity (business rule violations), 
+     * 409 Conflict (concurrent modification or duplicate key), or 400 Bad Request 
+     * (invalid input data)</p>
      * 
      * @param ex the BusinessLogicException containing business rule violation details
      * @param request the HTTP request that caused the exception
-     * @return ResponseEntity containing structured error details with HTTP 500 or 409 status
+     * @return ResponseEntity containing structured error details with appropriate HTTP status
      */
     @ExceptionHandler(BusinessLogicException.class)
     public ResponseEntity<ErrorResponse> handleBusinessLogicException(
             BusinessLogicException ex,
             HttpServletRequest request) {
         
-        // Check if this is a concurrent modification or duplicate key error for HTTP 409 response
-        // CONCURRENT_MODIFICATION: Optimistic locking failures (COACTUPC.cbl)
-        // DUPLICATE_KEY: VSAM DUPKEY/DUPREC errors (COUSR01C.cbl lines 260-268)
-        // INSUFFICIENT_BALANCE: Payment amount exceeds available balance (COBIL00C.cbl)
-        // Message patterns: "already exist" matches COBOL error messages
-        HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
+        // Default to 422 Unprocessable Entity for business rule violations
+        // This is the appropriate status for semantically invalid requests that
+        // cannot be processed due to business logic constraints
+        HttpStatus status = HttpStatus.UNPROCESSABLE_ENTITY;
         
-        if (ex.getErrorCode() != null) {
-            if (ex.getErrorCode().contains("CONCURRENT_MODIFICATION") ||
-                ex.getErrorCode().contains("DUPLICATE_KEY") ||
-                ex.getErrorCode().contains("DUPLICATE")) {
-                status = HttpStatus.CONFLICT;
-            } else if (ex.getErrorCode().contains("INSUFFICIENT_BALANCE") ||
-                       ex.getErrorCode().contains("INVALID_AMOUNT") ||
-                       ex.getErrorCode().contains("INVALID_ACCOUNT_STATUS")) {
-                // Business validation errors that are client errors (bad input)
-                status = HttpStatus.BAD_REQUEST;
-            }
-        } else if (ex.getMessage() != null) {
-            if (ex.getMessage().toLowerCase().contains("already exist") ||
-                ex.getMessage().toLowerCase().contains("duplicate")) {
-                // Also check message content for duplicate scenarios
-                status = HttpStatus.CONFLICT;
-            } else if (ex.getMessage().toLowerCase().contains("insufficient") ||
-                       ex.getMessage().toLowerCase().contains("invalid amount") ||
-                       ex.getMessage().toLowerCase().contains("inactive account")) {
-                // Check message content for validation scenarios
-                status = HttpStatus.BAD_REQUEST;
-            }
+        String message = ex.getMessage() != null ? ex.getMessage().toLowerCase() : "";
+        String errorCode = ex.getErrorCode() != null ? ex.getErrorCode() : "";
+        
+        // Check error code first for specific status codes
+        if (errorCode.contains("CONCURRENT_MODIFICATION") ||
+            errorCode.contains("DUPLICATE_KEY") ||
+            errorCode.contains("DUPLICATE")) {
+            // Concurrent modification or duplicate key -> 409 Conflict
+            status = HttpStatus.CONFLICT;
+        } else if (errorCode.contains("INSUFFICIENT_BALANCE") ||
+                   errorCode.contains("INVALID_AMOUNT") ||
+                   errorCode.contains("INVALID_ACCOUNT_STATUS")) {
+            // Input validation errors -> 400 Bad Request
+            status = HttpStatus.BAD_REQUEST;
+        }
+        // Check message content for specific scenarios
+        else if (message.contains("already exist") ||
+                 message.contains("duplicate")) {
+            // Duplicate scenarios -> 409 Conflict
+            status = HttpStatus.CONFLICT;
+        } else if (message.contains("insufficient") ||
+                   message.contains("invalid amount") ||
+                   message.contains("inactive account")) {
+            // Input validation errors -> 400 Bad Request
+            status = HttpStatus.BAD_REQUEST;
+        }
+        // Business rule violations -> 422 Unprocessable Entity
+        // These include: expired card, blocked/inactive card, exceeds credit limit
+        // The request is well-formed but violates business rules
+        else if (message.contains("expired") ||
+                 message.contains("not active") ||
+                 message.contains("exceeds available credit") ||
+                 message.contains("blocked") ||
+                 message.contains("suspended")) {
+            // Business rule violations -> 422 Unprocessable Entity
+            status = HttpStatus.UNPROCESSABLE_ENTITY;
         }
         
         logger.warn("Business logic error [{}]: {} - Request path: {}", 
