@@ -1,0 +1,753 @@
+/**
+ * AccountViewComponent.module.css
+ * 
+ * CSS Module for Account View Component
+ * Transformed from COACTVW.bms BMS mapset (24x80 3270 screen)
+ * 
+ * This module provides read-only display styling for account viewing
+ * including protected field backgrounds, underline highlights, and
+ * formatted numeric display matching COBOL PICOUT specifications.
+ * 
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * Licensed under the Apache License, Version 2.0
+ */
+
+/* ============================================================================
+ * CONTAINER AND LAYOUT STRUCTURE
+ * ============================================================================ */
+
+/**
+ * Main container for account view screen
+ * Replaces 24x80 3270 terminal display with responsive web layout
+ */
+.accountViewContainer {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+  background-color: #ffffff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/**
+ * Header section (Rows 1-2)
+ * Contains transaction name, title, date, program name, time
+ */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 32px;
+  padding-bottom: 16px;
+  border-bottom: 2px solid #e5e7eb;
+}
+
+.headerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.headerRight {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: right;
+}
+
+/**
+ * Transaction name and program name labels
+ * BMS: COLOR=BLUE, ATTRB=(ASKIP,NORM)
+ */
+.headerLabel {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #1e40af; /* Blue matching BMS COLOR=BLUE */
+  margin: 0;
+}
+
+.headerValue {
+  font-size: 0.875rem;
+  color: #1e40af;
+  margin: 0;
+}
+
+/**
+ * Title sections (TITLE01, TITLE02)
+ * BMS: COLOR=YELLOW, ATTRB=(ASKIP,NORM)
+ */
+.title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #ca8a04; /* Yellow matching BMS COLOR=YELLOW */
+  text-align: center;
+  margin: 0 16px;
+}
+
+/**
+ * Date and time display
+ * BMS: COLOR=BLUE, INITIAL='mm/dd/yy' and 'hh:mm:ss'
+ */
+.dateTime {
+  font-size: 0.875rem;
+  color: #1e40af;
+  margin: 0;
+}
+
+/* ============================================================================
+ * SECTION HEADERS
+ * ============================================================================ */
+
+/**
+ * Section headers (View Account, Customer Details)
+ * BMS: COLOR=NEUTRAL, centered text
+ */
+.sectionHeader {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #6b7280; /* Neutral color matching BMS COLOR=NEUTRAL */
+  text-align: center;
+  margin: 24px 0 16px 0;
+  padding: 8px 0;
+}
+
+/* ============================================================================
+ * TWO-COLUMN LAYOUT FOR ACCOUNT AND CUSTOMER INFORMATION
+ * ============================================================================ */
+
+/**
+ * Account section container (rows 5-10)
+ * Left side of the display showing account details
+ */
+.accountSection {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+/**
+ * Customer details section (rows 12-20)
+ * Comprehensive customer information display
+ */
+.customerSection {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 24px;
+  padding: 16px;
+  background-color: #fafafa;
+  border-radius: 4px;
+}
+
+/* ============================================================================
+ * FIELD GROUPS AND ROWS
+ * ============================================================================ */
+
+/**
+ * Field row container
+ * Horizontal layout for label and value pairs
+ */
+.fieldRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+/**
+ * Field group for related fields
+ * Used for name fields (first, middle, last) and address fields
+ */
+.fieldGroup {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.fieldGroupTwo {
+  display: grid;
+  grid-template-columns: 1fr 200px;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+/* ============================================================================
+ * FIELD LABELS
+ * ============================================================================ */
+
+/**
+ * Standard field labels
+ * BMS: COLOR=TURQUOISE, ATTRB=(ASKIP,NORM)
+ */
+.fieldLabel {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #14b8a6; /* Turquoise matching BMS COLOR=TURQUOISE */
+  white-space: nowrap;
+  min-width: fit-content;
+}
+
+.fieldLabelBlock {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #14b8a6;
+  margin-bottom: 4px;
+  display: block;
+}
+
+/* ============================================================================
+ * PROTECTED/READ-ONLY FIELD STYLING (ASKIP ATTRIBUTES)
+ * ============================================================================ */
+
+/**
+ * Protected field display container
+ * BMS: ATTRB=(ASKIP) - Auto-skip protected fields
+ * Styled with gray background to indicate read-only status
+ */
+.protectedField {
+  padding: 8px 12px;
+  background-color: #f3f4f6; /* Gray background for ASKIP attributes */
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 0.9375rem;
+  color: #374151;
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+}
+
+/**
+ * Protected field with HILIGHT=UNDERLINE attribute
+ * BMS: HILIGHT=UNDERLINE - Display fields with underline emphasis
+ */
+.protectedFieldUnderline {
+  padding: 8px 12px;
+  background-color: #f3f4f6;
+  border: none;
+  border-bottom: 2px solid #6b7280; /* 2px bottom border for HILIGHT=UNDERLINE */
+  border-radius: 0;
+  font-size: 0.9375rem;
+  color: #374151;
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+}
+
+/* ============================================================================
+ * EDITABLE FIELD STYLING (UNPROT ATTRIBUTES)
+ * ============================================================================ */
+
+/**
+ * Account number input field
+ * BMS: ACCTSID DFHMDF ATTRB=(FSET,IC,NORM,UNPROT), COLOR=GREEN
+ * Only editable field on this screen with initial cursor (IC)
+ */
+.editableField {
+  padding: 8px 12px;
+  background-color: #ffffff;
+  border: 2px solid #22c55e; /* Green border matching BMS COLOR=GREEN */
+  border-radius: 4px;
+  font-size: 0.9375rem;
+  color: #1f2937;
+  font-family: inherit;
+  width: 100%;
+  transition: border-color 0.2s ease-in-out;
+}
+
+.editableField:focus {
+  outline: none;
+  border-color: #16a34a;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1);
+}
+
+.editableField:disabled {
+  background-color: #f3f4f6;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/**
+ * Editable field with underline style
+ * BMS: HILIGHT=UNDERLINE on UNPROT field
+ */
+.editableFieldUnderline {
+  padding: 8px 12px;
+  background-color: #ffffff;
+  border: none;
+  border-bottom: 2px solid #22c55e;
+  border-radius: 0;
+  font-size: 0.9375rem;
+  color: #1f2937;
+  font-family: inherit;
+  width: 100%;
+  transition: border-bottom-color 0.2s ease-in-out;
+}
+
+.editableFieldUnderline:focus {
+  outline: none;
+  border-bottom-color: #16a34a;
+  box-shadow: 0 2px 0 0 rgba(34, 197, 94, 0.2);
+}
+
+/* ============================================================================
+ * NUMERIC FIELD FORMATTING (PICOUT SPECIFICATIONS)
+ * ============================================================================ */
+
+/**
+ * Monetary field display with PICOUT formatting
+ * BMS: PICOUT='+ZZZ,ZZZ,ZZZ.99', JUSTIFY=(RIGHT)
+ * Right-aligned with comma separators and decimal formatting
+ */
+.monetaryField {
+  padding: 8px 12px;
+  background-color: #f3f4f6;
+  border: none;
+  border-bottom: 2px solid #6b7280;
+  font-family: 'Courier New', Courier, monospace; /* Monospace for alignment */
+  font-size: 0.9375rem;
+  color: #374151;
+  text-align: right; /* Right-aligned matching JUSTIFY=(RIGHT) */
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  letter-spacing: 0.5px;
+}
+
+/**
+ * Numeric field container
+ * Ensures proper width for large monetary values
+ */
+.numericFieldContainer {
+  min-width: 180px;
+}
+
+/* ============================================================================
+ * DATE FIELD FORMATTING
+ * ============================================================================ */
+
+/**
+ * Date display field
+ * BMS: Fields like ADTOPEN, AEXPDT, AREISDT with 10-character length
+ * Format: YYYY-MM-DD with hyphen separators
+ */
+.dateField {
+  padding: 8px 12px;
+  background-color: #f3f4f6;
+  border: none;
+  border-bottom: 2px solid #6b7280;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9375rem;
+  color: #374151;
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  min-width: 130px;
+}
+
+/* ============================================================================
+ * STATUS AND SPECIAL FIELDS
+ * ============================================================================ */
+
+/**
+ * Status field (Active Y/N)
+ * BMS: ACSTTUS with LENGTH=1
+ */
+.statusField {
+  padding: 8px 12px;
+  background-color: #f3f4f6;
+  border: none;
+  border-bottom: 2px solid #6b7280;
+  font-size: 0.9375rem;
+  color: #374151;
+  text-align: center;
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 60px;
+  font-weight: 600;
+}
+
+/**
+ * SSN display field
+ * BMS: ACSTSSN with LENGTH=12
+ * Format: ###-##-####
+ */
+.ssnField {
+  padding: 8px 12px;
+  background-color: #f3f4f6;
+  border: none;
+  border-bottom: 2px solid #6b7280;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9375rem;
+  color: #374151;
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  letter-spacing: 1px;
+}
+
+/**
+ * Phone number field
+ * BMS: ACSPHN1, ACSPHN2 with LENGTH=13
+ */
+.phoneField {
+  padding: 8px 12px;
+  background-color: #f3f4f6;
+  border: none;
+  border-bottom: 2px solid #6b7280;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9375rem;
+  color: #374151;
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+}
+
+/**
+ * FICO score field
+ * BMS: ACSTFCO with LENGTH=3
+ */
+.ficoField {
+  padding: 8px 12px;
+  background-color: #f3f4f6;
+  border: none;
+  border-bottom: 2px solid #6b7280;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9375rem;
+  color: #374151;
+  text-align: center;
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 80px;
+  font-weight: 600;
+}
+
+/* ============================================================================
+ * NAME AND ADDRESS FIELDS
+ * ============================================================================ */
+
+/**
+ * Name fields (First, Middle, Last)
+ * BMS: ACSFNAM, ACSMNAM, ACSLNAM with LENGTH=25
+ */
+.nameField {
+  padding: 8px 12px;
+  background-color: #f3f4f6;
+  border: none;
+  border-bottom: 2px solid #6b7280;
+  font-size: 0.9375rem;
+  color: #374151;
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+}
+
+/**
+ * Address line fields
+ * BMS: ACSADL1, ACSADL2 with LENGTH=50
+ */
+.addressField {
+  padding: 8px 12px;
+  background-color: #f3f4f6;
+  border: none;
+  border-bottom: 2px solid #6b7280;
+  font-size: 0.9375rem;
+  color: #374151;
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+/**
+ * City field
+ * BMS: ACSCITY with LENGTH=50
+ */
+.cityField {
+  padding: 8px 12px;
+  background-color: #f3f4f6;
+  border: none;
+  border-bottom: 2px solid #6b7280;
+  font-size: 0.9375rem;
+  color: #374151;
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+}
+
+/**
+ * State field
+ * BMS: ACSSTTE with LENGTH=2
+ */
+.stateField {
+  padding: 8px 12px;
+  background-color: #f3f4f6;
+  border: none;
+  border-bottom: 2px solid #6b7280;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9375rem;
+  color: #374151;
+  text-align: center;
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 70px;
+  text-transform: uppercase;
+}
+
+/**
+ * Zip code field
+ * BMS: ACSZIPC with LENGTH=5, JUSTIFY=(RIGHT)
+ */
+.zipField {
+  padding: 8px 12px;
+  background-color: #f3f4f6;
+  border: none;
+  border-bottom: 2px solid #6b7280;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9375rem;
+  color: #374151;
+  text-align: right;
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 80px;
+}
+
+/**
+ * Country field
+ * BMS: ACSCTRY with LENGTH=3
+ */
+.countryField {
+  padding: 8px 12px;
+  background-color: #f3f4f6;
+  border: none;
+  border-bottom: 2px solid #6b7280;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9375rem;
+  color: #374151;
+  text-align: center;
+  cursor: not-allowed;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 70px;
+  text-transform: uppercase;
+}
+
+/* ============================================================================
+ * MESSAGE DISPLAY AREAS
+ * ============================================================================ */
+
+/**
+ * Information message area
+ * BMS: INFOMSG DFHMDF ATTRB=(PROT), COLOR=NEUTRAL
+ */
+.infoMessage {
+  padding: 12px 16px;
+  background-color: #f0f9ff;
+  border-left: 4px solid #0284c7;
+  color: #0c4a6e;
+  font-size: 0.9375rem;
+  margin: 24px 0;
+  border-radius: 4px;
+  text-align: center;
+}
+
+.infoMessage:empty {
+  display: none;
+}
+
+/**
+ * Error message area
+ * BMS: ERRMSG DFHMDF ATTRB=(ASKIP,BRT,FSET), COLOR=RED
+ */
+.errorMessage {
+  padding: 12px 16px;
+  background-color: #fef2f2;
+  border-left: 4px solid #dc2626;
+  color: #991b1b;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  margin: 24px 0;
+  border-radius: 4px;
+}
+
+.errorMessage:empty {
+  display: none;
+}
+
+/* ============================================================================
+ * FUNCTION KEY DISPLAY (FOOTER)
+ * ============================================================================ */
+
+/**
+ * Function key display area (Row 24)
+ * BMS: COLOR=TURQUOISE, INITIAL='  F3=Exit '
+ */
+.functionKeys {
+  margin-top: 32px;
+  padding: 16px;
+  background-color: #f9fafb;
+  border-top: 2px solid #e5e7eb;
+  border-radius: 4px;
+}
+
+.functionKeyText {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #14b8a6; /* Turquoise matching BMS COLOR=TURQUOISE */
+  margin: 0;
+}
+
+/* ============================================================================
+ * UTILITY CLASSES
+ * ============================================================================ */
+
+/**
+ * Full width field container
+ */
+.fullWidth {
+  width: 100%;
+}
+
+/**
+ * Half width field container (for two-column layouts)
+ */
+.halfWidth {
+  width: calc(50% - 8px);
+}
+
+/**
+ * Hidden field (for zero-length DFHMDF fields used for spacing)
+ */
+.hidden {
+  display: none;
+}
+
+/**
+ * Screen reader only text
+ * Accessibility support for field labels
+ */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* ============================================================================
+ * RESPONSIVE DESIGN
+ * ============================================================================ */
+
+/**
+ * Tablet and smaller screens
+ */
+@media (max-width: 1024px) {
+  .accountSection {
+    grid-template-columns: 1fr;
+  }
+
+  .fieldGroup {
+    grid-template-columns: 1fr;
+  }
+
+  .fieldGroupTwo {
+    grid-template-columns: 1fr;
+  }
+}
+
+/**
+ * Mobile screens
+ */
+@media (max-width: 640px) {
+  .accountViewContainer {
+    padding: 16px;
+  }
+
+  .header {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .headerRight {
+    text-align: left;
+  }
+
+  .title {
+    font-size: 1rem;
+    margin: 0;
+  }
+
+  .fieldRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .monetaryField,
+  .dateField,
+  .protectedField,
+  .protectedFieldUnderline {
+    font-size: 0.875rem;
+  }
+}
+
+/* ============================================================================
+ * PRINT STYLES
+ * ============================================================================ */
+
+@media print {
+  .accountViewContainer {
+    max-width: 100%;
+    padding: 0;
+  }
+
+  .functionKeys {
+    display: none;
+  }
+
+  .editableField,
+  .editableFieldUnderline {
+    border-color: #000;
+    background-color: transparent;
+  }
+
+  .protectedField,
+  .protectedFieldUnderline,
+  .monetaryField,
+  .dateField {
+    background-color: transparent;
+    border-bottom: 1px solid #000;
+  }
+}

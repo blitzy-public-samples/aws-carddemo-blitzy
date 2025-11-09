@@ -1,0 +1,827 @@
+/**
+ * TransactionListComponent.module.css
+ * 
+ * CSS Module for Transaction List Component
+ * Transformed from COTRN00.bms BMS mapset
+ * 
+ * This stylesheet provides styling for the transaction list screen with:
+ * - Ten-row repeating structure matching 10 transactions per page pagination
+ * - Table layout with headers (Select, Transaction ID, Date, Description, Amount)
+ * - Row hover effects for better usability
+ * - Selection field styling
+ * - Monetary amount column with right-alignment and decimal formatting
+ * - Pagination controls with page number display
+ * - Search input field styling
+ * - Function key footer (F3=Exit, F7/F8=Page scrolling)
+ * 
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * Licensed under the Apache License, Version 2.0
+ */
+
+/* ========================================================================
+   CONTAINER AND LAYOUT
+   ======================================================================== */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 1rem;
+  background-color: #f5f5f5;
+  min-height: 100vh;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+/* ========================================================================
+   HEADER SECTION
+   ======================================================================== */
+
+.header {
+  display: flex;
+  flex-direction: column;
+  background-color: #ffffff;
+  padding: 1rem;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  margin-bottom: 1rem;
+}
+
+.headerRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.headerRow:last-child {
+  margin-bottom: 0;
+}
+
+.transactionInfo {
+  display: flex;
+  gap: 1rem;
+  color: #1976d2;
+  font-size: 0.875rem;
+}
+
+.transactionLabel {
+  font-weight: bold;
+  color: #1976d2;
+}
+
+.dateTimeInfo {
+  display: flex;
+  gap: 1rem;
+  color: #1976d2;
+  font-size: 0.875rem;
+}
+
+.dateLabel,
+.timeLabel {
+  font-weight: bold;
+  color: #1976d2;
+}
+
+/* ========================================================================
+   TITLE SECTION
+   ======================================================================== */
+
+.titleSection {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #ffffff;
+  padding: 1rem;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  margin-bottom: 1rem;
+}
+
+.title {
+  font-size: 1.25rem;
+  font-weight: bold;
+  color: #424242;
+  letter-spacing: 0.5px;
+}
+
+.pageInfo {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #00897b;
+  font-size: 0.875rem;
+}
+
+.pageLabel {
+  font-weight: bold;
+  color: #00897b;
+}
+
+.pageNumber {
+  color: #1976d2;
+  font-weight: normal;
+}
+
+/* ========================================================================
+   SEARCH SECTION
+   ======================================================================== */
+
+.searchSection {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background-color: #ffffff;
+  padding: 1rem;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  margin-bottom: 1rem;
+}
+
+.searchLabel {
+  font-weight: bold;
+  color: #00897b;
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+
+.searchInput {
+  flex: 0 0 auto;
+  width: 200px;
+  padding: 0.5rem;
+  border: none;
+  border-bottom: 2px solid #4caf50;
+  background-color: transparent;
+  color: #4caf50;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.3s ease;
+}
+
+.searchInput:focus {
+  border-bottom-color: #2e7d32;
+}
+
+.searchInput::placeholder {
+  color: #81c784;
+  opacity: 0.7;
+}
+
+/* ========================================================================
+   TABLE CONTAINER
+   ======================================================================== */
+
+.tableContainer {
+  background-color: #ffffff;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  overflow-x: auto;
+  margin-bottom: 1rem;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  table-layout: fixed;
+}
+
+/* ========================================================================
+   TABLE HEADER
+   ======================================================================== */
+
+.tableHeader {
+  background-color: #424242;
+  color: #ffffff;
+  border-bottom: 2px solid #757575;
+}
+
+.tableHeader th {
+  padding: 0.75rem 0.5rem;
+  text-align: left;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+  position: sticky;
+  top: 0;
+  background-color: #424242;
+  z-index: 10;
+}
+
+.headerSelect {
+  width: 60px;
+  text-align: center;
+}
+
+.headerTransactionId {
+  width: 180px;
+  padding-left: 1rem;
+}
+
+.headerDate {
+  width: 120px;
+  text-align: center;
+}
+
+.headerDescription {
+  width: auto;
+  min-width: 250px;
+  padding-left: 1rem;
+}
+
+.headerAmount {
+  width: 150px;
+  text-align: right;
+  padding-right: 1rem;
+}
+
+/* Separator row below header */
+.separatorRow {
+  background-color: #757575;
+  height: 2px;
+}
+
+.separatorRow td {
+  padding: 0;
+  border: none;
+}
+
+/* ========================================================================
+   TABLE BODY - DATA ROWS (10 ROWS)
+   ======================================================================== */
+
+.tableBody {
+  background-color: #ffffff;
+}
+
+.tableRow {
+  border-bottom: 1px solid #e0e0e0;
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+  cursor: pointer;
+}
+
+/* Alternating row backgrounds for better readability */
+.tableRow:nth-child(odd) {
+  background-color: #fafafa;
+}
+
+.tableRow:nth-child(even) {
+  background-color: #ffffff;
+}
+
+/* Hover effect */
+.tableRow:hover {
+  background-color: #e3f2fd;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Active/selected row state */
+.tableRow.selected {
+  background-color: #bbdefb;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* Empty row styling (when less than 10 transactions) */
+.tableRow.empty {
+  background-color: #ffffff;
+  cursor: default;
+}
+
+.tableRow.empty:hover {
+  background-color: #ffffff;
+  box-shadow: none;
+}
+
+/* ========================================================================
+   TABLE CELLS
+   ======================================================================== */
+
+.tableRow td {
+  padding: 0.75rem 0.5rem;
+  vertical-align: middle;
+  color: #424242;
+}
+
+/* Selection field column */
+.cellSelect {
+  width: 60px;
+  text-align: center;
+}
+
+.selectInput {
+  width: 30px;
+  height: 30px;
+  text-align: center;
+  border: none;
+  border-bottom: 2px solid #4caf50;
+  background-color: transparent;
+  color: #4caf50;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.875rem;
+  font-weight: bold;
+  outline: none;
+  text-transform: uppercase;
+  transition: border-color 0.3s ease;
+}
+
+.selectInput:focus {
+  border-bottom-color: #2e7d32;
+  background-color: #f1f8e9;
+}
+
+.selectCheckbox {
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  accent-color: #4caf50;
+}
+
+/* Transaction ID column */
+.cellTransactionId {
+  width: 180px;
+  padding-left: 1rem;
+  color: #1976d2;
+  font-family: 'Courier New', Courier, monospace;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+
+/* Date column */
+.cellDate {
+  width: 120px;
+  text-align: center;
+  color: #1976d2;
+  font-family: 'Courier New', Courier, monospace;
+  white-space: nowrap;
+}
+
+/* Description column */
+.cellDescription {
+  width: auto;
+  min-width: 250px;
+  padding-left: 1rem;
+  color: #1976d2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cellDescription:hover {
+  white-space: normal;
+  word-wrap: break-word;
+}
+
+/* Amount column with right-alignment and monetary formatting */
+.cellAmount {
+  width: 150px;
+  text-align: right;
+  padding-right: 1rem;
+  color: #1976d2;
+  font-family: 'Courier New', Courier, monospace;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* Negative amounts displayed in red */
+.cellAmount.negative {
+  color: #d32f2f;
+  font-weight: bold;
+}
+
+/* Positive amounts displayed in green */
+.cellAmount.positive {
+  color: #388e3c;
+}
+
+/* Currency symbol styling */
+.currencySymbol {
+  font-size: 0.75rem;
+  margin-right: 0.25rem;
+}
+
+/* ========================================================================
+   INSTRUCTION TEXT
+   ======================================================================== */
+
+.instructionSection {
+  background-color: #fff3e0;
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  text-align: center;
+}
+
+.instructionText {
+  color: #424242;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+
+.instructionText strong {
+  color: #f57c00;
+  font-weight: bold;
+}
+
+/* ========================================================================
+   ERROR MESSAGE
+   ======================================================================== */
+
+.errorSection {
+  min-height: 2rem;
+  margin-bottom: 1rem;
+}
+
+.errorMessage {
+  background-color: #ffebee;
+  color: #c62828;
+  padding: 0.75rem 1rem;
+  border-left: 4px solid #d32f2f;
+  border-radius: 4px;
+  font-weight: 500;
+  font-size: 0.875rem;
+  letter-spacing: 0.5px;
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ========================================================================
+   PAGINATION CONTROLS
+   ======================================================================== */
+
+.paginationSection {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+  background-color: #ffffff;
+  padding: 1rem;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  margin-bottom: 1rem;
+}
+
+.paginationButton {
+  padding: 0.5rem 1rem;
+  background-color: #1976d2;
+  color: #ffffff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.875rem;
+  font-weight: bold;
+  transition: background-color 0.3s ease, transform 0.1s ease;
+}
+
+.paginationButton:hover:not(:disabled) {
+  background-color: #1565c0;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.paginationButton:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.paginationButton:disabled {
+  background-color: #bdbdbd;
+  color: #757575;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.paginationInfo {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #424242;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.currentPage {
+  color: #1976d2;
+  font-weight: bold;
+  font-size: 1rem;
+}
+
+.totalPages {
+  color: #757575;
+}
+
+/* ========================================================================
+   FUNCTION KEY FOOTER
+   ======================================================================== */
+
+.footer {
+  background-color: #424242;
+  color: #fdd835;
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.footerAction {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  white-space: nowrap;
+}
+
+.footerKey {
+  background-color: #fdd835;
+  color: #424242;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  font-weight: bold;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.75rem;
+}
+
+.footerLabel {
+  color: #fdd835;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+/* ========================================================================
+   LOADING STATE
+   ======================================================================== */
+
+.loadingContainer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 3rem;
+  background-color: #ffffff;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.loadingSpinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid #e0e0e0;
+  border-top-color: #1976d2;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loadingText {
+  margin-left: 1rem;
+  color: #757575;
+  font-size: 0.875rem;
+}
+
+/* ========================================================================
+   EMPTY STATE
+   ======================================================================== */
+
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 3rem;
+  background-color: #ffffff;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  text-align: center;
+}
+
+.emptyStateIcon {
+  font-size: 3rem;
+  color: #bdbdbd;
+  margin-bottom: 1rem;
+}
+
+.emptyStateTitle {
+  font-size: 1.25rem;
+  font-weight: bold;
+  color: #757575;
+  margin-bottom: 0.5rem;
+}
+
+.emptyStateMessage {
+  font-size: 0.875rem;
+  color: #9e9e9e;
+}
+
+/* ========================================================================
+   RESPONSIVE DESIGN
+   ======================================================================== */
+
+/* Tablet view (768px to 1024px) */
+@media screen and (max-width: 1024px) {
+  .container {
+    padding: 0.75rem;
+  }
+
+  .table {
+    font-size: 0.8125rem;
+  }
+
+  .headerTransactionId,
+  .cellTransactionId {
+    width: 150px;
+  }
+
+  .headerDescription,
+  .cellDescription {
+    min-width: 200px;
+  }
+
+  .headerAmount,
+  .cellAmount {
+    width: 120px;
+  }
+}
+
+/* Mobile view (below 768px) */
+@media screen and (max-width: 768px) {
+  .container {
+    padding: 0.5rem;
+  }
+
+  .header {
+    padding: 0.75rem;
+  }
+
+  .headerRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .titleSection {
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: flex-start;
+  }
+
+  .searchSection {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .searchInput {
+    width: 100%;
+  }
+
+  .tableContainer {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .table {
+    font-size: 0.75rem;
+    min-width: 800px;
+  }
+
+  .tableHeader th,
+  .tableRow td {
+    padding: 0.5rem 0.25rem;
+  }
+
+  .footer {
+    flex-direction: column;
+    gap: 0.75rem;
+    align-items: center;
+  }
+
+  .paginationSection {
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+}
+
+/* Print styles */
+@media print {
+  .container {
+    background-color: #ffffff;
+    padding: 0;
+  }
+
+  .searchSection,
+  .paginationSection,
+  .footer {
+    display: none;
+  }
+
+  .tableRow:hover {
+    background-color: inherit;
+    box-shadow: none;
+  }
+
+  .tableHeader {
+    background-color: #000000;
+    color: #ffffff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
+
+/* ========================================================================
+   ACCESSIBILITY ENHANCEMENTS
+   ======================================================================== */
+
+/* Focus visible for keyboard navigation */
+.searchInput:focus-visible,
+.selectInput:focus-visible,
+.selectCheckbox:focus-visible,
+.paginationButton:focus-visible {
+  outline: 2px solid #1976d2;
+  outline-offset: 2px;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .tableRow:hover {
+    background-color: #000000;
+    color: #ffffff;
+  }
+
+  .tableRow.selected {
+    background-color: #000000;
+    color: #ffff00;
+    border: 2px solid #ffff00;
+  }
+
+  .errorMessage {
+    border-width: 3px;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .tableRow,
+  .paginationButton,
+  .loadingSpinner,
+  .errorMessage {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* ========================================================================
+   UTILITY CLASSES
+   ======================================================================== */
+
+.hidden {
+  display: none;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+.textCenter {
+  text-align: center;
+}
+
+.textRight {
+  text-align: right;
+}
+
+.bold {
+  font-weight: bold;
+}
+
+.uppercase {
+  text-transform: uppercase;
+}
+
+/* ========================================================================
+   END OF STYLESHEET
+   ======================================================================== */

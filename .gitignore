@@ -1,0 +1,319 @@
+# CardDemo Spring Boot Migration - Git Ignore File
+# Comprehensive exclusions for Java 21, Spring Boot 3.2.0, Maven, React, and various IDEs
+
+##############################
+## Maven Build Artifacts
+##############################
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+##############################
+## Java Compiled Files
+##############################
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
+
+##############################
+## Package Files
+##############################
+*.7z
+*.dmg
+*.gz
+*.iso
+*.rar
+*.tar
+*.zip
+
+##############################
+## Logs and Databases
+##############################
+*.log
+logs/
+log/
+*.log.*
+*.sql
+*.sqlite
+*.db
+
+##############################
+## Spring Boot Specific
+##############################
+spring-boot-devtools.properties
+.springBeans
+*-spring.log
+
+##############################
+## IntelliJ IDEA
+##############################
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+.idea_modules/
+
+##############################
+## Eclipse
+##############################
+.metadata
+.classpath
+.project
+.settings/
+bin/
+tmp/
+*.tmp
+*.bak
+*.swp
+*~.nib
+local.properties
+.loadpath
+.recommenders
+.externalToolBuilders/
+.cache-main
+.scala_dependencies
+.worksheet
+
+##############################
+## NetBeans
+##############################
+nbproject/private/
+nbbuild/
+dist/
+nbdist/
+.nb-gradle/
+build/
+
+##############################
+## VS Code
+##############################
+.vscode/
+.code-workspace
+*.code-workspace
+
+##############################
+## macOS
+##############################
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+##############################
+## Windows
+##############################
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+##############################
+## Linux
+##############################
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+##############################
+## Environment and Secrets
+##############################
+.env
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.key
+*.pem
+*.p12
+*.jks
+secrets/
+application-secret.properties
+application-secrets.yml
+
+##############################
+## Frontend - Node/React
+##############################
+frontend/node_modules/
+frontend/.pnp
+frontend/.pnp.js
+frontend/coverage/
+frontend/build/
+frontend/dist/
+frontend/.next/
+frontend/out/
+frontend/.nuxt/
+frontend/.cache/
+frontend/.parcel-cache/
+frontend/.vuepress/dist
+frontend/.temp
+frontend/.docusaurus
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/lerna-debug.log*
+frontend/.eslintcache
+frontend/.stylelintcache
+frontend/.node_repl_history
+frontend/.yarn-integrity
+
+##############################
+## Testing
+##############################
+*.coverage
+coverage/
+.nyc_output/
+htmlcov/
+.tox/
+.hypothesis/
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+.cache
+
+##############################
+## Database Files
+##############################
+*.h2.db
+*.mv.db
+*.trace.db
+data/
+db.lock
+derby.log
+
+##############################
+## Redis
+##############################
+dump.rdb
+appendonly.aof
+
+##############################
+## Docker
+##############################
+docker-compose.override.yml
+.dockerignore
+
+##############################
+## Kubernetes Secrets
+##############################
+kubernetes/secret-*.yaml
+kubernetes/*-secret.yaml
+
+##############################
+## Temporary and Backup Files
+##############################
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+.#*
+\#*#
+.*.kate-swp
+.*.sw?
+
+##############################
+## Blitzy Platform Specific
+##############################
+# Temporary test files created by agents
+blitzy_adhoc_test_*
+
+# Screenshot directory (browser automation artifacts)
+screenshots/
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+##############################
+## Migration-Specific
+##############################
+# Original COBOL source files should remain in app/ directory
+# but migration artifacts and working files should be excluded
+migration-temp/
+*.migration.bak
+.migration-state
+
+##############################
+## Flyway
+##############################
+.flywayhistory
+
+##############################
+## Gradle (if used alongside Maven)
+##############################
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+!gradle-wrapper.properties
+
+##############################
+## SonarQube
+##############################
+.sonar/
+.scannerwork/
+
+##############################
+## JRebel
+##############################
+rebel.xml
+rebel-remote.xml
+
+##############################
+## JDeploy
+##############################
+.jdeploy/
+
+##############################
+## Profiler and Heap Dumps
+##############################
+*.hprof
+*.prof
+
+##############################
+## Misc
+##############################
+*.pid
+*.seed
+*.pid.lock
+.sass-cache/
+connect.lock
+.flattened-pom.xml

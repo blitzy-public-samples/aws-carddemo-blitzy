@@ -1,0 +1,923 @@
+/**
+ * AccountUpdateComponent.module.css
+ * 
+ * CSS Module for AccountUpdateComponent
+ * Transformed from COACTUP.bms BMS mapset (Account Update screen)
+ * 
+ * This stylesheet preserves the 24x80 character grid layout of the original
+ * BMS screen while providing modern, responsive styling for React components.
+ * 
+ * Key Transformations:
+ * - HILIGHT=UNDERLINE → 2px solid bottom border on editable fields
+ * - Two-column layout: Account details (left) | Financial/Customer details (right)
+ * - Date fields with hyphen separators (YYYY-MM-DD format)
+ * - SSN fields with segmentation (###-##-####)
+ * - Phone number fields with three-part grouping (###-###-####)
+ * - COLOR=TURQUOISE labels → turquoise color (#40E0D0)
+ * - COLOR=NEUTRAL headers → neutral gray color
+ * - Financial fields → right-aligned monospace font
+ * 
+ * Copyright: Amazon Web Services (AWS)
+ * License: Apache License 2.0
+ */
+
+/* ============================================================================
+   Container and Base Layout
+   ============================================================================ */
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #ffffff;
+  min-height: 100vh;
+}
+
+.formWrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* ============================================================================
+   Header Section (Rows 1-2 of BMS)
+   ============================================================================ */
+
+.header {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto;
+  gap: 8px 16px;
+  padding: 12px 16px;
+  background-color: #f8f9fa;
+  border-radius: 4px;
+  border: 1px solid #dee2e6;
+  margin-bottom: 16px;
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #0056b3;
+  font-size: 14px;
+}
+
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+  color: #0056b3;
+  font-size: 14px;
+}
+
+.headerTitle {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: #ffc107;
+  font-size: 18px;
+  font-weight: 600;
+  padding: 4px 0;
+}
+
+.headerLabel {
+  font-weight: 600;
+}
+
+.headerValue {
+  font-weight: normal;
+}
+
+/* ============================================================================
+   Section Headers (Rows 4, 11)
+   COLOR=NEUTRAL → Neutral gray
+   ============================================================================ */
+
+.sectionHeader {
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: #6c757d;
+  margin: 24px 0 16px 0;
+  padding: 8px 0;
+  border-bottom: 2px solid #dee2e6;
+}
+
+.sectionHeaderAccount {
+  composes: sectionHeader;
+  margin-top: 0;
+}
+
+.sectionHeaderCustomer {
+  composes: sectionHeader;
+}
+
+/* ============================================================================
+   Two-Column Layout
+   Left: Account details (rows 5-10)
+   Right: Financial and status fields
+   ============================================================================ */
+
+.formGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px 32px;
+  margin-bottom: 24px;
+}
+
+.formColumn {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.formColumnLeft {
+  composes: formColumn;
+}
+
+.formColumnRight {
+  composes: formColumn;
+}
+
+/* ============================================================================
+   Form Groups and Fields
+   ============================================================================ */
+
+.formGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.formGroupInline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.formRow {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+/* ============================================================================
+   Labels (COLOR=TURQUOISE)
+   Turquoise color matching BMS COLOR=TURQUOISE
+   ============================================================================ */
+
+.label {
+  color: #40E0D0;
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 4px;
+  display: block;
+}
+
+.labelInline {
+  composes: label;
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+
+.labelRequired::after {
+  content: ' *';
+  color: #dc3545;
+}
+
+/* ============================================================================
+   Input Fields Base Styles
+   ============================================================================ */
+
+.input {
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  background-color: #ffffff;
+  transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+  font-family: inherit;
+}
+
+.input:focus {
+  outline: none;
+  border-color: #80bdff;
+  box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+}
+
+.input:disabled {
+  background-color: #e9ecef;
+  color: #6c757d;
+  cursor: not-allowed;
+}
+
+/* ============================================================================
+   Editable Fields (HILIGHT=UNDERLINE)
+   2px solid bottom border matching BMS HILIGHT=UNDERLINE attribute
+   ============================================================================ */
+
+.inputEditable {
+  composes: input;
+  border-bottom: 2px solid #40E0D0;
+  border-radius: 4px 4px 0 0;
+}
+
+.inputEditable:focus {
+  border-bottom-color: #0056b3;
+  border-bottom-width: 3px;
+}
+
+/* ============================================================================
+   Account Number Field (POS=(5,38), LENGTH=11)
+   IC (Initial Cursor) - Primary input field
+   ============================================================================ */
+
+.accountNumberInput {
+  composes: inputEditable;
+  width: 220px;
+  font-family: 'Courier New', Courier, monospace;
+  letter-spacing: 1px;
+  font-size: 15px;
+}
+
+/* ============================================================================
+   Date Input Fields (Opened, Expiry, Reissue, DOB)
+   Format: YYYY-MM-DD with hyphen separators
+   POS=(6,17), (7,17), (8,17), (13,23) etc.
+   ============================================================================ */
+
+.dateFieldGroup {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dateInputYear {
+  composes: inputEditable;
+  width: 70px;
+  text-align: right;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.dateInputMonth {
+  composes: inputEditable;
+  width: 50px;
+  text-align: right;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.dateInputDay {
+  composes: inputEditable;
+  width: 50px;
+  text-align: right;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.dateSeparator {
+  color: #6c757d;
+  font-weight: bold;
+  user-select: none;
+  padding: 0 2px;
+}
+
+/* ============================================================================
+   Financial Fields (Credit Limit, Cash Credit Limit, Balances)
+   Right-aligned, monospace font
+   LENGTH=15, POS=(6,61), (7,61), (8,61), (9,61), (10,61)
+   ============================================================================ */
+
+.financialInput {
+  composes: inputEditable;
+  width: 180px;
+  text-align: right;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  letter-spacing: 0.5px;
+}
+
+.financialInput::placeholder {
+  text-align: right;
+  color: #adb5bd;
+}
+
+/* ============================================================================
+   Active Status and Primary Flag (Y/N Fields)
+   Single character toggle fields
+   POS=(5,70), POS=(20,78)
+   ============================================================================ */
+
+.toggleInput {
+  composes: inputEditable;
+  width: 45px;
+  text-align: center;
+  text-transform: uppercase;
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: 1px;
+}
+
+/* ============================================================================
+   Account Group Field
+   POS=(10,23), LENGTH=10
+   ============================================================================ */
+
+.accountGroupInput {
+  composes: inputEditable;
+  width: 150px;
+}
+
+/* ============================================================================
+   Customer ID Field
+   POS=(12,23), LENGTH=9
+   ============================================================================ */
+
+.customerIdInput {
+  composes: inputEditable;
+  width: 140px;
+  font-family: 'Courier New', Courier, monospace;
+  letter-spacing: 1px;
+}
+
+/* ============================================================================
+   SSN Fields (Three-part segmentation: ###-##-####)
+   POS=(12,55), (12,61), (12,66)
+   LENGTH=3, 2, 4
+   ============================================================================ */
+
+.ssnFieldGroup {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ssnInput1 {
+  composes: inputEditable;
+  width: 55px;
+  text-align: center;
+  font-family: 'Courier New', Courier, monospace;
+  letter-spacing: 1px;
+}
+
+.ssnInput2 {
+  composes: inputEditable;
+  width: 45px;
+  text-align: center;
+  font-family: 'Courier New', Courier, monospace;
+  letter-spacing: 1px;
+}
+
+.ssnInput3 {
+  composes: inputEditable;
+  width: 65px;
+  text-align: center;
+  font-family: 'Courier New', Courier, monospace;
+  letter-spacing: 1px;
+}
+
+.ssnSeparator {
+  color: #6c757d;
+  font-weight: bold;
+  user-select: none;
+  padding: 0 2px;
+}
+
+/* ============================================================================
+   FICO Score Field
+   POS=(13,62), LENGTH=3
+   ============================================================================ */
+
+.ficoInput {
+  composes: inputEditable;
+  width: 70px;
+  text-align: center;
+  font-family: 'Courier New', Courier, monospace;
+  font-weight: 600;
+}
+
+/* ============================================================================
+   Name Fields (First, Middle, Last)
+   POS=(15,1), (15,28), (15,55)
+   LENGTH=25 each
+   ============================================================================ */
+
+.nameFieldsContainer {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.nameInput {
+  composes: inputEditable;
+  width: 100%;
+  min-width: 0;
+}
+
+/* ============================================================================
+   Address Fields (Multi-line)
+   POS=(16,10), (17,10), (18,10)
+   LENGTH=50
+   ============================================================================ */
+
+.addressInput {
+  composes: inputEditable;
+  width: 100%;
+  max-width: 600px;
+}
+
+.cityInput {
+  composes: inputEditable;
+  width: 100%;
+  max-width: 600px;
+}
+
+/* ============================================================================
+   State, Zip, Country Fields (Small fields on right side)
+   ============================================================================ */
+
+.stateInput {
+  composes: inputEditable;
+  width: 60px;
+  text-transform: uppercase;
+  text-align: center;
+  font-weight: 600;
+}
+
+.zipInput {
+  composes: inputEditable;
+  width: 90px;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.countryInput {
+  composes: inputEditable;
+  width: 70px;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+/* ============================================================================
+   Phone Number Fields (Three-part grouping: ###-###-####)
+   POS=(19,10), (19,14), (19,18)
+   POS=(20,10), (20,14), (20,18)
+   ============================================================================ */
+
+.phoneFieldGroup {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.phoneInputArea {
+  composes: inputEditable;
+  width: 55px;
+  text-align: center;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.phoneInputExchange {
+  composes: inputEditable;
+  width: 55px;
+  text-align: center;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.phoneInputNumber {
+  composes: inputEditable;
+  width: 65px;
+  text-align: center;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.phoneSeparator {
+  color: #6c757d;
+  font-weight: bold;
+  user-select: none;
+  padding: 0 2px;
+}
+
+/* ============================================================================
+   Government ID and EFT Account Fields
+   POS=(19,58), (20,41)
+   ============================================================================ */
+
+.governmentIdInput {
+  composes: inputEditable;
+  width: 240px;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.eftAccountInput {
+  composes: inputEditable;
+  width: 160px;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+/* ============================================================================
+   Customer Details Section Layout
+   Full-width fields with side-by-side small fields
+   ============================================================================ */
+
+.customerDetailsGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.addressRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.addressRowSmallField {
+  min-width: 100px;
+}
+
+/* ============================================================================
+   Info and Error Messages (Rows 22-23)
+   POS=(22,23), POS=(23,1)
+   ============================================================================ */
+
+.messageArea {
+  margin-top: 24px;
+  margin-bottom: 16px;
+}
+
+.infoMessage {
+  color: #6c757d;
+  background-color: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 12px 16px;
+  text-align: center;
+  font-size: 14px;
+  margin-bottom: 8px;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.errorMessage {
+  color: #dc3545;
+  background-color: #f8d7da;
+  border: 1px solid #f5c6cb;
+  border-radius: 4px;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+}
+
+.errorMessage::before {
+  content: '⚠ ';
+  margin-right: 8px;
+  font-size: 16px;
+}
+
+/* ============================================================================
+   Function Keys Display (Row 24)
+   POS=(24,1), displaying ENTER=Process F3=Exit F5=Save F12=Cancel
+   ============================================================================ */
+
+.functionKeys {
+  display: flex;
+  gap: 16px;
+  padding: 12px 16px;
+  background-color: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 4px;
+  color: #856404;
+  font-size: 13px;
+  font-weight: 500;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 24px;
+}
+
+.functionKey {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.functionKeyCode {
+  font-weight: 700;
+  color: #dc3545;
+}
+
+.functionKeySeparator {
+  color: #856404;
+}
+
+/* ============================================================================
+   Action Buttons (Mimicking function key behavior)
+   ============================================================================ */
+
+.actionButtons {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 24px;
+  padding: 16px 0;
+}
+
+.button {
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 600;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.buttonPrimary {
+  composes: button;
+  background-color: #007bff;
+  color: #ffffff;
+}
+
+.buttonPrimary:hover {
+  background-color: #0056b3;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.buttonPrimary:active {
+  background-color: #004085;
+}
+
+.buttonSecondary {
+  composes: button;
+  background-color: #6c757d;
+  color: #ffffff;
+}
+
+.buttonSecondary:hover {
+  background-color: #5a6268;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.buttonSecondary:active {
+  background-color: #545b62;
+}
+
+.buttonSuccess {
+  composes: button;
+  background-color: #28a745;
+  color: #ffffff;
+}
+
+.buttonSuccess:hover {
+  background-color: #218838;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.buttonSuccess:active {
+  background-color: #1e7e34;
+}
+
+.buttonDanger {
+  composes: button;
+  background-color: #dc3545;
+  color: #ffffff;
+}
+
+.buttonDanger:hover {
+  background-color: #c82333;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.buttonDanger:active {
+  background-color: #bd2130;
+}
+
+.buttonDisabled {
+  composes: button;
+  background-color: #e9ecef;
+  color: #6c757d;
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+/* ============================================================================
+   Field Validation States
+   ============================================================================ */
+
+.inputError {
+  border-color: #dc3545;
+  border-bottom-color: #dc3545;
+}
+
+.inputError:focus {
+  border-color: #dc3545;
+  box-shadow: 0 0 0 0.2rem rgba(220, 53, 69, 0.25);
+}
+
+.inputSuccess {
+  border-color: #28a745;
+  border-bottom-color: #28a745;
+}
+
+.inputSuccess:focus {
+  border-color: #28a745;
+  box-shadow: 0 0 0 0.2rem rgba(40, 167, 69, 0.25);
+}
+
+.fieldError {
+  color: #dc3545;
+  font-size: 12px;
+  margin-top: 4px;
+  display: block;
+}
+
+.fieldHelp {
+  color: #6c757d;
+  font-size: 12px;
+  margin-top: 4px;
+  display: block;
+}
+
+/* ============================================================================
+   Responsive Design
+   Maintain usability on smaller screens while preserving layout intent
+   ============================================================================ */
+
+@media (max-width: 992px) {
+  .formGrid {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+
+  .nameFieldsContainer {
+    grid-template-columns: 1fr;
+  }
+
+  .addressRow {
+    grid-template-columns: 1fr;
+  }
+
+  .header {
+    grid-template-columns: 1fr;
+  }
+
+  .headerRight {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: 12px;
+  }
+
+  .dateFieldGroup,
+  .ssnFieldGroup,
+  .phoneFieldGroup {
+    flex-wrap: wrap;
+  }
+
+  .actionButtons {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .button {
+    width: 100%;
+  }
+
+  .functionKeys {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 576px) {
+  .financialInput {
+    width: 100%;
+    max-width: 180px;
+  }
+
+  .accountNumberInput,
+  .customerIdInput,
+  .governmentIdInput,
+  .eftAccountInput {
+    width: 100%;
+  }
+
+  .nameInput,
+  .addressInput,
+  .cityInput {
+    font-size: 16px; /* Prevents zoom on iOS */
+  }
+}
+
+/* ============================================================================
+   Accessibility Enhancements
+   ============================================================================ */
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.input:focus-visible,
+.button:focus-visible {
+  outline: 3px solid #0056b3;
+  outline-offset: 2px;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .input,
+  .inputEditable {
+    border-width: 2px;
+  }
+
+  .label {
+    font-weight: 700;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .input,
+  .button {
+    transition: none;
+  }
+}
+
+/* Print styles */
+@media print {
+  .actionButtons,
+  .functionKeys {
+    display: none;
+  }
+
+  .container {
+    max-width: 100%;
+    padding: 0;
+  }
+
+  .inputEditable {
+    border-bottom: 1px solid #000;
+  }
+}
+
+/* ============================================================================
+   Loading State
+   ============================================================================ */
+
+.loading {
+  opacity: 0.6;
+  pointer-events: none;
+  position: relative;
+}
+
+.loading::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 40px;
+  height: 40px;
+  margin: -20px 0 0 -20px;
+  border: 4px solid #f3f3f3;
+  border-top: 4px solid #007bff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* ============================================================================
+   End of AccountUpdateComponent.module.css
+   ============================================================================ */

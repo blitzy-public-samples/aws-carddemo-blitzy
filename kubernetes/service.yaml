@@ -1,0 +1,199 @@
+#
+# Kubernetes Service Definition for CardDemo Spring Boot Application
+#
+# This Service resource provides stable internal networking for the CardDemo
+# application within the Kubernetes cluster, replacing the CICS VTAM terminal
+# connection routing and transaction load distribution with cloud-native service
+# discovery and load balancing.
+#
+# Purpose:
+# - Exposes the CardDemo Spring Boot application on a stable ClusterIP
+# - Provides internal DNS resolution (carddemo-service.carddemo.svc.cluster.local)
+# - Load balances traffic across multiple application pod replicas
+# - Maintains session affinity for stateful Redis-backed sessions
+# - Routes HTTP traffic from port 80 to container port 8080
+#
+# Transformation Context:
+# COBOL/CICS Pattern → Kubernetes Service Pattern
+# - CICS VTAM terminal routing → Service ClusterIP with DNS
+# - CICS transaction load balancing → Kubernetes service load balancing
+# - Terminal connection management → Session affinity configuration
+# - CICS region communication → Internal cluster networking
+#
+# Migration Notes:
+# - Replaces mainframe terminal connection infrastructure
+# - Provides stable endpoint for Ingress controller routing
+# - Enables horizontal scaling with automatic load distribution
+# - Supports zero-downtime deployments with rolling updates
+#
+
+apiVersion: v1
+kind: Service
+metadata:
+  # Service name used for DNS resolution within cluster
+  # Accessible as: carddemo-service.carddemo.svc.cluster.local
+  name: carddemo-service
+  
+  # Namespace must match deployment namespace
+  namespace: carddemo
+  
+  # Labels for service identification and monitoring
+  labels:
+    app: carddemo
+    component: backend
+    tier: application
+    version: v1
+    managed-by: kubernetes
+    
+  # Annotations for service mesh integration and monitoring
+  annotations:
+    # Service description for documentation
+    description: "CardDemo Spring Boot application service - Mainframe CICS to Cloud migration"
+    
+    # Prometheus monitoring integration
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/actuator/prometheus"
+    
+    # Service mesh integration (if using Istio)
+    # Uncomment if service mesh is deployed
+    # sidecar.istio.io/inject: "true"
+    
+    # Migration context
+    migration.source: "CICS Transaction Routing"
+    migration.target: "Kubernetes Service"
+    
+spec:
+  # ClusterIP type for internal cluster communication only
+  # Not directly accessible from outside the cluster
+  # External access is provided through Ingress resource
+  type: ClusterIP
+  
+  # Selector to match pods managed by the deployment
+  # Must match deployment spec.template.metadata.labels
+  selector:
+    app: carddemo
+  
+  # Session affinity configuration for stateful sessions
+  # Maintains client routing to same pod for session continuity
+  # Important for Redis-backed Spring Session management
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      # Session timeout: 3 hours (10800 seconds)
+      # Aligns with typical user session duration
+      # Matches CICS pseudo-conversational timeout patterns
+      timeoutSeconds: 10800
+  
+  # Port configuration
+  ports:
+    # HTTP port for REST API traffic
+    - name: http
+      protocol: TCP
+      
+      # Port exposed by the service (internal cluster port)
+      # Ingress controller will route traffic to this port
+      port: 80
+      
+      # Target port on the container (Spring Boot embedded Tomcat)
+      # Must match containerPort in deployment spec
+      targetPort: 8080
+      
+      # Optional: nodePort for NodePort service type
+      # Not used for ClusterIP, included for documentation
+      # nodePort: 30080
+
+---
+#
+# Optional: Headless Service for StatefulSet (if needed in future)
+#
+# This section is commented out but provided as reference for potential
+# future use if StatefulSet deployment is required for specific scenarios
+# like batch processing or database clustering.
+#
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: carddemo-service-headless
+#   namespace: carddemo
+#   labels:
+#     app: carddemo
+#     component: backend
+#     service-type: headless
+# spec:
+#   type: ClusterIP
+#   clusterIP: None  # Headless service
+#   selector:
+#     app: carddemo
+#   ports:
+#     - name: http
+#       protocol: TCP
+#       port: 8080
+#       targetPort: 8080
+
+---
+#
+# Service Design Rationale:
+#
+# 1. ClusterIP Type:
+#    - Internal-only access prevents direct external exposure
+#    - Security best practice: expose only through Ingress
+#    - Reduces attack surface area
+#
+# 2. Session Affinity (ClientIP):
+#    - Ensures requests from same client route to same pod
+#    - Critical for Redis session management consistency
+#    - 3-hour timeout matches typical user session duration
+#    - Prevents session loss during active user sessions
+#
+# 3. Port Configuration (80 -> 8080):
+#    - Service port 80: Standard HTTP port for internal routing
+#    - Target port 8080: Spring Boot default embedded Tomcat port
+#    - Separation allows flexibility in container port changes
+#
+# 4. Selector Strategy:
+#    - Simple selector (app: carddemo) matches deployment
+#    - Enables automatic endpoint updates as pods scale
+#    - Kubernetes automatically maintains endpoint list
+#
+# 5. DNS Resolution:
+#    - Service creates DNS entry: carddemo-service.carddemo.svc.cluster.local
+#    - Short form within namespace: carddemo-service
+#    - Enables service discovery without hardcoded IPs
+#
+# 6. Load Balancing:
+#    - Kubernetes provides round-robin load balancing by default
+#    - With sessionAffinity: distributes new sessions, maintains existing
+#    - Replaces CICS transaction routing and load distribution
+#
+# Performance Characteristics:
+# - Sub-millisecond service routing latency
+# - Automatic health checking via pod readiness probes
+# - Zero-downtime updates with rolling deployment strategy
+# - Horizontal scaling: automatic endpoint addition/removal
+#
+# High Availability:
+# - Service maintains availability during pod restarts
+# - Automatic failover to healthy pods
+# - No single point of failure
+# - Survives node failures with pod rescheduling
+#
+# Monitoring and Observability:
+# - Prometheus annotations enable metrics collection
+# - Service endpoints visible via kubectl get endpoints
+# - Connection tracking through cluster networking layer
+# - Integration with service mesh (if deployed)
+#
+# Security Considerations:
+# - ClusterIP limits exposure to cluster internal
+# - No external direct access (defense in depth)
+# - Network policies can further restrict access
+# - TLS termination handled at Ingress layer
+#
+# Migration Benefits vs. CICS:
+# - CICS VTAM routing → Kubernetes service discovery
+# - Manual load balancing → Automatic pod distribution
+# - Static configuration → Dynamic endpoint management
+# - Limited scalability → Elastic horizontal scaling
+# - Complex failover → Automatic health-based routing
+#

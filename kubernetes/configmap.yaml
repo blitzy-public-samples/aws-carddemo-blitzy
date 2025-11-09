@@ -1,0 +1,159 @@
+# Kubernetes ConfigMap for CardDemo Spring Boot Application
+# This ConfigMap contains all non-sensitive application configuration properties
+# Replaces mainframe CICS System Initialization Table (SIT) parameters and JCL symbolic substitution
+#
+# Purpose: Externalize Spring Boot application.properties configuration for cloud-native deployment
+# Namespace: carddemo
+# Used by: carddemo-app Deployment pods
+#
+# IMPORTANT: This ConfigMap contains ONLY non-sensitive configuration.
+# Sensitive data (passwords, secrets) must be stored in kubernetes/secret.yaml
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carddemo-config
+  namespace: carddemo
+  labels:
+    app: carddemo
+    component: configuration
+    version: v1.0.0
+  annotations:
+    description: "Non-sensitive application configuration for CardDemo Spring Boot application"
+    migration.source: "Mainframe CICS SIT and JCL symbolic parameters"
+
+data:
+  # ===================================================================
+  # SERVER CONFIGURATION
+  # Replaces: CICS region PORT parameter
+  # ===================================================================
+  server.port: "8080"
+  server.servlet.context-path: "/"
+  server.shutdown: "graceful"
+  spring.lifecycle.timeout-per-shutdown-phase: "30s"
+  
+  # ===================================================================
+  # DATABASE CONFIGURATION - PostgreSQL
+  # Replaces: VSAM file definitions and DB2 connection parameters
+  # Service name 'postgres-service' must match Kubernetes Service for PostgreSQL
+  # ===================================================================
+  spring.datasource.url: "jdbc:postgresql://postgres-service:5432/carddemo"
+  spring.datasource.driver-class-name: "org.postgresql.Driver"
+  
+  # Connection pool configuration (HikariCP)
+  # Supports minimum 150 concurrent users with 10,000 TPS requirement
+  spring.datasource.hikari.maximum-pool-size: "20"
+  spring.datasource.hikari.minimum-idle: "5"
+  spring.datasource.hikari.connection-timeout: "30000"
+  spring.datasource.hikari.idle-timeout: "600000"
+  spring.datasource.hikari.max-lifetime: "1800000"
+  spring.datasource.hikari.pool-name: "CardDemoHikariPool"
+  
+  # ===================================================================
+  # JPA/HIBERNATE CONFIGURATION
+  # Replaces: VSAM file access patterns
+  # ===================================================================
+  spring.jpa.properties.hibernate.dialect: "org.hibernate.dialect.PostgreSQLDialect"
+  spring.jpa.hibernate.ddl-auto: "validate"
+  spring.jpa.show-sql: "false"
+  spring.jpa.open-in-view: "false"
+  spring.jpa.properties.hibernate.format_sql: "false"
+  spring.jpa.properties.hibernate.jdbc.batch_size: "20"
+  spring.jpa.properties.hibernate.order_inserts: "true"
+  spring.jpa.properties.hibernate.order_updates: "true"
+  spring.jpa.properties.hibernate.jdbc.time_zone: "UTC"
+  
+  # ===================================================================
+  # FLYWAY DATABASE MIGRATION
+  # Replaces: VSAM IDCAMS DEFINE CLUSTER commands
+  # ===================================================================
+  spring.flyway.enabled: "true"
+  spring.flyway.baseline-on-migrate: "true"
+  spring.flyway.locations: "classpath:db/migration"
+  spring.flyway.validate-on-migrate: "true"
+  
+  # ===================================================================
+  # REDIS SESSION CONFIGURATION
+  # Replaces: CICS COMMAREA pseudo-conversational state management
+  # Service name 'redis-service' must match Kubernetes Service for Redis
+  # ===================================================================
+  spring.session.store-type: "redis"
+  spring.redis.host: "redis-service"
+  spring.redis.port: "6379"
+  spring.redis.timeout: "60000"
+  spring.redis.jedis.pool.max-active: "20"
+  spring.redis.jedis.pool.max-idle: "10"
+  spring.redis.jedis.pool.min-idle: "5"
+  spring.session.timeout: "1800"
+  spring.session.redis.namespace: "carddemo:session"
+  
+  # ===================================================================
+  # SPRING BATCH CONFIGURATION
+  # Replaces: JCL job parameters and execution settings
+  # ===================================================================
+  spring.batch.jdbc.initialize-schema: "always"
+  spring.batch.job.enabled: "false"
+  spring.batch.jdbc.table-prefix: "BATCH_"
+  
+  # ===================================================================
+  # LOGGING CONFIGURATION
+  # Replaces: CICS MSGUSR and system log settings
+  # ===================================================================
+  logging.level.root: "INFO"
+  logging.level.com.carddemo: "DEBUG"
+  logging.level.org.springframework.web: "INFO"
+  logging.level.org.springframework.security: "INFO"
+  logging.level.org.springframework.batch: "INFO"
+  logging.level.org.hibernate.SQL: "INFO"
+  logging.level.org.hibernate.type.descriptor.sql.BasicBinder: "INFO"
+  logging.pattern.console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+  logging.pattern.file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  
+  # ===================================================================
+  # SPRING BOOT ACTUATOR - HEALTH & METRICS
+  # Used by Kubernetes liveness and readiness probes
+  # ===================================================================
+  management.endpoints.web.exposure.include: "health,info,metrics,prometheus"
+  management.endpoint.health.show-details: "when-authorized"
+  management.endpoint.health.probes.enabled: "true"
+  management.health.livenessState.enabled: "true"
+  management.health.readinessState.enabled: "true"
+  management.metrics.export.prometheus.enabled: "true"
+  
+  # ===================================================================
+  # JACKSON JSON CONFIGURATION
+  # Replaces: CICS COMMAREA and BMS map field serialization
+  # ===================================================================
+  spring.jackson.serialization.write-dates-as-timestamps: "false"
+  spring.jackson.time-zone: "UTC"
+  spring.jackson.default-property-inclusion: "non_null"
+  spring.jackson.serialization.fail-on-empty-beans: "false"
+  
+  # ===================================================================
+  # JWT SECURITY CONFIGURATION (Non-sensitive settings)
+  # Replaces: RACF security parameters
+  # JWT secret is stored in Secret, not here
+  # ===================================================================
+  jwt.expiration: "86400000"
+  jwt.header: "Authorization"
+  jwt.prefix: "Bearer "
+  
+  # ===================================================================
+  # APPLICATION-SPECIFIC CONFIGURATION
+  # Business logic constants from COBOL copybooks
+  # ===================================================================
+  carddemo.pagination.cards-per-page: "7"
+  carddemo.pagination.transactions-per-page: "10"
+  carddemo.transaction.response-time-target-ms: "200"
+  carddemo.batch.chunk-size: "1000"
+  carddemo.batch.processing-window-hours: "4"
+  
+  # ===================================================================
+  # CORS CONFIGURATION
+  # Allows frontend React application to access REST API
+  # ===================================================================
+  carddemo.cors.allowed-origins: "http://localhost:3000,https://carddemo.example.com"
+  carddemo.cors.allowed-methods: "GET,POST,PUT,DELETE,OPTIONS"
+  carddemo.cors.allowed-headers: "*"
+  carddemo.cors.allow-credentials: "true"
+  carddemo.cors.max-age: "3600"

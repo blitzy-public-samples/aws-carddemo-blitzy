@@ -1,0 +1,589 @@
+/**
+ * MainMenuComponent CSS Module
+ * 
+ * Transforms COMEN01.bms BMS mapset (24x80 character 3270 screen) to modern React styling.
+ * Preserves the visual hierarchy and layout of the original mainframe screen while
+ * adapting to responsive web design principles.
+ * 
+ * Original BMS Layout:
+ * - Line 1-2: Header with transaction name, title, date/time
+ * - Line 4: "Main Menu" title (centered)
+ * - Lines 6-17: 12 menu options (40 chars each, positioned at column 20)
+ * - Line 20: Option selection prompt and input field (2-digit numeric, right-aligned)
+ * - Line 23: Error message area (RED, 78 chars)
+ * - Line 24: Footer with function keys (YELLOW)
+ * 
+ * Copyright: Maintains Apache License 2.0 from original BMS source
+ */
+
+/* ============================================================================
+   MAIN CONTAINER
+   ============================================================================ */
+
+/**
+ * Main menu container
+ * Replicates 24x80 character terminal with modern responsive constraints
+ */
+.container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background-color: #000000; /* Terminal black background */
+  color: #ffffff;
+  font-family: 'Courier New', 'Consolas', 'Monaco', monospace; /* Monospace for terminal feel */
+  font-size: 16px;
+  line-height: 1.5;
+  padding: 20px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* ============================================================================
+   HEADER SECTION (Lines 1-2)
+   ============================================================================ */
+
+/**
+ * Header section containing transaction info, title, date/time
+ * Replicates BMS lines 1-2 with BLUE and YELLOW color scheme
+ */
+.header {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #333333;
+  padding-bottom: 10px;
+}
+
+/**
+ * Individual header row (line 1 and line 2)
+ */
+.headerRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 5px;
+}
+
+/**
+ * Left section of header row (transaction/program info)
+ */
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/**
+ * Center section of header row (titles)
+ */
+.headerCenter {
+  flex: 1;
+  text-align: center;
+  padding: 0 20px;
+}
+
+/**
+ * Right section of header row (date/time)
+ */
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/**
+ * Header labels (Tran:, Prog:, Date:, Time:)
+ * COLOR=BLUE in BMS
+ */
+.headerLabel {
+  color: #5555ff; /* BMS BLUE color approximation */
+  font-weight: bold;
+  font-size: 14px;
+}
+
+/**
+ * Header values (transaction name, program name, date, time)
+ * COLOR=BLUE in BMS, ASKIP attribute (protected)
+ */
+.headerValue {
+  color: #5555ff; /* BMS BLUE color approximation */
+  font-size: 14px;
+  font-weight: normal;
+}
+
+/**
+ * Primary title (TITLE01)
+ * COLOR=YELLOW in BMS, 40 character length, centered at POS=(1,21)
+ */
+.titlePrimary {
+  color: #ffff55; /* BMS YELLOW color approximation */
+  font-size: 16px;
+  font-weight: bold;
+  text-align: center;
+}
+
+/**
+ * Secondary title (TITLE02)
+ * COLOR=YELLOW in BMS, 40 character length, centered at POS=(2,21)
+ */
+.titleSecondary {
+  color: #ffff55; /* BMS YELLOW color approximation */
+  font-size: 16px;
+  font-weight: bold;
+  text-align: center;
+}
+
+/* ============================================================================
+   MENU TITLE (Line 4)
+   ============================================================================ */
+
+/**
+ * "Main Menu" heading
+ * BRT attribute (bright), COLOR=NEUTRAL, centered at POS=(4,35)
+ */
+.menuTitle {
+  color: #ffffff; /* NEUTRAL = white/bright */
+  font-size: 20px;
+  font-weight: bold;
+  text-align: center;
+  margin: 30px 0 20px 0;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+/* ============================================================================
+   MENU OPTIONS LIST (Lines 6-17)
+   ============================================================================ */
+
+/**
+ * Container for menu options list
+ * Positions options centered horizontally, matching BMS column 20 offset
+ */
+.menuOptions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 20px 0;
+  padding: 0 20px;
+}
+
+/**
+ * Individual menu option item
+ * Replicates OPTN001-OPTN012 fields:
+ * - COLOR=BLUE
+ * - LENGTH=40 characters
+ * - POS starting at (6,20) through (17,20)
+ * - ASKIP (protected), FSET, NORM attributes
+ */
+.menuOption {
+  color: #5555ff; /* BMS BLUE color */
+  font-size: 16px;
+  padding: 8px 20px;
+  margin: 4px 0;
+  width: 100%;
+  max-width: 600px;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  transition: all 0.2s ease-in-out;
+  background-color: transparent;
+}
+
+/**
+ * Menu option hover state
+ * Provides visual feedback for interactive menu items
+ */
+.menuOption:hover {
+  background-color: #1a1a3a; /* Subtle blue-tinted background */
+  border-color: #5555ff;
+  color: #7777ff; /* Lighter blue on hover */
+  transform: translateX(5px);
+}
+
+/**
+ * Menu option focus state (keyboard navigation)
+ */
+.menuOption:focus {
+  outline: 2px solid #ffff55; /* YELLOW outline for focus */
+  outline-offset: 2px;
+  background-color: #1a1a3a;
+}
+
+/**
+ * Selected/active menu option state
+ */
+.menuOptionActive {
+  background-color: #2a2a4a;
+  border-color: #ffff55; /* YELLOW border for active */
+  color: #ffffff;
+  font-weight: bold;
+}
+
+/**
+ * Disabled menu option (for admin-only options)
+ */
+.menuOptionDisabled {
+  color: #555555; /* Dimmed color */
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.menuOptionDisabled:hover {
+  background-color: transparent;
+  border-color: transparent;
+  transform: none;
+}
+
+/* ============================================================================
+   OPTION SELECTION INPUT (Line 20)
+   ============================================================================ */
+
+/**
+ * Option selection prompt and input container
+ * Replicates BMS line 20 layout
+ */
+.optionInputContainer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  margin: 30px 0 20px 0;
+  padding: 15px;
+}
+
+/**
+ * "Please select an option :" prompt text
+ * COLOR=TURQUOISE in BMS, BRT attribute, POS=(20,15)
+ */
+.optionPrompt {
+  color: #00ffff; /* BMS TURQUOISE color approximation */
+  font-size: 16px;
+  font-weight: bold;
+}
+
+/**
+ * Numeric option input field
+ * Replicates OPTION field:
+ * - ATTRB=(FSET,IC,NORM,NUM,UNPROT)
+ * - HILIGHT=UNDERLINE
+ * - JUSTIFY=(RIGHT,ZERO)
+ * - LENGTH=2
+ * - POS=(20,41)
+ */
+.optionInput {
+  width: 60px;
+  height: 40px;
+  background-color: #1a1a1a;
+  color: #00ff00; /* GREEN for input field */
+  font-family: 'Courier New', 'Consolas', 'Monaco', monospace;
+  font-size: 18px;
+  font-weight: bold;
+  text-align: right; /* RIGHT justification */
+  padding: 5px 10px;
+  border: none;
+  border-bottom: 3px solid #00ffff; /* UNDERLINE highlight in TURQUOISE */
+  outline: none;
+  transition: all 0.2s ease-in-out;
+}
+
+/**
+ * Option input focus state
+ * IC attribute (initial cursor) - field gets focus on screen display
+ */
+.optionInput:focus {
+  border-bottom-color: #ffff55; /* YELLOW on focus */
+  background-color: #2a2a2a;
+  box-shadow: 0 2px 8px rgba(255, 255, 85, 0.3);
+}
+
+/**
+ * Option input invalid state
+ */
+.optionInput:invalid {
+  border-bottom-color: #ff5555; /* RED for invalid input */
+}
+
+/**
+ * Option input placeholder styling
+ */
+.optionInput::placeholder {
+  color: #555555;
+  font-style: italic;
+}
+
+/* Number input spinner removal (maintain clean terminal look) */
+.optionInput::-webkit-inner-spin-button,
+.optionInput::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.optionInput[type=number] {
+  -moz-appearance: textfield;
+}
+
+/* ============================================================================
+   ERROR MESSAGE (Line 23)
+   ============================================================================ */
+
+/**
+ * Error message display area
+ * Replicates ERRMSG field:
+ * - ATTRB=(ASKIP,BRT,FSET)
+ * - COLOR=RED
+ * - LENGTH=78
+ * - POS=(23,1)
+ */
+.errorMessage {
+  color: #ff5555; /* BMS RED color approximation */
+  font-size: 14px;
+  font-weight: bold;
+  text-align: center;
+  min-height: 24px;
+  padding: 10px 20px;
+  margin: 20px 0;
+  background-color: rgba(255, 85, 85, 0.1); /* Subtle red background */
+  border: 1px solid #ff5555;
+  border-radius: 4px;
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+/**
+ * Error message hidden state
+ */
+.errorMessageHidden {
+  display: none;
+}
+
+/**
+ * Error message fade-in animation
+ */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ============================================================================
+   FOOTER (Line 24)
+   ============================================================================ */
+
+/**
+ * Footer section with function keys
+ * Replicates BMS line 24
+ */
+.footer {
+  margin-top: auto;
+  padding-top: 20px;
+  border-top: 1px solid #333333;
+}
+
+/**
+ * Function keys display
+ * "ENTER=Continue  F3=Exit"
+ * COLOR=YELLOW in BMS, POS=(24,1)
+ */
+.functionKeys {
+  color: #ffff55; /* BMS YELLOW color */
+  font-size: 14px;
+  text-align: center;
+  padding: 10px;
+  font-weight: bold;
+}
+
+/**
+ * Individual function key styling
+ */
+.functionKey {
+  display: inline-block;
+  margin: 0 15px;
+  padding: 5px 10px;
+  border: 1px solid #ffff55;
+  border-radius: 3px;
+  transition: all 0.2s ease-in-out;
+}
+
+.functionKey:hover {
+  background-color: rgba(255, 255, 85, 0.2);
+  transform: scale(1.05);
+}
+
+/* ============================================================================
+   RESPONSIVE DESIGN
+   ============================================================================ */
+
+/**
+ * Tablet and smaller screens (max-width: 768px)
+ */
+@media screen and (max-width: 768px) {
+  .container {
+    padding: 15px;
+    font-size: 14px;
+  }
+
+  .headerRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+  }
+
+  .headerCenter {
+    padding: 10px 0;
+    text-align: left;
+  }
+
+  .menuTitle {
+    font-size: 18px;
+    margin: 20px 0 15px 0;
+  }
+
+  .menuOption {
+    font-size: 14px;
+    padding: 6px 15px;
+    max-width: 100%;
+  }
+
+  .optionInputContainer {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .optionPrompt {
+    font-size: 14px;
+  }
+
+  .optionInput {
+    width: 80px;
+    height: 35px;
+    font-size: 16px;
+  }
+
+  .errorMessage {
+    font-size: 12px;
+    padding: 8px 15px;
+  }
+
+  .functionKeys {
+    font-size: 12px;
+  }
+
+  .functionKey {
+    display: block;
+    margin: 5px 0;
+    text-align: center;
+  }
+}
+
+/**
+ * Mobile screens (max-width: 480px)
+ */
+@media screen and (max-width: 480px) {
+  .container {
+    padding: 10px;
+    font-size: 12px;
+  }
+
+  .menuTitle {
+    font-size: 16px;
+    letter-spacing: 1px;
+  }
+
+  .menuOption {
+    font-size: 12px;
+    padding: 5px 10px;
+  }
+
+  .optionInput {
+    width: 60px;
+    height: 30px;
+    font-size: 14px;
+  }
+
+  .functionKeys {
+    font-size: 11px;
+  }
+}
+
+/* ============================================================================
+   ACCESSIBILITY
+   ============================================================================ */
+
+/**
+ * High contrast mode support
+ */
+@media (prefers-contrast: high) {
+  .container {
+    background-color: #000000;
+    color: #ffffff;
+  }
+
+  .menuOption {
+    border-color: #ffffff;
+  }
+
+  .optionInput {
+    border-bottom-width: 4px;
+  }
+}
+
+/**
+ * Reduced motion support
+ */
+@media (prefers-reduced-motion: reduce) {
+  .menuOption,
+  .optionInput,
+  .functionKey,
+  .errorMessage {
+    transition: none;
+    animation: none;
+  }
+
+  .menuOption:hover {
+    transform: none;
+  }
+}
+
+/**
+ * Screen reader only content
+ */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* ============================================================================
+   PRINT STYLES
+   ============================================================================ */
+
+/**
+ * Print-friendly styles (maintain readability on paper)
+ */
+@media print {
+  .container {
+    background-color: #ffffff;
+    color: #000000;
+  }
+
+  .menuOption,
+  .optionInput,
+  .functionKey {
+    border-color: #000000;
+  }
+
+  .footer {
+    page-break-after: avoid;
+  }
+}

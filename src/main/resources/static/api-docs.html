@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="CardDemo API Documentation - Spring Boot REST API replacing mainframe CICS transactions">
+    <meta name="keywords" content="CardDemo, API, REST, OpenAPI, Swagger, Credit Card Management">
+    <title>CardDemo API Documentation</title>
+    <style>
+        /* Reset and base styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .header .subtitle {
+            font-size: 1.2rem;
+            opacity: 0.9;
+            font-weight: 300;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .intro {
+            background: #f8f9fa;
+            border-left: 4px solid #2a5298;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-radius: 4px;
+        }
+
+        .intro h2 {
+            color: #1e3c72;
+            margin-bottom: 15px;
+            font-size: 1.5rem;
+        }
+
+        .intro p {
+            color: #555;
+            line-height: 1.8;
+        }
+
+        .migration-context {
+            background: #e8f4f8;
+            border: 2px solid #2a5298;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-radius: 8px;
+        }
+
+        .migration-context h3 {
+            color: #1e3c72;
+            margin-bottom: 10px;
+            font-size: 1.3rem;
+        }
+
+        .migration-context p {
+            color: #444;
+            font-style: italic;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            margin: 40px 0;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 15px 30px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            text-decoration: none;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            cursor: pointer;
+            border: none;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .endpoints-section {
+            margin: 40px 0;
+        }
+
+        .endpoints-section h2 {
+            color: #1e3c72;
+            margin-bottom: 25px;
+            font-size: 1.8rem;
+            text-align: center;
+        }
+
+        .endpoint-category {
+            margin-bottom: 30px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+        }
+
+        .endpoint-category h3 {
+            color: #2a5298;
+            margin-bottom: 15px;
+            font-size: 1.3rem;
+            display: flex;
+            align-items: center;
+        }
+
+        .endpoint-category h3::before {
+            content: '►';
+            margin-right: 10px;
+            color: #667eea;
+        }
+
+        .endpoint-list {
+            list-style: none;
+            padding-left: 20px;
+        }
+
+        .endpoint-list li {
+            padding: 10px 0;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            align-items: baseline;
+        }
+
+        .endpoint-list li:last-child {
+            border-bottom: none;
+        }
+
+        .http-method {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            margin-right: 12px;
+            min-width: 65px;
+            text-align: center;
+        }
+
+        .method-get {
+            background: #61affe;
+            color: white;
+        }
+
+        .method-post {
+            background: #49cc90;
+            color: white;
+        }
+
+        .method-put {
+            background: #fca130;
+            color: white;
+        }
+
+        .method-delete {
+            background: #f93e3e;
+            color: white;
+        }
+
+        .endpoint-path {
+            font-family: 'Courier New', monospace;
+            color: #333;
+            font-size: 0.95rem;
+        }
+
+        .cics-reference {
+            color: #888;
+            font-size: 0.85rem;
+            margin-left: auto;
+            font-style: italic;
+        }
+
+        .auth-notice {
+            background: #fff3cd;
+            border: 2px solid #ffc107;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 30px 0;
+        }
+
+        .auth-notice h3 {
+            color: #856404;
+            margin-bottom: 10px;
+            font-size: 1.2rem;
+        }
+
+        .auth-notice p {
+            color: #856404;
+            margin: 0;
+        }
+
+        .footer {
+            background: #f8f9fa;
+            padding: 30px;
+            text-align: center;
+            color: #666;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .footer p {
+            margin: 10px 0;
+        }
+
+        .footer a {
+            color: #2a5298;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        .redirect-notice {
+            background: #d1ecf1;
+            border: 2px solid #bee5eb;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: center;
+        }
+
+        .redirect-notice p {
+            color: #0c5460;
+            margin: 5px 0;
+        }
+
+        #countdown {
+            font-weight: 700;
+            font-size: 1.2rem;
+            color: #2a5298;
+        }
+
+        .cancel-redirect {
+            margin-top: 10px;
+            padding: 8px 16px;
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+
+        .cancel-redirect:hover {
+            background: #5a6268;
+        }
+
+        /* Responsive design */
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 1.8rem;
+            }
+
+            .header .subtitle {
+                font-size: 1rem;
+            }
+
+            .content {
+                padding: 20px;
+            }
+
+            .action-buttons {
+                flex-direction: column;
+            }
+
+            .btn {
+                width: 100%;
+            }
+
+            .endpoint-list li {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .cics-reference {
+                margin-left: 0;
+                margin-top: 5px;
+            }
+        }
+
+        /* Accessibility improvements */
+        .visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* Focus styles for keyboard navigation */
+        a:focus,
+        button:focus {
+            outline: 3px solid #667eea;
+            outline-offset: 2px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container" role="main">
+        <!-- Header Section -->
+        <header class="header">
+            <h1>CardDemo Credit Card Management API</h1>
+            <p class="subtitle">Modern REST API Documentation</p>
+        </header>
+
+        <!-- Content Section -->
+        <div class="content">
+            <!-- Introduction -->
+            <section class="intro" aria-labelledby="intro-heading">
+                <h2 id="intro-heading">Welcome to CardDemo API</h2>
+                <p>
+                    This API documentation provides interactive testing capabilities for all <strong>17 REST endpoints</strong> 
+                    that replace the original mainframe CICS transactions. The API enables modern web and mobile applications 
+                    to access credit card management functionality previously available only through 3270 terminal screens.
+                </p>
+            </section>
+
+            <!-- Migration Context -->
+            <section class="migration-context" aria-labelledby="migration-heading">
+                <h3 id="migration-heading">🔄 Mainframe to Cloud Transformation</h3>
+                <p>
+                    These REST APIs maintain functional equivalence with the original COBOL programs while providing 
+                    modern JSON-based interfaces for web applications, replacing the BMS 3270 terminal screens with 
+                    React components. Every endpoint preserves the exact business logic, validation rules, and data 
+                    integrity constraints of the original mainframe implementation.
+                </p>
+            </section>
+
+            <!-- Auto-redirect notice -->
+            <div class="redirect-notice" id="redirect-notice" role="alert" aria-live="polite">
+                <p>Automatically redirecting to interactive API documentation in <span id="countdown">5</span> seconds...</p>
+                <button class="cancel-redirect" id="cancel-btn" aria-label="Cancel automatic redirect">
+                    Stay on this page
+                </button>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="action-buttons" role="navigation" aria-label="Main documentation actions">
+                <a href="/swagger-ui.html" class="btn btn-primary" role="button" aria-label="View interactive API documentation">
+                    📖 View Interactive API Documentation
+                </a>
+                <a href="/v3/api-docs" class="btn btn-secondary" role="button" aria-label="Download OpenAPI specification JSON">
+                    📥 Download OpenAPI Specification
+                </a>
+            </div>
+
+            <!-- Endpoints Quick Reference -->
+            <section class="endpoints-section" aria-labelledby="endpoints-heading">
+                <h2 id="endpoints-heading">API Endpoints Quick Reference</h2>
+
+                <!-- Authentication -->
+                <article class="endpoint-category">
+                    <h3>Authentication</h3>
+                    <ul class="endpoint-list">
+                        <li>
+                            <span class="http-method method-post" role="text">POST</span>
+                            <span class="endpoint-path">/api/auth/login</span>
+                            <span class="cics-reference">Replaces CC00 (COSGN00C)</span>
+                        </li>
+                        <li>
+                            <span class="http-method method-post" role="text">POST</span>
+                            <span class="endpoint-path">/api/auth/logout</span>
+                            <span class="cics-reference">Session termination</span>
+                        </li>
+                    </ul>
+                </article>
+
+                <!-- Menu Navigation -->
+                <article class="endpoint-category">
+                    <h3>Menu Navigation</h3>
+                    <ul class="endpoint-list">
+                        <li>
+                            <span class="http-method method-get" role="text">GET</span>
+                            <span class="endpoint-path">/api/menu</span>
+                            <span class="cics-reference">Replaces CM00 (COMEN01C)</span>
+                        </li>
+                        <li>
+                            <span class="http-method method-get" role="text">GET</span>
+                            <span class="endpoint-path">/api/admin/menu</span>
+                            <span class="cics-reference">Replaces CA00 (COADM01C)</span>
+                        </li>
+                    </ul>
+                </article>
+
+                <!-- Account Management -->
+                <article class="endpoint-category">
+                    <h3>Account Management</h3>
+                    <ul class="endpoint-list">
+                        <li>
+                            <span class="http-method method-get" role="text">GET</span>
+                            <span class="endpoint-path">/api/accounts/{id}</span>
+                            <span class="cics-reference">Replaces CAVW (COACTVWC)</span>
+                        </li>
+                        <li>
+                            <span class="http-method method-put" role="text">PUT</span>
+                            <span class="endpoint-path">/api/accounts/{id}</span>
+                            <span class="cics-reference">Replaces CAUP (COACTUPC)</span>
+                        </li>
+                    </ul>
+                </article>
+
+                <!-- Card Operations -->
+                <article class="endpoint-category">
+                    <h3>Card Operations</h3>
+                    <ul class="endpoint-list">
+                        <li>
+                            <span class="http-method method-get" role="text">GET</span>
+                            <span class="endpoint-path">/api/cards</span>
+                            <span class="cics-reference">Replaces CCLI (COCRDLIC)</span>
+                        </li>
+                        <li>
+                            <span class="http-method method-get" role="text">GET</span>
+                            <span class="endpoint-path">/api/cards/{id}</span>
+                            <span class="cics-reference">Replaces CCDL (COCRDSLC)</span>
+                        </li>
+                        <li>
+                            <span class="http-method method-put" role="text">PUT</span>
+                            <span class="endpoint-path">/api/cards/{id}</span>
+                            <span class="cics-reference">Replaces CCUP (COCRDUPC)</span>
+                        </li>
+                    </ul>
+                </article>
+
+                <!-- Transaction Management -->
+                <article class="endpoint-category">
+                    <h3>Transaction Management</h3>
+                    <ul class="endpoint-list">
+                        <li>
+                            <span class="http-method method-get" role="text">GET</span>
+                            <span class="endpoint-path">/api/transactions</span>
+                            <span class="cics-reference">Replaces CT00 (COTRN00C)</span>
+                        </li>
+                        <li>
+                            <span class="http-method method-get" role="text">GET</span>
+                            <span class="endpoint-path">/api/transactions/{id}</span>
+                            <span class="cics-reference">Replaces CT01 (COTRN01C)</span>
+                        </li>
+                        <li>
+                            <span class="http-method method-post" role="text">POST</span>
+                            <span class="endpoint-path">/api/transactions</span>
+                            <span class="cics-reference">Replaces CT02 (COTRN02C)</span>
+                        </li>
+                    </ul>
+                </article>
+
+                <!-- Billing -->
+                <article class="endpoint-category">
+                    <h3>Billing & Payments</h3>
+                    <ul class="endpoint-list">
+                        <li>
+                            <span class="http-method method-post" role="text">POST</span>
+                            <span class="endpoint-path">/api/billing/payment</span>
+                            <span class="cics-reference">Replaces CB00 (COBIL00C)</span>
+                        </li>
+                    </ul>
+                </article>
+
+                <!-- Reporting -->
+                <article class="endpoint-category">
+                    <h3>Reporting</h3>
+                    <ul class="endpoint-list">
+                        <li>
+                            <span class="http-method method-get" role="text">GET</span>
+                            <span class="endpoint-path">/api/reports/transactions</span>
+                            <span class="cics-reference">Replaces CR00 (CORPT00C)</span>
+                        </li>
+                    </ul>
+                </article>
+
+                <!-- Administration -->
+                <article class="endpoint-category">
+                    <h3>User Administration</h3>
+                    <ul class="endpoint-list">
+                        <li>
+                            <span class="http-method method-get" role="text">GET</span>
+                            <span class="endpoint-path">/api/admin/users</span>
+                            <span class="cics-reference">Replaces CU00 (COUSR00C)</span>
+                        </li>
+                        <li>
+                            <span class="http-method method-post" role="text">POST</span>
+                            <span class="endpoint-path">/api/admin/users</span>
+                            <span class="cics-reference">Replaces CU01 (COUSR01C)</span>
+                        </li>
+                        <li>
+                            <span class="http-method method-put" role="text">PUT</span>
+                            <span class="endpoint-path">/api/admin/users/{id}</span>
+                            <span class="cics-reference">Replaces CU02 (COUSR02C)</span>
+                        </li>
+                        <li>
+                            <span class="http-method method-delete" role="text">DELETE</span>
+                            <span class="endpoint-path">/api/admin/users/{id}</span>
+                            <span class="cics-reference">Replaces CU03 (COUSR03C)</span>
+                        </li>
+                    </ul>
+                </article>
+            </section>
+
+            <!-- Authentication Notice -->
+            <aside class="auth-notice" role="complementary" aria-labelledby="auth-notice-heading">
+                <h3 id="auth-notice-heading">🔒 Authentication Required</h3>
+                <p>
+                    Most endpoints require JWT Bearer token authentication. Obtain a token by calling 
+                    <code>POST /api/auth/login</code> with valid credentials. Include the token in the 
+                    Authorization header: <code>Authorization: Bearer &lt;your-token&gt;</code>
+                </p>
+            </aside>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer" role="contentinfo">
+            <p><strong>CardDemo API Version 1.0.0</strong></p>
+            <p>Spring Boot 3.2.0 | Java 21 | PostgreSQL 16.1</p>
+            <p>
+                <a href="/actuator/health" aria-label="Check API health status">Health Check</a> | 
+                <a href="/actuator/info" aria-label="View API information">API Info</a> | 
+                <a href="https://github.com/carddemo" aria-label="View source code on GitHub">GitHub Repository</a>
+            </p>
+            <p style="margin-top: 15px; font-size: 0.9rem; color: #888;">
+                Migrated from IBM Mainframe COBOL/CICS to modern cloud-native architecture.
+                <br>Maintaining 100% functional equivalence with original CardDemo application.
+            </p>
+        </footer>
+    </div>
+
+    <!-- Auto-redirect JavaScript -->
+    <script>
+        // Auto-redirect functionality with countdown
+        let countdown = 5;
+        let redirectTimer;
+        const countdownElement = document.getElementById('countdown');
+        const redirectNotice = document.getElementById('redirect-notice');
+        const cancelBtn = document.getElementById('cancel-btn');
+
+        function startCountdown() {
+            redirectTimer = setInterval(function() {
+                countdown--;
+                countdownElement.textContent = countdown;
+                
+                if (countdown <= 0) {
+                    clearInterval(redirectTimer);
+                    window.location.href = '/swagger-ui.html';
+                }
+            }, 1000);
+        }
+
+        function cancelRedirect() {
+            clearInterval(redirectTimer);
+            redirectNotice.style.display = 'none';
+        }
+
+        // Event listener for cancel button
+        cancelBtn.addEventListener('click', cancelRedirect);
+
+        // Start countdown on page load
+        startCountdown();
+
+        // Cancel redirect if user clicks anywhere on the page
+        document.addEventListener('click', function(event) {
+            if (event.target !== cancelBtn && !cancelBtn.contains(event.target)) {
+                // User is interacting with the page, cancel auto-redirect
+                if (countdown > 0) {
+                    cancelRedirect();
+                }
+            }
+        });
+
+        // Cancel redirect on any keyboard interaction
+        document.addEventListener('keydown', function() {
+            if (countdown > 0) {
+                cancelRedirect();
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,810 @@
+/**
+ * TransactionAddComponent.module.css
+ * 
+ * CSS Module for Transaction Add Component
+ * Transformed from COTRN02.bms BMS mapset (3270 terminal screen)
+ * 
+ * This stylesheet implements the transaction add form layout with:
+ * - Account ID and Card Number input fields
+ * - Transaction type, category, and source fields
+ * - Amount field with monetary formatting hints
+ * - Date fields with YYYY-MM-DD format hints
+ * - Merchant information fields (ID, name, city, zip)
+ * - Confirmation Y/N toggle
+ * - Error message display area
+ * - Function key footer navigation
+ * 
+ * Layout preserves the original BMS screen structure while applying
+ * modern responsive design principles.
+ */
+
+/* ============================================
+   Container and Layout
+   ============================================ */
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: 'Courier New', 'Lucida Console', monospace;
+  background-color: #000000;
+  color: #00ff00;
+  min-height: 100vh;
+}
+
+.formWrapper {
+  background-color: #000000;
+  border: 2px solid #00ffff;
+  border-radius: 4px;
+  padding: 24px;
+  box-shadow: 0 4px 6px rgba(0, 255, 255, 0.1);
+}
+
+/* ============================================
+   Header Section (Lines 1-2 from BMS)
+   ============================================ */
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #0066ff;
+}
+
+.headerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.headerRight {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+
+.transactionLabel {
+  color: #0066ff;
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.transactionName {
+  color: #0066ff;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.programLabel {
+  color: #0066ff;
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.programName {
+  color: #0066ff;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.dateLabel,
+.timeLabel {
+  color: #0066ff;
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.currentDate,
+.currentTime {
+  color: #0066ff;
+  font-size: 12px;
+}
+
+/* ============================================
+   Title Section (Line 4 from BMS)
+   ============================================ */
+
+.pageTitle {
+  text-align: center;
+  margin: 20px 0 24px 0;
+  padding: 12px;
+  background-color: #1a1a1a;
+  border: 1px solid #808080;
+}
+
+.pageTitleText {
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+/* ============================================
+   Account/Card Selection Section (Line 6)
+   ============================================ */
+
+.accountCardSection {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+  padding: 16px;
+  background-color: #0a0a0a;
+  border: 1px solid #00ffff;
+  border-radius: 4px;
+}
+
+.fieldGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fieldLabel {
+  color: #00ffff;
+  font-size: 14px;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.orSeparator {
+  color: #808080;
+  font-size: 14px;
+  padding: 0 8px;
+  font-style: italic;
+}
+
+/* ============================================
+   Input Field Styling
+   ============================================ */
+
+.inputField {
+  background-color: #000000;
+  border: none;
+  border-bottom: 2px solid #00ff00;
+  color: #00ff00;
+  font-family: 'Courier New', 'Lucida Console', monospace;
+  font-size: 14px;
+  padding: 6px 8px;
+  outline: none;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.inputField:focus {
+  border-bottom-color: #00ffff;
+  box-shadow: 0 2px 4px rgba(0, 255, 255, 0.3);
+}
+
+.inputField::placeholder {
+  color: #006600;
+  opacity: 0.7;
+}
+
+/* Account ID input - 11 characters */
+.accountIdInput {
+  composes: inputField;
+  width: 140px;
+  max-length: 11;
+}
+
+/* Card Number input - 16 characters */
+.cardNumberInput {
+  composes: inputField;
+  width: 200px;
+  max-length: 16;
+  letter-spacing: 2px;
+}
+
+/* ============================================
+   Divider (Line 8 from BMS)
+   ============================================ */
+
+.divider {
+  border: none;
+  border-top: 1px solid #808080;
+  margin: 24px 0;
+}
+
+/* ============================================
+   Transaction Details Section (Lines 10-15)
+   ============================================ */
+
+.transactionDetailsSection {
+  margin-bottom: 24px;
+  padding: 16px;
+  background-color: #0a0a0a;
+  border: 1px solid #00ffff;
+  border-radius: 4px;
+}
+
+.detailsRow {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.detailsRowLast {
+  composes: detailsRow;
+  margin-bottom: 0;
+}
+
+/* Transaction Type Code - 2 characters */
+.typeCodeInput {
+  composes: inputField;
+  width: 60px;
+  max-length: 2;
+  text-transform: uppercase;
+}
+
+/* Transaction Category Code - 4 characters */
+.categoryCodeInput {
+  composes: inputField;
+  width: 80px;
+  max-length: 4;
+  text-transform: uppercase;
+}
+
+/* Transaction Source - 10 characters */
+.sourceInput {
+  composes: inputField;
+  width: 140px;
+  max-length: 10;
+}
+
+/* Description - 60 characters */
+.descriptionInput {
+  composes: inputField;
+  width: 100%;
+  max-length: 60;
+}
+
+.fullWidthField {
+  flex: 1 1 100%;
+}
+
+/* ============================================
+   Amount and Date Fields (Lines 14-15)
+   ============================================ */
+
+.amountDateRow {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.amountFieldGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dateFieldGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Transaction Amount - 12 characters with hint */
+.amountInput {
+  composes: inputField;
+  width: 160px;
+  max-length: 12;
+  text-align: right;
+  font-weight: bold;
+}
+
+.amountInput:focus {
+  border-bottom-color: #ffff00;
+}
+
+/* Date inputs - 10 characters YYYY-MM-DD format */
+.dateInput {
+  composes: inputField;
+  width: 140px;
+  max-length: 10;
+}
+
+.dateInput:focus {
+  border-bottom-color: #ffff00;
+}
+
+/* Format hints displayed below inputs */
+.formatHint {
+  color: #0066ff;
+  font-size: 11px;
+  font-style: italic;
+  margin-top: 2px;
+  white-space: nowrap;
+}
+
+.amountHint {
+  composes: formatHint;
+}
+
+.dateHint {
+  composes: formatHint;
+}
+
+/* ============================================
+   Merchant Information Section (Lines 16-18)
+   ============================================ */
+
+.merchantSection {
+  margin-bottom: 24px;
+  padding: 16px;
+  background-color: #0a0a0a;
+  border: 1px solid #00ffff;
+  border-radius: 4px;
+}
+
+.merchantSectionTitle {
+  color: #00ffff;
+  font-size: 14px;
+  font-weight: bold;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.merchantRow {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.merchantRowLast {
+  composes: merchantRow;
+  margin-bottom: 0;
+}
+
+/* Merchant ID - 9 characters */
+.merchantIdInput {
+  composes: inputField;
+  width: 120px;
+  max-length: 9;
+}
+
+/* Merchant Name - 30 characters */
+.merchantNameInput {
+  composes: inputField;
+  width: 300px;
+  max-length: 30;
+  flex: 1;
+}
+
+/* Merchant City - 25 characters */
+.merchantCityInput {
+  composes: inputField;
+  width: 250px;
+  max-length: 25;
+  flex: 1;
+}
+
+/* Merchant Zip - 10 characters */
+.merchantZipInput {
+  composes: inputField;
+  width: 130px;
+  max-length: 10;
+}
+
+/* ============================================
+   Confirmation Section (Line 21)
+   ============================================ */
+
+.confirmationSection {
+  margin: 32px 0 24px 0;
+  padding: 16px;
+  background-color: #1a1a00;
+  border: 2px solid #ffff00;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.confirmationPrompt {
+  color: #00ffff;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.confirmationInputGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.confirmationInput {
+  composes: inputField;
+  width: 40px;
+  max-length: 1;
+  text-align: center;
+  text-transform: uppercase;
+  font-size: 16px;
+  font-weight: bold;
+  border-bottom-color: #ffff00;
+}
+
+.confirmationInput:focus {
+  border-bottom-color: #00ffff;
+  box-shadow: 0 2px 4px rgba(255, 255, 0, 0.5);
+}
+
+.confirmationHint {
+  color: #808080;
+  font-size: 12px;
+}
+
+/* ============================================
+   Validation States
+   ============================================ */
+
+.inputField.valid {
+  border-bottom-color: #00ff00;
+}
+
+.inputField.invalid {
+  border-bottom-color: #ff0000;
+  animation: shake 0.3s ease-in-out;
+}
+
+.inputField.warning {
+  border-bottom-color: #ffff00;
+}
+
+.inputField.required:not(:focus):invalid {
+  border-bottom-color: #ff6600;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+/* ============================================
+   Error Message Section (Line 23)
+   ============================================ */
+
+.errorSection {
+  margin-bottom: 16px;
+  min-height: 28px;
+}
+
+.errorMessage {
+  color: #ff0000;
+  font-size: 13px;
+  font-weight: bold;
+  padding: 8px 12px;
+  background-color: #1a0000;
+  border: 1px solid #ff0000;
+  border-radius: 4px;
+  animation: flashError 0.5s ease-in-out;
+}
+
+@keyframes flashError {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.errorMessageHidden {
+  display: none;
+}
+
+/* ============================================
+   Footer / Function Keys (Line 24)
+   ============================================ */
+
+.footer {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #808080;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.functionKeys {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.functionKey {
+  color: #ffff00;
+  font-size: 12px;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.functionKey span {
+  color: #ffffff;
+  margin-left: 4px;
+}
+
+/* ============================================
+   Action Buttons
+   ============================================ */
+
+.actionButtons {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.button {
+  padding: 10px 20px;
+  font-family: 'Courier New', 'Lucida Console', monospace;
+  font-size: 14px;
+  font-weight: bold;
+  border: 2px solid;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.primaryButton {
+  composes: button;
+  background-color: #00ff00;
+  border-color: #00ff00;
+  color: #000000;
+}
+
+.primaryButton:hover:not(:disabled) {
+  background-color: #00ffff;
+  border-color: #00ffff;
+  box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+}
+
+.secondaryButton {
+  composes: button;
+  background-color: transparent;
+  border-color: #0066ff;
+  color: #0066ff;
+}
+
+.secondaryButton:hover:not(:disabled) {
+  background-color: #0066ff;
+  color: #ffffff;
+  box-shadow: 0 0 10px rgba(0, 102, 255, 0.5);
+}
+
+.clearButton {
+  composes: button;
+  background-color: transparent;
+  border-color: #ffff00;
+  color: #ffff00;
+}
+
+.clearButton:hover:not(:disabled) {
+  background-color: #ffff00;
+  color: #000000;
+  box-shadow: 0 0 10px rgba(255, 255, 0, 0.5);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: grayscale(50%);
+}
+
+/* ============================================
+   Loading State
+   ============================================ */
+
+.loadingOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.8);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.loadingSpinner {
+  border: 4px solid #0066ff;
+  border-top: 4px solid #00ffff;
+  border-radius: 50%;
+  width: 60px;
+  height: 60px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.loadingText {
+  color: #00ffff;
+  font-size: 16px;
+  margin-top: 16px;
+  text-align: center;
+}
+
+/* ============================================
+   Responsive Design
+   ============================================ */
+
+@media (max-width: 768px) {
+  .container {
+    padding: 12px;
+  }
+
+  .formWrapper {
+    padding: 16px;
+  }
+
+  .header {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .headerRight {
+    align-items: flex-start;
+  }
+
+  .accountCardSection {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .fieldGroup {
+    width: 100%;
+  }
+
+  .orSeparator {
+    text-align: center;
+    padding: 8px 0;
+  }
+
+  .detailsRow,
+  .amountDateRow,
+  .merchantRow {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .cardNumberInput,
+  .accountIdInput,
+  .merchantNameInput,
+  .merchantCityInput,
+  .descriptionInput {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .confirmationSection {
+    flex-direction: column;
+    gap: 12px;
+    align-items: stretch;
+  }
+
+  .confirmationPrompt {
+    text-align: center;
+  }
+
+  .confirmationInputGroup {
+    justify-content: center;
+  }
+
+  .footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .functionKeys,
+  .actionButtons {
+    justify-content: center;
+  }
+}
+
+@media (max-width: 480px) {
+  .pageTitleText {
+    font-size: 16px;
+    letter-spacing: 1px;
+  }
+
+  .fieldLabel {
+    font-size: 12px;
+  }
+
+  .inputField {
+    font-size: 13px;
+  }
+
+  .button {
+    width: 100%;
+    padding: 12px 16px;
+  }
+
+  .actionButtons {
+    width: 100%;
+  }
+}
+
+/* ============================================
+   Accessibility Enhancements
+   ============================================ */
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+.inputField:focus-visible {
+  outline: 2px solid #00ffff;
+  outline-offset: 2px;
+}
+
+.button:focus-visible {
+  outline: 3px solid #00ffff;
+  outline-offset: 3px;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .container {
+    border: 2px solid currentColor;
+  }
+
+  .inputField {
+    border-bottom-width: 3px;
+  }
+
+  .button {
+    border-width: 3px;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Print styles */
+@media print {
+  .container {
+    background-color: white;
+    color: black;
+  }
+
+  .button,
+  .footer,
+  .loadingOverlay {
+    display: none;
+  }
+
+  .inputField {
+    border-bottom: 1px solid black;
+    color: black;
+  }
+}

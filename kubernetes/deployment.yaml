@@ -1,0 +1,208 @@
+# Kubernetes Deployment manifest for CardDemo Spring Boot application
+# Replaces mainframe CICS region configuration and workload management
+# Provides high availability with 3 replicas supporting 150+ concurrent users
+# Resource management ensures predictable performance equivalent to mainframe workload controls
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: carddemo-app
+  namespace: carddemo
+  labels:
+    app: carddemo
+    component: backend
+    version: v1
+    tier: application
+  annotations:
+    description: "CardDemo credit card management application backend"
+    deployment.kubernetes.io/revision: "1"
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/actuator/prometheus"
+spec:
+  # High availability configuration - 3 replicas for load distribution
+  # Supports minimum 150 concurrent users with horizontal scaling capability
+  replicas: 3
+  
+  # Selector to match pod template labels
+  selector:
+    matchLabels:
+      app: carddemo
+      component: backend
+      version: v1
+  
+  # Rolling update strategy for zero-downtime deployments
+  # Ensures at least one pod always available during updates
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1           # Maximum 1 extra pod during rolling update
+      maxUnavailable: 0     # No pods can be unavailable during update (zero-downtime)
+  
+  # Minimum time for which a newly created pod should be ready
+  minReadySeconds: 10
+  
+  # Number of old ReplicaSets to retain for rollback capability
+  revisionHistoryLimit: 10
+  
+  # Pod template specification
+  template:
+    metadata:
+      labels:
+        app: carddemo
+        component: backend
+        version: v1
+        tier: application
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      # Service account for pod identity and RBAC
+      serviceAccountName: default
+      
+      # Security context for the entire pod
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      
+      # Container specification
+      containers:
+      - name: carddemo-spring
+        image: carddemo-spring:1.0.0
+        imagePullPolicy: IfNotPresent
+        
+        # Container port exposure
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        # Environment variables from ConfigMap (non-sensitive configuration)
+        envFrom:
+        - configMapRef:
+            name: carddemo-config
+        
+        # Environment variables from Secret (sensitive data)
+        env:
+        - name: DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: carddemo-secrets
+              key: db-username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: carddemo-secrets
+              key: db-password
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: carddemo-secrets
+              key: jwt-secret
+        - name: SPRING_PROFILES_ACTIVE
+          value: "prod"
+        - name: JAVA_OPTS
+          value: "-Xms512m -Xmx768m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+        
+        # Resource limits and requests for predictable performance
+        # Limits prevent resource overconsumption
+        # Requests ensure guaranteed resources for scheduling
+        resources:
+          limits:
+            cpu: "1"          # Maximum 1 CPU core per pod
+            memory: "1Gi"     # Maximum 1 GiB memory per pod
+          requests:
+            cpu: "500m"       # Guaranteed 500 millicores (0.5 CPU)
+            memory: "512Mi"   # Guaranteed 512 MiB memory
+        
+        # Liveness probe - checks if container is alive
+        # Kubernetes restarts container if liveness probe fails
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 60    # Wait 60s after container start before first probe
+          periodSeconds: 30          # Check every 30 seconds
+          timeoutSeconds: 5          # Probe timeout after 5 seconds
+          successThreshold: 1        # Consider healthy after 1 successful probe
+          failureThreshold: 3        # Restart container after 3 consecutive failures
+        
+        # Readiness probe - checks if container is ready to accept traffic
+        # Kubernetes routes traffic only to ready pods
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30    # Wait 30s after container start before first probe
+          periodSeconds: 10          # Check every 10 seconds
+          timeoutSeconds: 3          # Probe timeout after 3 seconds
+          successThreshold: 1        # Consider ready after 1 successful probe
+          failureThreshold: 3        # Remove from service after 3 consecutive failures
+        
+        # Startup probe - protects slow starting containers
+        # Useful for Spring Boot applications with longer initialization
+        startupProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 0
+          periodSeconds: 10
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 12       # Allow up to 120 seconds for startup (12 * 10s)
+        
+        # Container security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false  # Spring Boot requires writable temp directory
+          runAsNonRoot: true
+          runAsUser: 1001
+        
+        # Volume mounts for temporary storage
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: logs
+          mountPath: /var/log/carddemo
+      
+      # Volumes for pod
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: logs
+        emptyDir: {}
+      
+      # DNS policy for service discovery
+      dnsPolicy: ClusterFirst
+      
+      # Restart policy
+      restartPolicy: Always
+      
+      # Termination grace period for graceful shutdown
+      terminationGracePeriodSeconds: 30
+      
+      # Affinity rules for pod distribution across nodes
+      affinity:
+        # Pod anti-affinity to distribute replicas across different nodes
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - carddemo
+              topologyKey: kubernetes.io/hostname

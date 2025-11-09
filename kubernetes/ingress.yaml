@@ -1,0 +1,224 @@
+---
+# Kubernetes Ingress Resource for CardDemo Application
+# 
+# Purpose: Provides external HTTPS access to the CardDemo Spring Boot application
+# with TLS termination, path-based routing, and load balancing capabilities.
+# 
+# This Ingress replaces the mainframe CICS Web Support (CWS) and HTTP gateway,
+# providing cloud-native external access with modern SSL/TLS security and
+# intelligent routing to the carddemo-service backend.
+#
+# Key Features:
+# - HTTPS-only access with automatic SSL redirect
+# - TLS certificate management via cert-manager
+# - Path-based routing for root (/) and API paths (/api/*)
+# - NGINX ingress controller with optimized timeout and body size settings
+# - Session affinity support for stateful applications
+# - Load balancing across multiple backend pods
+#
+# Environment Configuration:
+# - Development: Use self-signed certificates or cert-manager staging
+# - Production: Use Let's Encrypt production or enterprise CA certificates
+# - Host DNS must point to ingress controller external IP/load balancer
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: carddemo-ingress
+  namespace: carddemo
+  labels:
+    app: carddemo
+    component: ingress
+    environment: production
+    version: v1
+  annotations:
+    # Ingress class specification for NGINX controller
+    kubernetes.io/ingress.class: nginx
+    
+    # Force HTTPS - redirect all HTTP requests to HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    
+    # Proxy body size limit (10MB) for file uploads and large payloads
+    # Accommodates transaction batch uploads and report generation
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    
+    # Connection timeout settings (60 seconds)
+    # Aligned with Spring Boot transaction processing requirements
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    
+    # Certificate management via cert-manager
+    # For production: use letsencrypt-prod cluster issuer
+    # For development: use letsencrypt-staging or self-signed issuer
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    
+    # Additional NGINX optimizations for CardDemo application
+    # Enable CORS for frontend-backend communication
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+    
+    # Session affinity to maintain consistent routing for stateful sessions
+    # Important for Redis-backed HTTP sessions
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "carddemo-session"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "10800"
+    
+    # Rate limiting to protect against abuse (optional, adjust as needed)
+    # nginx.ingress.kubernetes.io/limit-rps: "100"
+    
+    # Ingress metadata
+    description: "CardDemo Application External Access Point"
+    owner: "platform-team"
+    maintained-by: "kubernetes-admin"
+
+spec:
+  # Specify NGINX ingress class explicitly
+  ingressClassName: nginx
+  
+  # TLS configuration for HTTPS termination
+  tls:
+    - hosts:
+        # Primary application host - update for your environment
+        # Development: carddemo-dev.example.com
+        # Staging: carddemo-staging.example.com
+        # Production: carddemo.example.com or carddemo.yourdomain.com
+        - carddemo.example.com
+      # Secret containing TLS certificate and private key
+      # Generated automatically by cert-manager or manually created
+      # For manual creation: kubectl create secret tls carddemo-tls-cert \
+      #   --cert=path/to/cert.pem --key=path/to/key.pem -n carddemo
+      secretName: carddemo-tls-cert
+  
+  # Routing rules
+  rules:
+    # Rule for primary host
+    - host: carddemo.example.com
+      http:
+        paths:
+          # Root path - serves React frontend application
+          # Matches: /, /login, /menu, /accounts, etc.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: carddemo-service
+                port:
+                  number: 80
+          
+          # API path - REST API endpoints
+          # Matches: /api/auth/login, /api/accounts, /api/cards, etc.
+          # Explicitly defined for clarity and potential future routing policies
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: carddemo-service
+                port:
+                  number: 80
+          
+          # Actuator endpoints for health checks and monitoring
+          # Matches: /actuator/health, /actuator/info, /actuator/metrics
+          - path: /actuator
+            pathType: Prefix
+            backend:
+              service:
+                name: carddemo-service
+                port:
+                  number: 80
+
+---
+# Alternative Configuration for Multi-Environment Setup
+# Uncomment and modify the following section for development/staging environments
+#
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: carddemo-ingress-dev
+#   namespace: carddemo
+#   labels:
+#     app: carddemo
+#     component: ingress
+#     environment: development
+#   annotations:
+#     kubernetes.io/ingress.class: nginx
+#     nginx.ingress.kubernetes.io/ssl-redirect: "false"  # Allow HTTP in dev
+#     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+#     cert-manager.io/cluster-issuer: "letsencrypt-staging"  # Use staging for dev
+# spec:
+#   ingressClassName: nginx
+#   tls:
+#     - hosts:
+#         - carddemo-dev.example.com
+#       secretName: carddemo-tls-cert-dev
+#   rules:
+#     - host: carddemo-dev.example.com
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: carddemo-service
+#                 port:
+#                   number: 80
+
+---
+# Ingress Deployment Notes
+#
+# Prerequisites:
+# 1. NGINX Ingress Controller must be installed in the cluster
+#    Install: kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/cloud/deploy.yaml
+#
+# 2. cert-manager must be installed for automatic TLS certificate management
+#    Install: kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.0/cert-manager.yaml
+#
+# 3. DNS Configuration:
+#    - Create A record pointing carddemo.example.com to Ingress Controller LoadBalancer IP
+#    - Verify DNS propagation: nslookup carddemo.example.com
+#
+# 4. TLS Secret (if not using cert-manager):
+#    kubectl create secret tls carddemo-tls-cert \
+#      --cert=carddemo.crt --key=carddemo.key \
+#      --namespace=carddemo
+#
+# Deployment Commands:
+# 1. Apply the Ingress:
+#    kubectl apply -f kubernetes/ingress.yaml
+#
+# 2. Verify Ingress creation:
+#    kubectl get ingress -n carddemo
+#    kubectl describe ingress carddemo-ingress -n carddemo
+#
+# 3. Check NGINX Ingress Controller logs:
+#    kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx
+#
+# 4. Verify certificate issuance (if using cert-manager):
+#    kubectl get certificate -n carddemo
+#    kubectl describe certificate carddemo-tls-cert -n carddemo
+#
+# 5. Test external access:
+#    curl -k https://carddemo.example.com/actuator/health
+#    curl -k https://carddemo.example.com/api/menu
+#
+# Troubleshooting:
+# - If 404 errors occur, verify service and pods are running
+# - If certificate errors occur, check cert-manager logs and certificate status
+# - If timeout errors occur, adjust proxy timeout annotations
+# - If CORS errors occur from frontend, verify CORS annotations
+#
+# Maintenance Equivalence:
+# This Ingress replaces the following mainframe components:
+# - CICS Web Support (CWS) for HTTP/HTTPS protocol handling
+# - CICS HTTP gateway for external access
+# - VTAM terminal connection routing (modernized to HTTP routing)
+# - Transaction load distribution across CICS regions (now pod-based load balancing)
+#
+# Performance Considerations:
+# - NGINX Ingress Controller provides sub-millisecond routing latency
+# - SSL/TLS termination at ingress reduces backend processing overhead
+# - Session affinity ensures consistent user experience across pod restarts
+# - Rate limiting protects against abuse and ensures fair resource usage
+# - Supports 10,000+ TPS requirement with proper NGINX tuning and pod scaling
