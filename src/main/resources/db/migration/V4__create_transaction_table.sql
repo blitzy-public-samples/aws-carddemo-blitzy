@@ -160,13 +160,7 @@ CREATE INDEX idx_transaction_category_code
 -- Table Comment
 -- =============================================================================
 
-COMMENT ON TABLE transaction IS 
-'Transaction master table transformed from COBOL copybook CVTRA05Y.cpy (RECLN=350 bytes). ' ||
-'Stores all credit card transaction records with merchant details, amounts, and timestamps. ' ||
-'Foreign key to card table maintains referential integrity replacing VSAM XREF cross-reference. ' ||
-'Indexed for efficient transaction history queries and date-range pagination (10 transactions per page). ' ||
-'Amount field uses NUMERIC(11,2) for exact precision matching COBOL S9(09)V99 with BigDecimal semantics. ' ||
-'Timestamps use TIMESTAMP(6) microsecond precision matching COBOL 26-character format requiring DateUtility.java Lillian conversion.';
+COMMENT ON TABLE transaction IS 'Transaction master table transformed from COBOL copybook CVTRA05Y.cpy (RECLN=350 bytes). Stores all credit card transaction records with merchant details, amounts, and timestamps. Foreign key to card table maintains referential integrity replacing VSAM XREF cross-reference. Indexed for efficient transaction history queries and date-range pagination (10 transactions per page). Amount field uses NUMERIC(11,2) for exact precision matching COBOL S9(09)V99 with BigDecimal semantics. Timestamps use TIMESTAMP(6) microsecond precision matching COBOL 26-character format requiring DateUtility.java Lillian conversion.';
 
 -- =============================================================================
 -- Column Comments
@@ -187,10 +181,7 @@ COMMENT ON COLUMN transaction.source IS
 COMMENT ON COLUMN transaction.description IS 
 'Transaction description text. Maps from COBOL TRAN-DESC PIC X(100).';
 
-COMMENT ON COLUMN transaction.amount IS 
-'Transaction amount with exact 2 decimal precision. Maps from COBOL TRAN-AMT PIC S9(09)V99. ' ||
-'NUMERIC(11,2) ensures exact monetary precision matching Java BigDecimal with RoundingMode.HALF_UP. ' ||
-'Signed field supports negative amounts for reversals and refunds. Valid range: -999999999.99 to +999999999.99.';
+COMMENT ON COLUMN transaction.amount IS 'Transaction amount with exact 2 decimal precision. Maps from COBOL TRAN-AMT PIC S9(09)V99. NUMERIC(11,2) ensures exact monetary precision matching Java BigDecimal with RoundingMode.HALF_UP. Signed field supports negative amounts for reversals and refunds. Valid range: -999999999.99 to +999999999.99.';
 
 COMMENT ON COLUMN transaction.merchant_id IS 
 'Merchant identifier (9-digit numeric). Maps from COBOL TRAN-MERCHANT-ID PIC 9(09).';
@@ -204,24 +195,13 @@ COMMENT ON COLUMN transaction.merchant_city IS
 COMMENT ON COLUMN transaction.merchant_postal_code IS 
 'Merchant postal/ZIP code. Maps from COBOL TRAN-MERCHANT-ZIP PIC X(10).';
 
-COMMENT ON COLUMN transaction.card_number IS 
-'Card number reference. Maps from COBOL TRAN-CARD-NUM PIC X(16). ' ||
-'Foreign key to card(card_number) with CASCADE delete. ' ||
-'Enforces referential integrity replacing VSAM XREF cross-reference files.';
+COMMENT ON COLUMN transaction.card_number IS 'Card number reference. Maps from COBOL TRAN-CARD-NUM PIC X(16). Foreign key to card(card_number) with CASCADE delete. Enforces referential integrity replacing VSAM XREF cross-reference files.';
 
-COMMENT ON COLUMN transaction.original_timestamp IS 
-'Original transaction timestamp with microsecond precision. Maps from COBOL TRAN-ORIG-TS PIC X(26). ' ||
-'TIMESTAMP(6) provides 6 fractional seconds matching COBOL 26-character timestamp format. ' ||
-'Requires DateUtility.java conversion from Lillian format to LocalDateTime.';
+COMMENT ON COLUMN transaction.original_timestamp IS 'Original transaction timestamp with microsecond precision. Maps from COBOL TRAN-ORIG-TS PIC X(26). TIMESTAMP(6) provides 6 fractional seconds matching COBOL 26-character timestamp format. Requires DateUtility.java conversion from Lillian format to LocalDateTime.';
 
-COMMENT ON COLUMN transaction.processed_timestamp IS 
-'Transaction processing timestamp with microsecond precision. Maps from COBOL TRAN-PROC-TS PIC X(26). ' ||
-'TIMESTAMP(6) provides 6 fractional seconds. ' ||
-'Set by DailyTransactionProcessingJob.java when transaction is posted.';
+COMMENT ON COLUMN transaction.processed_timestamp IS 'Transaction processing timestamp with microsecond precision. Maps from COBOL TRAN-PROC-TS PIC X(26). TIMESTAMP(6) provides 6 fractional seconds. Set by DailyTransactionProcessingJob.java when transaction is posted.';
 
-COMMENT ON COLUMN transaction.created_at IS 
-'Audit trail timestamp. Automatically set to current timestamp on record creation. ' ||
-'Added for cloud-native audit requirements beyond original COBOL structure.';
+COMMENT ON COLUMN transaction.created_at IS 'Audit trail timestamp. Automatically set to current timestamp on record creation. Added for cloud-native audit requirements beyond original COBOL structure.';
 
 -- =============================================================================
 -- End of Migration

@@ -64,7 +64,7 @@
         <mapstruct.version>1.5.5.Final</mapstruct.version>
 
         <!-- Database Migration -->
-        <flyway.version>10.3.0</flyway.version>
+        <flyway.version>10.18.2</flyway.version>
 
         <!-- API Documentation -->
         <springdoc.version>2.3.0</springdoc.version>
@@ -168,6 +168,14 @@
             <artifactId>flyway-core</artifactId>
             <version>${flyway.version}</version>
             <!-- Manages database schema evolution with versioned migration scripts -->
+        </dependency>
+
+        <!-- Flyway PostgreSQL Support Module - Required for Flyway 10+ -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <version>${flyway.version}</version>
+            <!-- PostgreSQL-specific database support for Flyway migrations -->
         </dependency>
 
         <!-- H2 Database - In-memory database for testing -->

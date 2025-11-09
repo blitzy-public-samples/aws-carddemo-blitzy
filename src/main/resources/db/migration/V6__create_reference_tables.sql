@@ -112,7 +112,7 @@ CREATE TABLE transaction_category (
 CREATE INDEX idx_transaction_category_description ON transaction_category(description);
 
 -- Create index for category_code lookups within types
-CREATE INDEX idx_transaction_category_code ON transaction_category(type_code, category_code);
+CREATE INDEX idx_trans_cat_type_category_code ON transaction_category(type_code, category_code);
 
 -- Add table comment
 COMMENT ON TABLE transaction_category IS 

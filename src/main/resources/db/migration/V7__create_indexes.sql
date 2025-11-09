@@ -171,7 +171,7 @@ COMMENT ON INDEX idx_transaction_card_date IS
 -- Purpose: Support transaction queries filtered by amount ranges
 -- Usage: Fraud detection queries finding transactions above threshold amounts
 CREATE INDEX IF NOT EXISTS idx_transaction_amount 
-    ON transaction(transaction_amount);
+    ON transaction(amount);
 
 COMMENT ON INDEX idx_transaction_amount IS 
     'Performance index: Supports transaction queries filtering by amount ranges for fraud detection and reporting.';

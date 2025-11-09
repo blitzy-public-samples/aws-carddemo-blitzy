@@ -393,11 +393,11 @@ VALUES ('ZEROAPR', '07', 1, 0.00);
 
 -- Source: custdata.txt line 1 - Customer ID 1
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (1, 'Immanuel', 'Madeline', 'Kessler', '618 Deshaun Route', 'Apt. 802', 'Altenwerthshire', 'NC', 'USA', '12546', '(908)119-8310', '(373)693-8684', 20973888, '00000000000493684371', '1961-06-08', '0053581756', 'Y', 274);
+VALUES (1, 'Immanuel', 'Madeline', 'Kessler', '618 Deshaun Route', 'Apt. 802', 'Altenwerthshire', 'NC', 'USA', '12546', '(908)119-8310', '(373)693-8684', 20973888, '00000000000493684371', '1961-06-08', '0053581756', 'Y', 574);
 
 -- Source: custdata.txt line 2 - Customer ID 2
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (2, 'Enrico', 'April', 'Rosenbaum', '4917 Myrna Flats', 'Apt. 453', 'West Bernita', 'IN', 'USA', '22770', '(429)706-9510', '(744)950-5272', 587518382, '00000000005062103711', '1961-10-08', '0069194009', 'Y', 268);
+VALUES (2, 'Enrico', 'April', 'Rosenbaum', '4917 Myrna Flats', 'Apt. 453', 'West Bernita', 'IN', 'USA', '22770', '(429)706-9510', '(744)950-5272', 587518382, '00000000005062103711', '1961-10-08', '0069194009', 'Y', 568);
 
 -- Source: custdata.txt line 3 - Customer ID 3
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
@@ -421,7 +421,7 @@ VALUES (7, 'Cooper', 'Dennis', 'Mayert', '6490 Zakary Locks', 'Apt. 765', 'Madie
 
 -- Source: custdata.txt line 8 - Customer ID 8
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (8, 'Kelsie', 'Jordyn', 'Dicki', '0925 Welch Streets', 'Apt. 152', 'North Nanniestad', 'SC', 'USA', '27610', '(345)563-7159', '(443)197-1271', 295270759, '00000000001097469911', '1964-03-25', '0033132723', 'Y', 51);
+VALUES (8, 'Kelsie', 'Jordyn', 'Dicki', '0925 Welch Streets', 'Apt. 152', 'North Nanniestad', 'SC', 'USA', '27610', '(345)563-7159', '(443)197-1271', 295270759, '00000000001097469911', '1964-03-25', '0033132723', 'Y', 351);
 
 -- Source: custdata.txt line 9 - Customer ID 9
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
@@ -433,7 +433,7 @@ VALUES (10, 'Maybell', 'Creola', 'Mann', '77933 Adah Dale', 'Suite 343', 'Anders
 
 -- Source: custdata.txt line 11 - Customer ID 11
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (11, 'Hayden', 'Ressie', 'Pfannerstill', '14895 Everette Ridges', 'Apt. 443', 'Julianneburgh', 'WA', 'USA', '24984', '(002)533-6980', '(553)586-7718', 493538586, '00000000001111908551', '1986-11-03', '0002650577', 'Y', 209);
+VALUES (11, 'Hayden', 'Ressie', 'Pfannerstill', '14895 Everette Ridges', 'Apt. 443', 'Julianneburgh', 'WA', 'USA', '24984', '(002)533-6980', '(553)586-7718', 493538586, '00000000001111908551', '1986-11-03', '0002650577', 'Y', 509);
 
 -- Source: custdata.txt line 12 - Customer ID 12
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
@@ -441,11 +441,11 @@ VALUES (12, 'Maci', 'Alan', 'Robel', '80501 Isac Cliffs', 'Suite 623', 'Predovic
 
 -- Source: custdata.txt line 13 - Customer ID 13
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (13, 'Mariane', 'Oma', 'Fadel', '2689 Derick Mission', 'Suite 055', 'Bruenfurt', 'OR', 'USA', '02322', '(875)943-7287', '(075)550-6435', 757924569, '00000000001813772201', '1999-03-09', '0044807431', 'Y', 53);
+VALUES (13, 'Mariane', 'Oma', 'Fadel', '2689 Derick Mission', 'Suite 055', 'Bruenfurt', 'OR', 'USA', '02322', '(875)943-7287', '(075)550-6435', 757924569, '00000000001813772201', '1999-03-09', '0044807431', 'Y', 353);
 
 -- Source: custdata.txt line 14 - Customer ID 14
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (14, 'Chelsea', 'Ignacio', 'Marks', '747 Dino Lodge', 'Apt. 850', 'West Chase', 'RI', 'USA', '12914-8465', '(141)807-6571', '(284)088-9052', 655128548, '00000000005259552221', '1974-11-29', '0048306401', 'Y', 243);
+VALUES (14, 'Chelsea', 'Ignacio', 'Marks', '747 Dino Lodge', 'Apt. 850', 'West Chase', 'RI', 'USA', '12914-8465', '(141)807-6571', '(284)088-9052', 655128548, '00000000005259552221', '1974-11-29', '0048306401', 'Y', 543);
 
 -- Source: custdata.txt line 15 - Customer ID 15
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
@@ -457,7 +457,7 @@ VALUES (16, 'Carroll', 'Cicero', 'Bergstrom', '06988 Thiel Falls', 'Suite 148', 
 
 -- Source: custdata.txt line 17 - Customer ID 17
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (17, 'Sigrid', 'Angeline', 'Mann', '95666 Dare Isle', 'Suite 286', 'New Presley', 'FM', 'USA', '56181-0584', '(087)314-2070', '(541)003-6606', 303334693, '00000000004976063571', '1979-01-26', '0052356071', 'Y', 54);
+VALUES (17, 'Sigrid', 'Angeline', 'Mann', '95666 Dare Isle', 'Suite 286', 'New Presley', 'FM', 'USA', '56181-0584', '(087)314-2070', '(541)003-6606', 303334693, '00000000004976063571', '1979-01-26', '0052356071', 'Y', 354);
 
 -- Source: custdata.txt line 18 - Customer ID 18
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
@@ -465,7 +465,7 @@ VALUES (18, 'Emile', 'Jairo', 'White', '133 Bergnaum Square', 'Apt. 328', 'Hanse
 
 -- Source: custdata.txt line 19 - Customer ID 19
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (19, 'Hadley', 'Sigrid', 'Hamill', '6273 Ondricka Meadows', 'Apt. 130', 'New Arturoshire', 'RI', 'USA', '48161', '(817)452-4986', '(724)901-6019', 439569907, '00000000002701763871', '1991-01-07', '0036492057', 'Y', 259);
+VALUES (19, 'Hadley', 'Sigrid', 'Hamill', '6273 Ondricka Meadows', 'Apt. 130', 'New Arturoshire', 'RI', 'USA', '48161', '(817)452-4986', '(724)901-6019', 439569907, '00000000002701763871', '1991-01-07', '0036492057', 'Y', 559);
 
 -- Source: custdata.txt line 20 - Customer ID 20
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
@@ -473,7 +473,7 @@ VALUES (20, 'Carter', 'Oren', 'Veum', '5845 Allison Valleys', 'Suite 934', 'Mitc
 
 -- Source: custdata.txt line 21 - Customer ID 21
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (21, 'Jerrold', 'Adolphus', 'Maggio', '401 Haylie Crest', 'Apt. 320', 'North Myrnaton', 'CA', 'USA', '72407', '(399)526-3254', '(326)193-1118', 336490822, '00000000000276562601', '1977-11-15', '0011744660', 'Y', 163);
+VALUES (21, 'Jerrold', 'Adolphus', 'Maggio', '401 Haylie Crest', 'Apt. 320', 'North Myrnaton', 'CA', 'USA', '72407', '(399)526-3254', '(326)193-1118', 336490822, '00000000000276562601', '1977-11-15', '0011744660', 'Y', 463);
 
 -- Source: custdata.txt line 22 - Customer ID 22
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
@@ -493,15 +493,15 @@ VALUES (25, 'Elliott', 'Fermin', 'Howell', '9524 McKenzie Lakes', 'Suite 245', '
 
 -- Source: custdata.txt line 26 - Customer ID 26
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (26, 'Marjory', 'Damien', 'Stracke', '30161 Bogan Canyon', 'Suite 916', 'Walshberg', 'IL', 'USA', '59945', '(584)772-2867', '(819)733-9809', 840478806, '00000000009474116261', '1990-03-17', '0060808858', 'Y', 1);
+VALUES (26, 'Marjory', 'Damien', 'Stracke', '30161 Bogan Canyon', 'Suite 916', 'Walshberg', 'IL', 'USA', '59945', '(584)772-2867', '(819)733-9809', 840478806, '00000000009474116261', '1990-03-17', '0060808858', 'Y', 301);
 
 -- Source: custdata.txt line 27 - Customer ID 27
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (27, 'Ward', 'Henri', 'Jones', '210 Amaya Turnpike', 'Suite 180', 'Port Dwight', 'GU', 'USA', '07923-8822', '(935)027-1145', '(103)537-5007', 980161210, '00000000008815587571', '1986-11-08', '0050024139', 'Y', 78);
+VALUES (27, 'Ward', 'Henri', 'Jones', '210 Amaya Turnpike', 'Suite 180', 'Port Dwight', 'GU', 'USA', '07923-8822', '(935)027-1145', '(103)537-5007', 980161210, '00000000008815587571', '1986-11-08', '0050024139', 'Y', 378);
 
 -- Source: custdata.txt line 28 - Customer ID 28
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (28, 'Hester', 'Vesta', 'Hane', '06816 Ursula Meadows', 'Suite 605', 'South Aurore', 'AS', 'USA', '77442-7954', '(122)357-7257', '(050)352-6579', 677986013, '00000000005141877961', '1991-06-05', '0026946180', 'Y', 114);
+VALUES (28, 'Hester', 'Vesta', 'Hane', '06816 Ursula Meadows', 'Suite 605', 'South Aurore', 'AS', 'USA', '77442-7954', '(122)357-7257', '(050)352-6579', 677986013, '00000000005141877961', '1991-06-05', '0026946180', 'Y', 414);
 
 -- Source: custdata.txt line 29 - Customer ID 29
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
@@ -509,15 +509,15 @@ VALUES (29, 'Rickie', 'Otho', 'Daugherty', '676 Funk Curve', 'Apt. 375', 'Hayess
 
 -- Source: custdata.txt line 30 - Customer ID 30
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (30, 'Layla', 'Dannie', 'Ullrich', '269 Eleazar Circle', 'Apt. 817', 'Kutchland', 'AK', 'USA', '64266', '(330)408-6966', '(413)347-7306', 866102152, '00000000004920216861', '1965-11-28', '0050520060', 'Y', 133);
+VALUES (30, 'Layla', 'Dannie', 'Ullrich', '269 Eleazar Circle', 'Apt. 817', 'Kutchland', 'AK', 'USA', '64266', '(330)408-6966', '(413)347-7306', 866102152, '00000000004920216861', '1965-11-28', '0050520060', 'Y', 433);
 
 -- Source: custdata.txt line 31 - Customer ID 31
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (31, 'Lucious', 'Otto', 'O''Connell', '919 Swift Valleys', 'Suite 548', 'Hermanborough', 'MS', 'USA', '56133-5636', '(259)414-9625', '(118)946-9264', 357462348, '00000000006183105391', '1976-08-03', '0092999757', 'Y', 58);
+VALUES (31, 'Lucious', 'Otto', 'O''Connell', '919 Swift Valleys', 'Suite 548', 'Hermanborough', 'MS', 'USA', '56133-5636', '(259)414-9625', '(118)946-9264', 357462348, '00000000006183105391', '1976-08-03', '0092999757', 'Y', 358);
 
 -- Source: custdata.txt line 32 - Customer ID 32
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (32, 'Stephany', 'Meda', 'Fisher', '63452 Kenny Streets', 'Apt. 116', 'Predovicburgh', 'AK', 'USA', '85943-7605', '(202)436-5156', '(246)296-3533', 146204208, '00000000002062003411', '1980-11-19', '0035970593', 'Y', 221);
+VALUES (32, 'Stephany', 'Meda', 'Fisher', '63452 Kenny Streets', 'Apt. 116', 'Predovicburgh', 'AK', 'USA', '85943-7605', '(202)436-5156', '(246)296-3533', 146204208, '00000000002062003411', '1980-11-19', '0035970593', 'Y', 521);
 
 -- Source: custdata.txt line 33 - Customer ID 33
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
@@ -525,7 +525,7 @@ VALUES (33, 'Bernice', 'Norbert', 'Herman', '877 Kassandra Ranch', 'Suite 956', 
 
 -- Source: custdata.txt line 34 - Customer ID 34
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (34, 'Faustino', 'Jess', 'Schmidt', '44132 Michel Square', 'Suite 007', 'South Margarettaburgh', 'ME', 'USA', '49544-2869', '(179)036-5135', '(986)905-0112', 548088300, '00000000001598825331', '1994-03-21', '0067445089', 'Y', 104);
+VALUES (34, 'Faustino', 'Jess', 'Schmidt', '44132 Michel Square', 'Suite 007', 'South Margarettaburgh', 'ME', 'USA', '49544-2869', '(179)036-5135', '(986)905-0112', 548088300, '00000000001598825331', '1994-03-21', '0067445089', 'Y', 404);
 
 -- Source: custdata.txt line 35 - Customer ID 35
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
@@ -533,7 +533,7 @@ VALUES (35, 'Angelica', 'Damaris', 'Dach', '396 Pearl Loop', 'Suite 383', 'Pfeff
 
 -- Source: custdata.txt line 36 - Customer ID 36
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (36, 'Toney', 'Emerald', 'Gerhold', '35943 Raleigh Harbor', 'Apt. 116', 'Lake Derekburgh', 'AL', 'USA', '10932-0480', '(034)271-9180', '(507)529-4523', 420360688, '00000000009420292101', '1991-03-31', '0066461979', 'Y', 266);
+VALUES (36, 'Toney', 'Emerald', 'Gerhold', '35943 Raleigh Harbor', 'Apt. 116', 'Lake Derekburgh', 'AL', 'USA', '10932-0480', '(034)271-9180', '(507)529-4523', 420360688, '00000000009420292101', '1991-03-31', '0066461979', 'Y', 566);
 
 -- Source: custdata.txt line 37 - Customer ID 37
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
@@ -549,7 +549,7 @@ VALUES (39, 'Aliyah', 'Horace', 'Berge', '5761 Pasquale Trail', 'Apt. 616', 'New
 
 -- Source: custdata.txt line 40 - Customer ID 40
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (40, 'Davon', 'Demond', 'Emmerich', '23499 Beer Views', 'Suite 816', 'Erniechester', 'TX', 'USA', '87156-8689', '(463)762-3017', '(419)414-2177', 54960660, '00000000003983532991', '1992-01-26', '0087069976', 'Y', 284);
+VALUES (40, 'Davon', 'Demond', 'Emmerich', '23499 Beer Views', 'Suite 816', 'Erniechester', 'TX', 'USA', '87156-8689', '(463)762-3017', '(419)414-2177', 54960660, '00000000003983532991', '1992-01-26', '0087069976', 'Y', 584);
 
 -- Source: custdata.txt line 41 - Customer ID 41
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
@@ -557,7 +557,7 @@ VALUES (41, 'Devonte', 'Cristobal', 'Stiedemann', '8968 Howell Ville', 'Apt. 558
 
 -- Source: custdata.txt line 42 - Customer ID 42
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
-VALUES (42, 'Haylie', 'Pearl', 'Weber', '0064 Tremblay Hollow', 'Suite 536', 'Tremblayville', 'MI', 'USA', '67009', '(890)849-9088', '(659)664-6163', 695683876, '00000000006673699471', '1964-11-26', '0063858695', 'Y', 282);
+VALUES (42, 'Haylie', 'Pearl', 'Weber', '0064 Tremblay Hollow', 'Suite 536', 'Tremblayville', 'MI', 'USA', '67009', '(890)849-9088', '(659)664-6163', 695683876, '00000000006673699471', '1964-11-26', '0063858695', 'Y', 582);
 
 -- Source: custdata.txt line 43 - Customer ID 43
 INSERT INTO customer (customer_id, first_name, middle_name, last_name, address_line_1, address_line_2, address_line_3, state_code, country_code, postal_code, phone_number_1, phone_number_2, ssn, government_issued_id, date_of_birth, eft_account_id, primary_cardholder_ind, fico_credit_score)
@@ -822,7 +822,7 @@ VALUES (50, 50, 'Y', 492.00, 6169.00, 4587.00, '2011-04-22', '2023-03-09', '2023
 -- Record Layout:
 --   Pos 1-16:   card_number (PIC X(16))
 --   Pos 17-27:  account_id (PIC 9(11))
---   Pos 28-30:  card_cvv_number (PIC 9(03))
+--   Pos 28-30:  cvv_code (PIC 9(03))
 --   Pos 31-80:  embossed_name (PIC X(50))
 --   Pos 81-90:  expiration_date (PIC X(10))
 --   Pos 91:     active_status (PIC X(01))
@@ -830,204 +830,204 @@ VALUES (50, 50, 'Y', 492.00, 6169.00, 4587.00, '2011-04-22', '2023-03-09', '2023
 -- ======================================================================================
 
 -- Source: carddata.txt line 1 - Card linked to Account 50
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('0500024453765740', 50, '747', 'Aniya Von', '2023-03-09', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('0500024453765740', 50, 'CC', '747', 'Aniya Von', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 2 - Card linked to Account 47
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('0891844358978686', 47, '851', 'Lloyd Wyman', '2025-08-23', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('0891844358978686', 47, 'CC', '851', 'Lloyd Wyman', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 3 - Card linked to Account 1
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('1000160031451623', 1, '045', 'Immanuel Kessler', '2025-05-20', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('1000160031451623', 1, 'CC', '045', 'Immanuel Kessler', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 4 - Card linked to Account 24
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('1021422016718360', 24, '137', 'Emile White', '2023-09-10', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('1021422016718360', 24, 'CC', '137', 'Emile White', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 5 - Card linked to Account 41
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('1109816449453318', 41, '735', 'Ashton Veum', '2023-04-24', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('1109816449453318', 41, 'CC', '735', 'Ashton Veum', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 6 - Card linked to Account 39
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('1326239838990406', 39, '427', 'Lilyan VonRueden', '2025-09-08', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('1326239838990406', 39, 'CC', '427', 'Lilyan VonRueden', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 7 - Card linked to Account 22
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('1477915908267887', 22, '524', 'Jerrold Maggio', '2023-01-06', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('1477915908267887', 22, 'CC', '524', 'Jerrold Maggio', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 8 - Card linked to Account 34
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('1620529177367216', 34, '196', 'Cindy Cremin', '2025-06-20', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('1620529177367216', 34, 'CC', '196', 'Cindy Cremin', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 9 - Card linked to Account 37
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('1667831225871288', 37, '166', 'Madge Schumm', '2023-10-24', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('1667831225871288', 37, 'CC', '166', 'Madge Schumm', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 10 - Card linked to Account 44
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('1676396441356499', 44, '955', 'Chelsea Marks', '2025-12-11', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('1676396441356499', 44, 'CC', '955', 'Chelsea Marks', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 11 - Card linked to Account 11
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('1742468614095756', 11, '892', 'Hayden Pfannerstill', '2025-03-12', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('1742468614095756', 11, 'CC', '892', 'Hayden Pfannerstill', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 12 - Card linked to Account 12
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('1824764454428931', 12, '230', 'Kelsie Dicki', '2024-05-20', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('1824764454428931', 12, 'CC', '230', 'Kelsie Dicki', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 13 - Card linked to Account 4
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('1855677187479162', 4, '425', 'Melvin Ondricka', '2024-12-27', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('1855677187479162', 4, 'CC', '425', 'Melvin Ondricka', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 14 - Card linked to Account 10
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('2207062283169364', 10, '027', 'Keven Bergnaum', '2023-01-27', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('2207062283169364', 10, 'CC', '027', 'Keven Bergnaum', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 15 - Card linked to Account 35
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('2273154038363546', 35, '401', 'Britney Waters', '2025-08-29', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('2273154038363546', 35, 'CC', '401', 'Britney Waters', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 16 - Card linked to Account 19
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('2328179898261054', 19, '708', 'Angela Ankunding', '2023-07-23', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('2328179898261054', 19, 'CC', '708', 'Angela Ankunding', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 17 - Card linked to Account 13
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('2353925333950767', 13, '735', 'Aubree Hermann', '2025-06-09', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('2353925333950767', 13, 'CC', '735', 'Aubree Hermann', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 18 - Card linked to Account 36
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('2489154384768292', 36, '839', 'April Barrows', '2024-12-23', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('2489154384768292', 36, 'CC', '839', 'April Barrows', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 19 - Card linked to Account 20
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('2620467994493093', 20, '230', 'Layla Ullrich', '2024-06-27', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('2620467994493093', 20, 'CC', '230', 'Layla Ullrich', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 20 - Card linked to Account 5
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('3559483826562509', 5, '027', 'Treva Schowalter', '2025-03-09', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('3559483826562509', 5, 'CC', '027', 'Treva Schowalter', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 21 - Card linked to Account 7
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('4859452612877065', 7, '321', 'Cooper Mayert', '2024-12-13', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('4859452612877065', 7, 'CC', '321', 'Cooper Mayert', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 22 - Card linked to Account 21
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('5407099850479866', 21, '524', 'Jerrold Maggio', '2023-01-06', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('5407099850479866', 21, 'CC', '524', 'Jerrold Maggio', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 23 - Card linked to Account 46
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('5656830544981216', 46, '196', 'Cindy Cremin', '2025-06-20', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('5656830544981216', 46, 'CC', '196', 'Cindy Cremin', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 24 - Card linked to Account 18
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('5671184478505844', 18, '137', 'Emile White', '2023-09-10', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('5671184478505844', 18, 'CC', '137', 'Emile White', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 25 - Card linked to Account 47
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('5787351228879339', 47, '067', 'Rigoberto Hoeger', '2025-08-23', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('5787351228879339', 47, 'CC', '067', 'Rigoberto Hoeger', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 26 - Card linked to Account 42
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('5975117516616077', 42, '426', 'Heather Nienow', '2025-09-19', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('5975117516616077', 42, 'CC', '426', 'Heather Nienow', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 27 - Card linked to Account 5
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('6009619150674526', 5, '021', 'Treva Schowalter', '2025-03-09', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('6009619150674526', 5, 'CC', '021', 'Treva Schowalter', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 28 - Card linked to Account 15
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('6349250331648509', 15, '735', 'Aubree Hermann', '2025-06-09', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('6349250331648509', 15, 'CC', '735', 'Aubree Hermann', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 29 - Card linked to Account 48
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('6503535181795992', 48, '413', 'Lyric Pacocha', '2025-02-06', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('6503535181795992', 48, 'CC', '413', 'Lyric Pacocha', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 30 - Card linked to Account 30
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('6509230362553816', 30, '236', 'Layla Ullrich', '2024-06-27', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('6509230362553816', 30, 'CC', '236', 'Layla Ullrich', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 31 - Card linked to Account 28
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('6723000463207764', 28, '486', 'Hester Hane', '2024-05-09', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('6723000463207764', 28, 'CC', '486', 'Hester Hane', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 32 - Card linked to Account 16
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('6727055190616014', 16, '641', 'Carroll Bergstrom', '2024-01-25', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('6727055190616014', 16, 'CC', '641', 'Carroll Bergstrom', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 33 - Card linked to Account 33
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('6832676047698087', 33, '983', 'Bernice Herman', '2025-10-07', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('6832676047698087', 33, 'CC', '983', 'Bernice Herman', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 34 - Card linked to Account 31
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('7026637615032277', 31, '920', 'Lucious O''Connell', '2025-06-08', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('7026637615032277', 31, 'CC', '920', 'Lucious O''Connell', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 35 - Card linked to Account 43
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('7058267261837752', 43, '401', 'Britney Waters', '2025-08-29', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('7058267261837752', 43, 'CC', '401', 'Britney Waters', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 36 - Card linked to Account 32
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('7094142751055551', 32, '659', 'Stephany Fisher', '2025-05-19', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('7094142751055551', 32, 'CC', '659', 'Stephany Fisher', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 37 - Card linked to Account 29
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('7251508149188883', 29, '717', 'Rickie Daugherty', '2024-06-04', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('7251508149188883', 29, 'CC', '717', 'Rickie Daugherty', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 38 - Card linked to Account 45
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('7379335634661142', 45, '134', 'Dixie Beier', '2025-07-09', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('7379335634661142', 45, 'CC', '134', 'Dixie Beier', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 39 - Card linked to Account 11
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('7427684863423209', 11, '892', 'Hayden Pfannerstill', '2025-03-12', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('7427684863423209', 11, 'CC', '892', 'Hayden Pfannerstill', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 40 - Card linked to Account 38
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('7443870988897530', 38, '708', 'Angela Ankunding', '2023-07-23', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('7443870988897530', 38, 'CC', '708', 'Angela Ankunding', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 41 - Card linked to Account 26
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('8040580410348680', 26, '971', 'Marjory Stracke', '2024-12-19', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('8040580410348680', 26, 'CC', '971', 'Marjory Stracke', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 42 - Card linked to Account 23
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('8112545834239735', 23, '440', 'Johnson Ruecker', '2025-03-18', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('8112545834239735', 23, 'CC', '440', 'Johnson Ruecker', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 43 - Card linked to Account 49
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('8262593602473076', 49, '457', 'Immanuel Bednar', '2023-09-17', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('8262593602473076', 49, 'CC', '457', 'Immanuel Bednar', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 44 - Card linked to Account 14
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('8517866958206008', 14, '955', 'Chelsea Marks', '2025-12-11', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('8517866958206008', 14, 'CC', '955', 'Chelsea Marks', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 45 - Card linked to Account 8
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('8931369351894783', 8, '230', 'Kelsie Dicki', '2024-05-20', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('8931369351894783', 8, 'CC', '230', 'Kelsie Dicki', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 46 - Card linked to Account 25
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('9056297931664011', 25, '931', 'Elliott Howell', '2025-07-10', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('9056297931664011', 25, 'CC', '931', 'Elliott Howell', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 47 - Card linked to Account 17
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('9349107475869214', 17, '218', 'Sigrid Mann', '2025-03-01', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('9349107475869214', 17, 'CC', '218', 'Sigrid Mann', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 48 - Card linked to Account 9
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('9501733721429893', 9, '725', 'Melvin Ondricka', '2024-12-27', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('9501733721429893', 9, 'CC', '725', 'Melvin Ondricka', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 49 - Card linked to Account 1
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('9680294154603697', 1, '045', 'Immanuel Kessler', '2025-05-20', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('9680294154603697', 1, 'CC', '045', 'Immanuel Kessler', '2028-11-08', 'Y', '2026-11-09');
 
 -- Source: carddata.txt line 50 - Card linked to Account 40
-INSERT INTO card (card_number, account_id, card_cvv_number, embossed_name, expiration_date, active_status)
-VALUES ('9805583408996588', 40, '908', 'Davon Emmerich', '2023-10-27', 'Y');
+INSERT INTO card (card_number, account_id, card_type, cvv_code, embossed_name, expiration_date, active_status, open_date)
+VALUES ('9805583408996588', 40, 'CC', '908', 'Davon Emmerich', '2028-11-08', 'Y', '2026-11-09');
 
 -- ======================================================================================
 -- TRANSACTION DATA (300 records)
@@ -1716,7 +1716,7 @@ VALUES ('0000000573732499', '01', 1, 'POS TERM', 'Purchase at Ortiz, Langworth a
 
 -- Source: dailytran.txt line 181
 INSERT INTO transaction (transaction_id, transaction_type_code, transaction_category_code, source, description, amount, merchant_id, merchant_name, merchant_city, merchant_postal_code, card_number, original_timestamp, processed_timestamp)
-VALUES ('0000000575834812', '01', 1, 'POS TERM', 'Purchase at Ritchie and Sons', 000000689.88, 800000000, 'Ritchie and Sons', 'O'Haraberg', '45500-2911', '7379335634661142', '2022-06-10 19:27:53.000000', NULL);
+VALUES ('0000000575834812', '01', 1, 'POS TERM', 'Purchase at Ritchie and Sons', 000000689.88, 800000000, 'Ritchie and Sons', 'O''Haraberg', '45500-2911', '7379335634661142', '2022-06-10 19:27:53.000000', NULL);
 
 -- Source: dailytran.txt line 182
 -- REMOVED: Transaction for non-existent card 2745303720002090
@@ -2162,203 +2162,203 @@ VALUES ('0000000982241353', '01', 1, 'POS TERM', 'Purchase at Bins, Gorczany and
 -- Found 50 transaction category balance records
 
 -- Source: tcatbal.txt line 1
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000001, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 2
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000002, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 3
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000003, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 4
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000004, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 5
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000005, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 6
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000006, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 7
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000007, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 8
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000008, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 9
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000009, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 10
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000010, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 11
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000011, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 12
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000012, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 13
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000013, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 14
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000014, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 15
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000015, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 16
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000016, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 17
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000017, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 18
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000018, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 19
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000019, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 20
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000020, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 21
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000021, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 22
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000022, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 23
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000023, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 24
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000024, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 25
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000025, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 26
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000026, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 27
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000027, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 28
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000028, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 29
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000029, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 30
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000030, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 31
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000031, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 32
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000032, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 33
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000033, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 34
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000034, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 35
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000035, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 36
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000036, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 37
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000037, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 38
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000038, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 39
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000039, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 40
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000040, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 41
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000041, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 42
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000042, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 43
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000043, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 44
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000044, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 45
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000045, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 46
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000046, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 47
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000047, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 48
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000048, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 49
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000049, '01', 1, 000000000.00);
 
 -- Source: tcatbal.txt line 50
-INSERT INTO transaction_category_balance (account_id, transaction_type_code, transaction_category_code, balance)
+INSERT INTO transaction_category_balance (account_id, type_code, category_code, balance)
 VALUES (00000000050, '01', 1, 000000000.00);
 
 

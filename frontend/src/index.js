@@ -273,7 +273,7 @@ window.addEventListener('unhandledrejection', (event) => {
  * Log application initialization in development mode for debugging purposes.
  * This helps developers verify that the application is starting correctly.
  */
-if (process.env.NODE_ENV === 'development') {
+if (import.meta.env.MODE === 'development') {
   console.log('🚀 CardDemo Application initialized in development mode');
   console.log('📦 React version:', React.version);
   console.log('🎨 Material-UI CssBaseline loaded');

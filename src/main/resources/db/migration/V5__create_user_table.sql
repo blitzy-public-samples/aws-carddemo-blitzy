@@ -141,7 +141,7 @@ INSERT INTO "user" (
     'Administrator',
     -- BCrypt hash for password: CardDemo123!
     -- Generated with BCrypt strength 10
-    '$2a$10$8EhQJz5q7z5Z5Z5Z5Z5Z5.K5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z6',
+    '$2a$10$fJVIIwVAXelgK/Sqrg.v0O8gTWrfGuFxpUXXC3ncBwFyS/L0OAFEi',
     'A',
     CURRENT_TIMESTAMP,
     NULL,
@@ -169,7 +169,7 @@ INSERT INTO "user" (
     'Doe',
     -- BCrypt hash for password: UserPass123!
     -- Generated with BCrypt strength 10
-    '$2a$10$9EhQJz5q7z5Z5Z5Z5Z5Z5.K5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z7',
+    '$2a$10$JaVWWCUp9mSFCbJ.MJyifOX6F0Jk8kGt.oW3b15l1OKO0/tKRm/1i',
     'R',
     CURRENT_TIMESTAMP,
     NULL,

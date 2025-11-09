@@ -335,12 +335,13 @@ public class AccountDataLoadJob {
      * @return configured Step bean for account data loading
      */
     @Bean(name = "accountDataLoadStep")
-    public Step accountDataLoadStep(@Qualifier("csvAccountReader") ItemReader<Account> reader) {
+    public Step accountDataLoadStep(@Qualifier("csvAccountReader") ItemReader<Account> reader,
+                                     @Qualifier("accountWriter") ItemWriter<Account> writer) {
         return stepBuilderFactory.get("accountDataLoadStep")
                 .<Account, Account>chunk(chunkSize)
                 .reader(reader)
                 .processor(accountDataProcessor)
-                .writer(accountWriter())
+                .writer(writer)
                 .transactionManager(transactionManager)
                 .faultTolerant()
                 .skipLimit(skipLimit)
@@ -672,28 +673,7 @@ public class AccountDataLoadJob {
         }
     }
 
-    /**
-     * Create the Account JPA Writer bean.
-     * 
-     * <p>This bean configures a JpaItemWriter to persist validated Account entities to
-     * the PostgreSQL database using JPA. The writer supports upsert operations through
-     * EntityManager merge functionality, allowing both inserts and updates.</p>
-     * 
-     * <p><strong>Transaction Management:</strong></p>
-     * <ul>
-     *   <li>Writes occur within chunk transaction boundaries (1000 records per commit)</li>
-     *   <li>EntityManager.merge() handles both insert and update operations</li>
-     *   <li>Failures trigger automatic rollback of entire chunk</li>
-     * </ul>
-     * 
-     * @return configured JpaItemWriter for Account entities
-     */
-    @Bean
-    public ItemWriter<Account> accountWriter() {
-        JpaItemWriter<Account> writer = new JpaItemWriter<>();
-        writer.setEntityManagerFactory(entityManagerFactory);
-        return writer;
-    }
+
 
     /**
      * ValidationException - thrown when account data validation fails.
