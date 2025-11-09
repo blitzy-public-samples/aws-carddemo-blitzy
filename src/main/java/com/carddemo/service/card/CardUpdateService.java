@@ -31,6 +31,7 @@ import com.carddemo.dto.request.CardUpdateRequest;
 import com.carddemo.dto.response.CardResponse;
 import com.carddemo.exception.ResourceNotFoundException;
 import com.carddemo.exception.BusinessLogicException;
+import com.carddemo.exception.ValidationException;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -392,51 +393,41 @@ public class CardUpdateService {
 
         log.debug("Card found: {}", cardNumber);
 
-        try {
-            // Validate and update expiration date if provided
-            if (request.getExpirationDate() != null) {
-                validateExpirationDate(request.getExpirationDate());
-                log.debug("Updating expiration date from {} to {}", 
-                         card.getExpirationDate(), request.getExpirationDate());
-                card.setExpirationDate(request.getExpirationDate());
-            }
-
-            // Validate and update active status if provided
-            if (request.getStatus() != null) {
-                validateStatusChange(card, request.getStatus());
-                log.debug("Updating active status from {} to {}", 
-                         card.getActiveStatus(), request.getStatus());
-                
-                // Regenerate CVV for lost/stolen cards
-                if ("N".equals(request.getStatus()) && "Y".equals(card.getActiveStatus())) {
-                    String newCvv = generateNewCvv();
-                    card.setCvvCode(newCvv);
-                    log.warn("CVV regenerated for card {} due to status change to inactive", cardNumber);
-                }
-                
-                card.setActiveStatus(request.getStatus());
-            }
-
-            // Save card with optimistic locking - replaces COBOL EXEC CICS REWRITE
-            // JPA @Version annotation on Card entity provides automatic version checking
-            // UPDATE statement includes: WHERE card_number = ? AND version = ?
-            // If 0 rows updated (version mismatch), OptimisticLockException thrown
-            Card updatedCard = cardRepository.save(card);
-            
-            log.info("Card updated successfully: {}", cardNumber);
-
-            // Map entity to response DTO
-            return mapToResponse(updatedCard);
-
-        } catch (OptimisticLockException e) {
-            // Catch optimistic lock exception and transform to business exception
-            // Matches COBOL LOCKED-BUT-UPDATE-FAILED condition (line 1491 in COCRDUPC.cbl)
-            // and DATA-WAS-CHANGED-BEFORE-UPDATE condition (line 1511 in COCRDUPC.cbl)
-            log.error("Optimistic lock failure for card: {}", cardNumber, e);
-            throw new BusinessLogicException(
-                "CONCURRENT_MODIFICATION",
-                "Card has been modified by another user. Please refresh and try again.");
+        // Validate and update expiration date if provided
+        if (request.getExpirationDate() != null) {
+            validateExpirationDate(request.getExpirationDate());
+            log.debug("Updating expiration date from {} to {}", 
+                     card.getExpirationDate(), request.getExpirationDate());
+            card.setExpirationDate(request.getExpirationDate());
         }
+
+        // Validate and update active status if provided
+        if (request.getStatus() != null) {
+            validateStatusChange(card, request.getStatus());
+            log.debug("Updating active status from {} to {}", 
+                     card.getActiveStatus(), request.getStatus());
+            
+            // Regenerate CVV for lost/stolen cards
+            if ("N".equals(request.getStatus()) && "Y".equals(card.getActiveStatus())) {
+                String newCvv = generateNewCvv();
+                card.setCvvCode(newCvv);
+                log.warn("CVV regenerated for card {} due to status change to inactive", cardNumber);
+            }
+            
+            card.setActiveStatus(request.getStatus());
+        }
+
+        // Save card with optimistic locking - replaces COBOL EXEC CICS REWRITE
+        // JPA @Version annotation on Card entity provides automatic version checking
+        // UPDATE statement includes: WHERE card_number = ? AND version = ?
+        // If 0 rows updated (version mismatch), OptimisticLockException thrown
+        // Note: OptimisticLockException is allowed to propagate to caller for proper exception handling
+        Card updatedCard = cardRepository.save(card);
+        
+        log.info("Card updated successfully: {}", cardNumber);
+
+        // Map entity to response DTO
+        return mapToResponse(updatedCard);
     }
 
     /**
@@ -457,7 +448,7 @@ public class CardUpdateService {
      * </ul>
      *
      * @param expirationDate the expiration date to validate
-     * @throws BusinessLogicException if expiration date is past date or exceeds 10-year limit
+     * @throws ValidationException if expiration date is past date or exceeds 10-year limit
      */
     private void validateExpirationDate(LocalDate expirationDate) {
         LocalDate today = LocalDate.now();
@@ -466,14 +457,14 @@ public class CardUpdateService {
         // Validate future date
         if (expirationDate.isBefore(today) || expirationDate.isEqual(today)) {
             log.warn("Invalid expiration date (past date): {}", expirationDate);
-            throw new BusinessLogicException(
+            throw new ValidationException(
                 "Expiration date must be in the future. Provided: " + expirationDate);
         }
 
         // Validate within 10-year range
         if (expirationDate.isAfter(maxExpirationDate)) {
             log.warn("Invalid expiration date (exceeds 10 years): {}", expirationDate);
-            throw new BusinessLogicException(
+            throw new ValidationException(
                 "Expiration date cannot be more than 10 years in the future. Maximum: " + maxExpirationDate);
         }
 
@@ -543,15 +534,17 @@ public class CardUpdateService {
      * Map Card Entity to Response DTO
      *
      * <p>Transforms Card JPA entity to CardResponse DTO for API response.
+     * Applies masking to card number for PCI DSS compliance and formats
+     * status for user-friendly display.</p>
      *
      * <p>Field Mappings:</p>
      * <ul>
-     *   <li>cardNumber: Full 16-digit number (masking done by controller/service layer)</li>
+     *   <li>cardNumber: Masked card number (only last 4 digits visible)</li>
      *   <li>accountId: Foreign key to Account entity</li>
      *   <li>cvv: 3-digit CVV code (potentially regenerated)</li>
      *   <li>embossedName: Cardholder name on card</li>
      *   <li>expirationDate: Expiration date in ISO 8601 format (yyyy-MM-dd)</li>
-     *   <li>activeStatus: Single character 'Y' or 'N'</li>
+     *   <li>activeStatus: Formatted status string ("Active" or "Inactive")</li>
      * </ul>
      *
      * @param card the Card entity to map
@@ -559,12 +552,74 @@ public class CardUpdateService {
      */
     private CardResponse mapToResponse(Card card) {
         return CardResponse.builder()
-                .cardNumber(card.getCardNumber())
+                .cardNumber(maskCardNumber(card.getCardNumber()))
                 .accountId(card.getAccount() != null ? card.getAccount().getAccountId() : null)
                 .cvv(card.getCvvCode())
                 .embossedName(card.getEmbossedName())
                 .expirationDate(card.getExpirationDate())
-                .activeStatus(card.getActiveStatus())
+                .activeStatus(formatStatus(card.getActiveStatus()))
                 .build();
+    }
+
+    /**
+     * Masks card number for PCI DSS compliance.
+     * 
+     * <p>Displays only the last 4 digits of the card number, masking all other
+     * digits with asterisks. This ensures PCI DSS compliance by preventing
+     * full card number exposure in API responses and logs.</p>
+     * 
+     * <p><strong>Masking Format:</strong></p>
+     * <ul>
+     *   <li>16-digit card: "************1234" (12 asterisks + last 4 digits)</li>
+     *   <li>Less than 4 digits: All asterisks for security</li>
+     *   <li>null or empty: Returns empty string</li>
+     * </ul>
+     * 
+     * <p><strong>Examples:</strong></p>
+     * <ul>
+     *   <li>"4000123456789010" → "************9010"</li>
+     *   <li>"5500000000000004" → "************0004"</li>
+     *   <li>"123" → "***"</li>
+     *   <li>null → ""</li>
+     * </ul>
+     * 
+     * @param cardNumber Full 16-digit card number to mask. May be null or empty.
+     * 
+     * @return Masked card number showing only last 4 digits with leading asterisks.
+     *         Returns empty string if input is null or empty.
+     */
+    private String maskCardNumber(String cardNumber) {
+        if (cardNumber == null || cardNumber.length() < 4) {
+            return cardNumber == null ? "" : "*".repeat(cardNumber.length());
+        }
+        // Show only last 4 digits (PCI DSS compliance)
+        return "*".repeat(cardNumber.length() - 4) + cardNumber.substring(cardNumber.length() - 4);
+    }
+
+    /**
+     * Formats card active status from database code to display string.
+     * 
+     * <p>Converts COBOL CARD-ACTIVE-STATUS single character field ('Y'/'N')
+     * to user-friendly display string for UI presentation.</p>
+     * 
+     * <p><strong>Status Mapping:</strong></p>
+     * <ul>
+     *   <li>'Y' → "Active"</li>
+     *   <li>'N' → "Inactive"</li>
+     *   <li>Any other value → "Unknown"</li>
+     * </ul>
+     * 
+     * @param activeStatus Database status code ('Y' or 'N'). May be null.
+     * 
+     * @return Formatted status string for display ("Active", "Inactive", or "Unknown").
+     */
+    private String formatStatus(String activeStatus) {
+        if ("Y".equals(activeStatus)) {
+            return "Active";
+        } else if ("N".equals(activeStatus)) {
+            return "Inactive";
+        } else {
+            return "Unknown";
+        }
     }
 }
