@@ -3,8 +3,12 @@ package com.carddemo.controller;
 import com.carddemo.dto.request.PaymentRequest;
 import com.carddemo.dto.response.PaymentResponse;
 import com.carddemo.entity.Account;
+import com.carddemo.entity.Card;
+import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.constants.MessageConstants;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -188,6 +192,24 @@ public class BillingControllerTest {
     private TransactionRepository transactionRepository;
 
     /**
+     * CustomerRepository for test customer data setup.
+     * <p>Used in @BeforeEach to create test customers that are required for account creation
+     * due to foreign key relationship (customer_id) in account table. Customers are cleaned
+     * up in @AfterEach to maintain test isolation.</p>
+     */
+    @Autowired
+    private CustomerRepository customerRepository;
+
+    /**
+     * CardRepository for test card data setup.
+     * <p>Used in @BeforeEach to create test cards that are required for payment processing
+     * due to BillPaymentService requirement that each account must have an associated card.
+     * Cards are cleaned up in @AfterEach to maintain test isolation.</p>
+     */
+    @Autowired
+    private CardRepository cardRepository;
+
+    /**
      * Test account ID constant for successful payment tests.
      * <p>Represents a valid 11-digit account ID matching COBOL ACCT-ID PIC 9(11) format
      * from CVACT01Y.cpy copybook. Used to create test account with sufficient balance.</p>
@@ -207,6 +229,20 @@ public class BillingControllerTest {
      * RESP(DFHRESP(NOTFND)) condition.</p>
      */
     private static final Long TEST_ACCOUNT_ID_NOT_FOUND = 9999999999L;
+
+    /**
+     * Test customer ID constant for primary test customer.
+     * <p>Represents a valid 9-digit customer ID matching COBOL CUST-ID PIC 9(09) format
+     * from CVCUS01Y.cpy copybook. Used to create test customer for account association.</p>
+     */
+    private static final Long TEST_CUSTOMER_ID = 100000001L;
+
+    /**
+     * Test customer ID constant for low balance account.
+     * <p>Represents a second test customer for low balance account association, ensuring
+     * proper foreign key relationships in test data setup.</p>
+     */
+    private static final Long TEST_CUSTOMER_ID_LOW_BALANCE = 100000002L;
 
     /**
      * Test account balance constant.
@@ -238,27 +274,71 @@ public class BillingControllerTest {
 
     /**
      * Test setup method executed before each test.
-     * <p>Creates and persists test account data in database with known balances to provide
-     * consistent test fixtures. Test accounts include:</p>
+     * <p>Creates and persists test customer and account data in database with known balances to
+     * provide consistent test fixtures. Test data includes:</p>
      * <ul>
+     *   <li>Test customers matching COBOL CUSTOMER-RECORD structure from CVCUS01Y.cpy</li>
      *   <li>Normal account with $5,000.00 balance for successful payment tests</li>
      *   <li>Low balance account with $50.00 balance for insufficient funds tests</li>
      * </ul>
      * 
-     * <p>Account entities are built using Lombok @Builder pattern with fields matching COBOL
-     * ACCOUNT-RECORD structure from CVACT01Y.cpy copybook, including accountId, activeStatus,
-     * currentBalance, creditLimit, cashCreditLimit, and date fields.</p>
+     * <p>Customer entities are created first to satisfy foreign key constraints, as the Account
+     * entity has a @ManyToOne relationship to Customer via customer_id column. Account entities
+     * are built using Lombok @Builder pattern with fields matching COBOL ACCOUNT-RECORD structure
+     * from CVACT01Y.cpy copybook, including accountId, activeStatus, currentBalance, creditLimit,
+     * cashCreditLimit, and date fields.</p>
      */
     @BeforeEach
     public void setUp() {
         // Clean up any existing test data to ensure fresh state
-        accountRepository.deleteAll();
+        // Deletion order respects foreign key constraints
         transactionRepository.deleteAll();
+        cardRepository.deleteAll();
+        accountRepository.deleteAll();
+        customerRepository.deleteAll();
+
+        // Create test customer for primary test account
+        // Matches COBOL CUSTOMER-RECORD structure from CVCUS01Y.cpy
+        Customer testCustomer = Customer.builder()
+                .customerId(TEST_CUSTOMER_ID)
+                .firstName("John")
+                .middleName("Michael")
+                .lastName("Doe")
+                .addressLine1("123 Main Street")
+                .addressLine2("Apt 4B")
+                .addressLine3("Springfield")
+                .addressStateCode("IL")
+                .addressCountryCode("USA")
+                .addressZip("62701")
+                .ssn("123456789")
+                .dateOfBirth(LocalDate.of(1980, 1, 15))
+                .ficoScore(750)
+                .build();
+        customerRepository.save(testCustomer);
+
+        // Create test customer for low balance account
+        Customer testCustomerLowBalance = Customer.builder()
+                .customerId(TEST_CUSTOMER_ID_LOW_BALANCE)
+                .firstName("Jane")
+                .middleName("Elizabeth")
+                .lastName("Smith")
+                .addressLine1("456 Oak Avenue")
+                .addressLine2("Unit 12")
+                .addressLine3("Capital City")
+                .addressStateCode("CA")
+                .addressCountryCode("USA")
+                .addressZip("90210")
+                .ssn("987654321")
+                .dateOfBirth(LocalDate.of(1985, 6, 20))
+                .ficoScore(680)
+                .build();
+        customerRepository.save(testCustomerLowBalance);
 
         // Create test account with sufficient balance for successful payment tests
         // Matches COBOL ACCOUNT-RECORD structure from CVACT01Y.cpy
         Account testAccount = Account.builder()
                 .accountId(TEST_ACCOUNT_ID)
+                .customer(testCustomer)  // Associate with customer to satisfy foreign key
                 .activeStatus("Y")  // Active account
                 .currentBalance(TEST_INITIAL_BALANCE.setScale(2, RoundingMode.HALF_UP))
                 .creditLimit(new BigDecimal("10000.00").setScale(2, RoundingMode.HALF_UP))
@@ -274,6 +354,7 @@ public class BillingControllerTest {
         // Enables testing of balance validation logic from COBIL00C.cbl
         Account lowBalanceAccount = Account.builder()
                 .accountId(TEST_ACCOUNT_ID_LOW_BALANCE)
+                .customer(testCustomerLowBalance)  // Associate with customer to satisfy foreign key
                 .activeStatus("Y")
                 .currentBalance(TEST_LOW_BALANCE.setScale(2, RoundingMode.HALF_UP))
                 .creditLimit(new BigDecimal("5000.00").setScale(2, RoundingMode.HALF_UP))
@@ -284,19 +365,48 @@ public class BillingControllerTest {
                 .currentCycleDebit(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP))
                 .build();
         accountRepository.save(lowBalanceAccount);
+
+        // Create test card for primary test account
+        // BillPaymentService requires Card entity for account validation
+        // Matches COBOL CARD-RECORD structure from CVACT02Y.cpy
+        Card testCard = Card.builder()
+                .cardNumber("4000123456789010")  // Valid 16-digit test card number
+                .account(testAccount)  // Associate with account to satisfy foreign key
+                .cvvCode("123")  // 3-digit CVV code
+                .embossedName("JOHN M DOE")  // Cardholder name in uppercase
+                .expirationDate(LocalDate.of(2025, 12, 31))  // Card expiration date
+                .activeStatus("Y")  // Active card status
+                .build();
+        cardRepository.save(testCard);
+
+        // Create test card for low balance account
+        Card testCardLowBalance = Card.builder()
+                .cardNumber("4000123456789011")  // Unique card number for second account
+                .account(lowBalanceAccount)  // Associate with low balance account
+                .cvvCode("456")  // Different CVV code
+                .embossedName("JANE E SMITH")  // Different cardholder name
+                .expirationDate(LocalDate.of(2025, 12, 31))  // Card expiration date
+                .activeStatus("Y")  // Active card status
+                .build();
+        cardRepository.save(testCardLowBalance);
     }
 
     /**
      * Test cleanup method executed after each test.
-     * <p>Deletes all test data from accounts and transactions tables to maintain test isolation
-     * and prevent data pollution across test executions. This cleanup ensures each test starts
-     * with a fresh database state created by @BeforeEach setUp() method.</p>
+     * <p>Deletes all test data from transactions, cards, accounts, and customers tables to maintain
+     * test isolation and prevent data pollution across test executions. Deletion order respects
+     * foreign key constraints: transactions first (references accounts), then cards (references
+     * accounts), then accounts (references customers), then customers. This cleanup ensures each
+     * test starts with a fresh database state created by @BeforeEach setUp() method.</p>
      */
     @AfterEach
     public void tearDown() {
         // Clean up all test data to maintain test isolation
+        // Deletion order respects foreign key constraints
         transactionRepository.deleteAll();
+        cardRepository.deleteAll();
         accountRepository.deleteAll();
+        customerRepository.deleteAll();
     }
 
     /**
