@@ -844,7 +844,7 @@ public class TransactionRepositoryTest {
         assertThat(retrieved.getMerchantZip().length()).isLessThanOrEqualTo(10);
         
         // Test with edge case: Long merchant name (exactly 50 characters)
-        String longMerchantName = "VERY LONG MERCHANT NAME TESTING FIFTY CHARACTER"; // 49 chars
+        String longMerchantName = "VERY LONG MERCHANT NAME TESTING FIFTY CHARACTERS!"; // 49 chars
         longMerchantName = longMerchantName + "S"; // Make it exactly 50
         
         Transaction longNameTransaction = Transaction.builder()
