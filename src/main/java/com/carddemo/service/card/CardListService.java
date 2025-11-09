@@ -811,6 +811,7 @@ public class CardListService {
         CardResponse response = CardResponse.builder()
                 .cardNumber(maskCardNumber(card.getCardNumber()))
                 .accountId(accountId)
+                .cardType(card.getCardType())
                 .cvv(CVV_MASKED)  // Always mask CVV in list views
                 .embossedName(card.getEmbossedName())
                 .expirationDate(card.getExpirationDate())

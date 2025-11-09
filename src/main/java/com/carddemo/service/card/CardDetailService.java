@@ -425,6 +425,7 @@ public class CardDetailService {
         CardDetailResponse response = CardDetailResponse.builder()
                 .cardNumber(maskCardNumber(card.getCardNumber()))
                 .accountId(card.getAccount() != null ? card.getAccount().getAccountId() : null)
+                .cardType(card.getCardType())
                 .cvv(cvvDisplay)
                 .embossedName(formattedName)
                 .expirationDate(card.getExpirationDate())

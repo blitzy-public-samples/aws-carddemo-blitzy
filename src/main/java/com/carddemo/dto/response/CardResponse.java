@@ -161,6 +161,7 @@ import java.time.LocalDate;
 @JsonPropertyOrder({
     "cardNumber",
     "accountId",
+    "cardType",
     "cvv",
     "embossedName",
     "expirationDate",
@@ -242,6 +243,41 @@ public class CardResponse {
      */
     @JsonProperty("accountId")
     private Long accountId;
+
+    /**
+     * Card Type
+     * 
+     * <p>2-character code indicating the type of card (Credit or Debit).
+     * Enhanced field added during modernization for improved card categorization
+     * and transaction processing.
+     * 
+     * <p><b>Valid Values:</b>
+     * <ul>
+     *   <li><b>"CC"</b> - Credit Card: Extends credit to cardholder</li>
+     *   <li><b>"DC"</b> - Debit Card: Linked to checking/savings account</li>
+     * </ul>
+     * 
+     * <p><b>Database Mapping:</b>
+     * <ul>
+     *   <li>PostgreSQL column: card_type VARCHAR(2) NOT NULL</li>
+     *   <li>Validation enforced at database and application layers</li>
+     * </ul>
+     * 
+     * <p><b>Business Rules:</b>
+     * <ul>
+     *   <li>Credit cards have credit limits and interest calculations</li>
+     *   <li>Debit cards have direct account balance verification</li>
+     *   <li>Card type determines transaction authorization logic</li>
+     * </ul>
+     * 
+     * <p><b>Example Values:</b>
+     * <ul>
+     *   <li>"CC" - Visa/Mastercard credit card</li>
+     *   <li>"DC" - ATM/Debit card</li>
+     * </ul>
+     */
+    @JsonProperty("cardType")
+    private String cardType;
 
     /**
      * Card Verification Value (CVV)
@@ -440,6 +476,7 @@ public class CardResponse {
      * 
      * @param cardNumber Masked 16-character card number
      * @param accountId 11-digit account identifier (foreign key)
+     * @param cardType 2-character card type code ('CC' or 'DC')
      * @param cvv 3-digit card verification value
      * @param embossedName Cardholder name on card (max 50 chars)
      * @param expirationDate Card expiry date (ISO 8601 format)

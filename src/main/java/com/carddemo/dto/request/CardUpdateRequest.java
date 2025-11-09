@@ -35,6 +35,7 @@ import java.time.LocalDate;
  *     <th>COBOL Type</th>
  *     <th>Java Field</th>
  *     <th>Java Type</th>
+ *     <th>Location</th>
  *     <th>Source Line</th>
  *   </tr>
  *   <tr>
@@ -42,6 +43,7 @@ import java.time.LocalDate;
  *     <td>PIC X(16)</td>
  *     <td>cardNumber</td>
  *     <td>String</td>
+ *     <td>URL Path Variable</td>
  *     <td>CVACT02Y.cpy:5</td>
  *   </tr>
  *   <tr>
@@ -49,6 +51,7 @@ import java.time.LocalDate;
  *     <td>PIC X(10)</td>
  *     <td>expirationDate</td>
  *     <td>LocalDate</td>
+ *     <td>Request Body</td>
  *     <td>CVACT02Y.cpy:9</td>
  *   </tr>
  *   <tr>
@@ -56,6 +59,7 @@ import java.time.LocalDate;
  *     <td>PIC X(01)</td>
  *     <td>status</td>
  *     <td>String</td>
+ *     <td>Request Body</td>
  *     <td>CVACT02Y.cpy:10</td>
  *   </tr>
  * </table>
@@ -64,7 +68,7 @@ import java.time.LocalDate;
  * <p>Jakarta Bean Validation annotations enforce data integrity rules that replicate
  * the original COBOL field validation:</p>
  * <ul>
- *   <li><b>cardNumber:</b> Must be exactly 16 numeric digits (matches COBOL PIC X(16) with numeric validation)</li>
+ *   <li><b>cardNumber:</b> Validated in URL path parameter (must be exactly 16 numeric digits, matches COBOL PIC X(16))</li>
  *   <li><b>expirationDate:</b> Must be a valid future date in yyyy-MM-dd format</li>
  *   <li><b>status:</b> Must be either 'Y' (Active) or 'N' (Inactive) - matches COBOL 88-level condition logic</li>
  * </ul>
@@ -79,15 +83,15 @@ import java.time.LocalDate;
  * <h3>REST API Contract</h3>
  * <p>This DTO defines the request body structure for the card update endpoint:</p>
  * <pre>
- * PUT /api/cards/{id}
+ * PUT /api/cards/4111111111111111
  * Content-Type: application/json
  * 
  * {
- *   "cardNumber": "4111111111111111",
  *   "expirationDate": "2025-12-31",
  *   "status": "Y"
  * }
  * </pre>
+ * <p>Note: cardNumber is in the URL path, not in the request body.</p>
  * 
  * <h3>Usage Example</h3>
  * <pre>
@@ -99,9 +103,8 @@ import java.time.LocalDate;
  *     return ResponseEntity.ok(cardUpdateService.updateCard(id, request));
  * }
  * 
- * // Building a request object
+ * // Building a request object (cardNumber comes from path parameter)
  * CardUpdateRequest request = CardUpdateRequest.builder()
- *     .cardNumber("4111111111111111")
  *     .expirationDate(LocalDate.of(2025, 12, 31))
  *     .status("Y")
  *     .build();
@@ -133,29 +136,13 @@ import java.time.LocalDate;
 public class CardUpdateRequest {
 
     /**
-     * Card Number
+     * NOTE: cardNumber is NOT included in this request body as it is provided via the 
+     * URL path parameter in PUT /api/cards/{id}. This follows REST best practices where
+     * the resource identifier is in the URL, not duplicated in the request body.
      * 
-     * <p>16-digit payment card number that uniquely identifies the card.
-     * This field maps to the COBOL CARD-NUM field (PIC X(16)) from CVACT02Y.cpy line 5.</p>
-     * 
-     * <p><b>Validation Rules:</b></p>
-     * <ul>
-     *   <li>Cannot be null or blank</li>
-     *   <li>Must be exactly 16 numeric digits</li>
-     *   <li>No spaces, hyphens, or other formatting characters allowed</li>
-     * </ul>
-     * 
-     * <p><b>COBOL Source:</b> CARD-NUM PIC X(16) in CVACT02Y.cpy:5</p>
-     * 
-     * <p><b>Example:</b> "4111111111111111"</p>
+     * Original COBOL design had cardNumber in the COMMAREA structure, but in REST API
+     * design, the resource identifier should only be in the URL path.
      */
-    @NotBlank(message = "Card number is required")
-    @Pattern(
-        regexp = "^[0-9]{16}$",
-        message = "Card number must be exactly 16 digits"
-    )
-    @JsonProperty("cardNumber")
-    private String cardNumber;
 
     /**
      * Card Expiration Date
