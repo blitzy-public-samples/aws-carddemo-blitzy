@@ -4,6 +4,7 @@ import com.carddemo.dto.request.TransactionRequest;
 import com.carddemo.dto.response.TransactionResponse;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
+import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
 import com.carddemo.entity.TransactionCategoryBalance;
 import com.carddemo.exception.BusinessLogicException;
@@ -199,6 +200,7 @@ public class TransactionServiceTest {
     private static final RoundingMode DECIMAL_ROUNDING = RoundingMode.HALF_UP;
     
     // Mock entities reused across tests
+    private Customer mockCustomer;
     private Card mockValidCard;
     private Account mockAccount;
     private Transaction mockTransaction;
@@ -212,26 +214,34 @@ public class TransactionServiceTest {
      */
     @BeforeEach
     void setUp() {
-        // Initialize valid card with active status and future expiration
-        // Matches COBOL: CARD-ACTIVE-STATUS='Y', CARD-EXPIRAION-DATE >= current date
-        mockValidCard = Card.builder()
-                .cardNumber(VALID_CARD_NUMBER)
-                .accountId(VALID_ACCOUNT_ID)
-                .activeStatus("Y")
-                .expirationDate(LocalDate.now().plusYears(2))
-                .cvv("123")
-                .embossedName("TEST CARDHOLDER")
+        // Initialize customer for account relationship
+        // Matches COBOL: CUST-ID from CVCUS01Y.cpy
+        mockCustomer = Customer.builder()
+                .customerId(98765432101L)
+                .firstName("TEST")
+                .lastName("CUSTOMER")
                 .build();
 
         // Initialize account with balance and credit limit
         // Matches COBOL: ACCT-CURR-BAL, ACCT-CREDIT-LIMIT (PIC S9(10)V99 COMP-3)
         mockAccount = Account.builder()
                 .accountId(VALID_ACCOUNT_ID)
-                .customerId(98765432101L)
+                .customer(mockCustomer)
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("1000.00").setScale(DECIMAL_SCALE, DECIMAL_ROUNDING))
                 .creditLimit(new BigDecimal("10000.00").setScale(DECIMAL_SCALE, DECIMAL_ROUNDING))
                 .cashCreditLimit(new BigDecimal("5000.00").setScale(DECIMAL_SCALE, DECIMAL_ROUNDING))
+                .build();
+
+        // Initialize valid card with active status and future expiration
+        // Matches COBOL: CARD-ACTIVE-STATUS='Y', CARD-EXPIRAION-DATE >= current date
+        mockValidCard = Card.builder()
+                .cardNumber(VALID_CARD_NUMBER)
+                .account(mockAccount)
+                .activeStatus("Y")
+                .expirationDate(LocalDate.now().plusYears(2))
+                .cvvCode("123")
+                .embossedName("TEST CARDHOLDER")
                 .build();
 
         // Initialize mock transaction for save operations
@@ -264,6 +274,9 @@ public class TransactionServiceTest {
                 .cardNumber(VALID_CARD_NUMBER)
                 .amount(new BigDecimal("100.00").setScale(DECIMAL_SCALE, DECIMAL_ROUNDING))
                 .merchantId(MERCHANT_ID)
+                .merchantName(MERCHANT_NAME)
+                .merchantCity(MERCHANT_CITY)
+                .merchantZip(MERCHANT_ZIP)
                 .description(DESCRIPTION)
                 .typeCode(TYPE_CODE)
                 .categoryCode(CATEGORY_CODE)
@@ -302,6 +315,9 @@ public class TransactionServiceTest {
     @DisplayName("Should successfully create transaction with valid card and sufficient credit")
     void testAddTransactionSuccess() {
         // Arrange: Setup mock repository responses for happy path
+        // Capture original balance before service call (service mutates the account object)
+        BigDecimal originalBalance = mockAccount.getCurrentBalance();
+        
         when(cardRepository.findByCardNumber(VALID_CARD_NUMBER))
                 .thenReturn(Optional.of(mockValidCard));
         
@@ -348,7 +364,7 @@ public class TransactionServiceTest {
         verify(accountRepository, times(1)).save(accountCaptor.capture());
         
         Account updatedAccount = accountCaptor.getValue();
-        BigDecimal expectedBalance = mockAccount.getCurrentBalance()
+        BigDecimal expectedBalance = originalBalance
                 .add(validRequest.getAmount())
                 .setScale(DECIMAL_SCALE, DECIMAL_ROUNDING);
         assertThat(updatedAccount.getCurrentBalance()).isEqualByComparingTo(expectedBalance);
@@ -383,6 +399,9 @@ public class TransactionServiceTest {
                 .cardNumber(VALID_CARD_NUMBER)
                 .amount(excessiveAmount)
                 .merchantId(MERCHANT_ID)
+                .merchantName(MERCHANT_NAME)
+                .merchantCity(MERCHANT_CITY)
+                .merchantZip(MERCHANT_ZIP)
                 .description(DESCRIPTION)
                 .typeCode(TYPE_CODE)
                 .categoryCode(CATEGORY_CODE)
@@ -431,10 +450,10 @@ public class TransactionServiceTest {
         // Arrange: Create expired card (expiration date in the past)
         Card expiredCard = Card.builder()
                 .cardNumber(VALID_CARD_NUMBER)
-                .accountId(VALID_ACCOUNT_ID)
+                .account(mockAccount)
                 .activeStatus("Y")
                 .expirationDate(LocalDate.now().minusMonths(1)) // Expired last month
-                .cvv("123")
+                .cvvCode("123")
                 .embossedName("TEST CARDHOLDER")
                 .build();
 
@@ -475,10 +494,10 @@ public class TransactionServiceTest {
         // Arrange: Create inactive card (CARD-ACTIVE-STATUS='N')
         Card inactiveCard = Card.builder()
                 .cardNumber(VALID_CARD_NUMBER)
-                .accountId(VALID_ACCOUNT_ID)
+                .account(mockAccount)
                 .activeStatus("N") // Inactive status
                 .expirationDate(LocalDate.now().plusYears(2))
-                .cvv("123")
+                .cvvCode("123")
                 .embossedName("TEST CARDHOLDER")
                 .build();
 
@@ -531,6 +550,9 @@ public class TransactionServiceTest {
                 .cardNumber(INVALID_CARD_NUMBER)
                 .amount(validRequest.getAmount())
                 .merchantId(MERCHANT_ID)
+                .merchantName(MERCHANT_NAME)
+                .merchantCity(MERCHANT_CITY)
+                .merchantZip(MERCHANT_ZIP)
                 .description(DESCRIPTION)
                 .typeCode(TYPE_CODE)
                 .categoryCode(CATEGORY_CODE)
@@ -572,6 +594,9 @@ public class TransactionServiceTest {
                 .cardNumber(VALID_CARD_NUMBER)
                 .amount(BigDecimal.ZERO)
                 .merchantId(MERCHANT_ID)
+                .merchantName(MERCHANT_NAME)
+                .merchantCity(MERCHANT_CITY)
+                .merchantZip(MERCHANT_ZIP)
                 .description(DESCRIPTION)
                 .typeCode(TYPE_CODE)
                 .categoryCode(CATEGORY_CODE)
@@ -592,6 +617,9 @@ public class TransactionServiceTest {
                 .cardNumber(VALID_CARD_NUMBER)
                 .amount(new BigDecimal("-100.00"))
                 .merchantId(MERCHANT_ID)
+                .merchantName(MERCHANT_NAME)
+                .merchantCity(MERCHANT_CITY)
+                .merchantZip(MERCHANT_ZIP)
                 .description(DESCRIPTION)
                 .typeCode(TYPE_CODE)
                 .categoryCode(CATEGORY_CODE)
@@ -633,6 +661,9 @@ public class TransactionServiceTest {
                 .cardNumber(VALID_CARD_NUMBER)
                 .amount(amountWithExcessPrecision)
                 .merchantId(MERCHANT_ID)
+                .merchantName(MERCHANT_NAME)
+                .merchantCity(MERCHANT_CITY)
+                .merchantZip(MERCHANT_ZIP)
                 .description(DESCRIPTION)
                 .typeCode(TYPE_CODE)
                 .categoryCode(CATEGORY_CODE)
@@ -701,7 +732,7 @@ public class TransactionServiceTest {
 
         Account testAccount = Account.builder()
                 .accountId(VALID_ACCOUNT_ID)
-                .customerId(98765432101L)
+                .customer(mockCustomer)
                 .activeStatus("Y")
                 .currentBalance(initialBalance)
                 .creditLimit(new BigDecimal("10000.00").setScale(DECIMAL_SCALE, DECIMAL_ROUNDING))
@@ -712,6 +743,9 @@ public class TransactionServiceTest {
                 .cardNumber(VALID_CARD_NUMBER)
                 .amount(transactionAmount)
                 .merchantId(MERCHANT_ID)
+                .merchantName(MERCHANT_NAME)
+                .merchantCity(MERCHANT_CITY)
+                .merchantZip(MERCHANT_ZIP)
                 .description(DESCRIPTION)
                 .typeCode(TYPE_CODE)
                 .categoryCode(CATEGORY_CODE)
@@ -848,6 +882,10 @@ public class TransactionServiceTest {
         when(transactionRepository.findTopByOrderByTransactionIdDesc())
                 .thenReturn(Optional.of(mockLastTransaction));
         
+        // Mock transaction save to succeed (so we reach account update phase)
+        when(transactionRepository.save(any(Transaction.class)))
+                .thenReturn(mockTransaction);
+        
         // Simulate error during account save (after transaction save succeeds)
         when(accountRepository.save(any(Account.class)))
                 .thenThrow(new RuntimeException("Database error during account update"));
@@ -886,13 +924,16 @@ public class TransactionServiceTest {
                 TransactionCategoryBalance.TransactionCategoryBalanceId.builder()
                         .accountId(VALID_ACCOUNT_ID)
                         .transactionTypeCode(TYPE_CODE)
-                        .categoryCode(Integer.valueOf(CATEGORY_CODE))
+                        .categoryCode(CATEGORY_CODE)
                         .build();
         
         TransactionCategoryBalance existingBalance = TransactionCategoryBalance.builder()
                 .id(balanceId)
                 .balance(new BigDecimal("500.00").setScale(DECIMAL_SCALE, DECIMAL_ROUNDING))
                 .build();
+        
+        // Capture original category balance before service call (service mutates the object)
+        BigDecimal originalCategoryBalance = existingBalance.getBalance();
 
         when(cardRepository.findByCardNumber(VALID_CARD_NUMBER))
                 .thenReturn(Optional.of(mockValidCard));
@@ -919,7 +960,7 @@ public class TransactionServiceTest {
         verify(categoryBalanceRepository, times(1)).save(categoryCaptor.capture());
         
         TransactionCategoryBalance updatedBalance = categoryCaptor.getValue();
-        BigDecimal expectedCategoryBalance = existingBalance.getBalance()
+        BigDecimal expectedCategoryBalance = originalCategoryBalance
                 .add(validRequest.getAmount())
                 .setScale(DECIMAL_SCALE, DECIMAL_ROUNDING);
         
@@ -955,7 +996,7 @@ public class TransactionServiceTest {
 
         Account highLimitAccount = Account.builder()
                 .accountId(VALID_ACCOUNT_ID)
-                .customerId(98765432101L)
+                .customer(mockCustomer)
                 .activeStatus("Y")
                 .currentBalance(currentBalance)
                 .creditLimit(highCreditLimit)
@@ -966,6 +1007,9 @@ public class TransactionServiceTest {
                 .cardNumber(VALID_CARD_NUMBER)
                 .amount(maximumAmount)
                 .merchantId(MERCHANT_ID)
+                .merchantName(MERCHANT_NAME)
+                .merchantCity(MERCHANT_CITY)
+                .merchantZip(MERCHANT_ZIP)
                 .description(DESCRIPTION)
                 .typeCode(TYPE_CODE)
                 .categoryCode(CATEGORY_CODE)

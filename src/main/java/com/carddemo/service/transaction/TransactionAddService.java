@@ -219,7 +219,7 @@ public class TransactionAddService {
         
         return cardRepository.findByCardNumber(cardNumber)
                 .orElseThrow(() -> new ResourceNotFoundException(
-                        "Card number not found: " + maskCardNumber(cardNumber)));
+                        "Card not found: " + maskCardNumber(cardNumber)));
     }
 
     /**
@@ -240,7 +240,7 @@ public class TransactionAddService {
         // Replaces COBOL: Card status field validation
         if (!"Y".equalsIgnoreCase(card.getActiveStatus())) {
             throw new BusinessLogicException(
-                    "Card is inactive: " + maskCardNumber(card.getCardNumber()));
+                    "Card is not active: " + maskCardNumber(card.getCardNumber()));
         }
         
         // Check if card is not expired
@@ -333,7 +333,7 @@ public class TransactionAddService {
             availableCredit = availableCredit.setScale(DECIMAL_SCALE, DECIMAL_ROUNDING);
             
             throw new BusinessLogicException(
-                    String.format("Insufficient credit. Transaction amount: %s, " +
+                    String.format("Transaction amount %s exceeds available credit. " +
                             "Available credit: %s, Credit limit: %s",
                             amount, availableCredit, creditLimit));
         }
