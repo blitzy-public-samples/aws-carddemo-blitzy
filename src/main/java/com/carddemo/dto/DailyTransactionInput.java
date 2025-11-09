@@ -107,4 +107,18 @@ public class DailyTransactionInput {
      * Converted from COBOL timestamp format to LocalDateTime
      */
     private LocalDateTime originationTimestamp;
+    
+    /**
+     * Processing Timestamp (not used in processing)
+     * Maps to DALYTRAN-PROC-TS (PIC X(26))
+     * Included to match full 350-byte record structure
+     */
+    private String processingTimestamp;
+    
+    /**
+     * Filler field (not used in processing)
+     * Maps to FILLER (PIC X(20))
+     * Included to match full 350-byte record structure
+     */
+    private String filler;
 }
