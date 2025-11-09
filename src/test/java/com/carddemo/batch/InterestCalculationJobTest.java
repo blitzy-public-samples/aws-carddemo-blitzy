@@ -3,19 +3,26 @@ package com.carddemo.batch;
 import com.carddemo.batch.job.InterestCalculationJob;
 import com.carddemo.batch.processor.InterestCalculationProcessor;
 import com.carddemo.entity.Account;
+import com.carddemo.entity.Card;
+import com.carddemo.entity.Customer;
 import com.carddemo.entity.DisclosureGroup;
 import com.carddemo.entity.TransactionCategoryBalance;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.DisclosureGroupRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
+import com.carddemo.repository.TransactionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -110,7 +117,20 @@ public class InterestCalculationJobTest {
     private JobLauncherTestUtils jobLauncherTestUtils;
 
     @Autowired
+    @Qualifier("interestCalculationBatchJob")
+    private Job interestCalculationBatchJob;
+
+    @Autowired
     private AccountRepository accountRepository;
+
+    @Autowired
+    private CardRepository cardRepository;
+
+    @Autowired
+    private CustomerRepository customerRepository;
+
+    @Autowired
+    private TransactionRepository transactionRepository;
 
     @Autowired
     private TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
@@ -132,10 +152,42 @@ public class InterestCalculationJobTest {
      */
     @BeforeEach
     public void setUp() {
+        // Configure JobLauncherTestUtils with the specific job to test
+        jobLauncherTestUtils.setJob(interestCalculationBatchJob);
+        
         // Clean up test data before each test
+        // Order matters: delete children before parents due to foreign key constraints
+        transactionRepository.deleteAll();  // Delete transactions first (references cards)
         transactionCategoryBalanceRepository.deleteAll();
         disclosureGroupRepository.deleteAll();
+        cardRepository.deleteAll();  // Delete cards after transactions
         accountRepository.deleteAll();
+        customerRepository.deleteAll();
+    }
+
+    /**
+     * Helper method to create a test customer for account associations.
+     * 
+     * <p>Creates a minimal Customer entity with required fields to satisfy
+     * foreign key constraints on Account.customer_id column.</p>
+     * 
+     * @param customerId the customer ID to use
+     * @return saved Customer entity
+     */
+    private Customer createTestCustomer(Long customerId) {
+        Customer customer = Customer.builder()
+                .customerId(customerId)
+                .firstName("Test")
+                .lastName("Customer")
+                .addressLine1("123 Test St")
+                .addressStateCode("TX")
+                .addressCountryCode("USA")
+                .addressZip("75001")
+                .ssn("123456789")
+                .dateOfBirth(LocalDate.of(1980, 1, 1))
+                .ficoScore(700)
+                .build();
+        return customerRepository.save(customer);
     }
 
     /**
@@ -168,8 +220,14 @@ public class InterestCalculationJobTest {
     @DisplayName("Should calculate interest for all accounts successfully")
     public void testInterestCalculationJob_Success() throws Exception {
         // Arrange: Create test data matching COBOL file structures
+        // First create customers to satisfy foreign key constraints
+        Customer customer1 = createTestCustomer(100010000L);
+        Customer customer2 = createTestCustomer(100020000L);
+        Customer customer3 = createTestCustomer(100030000L);
+        
         Account account1 = Account.builder()
                 .accountId(10001000001L)
+                .customer(customer1)
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("5000.00"))
                 .creditLimit(new BigDecimal("10000.00"))
@@ -181,6 +239,7 @@ public class InterestCalculationJobTest {
 
         Account account2 = Account.builder()
                 .accountId(10002000001L)
+                .customer(customer2)
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("15000.50"))
                 .creditLimit(new BigDecimal("20000.00"))
@@ -192,6 +251,7 @@ public class InterestCalculationJobTest {
 
         Account account3 = Account.builder()
                 .accountId(10003000001L)
+                .customer(customer3)
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("8750.25"))
                 .creditLimit(new BigDecimal("15000.00"))
@@ -203,25 +263,62 @@ public class InterestCalculationJobTest {
 
         accountRepository.saveAll(Arrays.asList(account1, account2, account3));
 
+        // Create Card test data - required for interest transaction creation
+        // Each account must have at least one card for cross-reference lookup
+        Card card1 = Card.builder()
+                .cardNumber("4000123400001000")
+                .account(account1)
+                .cardType("CC")
+                .expirationDate(LocalDate.now().plusYears(3))
+                .cvvCode("123")
+                .activeStatus("Y")
+                .build();
+
+        Card card2 = Card.builder()
+                .cardNumber("4000123400002000")
+                .account(account2)
+                .cardType("CC")
+                .expirationDate(LocalDate.now().plusYears(3))
+                .cvvCode("456")
+                .activeStatus("Y")
+                .build();
+
+        Card card3 = Card.builder()
+                .cardNumber("4000123400003000")
+                .account(account3)
+                .cardType("CC")
+                .expirationDate(LocalDate.now().plusYears(3))
+                .cvvCode("789")
+                .activeStatus("Y")
+                .build();
+
+        cardRepository.saveAll(Arrays.asList(card1, card2, card3));
+
         // Create TransactionCategoryBalance test data (TRAN-CAT-BAL-RECORD)
         TransactionCategoryBalance tcb1 = TransactionCategoryBalance.builder()
-                .accountId(10001000001L)
-                .transactionTypeCode("01")
-                .categoryCode("0001")
+                .id(TransactionCategoryBalance.TransactionCategoryBalanceId.builder()
+                        .accountId(10001000001L)
+                        .transactionTypeCode("01")
+                        .categoryCode("0001")
+                        .build())
                 .balance(new BigDecimal("5000.00"))
                 .build();
 
         TransactionCategoryBalance tcb2 = TransactionCategoryBalance.builder()
-                .accountId(10002000001L)
-                .transactionTypeCode("01")
-                .categoryCode("0002")
+                .id(TransactionCategoryBalance.TransactionCategoryBalanceId.builder()
+                        .accountId(10002000001L)
+                        .transactionTypeCode("01")
+                        .categoryCode("0002")
+                        .build())
                 .balance(new BigDecimal("15000.50"))
                 .build();
 
         TransactionCategoryBalance tcb3 = TransactionCategoryBalance.builder()
-                .accountId(10003000001L)
-                .transactionTypeCode("01")
-                .categoryCode("0003")
+                .id(TransactionCategoryBalance.TransactionCategoryBalanceId.builder()
+                        .accountId(10003000001L)
+                        .transactionTypeCode("01")
+                        .categoryCode("0003")
+                        .build())
                 .balance(new BigDecimal("8750.25"))
                 .build();
 
@@ -229,23 +326,29 @@ public class InterestCalculationJobTest {
 
         // Create DisclosureGroup test data (DIS-GROUP-RECORD)
         DisclosureGroup dg1 = DisclosureGroup.builder()
-                .accountGroupId("GROUP001")
-                .transactionTypeCode("01")
-                .transactionCategoryCode("0001")
+                .id(DisclosureGroup.DisclosureGroupId.builder()
+                        .accountGroupId("GROUP001")
+                        .transactionTypeCode("01")
+                        .transactionCategoryCode("0001")
+                        .build())
                 .interestRate(new BigDecimal("18.50"))
                 .build();
 
         DisclosureGroup dg2 = DisclosureGroup.builder()
-                .accountGroupId("GROUP002")
-                .transactionTypeCode("01")
-                .transactionCategoryCode("0002")
+                .id(DisclosureGroup.DisclosureGroupId.builder()
+                        .accountGroupId("GROUP002")
+                        .transactionTypeCode("01")
+                        .transactionCategoryCode("0002")
+                        .build())
                 .interestRate(new BigDecimal("21.99"))
                 .build();
 
         DisclosureGroup dg3 = DisclosureGroup.builder()
-                .accountGroupId("GROUP003")
-                .transactionTypeCode("01")
-                .transactionCategoryCode("0003")
+                .id(DisclosureGroup.DisclosureGroupId.builder()
+                        .accountGroupId("GROUP003")
+                        .transactionTypeCode("01")
+                        .transactionCategoryCode("0003")
+                        .build())
                 .interestRate(new BigDecimal("15.75"))
                 .build();
 
@@ -292,8 +395,11 @@ public class InterestCalculationJobTest {
     @DisplayName("Should match exact COBOL formula: (TRAN-CAT-BAL * DIS-INT-RATE) / 1200")
     public void testInterestCalculationJob_ExactFormula() throws Exception {
         // Arrange: Set up test data with known values
+        Customer customer = createTestCustomer(100010000L);
+        
         Account account = Account.builder()
                 .accountId(10001000001L)
+                .customer(customer)
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("10000.00"))
                 .creditLimit(new BigDecimal("15000.00"))
@@ -305,17 +411,21 @@ public class InterestCalculationJobTest {
         accountRepository.save(account);
 
         TransactionCategoryBalance tcb = TransactionCategoryBalance.builder()
-                .accountId(10001000001L)
-                .transactionTypeCode("01")
-                .categoryCode("0001")
+                .id(TransactionCategoryBalance.TransactionCategoryBalanceId.builder()
+                        .accountId(10001000001L)
+                        .transactionTypeCode("01")
+                        .categoryCode("0001")
+                        .build())
                 .balance(new BigDecimal("10000.00"))
                 .build();
         transactionCategoryBalanceRepository.save(tcb);
 
         DisclosureGroup dg = DisclosureGroup.builder()
-                .accountGroupId("TESTGROUP")
-                .transactionTypeCode("01")
-                .transactionCategoryCode("0001")
+                .id(DisclosureGroup.DisclosureGroupId.builder()
+                        .accountGroupId("TESTGROUP")
+                        .transactionTypeCode("01")
+                        .transactionCategoryCode("0001")
+                        .build())
                 .interestRate(new BigDecimal("18.50"))
                 .build();
         disclosureGroupRepository.save(dg);
@@ -363,8 +473,11 @@ public class InterestCalculationJobTest {
     @DisplayName("Should maintain BigDecimal scale=2 precision throughout calculation")
     public void testInterestCalculationJob_BigDecimalPrecision() throws Exception {
         // Arrange: Test data with precise decimal values
+        Customer customer = createTestCustomer(100010000L);
+        
         Account account = Account.builder()
                 .accountId(10001000001L)
+                .customer(customer)
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("12345.67"))
                 .creditLimit(new BigDecimal("20000.00"))
@@ -376,17 +489,21 @@ public class InterestCalculationJobTest {
         accountRepository.save(account);
 
         TransactionCategoryBalance tcb = TransactionCategoryBalance.builder()
-                .accountId(10001000001L)
-                .transactionTypeCode("01")
-                .categoryCode("0001")
+                .id(TransactionCategoryBalance.TransactionCategoryBalanceId.builder()
+                        .accountId(10001000001L)
+                        .transactionTypeCode("01")
+                        .categoryCode("0001")
+                        .build())
                 .balance(new BigDecimal("12345.67"))
                 .build();
         transactionCategoryBalanceRepository.save(tcb);
 
         DisclosureGroup dg = DisclosureGroup.builder()
-                .accountGroupId("PRECISION")
-                .transactionTypeCode("01")
-                .transactionCategoryCode("0001")
+                .id(DisclosureGroup.DisclosureGroupId.builder()
+                        .accountGroupId("PRECISION")
+                        .transactionTypeCode("01")
+                        .transactionCategoryCode("0001")
+                        .build())
                 .interestRate(new BigDecimal("19.99"))
                 .build();
         disclosureGroupRepository.save(dg);
@@ -406,8 +523,8 @@ public class InterestCalculationJobTest {
         // Assert: Verify scale=2 on result
         assertThat(monthlyInterest.scale()).isEqualTo(2);
         
-        // Verify exact calculation: (12345.67 * 19.99) / 1200 = 205.68
-        assertThat(monthlyInterest).isEqualByComparingTo(new BigDecimal("205.68"));
+        // Verify exact calculation: (12345.67 * 19.99) / 1200 = 205.66
+        assertThat(monthlyInterest).isEqualByComparingTo(new BigDecimal("205.66"));
 
         // Execute batch job
         JobExecution jobExecution = jobLauncherTestUtils.launchJob();
@@ -438,8 +555,11 @@ public class InterestCalculationJobTest {
     @DisplayName("Should use RoundingMode.HALF_UP matching COBOL COMP-3 rounding")
     public void testInterestCalculationJob_RoundingMode() throws Exception {
         // Arrange: Test data that produces .175 fractional result
+        Customer customer = createTestCustomer(100010000L);
+        
         Account account = Account.builder()
                 .accountId(10001000001L)
+                .customer(customer)
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("10000.50"))
                 .creditLimit(new BigDecimal("15000.00"))
@@ -451,17 +571,21 @@ public class InterestCalculationJobTest {
         accountRepository.save(account);
 
         TransactionCategoryBalance tcb = TransactionCategoryBalance.builder()
-                .accountId(10001000001L)
-                .transactionTypeCode("01")
-                .categoryCode("0001")
+                .id(TransactionCategoryBalance.TransactionCategoryBalanceId.builder()
+                        .accountId(10001000001L)
+                        .transactionTypeCode("01")
+                        .categoryCode("0001")
+                        .build())
                 .balance(new BigDecimal("10000.50"))
                 .build();
         transactionCategoryBalanceRepository.save(tcb);
 
         DisclosureGroup dg = DisclosureGroup.builder()
-                .accountGroupId("ROUNDING")
-                .transactionTypeCode("01")
-                .transactionCategoryCode("0001")
+                .id(DisclosureGroup.DisclosureGroupId.builder()
+                        .accountGroupId("ROUNDING")
+                        .transactionTypeCode("01")
+                        .transactionCategoryCode("0001")
+                        .build())
                 .interestRate(new BigDecimal("18.50"))
                 .build();
         disclosureGroupRepository.save(dg);
@@ -509,8 +633,11 @@ public class InterestCalculationJobTest {
     @DisplayName("Should handle zero interest rate gracefully")
     public void testInterestCalculationJob_ZeroInterestRate() throws Exception {
         // Arrange: Account with zero interest rate
+        Customer customer = createTestCustomer(100010000L);
+        
         Account account = Account.builder()
                 .accountId(10001000001L)
+                .customer(customer)
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("5000.00"))
                 .creditLimit(new BigDecimal("10000.00"))
@@ -522,17 +649,21 @@ public class InterestCalculationJobTest {
         Account savedAccount = accountRepository.save(account);
 
         TransactionCategoryBalance tcb = TransactionCategoryBalance.builder()
-                .accountId(10001000001L)
-                .transactionTypeCode("01")
-                .categoryCode("0001")
+                .id(TransactionCategoryBalance.TransactionCategoryBalanceId.builder()
+                        .accountId(10001000001L)
+                        .transactionTypeCode("01")
+                        .categoryCode("0001")
+                        .build())
                 .balance(new BigDecimal("5000.00"))
                 .build();
         transactionCategoryBalanceRepository.save(tcb);
 
         DisclosureGroup dg = DisclosureGroup.builder()
-                .accountGroupId("ZERORATE")
-                .transactionTypeCode("01")
-                .transactionCategoryCode("0001")
+                .id(DisclosureGroup.DisclosureGroupId.builder()
+                        .accountGroupId("ZERORATE")
+                        .transactionTypeCode("01")
+                        .transactionCategoryCode("0001")
+                        .build())
                 .interestRate(new BigDecimal("0.00"))
                 .build();
         disclosureGroupRepository.save(dg);
@@ -574,12 +705,18 @@ public class InterestCalculationJobTest {
     @DisplayName("Should process accounts in chunks of 1000 with proper commit boundaries")
     public void testInterestCalculationJob_ChunkProcessing() throws Exception {
         // Arrange: Create 2500 test accounts for chunk boundary testing
+        List<Customer> customers = new java.util.ArrayList<>();
         List<Account> accounts = new java.util.ArrayList<>();
+        List<Card> cards = new java.util.ArrayList<>();
         List<TransactionCategoryBalance> balances = new java.util.ArrayList<>();
         
         for (int i = 1; i <= 2500; i++) {
+            Customer customer = createTestCustomer(10000000000L + i);
+            customers.add(customer);
+            
             Account account = Account.builder()
                     .accountId(10000000000L + i)
+                    .customer(customer)
                     .activeStatus("Y")
                     .currentBalance(new BigDecimal("1000.00"))
                     .creditLimit(new BigDecimal("5000.00"))
@@ -590,23 +727,41 @@ public class InterestCalculationJobTest {
                     .build();
             accounts.add(account);
             
+            // Create Card entity for each account (required by InterestCalculationProcessor.buildInterestTransaction)
+            Card card = Card.builder()
+                    .cardNumber(String.format("4000%012d", i))
+                    .account(account)
+                    .cardType("CC")
+                    .expirationDate(LocalDate.now().plusYears(3))
+                    .cvvCode("123")
+                    .embossedName("Test Customer " + i)
+                    .activeStatus("Y")
+                    .build();
+            cards.add(card);
+            
             TransactionCategoryBalance tcb = TransactionCategoryBalance.builder()
-                    .accountId(10000000000L + i)
-                    .transactionTypeCode("01")
-                    .categoryCode("0001")
+                    .id(TransactionCategoryBalance.TransactionCategoryBalanceId.builder()
+                            .accountId(10000000000L + i)
+                            .transactionTypeCode("01")
+                            .categoryCode("0001")
+                            .build())
                     .balance(new BigDecimal("1000.00"))
                     .build();
             balances.add(tcb);
         }
         
+        customerRepository.saveAll(customers);
         accountRepository.saveAll(accounts);
+        cardRepository.saveAll(cards);
         transactionCategoryBalanceRepository.saveAll(balances);
         
         // Create single disclosure group for all accounts
         DisclosureGroup dg = DisclosureGroup.builder()
-                .accountGroupId("CHUNKTEST")
-                .transactionTypeCode("01")
-                .transactionCategoryCode("0001")
+                .id(DisclosureGroup.DisclosureGroupId.builder()
+                        .accountGroupId("CHUNKTEST")
+                        .transactionTypeCode("01")
+                        .transactionCategoryCode("0001")
+                        .build())
                 .interestRate(new BigDecimal("18.00"))
                 .build();
         disclosureGroupRepository.save(dg);
@@ -653,8 +808,11 @@ public class InterestCalculationJobTest {
     @DisplayName("Should create interest transactions with calculated amounts")
     public void testInterestCalculationJob_TransactionCreation() throws Exception {
         // Arrange: Single account with known balance and rate
+        Customer customer = createTestCustomer(100010000L);
+        
         Account account = Account.builder()
                 .accountId(10001000001L)
+                .customer(customer)
                 .activeStatus("Y")
                 .currentBalance(new BigDecimal("10000.00"))
                 .creditLimit(new BigDecimal("15000.00"))
@@ -665,18 +823,34 @@ public class InterestCalculationJobTest {
                 .build();
         accountRepository.save(account);
 
+        // Create Card entity for this account (required by InterestCalculationProcessor.buildInterestTransaction)
+        Card card = Card.builder()
+                .cardNumber("4000100010001000")
+                .account(account)
+                .cardType("CC")
+                .expirationDate(LocalDate.now().plusYears(3))
+                .cvvCode("123")
+                .embossedName("Test Customer")
+                .activeStatus("Y")
+                .build();
+        cardRepository.save(card);
+
         TransactionCategoryBalance tcb = TransactionCategoryBalance.builder()
-                .accountId(10001000001L)
-                .transactionTypeCode("01")
-                .categoryCode("0001")
+                .id(TransactionCategoryBalance.TransactionCategoryBalanceId.builder()
+                        .accountId(10001000001L)
+                        .transactionTypeCode("01")
+                        .categoryCode("0001")
+                        .build())
                 .balance(new BigDecimal("10000.00"))
                 .build();
         transactionCategoryBalanceRepository.save(tcb);
 
         DisclosureGroup dg = DisclosureGroup.builder()
-                .accountGroupId("TXNTEST")
-                .transactionTypeCode("01")
-                .transactionCategoryCode("0001")
+                .id(DisclosureGroup.DisclosureGroupId.builder()
+                        .accountGroupId("TXNTEST")
+                        .transactionTypeCode("01")
+                        .transactionCategoryCode("0001")
+                        .build())
                 .interestRate(new BigDecimal("18.00"))
                 .build();
         disclosureGroupRepository.save(dg);
@@ -729,12 +903,18 @@ public class InterestCalculationJobTest {
     @DisplayName("Should complete within 4-hour processing window")
     public void testInterestCalculationJob_PerformanceRequirement() throws Exception {
         // Arrange: Create 10,000 test accounts
+        List<Customer> customers = new java.util.ArrayList<>();
         List<Account> accounts = new java.util.ArrayList<>();
+        List<Card> cards = new java.util.ArrayList<>();
         List<TransactionCategoryBalance> balances = new java.util.ArrayList<>();
         
         for (int i = 1; i <= 10000; i++) {
+            Customer customer = createTestCustomer(10000000000L + i);
+            customers.add(customer);
+            
             Account account = Account.builder()
                     .accountId(10000000000L + i)
+                    .customer(customer)
                     .activeStatus("Y")
                     .currentBalance(new BigDecimal("5000.00"))
                     .creditLimit(new BigDecimal("10000.00"))
@@ -745,22 +925,40 @@ public class InterestCalculationJobTest {
                     .build();
             accounts.add(account);
             
+            // Create Card entity for each account (required by InterestCalculationProcessor.buildInterestTransaction)
+            Card card = Card.builder()
+                    .cardNumber(String.format("4000%012d", i))
+                    .account(account)
+                    .cardType("CC")
+                    .expirationDate(LocalDate.now().plusYears(3))
+                    .cvvCode("123")
+                    .embossedName("Test Customer " + i)
+                    .activeStatus("Y")
+                    .build();
+            cards.add(card);
+            
             TransactionCategoryBalance tcb = TransactionCategoryBalance.builder()
-                    .accountId(10000000000L + i)
-                    .transactionTypeCode("01")
-                    .categoryCode("0001")
+                    .id(TransactionCategoryBalance.TransactionCategoryBalanceId.builder()
+                            .accountId(10000000000L + i)
+                            .transactionTypeCode("01")
+                            .categoryCode("0001")
+                            .build())
                     .balance(new BigDecimal("5000.00"))
                     .build();
             balances.add(tcb);
         }
         
+        customerRepository.saveAll(customers);
         accountRepository.saveAll(accounts);
+        cardRepository.saveAll(cards);
         transactionCategoryBalanceRepository.saveAll(balances);
         
         DisclosureGroup dg = DisclosureGroup.builder()
-                .accountGroupId("PERFTEST")
-                .transactionTypeCode("01")
-                .transactionCategoryCode("0001")
+                .id(DisclosureGroup.DisclosureGroupId.builder()
+                        .accountGroupId("PERFTEST")
+                        .transactionTypeCode("01")
+                        .transactionCategoryCode("0001")
+                        .build())
                 .interestRate(new BigDecimal("18.50"))
                 .build();
         disclosureGroupRepository.save(dg);
