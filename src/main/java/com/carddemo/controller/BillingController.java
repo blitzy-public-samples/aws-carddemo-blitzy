@@ -508,7 +508,7 @@ public class BillingController {
         log.info("Bill payment processed successfully for account ID: {}, transaction ID: {}, new balance: {}", 
                  request.getAccountId(), 
                  response.getTransactionId(), 
-                 response.getNewBalance());
+                 response.getUpdatedBalance());
 
         // Return HTTP 200 OK with PaymentResponse JSON body
         // COBOL equivalent: SEND-BILLPAY-SCREEN with success message (lines 289-301)
