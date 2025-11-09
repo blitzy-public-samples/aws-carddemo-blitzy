@@ -307,20 +307,44 @@ public class TransactionController {
             
             @RequestParam(required = false)
             @Parameter(
-                description = "Optional filter by account ID. Returns all transactions for cards associated with the account. " +
-                              "Useful for account-level transaction history and statement generation. " +
-                              "Maps to COBOL account lookup via cross-reference file (CXACAIX).",
-                example = "12345678901"
+                description = "Optional filter by transaction type code. Valid values: '01' (purchase), '02' (cash advance), " +
+                              "'03' (payment), '04' (refund), '05' (fee). Maps to COBOL TRAN-TYPE-CD field filter.",
+                example = "01"
             )
-            String accountId
+            String transactionType,
+            
+            @RequestParam(required = false)
+            @Parameter(
+                description = "Optional merchant name search (case-insensitive partial match). Example: 'WALMART' matches " +
+                              "'WALMART SUPERCENTER', 'Walmart Store', etc.",
+                example = "WALMART"
+            )
+            String merchantName,
+            
+            @RequestParam(required = false)
+            @Parameter(
+                description = "Optional minimum transaction amount filter (inclusive). Uses BigDecimal for exact precision. " +
+                              "Example: 10.00 for transactions >= $10.00",
+                example = "10.00"
+            )
+            BigDecimal minAmount,
+            
+            @RequestParam(required = false)
+            @Parameter(
+                description = "Optional maximum transaction amount filter (inclusive). Must be >= minAmount if both provided. " +
+                              "Example: 500.00 for transactions <= $500.00",
+                example = "500.00"
+            )
+            BigDecimal maxAmount
     ) {
-        log.info("Received transaction list request: page={}, size={}, cardNumber={}, startDate={}, endDate={}, accountId={}",
+        log.info("Received transaction list request: page={}, size={}, cardNumber={}, startDate={}, endDate={}, " +
+                 "transactionType={}, merchantName={}, minAmount={}, maxAmount={}",
                 pageable.getPageNumber(), pageable.getPageSize(), 
                 cardNumber != null ? maskCardNumber(cardNumber) : "null",
-                startDate, endDate, accountId);
+                startDate, endDate, transactionType, merchantName, minAmount, maxAmount);
         
         Page<TransactionResponse> transactions = transactionListService.listTransactions(
-                pageable, cardNumber, startDate, endDate, accountId);
+                pageable, cardNumber, startDate, endDate, transactionType, merchantName, minAmount, maxAmount);
         
         log.info("Returning {} transactions (page {} of {})",
                 transactions.getNumberOfElements(),
