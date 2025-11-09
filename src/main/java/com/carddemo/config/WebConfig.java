@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.web.servlet.HandlerInterceptor;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
@@ -102,43 +103,55 @@ public class WebConfig implements WebMvcConfigurer {
     }
 
     /**
-     * Configures HTTP message converters for request/response body serialization
+     * Extends HTTP message converters to customize JSON serialization
      * 
-     * This method adds a Jackson2HttpMessageConverter configured with JavaTimeModule
-     * to properly handle Java 8 date/time types (LocalDate, LocalDateTime, ZonedDateTime)
+     * This method modifies the auto-configured Jackson2HttpMessageConverter to ensure
+     * proper handling of Java 8 date/time types (LocalDate, LocalDateTime, ZonedDateTime)
      * that replace COBOL date fields (CEEDAYS Lillian format).
+     * 
+     * By using extendMessageConverters instead of configureMessageConverters, we preserve
+     * Spring Boot's auto-configuration including Spring Data Page serialization support
+     * while adding our custom date/time formatting requirements.
      * 
      * Key configuration:
      * - JavaTimeModule: Enables JSR-310 date/time API support
      * - ISO-8601 format: Dates serialized as "2024-01-15" instead of Unix timestamps
      * - Human-readable JSON: Ensures date fields are easily readable in API responses
+     * - Spring Data support: Preserved from auto-configuration for Page, Slice serialization
      * 
      * This replaces mainframe EBCDIC data encoding with modern JSON UTF-8 encoding.
      *
-     * @param converters List of HttpMessageConverter instances to configure
+     * @param converters List of HttpMessageConverter instances to extend
      */
     @Override
-    public void configureMessageConverters(List<HttpMessageConverter<?>> converters) {
-        log.info("Configuring Jackson message converters with JSR-310 support");
+    public void extendMessageConverters(List<HttpMessageConverter<?>> converters) {
+        log.info("Extending Jackson message converters with JSR-310 date/time configuration");
         
-        // Create ObjectMapper with JavaTimeModule for proper date/time serialization
-        ObjectMapper objectMapper = new ObjectMapper();
-        
-        // Register JavaTimeModule for LocalDate, LocalDateTime, ZonedDateTime support
-        objectMapper.registerModule(new JavaTimeModule());
-        
-        // Disable timestamp serialization - use ISO-8601 format instead
-        objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        
-        // Create Jackson converter with custom ObjectMapper
-        MappingJackson2HttpMessageConverter converter = new MappingJackson2HttpMessageConverter();
-        converter.setObjectMapper(objectMapper);
-        
-        // Add converter to the list
-        converters.add(converter);
-        
-        log.debug("Jackson message converter configured: ISO-8601 date format, "
-                + "JavaTimeModule registered");
+        // Find the existing Jackson converter added by Spring Boot auto-configuration
+        converters.stream()
+                .filter(converter -> converter instanceof MappingJackson2HttpMessageConverter)
+                .map(converter -> (MappingJackson2HttpMessageConverter) converter)
+                .findFirst()
+                .ifPresent(converter -> {
+                    ObjectMapper objectMapper = converter.getObjectMapper();
+                    
+                    // Debug: Log registered modules
+                    log.debug("Registered Jackson modules before customization: " + 
+                            objectMapper.getRegisteredModuleIds());
+                    
+                    // Ensure JavaTimeModule is registered
+                    objectMapper.registerModule(new JavaTimeModule());
+                    
+                    // Disable timestamp serialization - use ISO-8601 format instead
+                    objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+                    
+                    // Debug: Log registered modules after customization
+                    log.debug("Registered Jackson modules after customization: " + 
+                            objectMapper.getRegisteredModuleIds());
+                    
+                    log.debug("Extended existing Jackson converter: ISO-8601 date format configured, "
+                            + "Spring Data Page serialization preserved");
+                });
     }
 
     /**
