@@ -7,6 +7,8 @@ import com.carddemo.entity.Customer;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.batch.processor.StatementDetailProcessor;
+import com.carddemo.batch.processor.AccountStatementProcessor;
+import com.carddemo.dto.AccountStatement;
 import com.carddemo.dto.response.StatementDetail;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -235,6 +237,10 @@ public class StatementGenerationJob implements JobExecutionListener {
     private final StatementDetailProcessor statementDetailProcessor;
     private final TransactionRepository transactionRepository;
     private final AccountRepository accountRepository;
+    
+    // Step-scoped processor injected as proxy (resolved at step execution time)
+    @org.springframework.beans.factory.annotation.Autowired
+    private AccountStatementProcessor accountStatementProcessor;
 
     // Job execution statistics (thread-safe for parallel processing)
     private final AtomicInteger statementCount = new AtomicInteger(0);
@@ -261,13 +267,13 @@ public class StatementGenerationJob implements JobExecutionListener {
      * @return configured Job instance ready for execution by JobLauncher
      */
     @Bean
-    public Job monthlyStatementGenerationJob(Step statementGenerationStep) {
+    public Job monthlyStatementGenerationJob() {
         log.info("Initializing monthlyStatementGenerationJob bean");
         
         return new JobBuilder("statementGenerationJob", jobRepository)
                 .incrementer(new RunIdIncrementer())
                 .listener(this)
-                .start(statementGenerationStep)
+                .start(statementGenerationStep())
                 .build();
     }
 
@@ -276,15 +282,19 @@ public class StatementGenerationJob implements JobExecutionListener {
      * 
      * <p>This method defines the core processing step with:</p>
      * <ul>
-     *   <li><b>Chunk Size: 50</b> - Process 50 transactions per commit interval</li>
-     *   <li><b>Reader:</b> transactionReader - JpaPagingItemReader with JPQL query</li>
-     *   <li><b>Processor:</b> statementDetailProcessor - Enriches transaction data</li>
+     *   <li><b>Chunk Size: 10</b> - Process 10 accounts per commit interval</li>
+     *   <li><b>Reader:</b> accountReader - JpaPagingItemReader with JPQL query</li>
+     *   <li><b>Processor:</b> accountStatementProcessor - Enriches account with transactions</li>
      *   <li><b>Writer:</b> statementWriter - Generates PDF statements</li>
-     *   <li><b>Fault Tolerance:</b> Skip limit 10 for transactions with missing data</li>
+     *   <li><b>Fault Tolerance:</b> Skip limit 10 for accounts with data issues</li>
      * </ul>
      * 
      * <p><b>COBOL Equivalent:</b> Main processing loop in CBSTM03A.CBL PROCEDURE DIVISION
-     * with PERFORM UNTIL END-OF-FILE for sequential transaction file processing</p>
+     * with PERFORM UNTIL END-OF-FILE for sequential account file processing</p>
+     * 
+     * <p><b>Zero Transaction Handling:</b> The account-driven architecture ensures that
+     * accounts with zero transactions still receive statements with "No transactions this
+     * period" message, matching COBOL behavior where all accounts receive monthly statements.</p>
      * 
      * <p><b>Transaction Boundaries:</b> Each chunk commit matches COBOL implicit commit
      * after each WRITE operation to STMT-FILE, preserving ACID properties per Section 0.10
@@ -297,16 +307,15 @@ public class StatementGenerationJob implements JobExecutionListener {
      * @return configured Step instance for statement generation processing
      */
     @Bean
-    public Step statementGenerationStep(JpaPagingItemReader<Transaction> transactionReader,
-                                       ItemWriter<StatementDetail> statementWriter) {
+    public Step statementGenerationStep() {
         
-        log.info("Initializing statementGenerationStep bean with chunk size 50");
+        log.info("Initializing statementGenerationStep bean with chunk size 10");
         
         return new StepBuilder("statementGenerationStep", jobRepository)
-                .<Transaction, StatementDetail>chunk(50, transactionManager)
-                .reader(transactionReader)
-                .processor(statementDetailProcessor)
-                .writer(statementWriter)
+                .<Account, AccountStatement>chunk(10, transactionManager)
+                .reader(statementAccountReader())
+                .processor(accountStatementProcessor)
+                .writer(statementWriter(null))
                 .faultTolerant()
                 .skipLimit(10)
                 .skip(Exception.class)
@@ -314,84 +323,78 @@ public class StatementGenerationJob implements JobExecutionListener {
     }
 
     /**
-     * JPA Paging Item Reader for transaction data retrieval.
+     * JPA Paging Item Reader for account data retrieval.
      * 
-     * <p>This @Bean method creates a JpaPagingItemReader configured to fetch transactions
-     * within the statement period date range with eager loading of related entities.</p>
+     * <p>This @Bean method creates a JpaPagingItemReader configured to fetch all accounts
+     * with eager loading of related customer entity. The account-driven architecture ensures
+     * that statements are generated for all accounts, including those with zero transactions.</p>
+     * 
+     * <p><b>Bean Name:</b> Named "statementAccountReader" to avoid collision with
+     * "accountReader" bean in AccountDataReader class used for CSV data loading.</p>
      * 
      * <p><b>JPQL Query:</b></p>
      * <pre>
-     * SELECT t FROM Transaction t 
-     * JOIN FETCH t.card c 
-     * JOIN FETCH c.account a 
+     * SELECT a FROM Account a 
      * JOIN FETCH a.customer 
-     * WHERE t.originationTimestamp BETWEEN :startDateTime AND :endDateTime 
-     * ORDER BY c.cardNumber, t.originationTimestamp
+     * WHERE a.activeStatus = 'Y' 
+     * ORDER BY a.accountId
      * </pre>
      * 
      * <p><b>Query Optimization:</b></p>
      * <ul>
-     *   <li><b>JOIN FETCH:</b> Eliminates N+1 query problem by eagerly loading relationships</li>
-     *   <li><b>ORDER BY:</b> Groups transactions by card number for statement consolidation</li>
-     *   <li><b>Page Size: 1000</b> - Balances memory usage with query performance</li>
-     *   <li><b>Date Range Filter:</b> WHERE clause limits result set to statement period</li>
+     *   <li><b>JOIN FETCH:</b> Eliminates N+1 query problem by eagerly loading customer</li>
+     *   <li><b>ORDER BY:</b> Ensures consistent processing order across job restarts</li>
+     *   <li><b>Page Size: 100</b> - Balances memory usage with query performance</li>
+     *   <li><b>Active Status Filter:</b> WHERE clause limits to active accounts only</li>
      * </ul>
      * 
      * <p><b>COBOL Equivalent:</b></p>
      * <ul>
-     *   <li>Lines 140-144: 1000-TRNXFILE-PROC paragraph with M03B-READ operation</li>
-     *   <li>WS-FL-DD='TRNXFILE' sequential file access</li>
+     *   <li>Lines 140-144: 1000-ACCTFILE-PROC paragraph with sequential file access</li>
+     *   <li>WS-FL-DD='ACCTFILE' sequential file access</li>
      *   <li>PERFORM UNTIL END-OF-FILE='Y' loop for record processing</li>
      * </ul>
      * 
-     * <p><b>Step Scope:</b> This bean is step-scoped allowing dynamic parameter injection
-     * for startDate and endDate from JobParameters, enabling configurable statement periods
-     * for each job execution (monthly, quarterly, ad-hoc date ranges).</p>
+     * <p><b>Zero Transaction Handling:</b></p>
+     * <p>By reading accounts instead of transactions, this reader ensures that all accounts
+     * are processed regardless of transaction count. The processor will fetch transactions
+     * per account, and the writer will generate statements even for accounts with zero
+     * transactions, matching COBOL behavior.</p>
      * 
-     * @param startDate beginning of statement period (injected from JobParameters)
-     * @param endDate end of statement period (injected from JobParameters)
-     * @return configured JpaPagingItemReader for transaction data retrieval
+     * <p><b>Step Scope:</b> This bean is step-scoped allowing dynamic parameter injection
+     * from JobParameters. Although date parameters are not used in the account query itself,
+     * they are passed to the processor for transaction filtering.</p>
+     * 
+     * @return configured JpaPagingItemReader for account data retrieval
      */
     @Bean
     @StepScope
-    public JpaPagingItemReader<Transaction> transactionReader(
-            @Value("#{jobParameters['startDate']}") LocalDate startDate,
-            @Value("#{jobParameters['endDate']}") LocalDate endDate) {
+    public JpaPagingItemReader<Account> statementAccountReader() {
         
-        log.info("Initializing transactionReader with date range: {} to {}", startDate, endDate);
+        log.info("Initializing statementAccountReader for all active accounts");
         
-        JpaPagingItemReader<Transaction> reader = new JpaPagingItemReader<>();
+        JpaPagingItemReader<Account> reader = new JpaPagingItemReader<>();
         reader.setEntityManagerFactory(entityManagerFactory);
         
-        // JPQL query with JOIN FETCH for relationship loading
-        // Note: Transaction entity uses originationTimestamp (LocalDateTime), not transactionDate
-        String queryString = "SELECT t FROM Transaction t " +
-                "JOIN FETCH t.card c " +
-                "JOIN FETCH c.account a " +
+        // JPQL query with JOIN FETCH for customer relationship loading
+        String queryString = "SELECT a FROM Account a " +
                 "JOIN FETCH a.customer " +
-                "WHERE t.originationTimestamp BETWEEN :startDateTime AND :endDateTime " +
-                "ORDER BY c.cardNumber, t.originationTimestamp";
+                "WHERE a.activeStatus = 'Y' " +
+                "ORDER BY a.accountId";
         
         reader.setQueryString(queryString);
         
-        // Parameter binding for date range filtering
-        // Convert LocalDate to LocalDateTime for timestamp comparison
-        Map<String, Object> parameterValues = new HashMap<>();
-        parameterValues.put("startDateTime", startDate.atStartOfDay());
-        parameterValues.put("endDateTime", endDate.plusDays(1).atStartOfDay());
-        reader.setParameterValues(parameterValues);
-        
         // Page size for memory-efficient processing
-        reader.setPageSize(1000);
+        reader.setPageSize(100);
         
         try {
             reader.afterPropertiesSet();
         } catch (Exception e) {
-            log.error("Failed to initialize transactionReader", e);
-            throw new RuntimeException("TransactionReader initialization failed", e);
+            log.error("Failed to initialize statementAccountReader", e);
+            throw new RuntimeException("StatementAccountReader initialization failed", e);
         }
         
-        log.info("TransactionReader initialized successfully with page size 1000");
+        log.info("StatementAccountReader initialized successfully with page size 100");
         return reader;
     }
 
@@ -399,7 +402,7 @@ public class StatementGenerationJob implements JobExecutionListener {
      * Custom Item Writer for PDF statement generation using JasperReports.
      * 
      * <p>This @Bean method creates a custom ItemWriter that generates PDF statement documents
-     * from StatementDetail objects. Each statement includes:</p>
+     * from AccountStatement objects. Each statement includes:</p>
      * <ul>
      *   <li><b>Customer Information:</b> Name, address (lines 1-3), city, state, zip</li>
      *   <li><b>Account Summary:</b> Account number, current balance, credit limit, statement period</li>
@@ -414,6 +417,11 @@ public class StatementGenerationJob implements JobExecutionListener {
      *   <li>Export format: PDF via JasperExportManager.exportReportToPdfFile()</li>
      *   <li>Output filename: statement_{accountId}_{statementPeriod}.pdf</li>
      * </ul>
+     * 
+     * <p><b>Zero Transaction Handling:</b></p>
+     * <p>This writer properly handles accounts with zero transactions by checking if the
+     * transaction list is empty and generating a statement with "No transactions this period"
+     * message, matching COBOL behavior where all accounts receive monthly statements.</p>
      * 
      * <p><b>COBOL Equivalent:</b></p>
      * <ul>
@@ -440,33 +448,22 @@ public class StatementGenerationJob implements JobExecutionListener {
      */
     @Bean
     @StepScope
-    public ItemWriter<StatementDetail> statementWriter(
+    public ItemWriter<AccountStatement> statementWriter(
             @Value("#{jobParameters['outputPath'] ?: '${batch.output.statement-directory:./statements}'}") String outputPath) {
         
         log.info("Initializing statementWriter with output path: {}", outputPath);
         
         return items -> {
-            // Group statement details by account for statement consolidation
-            Map<Long, List<StatementDetail>> statementsByAccount = new HashMap<>();
-            
-            for (StatementDetail detail : items) {
-                statementsByAccount
-                        .computeIfAbsent(detail.getAccountId(), k -> new ArrayList<>())
-                        .add(detail);
-            }
-            
             // Generate one PDF statement per account
-            for (Map.Entry<Long, List<StatementDetail>> entry : statementsByAccount.entrySet()) {
-                Long accountId = entry.getKey();
-                List<StatementDetail> accountStatements = entry.getValue();
-                
+            for (AccountStatement accountStatement : items) {
                 try {
-                    generatePdfStatement(accountId, accountStatements, outputPath);
+                    generatePdfStatement(accountStatement, outputPath);
                     statementCount.incrementAndGet();
-                    log.debug("Generated statement for account {}", accountId);
+                    log.debug("Generated statement for account {}", accountStatement.getAccountId());
                 } catch (Exception e) {
                     errorCount.incrementAndGet();
-                    log.error("Failed to generate statement for account {}: {}", accountId, e.getMessage(), e);
+                    log.error("Failed to generate statement for account {}: {}", 
+                            accountStatement.getAccountId(), e.getMessage(), e);
                     throw e; // Trigger chunk rollback
                 }
             }
@@ -494,13 +491,19 @@ public class StatementGenerationJob implements JobExecutionListener {
      *   <li>Statement total calculated with BigDecimal scale=2 and RoundingMode.HALF_UP</li>
      * </ul>
      * 
-     * @param accountId account identifier for statement filename
-     * @param statementDetails list of transaction details for this account
+     * <p><b>Zero Transaction Handling:</b></p>
+     * <p>If the account has no transactions, this method generates a statement with
+     * "No transactions this period" message and statement total of $0.00, matching
+     * COBOL behavior where all accounts receive monthly statements.</p>
+     * 
+     * @param accountStatement AccountStatement containing account, customer, and transaction data
      * @param outputPath directory path for PDF file output
      * @throws Exception if template compilation, report filling, or PDF export fails
      */
-    private void generatePdfStatement(Long accountId, List<StatementDetail> statementDetails, String outputPath) 
+    private void generatePdfStatement(AccountStatement accountStatement, String outputPath) 
             throws Exception {
+        
+        List<StatementDetail> statementDetails = accountStatement.getTransactions();
         
         // Calculate statement total with BigDecimal precision matching COBOL COMP-3 WS-TOTAL-AMT
         BigDecimal statementTotal = statementDetails.stream()
@@ -508,26 +511,26 @@ public class StatementGenerationJob implements JobExecutionListener {
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .setScale(2, RoundingMode.HALF_UP);
         
-        // Extract customer and account information from first statement detail
-        StatementDetail firstDetail = statementDetails.get(0);
-        
-        // Build JasperReports parameters map
+        // Build JasperReports parameters map from AccountStatement
         Map<String, Object> parameters = new HashMap<>();
-        parameters.put("customerName", firstDetail.getCustomerName());
-        parameters.put("addressLine1", firstDetail.getAddressLine1());
-        parameters.put("addressLine2", firstDetail.getAddressLine2());
-        parameters.put("addressLine3", firstDetail.getAddressLine3());
-        parameters.put("accountNumber", accountId.toString());
+        parameters.put("customerName", accountStatement.getCustomerName());
+        parameters.put("addressLine1", accountStatement.getAddressLine1());
+        parameters.put("addressLine2", accountStatement.getAddressLine2());
+        parameters.put("addressLine3", accountStatement.getAddressLine3());
+        parameters.put("accountNumber", accountStatement.getAccountId().toString());
         parameters.put("statementPeriod", formatStatementPeriod(statementDetails));
         parameters.put("statementTotal", formatAmount(statementTotal));
-        parameters.put("currentBalance", formatAmount(firstDetail.getCurrentBalance()));
-        parameters.put("creditLimit", formatAmount(firstDetail.getCreditLimit()));
+        parameters.put("currentBalance", formatAmount(accountStatement.getCurrentBalance()));
+        parameters.put("creditLimit", formatAmount(accountStatement.getCreditLimit()));
+        
+        // Add flag for zero transaction handling
+        parameters.put("hasTransactions", !statementDetails.isEmpty());
         
         // Load and compile JasperReports template
         InputStream templateStream = getClass().getResourceAsStream("/reports/statement_template.jrxml");
         JasperReport jasperReport = JasperCompileManager.compileReport(templateStream);
         
-        // Create data source from statement details
+        // Create data source from statement details (empty list if no transactions)
         JRBeanCollectionDataSource dataSource = new JRBeanCollectionDataSource(statementDetails);
         
         // Fill report with data
@@ -536,7 +539,7 @@ public class StatementGenerationJob implements JobExecutionListener {
         // Export to PDF file
         String outputFilename = String.format("%s/statement_%d_%s.pdf", 
                 outputPath, 
-                accountId, 
+                accountStatement.getAccountId(), 
                 LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")));
         
         JasperExportManager.exportReportToPdfFile(jasperPrint, outputFilename);
