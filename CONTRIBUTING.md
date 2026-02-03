@@ -50,6 +50,25 @@ For more information see the [Code of Conduct FAQ](https://aws.github.io/code-of
 opensource-codeofconduct@amazon.com with any additional questions or comments.
 
 
+## Code Style Catalog
+
+This project maintains a comprehensive **Code Style Catalog** that documents and enforces coding patterns extracted from the CardDemo mainframe application codebase. The catalog serves as the authoritative reference for all code generation activities and ensures consistency across contributions.
+
+**All contributors must adhere to the patterns documented in the Code Style Catalog when submitting code changes.**
+
+- **[Code Style Catalog Overview](docs/code-style-catalog/README.md)** - Main entry point containing pattern index, usage instructions, and compliance workflow
+- **Priority Level Enforcement:**
+  - **MUST (必須)**: Non-negotiable patterns. Violations result in **automatic rejection** of the contribution.
+  - **SHOULD (推奨)**: Applied by default. Deviations require **documented justification** in code comments.
+  - **MAY (任意)**: Optional patterns at developer discretion.
+- **[Compliance Reporting Format](docs/code-style-catalog/compliance-reporting.md)** - Required format for compliance reports accompanying generated code
+
+When contributing code, ensure that:
+1. All MUST-priority catalog rules are followed without exception
+2. Any SHOULD-priority deviations are clearly justified with inline comments
+3. Compliance reports are included with code generation submissions as specified in the catalog
+
+
 ## Security issue notifications
 If you discover a potential security issue in this project we ask that you notify AWS/Amazon Security via our [vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/). Please do **not** create a public github issue.
 
