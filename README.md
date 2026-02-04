@@ -18,6 +18,7 @@
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
 - [License](#license)
+- [Code Style Catalog](#code-style-catalog)
 - [Project status](#project-status)
 
 <br/>
@@ -310,6 +311,40 @@ Feel free to raise issues, create code and raise merge requests for enhancements
 ## License
 
 This is intended to be a community resource and it is released under the Apache 2.0 license.
+
+<br/>
+
+## Code Style Catalog
+
+The CardDemo application includes a comprehensive **Code Style Catalog** that documents and enforces coding patterns extracted from the COBOL/CICS/BMS codebase. This catalog serves as the authoritative reference for code generation, analysis, and modernization activities.
+
+📚 **[View the Complete Code Style Catalog](docs/code-style-catalog/README.md)**
+
+### Catalog Structure
+
+The catalog is organized into the following pattern categories:
+
+| Category | Japanese | Description |
+| :------- | :------- | :---------- |
+| Architecture Patterns | アーキテクチャパターン | COBOL program structure, division organization, paragraph numbering |
+| Naming Conventions | 命名規則 | Program ID prefixes, copybook naming, field prefixes |
+| Error Handling | エラー処理 | RESP/RESP2 patterns, APPL-RESULT codes, ABEND processing |
+| Data Contracts | データ契約 | Copybook structure, record layouts, COMMAREA contracts |
+| BMS/UI Patterns | BMSパターン | DFHMSD/DFHMDI/DFHMDF structure, AI/AO two-view pattern |
+| Validation Patterns | 検証パターン | 88-level condition names, input validation |
+| Compliance Reporting | 準拠レポート | Compliance report format, validation checklist |
+
+### Priority Levels
+
+Each pattern in the catalog is assigned a priority level:
+
+| Priority | Japanese | Enforcement |
+| :------- | :------- | :---------- |
+| **MUST** | 必須 | Non-negotiable. Automatic rejection on violation. |
+| **SHOULD** | 推奨 | Applied by default. Deviation requires documented justification. |
+| **MAY** | 任意 | Developer discretion. Optional application. |
+
+> **Note:** All generated code must pass validation against applicable catalog rules. Code violating MUST-priority rules results in automatic review failure.
 
 <br/>
 
