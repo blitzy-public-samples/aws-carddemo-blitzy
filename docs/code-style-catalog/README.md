@@ -97,20 +97,20 @@ This catalog documents and enforces coding patterns extracted from the CardDemo 
 | カテゴリ | MUST | SHOULD | MAY | 合計 | ドキュメント |
 |---------|------|--------|-----|------|-------------|
 | アーキテクチャ | 7 | 4 | 1 | 12 | [architecture-patterns.md](architecture-patterns.md) |
-| 命名規則 | 2 | 4 | 0 | 6 | [naming-conventions.md](naming-conventions.md) |
+| 命名規則 | 2 | 3 | 0 | 5 | [naming-conventions.md](naming-conventions.md) |
 | エラー処理 | 3 | 4 | 0 | 7 | [error-handling.md](error-handling.md) |
 | データベース | 7 | 2 | 0 | 9 | [data-contracts.md](data-contracts.md) |
-| API/UI | 5 | 4 | 3 | 12 | [bms-patterns.md](bms-patterns.md) |
-| テスト/検証 | 2 | 2 | 1 | 5 | [validation-patterns.md](validation-patterns.md) |
-| **合計** | **26** | **20** | **5** | **51** | - |
+| API/UI | 4 | 4 | 0 | 8 | [bms-patterns.md](bms-patterns.md) |
+| テスト/検証 | 3 | 4 | 2 | 9 | [validation-patterns.md](validation-patterns.md) |
+| **合計** | **26** | **21** | **3** | **50** | - |
 
 ### パターン分布 (Pattern Distribution)
 
 ```mermaid
 pie title パターン優先度分布 (Pattern Priority Distribution)
     "MUST (必須)" : 26
-    "SHOULD (推奨)" : 20
-    "MAY (任意)" : 5
+    "SHOULD (推奨)" : 21
+    "MAY (任意)" : 3
 ```
 
 ---
