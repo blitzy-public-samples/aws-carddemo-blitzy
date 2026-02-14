@@ -16,6 +16,7 @@
     - [**Admin Menu**](#admin-menu)
 - [Support](#support)
 - [Roadmap](#roadmap)
+- [Migration Analysis](#migration-analysis)
 - [Contributing](#contributing)
 - [License](#license)
 - [Project status](#project-status)
@@ -296,6 +297,21 @@ The following features are planned for upcoming releases
    * Message queue integration
    
    * Exposure of transactions for distributed application integration
+
+<br/>
+
+## Migration Analysis
+
+A comprehensive proprietary utilities assessment has been conducted for the CardDemo COBOL mainframe application. This analysis covers all IBM Language Environment runtime services, CICS Transaction Server APIs, z/OS batch utilities, BMS map macros, and proprietary copybook dependencies identified across the full codebase — 28 COBOL programs, 28 copybooks, and 17 BMS map sources.
+
+[Migration Analysis Report](docs/migration-analysis/00-executive-summary.md)
+
+The analysis includes:
+- **Utility Inventory** — exhaustive catalog of all proprietary utility dependencies by category
+- **Dependency Impact Analysis** — per-utility complexity assessment with Java equivalent mappings
+- **Migration Strategies** — per-utility migration playbooks with specific Java libraries and code examples
+- **Risk Assessment** — risk matrix classifying each utility by migration difficulty and behavioral fidelity
+- **Testing & Validation Framework** — behavioral parity testing strategy with byte-level comparison and regression test design
 
 <br/>
 
