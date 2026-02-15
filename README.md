@@ -19,6 +19,7 @@
 - [Contributing](#contributing)
 - [License](#license)
 - [Project status](#project-status)
+- [Migration Analysis](#migration-analysis)
 
 <br/>
 
@@ -321,4 +322,38 @@ Watch this space for updates
 
 <br/>
 
+## Migration Analysis
+
+A comprehensive proprietary mainframe utility assessment has been conducted for the CardDemo application. This analysis inventories every IBM proprietary dependency in the codebase, documents each through authoritative IBM sources, evaluates Java migration paths, and provides a risk-aware testing strategy for behavioral parity validation.
+
+### Key Findings
+
+- **20+ proprietary IBM utilities** identified across 5 categories: Language Environment services (CEE3ABD, CEEDAYS), CICS Runtime Commands (18 command types), JCL Utilities (IDCAMS, DFSORT, IEBGENER, IEFBR14), BMS Map Processing (DFHMSD/DFHMDI/DFHMDF), and VSAM File Access Patterns
+- **28 COBOL source programs** analyzed (9 batch + 19 online CICS), along with **17 BMS mapsets** and **13 VSAM KSDS datasets**
+- Each utility has been researched with **IBM documentation citations**, concrete **Java migration paths** identified using specific libraries (java.time, Spring Data JPA, Spring MVC, Apache Commons, AWS SDK), and **risk-classified** as HIGH, MEDIUM, or LOW
+
+### Migration Readiness Overview
+
+| Risk Level | Count | Examples |
+| :--------- | ----: | :------- |
+| **HIGH**   |     5 | CICS pseudo-conversational pattern, VSAM-to-JDBC file control, WRITEQ TD batch coupling, BMS terminal I/O, VSAM AIX topology |
+| **MEDIUM** |     5 | IDCAMS lifecycle management, DFSORT, BMS macros, CICS ASKTIME/FORMATTIME, CICS HANDLE/ABEND |
+| **LOW**    |     4 | CEEDAYS, CEE3ABD, IEBGENER, IEFBR14 |
+
+### Documentation
+
+For the full migration analysis report, start with the **[Executive Summary](./docs/migration-analysis/00-executive-summary.md)**, which provides a stakeholder-facing overview and links to all detailed sections.
+
+**Report Sections:**
+
+1. [Proprietary Utility Inventory](./docs/migration-analysis/01-proprietary-utility-inventory.md) — Complete catalog of all IBM proprietary utilities with source locations and classifications
+2. [External Documentation Research](./docs/migration-analysis/02-external-documentation-research.md) — Per-utility IBM documentation findings with citations and links
+3. [Dependency Impact Analysis](./docs/migration-analysis/03-dependency-impact-analysis.md) — Cross-referenced behavioral assessment with complexity ratings
+4. [Migration Strategy Per Utility](./docs/migration-analysis/04-migration-strategy-per-utility.md) — Java implementation recommendations with specific library candidates
+5. [Risk Assessment](./docs/migration-analysis/05-risk-assessment.md) — Risk matrix with HIGH/MEDIUM/LOW classifications and mitigation narratives
+6. [Testing & Validation Framework](./docs/migration-analysis/06-testing-validation-framework.md) — Byte-level comparison strategy and regression test design
+
+**[Appendices](./docs/migration-analysis/appendices/)** — CICS command reference, VSAM dataset catalog, batch job dependency map, BMS screen inventory, and source code cross-reference
+
+<br/>
 
