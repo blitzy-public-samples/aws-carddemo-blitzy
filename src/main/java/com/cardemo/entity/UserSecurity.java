@@ -1,68 +1,78 @@
 /*
- * UserSecurity.java — JPA Entity mapping VSAM USRSEC (80-byte KSDS record)
- *
- * Source: app/cpy/CSUSR01Y.cpy (SEC-USER-DATA)
- * VSAM Dataset: AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS
- * Record Length: 80 bytes
- * Primary Key: SEC-USR-ID PIC X(08) — 8-character user identifier
- *
- * COBOL Record Layout (CSUSR01Y.cpy):
- *   01  SEC-USER-DATA.
- *       05  SEC-USR-ID                 PIC X(08).   -> secUsrId (String, 8 chars, PK)
- *       05  SEC-USR-FNAME              PIC X(20).   -> secUsrFname (String, 20 chars)
- *       05  SEC-USR-LNAME              PIC X(20).   -> secUsrLname (String, 20 chars)
- *       05  SEC-USR-PWD                PIC X(08).   -> secUsrPwd (String, 72 chars — expanded for BCrypt)
- *       05  SEC-USR-TYPE               PIC X(01).   -> secUsrType (String, 1 char: 'A' or 'U')
- *       05  SEC-USR-FILLER             PIC X(23).   -> not mapped (padding only)
- *   Total: 8+20+20+8+1+23 = 80 bytes
- *
- * Migration Notes:
- * - SEC-USR-PWD is expanded from 8 chars (plaintext) to 72 chars (BCrypt hash)
- *   per AAP security requirements. Passwords are BCrypt-hashed, not stored in plaintext.
- * - SEC-USR-TYPE maps to the UserType enum ('A' = ADMIN, 'U' = USER), corresponding
- *   to COBOL 88-level conditions CDEMO-USRTYP-ADMIN/CDEMO-USRTYP-USER in COCOM01Y.cpy.
- * - No @Version optimistic locking — the COBOL user security file did not use
- *   READ UPDATE → REWRITE patterns for concurrent access (admin-only single-user updates).
- *
- * Referenced by:
- * - COSGN00C.cbl (Sign-on authentication — READ by SEC-USR-ID)
- * - COUSR00C.cbl (User list — STARTBR/READNEXT for paginated browse)
- * - COUSR01C.cbl (User add — WRITE new record)
- * - COUSR02C.cbl (User update — READ UPDATE/REWRITE)
- * - COUSR03C.cbl (User delete — READ/DELETE)
- *
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
- * Licensed under the Apache License, Version 2.0.
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package com.cardemo.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
+
+import com.cardemo.common.enums.UserType;
+
 import java.util.Objects;
 
 /**
- * JPA entity representing a user security record.
+ * JPA entity representing a user security record in the CardDemo application.
  *
  * <p>Maps the VSAM USRSEC KSDS dataset (80-byte records) defined in COBOL
- * copybook CSUSR01Y.cpy. This entity stores user credentials and role
+ * copybook {@code CSUSR01Y.cpy}. This entity stores user credentials and role
  * assignments for the CardDemo application's authentication and authorization
  * system.</p>
  *
- * <p>In the original COBOL application, passwords were stored as 8-character
- * plaintext in SEC-USR-PWD. In the Java migration, passwords are BCrypt-hashed
- * (60-character output, stored in a 72-character column for future algorithm
- * flexibility). The seed data loader (V100__seed_data.sql) pre-hashes the
- * original plaintext passwords.</p>
+ * <h3>COBOL Record Layout (CSUSR01Y.cpy SEC-USER-DATA, 80 bytes):</h3>
+ * <pre>
+ *   01  SEC-USER-DATA.
+ *       05  SEC-USR-ID      PIC X(08).  → userId    (String, 8 chars, PK)
+ *       05  SEC-USR-FNAME   PIC X(20).  → firstName (String, 20 chars)
+ *       05  SEC-USR-LNAME   PIC X(20).  → lastName  (String, 20 chars)
+ *       05  SEC-USR-PWD     PIC X(08).  → password  (String, 72 chars — BCrypt)
+ *       05  SEC-USR-TYPE    PIC X(01).  → userType  (UserType enum)
+ *       05  SEC-USR-FILLER  PIC X(23).  → not mapped (padding)
+ *   Total: 8 + 20 + 20 + 8 + 1 + 23 = 80 bytes
+ * </pre>
  *
- * <p>The user type field ({@code secUsrType}) carries 'A' for Admin or 'U' for
- * Regular User, matching the COBOL 88-level conditions
- * {@code CDEMO-USRTYP-ADMIN VALUE 'A'} and {@code CDEMO-USRTYP-USER VALUE 'U'}
- * defined in COCOM01Y.cpy. This maps to the {@link com.cardemo.common.enums.UserType}
- * enum in the service layer.</p>
+ * <h3>Security Migration Notes:</h3>
+ * <ul>
+ *   <li><strong>Password hashing:</strong> In the original COBOL application, passwords
+ *       were stored as 8-character plaintext in {@code SEC-USR-PWD}. In this Java
+ *       migration, passwords are BCrypt-hashed (60-character output, stored in a
+ *       72-character column for future algorithm flexibility). The seed data loader
+ *       pre-hashes the original plaintext passwords during database initialization.</li>
+ *   <li><strong>User type mapping:</strong> The {@code SEC-USR-TYPE PIC X(01)} field
+ *       maps to the {@link UserType} enum. Valid values correspond to the COBOL
+ *       88-level conditions defined in {@code COCOM01Y.cpy}:
+ *       {@link UserType#ADMIN ADMIN} ({@code 'A'}) and
+ *       {@link UserType#USER USER} ({@code 'U'}).</li>
+ *   <li><strong>Optimistic locking:</strong> The {@code @Version} field replaces the
+ *       CICS {@code READ UPDATE → REWRITE} concurrency pattern used in
+ *       {@code COUSR02C.cbl} (user update).</li>
+ * </ul>
  *
- * @see com.cardemo.common.enums.UserType
+ * <h3>Referenced by COBOL programs:</h3>
+ * <ul>
+ *   <li>{@code COSGN00C.cbl} — Sign-on authentication (READ by SEC-USR-ID)</li>
+ *   <li>{@code COUSR00C.cbl} — User list (STARTBR/READNEXT for paginated browse)</li>
+ *   <li>{@code COUSR01C.cbl} — User add (WRITE new record)</li>
+ *   <li>{@code COUSR02C.cbl} — User update (READ UPDATE/REWRITE)</li>
+ *   <li>{@code COUSR03C.cbl} — User delete (READ/DELETE)</li>
+ * </ul>
+ *
+ * @see UserType
  * @see com.cardemo.common.dto.UserSecurityRecord
  */
 @Entity
@@ -71,171 +81,309 @@ public class UserSecurity {
 
     /**
      * User identifier — primary key.
-     * <p>Maps to COBOL field {@code SEC-USR-ID PIC X(08)} from CSUSR01Y.cpy.
-     * This is the VSAM KSDS primary key used for keyed access in all user
-     * security operations (COSGN00C sign-on, COUSR00C-03C admin CRUD).</p>
+     *
+     * <p>Maps to COBOL field {@code SEC-USR-ID PIC X(08)} from
+     * {@code CSUSR01Y.cpy}. This is the VSAM KSDS primary key used
+     * for keyed access in all user security operations (sign-on via
+     * {@code COSGN00C}, admin CRUD via {@code COUSR00C–COUSR03C}).</p>
      */
     @Id
-    @Column(name = "sec_usr_id", length = 8, nullable = false)
-    private String secUsrId;
+    @Column(name = "user_id", length = 8, nullable = false)
+    private String userId;
 
     /**
      * User first name.
-     * <p>Maps to COBOL field {@code SEC-USR-FNAME PIC X(20)} from CSUSR01Y.cpy.
-     * Displayed in user management screens (COUSR00C user list).</p>
+     *
+     * <p>Maps to COBOL field {@code SEC-USR-FNAME PIC X(20)} from
+     * {@code CSUSR01Y.cpy}. Displayed in user management screens
+     * ({@code COUSR00C} user list, {@code COUSR02C} user update).</p>
      */
-    @Column(name = "sec_usr_fname", length = 20)
-    private String secUsrFname;
+    @Column(name = "first_name", length = 20)
+    private String firstName;
 
     /**
      * User last name.
-     * <p>Maps to COBOL field {@code SEC-USR-LNAME PIC X(20)} from CSUSR01Y.cpy.
-     * Displayed in user management screens (COUSR00C user list).</p>
+     *
+     * <p>Maps to COBOL field {@code SEC-USR-LNAME PIC X(20)} from
+     * {@code CSUSR01Y.cpy}. Displayed in user management screens
+     * ({@code COUSR00C} user list, {@code COUSR02C} user update).</p>
      */
-    @Column(name = "sec_usr_lname", length = 20)
-    private String secUsrLname;
+    @Column(name = "last_name", length = 20)
+    private String lastName;
 
     /**
      * BCrypt-hashed password.
-     * <p>Maps to COBOL field {@code SEC-USR-PWD PIC X(08)} from CSUSR01Y.cpy,
-     * but expanded from 8 characters (plaintext) to 72 characters to accommodate
-     * BCrypt hash output (typically 60 characters, e.g., {@code $2a$10$...}).
-     * The additional 12-character buffer allows for future hashing algorithm
-     * changes without schema migration.</p>
      *
-     * <p><strong>Security note:</strong> In the COBOL source, COSGN00C.cbl line 223
-     * compared passwords via {@code IF SEC-USR-PWD = WS-USER-PWD} (plaintext).
-     * In Java, comparison is performed via
-     * {@code BCryptPasswordEncoder.matches(rawPassword, encodedPassword)}.</p>
+     * <p>Maps to COBOL field {@code SEC-USR-PWD PIC X(08)} from
+     * {@code CSUSR01Y.cpy}, but expanded from 8 characters (plaintext)
+     * to 72 characters to accommodate BCrypt hash output (typically 60
+     * characters, e.g., {@code $2a$10$...}). The additional buffer
+     * allows for future hashing algorithm changes without schema
+     * migration.</p>
+     *
+     * <p><strong>Security note:</strong> In the COBOL source,
+     * {@code COSGN00C.cbl} compared passwords via
+     * {@code IF SEC-USR-PWD = WS-USER-PWD} (plaintext comparison).
+     * In Java, comparison uses
+     * {@code BCryptPasswordEncoder.matches(rawPassword, encodedPassword)}.
+     * This field must never be logged, serialized to REST responses,
+     * or included in {@link #toString()} output.</p>
      */
-    @Column(name = "sec_usr_pwd", length = 72, nullable = false)
-    private String secUsrPwd;
+    @Column(name = "password", length = 72, nullable = false)
+    private String password;
 
     /**
-     * User type code — single character indicating the user's role.
-     * <p>Maps to COBOL field {@code SEC-USR-TYPE PIC X(01)} from CSUSR01Y.cpy.
-     * Valid values:</p>
+     * User type indicating the user's role in the application.
+     *
+     * <p>Maps to COBOL field {@code SEC-USR-TYPE PIC X(01)} from
+     * {@code CSUSR01Y.cpy}. The original single-character codes correspond
+     * to the 88-level conditions in {@code COCOM01Y.cpy}:</p>
      * <ul>
-     *   <li>{@code 'A'} — Administrator (COBOL: {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'})</li>
-     *   <li>{@code 'U'} — Regular User (COBOL: {@code 88 CDEMO-USRTYP-USER VALUE 'U'})</li>
+     *   <li>{@link UserType#ADMIN} — {@code CDEMO-USRTYP-ADMIN VALUE 'A'}:
+     *       administrators with access to user management functions</li>
+     *   <li>{@link UserType#USER} — {@code CDEMO-USRTYP-USER VALUE 'U'}:
+     *       regular users with access to standard card operations</li>
      * </ul>
-     * <p>In the service layer, this value is converted to the
-     * {@link com.cardemo.common.enums.UserType} enum via {@code UserType.fromCode()}.</p>
+     *
+     * <p>Persisted as the enum name string ({@code "ADMIN"} or {@code "USER"})
+     * via {@code @Enumerated(EnumType.STRING)}.</p>
      */
-    @Column(name = "sec_usr_type", length = 1)
-    private String secUsrType;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "user_type", length = 5, nullable = false)
+    private UserType userType;
+
+    /**
+     * JPA optimistic locking version field.
+     *
+     * <p>Replaces the CICS {@code READ UPDATE → REWRITE} concurrency
+     * control pattern. JPA automatically increments this value on each
+     * {@code UPDATE}, throwing {@code OptimisticLockException} if a
+     * concurrent modification is detected — equivalent to the CICS
+     * deadlock-prevention mechanism in {@code COUSR02C.cbl}.</p>
+     */
+    @Version
+    @Column(name = "version")
+    private Long version;
 
     /**
      * Default no-argument constructor required by JPA specification.
-     * Not intended for direct use by application code.
+     *
+     * <p>Access level is {@code protected} to discourage direct
+     * instantiation by application code while satisfying the JPA
+     * provider's proxy/reflection requirements.</p>
      */
     protected UserSecurity() {
-        // Required by JPA
+        // Required by JPA — no initialization needed
     }
 
     /**
-     * Constructs a new {@code UserSecurity} entity with all fields.
+     * Constructs a new {@code UserSecurity} entity with all business fields.
      *
-     * @param secUsrId    the user identifier (max 8 characters, PK)
-     * @param secUsrFname the user's first name (max 20 characters)
-     * @param secUsrLname the user's last name (max 20 characters)
-     * @param secUsrPwd   the BCrypt-hashed password (max 72 characters)
-     * @param secUsrType  the user type code ('A' for Admin, 'U' for User)
+     * <p>The {@code version} field is intentionally omitted from this
+     * constructor because JPA manages it automatically via the
+     * {@code @Version} annotation. It starts as {@code null} for new
+     * entities and is assigned by the persistence provider on first
+     * flush.</p>
+     *
+     * @param userId    the user identifier (max 8 characters, primary key);
+     *                  corresponds to {@code SEC-USR-ID PIC X(08)}
+     * @param firstName the user's first name (max 20 characters);
+     *                  corresponds to {@code SEC-USR-FNAME PIC X(20)}
+     * @param lastName  the user's last name (max 20 characters);
+     *                  corresponds to {@code SEC-USR-LNAME PIC X(20)}
+     * @param password  the BCrypt-hashed password (max 72 characters);
+     *                  corresponds to {@code SEC-USR-PWD PIC X(08)} expanded
+     *                  for BCrypt storage
+     * @param userType  the user role; must be {@link UserType#ADMIN} or
+     *                  {@link UserType#USER}
      */
-    public UserSecurity(String secUsrId, String secUsrFname, String secUsrLname,
-                        String secUsrPwd, String secUsrType) {
-        this.secUsrId = secUsrId;
-        this.secUsrFname = secUsrFname;
-        this.secUsrLname = secUsrLname;
-        this.secUsrPwd = secUsrPwd;
-        this.secUsrType = secUsrType;
-    }
-
-    /** Returns the user identifier (primary key). */
-    public String getSecUsrId() {
-        return secUsrId;
-    }
-
-    /** Sets the user identifier. */
-    public void setSecUsrId(String secUsrId) {
-        this.secUsrId = secUsrId;
-    }
-
-    /** Returns the user's first name. */
-    public String getSecUsrFname() {
-        return secUsrFname;
-    }
-
-    /** Sets the user's first name. */
-    public void setSecUsrFname(String secUsrFname) {
-        this.secUsrFname = secUsrFname;
-    }
-
-    /** Returns the user's last name. */
-    public String getSecUsrLname() {
-        return secUsrLname;
-    }
-
-    /** Sets the user's last name. */
-    public void setSecUsrLname(String secUsrLname) {
-        this.secUsrLname = secUsrLname;
-    }
-
-    /** Returns the BCrypt-hashed password. */
-    public String getSecUsrPwd() {
-        return secUsrPwd;
-    }
-
-    /** Sets the BCrypt-hashed password. */
-    public void setSecUsrPwd(String secUsrPwd) {
-        this.secUsrPwd = secUsrPwd;
-    }
-
-    /** Returns the user type code ('A' or 'U'). */
-    public String getSecUsrType() {
-        return secUsrType;
-    }
-
-    /** Sets the user type code. */
-    public void setSecUsrType(String secUsrType) {
-        this.secUsrType = secUsrType;
+    public UserSecurity(String userId, String firstName, String lastName,
+                        String password, UserType userType) {
+        this.userId = userId;
+        this.firstName = firstName;
+        this.lastName = lastName;
+        this.password = password;
+        this.userType = userType;
     }
 
     /**
-     * Checks equality based on the user ID primary key ({@code secUsrId}).
-     * <p>Matches the COBOL VSAM keyed access pattern where SEC-USR-ID
-     * uniquely identifies each user security record.</p>
+     * Returns the user identifier (primary key).
+     *
+     * @return the user ID, up to 8 characters
+     */
+    public String getUserId() {
+        return userId;
+    }
+
+    /**
+     * Sets the user identifier.
+     *
+     * @param userId the user ID to set (max 8 characters)
+     */
+    public void setUserId(String userId) {
+        this.userId = userId;
+    }
+
+    /**
+     * Returns the user's first name.
+     *
+     * @return the first name, up to 20 characters
+     */
+    public String getFirstName() {
+        return firstName;
+    }
+
+    /**
+     * Sets the user's first name.
+     *
+     * @param firstName the first name to set (max 20 characters)
+     */
+    public void setFirstName(String firstName) {
+        this.firstName = firstName;
+    }
+
+    /**
+     * Returns the user's last name.
+     *
+     * @return the last name, up to 20 characters
+     */
+    public String getLastName() {
+        return lastName;
+    }
+
+    /**
+     * Sets the user's last name.
+     *
+     * @param lastName the last name to set (max 20 characters)
+     */
+    public void setLastName(String lastName) {
+        this.lastName = lastName;
+    }
+
+    /**
+     * Returns the BCrypt-hashed password.
+     *
+     * <p><strong>Security warning:</strong> The returned value is the
+     * BCrypt hash, not the plaintext password. It should never be
+     * logged or exposed in API responses.</p>
+     *
+     * @return the BCrypt-hashed password string
+     */
+    public String getPassword() {
+        return password;
+    }
+
+    /**
+     * Sets the BCrypt-hashed password.
+     *
+     * <p>Callers must ensure the value is a properly encoded BCrypt
+     * hash (e.g., via {@code BCryptPasswordEncoder.encode()}) before
+     * calling this method. Plaintext passwords must never be stored.</p>
+     *
+     * @param password the BCrypt-hashed password to set
+     */
+    public void setPassword(String password) {
+        this.password = password;
+    }
+
+    /**
+     * Returns the user type (role).
+     *
+     * @return the {@link UserType} enum value indicating the user's role
+     */
+    public UserType getUserType() {
+        return userType;
+    }
+
+    /**
+     * Sets the user type (role).
+     *
+     * @param userType the {@link UserType} to assign
+     */
+    public void setUserType(UserType userType) {
+        this.userType = userType;
+    }
+
+    /**
+     * Returns the JPA optimistic locking version.
+     *
+     * <p>Managed automatically by the JPA provider. Returns {@code null}
+     * for transient (not yet persisted) entities.</p>
+     *
+     * @return the current version number, or {@code null} if not yet persisted
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * Sets the JPA optimistic locking version.
+     *
+     * <p>This method exists for framework compatibility. Application code
+     * should not call this directly — the version is managed by JPA.</p>
+     *
+     * @param version the version number to set
+     */
+    public void setVersion(Long version) {
+        this.version = version;
+    }
+
+    /**
+     * Checks equality based on the user ID primary key ({@code userId}).
+     *
+     * <p>Follows JPA entity best practices: identity is determined by the
+     * business key (VSAM KSDS primary key {@code SEC-USR-ID}), not by
+     * object reference or all-field comparison. This ensures correct
+     * behavior in JPA collections and caches.</p>
+     *
+     * @param obj the object to compare with
+     * @return {@code true} if the other object is a {@code UserSecurity}
+     *         with the same {@code userId}
      */
     @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        UserSecurity that = (UserSecurity) o;
-        return Objects.equals(secUsrId, that.secUsrId);
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (obj == null || getClass() != obj.getClass()) {
+            return false;
+        }
+        UserSecurity that = (UserSecurity) obj;
+        return Objects.equals(userId, that.userId);
     }
 
     /**
      * Computes hash code based on the user ID primary key.
+     *
+     * <p>Consistent with {@link #equals(Object)}: uses only the
+     * {@code userId} field to ensure the hash code / equals contract
+     * is maintained across JPA entity lifecycle states.</p>
+     *
+     * @return hash code derived from the user ID
      */
     @Override
     public int hashCode() {
-        return Objects.hash(secUsrId);
+        return Objects.hash(userId);
     }
 
     /**
-     * Returns a string representation with the password field masked
-     * for security. Only the user ID, name, and type are visible.
+     * Returns a string representation of this user security record.
      *
-     * @return formatted string with masked password
+     * <p><strong>Security:</strong> The password field is deliberately
+     * excluded from this output to prevent credential leakage in logs,
+     * debug output, or exception messages. Only the user ID, name
+     * fields, user type, and version are included.</p>
+     *
+     * @return a string containing all non-sensitive fields
      */
     @Override
     public String toString() {
-        return "UserSecurity{" +
-                "secUsrId='" + secUsrId + '\'' +
-                ", secUsrFname='" + secUsrFname + '\'' +
-                ", secUsrLname='" + secUsrLname + '\'' +
-                ", secUsrPwd='********'" +
-                ", secUsrType='" + secUsrType + '\'' +
-                '}';
+        return "UserSecurity{"
+                + "userId='" + userId + '\''
+                + ", firstName='" + firstName + '\''
+                + ", lastName='" + lastName + '\''
+                + ", userType=" + userType
+                + ", version=" + version
+                + '}';
     }
 }
