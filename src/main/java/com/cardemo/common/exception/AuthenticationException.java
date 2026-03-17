@@ -1,5 +1,6 @@
 /*
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -17,28 +18,35 @@ package com.cardemo.common.exception;
 /**
  * Exception indicating an authentication failure in the CardDemo application.
  *
- * <p>This exception maps to the sign-on error handling logic in COSGN00C.cbl,
- * which authenticates users against the USRSEC VSAM dataset. The COBOL program
- * handles several authentication failure scenarios that this exception covers:</p>
+ * <p>This exception maps to the sign-on error handling logic in the
+ * {@code READ-USER-SEC-FILE} paragraph of COSGN00C.cbl (lines 209–257), which
+ * authenticates users against the USRSEC VSAM dataset. The COBOL program's
+ * three authentication failure paths all translate to this exception with
+ * specific messages preserved from the original {@code WS-MESSAGE} values:</p>
  *
- * <h2>COBOL Sign-On Error Handling (COSGN00C.cbl)</h2>
+ * <h2>COBOL Sign-On Error Paths (COSGN00C.cbl)</h2>
  * <ul>
- *   <li><strong>User not found</strong> — EXEC CICS READ returns
- *       {@code DFHRESP(NOTFND)} (RESP code 13, paragraphs 247–251).
- *       The user ID does not exist in the USRSEC dataset.</li>
- *   <li><strong>Password mismatch</strong> — The READ succeeds but
- *       {@code IF SEC-USR-PWD = WS-USER-PWD} evaluates to false (line 223).
- *       The password entered does not match the stored password.</li>
- *   <li><strong>User ID blank/empty</strong> — The BMS map field USERIDI
- *       is empty or contains only spaces (paragraphs 115–120).</li>
- *   <li><strong>Password blank/empty</strong> — The BMS map field PASSWDI
- *       is empty or contains only spaces (paragraphs 121–125).</li>
+ *   <li><strong>Password mismatch</strong> — {@code WHEN 0} (normal read)
+ *       followed by {@code IF SEC-USR-PWD = WS-USER-PWD} evaluating to false
+ *       (line 223). Message: {@code "Wrong Password. Try again ..."}</li>
+ *   <li><strong>User not found</strong> — {@code WHEN 13} (DFHRESP NOTFND,
+ *       lines 247–251). The user ID does not exist in the USRSEC dataset.
+ *       Message: {@code "User not found. Try again ..."}</li>
+ *   <li><strong>Unexpected I/O error</strong> — {@code WHEN OTHER}
+ *       (lines 252–256). An unexpected error occurred during the CICS READ
+ *       operation. Message: {@code "Unable to verify the User ..."}</li>
  * </ul>
  *
- * <p>In the Java migration, password comparison changes from plaintext
- * ({@code IF SEC-USR-PWD = WS-USER-PWD}) to BCrypt hash verification
- * ({@code BCryptPasswordEncoder.matches(rawPassword, encodedPassword)}).
- * This exception is thrown regardless of the comparison mechanism.</p>
+ * <p>The CSUSR01Y.cpy copybook defines the {@code SEC-USER-DATA} record used
+ * for the security file lookup, with {@code SEC-USR-ID} (8 bytes) as the
+ * primary key and {@code SEC-USR-PWD} (8 bytes) as the plaintext password
+ * field. In the Java migration, password comparison changes from plaintext
+ * ({@code IF SEC-USR-PWD = WS-USER-PWD}) to BCrypt hash verification, but
+ * the same three error paths are preserved.</p>
+ *
+ * <p>No additional custom fields are needed — error details are conveyed
+ * via the message string, matching the COBOL pattern where
+ * {@code WS-MESSAGE PIC X(80)} carries the error text.</p>
  *
  * <h2>Exception Hierarchy Position</h2>
  * <pre>
@@ -47,65 +55,59 @@ package com.cardemo.common.exception;
  *     └── AuthenticationException   (this class)
  * </pre>
  *
- * <p><strong>Note:</strong> This is a CardDemo application-level exception,
- * distinct from {@code org.springframework.security.core.AuthenticationException}
- * (Spring Security). The service layer may translate between the two as needed.</p>
+ * <p><strong>Important:</strong> This is a CardDemo application-level exception
+ * in the {@code com.cardemo.common.exception} package, distinct from
+ * {@code org.springframework.security.core.AuthenticationException} (Spring
+ * Security). The controller or security layer is responsible for mapping
+ * between the two as needed. Java imports will disambiguate by fully
+ * qualified class name.</p>
  *
- * @see com.cardemo.common.exception.CardDemoException
+ * @see CardDemoException
  */
 public class AuthenticationException extends CardDemoException {
 
     private static final long serialVersionUID = 1L;
 
     /**
-     * The user ID associated with the failed authentication attempt.
-     * Corresponds to the COBOL field {@code CDEMO-USER-ID PIC X(08)}
-     * from COCOM01Y.cpy, or the BMS map field {@code USERIDI} from COSGN0A.
-     */
-    private final String userId;
-
-    /**
      * Constructs a new {@code AuthenticationException} with the specified
-     * user ID and detail message.
+     * detail message.
      *
-     * @param userId  the user ID that failed authentication (may be null if not provided)
-     * @param message a detail message describing the authentication failure
-     */
-    public AuthenticationException(String userId, String message) {
-        super(message);
-        this.userId = userId;
-    }
-
-    /**
-     * Constructs a new {@code AuthenticationException} with the specified
-     * user ID, detail message, and root cause.
+     * <p>This constructor is used for the primary authentication failure paths
+     * originating from the {@code READ-USER-SEC-FILE} paragraph in COSGN00C.cbl.
+     * The message should preserve the original COBOL error text semantics:</p>
+     * <ul>
+     *   <li>{@code "Wrong Password. Try again ..."} — password mismatch
+     *       (COBOL line 242–243)</li>
+     *   <li>{@code "User not found. Try again ..."} — user ID not in USRSEC
+     *       (COBOL line 249)</li>
+     *   <li>{@code "Unable to verify the User ..."} — unexpected I/O error
+     *       (COBOL line 254)</li>
+     * </ul>
      *
-     * @param userId  the user ID that failed authentication
-     * @param message a detail message describing the authentication failure
-     * @param cause   the underlying cause of the authentication failure
-     */
-    public AuthenticationException(String userId, String message, Throwable cause) {
-        super(message, cause);
-        this.userId = userId;
-    }
-
-    /**
-     * Constructs a new {@code AuthenticationException} with only a detail message
-     * (no specific user ID).
-     *
-     * @param message a detail message describing the authentication failure
+     * @param message the detail message describing the authentication failure;
+     *                may be retrieved later by {@link #getMessage()}
      */
     public AuthenticationException(String message) {
         super(message);
-        this.userId = null;
     }
 
     /**
-     * Returns the user ID associated with the failed authentication attempt.
+     * Constructs a new {@code AuthenticationException} with the specified
+     * detail message and underlying cause.
      *
-     * @return the user ID, or {@code null} if not available
+     * <p>This constructor is used when wrapping lower-level exceptions (e.g.,
+     * database access errors, JPA exceptions) that occur during the
+     * authentication flow. It corresponds to the {@code WHEN OTHER} path in
+     * COSGN00C.cbl where an unexpected error during CICS READ needs to be
+     * propagated with the original exception preserved as the cause.</p>
+     *
+     * @param message the detail message describing the authentication failure;
+     *                may be retrieved later by {@link #getMessage()}
+     * @param cause   the underlying cause of the authentication failure
+     *                (e.g., a database connection error during user lookup);
+     *                may be retrieved later by {@link #getCause()}
      */
-    public String getUserId() {
-        return userId;
+    public AuthenticationException(String message, Throwable cause) {
+        super(message, cause);
     }
 }
