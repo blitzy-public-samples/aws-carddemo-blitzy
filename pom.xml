@@ -67,7 +67,7 @@
         <flyway.version>10.22.0</flyway.version>
 
         <!-- Plugin Versions -->
-        <jacoco.version>0.8.12</jacoco.version>
+        <jacoco.version>0.8.14</jacoco.version>
         <owasp.version>12.1.0</owasp.version>
 
         <!-- Library Versions -->
