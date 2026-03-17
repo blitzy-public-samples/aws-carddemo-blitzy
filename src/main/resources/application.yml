@@ -211,5 +211,6 @@ cardemo:
       chunk-size: 50                   # INTCALC job: process 50 accounts per chunk
     statement-gen:
       chunk-size: 25                   # CREASTMT job: generate 25 statements per chunk
+    reject-file-path: ${REJECT_FILE_PATH:./output/dalyrejs.txt}  # DALYREJS output file path
   security:
     password-encoder: bcrypt           # BCrypt replaces plaintext COBOL SEC-USR-PWD storage
