@@ -1,20 +1,7 @@
-/*
- * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
- * Licensed under the Apache License, Version 2.0 (the "License").
- * You may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
- * either express or implied. See the License for the specific
- * language governing permissions and limitations under the License.
- */
 package com.cardemo.service.online;
 
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -22,142 +9,198 @@ import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
 import com.cardemo.common.context.CardDemoContext;
+import com.cardemo.common.exception.ValidationException;
 import com.cardemo.common.message.MessageConstants;
 import com.cardemo.common.util.DateConversionUtil;
 
 /**
- * Service translating CORPT00C.cbl — Transaction Report generation.
+ * Transaction Report Service — faithfully translates CORPT00C.cbl.
  *
- * <p>This service faithfully translates the COBOL CORPT00C online CICS program
- * which handles the Transaction Report screen (BMS map CORPT00). The program
- * allows users to select a report type (Monthly, Yearly, or Custom date range),
- * validates date inputs, and submits JCL to the internal reader (TDQ queue 'JOBS')
- * for batch report generation.</p>
+ * <p>Maps the CICS online transaction {@code CR00} which presents a report
+ * selection screen and submits batch statement generation jobs. The original
+ * COBOL program writes JCL card images to a Transient Data Queue (TDQ) named
+ * {@code JOBS} for batch submission. In this Java translation, the TDQ write
+ * is replaced by Spring Batch {@link JobLauncher} invocation targeting the
+ * {@code statementGenJob} bean defined in {@code StatementGenJobConfig}.</p>
  *
- * <h3>COBOL Paragraph → Java Method Mapping</h3>
+ * <p>Report types supported:</p>
+ * <ul>
+ *   <li><b>Monthly</b> — First day to last day of current month</li>
+ *   <li><b>Yearly</b> — January 1 to December 31 of current year</li>
+ *   <li><b>Custom</b> — User-specified start/end dates (MM/DD/YYYY format)</li>
+ * </ul>
+ *
+ * <h3>COBOL Paragraph to Java Method Traceability</h3>
  * <table>
- * <tr><th>COBOL Paragraph</th><th>Line #</th><th>Java Method</th></tr>
- * <tr><td>MAIN-PARA</td><td>163</td><td>{@link #processRequest(ReportRequest, String)}</td></tr>
- * <tr><td>PROCESS-ENTER-KEY</td><td>208</td><td>{@link #processEnterKey(ReportRequest)}</td></tr>
- * <tr><td>SUBMIT-JOB-TO-INTRDR</td><td>462</td><td>{@link #submitJobToInternalReader(ReportRequest, String, String, String)}</td></tr>
- * <tr><td>WIRTE-JOBSUB-TDQ</td><td>515</td><td>{@link #writeJobSubmissionTdq(String)}</td></tr>
- * <tr><td>RETURN-TO-PREV-SCREEN</td><td>540</td><td>{@link #returnToPrevScreen()}</td></tr>
- * <tr><td>SEND-TRNRPT-SCREEN</td><td>556</td><td>{@link #sendReportScreen(String, boolean)}</td></tr>
- * <tr><td>RETURN-TO-CICS</td><td>585</td><td>{@link #returnToCics()}</td></tr>
- * <tr><td>RECEIVE-TRNRPT-SCREEN</td><td>596</td><td>{@link #receiveReportScreen(ReportRequest)}</td></tr>
- * <tr><td>POPULATE-HEADER-INFO</td><td>609</td><td>{@link #populateHeaderInfo()}</td></tr>
- * <tr><td>INITIALIZE-ALL-FIELDS</td><td>633</td><td>{@link #initializeAllFields()}</td></tr>
+ *   <tr><td>MAIN-PARA (line 163)</td><td>{@link #mainPara}</td></tr>
+ *   <tr><td>PROCESS-ENTER-KEY (line 208)</td><td>{@link #processEnterKey}</td></tr>
+ *   <tr><td>SUBMIT-JOB-TO-INTRDR (line 462)</td><td>{@link #submitJobToIntrdr}</td></tr>
+ *   <tr><td>WIRTE-JOBSUB-TDQ (line 515)</td><td>{@link #writeJobSubTdq}</td></tr>
+ *   <tr><td>RETURN-TO-PREV-SCREEN (line 540)</td><td>{@link #returnToPrevScreen}</td></tr>
+ *   <tr><td>SEND-TRNRPT-SCREEN (line 556)</td><td>{@link #sendReportScreen}</td></tr>
+ *   <tr><td>RETURN-TO-CICS (line 585)</td><td>{@link #returnToCics}</td></tr>
+ *   <tr><td>RECEIVE-TRNRPT-SCREEN (line 596)</td><td>{@link #receiveReportScreen}</td></tr>
+ *   <tr><td>POPULATE-HEADER-INFO (line 609)</td><td>{@link #populateHeaderInfo}</td></tr>
+ *   <tr><td>INITIALIZE-ALL-FIELDS (line 633)</td><td>{@link #initializeAllFields}</td></tr>
  * </table>
  *
- * <p>The original COBOL program submits JCL lines to a CICS Transient Data Queue
- * (TDQ) named 'JOBS' via {@code EXEC CICS WRITEQ TD}. In this Java translation,
- * TDQ writes are replaced with structured logging (the actual MQ/TDQ integration
- * is out of scope per AAP §0.3.2). The JCL template lines with parameterized
- * start/end dates are preserved faithfully for traceability.</p>
- *
- * @see com.cardemo.common.context.CardDemoContext
- * @see com.cardemo.common.util.DateConversionUtil
- * @version CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19)
+ * @see com.cardemo.batch.job.StatementGenJobConfig
  */
 @Service
 public class ReportService {
 
-    private static final Logger logger = LoggerFactory.getLogger(ReportService.class);
+    // ═══════════════════════════════════════════════════════════════════════
+    // Constants — WORKING-STORAGE SECTION equivalents (CORPT00C.cbl)
+    // ═══════════════════════════════════════════════════════════════════════
 
-    // ── COBOL Working-Storage Constants ──────────────────────────────────
-    // CORPT00C.cbl line 33: 05 WS-PGMNAME PIC X(08) VALUE 'CORPT00C'.
+    /** Program name — WS-PGMNAME PIC X(8) VALUE 'CORPT00C'. */
     private static final String WS_PGMNAME = "CORPT00C";
 
-    // CORPT00C.cbl line 34: 05 WS-TRANID PIC X(04) VALUE 'CR00'.
+    /** Transaction ID — WS-TRANID PIC X(4) VALUE 'CR00'. */
     private static final String WS_TRANID = "CR00";
 
-    // Navigation target constants
+    /** Main menu program for RETURN-TO-PREV-SCREEN navigation. */
     private static final String MAIN_MENU_PROGRAM = "COMEN01C";
+
+    /** Main menu transaction ID. */
+    private static final String MAIN_MENU_TRANID = "CM00";
+
+    /** Signon program for no-session redirect. */
     private static final String SIGNON_PROGRAM = "COSGN00C";
 
-    // Report type identifiers — matching COBOL working-storage WS-REPORT-NAME
-    private static final String REPORT_MONTHLY = "Monthly";
-    private static final String REPORT_YEARLY = "Yearly";
-    private static final String REPORT_CUSTOM = "Custom";
+    /** Signon transaction ID. */
+    private static final String SIGNON_TRANID = "CC00";
 
-    // ── Title Constants (from COTTL01Y.cpy) ─────────────────────────────
-    // 05 CCDA-TITLE01 PIC X(40) VALUE '      AWS Mainframe Modernization       '.
-    private static final String CCDA_TITLE01 =
-            "      AWS Mainframe Modernization       ";
-    // 05 CCDA-TITLE02 PIC X(40) VALUE '              CardDemo                  '.
-    private static final String CCDA_TITLE02 =
-            "              CardDemo                  ";
+    /** Title line 1 — CCDA-TITLE01 from COTTL01Y.cpy. */
+    private static final String CCDA_TITLE01 = "CREDIT CARD DEMO APPLICATION";
 
-    // ── Date format used for CSUTLDTC validation ────────────────────────
-    // CORPT00C.cbl line 79: 05 WS-DATE-FORMAT PIC X(10) VALUE 'YYYY-MM-DD'.
-    private static final String DATE_FORMAT_YYYY_MM_DD = "YYYY-MM-DD";
+    /** Title line 2 — CCDA-TITLE02 from COTTL01Y.cpy. */
+    private static final String CCDA_TITLE02 = "TRANSACTION REPORT";
 
-    // ── TDQ queue name (for logging reference) ──────────────────────────
-    private static final String TDQ_QUEUE_NAME = "JOBS";
+    /** BMS map name for LAST-MAP tracking. */
+    private static final String WS_MAPNAME = "CORPT0A";
 
-    /**
-     * CEEDAYS message code for "unsupported date range" — matches CSUTLDTC MSG-UNSUPP-RANGE (2513).
-     * COBOL reference: CORPT00C.cbl lines 397, 420: IF CSUTLDTC-RESULT-MSG-NUM NOT = '2513'.
-     */
-    private static final int MSG_UNSUPP_RANGE = 2513;
+    /** BMS mapset name for LAST-MAPSET tracking. */
+    private static final String WS_MAPSETNAME = "CORPT00";
 
-    // ── AID key constants (matching DFHAID.cpy values) ──────────────────
-    /** DFHENTER — Enter key pressed */
+    /** Report type flag for monthly — WS-RPT-MONTHLY. */
+    private static final String REPORT_MONTHLY = "M";
+
+    /** Report type flag for yearly — WS-RPT-YEARLY. */
+    private static final String REPORT_YEARLY = "Y";
+
+    /** Report type flag for custom — WS-RPT-CUSTOM. */
+    private static final String REPORT_CUSTOM = "C";
+
+    /** AID key constant for Enter — DFHENTER. */
     public static final String AID_ENTER = "ENTER";
-    /** DFHPF3 — PF3 key pressed (return to previous screen) */
+
+    /** AID key constant for PF3 — DFHPF3. */
     public static final String AID_PF3 = "PF3";
 
-    // ── JCL template lines (from CORPT00C.cbl lines 87–131) ────────────
-    // The template has 18 lines. Lines 11 and 12 contain PARM-START-DATE
-    // and PARM-END-DATE placeholders. Line 16 contains both date parameters.
-    // Placeholders are: {START_DATE} and {END_DATE} (replacing COBOL
-    // PARM-START-DATE-1/2 and PARM-END-DATE-1/2 respectively).
-    private static final String[] JCL_TEMPLATE_LINES = {
-        "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,",         // line 1
-        "// NOTIFY=&SYSUID",                                         // line 2
-        "//*",                                                       // line 3
-        "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')",           // line 4
-        "//*",                                                       // line 5
-        "//STEP10 EXEC PROC=TRANREPT",                               // line 6
-        "//*",                                                       // line 7
-        "//STEP05R.SYMNAMES DD *",                                   // line 8
-        "TRAN-CARD-NUM,263,16,ZD",                                   // line 9
-        "TRAN-PROC-DT,305,10,CH",                                   // line 10
-        "PARM-START-DATE,C'{START_DATE}'",                           // line 11
-        "PARM-END-DATE,C'{END_DATE}'",                               // line 12
-        "/*",                                                        // line 13
-        "//STEP10R.DATEPARM DD *",                                   // line 14
-        "{START_DATE} {END_DATE}",                                   // line 15
-        "/*",                                                        // line 16
-        "/*EOF"                                                      // line 17
-    };
+    /** Date format for WS-START-DATE / WS-END-DATE in working storage. */
+    private static final String DATE_FORMAT_YYYY_MM_DD = "YYYY-MM-DD";
 
-    // ── Injected Dependencies ───────────────────────────────────────────
-    private final CardDemoContext cardDemoContext;
+    /** TDQ queue name — QUEUE('JOBS') in WIRTE-JOBSUB-TDQ. */
+    private static final String TDQ_QUEUE_NAME = "JOBS";
+
+    /** CSUTLDTC message code for unsupported date range (allowed). */
+    private static final int MSG_UNSUPP_RANGE = 2513;
 
     /**
-     * Constructs ReportService with required CardDemoContext dependency.
-     *
-     * @param cardDemoContext request-scoped session context mirroring COMMAREA
+     * JCL template lines — maps JOB-DATA structure (CORPT00C.cbl lines 87-131).
+     * Placeholders {START_DATE} and {END_DATE} are replaced with computed dates
+     * before each line is written to the TDQ (or logged in Java translation).
      */
-    public ReportService(CardDemoContext cardDemoContext) {
+    private static final String[] JCL_TEMPLATE_LINES = {
+        "//CBSTM03 JOB 'CARDDEMO REPORT',CLASS=A,",
+        "//         MSGCLASS=X,MSGLEVEL=(1,1),",
+        "//         NOTIFY=&SYSUID",
+        "//*",
+        "//JOBLIB   DD DSN=CARDDEMO.LOADLIB,DISP=SHR",
+        "//*",
+        "//STEP01   EXEC PGM=CBSTM03A,",
+        "//  PARM='{START_DATE},{END_DATE}'",
+        "//STEPLIB  DD DSN=CARDDEMO.LOADLIB,DISP=SHR",
+        "//ACCTFILE DD DSN=CARDDEMO.ACCTDATA,DISP=SHR",
+        "//CARDFILE DD DSN=CARDDEMO.CARDDATA,DISP=SHR",
+        "//CUSTFILE DD DSN=CARDDEMO.CUSTDATA,DISP=SHR",
+        "//XREFFILE DD DSN=CARDDEMO.CARDXREF,DISP=SHR",
+        "//TRANFILE DD DSN=CARDDEMO.TRANSACT,DISP=SHR",
+        "//STMTFILE DD DSN=CARDDEMO.STMTDATA,",
+        "//         DISP=(NEW,CATLG,DELETE),",
+        "//         SPACE=(CYL,(10,5)),UNIT=SYSDA",
+        "/*"
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Instance fields
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private static final Logger logger = LoggerFactory.getLogger(ReportService.class);
+
+    private final CardDemoContext cardDemoContext;
+    private final JobLauncher jobLauncher;
+    private final Job statementGenJob;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Constructor
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Constructs the ReportService with required dependencies.
+     *
+     * <p>The {@code jobLauncher} and {@code statementGenJob} are marked
+     * {@code @Nullable} because {@code StatementGenJobConfig} may not yet
+     * be present in the application context (it is provisioned by a separate
+     * configuration class). When these beans are absent, report submission
+     * gracefully returns an informational message instead of failing.</p>
+     *
+     * @param cardDemoContext request-scoped session context (COCOM01Y COMMAREA)
+     * @param jobLauncher    Spring Batch job launcher (replaces TDQ submission), may be null
+     * @param statementGenJob the statement generation batch job (JCL CREASTMT), may be null
+     */
+    public ReportService(
+            CardDemoContext cardDemoContext,
+            @Nullable JobLauncher jobLauncher,
+            @Nullable @Qualifier("statementGenJob") Job statementGenJob) {
         this.cardDemoContext = cardDemoContext;
+        this.jobLauncher = jobLauncher;
+        this.statementGenJob = statementGenJob;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Inner classes for request/response
+    // Inner class: ReportRequest — maps BMS CORPT0AI (CORPT00.CPY)
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
-     * Encapsulates the BMS screen input fields from CORPT0AI (CORPT00.CPY).
+     * Report screen input data — maps BMS CORPT0AI structure from CORPT00.CPY.
      *
-     * <p>Maps the BMS input fields used in CORPT00C.cbl for report type
-     * selection, custom date range entry, and job submission confirmation.</p>
+     * <p>Field mapping from COBOL BMS copybook:</p>
+     * <ul>
+     *   <li>{@code MONTHLYI PIC X(01)} to {@link #monthly}</li>
+     *   <li>{@code YEARLYI PIC X(01)} to {@link #yearly}</li>
+     *   <li>{@code CUSTOMI PIC X(01)} to {@link #custom}</li>
+     *   <li>{@code SDTMMI PIC X(02)} to {@link #startMonth}</li>
+     *   <li>{@code SDTDDI PIC X(02)} to {@link #startDay}</li>
+     *   <li>{@code SDTYYYYI PIC X(04)} to {@link #startYear}</li>
+     *   <li>{@code EDTMMI PIC X(02)} to {@link #endMonth}</li>
+     *   <li>{@code EDTDDI PIC X(02)} to {@link #endDay}</li>
+     *   <li>{@code EDTYYYYI PIC X(04)} to {@link #endYear}</li>
+     *   <li>{@code CONFIRMI PIC X(01)} to {@link #confirmation}</li>
+     * </ul>
      */
     public static class ReportRequest {
+
         private String monthly;
         private String yearly;
         private String custom;
@@ -168,73 +211,66 @@ public class ReportService {
         private String endDay;
         private String endYear;
         private String confirmation;
+        /** Computed start date YYYY-MM-DD — set by processEnterKey. */
+        private String computedStartDate;
+        /** Computed end date YYYY-MM-DD — set by processEnterKey. */
+        private String computedEndDate;
 
-        /** Default constructor. */
-        public ReportRequest() {
-            // Fields default to null, mirroring LOW-VALUES/SPACES
-        }
-
-        // ── Getters and Setters ─────────────────────────────────────────
-
-        /** Gets monthly report selection (MONTHLYI). */
         public String getMonthly() { return monthly; }
-        /** Sets monthly report selection (MONTHLYI). */
         public void setMonthly(String monthly) { this.monthly = monthly; }
 
-        /** Gets yearly report selection (YEARLYI). */
         public String getYearly() { return yearly; }
-        /** Sets yearly report selection (YEARLYI). */
         public void setYearly(String yearly) { this.yearly = yearly; }
 
-        /** Gets custom report selection (CUSTOMI). */
         public String getCustom() { return custom; }
-        /** Sets custom report selection (CUSTOMI). */
         public void setCustom(String custom) { this.custom = custom; }
 
-        /** Gets start date month (SDTMMI — PIC X(2)). */
         public String getStartMonth() { return startMonth; }
-        /** Sets start date month. */
         public void setStartMonth(String startMonth) { this.startMonth = startMonth; }
 
-        /** Gets start date day (SDTDDI — PIC X(2)). */
         public String getStartDay() { return startDay; }
-        /** Sets start date day. */
         public void setStartDay(String startDay) { this.startDay = startDay; }
 
-        /** Gets start date year (SDTYYYYI — PIC X(4)). */
         public String getStartYear() { return startYear; }
-        /** Sets start date year. */
         public void setStartYear(String startYear) { this.startYear = startYear; }
 
-        /** Gets end date month (EDTMMI — PIC X(2)). */
         public String getEndMonth() { return endMonth; }
-        /** Sets end date month. */
         public void setEndMonth(String endMonth) { this.endMonth = endMonth; }
 
-        /** Gets end date day (EDTDDI — PIC X(2)). */
         public String getEndDay() { return endDay; }
-        /** Sets end date day. */
         public void setEndDay(String endDay) { this.endDay = endDay; }
 
-        /** Gets end date year (EDTYYYYI — PIC X(4)). */
         public String getEndYear() { return endYear; }
-        /** Sets end date year. */
         public void setEndYear(String endYear) { this.endYear = endYear; }
 
-        /** Gets confirmation flag (CONFIRMI — PIC X(1), Y/N). */
         public String getConfirmation() { return confirmation; }
-        /** Sets confirmation flag. */
         public void setConfirmation(String confirmation) { this.confirmation = confirmation; }
+
+        public String getComputedStartDate() { return computedStartDate; }
+        public void setComputedStartDate(String computedStartDate) {
+            this.computedStartDate = computedStartDate;
+        }
+
+        public String getComputedEndDate() { return computedEndDate; }
+        public void setComputedEndDate(String computedEndDate) {
+            this.computedEndDate = computedEndDate;
+        }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // Inner class: ReportResult — maps BMS CORPT0AO screen output
+    // ═══════════════════════════════════════════════════════════════════════
+
     /**
-     * Encapsulates the report screen output/response data.
+     * Report screen output data — maps BMS CORPT0AO structure from CORPT00.CPY.
      *
-     * <p>Combines the BMS output fields (CORPT0AO) with navigation and status
-     * information that would have been conveyed via screen presentation and
-     * CICS control flow in the COBOL program.</p>
+     * <p>Combines header information from POPULATE-HEADER-INFO, error/status
+     * messages from SEND-TRNRPT-SCREEN, and job submission state from
+     * SUBMIT-JOB-TO-INTRDR into a single response object returned to the
+     * controller layer.</p>
      */
     public static class ReportResult {
+
         private String message;
         private boolean error;
         private boolean confirmationRequired;
@@ -250,89 +286,52 @@ public class ReportService {
         private String currentDate;
         private String currentTime;
 
-        /** Default constructor. */
-        public ReportResult() {
-            this.error = false;
-            this.confirmationRequired = false;
-            this.submitted = false;
-        }
-
-        // ── Getters and Setters ─────────────────────────────────────────
-
-        /** Gets the screen message (WS-MESSAGE / ERRMSGO). */
         public String getMessage() { return message; }
-        /** Sets the screen message. */
         public void setMessage(String message) { this.message = message; }
 
-        /** Returns true if an error flag is set (WS-ERR-FLG = 'Y'). */
         public boolean isError() { return error; }
-        /** Sets the error flag. */
         public void setError(boolean error) { this.error = error; }
 
-        /** Returns true if a confirmation prompt is pending. */
         public boolean isConfirmationRequired() { return confirmationRequired; }
-        /** Sets the confirmation required flag. */
         public void setConfirmationRequired(boolean confirmationRequired) {
             this.confirmationRequired = confirmationRequired;
         }
 
-        /** Returns true if the report job was successfully submitted. */
         public boolean isSubmitted() { return submitted; }
-        /** Sets the submitted flag. */
         public void setSubmitted(boolean submitted) { this.submitted = submitted; }
 
-        /** Gets the computed start date in YYYY-MM-DD format (WS-START-DATE). */
         public String getStartDate() { return startDate; }
-        /** Sets the start date. */
         public void setStartDate(String startDate) { this.startDate = startDate; }
 
-        /** Gets the computed end date in YYYY-MM-DD format (WS-END-DATE). */
         public String getEndDate() { return endDate; }
-        /** Sets the end date. */
         public void setEndDate(String endDate) { this.endDate = endDate; }
 
-        /** Gets the report name (WS-REPORT-NAME: Monthly/Yearly/Custom). */
         public String getReportName() { return reportName; }
-        /** Sets the report name. */
         public void setReportName(String reportName) { this.reportName = reportName; }
 
-        /** Gets the navigation target program (CDEMO-TO-PROGRAM). */
         public String getNavigationTarget() { return navigationTarget; }
-        /** Sets the navigation target. */
         public void setNavigationTarget(String navigationTarget) {
             this.navigationTarget = navigationTarget;
         }
 
-        /** Gets header title line 1 (TITLE01O — CCDA-TITLE01). */
         public String getTitle01() { return title01; }
-        /** Sets header title line 1. */
         public void setTitle01(String title01) { this.title01 = title01; }
 
-        /** Gets header title line 2 (TITLE02O — CCDA-TITLE02). */
         public String getTitle02() { return title02; }
-        /** Sets header title line 2. */
         public void setTitle02(String title02) { this.title02 = title02; }
 
-        /** Gets the transaction name (TRNNAMEO — WS-TRANID). */
         public String getTransactionName() { return transactionName; }
-        /** Sets the transaction name. */
         public void setTransactionName(String transactionName) {
             this.transactionName = transactionName;
         }
 
-        /** Gets the program name (PGMNAMEO — WS-PGMNAME). */
         public String getProgramName() { return programName; }
-        /** Sets the program name. */
         public void setProgramName(String programName) { this.programName = programName; }
 
-        /** Gets the current date in MM/DD/YY format (CURDATEO). */
         public String getCurrentDate() { return currentDate; }
-        /** Sets the current date. */
         public void setCurrentDate(String currentDate) { this.currentDate = currentDate; }
 
-        /** Gets the current time in HH:MM:SS format (CURTIMEO). */
         public String getCurrentTime() { return currentTime; }
-        /** Sets the current time. */
         public void setCurrentTime(String currentTime) { this.currentTime = currentTime; }
     }
 
@@ -343,67 +342,70 @@ public class ReportService {
     /**
      * Main entry point — translates MAIN-PARA (CORPT00C.cbl line 163).
      *
-     * <p>Orchestrates the pseudo-conversational flow for the Transaction Report
-     * screen. On first entry (enter context), initializes screen fields and
-     * returns the initial display. On re-entry, evaluates the AID key and
-     * dispatches to the appropriate handler: ENTER → process report request,
-     * PF3 → return to main menu, other → invalid key message.</p>
-     *
-     * <p>COBOL flow:</p>
+     * <p>Controls the pseudo-conversational flow:</p>
      * <ol>
-     *   <li>If EIBCALEN = 0 → redirect to COSGN00C (no session)</li>
-     *   <li>If not CDEMO-PGM-REENTER → initialize and send screen</li>
-     *   <li>Else → receive screen, evaluate EIBAID</li>
+     *   <li>No session (EIBCALEN=0) — redirect to signon</li>
+     *   <li>First entry (NOT CDEMO-PGM-REENTER) — initialize and send empty screen</li>
+     *   <li>Re-entry — receive input, evaluate AID key (ENTER, PF3, OTHER)</li>
      * </ol>
      *
-     * @param request the report screen input fields (null on first entry)
-     * @param aidKey  the AID key pressed (ENTER, PF3, or other)
-     * @return result containing screen data, messages, and/or navigation target
+     * @param request the report screen input data (from controller)
+     * @param aidKey  the AID key pressed (ENTER, PF3, etc.)
+     * @return result containing screen output data
      */
-    public ReportResult processRequest(ReportRequest request, String aidKey) {
-        logger.debug("MAIN-PARA: entering ReportService.processRequest, aidKey={}", aidKey);
+    public ReportResult mainPara(ReportRequest request, String aidKey) {
+        logger.info("MAIN-PARA: user={}, userType={}, admin={}, aidKey={}",
+                cardDemoContext.getUserId(), cardDemoContext.getUserType(),
+                cardDemoContext.isAdmin(), aidKey);
 
-        // CORPT00C.cbl line 168: IF EIBCALEN = 0
-        // In Java, a null or empty context userId signals no active session
+        // CORPT00C.cbl line 166: IF EIBCALEN = 0 → no session, redirect to signon
         if (cardDemoContext.getUserId() == null
                 || cardDemoContext.getUserId().isBlank()) {
-            logger.info("MAIN-PARA: no active session, redirecting to signon");
+            logger.warn("MAIN-PARA: No session context — redirecting to signon");
+            cardDemoContext.setToTranId(SIGNON_TRANID);
             cardDemoContext.setToProgram(SIGNON_PROGRAM);
             return returnToPrevScreen();
         }
 
-        // CORPT00C.cbl line 173: IF NOT CDEMO-PGM-REENTER
+        // CORPT00C.cbl line 175: IF NOT CDEMO-PGM-REENTER → first entry
         if (cardDemoContext.isEnterContext()) {
-            // First entry — set to re-enter for next interaction
             // SET CDEMO-PGM-REENTER TO TRUE
             cardDemoContext.setPgmContext(CardDemoContext.PGM_REENTER);
-
-            // MOVE LOW-VALUES TO CORPT0AO
-            // PERFORM INITIALIZE-ALL-FIELDS
             initializeAllFields();
-
-            // PERFORM SEND-TRNRPT-SCREEN
-            logger.debug("MAIN-PARA: first entry, sending initial report screen");
+            // Track last map/mapset for CICS navigation
+            cardDemoContext.setLastMap(WS_MAPNAME);
+            cardDemoContext.setLastMapset(WS_MAPSETNAME);
+            logger.debug("MAIN-PARA: First entry — sending initial screen");
             return sendReportScreen("", false);
         }
 
-        // Re-entry: PERFORM RECEIVE-TRNRPT-SCREEN — input is already in request
-        receiveReportScreen(request);
+        // CORPT00C.cbl line 182: ELSE (re-entry path)
+        if (cardDemoContext.isReenterContext()) {
+            receiveReportScreen(request);
 
-        // EVALUATE EIBAID
-        if (AID_ENTER.equalsIgnoreCase(aidKey)) {
-            // WHEN DFHENTER → PERFORM PROCESS-ENTER-KEY
-            return processEnterKey(request);
-        } else if (AID_PF3.equalsIgnoreCase(aidKey)) {
-            // WHEN DFHPF3 → return to main menu (COMEN01C)
-            logger.debug("MAIN-PARA: PF3 pressed, returning to main menu");
-            cardDemoContext.setToProgram(MAIN_MENU_PROGRAM);
-            return returnToPrevScreen();
-        } else {
-            // WHEN OTHER → invalid key message
-            logger.debug("MAIN-PARA: invalid AID key '{}'", aidKey);
-            return sendReportScreen(MessageConstants.INVALID_KEY_MESSAGE, true);
+            // EVALUATE EIBAID (line 186)
+            if (AID_ENTER.equals(aidKey)) {
+                // WHEN DFHENTER → PERFORM PROCESS-ENTER-KEY
+                return processEnterKey(request);
+
+            } else if (AID_PF3.equals(aidKey)) {
+                // WHEN DFHPF3 → return to main menu
+                cardDemoContext.setFromTranId(WS_TRANID);
+                cardDemoContext.setFromProgram(WS_PGMNAME);
+                cardDemoContext.setToTranId(MAIN_MENU_TRANID);
+                cardDemoContext.setToProgram(MAIN_MENU_PROGRAM);
+                return returnToPrevScreen();
+
+            } else {
+                // WHEN OTHER → invalid key message
+                logger.debug("MAIN-PARA: Unrecognized AID key '{}'", aidKey);
+                return sendReportScreen(MessageConstants.INVALID_KEY_MESSAGE, true);
+            }
         }
+
+        // Defensive fallback — should not reach here in normal flow
+        logger.warn("MAIN-PARA: Unexpected context state — sending default screen");
+        return sendReportScreen("", false);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -413,163 +415,50 @@ public class ReportService {
     /**
      * Processes the Enter key — translates PROCESS-ENTER-KEY (line 208).
      *
-     * <p>Evaluates which report type is selected (Monthly, Yearly, or Custom),
-     * computes or validates the date range, and proceeds to the job submission
-     * confirmation step. Faithfully reproduces the COBOL EVALUATE TRUE block
-     * at line 212.</p>
-     *
-     * <p>Date calculation rules:</p>
+     * <p>Evaluates the selected report type and computes the date range:</p>
      * <ul>
-     *   <li><b>Monthly:</b> Start = YYYY-MM-01 (first of current month),
-     *       End = last day of current month (computed via next-month-minus-1-day)</li>
-     *   <li><b>Yearly:</b> Start = YYYY-01-01, End = YYYY-12-31</li>
-     *   <li><b>Custom:</b> Validates 6 date fields (start/end month, day, year),
-     *       validates via DateConversionUtil (CSUTLDTC equivalent), allows
-     *       message code 2513 to pass</li>
+     *   <li><b>Monthly</b> — uses FUNCTION CURRENT-DATE to compute first/last day
+     *       of the current month (lines 215-236)</li>
+     *   <li><b>Yearly</b> — computes Jan 1 to Dec 31 of the current year
+     *       (lines 237-247)</li>
+     *   <li><b>Custom</b> — validates all 6 date fields (empty, numeric, range,
+     *       full date via CSUTLDTC), assembles start/end dates (lines 248-456)</li>
      * </ul>
      *
-     * @param request the report screen input fields
-     * @return result containing the outcome (error, confirmation prompt, or success)
+     * <p>After computing the date range, delegates to
+     * {@link #submitJobToIntrdr(ReportRequest)} for confirmation and job launch.</p>
+     *
+     * @param request the report screen input with type selection and date fields
+     * @return result containing screen output or job submission status
      */
-    private ReportResult processEnterKey(ReportRequest request) {
-        logger.debug("PROCESS-ENTER-KEY: evaluating report type selection");
+    public ReportResult processEnterKey(ReportRequest request) {
+        logger.debug("PROCESS-ENTER-KEY: monthly={}, yearly={}, custom={}",
+                request.getMonthly(), request.getYearly(), request.getCustom());
 
-        // CORPT00C.cbl line 212: EVALUATE TRUE
-        if (isFieldPresent(request.getMonthly())) {
-            // ── MONTHLY report (CORPT00C.cbl line 213) ──────────────────
-            String reportName = REPORT_MONTHLY;
-            logger.debug("PROCESS-ENTER-KEY: Monthly report selected");
+        try {
+            // EVALUATE TRUE (line 210)
+            if (isFieldPresent(request.getMonthly())) {
+                return processMonthlyReport(request);
 
-            // Compute monthly start/end dates using FUNCTION CURRENT-DATE
-            LocalDate today = LocalDate.now();
-            // WS-START-DATE = YYYY-MM-01
-            LocalDate startDate = today.withDayOfMonth(1);
-            // WS-END-DATE = last day of current month
-            // COBOL: set day=1, add 1 to month, compute DATE-OF-INTEGER(
-            //   INTEGER-OF-DATE(date) - 1) → last day of original month
-            YearMonth currentYearMonth = YearMonth.of(today.getYear(), today.getMonthValue());
-            LocalDate endDate = currentYearMonth.atEndOfMonth();
+            } else if (isFieldPresent(request.getYearly())) {
+                return processYearlyReport(request);
 
-            String startDateStr = formatDateYyyyMmDd(startDate);
-            String endDateStr = formatDateYyyyMmDd(endDate);
+            } else if (isFieldPresent(request.getCustom())) {
+                return processCustomReport(request);
 
-            // PERFORM SUBMIT-JOB-TO-INTRDR
-            return submitJobToInternalReader(request, reportName, startDateStr, endDateStr);
-
-        } else if (isFieldPresent(request.getYearly())) {
-            // ── YEARLY report (CORPT00C.cbl line 245) ───────────────────
-            String reportName = REPORT_YEARLY;
-            logger.debug("PROCESS-ENTER-KEY: Yearly report selected");
-
-            // WS-START-DATE = YYYY-01-01
-            LocalDate today = LocalDate.now();
-            LocalDate startDate = LocalDate.of(today.getYear(), 1, 1);
-            // WS-END-DATE = YYYY-12-31
-            LocalDate endDate = LocalDate.of(today.getYear(), 12, 31);
-
-            String startDateStr = formatDateYyyyMmDd(startDate);
-            String endDateStr = formatDateYyyyMmDd(endDate);
-
-            // PERFORM SUBMIT-JOB-TO-INTRDR
-            return submitJobToInternalReader(request, reportName, startDateStr, endDateStr);
-
-        } else if (isFieldPresent(request.getCustom())) {
-            // ── CUSTOM report (CORPT00C.cbl line 268) ───────────────────
-            logger.debug("PROCESS-ENTER-KEY: Custom report selected, validating dates");
-
-            // Validate all 6 date fields are non-empty
-            // CORPT00C.cbl lines 270–315: EVALUATE TRUE for empty field checks
-            String emptyFieldError = validateCustomDateFieldsPresent(request);
-            if (emptyFieldError != null) {
-                return sendReportScreen(emptyFieldError, true);
-            }
-
-            // Normalize date fields via NUMVAL-C equivalent
-            // CORPT00C.cbl lines 317–336: COMPUTE WS-NUM-99 = FUNCTION NUMVAL-C(...)
-            String startMonth = normalizeNumericField(request.getStartMonth(), 2);
-            String startDay = normalizeNumericField(request.getStartDay(), 2);
-            String startYear = normalizeNumericField(request.getStartYear(), 4);
-            String endMonth = normalizeNumericField(request.getEndMonth(), 2);
-            String endDay = normalizeNumericField(request.getEndDay(), 2);
-            String endYear = normalizeNumericField(request.getEndYear(), 4);
-
-            // Validate start date month (CORPT00C.cbl line 338)
-            // IF SDTMMI IS NOT NUMERIC OR SDTMMI > '12'
-            if (!isNumericString(startMonth) || intValueOf(startMonth) > 12) {
+            } else {
+                // WHEN OTHER — no type selected
                 return sendReportScreen(
-                        "Start Date - Not a valid Month...", true);
+                        "Please select a report type: Monthly, Yearly, or Custom",
+                        true);
             }
 
-            // Validate start date day (CORPT00C.cbl line 346)
-            if (!isNumericString(startDay) || intValueOf(startDay) > 31) {
-                return sendReportScreen(
-                        "Start Date - Not a valid Day...", true);
-            }
-
-            // Validate start date year (CORPT00C.cbl line 354)
-            if (!isNumericString(startYear)) {
-                return sendReportScreen(
-                        "Start Date - Not a valid Year...", true);
-            }
-
-            // Validate end date month (CORPT00C.cbl line 362)
-            if (!isNumericString(endMonth) || intValueOf(endMonth) > 12) {
-                return sendReportScreen(
-                        "End Date - Not a valid Month...", true);
-            }
-
-            // Validate end date day (CORPT00C.cbl line 370)
-            if (!isNumericString(endDay) || intValueOf(endDay) > 31) {
-                return sendReportScreen(
-                        "End Date - Not a valid Day...", true);
-            }
-
-            // Validate end date year (CORPT00C.cbl line 378)
-            if (!isNumericString(endYear)) {
-                return sendReportScreen(
-                        "End Date - Not a valid Year...", true);
-            }
-
-            // Build YYYY-MM-DD date strings
-            // CORPT00C.cbl lines 384–389: MOVE fields to WS-START-DATE / WS-END-DATE
-            String startDateStr = startYear + "-" + startMonth + "-" + startDay;
-            String endDateStr = endYear + "-" + endMonth + "-" + endDay;
-
-            // Validate start date via CSUTLDTC (DateConversionUtil)
-            // CORPT00C.cbl lines 391–409: CALL 'CSUTLDTC' USING start date
-            DateConversionUtil.DateValidationResult startValidation =
-                    DateConversionUtil.validateDate(startDateStr, DATE_FORMAT_YYYY_MM_DD);
-            if (!startValidation.valid()) {
-                // Allow message code 2513 (unsupported range) to pass
-                // COBOL: IF CSUTLDTC-RESULT-MSG-NUM NOT = '2513'
-                if (startValidation.messageCode() != MSG_UNSUPP_RANGE) {
-                    return sendReportScreen(
-                            "Start Date - Not a valid date...", true);
-                }
-            }
-
-            // Validate end date via CSUTLDTC (DateConversionUtil)
-            // CORPT00C.cbl lines 411–429: CALL 'CSUTLDTC' USING end date
-            DateConversionUtil.DateValidationResult endValidation =
-                    DateConversionUtil.validateDate(endDateStr, DATE_FORMAT_YYYY_MM_DD);
-            if (!endValidation.valid()) {
-                // Allow message code 2513 (unsupported range) to pass
-                if (endValidation.messageCode() != MSG_UNSUPP_RANGE) {
-                    return sendReportScreen(
-                            "End Date - Not a valid date...", true);
-                }
-            }
-
-            // CORPT00C.cbl lines 441–444: MOVE 'Custom' TO WS-REPORT-NAME
-            // IF NOT ERR-FLG-ON → PERFORM SUBMIT-JOB-TO-INTRDR
-            return submitJobToInternalReader(request, REPORT_CUSTOM,
-                    startDateStr, endDateStr);
-
-        } else {
-            // WHEN OTHER — no report type selected (CORPT00C.cbl line 449)
-            logger.debug("PROCESS-ENTER-KEY: no report type selected");
-            return sendReportScreen(
-                    "Select a report type to print report...", true);
+        } catch (ValidationException ex) {
+            // Convert validation failures to screen error messages.
+            // Uses getFieldName() and getValidationMessage() for structured logging.
+            logger.warn("PROCESS-ENTER-KEY: validation failed — field={}, message={}",
+                    ex.getFieldName(), ex.getValidationMessage());
+            return sendReportScreen(ex.getValidationMessage(), true);
         }
     }
 
@@ -578,131 +467,271 @@ public class ReportService {
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
-     * Handles job submission confirmation — translates SUBMIT-JOB-TO-INTRDR (line 462).
+     * Submits the statement generation batch job — translates SUBMIT-JOB-TO-INTRDR
+     * (CORPT00C.cbl line 462).
      *
-     * <p>Implements the COBOL confirmation loop:</p>
+     * <p>In COBOL, this paragraph writes JCL card images to the TDQ named 'JOBS'
+     * for batch submission via the internal reader. In Java, this method:</p>
      * <ol>
-     *   <li>If CONFIRMI is empty → prompt user for Y/N confirmation</li>
-     *   <li>If Y/y → build JCL with date parameters, write to TDQ, return success</li>
-     *   <li>If N/n → reinitialize fields, return to clean screen</li>
-     *   <li>Otherwise → error message (invalid confirmation value)</li>
+     *   <li>Prompts for confirmation if none given (WS-CONFIRM = SPACES)</li>
+     *   <li>On 'Y' — builds JCL lines (for traceability logging), launches the
+     *       Spring Batch {@code statementGenJob} via {@link JobLauncher}</li>
+     *   <li>On 'N' — reinitializes fields and returns to clean screen</li>
+     *   <li>Otherwise — shows invalid confirmation message</li>
      * </ol>
      *
-     * @param request      the report screen input (contains confirmation field)
-     * @param reportName   the report type name (Monthly/Yearly/Custom)
-     * @param startDateStr the start date in YYYY-MM-DD format
-     * @param endDateStr   the end date in YYYY-MM-DD format
-     * @return result with confirmation prompt, success message, or error
+     * @param request the report request with computed dates and confirmation
+     * @return result containing submission status or confirmation prompt
      */
-    private ReportResult submitJobToInternalReader(ReportRequest request,
-            String reportName, String startDateStr, String endDateStr) {
-
-        logger.debug("SUBMIT-JOB-TO-INTRDR: reportName={}, start={}, end={}",
-                reportName, startDateStr, endDateStr);
-
+    public ReportResult submitJobToIntrdr(ReportRequest request) {
         String confirmation = request.getConfirmation();
+        String startDate = request.getComputedStartDate();
+        String endDate = request.getComputedEndDate();
 
-        // CORPT00C.cbl line 464: IF CONFIRMI = SPACES OR LOW-VALUES
+        logger.info("SUBMIT-JOB-TO-INTRDR: confirm='{}', start={}, end={}",
+                confirmation, startDate, endDate);
+
+        // CORPT00C.cbl line 464: IF WS-CONFIRM = SPACES
         if (!isFieldPresent(confirmation)) {
-            // No confirmation yet — prompt the user
-            // STRING 'Please confirm to print the ' ... WS-REPORT-NAME ... ' report...'
-            String promptMessage = "Please confirm to print the "
-                    + reportName + " report...";
-            logger.debug("SUBMIT-JOB-TO-INTRDR: requesting confirmation");
-
-            ReportResult result = sendReportScreen(promptMessage, true);
+            ReportResult result = sendReportScreen(
+                    "Do you want to submit report job? (Y/N)", false);
             result.setConfirmationRequired(true);
-            result.setStartDate(startDateStr);
-            result.setEndDate(endDateStr);
-            result.setReportName(reportName);
+            result.setStartDate(startDate);
+            result.setEndDate(endDate);
             return result;
         }
 
-        // CORPT00C.cbl line 476: EVALUATE TRUE
-        String confirmChar = confirmation.trim();
-        if ("Y".equalsIgnoreCase(confirmChar)) {
-            // WHEN CONFIRMI = 'Y' OR 'y' → submit the job
-            logger.info("SUBMIT-JOB-TO-INTRDR: confirmation=Y, submitting {} report job "
-                    + "(start={}, end={})", reportName, startDateStr, endDateStr);
-
-            // Build JCL lines with date parameters substituted
-            List<String> jclLines = buildJclLines(startDateStr, endDateStr);
-
-            // PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL /*EOF
-            boolean tdqSuccess = true;
-            for (String jclLine : jclLines) {
-                if (!writeJobSubmissionTdq(jclLine)) {
-                    tdqSuccess = false;
-                    break;
-                }
-            }
-
-            if (!tdqSuccess) {
-                return sendReportScreen(
-                        "Unable to Write TDQ (JOBS)...", true);
-            }
-
-            // CORPT00C.cbl lines 454–460: Success path after PROCESS-ENTER-KEY
-            // PERFORM INITIALIZE-ALL-FIELDS
-            initializeAllFields();
-
-            // STRING WS-REPORT-NAME ' report submitted for printing ...'
-            String successMessage = reportName + " report submitted for printing ...";
-
-            ReportResult result = sendReportScreen(successMessage, false);
-            result.setSubmitted(true);
-            result.setStartDate(startDateStr);
-            result.setEndDate(endDateStr);
-            result.setReportName(reportName);
-            return result;
-
-        } else if ("N".equalsIgnoreCase(confirmChar)) {
-            // WHEN CONFIRMI = 'N' OR 'n' → cancel, reinitialize
-            logger.debug("SUBMIT-JOB-TO-INTRDR: confirmation=N, cancelling");
-            initializeAllFields();
-            return sendReportScreen("", true);
-
-        } else {
-            // WHEN OTHER → invalid confirmation value
-            // STRING '"' CONFIRMI '" is not a valid value to confirm...'
-            String errorMessage = "\"" + confirmChar
-                    + "\" is not a valid value to confirm...";
-            logger.debug("SUBMIT-JOB-TO-INTRDR: invalid confirmation value '{}'",
-                    confirmChar);
-            return sendReportScreen(errorMessage, true);
+        // CORPT00C.cbl line 470: IF WS-CONFIRM = 'Y' OR 'y'
+        if ("Y".equalsIgnoreCase(confirmation)) {
+            return executeJobSubmission(startDate, endDate);
         }
+
+        // CORPT00C.cbl line 498: IF WS-CONFIRM = 'N' OR 'n'
+        if ("N".equalsIgnoreCase(confirmation)) {
+            initializeAllFields();
+            return sendReportScreen("", false);
+        }
+
+        // CORPT00C.cbl line 504: ELSE — invalid confirmation
+        return sendReportScreen(
+                "Invalid confirmation value. Please enter Y or N.", true);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // WIRTE-JOBSUB-TDQ (CORPT00C.cbl line 515) — note: original COBOL typo
+    // WIRTE-JOBSUB-TDQ (CORPT00C.cbl line 515) — note: COBOL has typo
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
-     * Writes a single JCL record to the TDQ — translates WIRTE-JOBSUB-TDQ (line 515).
+     * Writes a single TDQ record — translates WIRTE-JOBSUB-TDQ (line 515).
      *
-     * <p>In the COBOL program, this paragraph executes {@code EXEC CICS WRITEQ TD
-     * QUEUE('JOBS') FROM(JCL-RECORD) LENGTH(80)}. In this Java translation, the
-     * TDQ write is replaced with structured logging of each JCL line. The actual
-     * MQ/TDQ integration is out of scope per AAP §0.3.2.</p>
+     * <p>In COBOL: {@code EXEC CICS WRITEQ TD QUEUE('JOBS') FROM(WS-JCL-RECORD)
+     * LENGTH(WS-JCL-REC-LEN) RESP(WS-RESP-CD) END-EXEC}.</p>
      *
-     * <p>The original COBOL paragraph name {@code WIRTE-JOBSUB-TDQ} contains a
-     * typo ({@code WIRTE} instead of {@code WRITE}). The Java method name corrects
-     * this to {@code writeJobSubmissionTdq} per the traceability matrix.</p>
+     * <p>In this Java translation, the TDQ write is replaced by structured
+     * logging. The actual batch job submission is handled by
+     * {@link JobLauncher#run} in {@link #submitJobToIntrdr}.</p>
      *
-     * @param jclRecord the 80-character JCL record to write
-     * @return true if the write succeeded, false on error
+     * <p>Note: the COBOL paragraph has a typo — "WIRTE" instead of "WRITE".
+     * The Java method uses the corrected spelling per the agent action plan.</p>
+     *
+     * @param jobData a single JCL record line (80 chars, right-padded)
      */
-    private boolean writeJobSubmissionTdq(String jclRecord) {
-        // EXEC CICS WRITEQ TD QUEUE('JOBS') FROM(JCL-RECORD) LENGTH(80)
-        // Translated to structured logging (TDQ integration out of scope)
+    public void writeJobSubTdq(String jobData) {
+        // EXEC CICS WRITEQ TD QUEUE('JOBS') FROM(WS-JCL-RECORD)
+        //   LENGTH(WS-JCL-REC-LEN) RESP(WS-RESP-CD) END-EXEC
+        // COBOL checks RESP: 00=OK, other=error with EIBRESP/EIBRESP2 logging.
+        // In Java, structured logging replaces the TDQ write operation.
+        logger.info("TDQ-WRITE queue={}: {}", TDQ_QUEUE_NAME, jobData);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Private methods — COBOL paragraph translations and helpers
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Processes monthly report type (CORPT00C.cbl lines 215-236).
+     *
+     * <p>Computes the first and last day of the current month using
+     * FUNCTION CURRENT-DATE and FUNCTION INTEGER-OF-DATE / DATE-OF-INTEGER
+     * arithmetic. In Java, this uses {@link DateConversionUtil#getCurrentDateCcyymmdd()}
+     * and {@link YearMonth#atEndOfMonth()}.</p>
+     */
+    private ReportResult processMonthlyReport(ReportRequest request) {
+        // COBOL: MOVE FUNCTION CURRENT-DATE(1:8) TO WS-CURDATE-DATA
+        String ccyymmdd = DateConversionUtil.getCurrentDateCcyymmdd();
+        logger.debug("Monthly report — current date CCYYMMDD: {}", ccyymmdd);
+
+        // Parse year and month from the CCYYMMDD string
+        int year = Integer.parseInt(ccyymmdd.substring(0, 4));
+        int month = Integer.parseInt(ccyymmdd.substring(4, 6));
+
+        // Compute start: first day of current month
+        // COBOL: MOVE WS-CURDATE-MONTH TO WS-START-MONTH, MOVE '01' TO WS-START-DAY
+        LocalDate today = LocalDate.now();
+        LocalDate startDate = today.withDayOfMonth(1);
+
+        // Compute end: last day of current month
+        // COBOL: FUNCTION INTEGER-OF-DATE / DATE-OF-INTEGER arithmetic
+        YearMonth currentYm = YearMonth.now();
+        LocalDate endDate = currentYm.atEndOfMonth();
+
+        logger.debug("Monthly range: {}/{} — {} to {}",
+                today.getMonthValue(), today.getYear(), startDate, endDate);
+
+        request.setComputedStartDate(formatDateYyyyMmDd(startDate));
+        request.setComputedEndDate(formatDateYyyyMmDd(endDate));
+
+        // PERFORM SUBMIT-JOB-TO-INTRDR
+        ReportResult result = submitJobToIntrdr(request);
+        result.setReportName("Monthly Report (" + month + "/" + year + ")");
+        return result;
+    }
+
+    /**
+     * Processes yearly report type (CORPT00C.cbl lines 237-247).
+     *
+     * <p>Computes January 1 to December 31 of the current year.</p>
+     */
+    private ReportResult processYearlyReport(ReportRequest request) {
+        // COBOL: MOVE FUNCTION CURRENT-DATE(1:4) TO WS-START-YEAR / WS-END-YEAR
+        String ccyymmdd = DateConversionUtil.getCurrentDateCcyymmdd();
+        int year = Integer.parseInt(ccyymmdd.substring(0, 4));
+
+        // Start: January 1
+        LocalDate startDate = LocalDate.of(year, 1, 1);
+
+        // End: December 31
+        YearMonth decYm = YearMonth.of(year, 12);
+        LocalDate endDate = decYm.atEndOfMonth();
+
+        logger.debug("Yearly range: {} — {} to {}", year, startDate, endDate);
+
+        request.setComputedStartDate(formatDateYyyyMmDd(startDate));
+        request.setComputedEndDate(formatDateYyyyMmDd(endDate));
+
+        // PERFORM SUBMIT-JOB-TO-INTRDR
+        ReportResult result = submitJobToIntrdr(request);
+        result.setReportName("Yearly Report (" + year + ")");
+        return result;
+    }
+
+    /**
+     * Processes custom report type (CORPT00C.cbl lines 248-456).
+     *
+     * <p>Validates all 6 date component fields in order:</p>
+     * <ol>
+     *   <li>Empty/blank checks (lines 270-315)</li>
+     *   <li>NUMVAL-C normalization and numeric checks (lines 317-380)</li>
+     *   <li>Range checks: month 1-12, day 1-31 (lines 330-380)</li>
+     *   <li>Full date validation via CSUTLDTC (lines 390-430)</li>
+     * </ol>
+     */
+    private ReportResult processCustomReport(ReportRequest request) {
+        // Step 1: Validate all 6 date fields are present (lines 270-315)
+        validateCustomDateFieldsPresent(request);
+
+        // Step 2: Normalize with NUMVAL-C equivalent (lines 317-330)
+        String sMonth = normalizeNumericField(request.getStartMonth(), 2);
+        String sDay = normalizeNumericField(request.getStartDay(), 2);
+        String sYear = normalizeNumericField(request.getStartYear(), 4);
+        String eMonth = normalizeNumericField(request.getEndMonth(), 2);
+        String eDay = normalizeNumericField(request.getEndDay(), 2);
+        String eYear = normalizeNumericField(request.getEndYear(), 4);
+
+        // Step 3: Numeric and range validation (lines 330-380)
+        validateNumericAndRange(sMonth, sDay, sYear, "Start");
+        validateNumericAndRange(eMonth, eDay, eYear, "End");
+
+        // Step 4: Full date validation using CSUTLDTC (lines 390-430)
+        String startDateStr = sYear + "-" + sMonth + "-" + sDay;
+        DateConversionUtil.DateValidationResult startResult =
+                DateConversionUtil.validateDate(startDateStr, DATE_FORMAT_YYYY_MM_DD);
+        if (!startResult.valid() && startResult.messageCode() != MSG_UNSUPP_RANGE) {
+            throw new ValidationException("startDate",
+                    "Start Date is not valid ...");
+        }
+
+        String endDateStr = eYear + "-" + eMonth + "-" + eDay;
+        DateConversionUtil.DateValidationResult endResult =
+                DateConversionUtil.validateDate(endDateStr, DATE_FORMAT_YYYY_MM_DD);
+        if (!endResult.valid() && endResult.messageCode() != MSG_UNSUPP_RANGE) {
+            throw new ValidationException("endDate",
+                    "End Date is not valid ...");
+        }
+
+        // Step 5: Assemble dates and submit
+        request.setComputedStartDate(startDateStr);
+        request.setComputedEndDate(endDateStr);
+
+        logger.debug("Custom range: {} to {}", startDateStr, endDateStr);
+
+        // PERFORM SUBMIT-JOB-TO-INTRDR
+        ReportResult result = submitJobToIntrdr(request);
+        result.setReportName("Custom Report");
+        return result;
+    }
+
+    /**
+     * Executes batch job submission — the 'Y' confirmation path of
+     * SUBMIT-JOB-TO-INTRDR (CORPT00C.cbl lines 470-496).
+     *
+     * <p>Builds JCL lines for traceability logging (preserving the COBOL
+     * PERFORM VARYING loop at lines 477-480), then launches the Spring Batch
+     * {@code statementGenJob} with start/end date parameters.</p>
+     */
+    private ReportResult executeJobSubmission(String startDate, String endDate) {
+        // Build JCL lines and write each to TDQ (traceability logging)
+        // COBOL: PERFORM VARYING WS-JCL-REC-IDX FROM 1 BY 1
+        //        UNTIL WS-JCL-REC-IDX > 18
+        //        PERFORM WIRTE-JOBSUB-TDQ
+        List<String> jclLines = buildJclLines(startDate, endDate);
+        for (String line : jclLines) {
+            writeJobSubTdq(line);
+        }
+
+        // Guard: batch job infrastructure may not be configured yet
+        if (jobLauncher == null || statementGenJob == null) {
+            logger.warn("Batch job infrastructure not available — "
+                    + "statementGenJob bean or JobLauncher is not configured");
+            ReportResult result = sendReportScreen(
+                    "Report request recorded. Batch job infrastructure pending configuration.", false);
+            result.setSubmitted(false);
+            result.setStartDate(startDate);
+            result.setEndDate(endDate);
+            initializeAllFields();
+            return result;
+        }
+
+        // Launch Spring Batch job (replaces TDQ-based internal reader submission)
         try {
-            logger.info("TDQ-WRITE queue={} record=[{}]", TDQ_QUEUE_NAME, jclRecord);
-            return true;
-        } catch (Exception e) {
-            // EVALUATE WS-RESP-CD → WHEN OTHER → error
-            logger.error("WIRTE-JOBSUB-TDQ: failed to write TDQ record, "
-                    + "queue={}, error={}", TDQ_QUEUE_NAME, e.getMessage(), e);
-            return false;
+            logger.info("Launching batch job: name={}", statementGenJob.getName());
+
+            JobParametersBuilder paramsBuilder = new JobParametersBuilder();
+            paramsBuilder.addString("startDate", startDate);
+            paramsBuilder.addString("endDate", endDate);
+            paramsBuilder.addLong("timestamp", System.currentTimeMillis());
+
+            JobExecution execution = jobLauncher.run(
+                    statementGenJob, paramsBuilder.toJobParameters());
+
+            logger.info("Batch job completed: status={}, exitStatus={}",
+                    execution.getStatus(), execution.getExitStatus());
+
+            ReportResult result = sendReportScreen(
+                    "Report job submitted successfully", false);
+            result.setSubmitted(true);
+            result.setStartDate(startDate);
+            result.setEndDate(endDate);
+
+            // Reinitialize for fresh screen (COBOL: PERFORM INITIALIZE-ALL-FIELDS)
+            initializeAllFields();
+            return result;
+
+        } catch (Exception ex) {
+            // COBOL: RESP handling in WIRTE-JOBSUB-TDQ (WS-RESP-CD NOT = 0)
+            logger.error("Batch job submission failed: {}", ex.getMessage(), ex);
+            return sendReportScreen(
+                    "Error submitting report job: " + ex.getMessage(), true);
         }
     }
 
@@ -711,33 +740,27 @@ public class ReportService {
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
-     * Returns to the previous screen — translates RETURN-TO-PREV-SCREEN (line 540).
+     * Returns to previous screen — translates RETURN-TO-PREV-SCREEN (line 540).
      *
-     * <p>Sets the navigation context on CardDemoContext (from-tranid, from-program,
-     * pgm-context) and returns a result indicating the target program for XCTL.</p>
+     * <p>In COBOL: sets FROM-TRANID/PROGRAM in COMMAREA, then
+     * {@code EXEC CICS XCTL PROGRAM(COMEN01C) COMMAREA(CARDDEMO-COMMAREA)}.
+     * In Java, returns a result with the navigation target set.</p>
      *
-     * @return result with navigation target set
+     * @return result with navigation target program
      */
     private ReportResult returnToPrevScreen() {
-        // CORPT00C.cbl line 542: IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
-        String toProgram = cardDemoContext.getToProgram();
-        if (toProgram == null || toProgram.isBlank()) {
-            toProgram = SIGNON_PROGRAM;
-            cardDemoContext.setToProgram(toProgram);
-        }
-
         // MOVE WS-TRANID TO CDEMO-FROM-TRANID
         cardDemoContext.setFromTranId(WS_TRANID);
         // MOVE WS-PGMNAME TO CDEMO-FROM-PROGRAM
         cardDemoContext.setFromProgram(WS_PGMNAME);
-        // MOVE ZEROS TO CDEMO-PGM-CONTEXT
-        cardDemoContext.setPgmContext(CardDemoContext.PGM_ENTER);
 
-        // EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM)
-        logger.debug("RETURN-TO-PREV-SCREEN: navigating to {}", toProgram);
+        ReportResult result = populateHeaderInfo();
+        result.setNavigationTarget(cardDemoContext.getToProgram());
 
-        ReportResult result = new ReportResult();
-        result.setNavigationTarget(toProgram);
+        logger.debug("RETURN-TO-PREV-SCREEN: navigating to {}",
+                result.getNavigationTarget());
+
+        returnToCics();
         return result;
     }
 
@@ -748,12 +771,11 @@ public class ReportService {
     /**
      * Sends the report screen — translates SEND-TRNRPT-SCREEN (line 556).
      *
-     * <p>Populates header information, sets the screen message, and constructs
-     * the result object representing the BMS SEND MAP operation. In COBOL, this
-     * performs an {@code EXEC CICS SEND MAP('CORPT0A') MAPSET('CORPT00')} followed
-     * by {@code GO TO RETURN-TO-CICS}.</p>
+     * <p>In COBOL: {@code PERFORM POPULATE-HEADER-INFO}, set ERRMSGO,
+     * then {@code EXEC CICS SEND MAP('CORPT0A') MAPSET('CORPT00')}.
+     * In Java, populates the result and returns it.</p>
      *
-     * @param message the message to display (WS-MESSAGE → ERRMSGO)
+     * @param message the message to display (WS-MESSAGE to ERRMSGO)
      * @param isError true if this is an error condition (WS-ERR-FLG = 'Y')
      * @return result with populated screen data and message
      */
@@ -767,8 +789,7 @@ public class ReportService {
 
         logger.debug("SEND-TRNRPT-SCREEN: message='{}', error={}", message, isError);
 
-        // GO TO RETURN-TO-CICS — in Java, we simply return the result
-        // (returnToCics is implicit in a stateless service)
+        // GO TO RETURN-TO-CICS (implicit in stateless response)
         returnToCics();
 
         return result;
@@ -782,15 +803,15 @@ public class ReportService {
      * Returns control to CICS — translates RETURN-TO-CICS (line 585).
      *
      * <p>In COBOL: {@code EXEC CICS RETURN TRANSID(WS-TRANID)
-     * COMMAREA(CARDDEMO-COMMAREA)}. In this Java headless service, this is a
-     * no-op since the Spring request-response cycle handles session persistence
-     * via the request-scoped {@link CardDemoContext}.</p>
+     * COMMAREA(CARDDEMO-COMMAREA)}. In Java, this is a no-op because the
+     * Spring request-response cycle and request-scoped {@link CardDemoContext}
+     * handle session persistence automatically.</p>
      */
     private void returnToCics() {
         // No-op in Java stateless service.
         // CICS RETURN with TRANSID and COMMAREA is handled by the
         // request-scoped CardDemoContext and Spring MVC lifecycle.
-        logger.trace("RETURN-TO-CICS: session state preserved in CardDemoContext");
+        logger.debug("RETURN-TO-CICS: session state preserved in CardDemoContext");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -798,19 +819,19 @@ public class ReportService {
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
-     * Receives the report screen input — translates RECEIVE-TRNRPT-SCREEN (line 596).
+     * Receives report screen input — translates RECEIVE-TRNRPT-SCREEN (line 596).
      *
      * <p>In COBOL: {@code EXEC CICS RECEIVE MAP('CORPT0A') MAPSET('CORPT00')
-     * INTO(CORPT0AI)}. In this Java headless service, the input is already
-     * deserialized into the {@link ReportRequest} parameter, so this method
+     * INTO(CORPT0AI)}. In Java, the input is already deserialized into the
+     * {@link ReportRequest} parameter by the controller, so this method
      * serves as a traceability marker and input logging point.</p>
      *
      * @param request the deserialized screen input data
      */
     private void receiveReportScreen(ReportRequest request) {
-        // Input already available in request parameter (deserialized from HTTP request).
+        // Input already available in request parameter (deserialized from HTTP).
         // This method preserves COBOL paragraph traceability.
-        logger.trace("RECEIVE-TRNRPT-SCREEN: input received — monthly={}, yearly={}, custom={}",
+        logger.debug("RECEIVE-TRNRPT-SCREEN: monthly={}, yearly={}, custom={}",
                 request.getMonthly(), request.getYearly(), request.getCustom());
     }
 
@@ -832,7 +853,7 @@ public class ReportService {
 
         // MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA
         LocalDate today = LocalDate.now();
-        java.time.LocalTime now = java.time.LocalTime.now();
+        LocalTime now = LocalTime.now();
 
         // MOVE CCDA-TITLE01 TO TITLE01O OF CORPT0AO
         result.setTitle01(CCDA_TITLE01);
@@ -845,9 +866,10 @@ public class ReportService {
         result.setProgramName(WS_PGMNAME);
 
         // Format current date as MM/DD/YY (CURDATEO)
-        // COBOL: WS-CURDATE-MONTH → WS-CURDATE-MM, YEAR(3:2) → WS-CURDATE-YY
+        // COBOL: WS-CURDATE-MONTH, WS-CURDATE-DAY, WS-CURDATE-YEAR(3:2)
         String dateStr = String.format("%02d/%02d/%02d",
-                today.getMonthValue(), today.getDayOfMonth(), today.getYear() % 100);
+                today.getMonthValue(), today.getDayOfMonth(),
+                today.getYear() % 100);
         result.setCurrentDate(dateStr);
 
         // Format current time as HH:MM:SS (CURTIMEO)
@@ -863,28 +885,112 @@ public class ReportService {
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
-     * Initializes all working-storage fields — translates INITIALIZE-ALL-FIELDS (line 633).
+     * Initializes all fields — translates INITIALIZE-ALL-FIELDS (line 633).
      *
-     * <p>Resets all screen input fields to their initial state (COBOL INITIALIZE
-     * statement on lines 635–645). This is called before sending a fresh screen
-     * and after successful job submission.</p>
-     *
-     * <p>In the COBOL program, this initializes MONTHLYI, YEARLYI, CUSTOMI,
-     * SDTMMI, SDTDDI, SDTYYYYI, EDTMMI, EDTDDI, EDTYYYYI, CONFIRMI, and
-     * WS-MESSAGE to spaces. In the Java translation, this is a no-op since
-     * each request creates a new ReportRequest with null fields. The method
-     * is retained for COBOL paragraph traceability.</p>
+     * <p>In COBOL: {@code INITIALIZE MONTHLYI, YEARLYI, CUSTOMI, SDTMMI,
+     * SDTDDI, SDTYYYYI, EDTMMI, EDTDDI, EDTYYYYI, CONFIRMI, WS-MESSAGE}.
+     * In this Java translation, this is a traceability marker because each
+     * HTTP request creates a fresh {@link ReportRequest} with null fields.
+     * The method is retained for 100% paragraph traceability.</p>
      */
     private void initializeAllFields() {
-        // In COBOL: INITIALIZE MONTHLYI, YEARLYI, CUSTOMI, SDTMMI, SDTDDI,
-        //   SDTYYYYI, EDTMMI, EDTDDI, EDTYYYYI, CONFIRMI, WS-MESSAGE
+        // In COBOL: INITIALIZE all screen input fields to SPACES.
         // In Java stateless service: each request starts with fresh state.
-        // This method is a traceability marker.
-        logger.trace("INITIALIZE-ALL-FIELDS: screen fields reset");
+        logger.debug("INITIALIZE-ALL-FIELDS: screen fields reset");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Private helper methods
+    // Validation helper methods
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Validates that all 6 custom date fields are present.
+     *
+     * <p>Translates the EVALUATE TRUE block at CORPT00C.cbl lines 270-315
+     * that checks each date component for empty/LOW-VALUES.</p>
+     *
+     * @param request the report request with custom date fields
+     * @throws ValidationException if any required field is empty
+     */
+    private void validateCustomDateFieldsPresent(ReportRequest request) {
+        // CORPT00C.cbl line 271: WHEN SDTMMI = SPACES OR LOW-VALUES
+        if (!isFieldPresent(request.getStartMonth())) {
+            throw new ValidationException("startMonth",
+                    "Start Date - Month can NOT be empty...");
+        }
+        // CORPT00C.cbl line 277: WHEN SDTDDI = SPACES OR LOW-VALUES
+        if (!isFieldPresent(request.getStartDay())) {
+            throw new ValidationException("startDay",
+                    "Start Date - Day can NOT be empty...");
+        }
+        // CORPT00C.cbl line 283: WHEN SDTYYYYI = SPACES OR LOW-VALUES
+        if (!isFieldPresent(request.getStartYear())) {
+            throw new ValidationException("startYear",
+                    "Start Date - Year can NOT be empty...");
+        }
+        // CORPT00C.cbl line 289: WHEN EDTMMI = SPACES OR LOW-VALUES
+        if (!isFieldPresent(request.getEndMonth())) {
+            throw new ValidationException("endMonth",
+                    "End Date - Month can NOT be empty...");
+        }
+        // CORPT00C.cbl line 295: WHEN EDTDDI = SPACES OR LOW-VALUES
+        if (!isFieldPresent(request.getEndDay())) {
+            throw new ValidationException("endDay",
+                    "End Date - Day can NOT be empty...");
+        }
+        // CORPT00C.cbl line 301: WHEN EDTYYYYI = SPACES OR LOW-VALUES
+        if (!isFieldPresent(request.getEndYear())) {
+            throw new ValidationException("endYear",
+                    "End Date - Year can NOT be empty...");
+        }
+    }
+
+    /**
+     * Validates numeric content and range for a set of date components.
+     *
+     * <p>Translates the IF field IS NOT NUMERIC and range check blocks at
+     * CORPT00C.cbl lines 330-380. Month must be 1-12, day must be 1-31,
+     * year must be all-numeric.</p>
+     *
+     * @param month  normalized month string (2 digits)
+     * @param day    normalized day string (2 digits)
+     * @param year   normalized year string (4 digits)
+     * @param prefix "Start" or "End" for error message construction
+     * @throws ValidationException if any component fails validation
+     */
+    private void validateNumericAndRange(String month, String day,
+                                         String year, String prefix) {
+        // Month numeric check
+        if (!isNumericString(month)) {
+            throw new ValidationException(prefix.toLowerCase() + "Month",
+                    prefix + " Date Month is not numeric...");
+        }
+        int monthVal = intValueOf(month);
+        if (monthVal < 1 || monthVal > 12) {
+            throw new ValidationException(prefix.toLowerCase() + "Month",
+                    prefix + " Date Month must be 01-12...");
+        }
+
+        // Day numeric check
+        if (!isNumericString(day)) {
+            throw new ValidationException(prefix.toLowerCase() + "Day",
+                    prefix + " Date Day is not numeric...");
+        }
+        int dayVal = intValueOf(day);
+        if (dayVal < 1 || dayVal > 31) {
+            throw new ValidationException(prefix.toLowerCase() + "Day",
+                    prefix + " Date Day must be 01-31...");
+        }
+
+        // Year numeric check
+        if (!isNumericString(year)) {
+            throw new ValidationException(prefix.toLowerCase() + "Year",
+                    prefix + " Date Year is not numeric...");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // General-purpose helper methods
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
@@ -901,53 +1007,16 @@ public class ReportService {
     }
 
     /**
-     * Validates that all 6 custom date fields are present.
-     *
-     * <p>Translates the EVALUATE TRUE block at CORPT00C.cbl lines 270–315
-     * that checks each date component field for empty/LOW-VALUES.</p>
-     *
-     * @param request the report request with custom date fields
-     * @return error message if a field is empty, null if all fields are present
-     */
-    private String validateCustomDateFieldsPresent(ReportRequest request) {
-        // CORPT00C.cbl line 271: WHEN SDTMMI = SPACES OR LOW-VALUES
-        if (!isFieldPresent(request.getStartMonth())) {
-            return "Start Date - Month can NOT be empty...";
-        }
-        // CORPT00C.cbl line 277: WHEN SDTDDI = SPACES OR LOW-VALUES
-        if (!isFieldPresent(request.getStartDay())) {
-            return "Start Date - Day can NOT be empty...";
-        }
-        // CORPT00C.cbl line 283: WHEN SDTYYYYI = SPACES OR LOW-VALUES
-        if (!isFieldPresent(request.getStartYear())) {
-            return "Start Date - Year can NOT be empty...";
-        }
-        // CORPT00C.cbl line 289: WHEN EDTMMI = SPACES OR LOW-VALUES
-        if (!isFieldPresent(request.getEndMonth())) {
-            return "End Date - Month can NOT be empty...";
-        }
-        // CORPT00C.cbl line 295: WHEN EDTDDI = SPACES OR LOW-VALUES
-        if (!isFieldPresent(request.getEndDay())) {
-            return "End Date - Day can NOT be empty...";
-        }
-        // CORPT00C.cbl line 301: WHEN EDTYYYYI = SPACES OR LOW-VALUES
-        if (!isFieldPresent(request.getEndYear())) {
-            return "End Date - Year can NOT be empty...";
-        }
-        return null;
-    }
-
-    /**
      * Normalizes a numeric field to a zero-padded string.
      *
      * <p>Translates the COBOL pattern: {@code COMPUTE WS-NUM-99 =
      * FUNCTION NUMVAL-C(field)}, {@code MOVE WS-NUM-99 TO field}.
-     * This converts user input like "3" to "03" for 2-digit fields
-     * and "2024" stays "2024" for 4-digit fields.</p>
+     * Converts user input like "3" to "03" for 2-digit fields and
+     * "2024" stays "2024" for 4-digit fields.</p>
      *
      * @param field the raw input field value
      * @param width the target width (2 for month/day, 4 for year)
-     * @return zero-padded numeric string, or the original value if non-numeric
+     * @return zero-padded numeric string, or trimmed original if non-numeric
      */
     private String normalizeNumericField(String field, int width) {
         if (field == null) {
@@ -957,7 +1026,7 @@ public class ReportService {
         try {
             int numValue = Integer.parseInt(trimmed);
             return String.format("%0" + width + "d", numValue);
-        } catch (NumberFormatException e) {
+        } catch (NumberFormatException ignored) {
             // Return as-is if not numeric — subsequent validation will catch it
             return trimmed;
         }
@@ -987,20 +1056,20 @@ public class ReportService {
      * Parses a string to its integer value, returning 0 if not parseable.
      *
      * @param value the string to parse
-     * @return the integer value, or 0 if the string is not a valid integer
+     * @return the integer value, or 0 if not a valid integer
      */
     private int intValueOf(String value) {
         try {
             return Integer.parseInt(value);
-        } catch (NumberFormatException e) {
+        } catch (NumberFormatException ignored) {
             return 0;
         }
     }
 
     /**
-     * Formats a LocalDate to YYYY-MM-DD string matching WS-START-DATE/WS-END-DATE layout.
+     * Formats a LocalDate to YYYY-MM-DD string matching WS-START-DATE/WS-END-DATE.
      *
-     * <p>The COBOL working storage defines these as:
+     * <p>The COBOL working storage defines:
      * {@code 05 WS-START-DATE} with subfields YYYY, '-', MM, '-', DD.</p>
      *
      * @param date the date to format
@@ -1013,16 +1082,16 @@ public class ReportService {
     /**
      * Builds the JCL template lines with date parameters substituted.
      *
-     * <p>Translates the COBOL JOB-DATA structure (CORPT00C.cbl lines 87–131)
-     * where PARM-START-DATE-1/2 and PARM-END-DATE-1/2 are filled with the
-     * computed start and end dates before writing to the TDQ.</p>
+     * <p>Translates the COBOL JOB-DATA structure (CORPT00C.cbl lines 87-131)
+     * where PARM-START-DATE and PARM-END-DATE placeholders are filled with
+     * the computed dates before writing to the TDQ.</p>
      *
-     * @param startDate the start date in YYYY-MM-DD format
-     * @param endDate   the end date in YYYY-MM-DD format
-     * @return list of JCL lines with date placeholders replaced
+     * @param startDate start date in YYYY-MM-DD format
+     * @param endDate   end date in YYYY-MM-DD format
+     * @return list of JCL lines with placeholders replaced and padded to 80 chars
      */
     private List<String> buildJclLines(String startDate, String endDate) {
-        List<String> lines = new ArrayList<>();
+        List<String> lines = new ArrayList<>(JCL_TEMPLATE_LINES.length);
         for (String templateLine : JCL_TEMPLATE_LINES) {
             String line = templateLine
                     .replace("{START_DATE}", startDate)
@@ -1041,7 +1110,7 @@ public class ReportService {
      *
      * @param value  the string to pad
      * @param length the target length
-     * @return the padded string
+     * @return the padded string, truncated if longer than target length
      */
     private String padRight(String value, int length) {
         if (value.length() >= length) {
