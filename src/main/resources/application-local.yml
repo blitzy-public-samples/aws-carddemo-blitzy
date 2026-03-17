@@ -1,0 +1,157 @@
+# =============================================================================
+# CardDemo Application — Local Development Profile Configuration
+# =============================================================================
+# Overrides application.yml with developer-friendly defaults for running the
+# CardDemo application on a local machine against a local PostgreSQL 16+ instance.
+#
+# Activate this profile via:
+#   ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+#   or: java -jar cardemo.jar --spring.profiles.active=local
+#   or: export SPRING_PROFILES_ACTIVE=local
+#
+# Key differences from the base (production) profile:
+#   - DataSource: default password "cardemo" (base has empty default)
+#   - JPA: SQL logging enabled (show-sql: true)
+#   - Flyway: clean-disabled=false (allows schema reset), baseline-on-migrate=true
+#   - Logging: DEBUG level for com.cardemo, Spring Web, and Hibernate SQL
+#   - Actuator: all endpoints exposed, health details shown unconditionally
+#
+# CRITICAL: Credentials still use ${} placeholders with local fallback defaults.
+#           No plaintext secrets are hardcoded — environment variables override all
+#           defaults when set.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Server Configuration
+# -----------------------------------------------------------------------------
+# Explicit port for local development clarity. Matches base profile default.
+server:
+  port: 8080
+
+# -----------------------------------------------------------------------------
+# Spring Core Configuration
+# -----------------------------------------------------------------------------
+spring:
+
+  # ---------------------------------------------------------------------------
+  # DataSource Configuration — Local PostgreSQL 16+
+  # ---------------------------------------------------------------------------
+  # Connects to a local PostgreSQL instance for development. Developers should
+  # have PostgreSQL 16+ running locally on the default port 5432 with a database
+  # named "cardemo" and user/password "cardemo/cardemo".
+  #
+  # Quick setup:
+  #   createdb -U postgres cardemo
+  #   createuser -U postgres -P cardemo    (set password to "cardemo")
+  #   GRANT ALL PRIVILEGES ON DATABASE cardemo TO cardemo;
+  #
+  # Or using Docker:
+  #   docker run -d --name cardemo-pg -p 5432:5432 \
+  #     -e POSTGRES_DB=cardemo \
+  #     -e POSTGRES_USER=cardemo \
+  #     -e POSTGRES_PASSWORD=cardemo \
+  #     postgres:16-alpine
+  #
+  # IMPORTANT: ${} placeholders ensure environment variables always take
+  # precedence. The defaults ("cardemo") are convenience values for local
+  # development only and must never be used in production.
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/cardemo}
+    username: ${DB_USERNAME:cardemo}
+    password: ${DB_PASSWORD:cardemo}
+    driver-class-name: org.postgresql.Driver
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate Configuration — Development Overrides
+  # ---------------------------------------------------------------------------
+  # Enables SQL logging for local development debugging. All VSAM file I/O
+  # operations (READ, WRITE, REWRITE, DELETE, STARTBR/READNEXT) are translated
+  # to JPA repository calls; seeing the generated SQL helps verify correctness.
+  jpa:
+    hibernate:
+      ddl-auto: none                      # Flyway exclusively manages schema — never use auto-DDL
+    show-sql: true                        # Show SQL in console for local debugging
+    properties:
+      hibernate:
+        format_sql: true                  # Format SQL for readability in console output
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+  # ---------------------------------------------------------------------------
+  # Flyway Configuration — Development Overrides
+  # ---------------------------------------------------------------------------
+  # Relaxed settings for local development:
+  #   - clean-disabled=false: Allows developers to reset the schema via Flyway clean
+  #     (useful when iterating on migration scripts)
+  #   - baseline-on-migrate=true: Handles cases where a developer's local database
+  #     already has tables from a previous run without Flyway tracking
+  #
+  # Migration scripts applied:
+  #   V1__create_schema.sql   — 11 tables (accounts, cards, card_xref, customers,
+  #                             transactions, daily_transactions, user_security,
+  #                             transaction_type_ref, transaction_category_ref,
+  #                             discount_groups, category_balances)
+  #   V2__create_indexes.sql  — Secondary indexes matching VSAM AIX definitions
+  #   V100__seed_data.sql     — Test fixtures from app/data/ASCII/*.txt
+  flyway:
+    enabled: true
+    locations: classpath:db/migration,classpath:db/seed
+    clean-disabled: false                 # Allow schema reset in local dev (NEVER in production)
+    baseline-on-migrate: true             # Handle pre-existing local databases gracefully
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch Configuration
+  # ---------------------------------------------------------------------------
+  # Batch jobs (POSTTRAN, INTCALC, COMBTRAN, CREASTMT, etc.) are NOT
+  # auto-started on application startup. Developers can trigger them manually
+  # via REST endpoints or Spring Boot Actuator batch endpoints.
+  batch:
+    job:
+      enabled: false                      # Do not auto-run batch jobs on startup
+    jdbc:
+      initialize-schema: always           # Create Spring Batch metadata tables
+
+# -----------------------------------------------------------------------------
+# Logging Configuration — Enhanced for Development
+# -----------------------------------------------------------------------------
+# Verbose logging for local development to assist with debugging the migrated
+# COBOL business logic. Key enhancements over the base profile:
+#   - com.cardemo: DEBUG (base has INFO) — see all CardDemo application logic
+#   - Spring Web: DEBUG — see request/response details for REST endpoints
+#   - Hibernate SQL: DEBUG — see all generated SQL statements
+#   - Hibernate BasicBinder: TRACE — see SQL bind parameter values
+#   - Flyway: INFO — see migration progress during startup
+logging:
+  level:
+    com.cardemo: DEBUG
+    org.springframework.web: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+    org.flywaydb: INFO
+
+# -----------------------------------------------------------------------------
+# Spring Actuator — Full Exposure for Development
+# -----------------------------------------------------------------------------
+# All actuator endpoints are exposed for local development monitoring and
+# debugging. In production (base profile), only health, info, metrics, and
+# prometheus endpoints are exposed.
+#
+# Useful endpoints for local development:
+#   /actuator                — List all available endpoints
+#   /actuator/health         — Application health with full details
+#   /actuator/info           — Application info and environment
+#   /actuator/metrics        — Micrometer metrics (JVM, HTTP, DB pool, batch)
+#   /actuator/prometheus     — Prometheus scrape endpoint
+#   /actuator/env            — Environment properties (Spring config resolution)
+#   /actuator/configprops    — All @ConfigurationProperties bindings
+#   /actuator/beans          — All Spring beans in the application context
+#   /actuator/mappings       — All REST endpoint mappings
+#   /actuator/flyway         — Flyway migration status
+#   /actuator/batch          — Spring Batch job execution status
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"                      # Expose all endpoints for development
+  endpoint:
+    health:
+      show-details: always                # Show full health details without authentication
