@@ -15,12 +15,10 @@
 package com.cardemo.entity;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import jakarta.persistence.Version;
 
 import com.cardemo.common.enums.UserType;
 
@@ -54,13 +52,12 @@ import java.util.Objects;
  *       72-character column for future algorithm flexibility). The seed data loader
  *       pre-hashes the original plaintext passwords during database initialization.</li>
  *   <li><strong>User type mapping:</strong> The {@code SEC-USR-TYPE PIC X(01)} field
- *       maps to the {@link UserType} enum. Valid values correspond to the COBOL
- *       88-level conditions defined in {@code COCOM01Y.cpy}:
+ *       maps to the {@link UserType} enum via a JPA {@link UserTypeConverter}
+ *       that persists the single-character codes ({@code 'A'} and {@code 'U'})
+ *       matching the original COBOL storage format. Valid values correspond to
+ *       the COBOL 88-level conditions defined in {@code COCOM01Y.cpy}:
  *       {@link UserType#ADMIN ADMIN} ({@code 'A'}) and
  *       {@link UserType#USER USER} ({@code 'U'}).</li>
- *   <li><strong>Optimistic locking:</strong> The {@code @Version} field replaces the
- *       CICS {@code READ UPDATE → REWRITE} concurrency pattern used in
- *       {@code COUSR02C.cbl} (user update).</li>
  * </ul>
  *
  * <h3>Referenced by COBOL programs:</h3>
@@ -88,7 +85,7 @@ public class UserSecurity {
      * {@code COSGN00C}, admin CRUD via {@code COUSR00C–COUSR03C}).</p>
      */
     @Id
-    @Column(name = "user_id", length = 8, nullable = false)
+    @Column(name = "sec_usr_id", length = 8, nullable = false)
     private String userId;
 
     /**
@@ -98,7 +95,7 @@ public class UserSecurity {
      * {@code CSUSR01Y.cpy}. Displayed in user management screens
      * ({@code COUSR00C} user list, {@code COUSR02C} user update).</p>
      */
-    @Column(name = "first_name", length = 20)
+    @Column(name = "sec_usr_fname", length = 20)
     private String firstName;
 
     /**
@@ -108,7 +105,7 @@ public class UserSecurity {
      * {@code CSUSR01Y.cpy}. Displayed in user management screens
      * ({@code COUSR00C} user list, {@code COUSR02C} user update).</p>
      */
-    @Column(name = "last_name", length = 20)
+    @Column(name = "sec_usr_lname", length = 20)
     private String lastName;
 
     /**
@@ -129,7 +126,7 @@ public class UserSecurity {
      * This field must never be logged, serialized to REST responses,
      * or included in {@link #toString()} output.</p>
      */
-    @Column(name = "password", length = 72, nullable = false)
+    @Column(name = "sec_usr_pwd", length = 72, nullable = false)
     private String password;
 
     /**
@@ -145,25 +142,13 @@ public class UserSecurity {
      *       regular users with access to standard card operations</li>
      * </ul>
      *
-     * <p>Persisted as the enum name string ({@code "ADMIN"} or {@code "USER"})
-     * via {@code @Enumerated(EnumType.STRING)}.</p>
+     * <p>Persisted as a single-character code ({@code 'A'} for ADMIN,
+     * {@code 'U'} for USER) via a JPA {@link UserTypeConverter}, matching
+     * the original COBOL {@code PIC X(01)} storage format.</p>
      */
-    @Enumerated(EnumType.STRING)
-    @Column(name = "user_type", length = 5, nullable = false)
+    @Convert(converter = UserTypeConverter.class)
+    @Column(name = "sec_usr_type", length = 1, nullable = false)
     private UserType userType;
-
-    /**
-     * JPA optimistic locking version field.
-     *
-     * <p>Replaces the CICS {@code READ UPDATE → REWRITE} concurrency
-     * control pattern. JPA automatically increments this value on each
-     * {@code UPDATE}, throwing {@code OptimisticLockException} if a
-     * concurrent modification is detected — equivalent to the CICS
-     * deadlock-prevention mechanism in {@code COUSR02C.cbl}.</p>
-     */
-    @Version
-    @Column(name = "version")
-    private Long version;
 
     /**
      * Default no-argument constructor required by JPA specification.
@@ -178,12 +163,6 @@ public class UserSecurity {
 
     /**
      * Constructs a new {@code UserSecurity} entity with all business fields.
-     *
-     * <p>The {@code version} field is intentionally omitted from this
-     * constructor because JPA manages it automatically via the
-     * {@code @Version} annotation. It starts as {@code null} for new
-     * entities and is assigned by the persistence provider on first
-     * flush.</p>
      *
      * @param userId    the user identifier (max 8 characters, primary key);
      *                  corresponds to {@code SEC-USR-ID PIC X(08)}
@@ -305,30 +284,6 @@ public class UserSecurity {
     }
 
     /**
-     * Returns the JPA optimistic locking version.
-     *
-     * <p>Managed automatically by the JPA provider. Returns {@code null}
-     * for transient (not yet persisted) entities.</p>
-     *
-     * @return the current version number, or {@code null} if not yet persisted
-     */
-    public Long getVersion() {
-        return version;
-    }
-
-    /**
-     * Sets the JPA optimistic locking version.
-     *
-     * <p>This method exists for framework compatibility. Application code
-     * should not call this directly — the version is managed by JPA.</p>
-     *
-     * @param version the version number to set
-     */
-    public void setVersion(Long version) {
-        this.version = version;
-    }
-
-    /**
      * Checks equality based on the user ID primary key ({@code userId}).
      *
      * <p>Follows JPA entity best practices: identity is determined by the
@@ -372,7 +327,7 @@ public class UserSecurity {
      * <p><strong>Security:</strong> The password field is deliberately
      * excluded from this output to prevent credential leakage in logs,
      * debug output, or exception messages. Only the user ID, name
-     * fields, user type, and version are included.</p>
+     * fields, and user type are included.</p>
      *
      * @return a string containing all non-sensitive fields
      */
@@ -383,7 +338,6 @@ public class UserSecurity {
                 + ", firstName='" + firstName + '\''
                 + ", lastName='" + lastName + '\''
                 + ", userType=" + userType
-                + ", version=" + version
                 + '}';
     }
 }

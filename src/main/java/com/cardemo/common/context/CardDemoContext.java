@@ -72,6 +72,17 @@ import org.springframework.web.context.annotation.RequestScope;
  * navigation fields. Selection screens populate entity IDs ({@code custId},
  * {@code acctId}, {@code cardNum}) for detail views.</p>
  *
+ * <h2>Scope Limitation — Batch Context</h2>
+ * <p><strong>Important:</strong> The {@code @RequestScope} annotation requires an
+ * active HTTP request context (i.e., a web application context with an in-flight
+ * servlet request). This bean is <em>not available</em> in Spring Batch job execution
+ * contexts, where there is no HTTP request. Batch services that process transactions
+ * offline (e.g., {@code DailyPostingService}, {@code InterestCalculationService})
+ * should <em>not</em> inject {@code CardDemoContext}. If batch services require
+ * user/session context in the future, a {@code @Scope("prototype")} fallback or a
+ * custom scope resolver that works in both web and batch contexts should be
+ * provided.</p>
+ *
  * @see com.cardemo.common.enums.UserType
  */
 @Component

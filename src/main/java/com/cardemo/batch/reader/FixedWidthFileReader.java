@@ -446,7 +446,7 @@ public class FixedWidthFileReader {
     }
 
     /**
-     * Column specifications for TCATBAL (CVTRA01Y.cpy, TRAN-CAT-BAL-RECORD, RECLN 50).
+     * Column specifications for TCATBAL (CVTRA07Y.cpy, TRAN-CAT-BAL-RECORD, RECLN 50).
      * Maps 4 data fields totaling 28 bytes; 22-byte FILLER is not mapped.
      * TRAN-CAT-BAL is a zoned decimal field (PIC S9(09)V99).
      *
