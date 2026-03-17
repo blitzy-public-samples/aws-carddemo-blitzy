@@ -30,6 +30,7 @@ package com.cardemo;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration;
 
 /**
  * Spring Boot application entry point for the CardDemo credit card management system.
@@ -60,7 +61,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * @see com.cardemo.config.BatchConfig
  * @see com.cardemo.config.JpaConfig
  */
-@SpringBootApplication
+@SpringBootApplication(exclude = {UserDetailsServiceAutoConfiguration.class})
 public class CardDemoApplication {
 
     /**

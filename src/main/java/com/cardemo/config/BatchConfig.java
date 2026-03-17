@@ -41,21 +41,25 @@
  */
 package com.cardemo.config;
 
-import org.springframework.batch.core.launch.JobLauncher;
-import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
-import org.springframework.batch.core.repository.JobRepository;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.task.SyncTaskExecutor;
 
 /**
  * Spring Batch infrastructure configuration for the CardDemo application.
  *
- * <p>This configuration provides a custom {@link JobLauncher} that executes
- * batch jobs synchronously in the calling thread. This design mirrors the
- * original JCL batch window on the mainframe where jobs ran sequentially
- * (POSTTRAN → INTCALC → COMBTRAN → CREASTMT) with each step completing
- * before the next one started.</p>
+ * <p>This configuration class serves as the anchor for Spring Batch customization
+ * in the migrated CardDemo application. Spring Boot 3.5.x auto-configures the
+ * core Spring Batch infrastructure — {@code JobRepository}, {@code JobLauncher},
+ * {@code JobExplorer}, and {@code PlatformTransactionManager} — without requiring
+ * {@code @EnableBatchProcessing}. The auto-configured {@code JobLauncher} already
+ * uses a {@code SyncTaskExecutor} (synchronous execution in the calling thread),
+ * which preserves the original JCL batch window semantics where each step completed
+ * before the next began.</p>
+ *
+ * <p><strong>Important:</strong> No custom {@code JobLauncher} bean is defined here
+ * because it would conflict with the Spring Boot auto-configured bean and cause a
+ * {@code BeanDefinitionOverrideException} at startup (bean overriding is disabled
+ * by default in Spring Boot 3.x). The auto-configured launcher provides identical
+ * synchronous execution semantics.</p>
  *
  * <h3>JCL-to-Spring-Batch Mapping</h3>
  * <table>
@@ -72,61 +76,24 @@ import org.springframework.core.task.SyncTaskExecutor;
  * <p>Note: JCL CLOSEFIL and OPENFIL jobs have no Java equivalent — database
  * connection lifecycle is managed by the HikariCP connection pool.</p>
  *
+ * <p>Individual job bean definitions reside in their own *JobConfig.java classes
+ * within the {@code batch/job/} package. This class provides the shared configuration
+ * anchor and may be extended with additional batch infrastructure beans (e.g., custom
+ * listeners, skip policies) as individual job configurations are implemented.</p>
+ *
  * @see org.springframework.batch.core.launch.JobLauncher
- * @see org.springframework.batch.core.launch.support.TaskExecutorJobLauncher
  */
 @Configuration
 public class BatchConfig {
-
-    /**
-     * Creates a custom {@link JobLauncher} configured for synchronous execution.
-     *
-     * <p>The launcher uses a {@link SyncTaskExecutor} to run batch jobs in the
-     * calling thread, ensuring sequential execution that matches the original
-     * JCL batch window semantics. In the mainframe environment, the JCL batch
-     * window enforced strict ordering:</p>
-     * <ol>
-     *   <li>CLOSEFIL — Close CICS files (not applicable in Java)</li>
-     *   <li>POSTTRAN — Post daily transactions (CBTRN02C.cbl)</li>
-     *   <li>INTCALC — Calculate interest (CBACT04C.cbl)</li>
-     *   <li>COMBTRAN — Sort/combine transactions (SORT utility)</li>
-     *   <li>CREASTMT — Generate statements (CBSTM03A/B.CBL)</li>
-     *   <li>OPENFIL — Re-open CICS files (not applicable in Java)</li>
-     * </ol>
-     *
-     * <p>Using {@link SyncTaskExecutor} prevents concurrent job execution that
-     * would violate the COBOL batch processing parity requirement. When batch
-     * jobs are triggered programmatically (e.g., via a REST endpoint or
-     * scheduler), they execute one at a time in the order they are launched.</p>
-     *
-     * @param jobRepository the Spring Batch {@link JobRepository} for persisting
-     *                      job metadata (execution status, step progress, restart
-     *                      data) — auto-configured by Spring Boot to use the
-     *                      application's PostgreSQL datasource
-     * @return a fully initialized {@link JobLauncher} with synchronous execution
-     * @throws Exception if the launcher initialization fails during
-     *                   {@link TaskExecutorJobLauncher#afterPropertiesSet()}
-     */
-    @Bean
-    public JobLauncher jobLauncher(JobRepository jobRepository) throws Exception {
-        TaskExecutorJobLauncher launcher = new TaskExecutorJobLauncher();
-
-        // Bind the job repository for batch metadata persistence.
-        // Spring Batch stores job instances, executions, step executions,
-        // and execution context in the BATCH_* tables managed by this repository.
-        launcher.setJobRepository(jobRepository);
-
-        // Configure synchronous task execution to match JCL batch window semantics.
-        // SyncTaskExecutor runs tasks in the calling thread, ensuring that each
-        // batch job completes before the next one can start — identical to the
-        // mainframe JCL step-by-step execution model where COND codes controlled
-        // sequential flow: POSTTRAN → INTCALC → COMBTRAN → CREASTMT.
-        launcher.setTaskExecutor(new SyncTaskExecutor());
-
-        // Validate the launcher configuration and initialize internal state.
-        // This mirrors the JCL JOB card validation that occurred before execution.
-        launcher.afterPropertiesSet();
-
-        return launcher;
-    }
+    // Spring Boot 3.5.x auto-configures Spring Batch infrastructure:
+    //   - JobRepository: persists batch metadata (BATCH_JOB_INSTANCE, etc.)
+    //   - JobLauncher: executes jobs synchronously via SyncTaskExecutor (default)
+    //   - PlatformTransactionManager: shared with JPA for single-datasource setup
+    //
+    // No custom beans are needed at this point. The auto-configured JobLauncher
+    // uses SyncTaskExecutor by default, matching the JCL batch window semantics
+    // where POSTTRAN → INTCALC → COMBTRAN → CREASTMT ran sequentially.
+    //
+    // Future job-specific beans (listeners, skip policies, etc.) can be added
+    // here as individual job configurations are implemented.
 }

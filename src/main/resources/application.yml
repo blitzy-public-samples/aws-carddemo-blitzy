@@ -77,7 +77,9 @@ spring:
   jpa:
     hibernate:
       ddl-auto: none                  # Flyway exclusively manages schema — never use auto-DDL
-    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    # database-platform is intentionally omitted — Hibernate 6.x auto-detects the
+    # PostgreSQL dialect from the JDBC URL, and explicitly specifying it triggers
+    # deprecation warning HHH90000025.
     show-sql: false                   # SQL logging handled by logback-spring.xml
     open-in-view: false               # Best practice: disable OSIV to prevent lazy loading in views
     properties:

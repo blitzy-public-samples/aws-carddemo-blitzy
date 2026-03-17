@@ -63,7 +63,8 @@ spring:
       ddl-auto: none
     properties:
       hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
+        # dialect is intentionally omitted — Hibernate 6.x auto-detects PostgreSQL
+        # dialect from the Testcontainers JDBC URL, avoiding HHH90000025 warning.
         format_sql: true
     show-sql: false
 
