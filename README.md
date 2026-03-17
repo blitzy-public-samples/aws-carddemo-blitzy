@@ -1,24 +1,168 @@
 ## CardDemo -- Mainframe CardDemo Application
 
-- [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-card-demo-application)
-- [Description](#description)
-- [Technologies used](#technologies-used)
-- [Installation on the mainframe](#installation-on-the-mainframe)
-- [Application Details](#application-details)
-  - [User Functions](#user-functions)
-  - [Admin Functions](#admin-functions)
-  - [Application Inventory](#application-inventory)
-    - [**Online**](#online)
-    - [**Batch**](#batch)
-  - [Application Screens](#application-screens)
-    - [**Signon Screen**](#signon-screen)
-    - [**Main Menu**](#main-menu)
-    - [**Admin Menu**](#admin-menu)
+> **This repository contains both the original COBOL mainframe application and its complete migration to Java 25 LTS + Spring Boot 3.5.x.** The original COBOL source is preserved under [`legacy/app/`](legacy/app/) for reference and traceability. No COBOL compiler or mainframe runtime is required to build and run the migrated Java application.
+
+**Table of Contents**
+
+- [Migrated Java Application](#migrated-java-application)
+  - [Prerequisites](#prerequisites)
+  - [Quick Start](#quick-start)
+  - [Environment Variables](#environment-variables)
+  - [Project Structure](#project-structure)
+  - [Technology Stack](#technology-stack)
+  - [Quality Gates](#quality-gates)
+  - [User Credentials (Local Testing)](#user-credentials-local-testing)
+  - [Key Documentation](#key-documentation)
+- [Legacy COBOL Application](#legacy-cobol-application)
+  - [Description](#description)
+  - [Technologies used](#technologies-used)
+  - [Installation on the mainframe](#installation-on-the-mainframe)
+  - [Running full batch](#running-full-batch)
+  - [Application Details](#application-details)
 - [Support](#support)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
 - [License](#license)
 - [Project status](#project-status)
+
+<br/>
+
+## Migrated Java Application
+
+The CardDemo application has been fully migrated from COBOL/CICS/VSAM/JCL to **Java 25 LTS + Spring Boot 3.5.x** with 100% business logic parity. All 28 COBOL programs (18 online CICS transactions and 10 batch programs) have been translated into Spring service classes, Spring Batch jobs, and REST controllers. All 10 VSAM KSDS datasets have been migrated to PostgreSQL 16+ tables with JPA entities using `BigDecimal` for all monetary fields.
+
+### Prerequisites
+
+| Requirement | Version | Notes |
+|------------|---------|-------|
+| Java | 25 LTS | OpenJDK (Eclipse Temurin) or Oracle JDK |
+| Docker | 20.10+ | Required for Testcontainers integration tests (PostgreSQL 16+) |
+| Maven | 3.9.9 | Included via Maven Wrapper (`./mvnw` / `mvnw.cmd`) — no separate install needed |
+| PostgreSQL | 16+ | Required for runtime; tests use Testcontainers auto-provisioned instances |
+
+> **Note:** No COBOL compiler, CICS runtime, or mainframe environment is required.
+
+### Quick Start
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd cardemo
+
+# Build (compile + unit tests + integration tests + JaCoCo coverage + OWASP dependency check)
+./mvnw clean verify
+
+# Run the application (set environment variables first — see below)
+./mvnw spring-boot:run
+
+# Run unit tests only
+./mvnw test
+
+# Run unit + integration tests
+./mvnw verify
+```
+
+### Environment Variables
+
+The following environment variables must be set before running the application:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `DB_URL` | PostgreSQL JDBC connection URL | `jdbc:postgresql://localhost:5432/cardemo` |
+| `DB_USERNAME` | Database username | *(set via environment)* |
+| `DB_PASSWORD` | Database password | *(set via environment)* |
+
+> **Note:** For tests, Testcontainers automatically provisions a PostgreSQL 16 container — no database environment variables are needed for running tests.
+
+### Project Structure
+
+```
+cardemo/
+├── pom.xml                          Maven build configuration
+├── mvnw / mvnw.cmd                  Maven Wrapper (no separate Maven install needed)
+├── src/
+│   ├── main/
+│   │   ├── java/com/cardemo/       Main application source
+│   │   │   ├── common/             Shared DTOs, enums, utilities, exceptions
+│   │   │   ├── config/             Spring configuration classes
+│   │   │   ├── entity/             JPA entities (← VSAM datasets)
+│   │   │   ├── repository/         Spring Data JPA repositories
+│   │   │   ├── service/
+│   │   │   │   ├── online/         Online transaction services (← CICS programs)
+│   │   │   │   └── batch/          Batch processing services (← batch COBOL programs)
+│   │   │   ├── batch/              Spring Batch job configurations (← JCL jobs)
+│   │   │   └── controller/         REST controllers
+│   │   └── resources/
+│   │       ├── application.yml     Application configuration
+│   │       └── db/
+│   │           ├── migration/      Flyway schema migrations
+│   │           └── seed/           Seed data (parsed from legacy fixed-width files)
+│   └── test/
+│       ├── java/com/cardemo/       JUnit 5 unit and integration tests
+│       └── resources/fixtures/     Test data fixtures
+├── docs/                            Architecture, decisions, traceability, onboarding
+├── legacy/app/                      Original COBOL source (preserved for reference)
+└── .mvn/                            Maven Wrapper configuration
+```
+
+### Technology Stack
+
+| Technology | Version | Purpose |
+|-----------|---------|---------|
+| Java | 25 LTS | Runtime platform |
+| Spring Boot | 3.5.11 | Application framework |
+| Spring Data JPA | *(managed by Spring Boot BOM)* | Data access layer (← VSAM KSDS) |
+| PostgreSQL | 16+ | Relational database (← VSAM) |
+| Spring Batch | *(managed by Spring Boot BOM)* | Batch processing (← JCL jobs) |
+| Spring Security | *(managed by Spring Boot BOM)* | Role-based authentication (Admin / User) |
+| Flyway | 10.22.0 | Database schema migrations |
+| JUnit 5 + Testcontainers | 2.0.2 | Testing with real PostgreSQL containers |
+| JaCoCo | 0.8.12 | Code coverage enforcement (≥80% line coverage) |
+| OWASP dependency-check | 12.1.0 | Vulnerability scanning (zero critical/high CVEs) |
+| Micrometer + Prometheus | 1.14.4 | Observability: metrics, tracing, health checks |
+
+### Quality Gates
+
+The Maven build enforces the following quality gates:
+
+- **Zero-warning compilation** — Java compiler configured with `-Xlint:all -Werror`
+- **≥80% line coverage** — JaCoCo enforces minimum 80% line coverage across unit and integration tests
+- **Zero critical/high CVEs** — OWASP dependency-check fails the build on CVSS score ≥ 7.0
+
+Run all quality gates with:
+
+```bash
+./mvnw clean verify
+```
+
+### User Credentials (Local Testing)
+
+The following test credentials are available after database seed data is loaded:
+
+| User ID | Password | Role | Access |
+|---------|----------|------|--------|
+| `ADMIN001` | `PASSWORD` | Admin | User management (add, update, delete users) |
+| `USER0001` | `PASSWORD` | Regular User | Account view/update, card management, transactions, bill payment |
+
+> **Note:** In the Java version, passwords are BCrypt-hashed in the database. The original plaintext passwords from the COBOL seed data are hashed during the initial database load via Flyway seed migration.
+
+### Key Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Onboarding Guide](docs/onboarding.md) | New developer setup: clean machine → running application |
+| [Architecture Diagrams](docs/architecture/diagrams.md) | Before/after Mermaid architecture views |
+| [Decision Log](docs/decision-log.md) | Non-trivial implementation decisions with rationale |
+| [Traceability Matrix](docs/traceability-matrix.md) | 100% COBOL paragraph → Java method mapping |
+| [Executive Summary](docs/slides/executive-summary.html) | reveal.js presentation for leadership |
+
+<br/>
+
+---
+
+## Legacy COBOL Application
+
+The sections below contain the original COBOL/CICS/VSAM mainframe application documentation, preserved for reference. The original source code is also retained under [`legacy/app/`](legacy/app/).
 
 <br/>
 
