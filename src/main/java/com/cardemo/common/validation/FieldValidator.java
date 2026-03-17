@@ -116,12 +116,12 @@ public class FieldValidator {
      */
     public boolean validateDateCcyymmdd(String dateStr) {
         if (dateStr == null || dateStr.length() != 8) {
-            throw new ValidationException("date", dateStr,
+            throw new ValidationException("date",
                     "Date must be exactly 8 characters in CCYYMMDD format");
         }
 
         if (!dateStr.chars().allMatch(Character::isDigit)) {
-            throw new ValidationException("date", dateStr,
+            throw new ValidationException("date",
                     "Date must contain only numeric characters (CCYYMMDD)");
         }
 
@@ -163,7 +163,7 @@ public class FieldValidator {
     public void validateYear(int ccyy) {
         int century = ccyy / 100;
         if (century != 19 && century != 20) {
-            throw new ValidationException("year", String.valueOf(ccyy),
+            throw new ValidationException("year",
                     "Year century must be 19 or 20, got: " + century);
         }
     }
@@ -183,7 +183,7 @@ public class FieldValidator {
      */
     public void validateMonth(int month) {
         if (month < 1 || month > 12) {
-            throw new ValidationException("month", String.valueOf(month),
+            throw new ValidationException("month",
                     "Month must be between 1 and 12, got: " + month);
         }
     }
@@ -203,7 +203,7 @@ public class FieldValidator {
      */
     public void validateDay(int day) {
         if (day < 1 || day > 31) {
-            throw new ValidationException("day", String.valueOf(day),
+            throw new ValidationException("day",
                     "Day must be between 1 and 31, got: " + day);
         }
     }
@@ -252,7 +252,7 @@ public class FieldValidator {
 
         if (MONTHS_WITH_30_DAYS.contains(month)) {
             if (day > 30) {
-                throw new ValidationException("day", String.valueOf(day),
+                throw new ValidationException("day",
                         "Day must be 1-30 for month " + month + ", got: " + day);
             }
             return;
@@ -263,7 +263,7 @@ public class FieldValidator {
             boolean leapYear = isLeapYear(year);
             int maxDay = leapYear ? 29 : 28;
             if (day > maxDay) {
-                throw new ValidationException("day", String.valueOf(day),
+                throw new ValidationException("day",
                         "Day must be 1-" + maxDay + " for February " + year
                                 + (leapYear ? " (leap year)" : " (non-leap year)")
                                 + ", got: " + day);
@@ -316,7 +316,7 @@ public class FieldValidator {
         LocalDate today = LocalDate.now();
 
         if (date.isAfter(today)) {
-            throw new ValidationException("dateOfBirth", dateStr,
+            throw new ValidationException("dateOfBirth",
                     "Date of birth cannot be in the future: " + dateStr);
         }
 
@@ -337,12 +337,12 @@ public class FieldValidator {
      */
     public boolean validateDateMmddyyyy(String dateStr) {
         if (dateStr == null || dateStr.length() != 10) {
-            throw new ValidationException("date", dateStr,
+            throw new ValidationException("date",
                     "Date must be in MM/DD/YYYY format (10 characters)");
         }
 
         if (dateStr.charAt(2) != '/' || dateStr.charAt(5) != '/') {
-            throw new ValidationException("date", dateStr,
+            throw new ValidationException("date",
                     "Date must use '/' separators in MM/DD/YYYY format");
         }
 
@@ -353,7 +353,7 @@ public class FieldValidator {
         if (!mmStr.chars().allMatch(Character::isDigit)
                 || !ddStr.chars().allMatch(Character::isDigit)
                 || !yyyyStr.chars().allMatch(Character::isDigit)) {
-            throw new ValidationException("date", dateStr,
+            throw new ValidationException("date",
                     "Date components must be numeric in MM/DD/YYYY format");
         }
 
@@ -383,7 +383,7 @@ public class FieldValidator {
      */
     public void validateRequired(String value, String fieldName) {
         if (value == null || value.isBlank()) {
-            throw new ValidationException(fieldName, value,
+            throw new ValidationException(fieldName,
                     fieldName + " is required and must not be blank");
         }
     }
@@ -401,11 +401,11 @@ public class FieldValidator {
      */
     public void validateNumeric(String value, String fieldName) {
         if (value == null || value.isEmpty()) {
-            throw new ValidationException(fieldName, value,
+            throw new ValidationException(fieldName,
                     fieldName + " must not be empty for numeric validation");
         }
         if (!value.chars().allMatch(Character::isDigit)) {
-            throw new ValidationException(fieldName, value,
+            throw new ValidationException(fieldName,
                     fieldName + " must contain only numeric characters");
         }
     }
@@ -426,7 +426,7 @@ public class FieldValidator {
     public void validateLength(String value, String fieldName, int length) {
         if (value == null || value.length() != length) {
             int actualLength = (value == null) ? 0 : value.length();
-            throw new ValidationException(fieldName, value,
+            throw new ValidationException(fieldName,
                     fieldName + " must be exactly " + length + " characters, got: " + actualLength);
         }
     }
@@ -445,7 +445,7 @@ public class FieldValidator {
      */
     public void validateMaxLength(String value, String fieldName, int maxLength) {
         if (value != null && value.length() > maxLength) {
-            throw new ValidationException(fieldName, value,
+            throw new ValidationException(fieldName,
                     fieldName + " must not exceed " + maxLength + " characters, got: " + value.length());
         }
     }
@@ -467,7 +467,6 @@ public class FieldValidator {
     public void validatePositiveAmount(BigDecimal amount, String fieldName) {
         if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
             throw new ValidationException(fieldName,
-                    amount != null ? amount.toPlainString() : null,
                     fieldName + " must be a positive amount");
         }
     }
@@ -484,7 +483,6 @@ public class FieldValidator {
     public void validateNonNegativeAmount(BigDecimal amount, String fieldName) {
         if (amount == null || amount.compareTo(BigDecimal.ZERO) < 0) {
             throw new ValidationException(fieldName,
-                    amount != null ? amount.toPlainString() : null,
                     fieldName + " must be zero or a positive amount");
         }
     }
@@ -503,7 +501,7 @@ public class FieldValidator {
      */
     public void validateAllowedValues(String value, String fieldName, Set<String> allowedValues) {
         if (value == null || !allowedValues.contains(value)) {
-            throw new ValidationException(fieldName, value,
+            throw new ValidationException(fieldName,
                     fieldName + " must be one of " + allowedValues + ", got: " + value);
         }
     }
@@ -571,8 +569,8 @@ public class FieldValidator {
             }
         }
         if (!errors.isEmpty()) {
-            throw new ValidationException(errors,
-                    "Validation failed with " + errors.size() + " error(s)");
+            throw new ValidationException(
+                    "Validation failed with " + errors.size() + " error(s): " + String.join("; ", errors));
         }
     }
 }
