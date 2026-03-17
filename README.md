@@ -117,7 +117,7 @@ cardemo/
 | Spring Security | *(managed by Spring Boot BOM)* | Role-based authentication (Admin / User) |
 | Flyway | 10.22.0 | Database schema migrations |
 | JUnit 5 + Testcontainers | 2.0.2 | Testing with real PostgreSQL containers |
-| JaCoCo | 0.8.12 | Code coverage enforcement (≥80% line coverage) |
+| JaCoCo | 0.8.14 | Code coverage enforcement (≥80% line coverage) |
 | OWASP dependency-check | 12.1.0 | Vulnerability scanning (zero critical/high CVEs) |
 | Micrometer + Prometheus | 1.14.4 | Observability: metrics, tracing, health checks |
 

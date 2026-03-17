@@ -57,7 +57,7 @@ import java.util.Objects;
  * COBOL PIC S9(10)V99 packed decimal specification exactly.</p>
  */
 @Entity
-@Table(name = "account")
+@Table(name = "accounts")
 public class Account {
 
     // =========================================================================
@@ -82,7 +82,7 @@ public class Account {
      * Maps to COBOL ACCT-ACTIVE-STATUS PIC X(01).
      * Typical values: 'Y' = active, 'N' = inactive.
      */
-    @Column(name = "active_status", length = 1)
+    @Column(name = "acct_active_status", length = 1)
     private String activeStatus;
 
     // =========================================================================
@@ -97,7 +97,7 @@ public class Account {
      * BigDecimal with precision 12 (10 integer + 2 decimal), scale 2.
      * All calculations must use RoundingMode.HALF_UP matching COBOL default.
      */
-    @Column(name = "curr_bal", precision = 12, scale = 2)
+    @Column(name = "acct_curr_bal", precision = 12, scale = 2)
     private BigDecimal currBal;
 
     /**
@@ -105,7 +105,7 @@ public class Account {
      * Maps to COBOL ACCT-CREDIT-LIMIT PIC S9(10)V99.
      * BigDecimal with precision 12, scale 2.
      */
-    @Column(name = "credit_limit", precision = 12, scale = 2)
+    @Column(name = "acct_credit_limit", precision = 12, scale = 2)
     private BigDecimal creditLimit;
 
     /**
@@ -113,7 +113,7 @@ public class Account {
      * Maps to COBOL ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99.
      * BigDecimal with precision 12, scale 2.
      */
-    @Column(name = "cash_credit_limit", precision = 12, scale = 2)
+    @Column(name = "acct_cash_credit_limit", precision = 12, scale = 2)
     private BigDecimal cashCreditLimit;
 
     // =========================================================================
@@ -124,7 +124,7 @@ public class Account {
      * Account open date in YYYY-MM-DD format.
      * Maps to COBOL ACCT-OPEN-DATE PIC X(10).
      */
-    @Column(name = "open_date", length = 10)
+    @Column(name = "acct_open_date", length = 10)
     private String openDate;
 
     /**
@@ -132,14 +132,14 @@ public class Account {
      * Maps to COBOL ACCT-EXPIRAION-DATE PIC X(10).
      * Note: COBOL source has typo "EXPIRAION"; Java uses corrected spelling.
      */
-    @Column(name = "expiration_date", length = 10)
+    @Column(name = "acct_expiration_date", length = 10)
     private String expirationDate;
 
     /**
      * Card reissue date in YYYY-MM-DD format.
      * Maps to COBOL ACCT-REISSUE-DATE PIC X(10).
      */
-    @Column(name = "reissue_date", length = 10)
+    @Column(name = "acct_reissue_date", length = 10)
     private String reissueDate;
 
     // =========================================================================
@@ -151,7 +151,7 @@ public class Account {
      * Maps to COBOL ACCT-CURR-CYC-CREDIT PIC S9(10)V99.
      * BigDecimal with precision 12, scale 2.
      */
-    @Column(name = "curr_cyc_credit", precision = 12, scale = 2)
+    @Column(name = "acct_curr_cyc_credit", precision = 12, scale = 2)
     private BigDecimal currCycCredit;
 
     /**
@@ -159,7 +159,7 @@ public class Account {
      * Maps to COBOL ACCT-CURR-CYC-DEBIT PIC S9(10)V99.
      * BigDecimal with precision 12, scale 2.
      */
-    @Column(name = "curr_cyc_debit", precision = 12, scale = 2)
+    @Column(name = "acct_curr_cyc_debit", precision = 12, scale = 2)
     private BigDecimal currCycDebit;
 
     // =========================================================================
@@ -170,14 +170,14 @@ public class Account {
      * Account address ZIP code.
      * Maps to COBOL ACCT-ADDR-ZIP PIC X(10).
      */
-    @Column(name = "addr_zip", length = 10)
+    @Column(name = "acct_addr_zip", length = 10)
     private String addrZip;
 
     /**
      * Discount group identifier linking to the DiscountGroup entity.
      * Maps to COBOL ACCT-GROUP-ID PIC X(10).
      */
-    @Column(name = "group_id", length = 10)
+    @Column(name = "acct_group_id", length = 10)
     private String groupId;
 
     // =========================================================================

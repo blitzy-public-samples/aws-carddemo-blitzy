@@ -57,9 +57,9 @@ import java.util.Objects;
  */
 @Entity
 @Table(
-    name = "card_transaction",
+    name = "transactions",
     indexes = {
-        @Index(name = "idx_transaction_orig_ts", columnList = "orig_timestamp")
+        @Index(name = "idx_transaction_orig_ts", columnList = "tran_orig_ts")
     }
 )
 public class Transaction {
@@ -81,30 +81,30 @@ public class Transaction {
      * COBOL: {@code TRAN-TYPE-CD PIC X(02)}.
      * References the {@code TRANTYPE} reference data (7 types).
      */
-    @Column(name = "type_code", length = 2)
+    @Column(name = "tran_type_cd", length = 2)
     private String typeCode;
 
     /**
      * Transaction category code.
      * COBOL: {@code TRAN-CAT-CD PIC 9(04)}.
-     * Stored as String to preserve leading zeros.
+     * Stored as Integer matching the PostgreSQL INTEGER column type.
      * References the {@code TRANCATG} reference data (18 categories).
      */
-    @Column(name = "category_code", length = 4)
-    private String categoryCode;
+    @Column(name = "tran_cat_cd")
+    private Integer categoryCode;
 
     /**
      * Transaction source identifier.
      * COBOL: {@code TRAN-SOURCE PIC X(10)}.
      */
-    @Column(name = "source", length = 10)
+    @Column(name = "tran_source", length = 10)
     private String source;
 
     /**
      * Transaction description.
      * COBOL: {@code TRAN-DESC PIC X(100)}.
      */
-    @Column(name = "description", length = 100)
+    @Column(name = "tran_desc", length = 100)
     private String description;
 
     /**
@@ -118,7 +118,7 @@ public class Transaction {
      * {@link java.math.RoundingMode#HALF_UP} to match COBOL default
      * rounding behaviour.
      */
-    @Column(name = "amount", precision = 11, scale = 2)
+    @Column(name = "tran_amt", precision = 11, scale = 2)
     private BigDecimal amount;
 
     /**
@@ -126,35 +126,35 @@ public class Transaction {
      * COBOL: {@code TRAN-MERCHANT-ID PIC 9(09)}.
      * Stored as String to preserve leading zeros.
      */
-    @Column(name = "merchant_id", length = 9)
+    @Column(name = "tran_merchant_id", length = 9)
     private String merchantId;
 
     /**
      * Merchant name.
      * COBOL: {@code TRAN-MERCHANT-NAME PIC X(50)}.
      */
-    @Column(name = "merchant_name", length = 50)
+    @Column(name = "tran_merchant_name", length = 50)
     private String merchantName;
 
     /**
      * Merchant city.
      * COBOL: {@code TRAN-MERCHANT-CITY PIC X(50)}.
      */
-    @Column(name = "merchant_city", length = 50)
+    @Column(name = "tran_merchant_city", length = 50)
     private String merchantCity;
 
     /**
      * Merchant ZIP / postal code.
      * COBOL: {@code TRAN-MERCHANT-ZIP PIC X(10)}.
      */
-    @Column(name = "merchant_zip", length = 10)
+    @Column(name = "tran_merchant_zip", length = 10)
     private String merchantZip;
 
     /**
      * Card number associated with this transaction.
      * COBOL: {@code TRAN-CARD-NUM PIC X(16)}.
      */
-    @Column(name = "card_num", length = 16)
+    @Column(name = "tran_card_num", length = 16)
     private String cardNum;
 
     /**
@@ -167,7 +167,7 @@ public class Transaction {
      * index (AIX) on {@code TRAN-ORIG-TS} (position 304, length 26)
      * enabling chronological range queries.
      */
-    @Column(name = "orig_timestamp", length = 26)
+    @Column(name = "tran_orig_ts", length = 26)
     private String origTimestamp;
 
     /**
@@ -176,7 +176,7 @@ public class Transaction {
      * Format: {@code YYYY-MM-DD-HH.MM.SS.mmmmmm} (26 characters with
      * microsecond precision).
      */
-    @Column(name = "proc_timestamp", length = 26)
+    @Column(name = "tran_proc_ts", length = 26)
     private String procTimestamp;
 
     // ---------------------------------------------------------------
@@ -196,7 +196,7 @@ public class Transaction {
      *
      * @param tranId        transaction identifier (PK, 16 chars)
      * @param typeCode      transaction type code (2 chars)
-     * @param categoryCode  transaction category code (4 digits as String)
+     * @param categoryCode  transaction category code (integer value)
      * @param source        transaction source (10 chars)
      * @param description   transaction description (up to 100 chars)
      * @param amount        transaction amount (BigDecimal, precision 11, scale 2)
@@ -208,7 +208,7 @@ public class Transaction {
      * @param origTimestamp original timestamp (26-char ISO-8601 extended)
      * @param procTimestamp processing timestamp (26-char ISO-8601 extended)
      */
-    public Transaction(String tranId, String typeCode, String categoryCode,
+    public Transaction(String tranId, String typeCode, Integer categoryCode,
                        String source, String description, BigDecimal amount,
                        String merchantId, String merchantName,
                        String merchantCity, String merchantZip,
@@ -254,12 +254,12 @@ public class Transaction {
     }
 
     /** Returns the transaction category code. */
-    public String getCategoryCode() {
+    public Integer getCategoryCode() {
         return categoryCode;
     }
 
     /** Sets the transaction category code. */
-    public void setCategoryCode(String categoryCode) {
+    public void setCategoryCode(Integer categoryCode) {
         this.categoryCode = categoryCode;
     }
 
@@ -406,7 +406,7 @@ public class Transaction {
         return "Transaction{" +
                 "tranId='" + tranId + '\'' +
                 ", typeCode='" + typeCode + '\'' +
-                ", categoryCode='" + categoryCode + '\'' +
+                ", categoryCode=" + categoryCode +
                 ", amount=" + amount +
                 ", cardNum='" + maskCardNum(cardNum) + '\'' +
                 ", origTimestamp='" + origTimestamp + '\'' +

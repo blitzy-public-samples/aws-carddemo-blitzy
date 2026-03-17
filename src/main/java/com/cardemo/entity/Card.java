@@ -64,9 +64,9 @@ import java.util.Objects;
  */
 @Entity
 @Table(
-        name = "card",
+        name = "cards",
         indexes = {
-                @Index(name = "idx_card_acct_id", columnList = "account_id")
+                @Index(name = "idx_card_acct_id", columnList = "card_acct_id")
         }
 )
 public class Card {
@@ -102,7 +102,7 @@ public class Card {
      * lookups used by COCRDLIC (credit card list) and COCRDSLC (credit
      * card detail) CICS programs.</p>
      */
-    @Column(name = "account_id", length = 11, nullable = false)
+    @Column(name = "card_acct_id", length = 11, nullable = false)
     private String accountId;
 
     // =========================================================================
@@ -119,7 +119,7 @@ public class Card {
      * unless explicitly required and properly secured. It is fully masked
      * in {@link #toString()} output.</p>
      */
-    @Column(name = "cvv_code", length = 3)
+    @Column(name = "card_cvv_cd", length = 3)
     private String cvvCode;
 
     // =========================================================================
@@ -130,7 +130,7 @@ public class Card {
      * Name embossed on the physical card (up to 50 characters).
      * Maps to COBOL CARD-EMBOSSED-NAME PIC X(50).
      */
-    @Column(name = "embossed_name", length = 50)
+    @Column(name = "card_embossed_name", length = 50)
     private String embossedName;
 
     /**
@@ -141,7 +141,7 @@ public class Card {
      * The Java field corrects the spelling to {@code expirationDate}, and the
      * database column uses {@code expiration_date}.</p>
      */
-    @Column(name = "expiration_date", length = 10)
+    @Column(name = "card_expiration_date", length = 10)
     private String expirationDate;
 
     /**
@@ -149,7 +149,7 @@ public class Card {
      * Maps to COBOL CARD-ACTIVE-STATUS PIC X(01).
      * Typical values: "Y" (active), "N" (inactive).
      */
-    @Column(name = "active_status", length = 1)
+    @Column(name = "card_active_status", length = 1)
     private String activeStatus;
 
     // =========================================================================

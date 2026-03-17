@@ -2,10 +2,17 @@ package com.cardemo.config;
 
 import io.micrometer.observation.ObservationRegistry;
 import io.micrometer.observation.aop.ObservedAspect;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobInstance;
+import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Observability infrastructure configuration for the CardDemo application.
@@ -135,9 +142,37 @@ public class ObservabilityConfig {
      * @return a {@link HealthIndicator} that reports batch job processing health status
      */
     @Bean
-    public HealthIndicator batchJobHealthIndicator() {
-        return () -> Health.up()
-                .withDetail("batch", "No failed jobs")
-                .build();
+    public HealthIndicator batchJobHealthIndicator(JobExplorer jobExplorer) {
+        return () -> {
+            List<String> jobNames = jobExplorer.getJobNames();
+            if (jobNames.isEmpty()) {
+                return Health.up()
+                        .withDetail("batch", "No batch jobs registered")
+                        .build();
+            }
+
+            List<String> failedJobs = new ArrayList<>();
+            for (String jobName : jobNames) {
+                List<JobInstance> instances = jobExplorer.getJobInstances(jobName, 0, 1);
+                for (JobInstance instance : instances) {
+                    List<JobExecution> executions = jobExplorer.getJobExecutions(instance);
+                    for (JobExecution execution : executions) {
+                        if (execution.getStatus() == BatchStatus.FAILED) {
+                            failedJobs.add(jobName + " (executionId=" + execution.getId() + ")");
+                        }
+                    }
+                }
+            }
+
+            if (failedJobs.isEmpty()) {
+                return Health.up()
+                        .withDetail("batch", "No failed jobs")
+                        .build();
+            } else {
+                return Health.down()
+                        .withDetail("failedJobs", failedJobs)
+                        .build();
+            }
+        };
     }
 }

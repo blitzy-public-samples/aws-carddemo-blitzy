@@ -45,6 +45,7 @@ package com.cardemo.config;
 import jakarta.validation.constraints.Min;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
+import org.springframework.validation.annotation.Validated;
 
 /**
  * Type-safe configuration properties for the CardDemo application.
@@ -59,6 +60,7 @@ import org.springframework.stereotype.Component;
  * and retry limits.</p>
  */
 @Component
+@Validated
 @ConfigurationProperties(prefix = "cardemo")
 public class AppProperties {
 

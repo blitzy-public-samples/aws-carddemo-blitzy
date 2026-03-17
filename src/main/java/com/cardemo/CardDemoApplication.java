@@ -28,7 +28,6 @@
  */
 package com.cardemo;
 
-import org.springframework.batch.core.configuration.annotation.EnableBatchProcessing;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
@@ -46,10 +45,12 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *   <li>Configuration properties binding from application.yml</li>
  * </ul>
  *
- * <p>The {@link EnableBatchProcessing} annotation activates Spring Batch infrastructure
- * (JobRepository, JobLauncher) required by all 7 batch job configurations migrated
- * from JCL: DailyPostingJob, InterestCalcJob, TransactionSortJob, StatementGenJob,
- * AccountLoadJob, CustomerLoadJob, and TransactionLoadJob.</p>
+ * <p>Spring Boot 3.x auto-configures Spring Batch infrastructure (JobRepository,
+ * JobLauncher) without requiring {@code @EnableBatchProcessing}. The custom
+ * {@link com.cardemo.config.BatchConfig} overrides specific beans as needed for the
+ * 7 batch job configurations migrated from JCL: DailyPostingJob, InterestCalcJob,
+ * TransactionSortJob, StatementGenJob, AccountLoadJob, CustomerLoadJob, and
+ * TransactionLoadJob.</p>
  *
  * <p>All business logic resides in dedicated service, batch, and controller packages.
  * This entry point class contains no business logic — it exists solely to bootstrap
@@ -60,7 +61,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * @see com.cardemo.config.JpaConfig
  */
 @SpringBootApplication
-@EnableBatchProcessing
 public class CardDemoApplication {
 
     /**

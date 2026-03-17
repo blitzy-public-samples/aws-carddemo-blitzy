@@ -36,7 +36,7 @@ import java.util.Objects;
  * <p>COBOL equivalent: TRAN-TYPE PIC X(02) as the primary key.</p>
  */
 @Entity
-@Table(name = "transaction_type_ref")
+@Table(name = "transaction_type_refs")
 public class TransactionTypeRef {
 
     /**
@@ -44,7 +44,7 @@ public class TransactionTypeRef {
      * Values: "01" through "07", matching the COBOL TRAN-TYPE PIC X(02).
      */
     @Id
-    @Column(name = "type_code", length = 2, nullable = false)
+    @Column(name = "tran_type", length = 2, nullable = false)
     private String typeCode;
 
     /**
@@ -53,7 +53,7 @@ public class TransactionTypeRef {
      * Examples: "Purchase", "Payment", "Credit", "Authorization",
      * "Refund", "Reversal", "Adjustment".
      */
-    @Column(name = "type_description", length = 50, nullable = false)
+    @Column(name = "tran_type_desc", length = 50, nullable = false)
     private String typeDescription;
 
     /**

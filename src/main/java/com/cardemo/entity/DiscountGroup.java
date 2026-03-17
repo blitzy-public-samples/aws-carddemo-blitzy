@@ -2,7 +2,7 @@
  * DiscountGroup.java — JPA Entity for VSAM DISCGRP reference data
  *
  * Faithfully translates the COBOL copybook CVTRA02Y.cpy DIS-GROUP-RECORD
- * (50 bytes) into a JPA entity mapped to the PostgreSQL 'discount_group' table.
+ * (50 bytes) into a JPA entity mapped to the PostgreSQL 'discount_groups' table.
  *
  * COBOL Record Layout (CVTRA02Y.cpy):
  *   01  DIS-GROUP-RECORD.
@@ -13,14 +13,22 @@
  *       05  DIS-INT-RATE           PIC S9(04)V99.
  *       05  FILLER                 PIC X(28).
  *
+ * Database Schema (V1__create_schema.sql):
+ *   CREATE TABLE discount_groups (
+ *       dis_acct_group_id   VARCHAR(10)    NOT NULL,
+ *       dis_tran_type_cd    VARCHAR(2)     NOT NULL,
+ *       dis_tran_cat_cd     INTEGER        NOT NULL,
+ *       dis_int_rate        NUMERIC(6,2)   NOT NULL DEFAULT 0,
+ *       PRIMARY KEY (dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_cd)
+ *   );
+ *
  * Data source: app/data/ASCII/discgrp.txt — 51 records in 3 blocks:
  *   Lines  1-17: Group "A"       (17 category combinations)
  *   Lines 18-34: Group "DEFAULT" (17 category combinations)
  *   Lines 35-51: Group "ZEROAPR" (17 category combinations, zero interest)
  *
- * Key Decision: Uses a surrogate @Id (Long) with a @UniqueConstraint on the
- * composite natural key (group_id + tran_type_code + tran_cat_code) to preserve
- * VSAM KSDS DIS-GROUP-KEY semantics while simplifying JPA identity management.
+ * Key Decision: Uses @IdClass composite primary key matching the VSAM KSDS
+ * DIS-GROUP-KEY structure (dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_cd).
  *
  * @see app/cpy/CVTRA02Y.cpy — COBOL source copybook
  * @see app/data/ASCII/discgrp.txt — Reference data (51 records)
@@ -29,12 +37,12 @@ package com.cardemo.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.IdClass;
 import jakarta.persistence.Table;
-import jakarta.persistence.UniqueConstraint;
 
+import java.io.Serial;
+import java.io.Serializable;
 import java.math.BigDecimal;
 import java.util.Objects;
 
@@ -42,60 +50,51 @@ import java.util.Objects;
  * JPA entity representing a discount group reference record.
  *
  * <p>Maps the VSAM DISCGRP dataset (DIS-GROUP-RECORD from CVTRA02Y.cpy, 50 bytes)
- * to the PostgreSQL {@code discount_group} table. Each record defines an interest
+ * to the PostgreSQL {@code discount_groups} table. Each record defines an interest
  * rate for a specific combination of account group, transaction type, and
  * transaction category.</p>
  *
- * <p>The composite natural key (groupId + tranTypeCode + tranCatCode) mirrors the
- * COBOL DIS-GROUP-KEY structure and is enforced via a unique constraint. A surrogate
- * {@code id} serves as the JPA primary key for simplified entity management.</p>
+ * <p>Uses a composite primary key via {@code @IdClass} matching the VSAM KSDS
+ * DIS-GROUP-KEY structure: (dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_cd).</p>
  *
  * <p><strong>BigDecimal mandate:</strong> The {@code interestRate} field uses
  * {@link BigDecimal} (never {@code float} or {@code double}) to match the COBOL
  * PIC S9(04)V99 specification with exact decimal precision (scale=2).</p>
  */
 @Entity
-@Table(
-    name = "discount_group",
-    uniqueConstraints = @UniqueConstraint(
-        name = "uk_discount_group_natural_key",
-        columnNames = {"group_id", "tran_type_code", "tran_cat_code"}
-    )
-)
+@Table(name = "discount_groups")
+@IdClass(DiscountGroup.DiscountGroupId.class)
 public class DiscountGroup {
-
-    /**
-     * Surrogate primary key — auto-generated identity column.
-     * Replaces the composite VSAM KSDS key for JPA simplicity.
-     */
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    @Column(name = "id")
-    private Long id;
 
     /**
      * Discount account group identifier.
      * Maps to DIS-ACCT-GROUP-ID PIC X(10).
+     * Part of the composite primary key matching the VSAM KSDS DIS-GROUP-KEY.
      * Values in seed data: "A", "DEFAULT", "ZEROAPR" (space-padded to 10 chars in COBOL source).
      */
-    @Column(name = "group_id", length = 10, nullable = false)
+    @Id
+    @Column(name = "dis_acct_group_id", length = 10, nullable = false)
     private String groupId;
 
     /**
      * Transaction type code.
      * Maps to DIS-TRAN-TYPE-CD PIC X(02).
+     * Part of the composite primary key matching the VSAM KSDS DIS-GROUP-KEY.
      * 2-character code (e.g., "01" through "07") linking to transaction types.
      */
-    @Column(name = "tran_type_code", length = 2, nullable = false)
+    @Id
+    @Column(name = "dis_tran_type_cd", length = 2, nullable = false)
     private String tranTypeCode;
 
     /**
      * Transaction category code.
      * Maps to DIS-TRAN-CAT-CD PIC 9(04).
-     * Stored as String to preserve leading zeros (e.g., "0001", "0002").
+     * Part of the composite primary key matching the VSAM KSDS DIS-GROUP-KEY.
+     * Stored as {@code Integer} matching the PostgreSQL INTEGER column type.
      */
-    @Column(name = "tran_cat_code", length = 4, nullable = false)
-    private String tranCatCode;
+    @Id
+    @Column(name = "dis_tran_cat_cd", nullable = false)
+    private Integer tranCatCode;
 
     /**
      * Interest rate for this discount group/type/category combination.
@@ -110,7 +109,7 @@ public class DiscountGroup {
      * the numeric field represents a positive zero in EBCDIC zoned decimal encoding.
      * For example, "00150{" = +0015.00 (interest rate of 15.00).</p>
      */
-    @Column(name = "interest_rate", precision = 6, scale = 2, nullable = false)
+    @Column(name = "dis_int_rate", precision = 6, scale = 2, nullable = false)
     private BigDecimal interestRate;
 
     /**
@@ -125,10 +124,10 @@ public class DiscountGroup {
      *
      * @param groupId      the discount account group identifier (DIS-ACCT-GROUP-ID, up to 10 chars)
      * @param tranTypeCode the transaction type code (DIS-TRAN-TYPE-CD, 2 chars)
-     * @param tranCatCode  the transaction category code (DIS-TRAN-CAT-CD, 4 chars)
+     * @param tranCatCode  the transaction category code (DIS-TRAN-CAT-CD, Integer)
      * @param interestRate the interest rate (DIS-INT-RATE, BigDecimal with scale 2)
      */
-    public DiscountGroup(String groupId, String tranTypeCode, String tranCatCode,
+    public DiscountGroup(String groupId, String tranTypeCode, Integer tranCatCode,
                          BigDecimal interestRate) {
         this.groupId = groupId;
         this.tranTypeCode = tranTypeCode;
@@ -139,25 +138,6 @@ public class DiscountGroup {
     // ========================================================================
     // Getters and Setters
     // ========================================================================
-
-    /**
-     * Returns the surrogate primary key.
-     *
-     * @return the auto-generated entity identifier, or {@code null} if not yet persisted
-     */
-    public Long getId() {
-        return id;
-    }
-
-    /**
-     * Sets the surrogate primary key.
-     * Typically managed by JPA; manual assignment is discouraged.
-     *
-     * @param id the entity identifier
-     */
-    public void setId(Long id) {
-        this.id = id;
-    }
 
     /**
      * Returns the discount account group identifier.
@@ -198,18 +178,18 @@ public class DiscountGroup {
     /**
      * Returns the transaction category code.
      *
-     * @return the 4-character transaction category code (DIS-TRAN-CAT-CD)
+     * @return the transaction category code as Integer (DIS-TRAN-CAT-CD)
      */
-    public String getTranCatCode() {
+    public Integer getTranCatCode() {
         return tranCatCode;
     }
 
     /**
      * Sets the transaction category code.
      *
-     * @param tranCatCode the 4-character category code (leading zeros preserved)
+     * @param tranCatCode the category code as Integer
      */
-    public void setTranCatCode(String tranCatCode) {
+    public void setTranCatCode(Integer tranCatCode) {
         this.tranCatCode = tranCatCode;
     }
 
@@ -232,16 +212,16 @@ public class DiscountGroup {
     }
 
     // ========================================================================
-    // equals, hashCode, toString — based on composite natural key
+    // equals, hashCode, toString — based on composite primary key
     // ========================================================================
 
     /**
      * Compares this entity with another object for equality based on the
-     * composite natural key: {@code groupId}, {@code tranTypeCode}, and
+     * composite primary key: {@code groupId}, {@code tranTypeCode}, and
      * {@code tranCatCode}. This matches the VSAM KSDS DIS-GROUP-KEY semantics.
      *
      * @param o the object to compare with
-     * @return {@code true} if both objects have the same natural key values
+     * @return {@code true} if both objects have the same composite key values
      */
     @Override
     public boolean equals(Object o) {
@@ -258,10 +238,10 @@ public class DiscountGroup {
     }
 
     /**
-     * Computes the hash code based on the composite natural key:
+     * Computes the hash code based on the composite primary key:
      * {@code groupId}, {@code tranTypeCode}, and {@code tranCatCode}.
      *
-     * @return the hash code derived from the natural key fields
+     * @return the hash code derived from the composite key fields
      */
     @Override
     public int hashCode() {
@@ -270,18 +250,122 @@ public class DiscountGroup {
 
     /**
      * Returns a string representation of this discount group record.
-     * Includes the entity name, all key fields, and the interest rate.
+     * Includes all key fields and the interest rate.
      *
      * @return a human-readable string representation
      */
     @Override
     public String toString() {
         return "DiscountGroup{"
-                + "id=" + id
-                + ", groupId='" + groupId + '\''
+                + "groupId='" + groupId + '\''
                 + ", tranTypeCode='" + tranTypeCode + '\''
-                + ", tranCatCode='" + tranCatCode + '\''
+                + ", tranCatCode=" + tranCatCode
                 + ", interestRate=" + interestRate
                 + '}';
+    }
+
+    // ========================================================================
+    // Composite Primary Key Class
+    // ========================================================================
+
+    /**
+     * Composite primary key class for {@link DiscountGroup}.
+     *
+     * <p>Implements {@link Serializable} as required by the JPA specification
+     * for {@code @IdClass} composite keys. The field names must match exactly
+     * the {@code @Id} fields in the entity class.</p>
+     *
+     * <p>The composite key (dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_cd) mirrors
+     * the VSAM KSDS primary key DIS-GROUP-KEY.</p>
+     */
+    public static class DiscountGroupId implements Serializable {
+
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        /** Account group identifier — matches entity field {@code groupId}. */
+        private String groupId;
+
+        /** Transaction type code — matches entity field {@code tranTypeCode}. */
+        private String tranTypeCode;
+
+        /** Transaction category code — matches entity field {@code tranCatCode}. */
+        private Integer tranCatCode;
+
+        /** Default constructor required by JPA. */
+        public DiscountGroupId() {
+            // Required by JPA specification
+        }
+
+        /**
+         * Constructs a composite key with all key components.
+         *
+         * @param groupId      the discount account group identifier
+         * @param tranTypeCode the 2-character transaction type code
+         * @param tranCatCode  the category code as Integer
+         */
+        public DiscountGroupId(String groupId, String tranTypeCode, Integer tranCatCode) {
+            this.groupId = groupId;
+            this.tranTypeCode = tranTypeCode;
+            this.tranCatCode = tranCatCode;
+        }
+
+        /** Returns the account group identifier. */
+        public String getGroupId() {
+            return groupId;
+        }
+
+        /** Sets the account group identifier. */
+        public void setGroupId(String groupId) {
+            this.groupId = groupId;
+        }
+
+        /** Returns the transaction type code. */
+        public String getTranTypeCode() {
+            return tranTypeCode;
+        }
+
+        /** Sets the transaction type code. */
+        public void setTranTypeCode(String tranTypeCode) {
+            this.tranTypeCode = tranTypeCode;
+        }
+
+        /** Returns the transaction category code. */
+        public Integer getTranCatCode() {
+            return tranCatCode;
+        }
+
+        /** Sets the transaction category code. */
+        public void setTranCatCode(Integer tranCatCode) {
+            this.tranCatCode = tranCatCode;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+            DiscountGroupId that = (DiscountGroupId) o;
+            return Objects.equals(groupId, that.groupId)
+                    && Objects.equals(tranTypeCode, that.tranTypeCode)
+                    && Objects.equals(tranCatCode, that.tranCatCode);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(groupId, tranTypeCode, tranCatCode);
+        }
+
+        @Override
+        public String toString() {
+            return "DiscountGroupId{"
+                    + "groupId='" + groupId + '\''
+                    + ", tranTypeCode='" + tranTypeCode + '\''
+                    + ", tranCatCode=" + tranCatCode
+                    + '}';
+        }
     }
 }

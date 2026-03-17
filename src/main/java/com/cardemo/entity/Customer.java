@@ -25,7 +25,7 @@
  *       05  CUST-DOB-YYYY-MM-DD               PIC X(10).       -> dateOfBirth (String, 10 chars)
  *       05  CUST-EFT-ACCOUNT-ID               PIC X(10).       -> eftAccountId (String, 10 chars)
  *       05  CUST-PRI-CARD-HOLDER-IND          PIC X(01).       -> priCardHolderInd (String, 1 char)
- *       05  CUST-FICO-CREDIT-SCORE            PIC 9(03).       -> ficoCreditScore (String, 3 chars)
+ *       05  CUST-FICO-CREDIT-SCORE            PIC 9(03).       -> ficoCreditScore (Integer)
  *       05  FILLER                            PIC X(168).      -> not mapped
  *   Total: 9+25+25+25+50+50+50+2+3+10+15+15+9+20+10+10+1+3+168 = 500 bytes
  *
@@ -68,7 +68,7 @@ import java.util.Objects;
  * CUST-SSN, CUST-FICO-CREDIT-SCORE) use String to preserve leading zeros.</p>
  */
 @Entity
-@Table(name = "customer")
+@Table(name = "customers")
 public class Customer {
 
     // =========================================================================
@@ -92,21 +92,21 @@ public class Customer {
      * Customer first name.
      * Maps to COBOL CUST-FIRST-NAME PIC X(25).
      */
-    @Column(name = "first_name", length = 25)
+    @Column(name = "cust_first_name", length = 25)
     private String firstName;
 
     /**
      * Customer middle name.
      * Maps to COBOL CUST-MIDDLE-NAME PIC X(25).
      */
-    @Column(name = "middle_name", length = 25)
+    @Column(name = "cust_middle_name", length = 25)
     private String middleName;
 
     /**
      * Customer last name.
      * Maps to COBOL CUST-LAST-NAME PIC X(25).
      */
-    @Column(name = "last_name", length = 25)
+    @Column(name = "cust_last_name", length = 25)
     private String lastName;
 
     // =========================================================================
@@ -117,35 +117,35 @@ public class Customer {
      * Address line 1 (street address).
      * Maps to COBOL CUST-ADDR-LINE-1 PIC X(50).
      */
-    @Column(name = "addr_line_1", length = 50)
+    @Column(name = "cust_addr_line_1", length = 50)
     private String addrLine1;
 
     /**
      * Address line 2 (apartment, suite, etc.).
      * Maps to COBOL CUST-ADDR-LINE-2 PIC X(50).
      */
-    @Column(name = "addr_line_2", length = 50)
+    @Column(name = "cust_addr_line_2", length = 50)
     private String addrLine2;
 
     /**
      * Address line 3 (city or additional info).
      * Maps to COBOL CUST-ADDR-LINE-3 PIC X(50).
      */
-    @Column(name = "addr_line_3", length = 50)
+    @Column(name = "cust_addr_line_3", length = 50)
     private String addrLine3;
 
     /**
      * State code (2-letter US state abbreviation).
      * Maps to COBOL CUST-ADDR-STATE-CD PIC X(02).
      */
-    @Column(name = "addr_state_code", length = 2)
+    @Column(name = "cust_addr_state_cd", length = 2)
     private String addrStateCode;
 
     /**
      * Country code (3-letter country code, e.g., "USA").
      * Maps to COBOL CUST-ADDR-COUNTRY-CD PIC X(03).
      */
-    @Column(name = "addr_country_code", length = 3)
+    @Column(name = "cust_addr_country_cd", length = 3)
     private String addrCountryCode;
 
     /**
@@ -153,7 +153,7 @@ public class Customer {
      * Maps to COBOL CUST-ADDR-ZIP PIC X(10).
      * Supports both 5-digit ("12546") and ZIP+4 ("19852-6716") formats.
      */
-    @Column(name = "addr_zip", length = 10)
+    @Column(name = "cust_addr_zip", length = 10)
     private String addrZip;
 
     // =========================================================================
@@ -165,7 +165,7 @@ public class Customer {
      * Maps to COBOL CUST-PHONE-NUM-1 PIC X(15).
      * Format typically "(NNN)NNN-NNNN" from seed data.
      */
-    @Column(name = "phone_num_1", length = 15)
+    @Column(name = "cust_phone_num_1", length = 15)
     private String phoneNum1;
 
     /**
@@ -173,7 +173,7 @@ public class Customer {
      * Maps to COBOL CUST-PHONE-NUM-2 PIC X(15).
      * Format typically "(NNN)NNN-NNNN" from seed data.
      */
-    @Column(name = "phone_num_2", length = 15)
+    @Column(name = "cust_phone_num_2", length = 15)
     private String phoneNum2;
 
     // =========================================================================
@@ -189,7 +189,7 @@ public class Customer {
      * sensitive personally identifiable information and is deliberately
      * excluded from {@link #toString()} output.</p>
      */
-    @Column(name = "ssn", length = 9)
+    @Column(name = "cust_ssn", length = 9)
     private String ssn; // PII: Do not log or expose
 
     /**
@@ -200,7 +200,7 @@ public class Customer {
      * sensitive personally identifiable information and is deliberately
      * excluded from {@link #toString()} output.</p>
      */
-    @Column(name = "govt_issued_id", length = 20)
+    @Column(name = "cust_govt_issued_id", length = 20)
     private String govtIssuedId; // PII: Do not log or expose
 
     // =========================================================================
@@ -213,14 +213,14 @@ public class Customer {
      * CUST-DOB-YYYYMMDD PIC X(10) (CUSTREC.cpy).
      * Both copybooks define the same 10-character field at the same position.
      */
-    @Column(name = "dob", length = 10)
+    @Column(name = "cust_dob_yyyy_mm_dd", length = 10)
     private String dateOfBirth;
 
     /**
      * Electronic Funds Transfer account identifier.
      * Maps to COBOL CUST-EFT-ACCOUNT-ID PIC X(10).
      */
-    @Column(name = "eft_account_id", length = 10)
+    @Column(name = "cust_eft_account_id", length = 10)
     private String eftAccountId;
 
     // =========================================================================
@@ -232,17 +232,17 @@ public class Customer {
      * Maps to COBOL CUST-PRI-CARD-HOLDER-IND PIC X(01).
      * Typical values: 'Y' = primary card holder, 'N' = not primary.
      */
-    @Column(name = "pri_card_holder_ind", length = 1)
+    @Column(name = "cust_pri_card_holder_ind", length = 1)
     private String priCardHolderInd;
 
     /**
-     * FICO credit score (3-digit numeric string).
+     * FICO credit score (integer value).
      * Maps to COBOL CUST-FICO-CREDIT-SCORE PIC 9(03).
-     * Stored as String to preserve leading zeros (e.g., "051").
-     * Valid FICO range is typically 300-850, but stored as-is from COBOL.
+     * Stored as Integer matching the PostgreSQL INTEGER column type.
+     * Valid FICO range is typically 300-850.
      */
-    @Column(name = "fico_credit_score", length = 3)
-    private String ficoCreditScore;
+    @Column(name = "cust_fico_credit_score")
+    private Integer ficoCreditScore;
 
     // =========================================================================
     // Constructors
@@ -276,7 +276,7 @@ public class Customer {
      * @param dateOfBirth       date of birth in YYYY-MM-DD format (10 chars)
      * @param eftAccountId      EFT account identifier (up to 10 chars)
      * @param priCardHolderInd  primary card holder indicator (1 char)
-     * @param ficoCreditScore   FICO credit score (3 chars)
+     * @param ficoCreditScore   FICO credit score (integer value)
      */
     public Customer(String custId, String firstName, String middleName,
                     String lastName, String addrLine1, String addrLine2,
@@ -284,7 +284,7 @@ public class Customer {
                     String addrZip, String phoneNum1, String phoneNum2,
                     String ssn, String govtIssuedId, String dateOfBirth,
                     String eftAccountId, String priCardHolderInd,
-                    String ficoCreditScore) {
+                    Integer ficoCreditScore) {
         this.custId = custId;
         this.firstName = firstName;
         this.middleName = middleName;
@@ -587,17 +587,17 @@ public class Customer {
 
     /**
      * Returns the FICO credit score.
-     * @return 3-character numeric string representing the FICO score
+     * @return integer value representing the FICO score
      */
-    public String getFicoCreditScore() {
+    public Integer getFicoCreditScore() {
         return ficoCreditScore;
     }
 
     /**
      * Sets the FICO credit score.
-     * @param ficoCreditScore 3-character numeric string representing the FICO score
+     * @param ficoCreditScore integer value representing the FICO score
      */
-    public void setFicoCreditScore(String ficoCreditScore) {
+    public void setFicoCreditScore(Integer ficoCreditScore) {
         this.ficoCreditScore = ficoCreditScore;
     }
 
@@ -669,7 +669,7 @@ public class Customer {
                 + ", dateOfBirth='" + dateOfBirth + '\''
                 + ", eftAccountId='" + eftAccountId + '\''
                 + ", priCardHolderInd='" + priCardHolderInd + '\''
-                + ", ficoCreditScore='" + ficoCreditScore + '\''
+                + ", ficoCreditScore=" + ficoCreditScore
                 + '}';
     }
 }

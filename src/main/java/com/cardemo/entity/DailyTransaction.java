@@ -49,7 +49,7 @@ import java.util.Objects;
  * @see com.cardemo.service.batch.DailyPostingService
  */
 @Entity
-@Table(name = "daily_transaction")
+@Table(name = "daily_transactions")
 public class DailyTransaction {
 
     // =========================================================================
@@ -76,28 +76,28 @@ public class DailyTransaction {
      * Transaction type code (e.g., "01"=Purchase, "03"=Credit).
      * COBOL: DALYTRAN-TYPE-CD PIC X(02).
      */
-    @Column(name = "type_code", length = 2)
+    @Column(name = "dalytran_type_cd", length = 2)
     private String typeCode;
 
     /**
-     * Transaction category code, stored as String to preserve leading zeros.
+     * Transaction category code, stored as Integer matching PostgreSQL INTEGER column type.
      * COBOL: DALYTRAN-CAT-CD PIC 9(04).
      */
-    @Column(name = "category_code", length = 4)
-    private String categoryCode;
+    @Column(name = "dalytran_cat_cd")
+    private Integer categoryCode;
 
     /**
      * Transaction source identifier (e.g., "POS TERM", "OPERATOR").
      * COBOL: DALYTRAN-SOURCE PIC X(10).
      */
-    @Column(name = "source", length = 10)
+    @Column(name = "dalytran_source", length = 10)
     private String source;
 
     /**
      * Transaction description.
      * COBOL: DALYTRAN-DESC PIC X(100).
      */
-    @Column(name = "description", length = 100)
+    @Column(name = "dalytran_desc", length = 100)
     private String description;
 
     /**
@@ -106,42 +106,42 @@ public class DailyTransaction {
      * Precision = 11 (9 integer + 2 decimal), scale = 2 from V99.
      * MUST use BigDecimal — NEVER float/double. RoundingMode.HALF_UP for calculations.
      */
-    @Column(name = "amount", precision = 11, scale = 2)
+    @Column(name = "dalytran_amt", precision = 11, scale = 2)
     private BigDecimal amount;
 
     /**
      * Merchant identifier, stored as String to preserve leading zeros.
      * COBOL: DALYTRAN-MERCHANT-ID PIC 9(09).
      */
-    @Column(name = "merchant_id", length = 9)
+    @Column(name = "dalytran_merchant_id", length = 9)
     private String merchantId;
 
     /**
      * Merchant name.
      * COBOL: DALYTRAN-MERCHANT-NAME PIC X(50).
      */
-    @Column(name = "merchant_name", length = 50)
+    @Column(name = "dalytran_merchant_name", length = 50)
     private String merchantName;
 
     /**
      * Merchant city.
      * COBOL: DALYTRAN-MERCHANT-CITY PIC X(50).
      */
-    @Column(name = "merchant_city", length = 50)
+    @Column(name = "dalytran_merchant_city", length = 50)
     private String merchantCity;
 
     /**
      * Merchant ZIP code.
      * COBOL: DALYTRAN-MERCHANT-ZIP PIC X(10).
      */
-    @Column(name = "merchant_zip", length = 10)
+    @Column(name = "dalytran_merchant_zip", length = 10)
     private String merchantZip;
 
     /**
      * Card number associated with this daily transaction.
      * COBOL: DALYTRAN-CARD-NUM PIC X(16).
      */
-    @Column(name = "card_num", length = 16)
+    @Column(name = "dalytran_card_num", length = 16)
     private String cardNum;
 
     /**
@@ -149,7 +149,7 @@ public class DailyTransaction {
      * {@code YYYY-MM-DD-HH.MM.SS.mmmmmm} (26 characters with microsecond precision).
      * COBOL: DALYTRAN-ORIG-TS PIC X(26).
      */
-    @Column(name = "orig_timestamp", length = 26)
+    @Column(name = "dalytran_orig_ts", length = 26)
     private String origTimestamp;
 
     /**
@@ -157,7 +157,7 @@ public class DailyTransaction {
      * {@code YYYY-MM-DD-HH.MM.SS.mmmmmm} (26 characters with microsecond precision).
      * COBOL: DALYTRAN-PROC-TS PIC X(26).
      */
-    @Column(name = "proc_timestamp", length = 26)
+    @Column(name = "dalytran_proc_ts", length = 26)
     private String procTimestamp;
 
     // =========================================================================
@@ -178,7 +178,7 @@ public class DailyTransaction {
      *
      * @param dalytranId     transaction identifier in the daily feed (16 chars max)
      * @param typeCode       transaction type code (2 chars max)
-     * @param categoryCode   transaction category code (4 chars max, leading-zero preserved)
+     * @param categoryCode   transaction category code (integer value)
      * @param source         transaction source identifier (10 chars max)
      * @param description    transaction description (100 chars max)
      * @param amount         transaction amount as BigDecimal (precision=11, scale=2)
@@ -190,7 +190,7 @@ public class DailyTransaction {
      * @param origTimestamp  original timestamp in ISO-8601 format (26 chars)
      * @param procTimestamp  processing timestamp in ISO-8601 format (26 chars)
      */
-    public DailyTransaction(String dalytranId, String typeCode, String categoryCode,
+    public DailyTransaction(String dalytranId, String typeCode, Integer categoryCode,
                             String source, String description, BigDecimal amount,
                             String merchantId, String merchantName, String merchantCity,
                             String merchantZip, String cardNum, String origTimestamp,
@@ -269,20 +269,20 @@ public class DailyTransaction {
     }
 
     /**
-     * Returns the transaction category code (leading zeros preserved).
+     * Returns the transaction category code.
      *
-     * @return the DALYTRAN-CAT-CD value (up to 4 characters)
+     * @return the DALYTRAN-CAT-CD value as Integer
      */
-    public String getCategoryCode() {
+    public Integer getCategoryCode() {
         return categoryCode;
     }
 
     /**
      * Sets the transaction category code.
      *
-     * @param categoryCode the category code (up to 4 characters, leading zeros preserved)
+     * @param categoryCode the category code as Integer
      */
-    public void setCategoryCode(String categoryCode) {
+    public void setCategoryCode(Integer categoryCode) {
         this.categoryCode = categoryCode;
     }
 
@@ -527,7 +527,7 @@ public class DailyTransaction {
                 + "id=" + id
                 + ", dalytranId='" + dalytranId + '\''
                 + ", typeCode='" + typeCode + '\''
-                + ", categoryCode='" + categoryCode + '\''
+                + ", categoryCode=" + categoryCode
                 + ", amount=" + amount
                 + ", cardNum='" + cardNum + '\''
                 + ", origTimestamp='" + origTimestamp + '\''

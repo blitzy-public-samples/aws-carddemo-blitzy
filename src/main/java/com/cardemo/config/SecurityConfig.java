@@ -177,10 +177,11 @@ public class SecurityConfig {
                 // Maps to COSGN00C.cbl CC00 transaction entry point.
                 .requestMatchers("/api/auth/**").permitAll()
 
-                // Actuator health and readiness endpoints — publicly accessible
+                // Actuator health and readiness/liveness endpoints — publicly accessible
                 // for observability infrastructure (load balancers, Kubernetes probes).
-                .requestMatchers("/actuator/health").permitAll()
-                .requestMatchers("/actuator/readiness").permitAll()
+                // Wildcard covers /actuator/health, /actuator/health/readiness,
+                // and /actuator/health/liveness sub-paths.
+                .requestMatchers("/actuator/health/**").permitAll()
 
                 // Admin-only endpoints — restricted to users with ROLE_ADMIN.
                 // Maps to COBOL 88-level condition: CDEMO-USRTYP-ADMIN VALUE 'A'

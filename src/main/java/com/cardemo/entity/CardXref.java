@@ -35,9 +35,9 @@ import java.util.Objects;
  */
 @Entity
 @Table(
-    name = "card_xref",
+    name = "card_xrefs",
     indexes = {
-        @Index(name = "idx_cardxref_acct_id", columnList = "account_id")
+        @Index(name = "idx_cardxref_acct_id", columnList = "xref_acct_id")
     }
 )
 public class CardXref {
@@ -48,7 +48,7 @@ public class CardXref {
      * This is the VSAM KSDS primary key (16 bytes).
      */
     @Id
-    @Column(name = "card_num", length = 16, nullable = false)
+    @Column(name = "xref_card_num", length = 16, nullable = false)
     private String xrefCardNum;
 
     /**
@@ -57,7 +57,7 @@ public class CardXref {
      * Stored as String to preserve leading zeros from the original
      * 9-digit numeric COBOL field.
      */
-    @Column(name = "customer_id", length = 9, nullable = false)
+    @Column(name = "xref_cust_id", length = 9, nullable = false)
     private String custId;
 
     /**
@@ -68,7 +68,7 @@ public class CardXref {
      * This column is indexed (idx_cardxref_acct_id) to replicate the
      * VSAM alternate index (AIX) on XREF-ACCT-ID at position 25, length 11.
      */
-    @Column(name = "account_id", length = 11, nullable = false)
+    @Column(name = "xref_acct_id", length = 11, nullable = false)
     private String accountId;
 
     /**
