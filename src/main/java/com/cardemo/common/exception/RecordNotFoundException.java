@@ -1,5 +1,6 @@
 /*
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,18 +15,18 @@
  */
 package com.cardemo.common.exception;
 
-import com.cardemo.common.enums.FileStatusCode;
-
 /**
  * Exception indicating that a requested record was not found.
  *
- * <p>Maps directly to VSAM file status code '23' ({@code DFHRESP(NOTFND)}).
- * This is the most commonly handled non-success condition in CardDemo COBOL
- * programs, occurring when:</p>
+ * <p>Maps directly to VSAM file status code {@code '23'}
+ * ({@code DFHRESP(NOTFND)}). This is the most commonly handled non-success
+ * condition in CardDemo COBOL programs, occurring when:</p>
  * <ul>
- *   <li>A READ operation specifies a key that does not exist in the VSAM KSDS</li>
+ *   <li>A READ operation specifies a key that does not exist in the VSAM
+ *       KSDS dataset</li>
  *   <li>A DELETE operation targets a non-existent record</li>
- *   <li>A STARTBR operation specifies a key beyond the dataset's key range</li>
+ *   <li>A STARTBR operation specifies a key beyond the dataset's key
+ *       range</li>
  * </ul>
  *
  * <h2>COBOL Usage Patterns</h2>
@@ -41,11 +42,27 @@ import com.cardemo.common.enums.FileStatusCode;
  *   END-IF
  * </pre>
  *
- * <p>Programs that check for this condition include COACTVWC (account view),
- * COACTUPC (account update), COCRDSLC (card detail), COTRN01C (transaction view),
- * and all user management programs (COUSR00C-03C).</p>
+ * <p>Programs that check for this condition include:</p>
+ * <ul>
+ *   <li>COACTVWC.cbl — account view (handles NOTFND on ACCTDATA)</li>
+ *   <li>COACTUPC.cbl — account update (handles NOTFND on ACCTDATA,
+ *       CUSTDATA, XREFDATA)</li>
+ *   <li>COCRDSLC.cbl — card detail (handles NOTFND on CARDDATA)</li>
+ *   <li>COSGN00C.cbl — sign-on (handles NOTFND on USRSEC for user
+ *       lookup)</li>
+ *   <li>COBIL00C.cbl — bill payment (handles NOTFND on ACCTDATA)</li>
+ *   <li>CBTRN02C.cbl — daily posting batch (INVALID KEY on READ maps to
+ *       validation fail reason 100/101)</li>
+ * </ul>
  *
- * @see FileStatusCode#RECORD_NOT_FOUND
+ * <h2>Exception Hierarchy</h2>
+ * <pre>
+ * RuntimeException
+ * └── CardDemoException
+ *     └── FileStatusException (STATUS code "23")
+ *         └── RecordNotFoundException (this class)
+ * </pre>
+ *
  * @see FileStatusException
  */
 public class RecordNotFoundException extends FileStatusException {
@@ -53,56 +70,53 @@ public class RecordNotFoundException extends FileStatusException {
     private static final long serialVersionUID = 1L;
 
     /**
-     * The key value that was searched for but not found.
-     * Corresponds to the COBOL {@code RIDFLD} value in the failed
-     * EXEC CICS READ operation.
+     * The fixed VSAM file status code for record-not-found conditions.
+     * This constant is always passed to the parent {@link FileStatusException}
+     * constructor to preserve COBOL traceability.
      */
-    private final String keyValue;
+    private static final String NOT_FOUND_STATUS_CODE = "23";
 
     /**
-     * Constructs a new {@code RecordNotFoundException} with the dataset name
-     * and the key value that was not found.
+     * Constructs a new {@code RecordNotFoundException} with the specified
+     * detail message.
      *
-     * @param datasetName the name of the dataset searched (e.g., "ACCTDATA", "accounts")
-     * @param keyValue    the key value that was not found (e.g., "00000000001")
+     * <p>The VSAM file status code {@code "23"} is automatically set via the
+     * parent constructor.</p>
+     *
+     * @param message the detail message describing the not-found condition
      */
-    public RecordNotFoundException(String datasetName, String keyValue) {
-        super(FileStatusCode.RECORD_NOT_FOUND, datasetName,
-              "Record not found in " + datasetName + " for key: " + keyValue);
-        this.keyValue = keyValue;
+    public RecordNotFoundException(String message) {
+        super(NOT_FOUND_STATUS_CODE, message);
     }
 
     /**
-     * Constructs a new {@code RecordNotFoundException} with a custom message.
+     * Constructs a new {@code RecordNotFoundException} with the specified
+     * detail message and root cause.
      *
-     * @param datasetName the name of the dataset searched
-     * @param keyValue    the key value that was not found
-     * @param message     a custom detail message
+     * <p>Use this constructor when wrapping lower-level exceptions (e.g.,
+     * JPA {@code NoResultException}, {@code EmptyResultDataAccessException})
+     * with COBOL-traceable context. The VSAM file status code {@code "23"}
+     * is automatically set.</p>
+     *
+     * @param message the detail message describing the not-found condition
+     * @param cause   the underlying cause of this exception
      */
-    public RecordNotFoundException(String datasetName, String keyValue, String message) {
-        super(FileStatusCode.RECORD_NOT_FOUND, datasetName, message);
-        this.keyValue = keyValue;
+    public RecordNotFoundException(String message, Throwable cause) {
+        super(NOT_FOUND_STATUS_CODE, message, cause);
     }
 
     /**
-     * Constructs a new {@code RecordNotFoundException} wrapping a root cause.
+     * Convenience constructor that builds a descriptive message from the
+     * entity name and key value.
      *
-     * @param datasetName the name of the dataset searched
-     * @param keyValue    the key value that was not found
-     * @param cause       the underlying cause (e.g., JPA NoResultException)
-     */
-    public RecordNotFoundException(String datasetName, String keyValue, Throwable cause) {
-        super(FileStatusCode.RECORD_NOT_FOUND, datasetName,
-              "Record not found in " + datasetName + " for key: " + keyValue, cause);
-        this.keyValue = keyValue;
-    }
-
-    /**
-     * Returns the key value that was searched for but not found.
+     * <p>Usage example:
+     * {@code throw new RecordNotFoundException("Account", "00000000001");}</p>
      *
-     * @return the key value string
+     * @param entityName the name of the entity or dataset (e.g., "Account",
+     *                   "ACCTDATA")
+     * @param key        the key value that was not found
      */
-    public String getKeyValue() {
-        return keyValue;
+    public RecordNotFoundException(String entityName, String key) {
+        this(entityName + " not found with key: " + key);
     }
 }
