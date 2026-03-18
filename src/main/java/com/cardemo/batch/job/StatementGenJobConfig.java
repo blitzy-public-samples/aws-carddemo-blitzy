@@ -31,8 +31,8 @@
 package com.cardemo.batch.job;
 
 import com.cardemo.batch.processor.StatementProcessor;
-import com.cardemo.batch.processor.StatementProcessor.StatementData;
 import com.cardemo.batch.writer.StatementFileWriter;
+import com.cardemo.batch.writer.StatementFileWriter.StatementData;
 import com.cardemo.entity.CardXref;
 import com.cardemo.repository.CardXrefRepository;
 
@@ -97,6 +97,7 @@ public class StatementGenJobConfig {
     private final PlatformTransactionManager transactionManager;
     private final CardXrefRepository cardXrefRepository;
     private final StatementProcessor statementProcessor;
+    private final StatementFileWriter statementFileWriter;
 
     /**
      * Constructor injection for all dependencies.
@@ -105,15 +106,18 @@ public class StatementGenJobConfig {
      * @param transactionManager  transaction manager for chunk boundaries
      * @param cardXrefRepository  JPA repository for CardXref entity reads
      * @param statementProcessor  processor for CardXref → StatementData transformation
+     * @param statementFileWriter writer for plain-text + HTML statement output
      */
     public StatementGenJobConfig(JobRepository jobRepository,
                                  PlatformTransactionManager transactionManager,
                                  CardXrefRepository cardXrefRepository,
-                                 StatementProcessor statementProcessor) {
+                                 StatementProcessor statementProcessor,
+                                 StatementFileWriter statementFileWriter) {
         this.jobRepository = jobRepository;
         this.transactionManager = transactionManager;
         this.cardXrefRepository = cardXrefRepository;
         this.statementProcessor = statementProcessor;
+        this.statementFileWriter = statementFileWriter;
     }
 
     /**
@@ -166,7 +170,8 @@ public class StatementGenJobConfig {
                 .<CardXref, StatementData>chunk(CHUNK_SIZE, transactionManager)
                 .reader(cardXrefReader())
                 .processor(statementProcessor)
-                .writer(statementFileWriter())
+                .writer(statementFileWriter)
+                .stream(statementFileWriter)
                 .build();
     }
 
@@ -200,22 +205,4 @@ public class StatementGenJobConfig {
         return new ListItemReader<>(xrefs);
     }
 
-    /**
-     * Creates the {@link StatementFileWriter} that writes statement data
-     * to plain-text and HTML files. This translates the CBSTM03B WRITE
-     * operations for both STMT-FILE and HTML-FILE.
-     *
-     * <p><strong>COBOL Traceability:</strong></p>
-     * <ul>
-     *   <li>{@code WRITE STMT-REC} → writes statement_NNNN.txt</li>
-     *   <li>{@code WRITE HTML-REC} → writes statement_NNNN.html</li>
-     * </ul>
-     *
-     * @return ItemWriter for StatementData → file output
-     */
-    @Bean
-    @StepScope
-    public StatementFileWriter statementFileWriter() {
-        return new StatementFileWriter();
-    }
 }

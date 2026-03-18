@@ -1,5 +1,6 @@
 package com.cardemo.batch.processor;
 
+import com.cardemo.batch.writer.StatementFileWriter;
 import com.cardemo.entity.Account;
 import com.cardemo.entity.CardXref;
 import com.cardemo.entity.Customer;
@@ -47,10 +48,10 @@ import java.util.List;
  * {@code double}) are used anywhere in this class.</p>
  *
  * @see CardXref the input item from the batch reader (XREF records)
- * @see StatementData the output item passed to the batch writer
+ * @see StatementFileWriter.StatementData the output item passed to the batch writer
  */
 @Component
-public class StatementProcessor implements ItemProcessor<CardXref, StatementProcessor.StatementData> {
+public class StatementProcessor implements ItemProcessor<CardXref, StatementFileWriter.StatementData> {
 
     private static final Logger log = LoggerFactory.getLogger(StatementProcessor.class);
 
@@ -92,12 +93,12 @@ public class StatementProcessor implements ItemProcessor<CardXref, StatementProc
      * skip semantics for missing data).
      *
      * @param item the card cross-reference record from the batch reader
-     * @return fully populated {@link StatementData}, or {@code null} if
-     *         customer/account lookup fails
+     * @return fully populated {@link StatementFileWriter.StatementData}, or
+     *         {@code null} if customer/account lookup fails
      * @throws Exception if an unrecoverable processing error occurs
      */
     @Override
-    public StatementData process(CardXref item) throws Exception {
+    public StatementFileWriter.StatementData process(CardXref item) throws Exception {
         String cardNumber = item.getXrefCardNum();
         String custId = item.getCustId();
         String accountId = item.getAccountId();
@@ -139,57 +140,13 @@ public class StatementProcessor implements ItemProcessor<CardXref, StatementProc
             log.info("No transactions found for card {}", maskedCard);
         }
 
-        // Step 4: Build StatementData (← paragraph 5000-CREATE-STATEMENT)
-        StatementData data = new StatementData();
-        data.setCustomerName(buildCustomerName(customer));
-        data.setCustomerAddress(buildCustomerAddress(customer));
-        data.setAccountId(safeStr(account.getAcctId()));
-        data.setCardNumber(safeStr(cardNumber));
+        log.info("Statement data assembled: account={}, card={}, txns={}",
+                accountId, maskedCard, transactions.size());
 
-        BigDecimal currBal = account.getCurrBal() != null
-                ? account.getCurrBal() : BigDecimal.ZERO;
-        data.setCurrentBalance(currBal);
-
-        Integer ficoScore = customer.getFicoCreditScore();
-        data.setFicoScore(ficoScore != null ? ficoScore : 0);
-
-        // Step 5: Build transaction detail lines and accumulate total
-        // WS-TOTAL-AMT PIC S9(9)V99 COMP-3 → BigDecimal scale 2
-        List<TransactionLine> lines = new ArrayList<>();
-        BigDecimal totalAmount = BigDecimal.ZERO;
-
-        for (Transaction txn : transactions) {
-            // Defensive card-number match check (mirrors COBOL 2D array filtering)
-            if (cardNumber != null && !cardNumber.equals(txn.getCardNum())) {
-                log.warn("Transaction {} has unexpected card number, expected {}",
-                        txn.getTranId(), maskedCard);
-            }
-
-            TransactionLine line = new TransactionLine();
-            line.setTransactionId(safeStr(txn.getTranId()));
-            line.setDescription(safeStr(txn.getDescription()));
-
-            BigDecimal txnAmount = txn.getAmount() != null
-                    ? txn.getAmount() : BigDecimal.ZERO;
-            line.setAmount(txnAmount);
-            lines.add(line);
-
-            totalAmount = totalAmount.add(txnAmount);
-            log.debug("Transaction {}: amount {}", txn.getTranId(), txnAmount);
-        }
-
-        data.setTransactionLines(lines);
-        data.setTotalAmount(totalAmount.setScale(2, RoundingMode.HALF_UP));
-
-        // Step 6: Generate formatted output (STMT-FILE and HTML-FILE)
-        data.setPlainTextStatement(generatePlainTextStatement(data));
-        data.setHtmlStatement(generateHtmlStatement(data));
-
-        log.info("Statement generated: account={}, card={}, txns={}, total={}",
-                accountId, maskedCard, lines.size(),
-                totalAmount.setScale(2, RoundingMode.HALF_UP));
-
-        return data;
+        // Return assembled data — the StatementFileWriter handles all formatting
+        // (text + HTML output), matching COBOL architecture where CBSTM03A writes
+        // STMT-FILE and HTML-FILE directly.
+        return new StatementFileWriter.StatementData(customer, account, transactions);
     }
 
     // ---------------------------------------------------------------
