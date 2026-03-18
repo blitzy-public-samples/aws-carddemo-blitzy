@@ -253,6 +253,21 @@ public class InterestCalcJobConfig {
                 .writer(interestWriter())
                 .listener(new StepExecutionListener() {
                     /**
+                     * Before-step callback that propagates PARM-DATE from
+                     * job parameters into the STATEFUL processor. This is
+                     * equivalent to the COBOL LINKAGE SECTION receiving
+                     * PARM-DATE (PIC X(10)) from the JCL EXEC PARM.
+                     *
+                     * @param stepExecution the step execution context
+                     */
+                    @Override
+                    public void beforeStep(StepExecution stepExecution) {
+                        String date = stepExecution.getJobParameters()
+                                .getString("parmDate", "");
+                        interestCalculationProcessor.setParmDate(date);
+                    }
+
+                    /**
                      * After-step callback that flushes the last account's
                      * accumulated interest and logs the job completion banner.
                      *

@@ -36,6 +36,7 @@ import com.cardemo.entity.DiscountGroup;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardXrefRepository;
 import com.cardemo.repository.DiscountGroupRepository;
+import com.cardemo.service.batch.InterestCalculationService;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -136,12 +137,14 @@ public class InterestCalculationProcessor
     private static final int INTEREST_SCALE = 2;
 
     // =========================================================================
-    // Dependencies (← COBOL FILE SECTION: DISCGRP-FILE, ACCOUNT-FILE, XREF-FILE)
+    // Dependencies (← COBOL FILE SECTION: DISCGRP-FILE, ACCOUNT-FILE, XREF-FILE,
+    //   TRANSACT-FILE via InterestCalculationService for 1300-B-WRITE-TX)
     // =========================================================================
 
     private final DiscountGroupRepository discountGroupRepository;
     private final AccountRepository accountRepository;
     private final CardXrefRepository cardXrefRepository;
+    private final InterestCalculationService interestCalculationService;
 
     // =========================================================================
     // Stateful fields (← COBOL WORKING-STORAGE WS-MISC-VARS)
@@ -183,6 +186,21 @@ public class InterestCalculationProcessor
      */
     private String currentXrefCardNum = "";
 
+    /**
+     * PARM-DATE from the job parameters (CCYYMMDD format, 8 characters).
+     * Set via {@link #setParmDate(String)} from the job config listener's
+     * {@code beforeStep} callback. Used in 1300-B-WRITE-TX to construct
+     * the transaction ID (← COBOL: {@code STRING PARM-DATE WS-TRANID-SUFFIX}).
+     */
+    private String parmDate = "";
+
+    /**
+     * Sequential suffix for transaction ID generation.
+     * ← COBOL: {@code WS-TRANID-SUFFIX PIC 9(08) VALUE 0}
+     * Incremented for each interest transaction written (1300-B-WRITE-TX).
+     */
+    private int tranIdSuffix;
+
     // =========================================================================
     // Constructor
     // =========================================================================
@@ -197,14 +215,18 @@ public class InterestCalculationProcessor
      *        (← CBACT04C.cbl lines 41-45: ACCOUNT-FILE)
      * @param cardXrefRepository repository for CARDXREF VSAM junction dataset
      *        (← CBACT04C.cbl lines 34-39: XREF-FILE, AIX on XREF-ACCT-ID)
+     * @param interestCalculationService service for interest transaction
+     *        record persistence (← 1300-B-WRITE-TX, TRANSACT-FILE)
      */
     public InterestCalculationProcessor(
             DiscountGroupRepository discountGroupRepository,
             AccountRepository accountRepository,
-            CardXrefRepository cardXrefRepository) {
+            CardXrefRepository cardXrefRepository,
+            InterestCalculationService interestCalculationService) {
         this.discountGroupRepository = discountGroupRepository;
         this.accountRepository = accountRepository;
         this.cardXrefRepository = cardXrefRepository;
+        this.interestCalculationService = interestCalculationService;
     }
 
     // =========================================================================
@@ -296,6 +318,17 @@ public class InterestCalculationProcessor
     // =========================================================================
 
     /**
+     * Sets the PARM-DATE job parameter for transaction ID generation.
+     * Called by the job config listener's {@code beforeStep} callback to
+     * propagate the job parameter into this stateful processor.
+     *
+     * @param parmDate the date parameter (CCYYMMDD format, 8 characters)
+     */
+    public void setParmDate(String parmDate) {
+        this.parmDate = parmDate != null ? parmDate : "";
+    }
+
+    /**
      * Flushes the last account's accumulated interest after all items have
      * been processed.
      *
@@ -337,6 +370,8 @@ public class InterestCalculationProcessor
         firstTime = true;
         currentAccount = null;
         currentXrefCardNum = "";
+        parmDate = "";
+        tranIdSuffix = 0;
 
         return ExitStatus.COMPLETED;
     }
@@ -508,6 +543,14 @@ public class InterestCalculationProcessor
         // Accumulate into per-account total
         // ← COBOL: ADD WS-MONTHLY-INT TO WS-TOTAL-INT (line 467)
         totalInterest = totalInterest.add(monthlyInterest);
+
+        // Write interest transaction record
+        // ← COBOL: PERFORM 1300-B-WRITE-TX (line 466)
+        // ADD 1 TO WS-TRANID-SUFFIX (line 469)
+        tranIdSuffix++;
+        interestCalculationService.writeInterestTransaction(
+                parmDate, tranIdSuffix, monthlyInterest,
+                item.getAccountId(), currentXrefCardNum);
 
         log.debug("Interest computed: accountId={}, type={}, cat={}, "
                 + "balance={}, rate={}, monthlyInterest={}, "
