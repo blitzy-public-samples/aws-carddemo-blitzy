@@ -44,12 +44,12 @@ import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.configuration.annotation.StepScope;
-import org.springframework.batch.item.ItemReader;
+import org.springframework.batch.item.support.ListItemReader;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
 
-import java.util.Iterator;
+import java.util.List;
 
 /**
  * Spring Batch {@link Configuration} defining the statement generation job.
@@ -171,42 +171,33 @@ public class StatementGenJobConfig {
     }
 
     /**
-     * Creates an {@link ItemReader} that reads all CardXref records from the
+     * Creates a {@link ListItemReader} that reads all CardXref records from the
      * database. This translates the COBOL STARTBR/READNEXT pattern on
      * the CARDXREF VSAM file in CBSTM03A 3000-XREFFILE-GET.
      *
      * <p>The reader fetches all records at once and provides them one-by-one
-     * via an iterator. This is appropriate for the statement generation use
-     * case where all active cards need statements.</p>
+     * via its internal list iterator. This is appropriate for the statement
+     * generation use case where all active cards need statements.
+     * Returning the concrete {@link ListItemReader} type (instead of the
+     * {@code ItemReader} interface) ensures Spring Batch can detect
+     * annotation-based listeners on the bean without proxy warnings.</p>
      *
      * <p><strong>COBOL Traceability:</strong></p>
      * <ul>
      *   <li>{@code EXEC CICS STARTBR FILE('CARDXREF')} → findAll()</li>
-     *   <li>{@code EXEC CICS READNEXT} in 3000-XREFFILE-GET → iterator.next()</li>
+     *   <li>{@code EXEC CICS READNEXT} in 3000-XREFFILE-GET → ListItemReader.read()</li>
      *   <li>End of file → reader returns null (Spring Batch end signal)</li>
      * </ul>
      *
-     * @return ItemReader producing CardXref entities sequentially
+     * @return ListItemReader producing CardXref entities sequentially
      */
     @Bean
     @StepScope
-    public ItemReader<CardXref> cardXrefReader() {
-        return new ItemReader<>() {
-            private Iterator<CardXref> iterator;
-
-            @Override
-            public CardXref read() {
-                if (iterator == null) {
-                    log.info("Opening CARDXREF reader (← 1000-OPEN-FILES / 3000-XREFFILE-GET)");
-                    iterator = cardXrefRepository.findAll().iterator();
-                }
-                if (iterator.hasNext()) {
-                    return iterator.next();
-                }
-                log.info("CARDXREF reader exhausted — all records processed");
-                return null; // Signals end of input to Spring Batch
-            }
-        };
+    public ListItemReader<CardXref> cardXrefReader() {
+        log.info("Opening CARDXREF reader (← 1000-OPEN-FILES / 3000-XREFFILE-GET)");
+        List<CardXref> xrefs = cardXrefRepository.findAll();
+        log.info("CARDXREF reader loaded {} records for statement generation", xrefs.size());
+        return new ListItemReader<>(xrefs);
     }
 
     /**

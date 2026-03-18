@@ -47,7 +47,7 @@ import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
-import org.springframework.batch.item.ItemReader;
+import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.item.file.transform.FieldSet;
 import org.springframework.context.annotation.Bean;
@@ -257,12 +257,12 @@ public class AccountLoadJobConfig {
      * <p>The {@code @StepScope} annotation ensures a fresh reader instance
      * is created for each step execution, supporting job restartability.</p>
      *
-     * @return step-scoped ItemReader that produces Account entities
+     * @return step-scoped FlatFileItemReader that produces Account entities
      *         from 300-byte fixed-width records
      */
     @Bean
     @StepScope
-    public ItemReader<Account> accountFileReader() {
+    public FlatFileItemReader<Account> accountFileReader() {
         // Retrieve column specifications matching CVACT01Y.cpy ACCOUNT-RECORD layout
         // 12 mapped fields (positions 1-122) from 300-byte records
         var columnSpecs = FixedWidthFileReader.getAccountColumnSpecs();

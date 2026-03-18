@@ -68,7 +68,7 @@ import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
-import org.springframework.batch.item.ItemReader;
+import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -192,7 +192,7 @@ public class CustomerLoadJobConfig {
     }
 
     /**
-     * Creates the {@link ItemReader} for parsing fixed-width customer records from
+     * Creates the {@link FlatFileItemReader} for parsing fixed-width customer records from
      * {@code custdata.txt}.
      *
      * <p>Translates COBOL paragraph {@code 1000-CUSTFILE-GET-NEXT}:</p>
@@ -214,11 +214,11 @@ public class CustomerLoadJobConfig {
      * constructor, populating all 18 business fields. The FICO credit score
      * (PIC 9(03)) is parsed from the fixed-width string to Integer.</p>
      *
-     * @return ItemReader configured for 500-byte CUSTOMER-RECORD fixed-width parsing
+     * @return FlatFileItemReader configured for 500-byte CUSTOMER-RECORD fixed-width parsing
      */
     @Bean
     @StepScope
-    public ItemReader<Customer> customerFileReader() {
+    public FlatFileItemReader<Customer> customerFileReader() {
         List<FixedWidthFileReader.ColumnSpec> columnSpecs =
                 FixedWidthFileReader.getCustomerColumnSpecs();
 
