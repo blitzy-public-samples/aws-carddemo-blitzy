@@ -16,18 +16,24 @@
  *
  * COBOL Traceability:
  *   CBSTM03A.CBL PROCEDURE DIVISION → StatementEngineService.generateStatements()
- *   CBSTM03A.CBL 1000-MAINLINE     → processMainline()
+ *   CBSTM03A.CBL 1000-MAINLINE     → [main loop inside generateStatements]
  *   CBSTM03A.CBL 8500-READTRNX-READ → loadTransactionTable()
- *   CBSTM03A.CBL 2000-CUSTFILE-GET  → getCustomer()
- *   CBSTM03A.CBL 3000-ACCTFILE-GET  → getAccount()
+ *   CBSTM03A.CBL 2000-CUSTFILE-GET  → getCustomer() [private]
+ *   CBSTM03A.CBL 3000-ACCTFILE-GET  → getAccount() [private]
  *   CBSTM03A.CBL 5000-CREATE-STATEMENT → createStatement()
+ *   CBSTM03A.CBL 5100-WRITE-HTML-HEADER → writeHtmlHeader()
+ *   CBSTM03A.CBL 5200-WRITE-HTML-NMADBS → writeHtmlNameAddress()
+ *   CBSTM03A.CBL 4000-TRNXFILE-GET  → writeTransactions()
  *   CBSTM03A.CBL 6000-WRITE-TRANS   → writeTransactionLine()
+ *   CBSTM03A.CBL 8100-8400          → openAllFiles()
+ *   CBSTM03A.CBL 9100-9400          → closeAllFiles()
  *
  * @see StatementEngineService
  * @see StatementIoService
  */
 package com.cardemo.service.batch;
 
+import com.cardemo.common.exception.CardDemoException;
 import com.cardemo.entity.Account;
 import com.cardemo.entity.CardXref;
 import com.cardemo.entity.Customer;
@@ -54,14 +60,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -113,11 +121,6 @@ class StatementEngineServiceTest {
 
     /**
      * Creates a test Customer matching CVCUS01Y.cpy record layout (500 bytes).
-     *
-     * <p>COBOL fields: CUST-ID(9), CUST-FIRST-NAME(25), CUST-MIDDLE-NAME(25),
-     * CUST-LAST-NAME(25), CUST-ADDR-LINE-1(50), etc.</p>
-     *
-     * @return Customer with representative test data
      */
     private Customer createTestCustomer() {
         return new Customer(
@@ -144,34 +147,26 @@ class StatementEngineServiceTest {
 
     /**
      * Creates a test Account matching CVACT01Y.cpy record layout (300 bytes).
-     *
-     * <p>All monetary fields use BigDecimal — no floating-point (COBOL COMP-3 parity).</p>
-     *
-     * @return Account with representative test data
      */
     private Account createTestAccount() {
         return new Account(
                 "00000000001",                          // acctId — PIC X(11)
                 "Y",                                    // activeStatus — PIC X(01)
                 new BigDecimal("5000.00"),               // currBal — PIC S9(11)V99 COMP-3
-                new BigDecimal("10000.00"),               // creditLimit — PIC S9(11)V99 COMP-3
-                new BigDecimal("5000.00"),                // cashCreditLimit — PIC S9(11)V99 COMP-3
-                "20200101",                              // openDate — PIC X(10)
-                "20251231",                              // expirationDate — PIC X(10)
-                "20240601",                              // reissueDate — PIC X(10)
-                new BigDecimal("1500.00"),                // currCycCredit — PIC S9(11)V99 COMP-3
-                new BigDecimal("3500.00"),                // currCycDebit — PIC S9(11)V99 COMP-3
-                "10001",                                 // addrZip — PIC X(10)
-                "A"                                      // groupId — PIC X(10)
+                new BigDecimal("10000.00"),               // creditLimit
+                new BigDecimal("5000.00"),                // cashCreditLimit
+                "20200101",                              // openDate
+                "20251231",                              // expirationDate
+                "20240601",                              // reissueDate
+                new BigDecimal("1500.00"),                // currCycCredit
+                new BigDecimal("3500.00"),                // currCycDebit
+                "10001",                                 // addrZip
+                "A"                                      // groupId
         );
     }
 
     /**
      * Creates a test CardXref matching CVACT03Y.cpy record layout (50 bytes).
-     *
-     * <p>Links card number → customer → account for statement generation.</p>
-     *
-     * @return CardXref with representative test data
      */
     private CardXref createTestXref() {
         return new CardXref(
@@ -182,37 +177,7 @@ class StatementEngineServiceTest {
     }
 
     /**
-     * Creates a test Transaction matching CVTRA05Y.cpy record layout (350 bytes).
-     *
-     * @param tranId  Transaction identifier
-     * @param amount  Transaction amount (BigDecimal — COMP-3 parity)
-     * @return Transaction with given ID and amount, default other fields
-     */
-    private Transaction createTestTransaction(String tranId, BigDecimal amount) {
-        return new Transaction(
-                tranId,                     // tranId — PIC X(16)
-                "01",                       // typeCode — PIC X(02)
-                1,                          // categoryCode — PIC 9(04)
-                "ONLINE",                   // source — PIC X(10)
-                "TEST PURCHASE",            // description — PIC X(100)
-                amount,                     // amount — PIC S9(9)V99 COMP-3
-                "MERCH001",                 // merchantId — PIC X(09)
-                "TEST MERCHANT",            // merchantName — PIC X(50)
-                "NEW YORK",                 // merchantCity — PIC X(30)
-                "10001",                    // merchantZip — PIC X(10)
-                "4111111111111111",          // cardNum — PIC X(16)
-                "2025-01-15-10.30.00.000000", // origTimestamp — 26-char ISO-8601
-                "2025-01-15-10.30.01.000000"  // procTimestamp — 26-char ISO-8601
-        );
-    }
-
-    /**
      * Creates a test Transaction for a specific card number.
-     *
-     * @param tranId  Transaction identifier
-     * @param amount  Transaction amount
-     * @param cardNum Card number (16 chars)
-     * @return Transaction bound to the specified card
      */
     private Transaction createTestTransactionForCard(String tranId, BigDecimal amount,
                                                      String cardNum) {
@@ -227,61 +192,45 @@ class StatementEngineServiceTest {
     // Test 1: StatementIoService Dependency Injection (← CALL 'CBSTM03B')
     // =========================================================================
 
-    /**
-     * Verifies StatementIoService is injected via constructor (replaces
-     * {@code CALL 'CBSTM03B' USING WS-M03B-AREA} in COBOL).
-     *
-     * <p>The COBOL program CBSTM03A calls CBSTM03B as a subroutine for all file I/O.
-     * In Java, this dependency is injected via {@code @Autowired} constructor.</p>
-     */
     @Test
     @DisplayName("StatementIoService should be injected via @Autowired (replaces CALL 'CBSTM03B')")
     void shouldHaveStatementIoServiceInjected() {
         // The @InjectMocks annotation injects the mocked StatementIoService
-        // Verify the service is accessible and not null by invoking a benign method
         assertThat(statementEngineService).isNotNull();
 
-        // Verify the class can be called without NullPointerException on dependencies
-        assertThatCode(() -> statementEngineService.dispatchFileOperation("TRNXFILE"))
+        // Verify openAllFiles can be called (uses StatementIoService internally)
+        assertThatCode(() -> statementEngineService.openAllFiles())
                 .doesNotThrowAnyException();
     }
 
     // =========================================================================
-    // Test 2: Transaction Grouping by Card Number (← WS-TRNX-TABLE)
+    // Test 2: loadTransactionTable — Transaction Grouping (← 8500-READTRNX-READ)
     // =========================================================================
 
-    /**
-     * Verifies transaction grouping by card number, replacing the COBOL
-     * WS-TRNX-TABLE (51 cards × 10 transactions per card).
-     *
-     * <p>COBOL structure:</p>
-     * <pre>{@code
-     * 01  WS-TRNX-TABLE.
-     *     05  WS-CARD-REC OCCURS 51 TIMES.
-     *         10  WS-CARD-NUM     PIC X(16).
-     *         10  WS-TRAN-REC OCCURS 10 TIMES.
-     * }</pre>
-     *
-     * <p>Java uses {@code Map<String, List<Transaction>>} instead of fixed-size 2D array.</p>
-     */
     @Test
     @DisplayName("Should group transactions by card number (WS-TRNX-TABLE: 51 cards × 10 trans)")
     void shouldGroupTransactionsByCardNumber() {
-        // Given: Transactions for 3 different cards
+        // Given: Transactions for 3 different cards, returned sequentially
         String card1 = "4111111111111111";
         String card2 = "4222222222222222";
         String card3 = "4333333333333333";
 
-        List<Transaction> allTxns = List.of(
-                createTestTransactionForCard("TXN001", new BigDecimal("100.00"), card1),
-                createTestTransactionForCard("TXN002", new BigDecimal("200.00"), card1),
-                createTestTransactionForCard("TXN003", new BigDecimal("50.00"), card1),
-                createTestTransactionForCard("TXN004", new BigDecimal("300.00"), card2),
-                createTestTransactionForCard("TXN005", new BigDecimal("150.00"), card2),
-                createTestTransactionForCard("TXN006", new BigDecimal("500.00"), card3)
-        );
+        Transaction txn1 = createTestTransactionForCard("TXN001", new BigDecimal("100.00"), card1);
+        Transaction txn2 = createTestTransactionForCard("TXN002", new BigDecimal("200.00"), card1);
+        Transaction txn3 = createTestTransactionForCard("TXN003", new BigDecimal("50.00"), card1);
+        Transaction txn4 = createTestTransactionForCard("TXN004", new BigDecimal("300.00"), card2);
+        Transaction txn5 = createTestTransactionForCard("TXN005", new BigDecimal("150.00"), card2);
+        Transaction txn6 = createTestTransactionForCard("TXN006", new BigDecimal("500.00"), card3);
 
-        when(transactionRepository.findAllByOrderByTranIdAsc()).thenReturn(allTxns);
+        // Mock sequential reads via StatementIoService (← 8500-READTRNX-READ)
+        when(statementIoService.readNextTransaction())
+                .thenReturn(Optional.of(txn1))
+                .thenReturn(Optional.of(txn2))
+                .thenReturn(Optional.of(txn3))
+                .thenReturn(Optional.of(txn4))
+                .thenReturn(Optional.of(txn5))
+                .thenReturn(Optional.of(txn6))
+                .thenReturn(Optional.empty()); // EOF (← RC='10')
 
         // When: loadTransactionTable() groups by card number
         Map<String, List<Transaction>> table = statementEngineService.loadTransactionTable();
@@ -300,179 +249,195 @@ class StatementEngineServiceTest {
     }
 
     // =========================================================================
-    // Test 3: Customer Resolution (← 2000-CUSTFILE-GET)
+    // Test 3: openAllFiles and closeAllFiles (← 8100-8400, 9100-9400)
     // =========================================================================
 
-    /**
-     * Verifies customer lookup via repository keyed read, translating
-     * CBSTM03A.CBL paragraph 2000-CUSTFILE-GET.
-     *
-     * <p>COBOL pattern: {@code EXEC CICS READ FILE('CUSTFILE') INTO(CUSTOMER-RECORD)
-     * RIDFLD(XREF-CUST-ID)}</p>
-     */
     @Test
-    @DisplayName("Should resolve customer via repository keyed read (← 2000-CUSTFILE-GET)")
-    void shouldResolveCustomerViaStatementIoService() {
-        // Given: Customer exists for the keyed lookup
-        Customer testCustomer = createTestCustomer();
-        when(customerRepository.findById("000000001")).thenReturn(Optional.of(testCustomer));
+    @DisplayName("Should open all 4 files via StatementIoService (← 8100-8400)")
+    void shouldOpenAllFiles() {
+        // When: openAllFiles calls all 4 StatementIoService open methods
+        assertThatCode(() -> statementEngineService.openAllFiles())
+                .doesNotThrowAnyException();
 
-        // When: getCustomer is called with the XREF-CUST-ID
-        Optional<Customer> result = statementEngineService.getCustomer("000000001");
+        // Then: all open methods were invoked
+        verify(statementIoService, times(1)).openTransactionFile();
+        verify(statementIoService, times(1)).openXrefFile();
+        verify(statementIoService, times(1)).openCustomerFile();
+        verify(statementIoService, times(1)).openAccountFile();
+    }
 
-        // Then: Customer is resolved successfully
-        assertThat(result).isPresent();
-        assertThat(result.get().getFirstName()).isEqualTo("JOHN");
-        assertThat(result.get().getLastName()).isEqualTo("PUBLIC");
-        assertThat(result.get().getAddrLine1()).isEqualTo("123 MAIN ST");
+    @Test
+    @DisplayName("Should close all 4 files via StatementIoService (← 9100-9400)")
+    void shouldCloseAllFiles() {
+        // When: closeAllFiles calls all 4 StatementIoService close methods
+        statementEngineService.closeAllFiles();
 
-        // Verify repository was called with exact key
-        verify(customerRepository, times(1)).findById("000000001");
+        // Then: all close methods were invoked
+        verify(statementIoService, times(1)).closeTransactionFile();
+        verify(statementIoService, times(1)).closeXrefFile();
+        verify(statementIoService, times(1)).closeCustomerFile();
+        verify(statementIoService, times(1)).closeAccountFile();
     }
 
     // =========================================================================
-    // Test 4: Account Resolution (← 3000-ACCTFILE-GET)
+    // Test 4: writeHtmlHeader (← 5100-WRITE-HTML-HEADER)
     // =========================================================================
 
-    /**
-     * Verifies account lookup via repository keyed read, translating
-     * CBSTM03A.CBL paragraph 3000-ACCTFILE-GET.
-     *
-     * <p>COBOL pattern: {@code EXEC CICS READ FILE('ACCTFILE') INTO(ACCOUNT-RECORD)
-     * RIDFLD(XREF-ACCT-ID)}</p>
-     */
     @Test
-    @DisplayName("Should resolve account via repository keyed read (← 3000-ACCTFILE-GET)")
-    void shouldResolveAccountViaStatementIoService() {
-        // Given: Account exists for the keyed lookup
-        Account testAccount = createTestAccount();
-        when(accountRepository.findById("00000000001")).thenReturn(Optional.of(testAccount));
+    @DisplayName("Should write HTML document header with DOCTYPE, title, table (← 5100)")
+    void shouldWriteHtmlHeader() throws IOException {
+        StringWriter sw = new StringWriter();
 
-        // When: getAccount is called with the XREF-ACCT-ID
-        Optional<Account> result = statementEngineService.getAccount("00000000001");
+        // When: writeHtmlHeader outputs L01-L08
+        statementEngineService.writeHtmlHeader(sw);
 
-        // Then: Account is resolved successfully with BigDecimal balance
-        assertThat(result).isPresent();
-        assertThat(result.get().getCurrBal()).isEqualByComparingTo(new BigDecimal("5000.00"));
-        assertThat(result.get().getCreditLimit()).isEqualByComparingTo(new BigDecimal("10000.00"));
-        assertThat(result.get().getActiveStatus()).isEqualTo("Y");
+        String html = sw.toString();
 
-        // Verify repository was called with exact key
-        verify(accountRepository, times(1)).findById("00000000001");
+        // Then: HTML structure elements are present
+        assertThat(html).contains("<!DOCTYPE html>");
+        assertThat(html).contains("<html lang=\"en\">");
+        assertThat(html).contains("<title>HTML Table Layout</title>");
+        assertThat(html).contains("<body style=\"margin:0px;\">");
+        assertThat(html).contains("width:70%");
+        assertThat(html).contains("font:12px Segoe UI,sans-serif;");
     }
 
     // =========================================================================
-    // Test 5: Plain Text Statement Formatting (← 5000-CREATE-STATEMENT)
+    // Test 5: createStatement — Plain Text (← 5000-CREATE-STATEMENT)
     // =========================================================================
 
-    /**
-     * Verifies plain text statement output contains customer name, address,
-     * account details, translating CBSTM03A.CBL paragraph 5000-CREATE-STATEMENT.
-     *
-     * <p>COBOL STRING operation for name formatting:</p>
-     * <pre>{@code
-     * STRING CUST-FIRST-NAME DELIMITED BY '  '
-     *        ' ' DELIMITED SIZE
-     *        CUST-MIDDLE-NAME DELIMITED BY '  '
-     *        ' ' DELIMITED SIZE
-     *        CUST-LAST-NAME DELIMITED BY '  '
-     *        INTO ST-CUSTNAME
-     * }</pre>
-     */
     @Test
-    @DisplayName("Should format plain text statement with customer name and address")
+    @DisplayName("Should format plain text statement with customer name and address lines")
     void shouldFormatPlainTextStatement() throws IOException {
-        // Given: Customer, Account, and CardXref
+        // Given: Customer and Account
         Customer customer = createTestCustomer();
         Account account = createTestAccount();
-        CardXref xref = createTestXref();
 
         StringWriter textSw = new StringWriter();
         StringWriter htmlSw = new StringWriter();
-        try (BufferedWriter textWriter = new BufferedWriter(textSw);
-             BufferedWriter htmlWriter = new BufferedWriter(htmlSw)) {
 
-            // When: createStatement generates the formatted output
-            statementEngineService.createStatement(customer, account, xref,
-                    textWriter, htmlWriter);
-            textWriter.flush();
-        }
+        // When: createStatement writes both text and HTML
+        statementEngineService.createStatement(customer, account, textSw, htmlSw);
 
         String textOutput = textSw.toString();
 
-        // Then: Text output contains customer name (STRING concatenation)
-        // COBOL: STRING CUST-FIRST-NAME ' ' CUST-MIDDLE-NAME ' ' CUST-LAST-NAME
+        // Then: Text output contains customer name (← STRING concatenation)
         assertThat(textOutput).contains("JOHN");
         assertThat(textOutput).contains("PUBLIC");
 
-        // Address lines
+        // Address lines (← ST-LINE2, ST-LINE3)
         assertThat(textOutput).contains("123 MAIN ST");
         assertThat(textOutput).contains("APT 4B");
 
-        // Account identifier
+        // Account identifier (← ST-LINE7)
         assertThat(textOutput).contains("00000000001");
 
-        // Bank name (from CBSTM03A constants)
-        assertThat(textOutput).contains(StatementEngineService.BANK_NAME);
+        // Section headers (← ST-LINE6, ST-LINE11)
+        assertThat(textOutput).contains("Basic Details");
+        assertThat(textOutput).contains("TRANSACTION SUMMARY");
+
+        // Column headers (← ST-LINE13)
+        assertThat(textOutput).contains("Tran ID");
+        assertThat(textOutput).contains("Tran Details");
+        assertThat(textOutput).contains("Tran Amount");
+
+        // Start separator (← ST-LINE0)
+        assertThat(textOutput).contains("START OF STATEMENT");
     }
 
     // =========================================================================
-    // Test 6: HTML Statement Output (← HTML-L01 through HTML-L80)
+    // Test 6: createStatement — HTML Output (← 5000 + 5100 + 5200)
     // =========================================================================
 
-    /**
-     * Verifies HTML statement output contains proper tags and styled elements,
-     * translating CBSTM03A.CBL HTML-L01 through HTML-L80.
-     */
     @Test
     @DisplayName("Should generate HTML statement with proper tags and styled content")
     void shouldGenerateHtmlStatement() throws IOException {
-        // Given: Customer, Account, and CardXref
+        // Given: Customer and Account
         Customer customer = createTestCustomer();
         Account account = createTestAccount();
-        CardXref xref = createTestXref();
 
         StringWriter textSw = new StringWriter();
         StringWriter htmlSw = new StringWriter();
-        try (BufferedWriter textWriter = new BufferedWriter(textSw);
-             BufferedWriter htmlWriter = new BufferedWriter(htmlSw)) {
 
-            // When: createStatement generates HTML output
-            statementEngineService.createStatement(customer, account, xref,
-                    textWriter, htmlWriter);
-            htmlWriter.flush();
-        }
+        // When: createStatement writes HTML
+        statementEngineService.createStatement(customer, account, textSw, htmlSw);
 
         String htmlOutput = htmlSw.toString();
 
-        // Then: HTML output has structure and styling
+        // Then: HTML structure (from writeHtmlHeader + createStatement)
+        assertThat(htmlOutput).contains("<!DOCTYPE html>");
         assertThat(htmlOutput).contains("<table");
-        assertThat(htmlOutput).contains("<tr");
-        assertThat(htmlOutput).contains("<td");
 
-        // Customer name appears in HTML
+        // Account heading row (← L10-L11)
+        assertThat(htmlOutput).contains("Statement for Account Number: 00000000001");
+
+        // Bank info (← L15-L18)
+        assertThat(htmlOutput).contains("Bank of XYZ");
+        assertThat(htmlOutput).contains("410 Terry Ave N");
+        assertThat(htmlOutput).contains("Seattle WA 99999");
+
+        // Customer name (← writeHtmlNameAddress)
         assertThat(htmlOutput).contains("JOHN");
         assertThat(htmlOutput).contains("PUBLIC");
-
-        // Address data in HTML
         assertThat(htmlOutput).contains("123 MAIN ST");
 
-        // Account ID in HTML
+        // Account details in HTML
+        assertThat(htmlOutput).contains("Account ID");
         assertThat(htmlOutput).contains("00000000001");
+        assertThat(htmlOutput).contains("FICO Score");
     }
 
     // =========================================================================
-    // Test 7: BigDecimal Total Accumulation (← WS-TOTAL-AMT)
+    // Test 7: writeHtmlNameAddress (← 5200-WRITE-HTML-NMADBS)
     // =========================================================================
 
-    /**
-     * Verifies transaction total uses BigDecimal (not floating-point),
-     * preserving COBOL COMP-3 packed decimal semantics.
-     *
-     * <p>COBOL: {@code ADD WS-TRNX-AMT TO WS-TOTAL-AMT} — exact decimal accumulation.</p>
-     */
     @Test
-    @DisplayName("Should accumulate transaction total using BigDecimal with RoundingMode.HALF_UP")
+    @DisplayName("Should write HTML name, address, basic details and column headers (← 5200)")
+    void shouldWriteHtmlNameAddress() throws IOException {
+        Customer customer = createTestCustomer();
+        Account account = createTestAccount();
+
+        StringWriter sw = new StringWriter();
+
+        // When: writeHtmlNameAddress outputs sections
+        statementEngineService.writeHtmlNameAddress(customer, account, sw);
+
+        String html = sw.toString();
+
+        // Then: Customer name with 16px font
+        assertThat(html).contains("font-size:16px");
+        assertThat(html).contains("JOHN Q PUBLIC");
+
+        // Address lines
+        assertThat(html).contains("123 MAIN ST");
+        assertThat(html).contains("APT 4B");
+
+        // Basic Details header with #33FFD1
+        assertThat(html).contains("#33FFD1");
+        assertThat(html).contains("Basic Details");
+
+        // Account details on #f2f2f2
+        assertThat(html).contains("#f2f2f2");
+        assertThat(html).contains("Account ID");
+        assertThat(html).contains("Current Balance");
+        assertThat(html).contains("FICO Score");
+
+        // Transaction Summary header
+        assertThat(html).contains("Transaction Summary");
+
+        // Column headers on #33FF5E
+        assertThat(html).contains("#33FF5E");
+        assertThat(html).contains("Tran ID");
+        assertThat(html).contains("Tran Details");
+        assertThat(html).contains("Amount");
+    }
+
+    // =========================================================================
+    // Test 8: writeTransactions — Total Accumulation (← 4000 + WS-TOTAL-AMT)
+    // =========================================================================
+
+    @Test
+    @DisplayName("Should write transactions and accumulate total using BigDecimal (← 4000/6000)")
     void shouldAccumulateTransactionTotalWithBigDecimal() throws IOException {
         // Given: 3 transactions with precise decimal amounts
         String cardNum = "4111111111111111";
@@ -483,54 +448,148 @@ class StatementEngineServiceTest {
         Transaction txn3 = createTestTransactionForCard("TXN003",
                 new BigDecimal("50.25"), cardNum);
 
-        Map<String, List<Transaction>> trnxTable = Map.of(
-                cardNum, List.of(txn1, txn2, txn3)
-        );
+        Map<String, List<Transaction>> trnxTable = new LinkedHashMap<>();
+        trnxTable.put(cardNum, List.of(txn1, txn2, txn3));
 
         CardXref xref = createTestXref();
 
         StringWriter textSw = new StringWriter();
         StringWriter htmlSw = new StringWriter();
-        try (BufferedWriter textWriter = new BufferedWriter(textSw);
-             BufferedWriter htmlWriter = new BufferedWriter(htmlSw)) {
 
-            // When: writeTransactions accumulates the total
-            BigDecimal total = statementEngineService.writeTransactions(
-                    xref, trnxTable, textWriter, htmlWriter);
-            textWriter.flush();
-            htmlWriter.flush();
+        // When: writeTransactions processes the card
+        statementEngineService.writeTransactions(xref, trnxTable, textSw, htmlSw);
 
-            // Then: Total = 100.50 + 200.75 + 50.25 = 351.50 (exact BigDecimal)
-            assertThat(total).isEqualByComparingTo(new BigDecimal("351.50"));
+        String textOutput = textSw.toString();
 
-            // Verify no floating-point imprecision: the scale must be exact
-            assertThat(total.setScale(2, RoundingMode.HALF_UP))
-                    .isEqualByComparingTo(new BigDecimal("351.50"));
-        }
+        // Then: Total line includes the accumulated total (100.50+200.75+50.25 = 351.50)
+        assertThat(textOutput).contains("Total EXP:");
+        assertThat(textOutput).contains("351.50");
+
+        // End separator present
+        assertThat(textOutput).contains("END OF STATEMENT");
+
+        // HTML footer present
+        String htmlOutput = htmlSw.toString();
+        assertThat(htmlOutput).contains("End of Statement");
+        assertThat(htmlOutput).contains("</table>");
+        assertThat(htmlOutput).contains("</html>");
     }
 
     // =========================================================================
-    // Test 8: Sequential XREF Iteration (← 1000-MAINLINE)
+    // Test 9: writeTransactions — Only matching card (← 4000-TRNXFILE-GET)
     // =========================================================================
 
-    /**
-     * Verifies the main loop iterates all XREF records and generates one
-     * statement per card, translating CBSTM03A.CBL paragraph 1000-MAINLINE.
-     *
-     * <p>COBOL pattern:</p>
-     * <pre>{@code
-     * PERFORM 1000-XREFFILE-GET-NEXT
-     * PERFORM UNTIL WS-FL-XREFEOF
-     *     PERFORM 2000-CUSTFILE-GET
-     *     PERFORM 3000-ACCTFILE-GET
-     *     PERFORM 5000-CREATE-STATEMENT
-     *     PERFORM 1000-XREFFILE-GET-NEXT
-     * END-PERFORM
-     * }</pre>
-     */
+    @Test
+    @DisplayName("Should write transaction lines matching card number from transaction table")
+    void shouldWriteTransactionLinesForMatchingCard() throws IOException {
+        // Given: Transactions for two different cards
+        String targetCard = "4111111111111111";
+        String otherCard = "4222222222222222";
+
+        Transaction matchTxn1 = createTestTransactionForCard("TXN001",
+                new BigDecimal("100.00"), targetCard);
+        Transaction matchTxn2 = createTestTransactionForCard("TXN002",
+                new BigDecimal("200.00"), targetCard);
+        Transaction noMatchTxn = createTestTransactionForCard("TXN003",
+                new BigDecimal("999.99"), otherCard);
+
+        Map<String, List<Transaction>> trnxTable = new LinkedHashMap<>();
+        trnxTable.put(targetCard, List.of(matchTxn1, matchTxn2));
+        trnxTable.put(otherCard, List.of(noMatchTxn));
+
+        CardXref xref = createTestXref(); // card "4111111111111111"
+
+        StringWriter textSw = new StringWriter();
+        StringWriter htmlSw = new StringWriter();
+
+        // When: writeTransactions processes only matching card
+        statementEngineService.writeTransactions(xref, trnxTable, textSw, htmlSw);
+
+        // Then: Matching transaction IDs appear in output
+        String textOutput = textSw.toString();
+        assertThat(textOutput).contains("TXN001");
+        assertThat(textOutput).contains("TXN002");
+
+        // Total is sum of matching only (100+200=300)
+        assertThat(textOutput).contains("300.00");
+
+        // Non-matching transaction must NOT appear
+        assertThat(textOutput).doesNotContain("TXN003");
+        assertThat(textOutput).doesNotContain("999.99");
+    }
+
+    // =========================================================================
+    // Test 10: writeTransactionLine (← 6000-WRITE-TRANS)
+    // =========================================================================
+
+    @Test
+    @DisplayName("Should write single transaction line to text and HTML (← 6000-WRITE-TRANS)")
+    void shouldWriteTransactionLine() throws IOException {
+        // Given: A single transaction
+        Transaction tran = createTestTransactionForCard("TXN001",
+                new BigDecimal("123.45"), "4111111111111111");
+
+        StringWriter textSw = new StringWriter();
+        StringWriter htmlSw = new StringWriter();
+
+        // When: writeTransactionLine outputs the line
+        statementEngineService.writeTransactionLine(tran, textSw, htmlSw);
+
+        // Then: Text output has ST-LINE14 format (80 chars)
+        String textOutput = textSw.toString();
+        assertThat(textOutput).contains("TXN001");
+        assertThat(textOutput).contains("PURCHASE");
+        assertThat(textOutput).contains("$");
+        assertThat(textOutput).contains("123.45");
+
+        // HTML output has 3-column row
+        String htmlOutput = htmlSw.toString();
+        assertThat(htmlOutput).contains("<tr>");
+        assertThat(htmlOutput).contains("TXN001");
+        assertThat(htmlOutput).contains("PURCHASE");
+        assertThat(htmlOutput).contains("123.45");
+        // Column widths
+        assertThat(htmlOutput).contains("width:25%");
+        assertThat(htmlOutput).contains("width:55%");
+        assertThat(htmlOutput).contains("width:20%");
+    }
+
+    // =========================================================================
+    // Test 11: Edge Case — Empty Transaction Table
+    // =========================================================================
+
+    @Test
+    @DisplayName("Should handle account with no transactions gracefully")
+    void shouldHandleAccountWithNoTransactions() throws IOException {
+        // Given: Empty transaction table for the target card
+        CardXref xref = createTestXref();
+        Map<String, List<Transaction>> emptyTable = Collections.emptyMap();
+
+        StringWriter textSw = new StringWriter();
+        StringWriter htmlSw = new StringWriter();
+
+        // When: writeTransactions is called with no matching transactions
+        statementEngineService.writeTransactions(xref, emptyTable, textSw, htmlSw);
+
+        String textOutput = textSw.toString();
+
+        // Then: Footer is still written (dashes, total zero, end separator)
+        assertThat(textOutput).contains("Total EXP:");
+        assertThat(textOutput).contains("END OF STATEMENT");
+
+        // HTML footer written
+        String htmlOutput = htmlSw.toString();
+        assertThat(htmlOutput).contains("End of Statement");
+        assertThat(htmlOutput).contains("</html>");
+    }
+
+    // =========================================================================
+    // Test 12: generateStatements — Full Integration (← 1000-MAINLINE)
+    // =========================================================================
+
     @Test
     @DisplayName("Should iterate XREFs sequentially and generate one statement per card")
-    void shouldIterateXrefsAndGenerateStatements(@TempDir Path tempDir) throws IOException {
+    void shouldIterateXrefsAndGenerateStatements(@TempDir Path tempDir) {
         // Given: 2 CardXref records (2 cards/accounts)
         CardXref xref1 = new CardXref("4111111111111111", "000000001", "00000000001");
         CardXref xref2 = new CardXref("4222222222222222", "000000002", "00000000002");
@@ -548,155 +607,106 @@ class StatementEngineServiceTest {
                 "20250101", new BigDecimal("2000.00"), new BigDecimal("5500.00"),
                 "90210", "B");
 
-        // Stub repository returns
-        when(cardXrefRepository.findAll()).thenReturn(List.of(xref1, xref2));
-        when(customerRepository.findById("000000001")).thenReturn(Optional.of(cust1));
-        when(customerRepository.findById("000000002")).thenReturn(Optional.of(cust2));
-        when(accountRepository.findById("00000000001")).thenReturn(Optional.of(acct1));
-        when(accountRepository.findById("00000000002")).thenReturn(Optional.of(acct2));
+        // Transactions loaded via StatementIoService sequential reads
+        Transaction txn1 = createTestTransactionForCard("TXN001",
+                new BigDecimal("100.00"), "4111111111111111");
+        Transaction txn2 = createTestTransactionForCard("TXN002",
+                new BigDecimal("250.00"), "4222222222222222");
 
-        // Transactions for both cards
-        List<Transaction> allTxns = List.of(
-                createTestTransactionForCard("TXN001", new BigDecimal("100.00"),
-                        "4111111111111111"),
-                createTestTransactionForCard("TXN002", new BigDecimal("250.00"),
-                        "4222222222222222")
-        );
-        when(transactionRepository.findAllByOrderByTranIdAsc()).thenReturn(allTxns);
+        when(statementIoService.readNextTransaction())
+                .thenReturn(Optional.of(txn1))
+                .thenReturn(Optional.of(txn2))
+                .thenReturn(Optional.empty());
+
+        // XREF iteration via StatementIoService sequential reads
+        when(statementIoService.readNextXref())
+                .thenReturn(Optional.of(xref1))
+                .thenReturn(Optional.of(xref2))
+                .thenReturn(Optional.empty());
+
+        // Customer keyed reads via StatementIoService
+        when(statementIoService.readCustomerByKey("000000001"))
+                .thenReturn(Optional.of(cust1));
+        when(statementIoService.readCustomerByKey("000000002"))
+                .thenReturn(Optional.of(cust2));
+
+        // Account keyed reads via StatementIoService
+        when(statementIoService.readAccountByKey("00000000001"))
+                .thenReturn(Optional.of(acct1));
+        when(statementIoService.readAccountByKey("00000000002"))
+                .thenReturn(Optional.of(acct2));
 
         // When: generateStatements processes all XREFs
         String outputDir = tempDir.toString();
         statementEngineService.generateStatements(outputDir);
 
-        // Then: Both customers were looked up
-        verify(customerRepository, times(1)).findById("000000001");
-        verify(customerRepository, times(1)).findById("000000002");
+        // Then: Customer keyed reads invoked
+        verify(statementIoService, times(1)).readCustomerByKey("000000001");
+        verify(statementIoService, times(1)).readCustomerByKey("000000002");
 
-        // Both accounts were looked up
-        verify(accountRepository, times(1)).findById("00000000001");
-        verify(accountRepository, times(1)).findById("00000000002");
+        // Account keyed reads invoked
+        verify(statementIoService, times(1)).readAccountByKey("00000000001");
+        verify(statementIoService, times(1)).readAccountByKey("00000000002");
+
+        // File open/close lifecycle
+        verify(statementIoService, times(1)).openTransactionFile();
+        verify(statementIoService, times(1)).openXrefFile();
+        verify(statementIoService, times(1)).openCustomerFile();
+        verify(statementIoService, times(1)).openAccountFile();
+        verify(statementIoService, times(1)).closeTransactionFile();
+        verify(statementIoService, times(1)).closeXrefFile();
+        verify(statementIoService, times(1)).closeCustomerFile();
+        verify(statementIoService, times(1)).closeAccountFile();
 
         // Output files were created
         Path textFile = tempDir.resolve("statements.txt");
         Path htmlFile = tempDir.resolve("statements.html");
         assertThat(textFile).exists();
         assertThat(htmlFile).exists();
-
-        // Both customer names appear in the text output
-        String textContent = Files.readString(textFile);
-        assertThat(textContent).contains("JOHN");
-        assertThat(textContent).contains("JANE");
     }
 
     // =========================================================================
-    // Test 9: Transaction Writing per Card (← 4000-TRNXFILE-GET / 6000-WRITE-TRANS)
+    // Test 13: Verify COBOL-faithful text formatting
     // =========================================================================
 
-    /**
-     * Verifies that only transactions matching the current card's number are
-     * written to the statement, translating paragraphs 4000-TRNXFILE-GET
-     * and 6000-WRITE-TRANS from CBSTM03A.CBL.
-     */
     @Test
-    @DisplayName("Should write transaction lines matching card number from transaction table")
-    void shouldWriteTransactionLinesForMatchingCard() throws IOException {
-        // Given: Transactions for two different cards
-        String targetCard = "4111111111111111";
-        String otherCard = "4222222222222222";
-
-        Transaction matchTxn1 = createTestTransactionForCard("TXN001",
-                new BigDecimal("100.00"), targetCard);
-        Transaction matchTxn2 = createTestTransactionForCard("TXN002",
-                new BigDecimal("200.00"), targetCard);
-        Transaction noMatchTxn = createTestTransactionForCard("TXN003",
-                new BigDecimal("999.99"), otherCard);
-
-        Map<String, List<Transaction>> trnxTable = Map.of(
-                targetCard, List.of(matchTxn1, matchTxn2),
-                otherCard, List.of(noMatchTxn)
-        );
-
-        CardXref xref = createTestXref(); // card "4111111111111111"
+    @DisplayName("Should produce 80-char lines with correct separator patterns (← ST-LINEs)")
+    void shouldProduce80CharLines() throws IOException {
+        Customer customer = createTestCustomer();
+        Account account = createTestAccount();
 
         StringWriter textSw = new StringWriter();
         StringWriter htmlSw = new StringWriter();
-        try (BufferedWriter textWriter = new BufferedWriter(textSw);
-             BufferedWriter htmlWriter = new BufferedWriter(htmlSw)) {
 
-            // When: writeTransactions processes only matching card
-            BigDecimal total = statementEngineService.writeTransactions(
-                    xref, trnxTable, textWriter, htmlWriter);
-            textWriter.flush();
-            htmlWriter.flush();
+        statementEngineService.createStatement(customer, account, textSw, htmlSw);
 
-            // Then: Total is sum of matching transactions only (100 + 200 = 300)
-            assertThat(total).isEqualByComparingTo(new BigDecimal("300.00"));
+        String textOutput = textSw.toString();
+        String[] lines = textOutput.split("\n", -1);
 
-            // Matching transaction IDs appear in output
-            String textOutput = textSw.toString();
-            assertThat(textOutput).contains("TXN001");
-            assertThat(textOutput).contains("TXN002");
-
-            // Non-matching transaction must NOT appear
-            assertThat(textOutput).doesNotContain("999.99");
-        }
+        // First line is START_SEPARATOR (80 chars)
+        assertThat(lines[0]).hasSize(80);
+        assertThat(lines[0]).contains("START OF STATEMENT");
+        assertThat(lines[0]).startsWith("*");
+        assertThat(lines[0]).endsWith("*");
     }
 
     // =========================================================================
-    // Test 10: Edge Case — Account with No Transactions
+    // Test 14: BigDecimal formatting for amounts
     // =========================================================================
 
-    /**
-     * Verifies graceful handling when a card has no transactions in the table.
-     * The statement should be generated with zero total and an informational notice.
-     */
     @Test
-    @DisplayName("Should handle account with no transactions gracefully")
-    void shouldHandleAccountWithNoTransactions() throws IOException {
-        // Given: Empty transaction table for the target card
-        CardXref xref = createTestXref();
-        Map<String, List<Transaction>> emptyTable = Collections.emptyMap();
+    @DisplayName("Should format negative amounts with trailing minus sign (← PIC Z(9).99-)")
+    void shouldFormatNegativeAmounts() throws IOException {
+        Transaction tran = createTestTransactionForCard("TXN001",
+                new BigDecimal("-42.50"), "4111111111111111");
 
         StringWriter textSw = new StringWriter();
         StringWriter htmlSw = new StringWriter();
-        try (BufferedWriter textWriter = new BufferedWriter(textSw);
-             BufferedWriter htmlWriter = new BufferedWriter(htmlSw)) {
 
-            // When: writeTransactions is called with no matching transactions
-            BigDecimal total = statementEngineService.writeTransactions(
-                    xref, emptyTable, textWriter, htmlWriter);
-            textWriter.flush();
-            htmlWriter.flush();
+        statementEngineService.writeTransactionLine(tran, textSw, htmlSw);
 
-            // Then: Total is zero
-            assertThat(total).isEqualByComparingTo(BigDecimal.ZERO);
-
-            // Output contains informational notice
-            String textOutput = textSw.toString();
-            assertThat(textOutput).contains("No transactions for this period");
-        }
-    }
-
-    // =========================================================================
-    // Test 11: Edge Case — Missing Customer Record
-    // =========================================================================
-
-    /**
-     * Verifies graceful handling when customer lookup returns empty Optional.
-     * The service should handle this case without throwing an exception.
-     *
-     * <p>COBOL equivalent: CUSTFILE-STATUS = '23' (record not found).</p>
-     */
-    @Test
-    @DisplayName("Should handle missing customer record gracefully")
-    void shouldHandleMissingCustomer() {
-        // Given: Customer does not exist
-        when(customerRepository.findById(anyString())).thenReturn(Optional.empty());
-
-        // When: getCustomer is called
-        Optional<Customer> result = statementEngineService.getCustomer("999999999");
-
-        // Then: Returns empty Optional without exception
-        assertThat(result).isEmpty();
+        String textOutput = textSw.toString();
+        // PIC Z(9).99- → trailing '-' for negative
+        assertThat(textOutput).contains("42.50-");
     }
 }

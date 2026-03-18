@@ -8,35 +8,25 @@ package com.cardemo.service.batch;
  *
  * COBOL Paragraph → Java Method Traceability:
  * ──────────────────────────────────────────────────────────────────────
- *   PROCEDURE DIVISION entry        → generateStatements(String)
- *   0000-START                      → dispatchFileOperation(String)
- *   1000-MAINLINE                   → processMainline(List, Map, BW, BW)
- *   1000-XREFFILE-GET-NEXT          → getNextXref(Iterator)
- *   2000-CUSTFILE-GET               → getCustomer(String)
- *   3000-ACCTFILE-GET               → getAccount(String)
- *   4000-TRNXFILE-GET               → writeTransactions(CardXref, Map, BW, BW)
- *   5000-CREATE-STATEMENT           → createStatement(Customer, Account, CardXref, BW, BW)
- *   5100-WRITE-HTML-HEADER          → writeHtmlHeader(BufferedWriter)
- *   5200-WRITE-HTML-NMADBS          → writeHtmlNameAddress(Customer, Account, BW)
- *   6000-WRITE-TRANS                → writeTransactionLine(Transaction, BW, BW)
- *   8100–8400 file opens            → StatementIoService.open*() methods
- *   8500-READTRNX-READ              → loadTransactionTable()
- *   9100–9400 file closes           → StatementIoService.close*() methods
- *   9999-ABEND-PROGRAM              → throws CardDemoException
+ *   PROCEDURE DIVISION entry   → generateStatements(String outputDir)
+ *   8100-8400 file opens       → openAllFiles()
+ *   8500-READTRNX-READ         → loadTransactionTable()
+ *   1000-MAINLINE              → [loop inside generateStatements]
+ *   1000-XREFFILE-GET-NEXT     → getNextXref()               [private]
+ *   2000-CUSTFILE-GET           → getCustomer(String)         [private]
+ *   3000-ACCTFILE-GET           → getAccount(String)          [private]
+ *   5000-CREATE-STATEMENT       → createStatement(Customer, Account, Writer, Writer)
+ *   5100-WRITE-HTML-HEADER      → writeHtmlHeader(Writer)
+ *   5200-WRITE-HTML-NMADBS      → writeHtmlNameAddress(Customer, Account, Writer)
+ *   4000-TRNXFILE-GET           → writeTransactions(CardXref, Map, Writer, Writer)
+ *   6000-WRITE-TRANS            → writeTransactionLine(Transaction, Writer, Writer)
+ *   9100-9400 file closes       → closeAllFiles()
+ *   9999-ABEND-PROGRAM          → throws CardDemoException
  * ──────────────────────────────────────────────────────────────────────
- *
- * This class is the service-layer orchestrator for statement generation.
- * It uses {@link StatementIoService} for coordinated dataset open/close
- * lifecycle (mapping the COBOL {@code CALL 'CBSTM03B'} I/O subroutine
- * pattern) and repositories for bulk data loading where beneficial.
- *
- * The companion {@link com.cardemo.batch.processor.StatementProcessor}
- * provides a Spring Batch {@code ItemProcessor} adapter for chunk-based
- * batch processing.  This service provides an independent orchestration
- * entry point that can be invoked outside the Spring Batch step pipeline.
  */
 
 import com.cardemo.common.exception.CardDemoException;
+import com.cardemo.common.exception.FileStatusException;
 import com.cardemo.entity.Account;
 import com.cardemo.entity.CardXref;
 import com.cardemo.entity.Customer;
@@ -46,28 +36,23 @@ import com.cardemo.repository.CardXrefRepository;
 import com.cardemo.repository.CustomerRepository;
 import com.cardemo.repository.TransactionRepository;
 
-import java.io.BufferedWriter;
-import java.io.IOException;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.Writer;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * Statement generation engine — faithful translation of CBSTM03A.CBL.
@@ -75,77 +60,88 @@ import org.springframework.stereotype.Service;
  * <p>Orchestrates the complete statement generation process: opens data files
  * via {@link StatementIoService} (← CALL 'CBSTM03B'), loads all transactions
  * into an in-memory table (← WS-TRNX-TABLE), iterates cross-reference records
- * (← STARTBR/READNEXT CARDXREF), resolves customer and account data via keyed
- * reads, and produces both plain-text (80-column, PIC X(80)) and HTML statement
+ * (← STARTBR/READNEXT XREFFILE), resolves customer and account data via keyed
+ * reads, and produces both plain-text (80-column PIC X(80)) and HTML statement
  * output files.</p>
  *
  * <h3>COBOL Working-Storage Equivalents</h3>
  * <ul>
  *   <li>WS-TRNX-TABLE (51 cards × 10 trans) → {@code Map<String, List<Transaction>>}</li>
- *   <li>WS-TRNX-TOTAL PIC S9(10)V99 → {@link BigDecimal} with scale 2</li>
- *   <li>ST-LINE0 through ST-LINE15 (PIC X(80)) → {@link BufferedWriter} lines</li>
- *   <li>WS-FL-DD-*-STATUS (file status codes) → {@link Optional} return semantics</li>
+ *   <li>WS-TOTAL-AMT PIC S9(9)V99 → {@link BigDecimal} with scale 2</li>
+ *   <li>ST-LINE0 through ST-LINE15 (PIC X(80)) → formatted string constants</li>
+ *   <li>HTML-L01 through HTML-L80 → inline HTML write statements</li>
  * </ul>
  *
+ * <p><strong>Thread Safety Note:</strong> This service mirrors the single-threaded
+ * COBOL batch processing model. The {@code totalAmount} instance field is reset
+ * per-statement within {@link #writeTransactions}. Concurrent invocations of
+ * {@link #generateStatements} are not supported.</p>
+ *
  * @see StatementIoService
- * @see com.cardemo.batch.processor.StatementProcessor
  */
 @Service
 public class StatementEngineService {
 
     private static final Logger logger = LoggerFactory.getLogger(StatementEngineService.class);
 
-    // ─── Working-Storage Constants (← CBSTM03A WORKING-STORAGE SECTION) ───────
+    // ─── Text Statement Format Constants (← CBSTM03A WORKING-STORAGE) ─────────
 
     /** Fixed line width for plain-text output (← PIC X(80) record length). */
-    static final int LINE_WIDTH = 80;
+    private static final int LINE_WIDTH = 80;
 
-    /** Maximum distinct cards in transaction table (← WS-MAX-CARDS VALUE 51). */
-    static final int MAX_CARDS = 51;
+    /** ST-LINE0: Start separator — 31 stars + "START OF STATEMENT" + 31 stars = 80. */
+    private static final String START_SEPARATOR =
+            "*".repeat(31) + "START OF STATEMENT" + "*".repeat(31);
 
-    /** Maximum transactions per card (← WS-MAX-TRNX-PER-CARD VALUE 10). */
-    static final int MAX_TRNX_PER_CARD = 10;
+    /** ST-LINE15: End separator — 32 stars + "END OF STATEMENT" + 32 stars = 80. */
+    private static final String END_SEPARATOR =
+            "*".repeat(32) + "END OF STATEMENT" + "*".repeat(32);
 
-    /** Bank name header text (← WS-BANK-NAME VALUE 'CARIBEAN BANK OF BAHAMAS'). */
-    static final String BANK_NAME = "CARIBEAN BANK OF BAHAMAS";
+    /** ST-LINE5 / ST-LINE10 / ST-LINE12: Dash separator line (80 dashes). */
+    private static final String DASH_LINE = "-".repeat(LINE_WIDTH);
 
-    /** 31-star left border for bank name line. */
-    private static final String STARS_31 = "*".repeat(31);
+    /** ST-LINE6: "Basic Details" centered — 33 spaces + 14 chars + 33 spaces = 80. */
+    private static final String BASIC_DETAILS_LINE =
+            " ".repeat(33) + "Basic Details " + " ".repeat(33);
 
-    /** Full 80-star separator line. */
-    private static final String STARS_80 = "*".repeat(LINE_WIDTH);
+    /** ST-LINE11: "TRANSACTION SUMMARY" centered — 30 spaces + 20 chars + 30 spaces = 80. */
+    private static final String TRAN_SUMMARY_LINE =
+            " ".repeat(30) + "TRANSACTION SUMMARY " + " ".repeat(30);
 
-    /** Full 80-dash separator line (← ST-LINE12 / ST-LINE14). */
-    private static final String DASHES_80 = "-".repeat(LINE_WIDTH);
+    /** ST-LINE13: Column headers — "Tran ID"(16) + "Tran Details"(51) + "  Tran Amount"(13) = 80. */
+    private static final String COLUMN_HEADER =
+            String.format("%-16s%-51s%13s", "Tran ID", "Tran Details", "Tran Amount");
 
-    /** Statement text output file name (← STMT-FILE DD). */
+    /** Output text file name (← STMT-FILE DD). */
     private static final String STMT_FILE_NAME = "statements.txt";
 
-    /** Statement HTML output file name (← HTML-FILE DD). */
+    /** Output HTML file name (← HTML-FILE DD). */
     private static final String HTML_FILE_NAME = "statements.html";
-
-    /** Timestamp formatter for logging. */
-    private static final DateTimeFormatter TIMESTAMP_FMT =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     // ─── HTML Color Constants (← CBSTM03A inline CSS hex values) ──────────────
 
-    /** Header/footer bar (← background-color #1d1d96b3). */
+    /** Header/footer bar color (← background-color #1d1d96b3). */
     private static final String COLOR_HEADER_FOOTER = "#1d1d96b3";
 
-    /** Bank info row (← background-color #FFAF33). */
+    /** Bank info row color (← background-color #FFAF33). */
     private static final String COLOR_BANK_INFO = "#FFAF33";
 
-    /** Data rows (← background-color #f2f2f2). */
+    /** Data/content row color (← background-color #f2f2f2). */
     private static final String COLOR_DATA_ROW = "#f2f2f2";
 
-    /** Section headers (← background-color #33FFD1). */
-    private static final String COLOR_SECTION_HEADER = "#33FFD1";
+    /** Section header color (← background-color #33FFD1). */
+    private static final String COLOR_SECTION_HDR = "#33FFD1";
 
-    /** Column headers (← background-color #33FF5E). */
-    private static final String COLOR_COLUMN_HEADER = "#33FF5E";
+    /** Column header color (← background-color #33FF5E). */
+    private static final String COLOR_COL_HDR = "#33FF5E";
 
-    // ─── Injected Dependencies ────────────────────────────────────────────────
+    /** Maximum distinct cards in transaction table (← WS-MAX-CARDS VALUE 51). */
+    private static final int MAX_CARDS = 51;
+
+    /** Maximum transactions per card (← WS-MAX-TRNX-PER-CARD VALUE 10). */
+    private static final int MAX_TRNX_PER_CARD = 10;
+
+    // ─── Injected Dependencies (← COBOL CALL 'CBSTM03B' + VSAM file access) ──
 
     private final StatementIoService statementIoService;
     private final TransactionRepository transactionRepository;
@@ -153,27 +149,19 @@ public class StatementEngineService {
     private final CustomerRepository customerRepository;
     private final AccountRepository accountRepository;
 
+    // ─── Working Storage (← WS-TOTAL-AMT PIC S9(9)V99 COMP-3) ────────────────
+
+    /** Per-statement transaction total accumulator (← WS-TOTAL-AMT). */
+    private BigDecimal totalAmount = BigDecimal.ZERO;
+
     /**
      * Constructs the statement engine with all required dependencies.
      *
-     * <p>Dependencies mirror the COBOL resource model:</p>
-     * <ul>
-     *   <li>{@code statementIoService} — I/O subroutine (← CALL 'CBSTM03B')</li>
-     *   <li>{@code transactionRepository} — bulk transaction loading
-     *       (← 8500-READTRNX-READ sequential file scan)</li>
-     *   <li>{@code cardXrefRepository} — cross-reference access
-     *       (← XREFFILE STARTBR/READNEXT)</li>
-     *   <li>{@code customerRepository} — customer keyed reads
-     *       (← CUSTFILE READ by key)</li>
-     *   <li>{@code accountRepository} — account keyed reads
-     *       (← ACCTFILE READ by key)</li>
-     * </ul>
-     *
      * @param statementIoService    I/O subroutine service (← CBSTM03B.CBL)
-     * @param transactionRepository transaction data access
-     * @param cardXrefRepository    card cross-reference data access
-     * @param customerRepository    customer data access
-     * @param accountRepository     account data access
+     * @param transactionRepository transaction data access (← TRANSACT VSAM)
+     * @param cardXrefRepository    card cross-reference data access (← CARDXREF VSAM)
+     * @param customerRepository    customer data access (← CUSTDATA VSAM)
+     * @param accountRepository     account data access (← ACCTDATA VSAM)
      */
     @Autowired
     public StatementEngineService(StatementIoService statementIoService,
@@ -189,7 +177,8 @@ public class StatementEngineService {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  Main Entry Point (← PROCEDURE DIVISION / 0000-START)
+    //  generateStatements(String outputDir) — Main Entry Point
+    //  ← PROCEDURE DIVISION entry / 0000-START / 1000-MAINLINE
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
@@ -197,77 +186,79 @@ public class StatementEngineService {
      *
      * <p>Orchestrates the complete CBSTM03A statement generation flow:</p>
      * <ol>
-     *   <li>Create output directory and open text + HTML output files</li>
+     *   <li>Open dataset files via {@link StatementIoService}
+     *       (← 8100–8400 file opens via CALL 'CBSTM03B')</li>
      *   <li>Load all transactions into an in-memory table grouped by card number
      *       (← 8500-READTRNX-READ → WS-TRNX-TABLE)</li>
-     *   <li>Open dataset files via {@link StatementIoService}
-     *       (← 8100-8400 file opens via CALL 'CBSTM03B')</li>
+     *   <li>Open output files (STMT-FILE and HTML-FILE)</li>
      *   <li>Iterate cross-references and generate per-account statements
      *       (← 1000-MAINLINE loop)</li>
-     *   <li>Close all dataset files (← 9100-9400 file closes)</li>
+     *   <li>Close all dataset files (← 9100–9400 file closes)</li>
      * </ol>
-     *
-     * <p>← PROCEDURE DIVISION / 0000-START</p>
      *
      * @param outputDir directory path for statement output files
      * @throws CardDemoException if a fatal error occurs (← 9999-ABEND-PROGRAM)
      */
     public void generateStatements(String outputDir) {
         logger.info("Statement generation started — output directory: {}", outputDir);
-        LocalDateTime startTime = LocalDateTime.now();
 
-        Path outPath = Paths.get(outputDir);
-        try {
-            Files.createDirectories(outPath);
-        } catch (IOException e) {
-            logger.error("Failed to create output directory: {}", outputDir, e);
+        // Ensure output directory exists (← JCL DD allocation)
+        File outDir = new File(outputDir);
+        if (!outDir.exists() && !outDir.mkdirs()) {
             throw new CardDemoException(
-                    "Statement generation abend — cannot create output directory: " + outputDir, e);
+                    "Statement generation abend — cannot create output directory: " + outputDir);
         }
 
-        try (BufferedWriter textWriter = Files.newBufferedWriter(
-                     outPath.resolve(STMT_FILE_NAME), StandardCharsets.UTF_8);
-             BufferedWriter htmlWriter = Files.newBufferedWriter(
-                     outPath.resolve(HTML_FILE_NAME), StandardCharsets.UTF_8)) {
+        // ← 8100–8400: Open all dataset files via CBSTM03B
+        openAllFiles();
 
-            // Write HTML document preamble
-            htmlWriter.write("<!DOCTYPE html>\n<html>\n<head>\n");
-            htmlWriter.write("<meta charset=\"UTF-8\">\n");
-            htmlWriter.write("<title>CardDemo Account Statements</title>\n");
-            htmlWriter.write("</head>\n<body>\n");
+        // ← 8500-READTRNX-READ: Load all transactions into WS-TRNX-TABLE
+        Map<String, List<Transaction>> trnxTable = loadTransactionTable();
 
-            // ← 8500-READTRNX-READ: Load all transactions into WS-TRNX-TABLE
-            Map<String, List<Transaction>> trnxTable = loadTransactionTable();
-            logger.info("Transaction table loaded — {} distinct cards, {} total transactions",
-                    trnxTable.size(),
-                    trnxTable.values().stream().mapToInt(List::size).sum());
+        // Cross-validate data availability via direct repository access
+        List<CardXref> allXrefs = cardXrefRepository.findAll();
+        List<Transaction> allTransactions = transactionRepository.findAll();
+        logger.info("Data available: {} cross-references, {} transactions",
+                allXrefs.size(), allTransactions.size());
 
-            // ← 8100-XREFFILE-OPEN through 8400-ACCTFILE-OPEN
-            dispatchFileOperation("XREFFILE");
-            dispatchFileOperation("CUSTFILE");
-            dispatchFileOperation("ACCTFILE");
+        // Open output files (← OPEN OUTPUT STMT-FILE, HTML-FILE)
+        File stmtFile = new File(outDir, STMT_FILE_NAME);
+        File htmlFile = new File(outDir, HTML_FILE_NAME);
 
-            // ← Retrieve xref records for sequential iteration
-            List<CardXref> xrefs = cardXrefRepository.findAll();
+        try (Writer stmtWriter = new BufferedWriter(new FileWriter(stmtFile));
+             Writer htmlWriter = new BufferedWriter(new FileWriter(htmlFile))) {
 
-            // ← 1000-MAINLINE: Process all statements
-            processMainline(xrefs, trnxTable, textWriter, htmlWriter);
+            int statementsGenerated = 0;
 
-            // Close HTML document
-            htmlWriter.write("</body>\n</html>\n");
+            // ← 1000-MAINLINE: PERFORM UNTIL END-OF-FILE = 'Y'
+            Optional<CardXref> xrefOpt = getNextXref();
 
-            // ← 9100-9400: Close all dataset files
-            statementIoService.closeXrefFile();
-            statementIoService.closeCustomerFile();
-            statementIoService.closeAccountFile();
-            statementIoService.closeTransactionFile();
+            while (xrefOpt.isPresent()) {
+                CardXref xref = xrefOpt.get();
 
-            textWriter.flush();
-            htmlWriter.flush();
+                // ← 2000-CUSTFILE-GET: Keyed read by XREF-CUST-ID
+                Customer customer = getCustomer(xref.getCustId());
 
-            LocalDateTime endTime = LocalDateTime.now();
-            logger.info("Statement generation completed — started={}, ended={}",
-                    startTime.format(TIMESTAMP_FMT), endTime.format(TIMESTAMP_FMT));
+                // ← 3000-ACCTFILE-GET: Keyed read by XREF-ACCT-ID
+                Account account = getAccount(xref.getAccountId());
+
+                // ← 5000-CREATE-STATEMENT: Write header (text + HTML)
+                createStatement(customer, account, stmtWriter, htmlWriter);
+
+                // ← MOVE ZERO TO WS-TOTAL-AMT, PERFORM 4000-TRNXFILE-GET
+                writeTransactions(xref, trnxTable, stmtWriter, htmlWriter);
+
+                statementsGenerated++;
+
+                // ← PERFORM 1000-XREFFILE-GET-NEXT (loop advance)
+                xrefOpt = getNextXref();
+            }
+
+            // ← 9100–9400: Close all dataset files
+            closeAllFiles();
+
+            logger.info("Statement generation complete — {} statements generated",
+                    statementsGenerated);
 
         } catch (IOException e) {
             // ← 9999-ABEND-PROGRAM
@@ -277,541 +268,569 @@ public class StatementEngineService {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  0000-START — File Operation Dispatcher
+    //  openAllFiles() — Open All Dataset Files
+    //  ← 8100-TRNXFILE-OPEN through 8400-ACCTFILE-OPEN
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Dispatches a dataset file-open operation to {@link StatementIoService}.
+     * Opens all dataset files via {@link StatementIoService}.
      *
-     * <p>← 0000-START: EVALUATE WS-M03B-DD dispatching file opens to CBSTM03B.</p>
+     * <p>← 8100-TRNXFILE-OPEN, 8200-XREFFILE-OPEN, 8300-CUSTFILE-OPEN,
+     * 8400-ACCTFILE-OPEN: Each calls CBSTM03B with M03B-OPEN operation.</p>
      *
-     * @param ddName logical dataset name (XREFFILE, CUSTFILE, ACCTFILE, TRNXFILE)
-     * @throws CardDemoException if the DD name is unrecognized
+     * @throws CardDemoException if any file open fails (← 9999-ABEND-PROGRAM)
      */
-    void dispatchFileOperation(String ddName) {
-        logger.debug("Opening dataset: {}", ddName);
-        switch (ddName) {
-            case "XREFFILE" -> statementIoService.openXrefFile();
-            case "CUSTFILE" -> statementIoService.openCustomerFile();
-            case "ACCTFILE" -> statementIoService.openAccountFile();
-            case "TRNXFILE" -> statementIoService.openTransactionFile();
-            default -> {
-                logger.error("Unrecognized DD name in dispatch: {}", ddName);
-                throw new CardDemoException(
-                        "Statement generation abend — unknown DD name: " + ddName);
-            }
+    public void openAllFiles() {
+        logger.debug("Opening all dataset files (← 8100–8400)");
+        try {
+            statementIoService.openTransactionFile();
+            statementIoService.openXrefFile();
+            statementIoService.openCustomerFile();
+            statementIoService.openAccountFile();
+            logger.info("All dataset files opened successfully");
+        } catch (FileStatusException e) {
+            logger.error("Failed to open dataset — file status: {}", e.getFileStatusCode());
+            throw new CardDemoException(
+                    "Statement generation abend — file open error, status: "
+                            + e.getFileStatusCode(), e);
         }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  8500-READTRNX-READ — Load Transaction Table
+    //  closeAllFiles() — Close All Dataset Files
+    //  ← 9100-TRNXFILE-CLOSE through 9400-ACCTFILE-CLOSE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Closes all dataset files via {@link StatementIoService}.
+     *
+     * <p>← 9100-TRNXFILE-CLOSE, 9200-XREFFILE-CLOSE, 9300-CUSTFILE-CLOSE,
+     * 9400-ACCTFILE-CLOSE: Each calls CBSTM03B with M03B-CLOSE operation.</p>
+     */
+    public void closeAllFiles() {
+        logger.debug("Closing all dataset files (← 9100–9400)");
+        statementIoService.closeTransactionFile();
+        statementIoService.closeXrefFile();
+        statementIoService.closeCustomerFile();
+        statementIoService.closeAccountFile();
+        logger.info("All dataset files closed");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  loadTransactionTable() — Build In-Memory Transaction Table
+    //  ← 8500-READTRNX-READ
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
      * Loads all transactions into an in-memory table grouped by card number.
      *
      * <p>← 8500-READTRNX-READ: Reads the entire TRANSACT dataset sequentially
-     * and populates WS-TRNX-TABLE indexed by card number.  The COBOL table has
-     * a capacity of {@link #MAX_CARDS} × {@link #MAX_TRNX_PER_CARD} entries;
-     * this Java implementation uses a {@link LinkedHashMap} with unbounded
-     * capacity but logs a warning if COBOL limits are exceeded.</p>
+     * and populates WS-TRNX-TABLE indexed by card number. The COBOL table has
+     * a capacity of {@value #MAX_CARDS} × {@value #MAX_TRNX_PER_CARD} entries;
+     * this Java implementation uses a {@link LinkedHashMap} preserving insertion
+     * order but logs a warning if COBOL limits are exceeded.</p>
      *
      * @return map of card number → list of transactions for that card
      */
-    Map<String, List<Transaction>> loadTransactionTable() {
-        List<Transaction> allTxns = transactionRepository.findAllByOrderByTranIdAsc();
+    public Map<String, List<Transaction>> loadTransactionTable() {
+        logger.debug("Loading transaction table (← 8500-READTRNX-READ)");
         Map<String, List<Transaction>> table = new LinkedHashMap<>();
+        int totalRecords = 0;
 
-        for (Transaction txn : allTxns) {
-            String cardNum = txn.getCardNum();
+        // Sequential read via StatementIoService (← PERFORM UNTIL WS-M03B-RC = '10')
+        Optional<Transaction> opt = statementIoService.readNextTransaction();
+        while (opt.isPresent()) {
+            Transaction tran = opt.get();
+            String cardNum = tran.getCardNum();
             if (cardNum != null && !cardNum.isBlank()) {
-                table.computeIfAbsent(cardNum, k -> new ArrayList<>()).add(txn);
+                table.computeIfAbsent(cardNum, k -> new ArrayList<>()).add(tran);
+                totalRecords++;
             }
+            opt = statementIoService.readNextTransaction();
         }
 
-        // COBOL parity check — WS-TRNX-TABLE capacity is 51 cards × 10 transactions
+        // COBOL parity warnings — WS-TRNX-TABLE capacity is 51 × 10
         if (table.size() > MAX_CARDS) {
             logger.warn("Transaction table exceeds COBOL WS-MAX-CARDS limit: {} > {}",
                     table.size(), MAX_CARDS);
         }
         for (Map.Entry<String, List<Transaction>> entry : table.entrySet()) {
             if (entry.getValue().size() > MAX_TRNX_PER_CARD) {
-                logger.warn("Card {} exceeds COBOL WS-MAX-TRNX-PER-CARD limit: {} > {}",
+                logger.warn("Card {} exceeds COBOL limit: {} transactions > {}",
                         entry.getKey(), entry.getValue().size(), MAX_TRNX_PER_CARD);
             }
         }
 
+        logger.info("Transaction table loaded: {} cards, {} records", table.size(), totalRecords);
         return table;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  1000-MAINLINE — Main Processing Loop
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /**
-     * Processes all cross-reference records and generates a statement for each.
-     *
-     * <p>← 1000-MAINLINE: PERFORM 1000-XREFFILE-GET-NEXT / PERFORM UNTIL
-     * WS-FL-DD-XREFFILE-STATUS = '10'.  For each XREF record, resolves the
-     * linked customer (← 2000-CUSTFILE-GET) and account (← 3000-ACCTFILE-GET),
-     * writes the statement header (← 5000-CREATE-STATEMENT), writes matching
-     * transactions (← 4000-TRNXFILE-GET), and appends the total footer.</p>
-     *
-     * @param xrefs      all cross-reference records to process
-     * @param trnxTable  pre-loaded transaction table grouped by card number
-     * @param textWriter plain-text output writer (← STMT-FILE)
-     * @param htmlWriter HTML output writer (← HTML-FILE)
-     * @throws IOException if an output write fails
-     */
-    void processMainline(List<CardXref> xrefs,
-                         Map<String, List<Transaction>> trnxTable,
-                         BufferedWriter textWriter,
-                         BufferedWriter htmlWriter) throws IOException {
-        int statementsGenerated = 0;
-        int xrefsSkipped = 0;
-        Iterator<CardXref> iterator = xrefs.iterator();
-
-        // ← PERFORM 1000-XREFFILE-GET-NEXT
-        Optional<CardXref> xrefOpt = getNextXref(iterator);
-
-        // ← PERFORM UNTIL WS-FL-DD-XREFFILE-STATUS = '10'
-        while (xrefOpt.isPresent()) {
-            CardXref xref = xrefOpt.get();
-
-            // ← 2000-CUSTFILE-GET: Read customer by XREF-CUST-ID
-            Optional<Customer> custOpt = getCustomer(xref.getCustId());
-
-            // ← 3000-ACCTFILE-GET: Read account by XREF-ACCT-ID
-            Optional<Account> acctOpt = getAccount(xref.getAccountId());
-
-            if (custOpt.isPresent() && acctOpt.isPresent()) {
-                Customer customer = custOpt.get();
-                Account account = acctOpt.get();
-
-                // ← 5000-CREATE-STATEMENT: Write header (name, address, account info)
-                createStatement(customer, account, xref, textWriter, htmlWriter);
-
-                // ← 4000-TRNXFILE-GET: Write matching transactions, accumulate total
-                BigDecimal total = writeTransactions(xref, trnxTable, textWriter, htmlWriter);
-
-                // Write statement footer with accumulated total
-                writeStatementFooter(total, textWriter, htmlWriter);
-
-                statementsGenerated++;
-            } else {
-                xrefsSkipped++;
-                logger.warn("Skipping XREF card={} — customer={} account={}",
-                        xref.getXrefCardNum(),
-                        custOpt.isPresent() ? "found" : xref.getCustId() + " NOT FOUND",
-                        acctOpt.isPresent() ? "found" : xref.getAccountId() + " NOT FOUND");
-            }
-
-            // ← PERFORM 1000-XREFFILE-GET-NEXT (loop advance)
-            xrefOpt = getNextXref(iterator);
-        }
-
-        logger.info("Mainline complete — {} statements generated, {} xrefs skipped",
-                statementsGenerated, xrefsSkipped);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  1000-XREFFILE-GET-NEXT — Sequential XREF Read
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /**
-     * Reads the next cross-reference record from the sequential iterator.
-     *
-     * <p>← 1000-XREFFILE-GET-NEXT: CALL 'CBSTM03B' with OP-READ-NEXT on
-     * XREFFILE.  Returns {@link Optional#empty()} when EOF is reached
-     * (← WS-FL-DD-XREFFILE-STATUS = '10').</p>
-     *
-     * @param iterator cross-reference record iterator
-     * @return next CardXref, or empty if EOF
-     */
-    Optional<CardXref> getNextXref(Iterator<CardXref> iterator) {
-        if (iterator.hasNext()) {
-            return Optional.of(iterator.next());
-        }
-        return Optional.empty();
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  2000-CUSTFILE-GET — Customer Keyed Read
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /**
-     * Reads a customer record by primary key.
-     *
-     * <p>← 2000-CUSTFILE-GET: CALL 'CBSTM03B' with OP-READ-KEY on CUSTFILE
-     * using XREF-CUST-ID as the key.  Returns {@link Optional#empty()} if the
-     * customer is not found (← WS-FL-DD-CUSTFILE-STATUS = '23').</p>
-     *
-     * @param custId customer identifier (← XREF-CUST-ID, 9 bytes)
-     * @return customer record, or empty if not found
-     */
-    Optional<Customer> getCustomer(String custId) {
-        return customerRepository.findById(custId);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  3000-ACCTFILE-GET — Account Keyed Read
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /**
-     * Reads an account record by primary key.
-     *
-     * <p>← 3000-ACCTFILE-GET: CALL 'CBSTM03B' with OP-READ-KEY on ACCTFILE
-     * using XREF-ACCT-ID as the key.  Returns {@link Optional#empty()} if the
-     * account is not found (← WS-FL-DD-ACCTFILE-STATUS = '23').</p>
-     *
-     * @param acctId account identifier (← XREF-ACCT-ID, 11 bytes)
-     * @return account record, or empty if not found
-     */
-    Optional<Account> getAccount(String acctId) {
-        return accountRepository.findById(acctId);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  5000-CREATE-STATEMENT — Statement Header Generation
+    //  createStatement(Customer, Account, Writer, Writer)
+    //  ← 5000-CREATE-STATEMENT
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
      * Writes the statement header section for a single card-holder account.
      *
-     * <p>← 5000-CREATE-STATEMENT: Formats customer name, address, and account
-     * details into both plain-text (ST-LINE0 through ST-LINE12) and HTML
-     * (table header via 5100/5200 sub-paragraphs) output.</p>
+     * <p>← 5000-CREATE-STATEMENT: Formats customer name (STRING CUST-FIRST-NAME
+     * DELIMITED BY ' ' ... INTO ST-NAME), address lines, account ID, current
+     * balance (PIC 9(9).99-), and FICO score into both plain-text (ST-LINE0
+     * through ST-LINE13 with dashes) and HTML output (via
+     * {@link #writeHtmlHeader} and {@link #writeHtmlNameAddress}).</p>
      *
-     * @param customer   customer record (← CUSTFILE)
-     * @param account    account record (← ACCTFILE)
-     * @param xref       cross-reference record (current iteration)
-     * @param textWriter plain-text output (← STMT-FILE)
-     * @param htmlWriter HTML output (← HTML-FILE)
+     * <p>Exact COBOL write order preserved: ST-LINE0 → HTML header → build
+     * name/address/account fields → HTML name/address → ST-LINE1 through
+     * ST-LINE12 with column headers.</p>
+     *
+     * @param customer   customer record (← CUSTFILE keyed read)
+     * @param account    account record (← ACCTFILE keyed read)
+     * @param stmtWriter plain-text output writer (← STMT-FILE)
+     * @param htmlWriter HTML output writer (← HTML-FILE)
      * @throws IOException if a write operation fails
      */
-    void createStatement(Customer customer, Account account, CardXref xref,
-                         BufferedWriter textWriter, BufferedWriter htmlWriter)
-            throws IOException {
+    public void createStatement(Customer customer, Account account,
+                                Writer stmtWriter, Writer htmlWriter) throws IOException {
 
-        String fullName = buildFullName(customer);
+        // ── ST-LINE0: Start separator (← WRITE FD-STMTFILE-REC FROM ST-LINE0) ──
+        writeLine(stmtWriter, START_SEPARATOR);
 
-        // ── Plain-text header (← ST-LINE0 through ST-LINE12) ──
-
-        // ST-LINE0: Star separator
-        writeLine(textWriter, STARS_80);
-
-        // ST-LINE1: Bank name (centered with star borders)
-        writeLine(textWriter, STARS_31 + " " + BANK_NAME + " " + "*".repeat(
-                LINE_WIDTH - STARS_31.length() - BANK_NAME.length() - 2));
-
-        // ST-LINE0 again: Star separator
-        writeLine(textWriter, STARS_80);
-
-        // ST-LINE2: Customer name
-        writeLine(textWriter, padRight("Name               : " + fullName, LINE_WIDTH));
-
-        // ST-LINE3: Address line 1
-        writeLine(textWriter, padRight("Address            : "
-                + safeStr(customer.getAddrLine1()), LINE_WIDTH));
-
-        // ST-LINE4: City, state, zip
-        String cityLine = safeStr(customer.getAddrLine2()) + " "
-                + safeStr(customer.getAddrStateCode()) + " "
-                + safeStr(customer.getAddrZip());
-        writeLine(textWriter, padRight("                     " + cityLine.trim(), LINE_WIDTH));
-
-        // ST-LINE5: Statement for account
-        writeLine(textWriter, padRight("Statement for Acct : "
-                + safeStr(account.getAcctId()), LINE_WIDTH));
-
-        // ST-LINE6: Status and balance
-        writeLine(textWriter, padRight("Status: " + safeStr(account.getActiveStatus())
-                + "   Balance: " + formatAmount(account.getCurrBal()), LINE_WIDTH));
-
-        // ST-LINE7: Credit limit
-        writeLine(textWriter, padRight("Credit Limit       : "
-                + formatAmount(account.getCreditLimit()), LINE_WIDTH));
-
-        // ST-LINE8: Cash credit limit
-        writeLine(textWriter, padRight("Cash Credit Limit  : "
-                + formatAmount(account.getCashCreditLimit()), LINE_WIDTH));
-
-        // ST-LINE9: FICO score (← CUST-FICO-CREDIT-SCORE PIC 9(03))
-        Integer ficoScore = customer.getFicoCreditScore();
-        int ficoDisplay = ficoScore != null ? ficoScore : 0;
-        writeLine(textWriter, padRight("FICO Score         : " + ficoDisplay, LINE_WIDTH));
-
-        // ST-LINE10: Open and expiration dates
-        writeLine(textWriter, padRight("Open Date: " + safeStr(account.getOpenDate())
-                + "   Exp Date: " + safeStr(account.getExpirationDate()), LINE_WIDTH));
-
-        // ST-LINE11: Transaction column headers
-        writeLine(textWriter, padRight(
-                "Tran ID    Type Cat Source Description              Amount", LINE_WIDTH));
-
-        // ST-LINE12: Dash separator
-        writeLine(textWriter, DASHES_80);
-
-        // ── HTML header sections ──
-
-        // ← 5100-WRITE-HTML-HEADER
+        // ← PERFORM 5100-WRITE-HTML-HEADER THRU 5100-EXIT
         writeHtmlHeader(htmlWriter);
 
-        // ← 5200-WRITE-HTML-NMADBS
+        // Account heading row (← L10, L11 from 5100 — uses ACCT-ID)
+        String acctId = safeStr(account.getAcctId()).trim();
+        htmlWriter.write("<tr>\n");
+        htmlWriter.write("<td colspan=\"3\" style=\"padding:0px 5px;"
+                + "background-color:" + COLOR_HEADER_FOOTER + ";\">\n");
+        htmlWriter.write("<h3>Statement for Account Number: "
+                + escapeHtml(acctId) + "</h3>\n");
+        htmlWriter.write("</td>\n");
+        htmlWriter.write("</tr>\n");
+
+        // Bank info row (← L15–L18 from 5100)
+        htmlWriter.write("<tr>\n");
+        htmlWriter.write("<td colspan=\"3\" style=\"padding:0px 5px;"
+                + "background-color:" + COLOR_BANK_INFO + ";\">\n");
+        htmlWriter.write("<p style=\"font-size:16px\">Bank of XYZ</p>\n");
+        htmlWriter.write("<p>410 Terry Ave N</p>\n");
+        htmlWriter.write("<p>Seattle WA 99999</p>\n");
+        htmlWriter.write("</td>\n");
+        htmlWriter.write("</tr>\n");
+
+        // Start name section (← L22 from 5100)
+        htmlWriter.write("<tr>\n");
+        htmlWriter.write("<td colspan=\"3\" style=\"padding:0px 5px;"
+                + "background-color:" + COLOR_DATA_ROW + ";\">\n");
+
+        // ── Build customer name (← STRING ... INTO ST-NAME) ──
+        String fullName = buildCustomerName(customer);
+
+        // ── Build city/state/country/zip (← STRING ... INTO ST-ADD3) ──
+        String cityStateZip = buildCityStateZip(customer);
+
+        // ── Format account fields ──
+        String balanceStr = formatBalance9V99(account.getCurrBal());
+        Integer fico = customer.getFicoCreditScore();
+        String ficoStr = fico != null ? String.valueOf(fico) : "0";
+
+        // ← PERFORM 5200-WRITE-HTML-NMADBS THRU 5200-EXIT
         writeHtmlNameAddress(customer, account, htmlWriter);
+
+        // ── Text output: ST-LINE1 through ST-LINE13 with separators ──
+
+        // ST-LINE1: Customer name (PIC X(75) + FILLER X(5) = 80)
+        writeLine(stmtWriter, padRight(fullName, 75) + "     ");
+
+        // ST-LINE2: Address line 1 (PIC X(50) + FILLER X(30) = 80)
+        writeLine(stmtWriter, padRight(safeStr(customer.getAddrLine1()).trim(), 50)
+                + " ".repeat(30));
+
+        // ST-LINE3: Address line 2 (PIC X(50) + FILLER X(30) = 80)
+        writeLine(stmtWriter, padRight(safeStr(customer.getAddrLine2()).trim(), 50)
+                + " ".repeat(30));
+
+        // ST-LINE4: City/State/Country/Zip (PIC X(80) = 80)
+        writeLine(stmtWriter, padRight(cityStateZip, LINE_WIDTH));
+
+        // ST-LINE5: Dashes
+        writeLine(stmtWriter, DASH_LINE);
+
+        // ST-LINE6: "Basic Details" centered
+        writeLine(stmtWriter, BASIC_DETAILS_LINE);
+
+        // ST-LINE5 again: Dashes (COBOL writes ST-LINE5 twice around Basic Details)
+        writeLine(stmtWriter, DASH_LINE);
+
+        // ST-LINE7: Account ID (← "Account ID         :" PIC X(20) + ST-ACCT-ID X(20) + X(40))
+        writeLine(stmtWriter, "Account ID         :" + padRight(acctId, 20) + " ".repeat(40));
+
+        // ST-LINE8: Current Balance (← PIC 9(9).99- = 13 chars + FILLER X(7) + X(40))
+        writeLine(stmtWriter, "Current Balance    :" + balanceStr + " ".repeat(47));
+
+        // ST-LINE9: FICO Score (← "FICO Score         :" X(20) + ST-FICO-SCORE X(20) + X(40))
+        writeLine(stmtWriter, "FICO Score         :" + padRight(ficoStr, 20) + " ".repeat(40));
+
+        // ST-LINE10: Dashes
+        writeLine(stmtWriter, DASH_LINE);
+
+        // ST-LINE11: "TRANSACTION SUMMARY" centered
+        writeLine(stmtWriter, TRAN_SUMMARY_LINE);
+
+        // ST-LINE12: Dashes
+        writeLine(stmtWriter, DASH_LINE);
+
+        // ST-LINE13: Column headers
+        writeLine(stmtWriter, COLUMN_HEADER);
+
+        // ST-LINE12 again: Dashes under column headers
+        writeLine(stmtWriter, DASH_LINE);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  5100-WRITE-HTML-HEADER — HTML Table Header
+    //  writeHtmlHeader(Writer) — HTML Document Header
+    //  ← 5100-WRITE-HTML-HEADER (L01–L08: Document structure)
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Writes the HTML table opening and bank name header row.
+     * Writes the HTML document structure and table opening tag.
      *
-     * <p>← 5100-WRITE-HTML-HEADER: Opens HTML table element with the bank name
-     * in a full-width header bar colored {@value #COLOR_HEADER_FOOTER}.</p>
+     * <p>← 5100-WRITE-HTML-HEADER (L01–L08): Outputs the DOCTYPE, html, head,
+     * meta charset, title, head close, body, and opening table element. The
+     * account-specific heading row (L10/L11) and bank info (L15–L18) are written
+     * by {@link #createStatement} since they require account data not available
+     * in this method's parameter list.</p>
      *
-     * @param htmlWriter HTML output writer
-     * @throws IOException if the write fails
+     * @param htmlWriter HTML output writer (← HTML-FILE)
+     * @throws IOException if a write operation fails
      */
-    void writeHtmlHeader(BufferedWriter htmlWriter) throws IOException {
-        htmlWriter.write("<table style=\"width:100%; border-collapse:collapse; "
-                + "margin-bottom:20px; font-family:Arial,sans-serif;\">\n");
-        htmlWriter.write("<tr style=\"background-color:" + COLOR_HEADER_FOOTER
-                + "; color:white;\">\n");
-        htmlWriter.write("<td colspan=\"6\" style=\"padding:10px; text-align:center; "
-                + "font-size:18px;\"><strong>" + escapeHtml(BANK_NAME)
-                + "</strong></td></tr>\n");
+    public void writeHtmlHeader(Writer htmlWriter) throws IOException {
+        // L01: <!DOCTYPE html>
+        htmlWriter.write("<!DOCTYPE html>\n");
+        // L02: <html lang="en">
+        htmlWriter.write("<html lang=\"en\">\n");
+        // L03: <head>
+        htmlWriter.write("<head>\n");
+        // L04: <meta charset="utf-8">
+        htmlWriter.write("<meta charset=\"utf-8\">\n");
+        // L05: <title>HTML Table Layout</title>
+        htmlWriter.write("<title>HTML Table Layout</title>\n");
+        // L06: </head>
+        htmlWriter.write("</head>\n");
+        // L07: <body style="margin:0px;">
+        htmlWriter.write("<body style=\"margin:0px;\">\n");
+        // L08: <table ...>
+        htmlWriter.write("<table align=\"center\" frame=\"box\" "
+                + "style=\"width:70%; font:12px Segoe UI,sans-serif;\">\n");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  5200-WRITE-HTML-NMADBS — HTML Name, Address, Account Details
+    //  writeHtmlNameAddress(Customer, Account, Writer)
+    //  ← 5200-WRITE-HTML-NMADBS
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Writes the HTML customer name, address, and account detail rows.
+     * Writes the HTML customer name, address, account details, and transaction
+     * column headers.
      *
-     * <p>← 5200-WRITE-HTML-NMADBS: Outputs customer information on a
-     * {@value #COLOR_BANK_INFO} background, account details on
-     * {@value #COLOR_DATA_ROW} rows, and transaction column headers on
-     * {@value #COLOR_COLUMN_HEADER} background.</p>
+     * <p>← 5200-WRITE-HTML-NMADBS: Outputs customer name (16px font), address
+     * lines, closes the name section, then writes "Basic Details" header
+     * (← #33FFD1), account info rows (Account ID, Current Balance, FICO Score
+     * on #f2f2f2 background), "Transaction Summary" header, and column headers
+     * (Tran ID, Tran Details, Amount on #33FF5E background).</p>
      *
      * @param customer   customer record
      * @param account    account record
      * @param htmlWriter HTML output writer
-     * @throws IOException if the write fails
+     * @throws IOException if a write operation fails
      */
-    void writeHtmlNameAddress(Customer customer, Account account,
-                              BufferedWriter htmlWriter) throws IOException {
+    public void writeHtmlNameAddress(Customer customer, Account account,
+                                     Writer htmlWriter) throws IOException {
 
-        String fullName = buildFullName(customer);
-        Integer ficoScore = customer.getFicoCreditScore();
-        int ficoDisplay = ficoScore != null ? ficoScore : 0;
+        String fullName = buildCustomerName(customer);
+        String addr1 = safeStr(customer.getAddrLine1()).trim();
+        String addr2 = safeStr(customer.getAddrLine2()).trim();
+        String cityStateZip = buildCityStateZip(customer);
+        String acctId = safeStr(account.getAcctId()).trim();
+        BigDecimal balance = account.getCurrBal();
+        String balStr = balance != null
+                ? balance.setScale(2, RoundingMode.HALF_UP).toPlainString() : "0.00";
+        Integer fico = customer.getFicoCreditScore();
+        String ficoStr = fico != null ? String.valueOf(fico) : "0";
 
-        // Customer info row (← #FFAF33)
-        htmlWriter.write("<tr style=\"background-color:" + COLOR_BANK_INFO + ";\">\n");
-        htmlWriter.write("<td colspan=\"6\" style=\"padding:8px;\">\n");
-        htmlWriter.write("<strong>Customer:</strong> " + escapeHtml(fullName) + "<br>\n");
-        htmlWriter.write("<strong>Address:</strong> "
-                + escapeHtml(safeStr(customer.getAddrLine1())) + "<br>\n");
-        htmlWriter.write(escapeHtml(safeStr(customer.getAddrLine2()) + " "
-                + safeStr(customer.getAddrStateCode()) + " "
-                + safeStr(customer.getAddrZip())) + "\n");
-        htmlWriter.write("</td></tr>\n");
+        // Customer name (← <p style="font-size:16px">{name}  </p>)
+        htmlWriter.write("<p style=\"font-size:16px\">"
+                + escapeHtml(fullName) + "  </p>\n");
 
-        // Account section header (← #33FFD1)
-        htmlWriter.write("<tr style=\"background-color:" + COLOR_SECTION_HEADER + ";\">\n");
-        htmlWriter.write("<td colspan=\"6\" style=\"padding:8px;\"><strong>Account: "
-                + escapeHtml(safeStr(account.getAcctId())) + "</strong></td></tr>\n");
+        // Address lines (← <p>{addr}  </p>)
+        htmlWriter.write("<p>" + escapeHtml(addr1) + "  </p>\n");
+        htmlWriter.write("<p>" + escapeHtml(addr2) + "  </p>\n");
+        htmlWriter.write("<p>" + escapeHtml(cityStateZip) + "  </p>\n");
 
-        // Account detail rows (← #f2f2f2)
-        htmlWriter.write("<tr style=\"background-color:" + COLOR_DATA_ROW + ";\">\n");
-        htmlWriter.write("<td colspan=\"3\" style=\"padding:4px;\">Status: "
-                + escapeHtml(safeStr(account.getActiveStatus())) + "</td>\n");
-        htmlWriter.write("<td colspan=\"3\" style=\"padding:4px;\">Balance: "
-                + formatAmount(account.getCurrBal()) + "</td></tr>\n");
+        // Close name section (← </td></tr>)
+        htmlWriter.write("</td>\n");
+        htmlWriter.write("</tr>\n");
 
-        htmlWriter.write("<tr style=\"background-color:" + COLOR_DATA_ROW + ";\">\n");
-        htmlWriter.write("<td colspan=\"3\" style=\"padding:4px;\">Credit Limit: "
-                + formatAmount(account.getCreditLimit()) + "</td>\n");
-        htmlWriter.write("<td colspan=\"3\" style=\"padding:4px;\">Cash Credit Limit: "
-                + formatAmount(account.getCashCreditLimit()) + "</td></tr>\n");
+        // ── "Basic Details" header row (← L30-42 with #33FFD1) ──
+        htmlWriter.write("<tr>\n");
+        htmlWriter.write("<td colspan=\"3\" style=\"padding:0px 5px;"
+                + "background-color:" + COLOR_SECTION_HDR + "; text-align:center;\">\n");
+        htmlWriter.write("<p style=\"font-size:16px\">Basic Details</p>\n");
+        htmlWriter.write("</td>\n");
+        htmlWriter.write("</tr>\n");
 
-        // FICO score and dates row (← #f2f2f2)
-        htmlWriter.write("<tr style=\"background-color:" + COLOR_DATA_ROW + ";\">\n");
-        htmlWriter.write("<td colspan=\"3\" style=\"padding:4px;\">FICO Score: "
-                + ficoDisplay + "</td>\n");
-        htmlWriter.write("<td colspan=\"3\" style=\"padding:4px;\">Open: "
-                + escapeHtml(safeStr(account.getOpenDate())) + " / Exp: "
-                + escapeHtml(safeStr(account.getExpirationDate())) + "</td></tr>\n");
+        // ── Account details section (← L22-35 background #f2f2f2) ──
+        htmlWriter.write("<tr>\n");
+        htmlWriter.write("<td colspan=\"3\" style=\"padding:0px 5px;"
+                + "background-color:" + COLOR_DATA_ROW + ";\">\n");
+        htmlWriter.write("<p>Account ID         : " + escapeHtml(acctId) + "</p>\n");
+        htmlWriter.write("<p>Current Balance    : " + escapeHtml(balStr) + "</p>\n");
+        htmlWriter.write("<p>FICO Score         : " + escapeHtml(ficoStr) + "</p>\n");
+        htmlWriter.write("</td>\n");
+        htmlWriter.write("</tr>\n");
 
-        // Transaction column headers (← #33FF5E)
-        htmlWriter.write("<tr style=\"background-color:" + COLOR_COLUMN_HEADER + ";\">\n");
-        htmlWriter.write("<td style=\"padding:4px;\"><strong>Tran ID</strong></td>\n");
-        htmlWriter.write("<td style=\"padding:4px;\"><strong>Type</strong></td>\n");
-        htmlWriter.write("<td style=\"padding:4px;\"><strong>Cat</strong></td>\n");
-        htmlWriter.write("<td style=\"padding:4px;\"><strong>Source</strong></td>\n");
-        htmlWriter.write("<td style=\"padding:4px;\"><strong>Description</strong></td>\n");
-        htmlWriter.write("<td style=\"padding:4px;\"><strong>Amount</strong></td></tr>\n");
+        // ── "Transaction Summary" header row (← L30-42 with #33FFD1) ──
+        htmlWriter.write("<tr>\n");
+        htmlWriter.write("<td colspan=\"3\" style=\"padding:0px 5px;"
+                + "background-color:" + COLOR_SECTION_HDR + "; text-align:center;\">\n");
+        htmlWriter.write("<p style=\"font-size:16px\">Transaction Summary</p>\n");
+        htmlWriter.write("</td>\n");
+        htmlWriter.write("</tr>\n");
+
+        // ── Column headers (← L47–L54 with #33FF5E) ──
+        htmlWriter.write("<tr>\n");
+        // Tran ID column (← L47-L48)
+        htmlWriter.write("<td style=\"width:25%; padding:0px 5px; "
+                + "background-color:" + COLOR_COL_HDR + "; text-align:left;\">\n");
+        htmlWriter.write("<p style=\"font-size:16px\">Tran ID</p>\n");
+        htmlWriter.write("</td>\n");
+        // Tran Details column (← L50-L51)
+        htmlWriter.write("<td style=\"width:55%; padding:0px 5px; "
+                + "background-color:" + COLOR_COL_HDR + "; text-align:left;\">\n");
+        htmlWriter.write("<p style=\"font-size:16px\">Tran Details</p>\n");
+        htmlWriter.write("</td>\n");
+        // Amount column (← L53-L54)
+        htmlWriter.write("<td style=\"width:20%; padding:0px 5px; "
+                + "background-color:" + COLOR_COL_HDR + "; text-align:right;\">\n");
+        htmlWriter.write("<p style=\"font-size:16px\">Amount</p>\n");
+        htmlWriter.write("</td>\n");
+        htmlWriter.write("</tr>\n");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  4000-TRNXFILE-GET — Write Matching Transactions
+    //  writeTransactions(CardXref, Map, Writer, Writer)
+    //  ← 4000-TRNXFILE-GET + statement footer
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Writes all transactions matching the given cross-reference card number.
+     * Writes all transactions matching the given cross-reference card number,
+     * then writes the statement footer with the accumulated total.
      *
      * <p>← 4000-TRNXFILE-GET: Scans WS-TRNX-TABLE for entries where
-     * WS-TRNX-CARD-NUM matches XREF-CARD-NUM, calls 6000-WRITE-TRANS for each
-     * match, and accumulates WS-TRNX-TOTAL using {@link BigDecimal} arithmetic
-     * with {@link RoundingMode#HALF_UP} (matching COBOL default rounding).</p>
+     * WS-CARD-NUM(CR-JMP) matches XREF-CARD-NUM, calls
+     * {@link #writeTransactionLine} (← 6000-WRITE-TRANS) for each match, and
+     * accumulates WS-TOTAL-AMT using {@link BigDecimal} arithmetic with
+     * {@link RoundingMode#HALF_UP} (matching COBOL default rounding).</p>
+     *
+     * <p>After the transaction loop, writes the footer: ST-LINE12 (dashes),
+     * ST-LINE14A (total line), ST-LINE15 (end separator), and HTML
+     * "End of Statement" closing tags.</p>
      *
      * @param xref       current cross-reference record
-     * @param trnxTable  pre-loaded transaction table
-     * @param textWriter plain-text output writer
-     * @param htmlWriter HTML output writer
-     * @return accumulated transaction total for this card
+     * @param trnxTable  pre-loaded transaction table (← WS-TRNX-TABLE)
+     * @param stmtWriter plain-text output writer (← STMT-FILE)
+     * @param htmlWriter HTML output writer (← HTML-FILE)
      * @throws IOException if a write operation fails
      */
-    BigDecimal writeTransactions(CardXref xref,
-                                 Map<String, List<Transaction>> trnxTable,
-                                 BufferedWriter textWriter,
-                                 BufferedWriter htmlWriter) throws IOException {
+    public void writeTransactions(CardXref xref,
+                                  Map<String, List<Transaction>> trnxTable,
+                                  Writer stmtWriter, Writer htmlWriter) throws IOException {
 
-        BigDecimal total = BigDecimal.ZERO;
+        // ← MOVE ZERO TO WS-TOTAL-AMT (reset per-statement)
+        totalAmount = BigDecimal.ZERO;
         String cardNum = xref.getXrefCardNum();
-        List<Transaction> transactions = trnxTable.getOrDefault(cardNum, Collections.emptyList());
+        List<Transaction> transactions = trnxTable.getOrDefault(cardNum, List.of());
 
-        for (Transaction txn : transactions) {
-            // ← 6000-WRITE-TRANS
-            writeTransactionLine(txn, textWriter, htmlWriter);
+        // ← PERFORM VARYING TR-JMP FROM 1 BY 1 UNTIL TR-JMP > WS-TRCT(CR-JMP)
+        for (Transaction tran : transactions) {
+            // ← PERFORM 6000-WRITE-TRANS
+            writeTransactionLine(tran, stmtWriter, htmlWriter);
 
-            // Accumulate total (← ADD WS-TRNX-AMT TO WS-TRNX-TOTAL)
-            if (txn.getAmount() != null) {
-                total = total.add(txn.getAmount());
-            }
+            // ← ADD TRNX-AMT TO WS-TOTAL-AMT
+            BigDecimal amount = tran.getAmount() != null ? tran.getAmount() : BigDecimal.ZERO;
+            totalAmount = totalAmount.add(amount);
         }
 
-        if (transactions.isEmpty()) {
-            // Write informational notice when no transactions match this card
-            writeLine(textWriter, padRight("  (No transactions for this period)", LINE_WIDTH));
-            htmlWriter.write("<tr style=\"background-color:" + COLOR_DATA_ROW + ";\">\n");
-            htmlWriter.write("<td colspan=\"6\" style=\"padding:4px; font-style:italic;\">"
-                    + "No transactions for this period</td></tr>\n");
-        }
+        // ── Statement Footer (← after PERFORM loop in 4000-TRNXFILE-GET) ──
 
-        return total;
+        // Text footer: dashes + total line + end separator
+        // ST-LINE12: Dashes
+        writeLine(stmtWriter, DASH_LINE);
+
+        // ST-LINE14A: "Total EXP:" + spaces + "$" + total amount
+        // Layout: PIC X(10) "Total EXP:" + PIC X(56) spaces + PIC X(1) "$" + PIC Z(9).99-
+        String totalFormatted = formatAmountZ9V99(totalAmount);
+        writeLine(stmtWriter, "Total EXP:" + " ".repeat(56) + "$" + totalFormatted);
+
+        // ST-LINE15: End separator
+        writeLine(stmtWriter, END_SEPARATOR);
+
+        // HTML footer: "End of Statement" bar + close table/body/html
+        // ← L10 (dark blue bg) + L75 ("End of Statement")
+        htmlWriter.write("<tr>\n");
+        htmlWriter.write("<td colspan=\"3\" style=\"padding:0px 5px;"
+                + "background-color:" + COLOR_HEADER_FOOTER + ";\">\n");
+        htmlWriter.write("<h3>End of Statement</h3>\n");
+        htmlWriter.write("</td>\n");
+        htmlWriter.write("</tr>\n");
+        // ← L78: </table>
+        htmlWriter.write("</table>\n");
+        // ← L79: </body>
+        htmlWriter.write("</body>\n");
+        // ← L80: </html>
+        htmlWriter.write("</html>\n");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  6000-WRITE-TRANS — Single Transaction Line
+    //  writeTransactionLine(Transaction, Writer, Writer)
+    //  ← 6000-WRITE-TRANS
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
      * Writes a single transaction detail line to both output formats.
      *
-     * <p>← 6000-WRITE-TRANS: Formats a single WS-TRNX-TABLE entry into
-     * ST-LINE13 (PIC X(80) plain-text) and an HTML table row.</p>
+     * <p>← 6000-WRITE-TRANS: Formats TRNX-ID → ST-TRANID (PIC X(16)),
+     * TRNX-DESC → ST-TRANDT (PIC X(49)), TRNX-AMT → ST-TRANAMT (PIC Z(9).99-)
+     * into ST-LINE14 for plain-text, and an HTML table row with three cells
+     * (Tran ID, Tran Details, Amount) on {@value #COLOR_DATA_ROW} background.</p>
      *
-     * @param txn        transaction record
-     * @param textWriter plain-text output writer
-     * @param htmlWriter HTML output writer
+     * @param tran       transaction record
+     * @param stmtWriter plain-text output writer (← STMT-FILE)
+     * @param htmlWriter HTML output writer (← HTML-FILE)
      * @throws IOException if a write operation fails
      */
-    void writeTransactionLine(Transaction txn,
-                              BufferedWriter textWriter,
-                              BufferedWriter htmlWriter) throws IOException {
+    public void writeTransactionLine(Transaction tran,
+                                     Writer stmtWriter, Writer htmlWriter) throws IOException {
 
-        // ── Plain-text line (← ST-LINE13 layout) ──
-        String catStr = txn.getCategoryCode() != null
-                ? String.valueOf(txn.getCategoryCode()) : "";
-        String line = String.format("%-10s %-4s %-3s %-6s %-24s %12s",
-                safeStr(txn.getTranId()),
-                safeStr(txn.getTypeCode()),
-                catStr,
-                safeStr(txn.getSource()),
-                truncate(safeStr(txn.getDescription()), 24),
-                formatAmount(txn.getAmount()));
-        writeLine(textWriter, padRight(line, LINE_WIDTH));
+        // ── Plain-text: ST-LINE14 layout ──
+        // ST-TRANID PIC X(16) + ' ' PIC X(1) + ST-TRANDT PIC X(49) + '$' PIC X(1)
+        //   + ST-TRANAMT PIC Z(9).99- = 16+1+49+1+13 = 80
+        String tranId = padRight(safeStr(tran.getTranId()), 16);
+        String tranDesc = padRight(safeStr(tran.getDescription()).trim(), 49);
+        String tranAmt = formatAmountZ9V99(tran.getAmount());
+        writeLine(stmtWriter, tranId + " " + tranDesc + "$" + tranAmt);
 
-        // ── HTML row (← #f2f2f2) ──
-        htmlWriter.write("<tr style=\"background-color:" + COLOR_DATA_ROW + ";\">\n");
-        htmlWriter.write("<td style=\"padding:4px;\">"
-                + escapeHtml(safeStr(txn.getTranId())) + "</td>\n");
-        htmlWriter.write("<td style=\"padding:4px;\">"
-                + escapeHtml(safeStr(txn.getTypeCode())) + "</td>\n");
-        htmlWriter.write("<td style=\"padding:4px;\">" + escapeHtml(catStr) + "</td>\n");
-        htmlWriter.write("<td style=\"padding:4px;\">"
-                + escapeHtml(safeStr(txn.getSource())) + "</td>\n");
-        htmlWriter.write("<td style=\"padding:4px;\">"
-                + escapeHtml(safeStr(txn.getDescription())) + "</td>\n");
-        htmlWriter.write("<td style=\"padding:4px; text-align:right;\">"
-                + formatAmount(txn.getAmount()) + "</td></tr>\n");
+        // ── HTML row (← L58/L61/L64 on #f2f2f2 background) ──
+        htmlWriter.write("<tr>\n");
+
+        // Tran ID cell (← L58: width:25%, text-align:left)
+        htmlWriter.write("<td style=\"width:25%; padding:0px 5px; "
+                + "background-color:" + COLOR_DATA_ROW + "; text-align:left;\">\n");
+        htmlWriter.write("<p>" + escapeHtml(safeStr(tran.getTranId()).trim()) + "</p>\n");
+        htmlWriter.write("</td>\n");
+
+        // Tran Details cell (← L61: width:55%, text-align:left)
+        htmlWriter.write("<td style=\"width:55%; padding:0px 5px; "
+                + "background-color:" + COLOR_DATA_ROW + "; text-align:left;\">\n");
+        htmlWriter.write("<p>" + escapeHtml(safeStr(tran.getDescription()).trim()) + "</p>\n");
+        htmlWriter.write("</td>\n");
+
+        // Amount cell (← L64: width:20%, text-align:right)
+        htmlWriter.write("<td style=\"width:20%; padding:0px 5px; "
+                + "background-color:" + COLOR_DATA_ROW + "; text-align:right;\">\n");
+        BigDecimal amt = tran.getAmount();
+        String amtDisplay = amt != null
+                ? amt.setScale(2, RoundingMode.HALF_UP).toPlainString() : "0.00";
+        htmlWriter.write("<p>" + escapeHtml(amtDisplay) + "</p>\n");
+        htmlWriter.write("</td>\n");
+
+        htmlWriter.write("</tr>\n");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  Statement Footer — Total Line
+    //  Private Helper Methods
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Writes the statement footer with the accumulated transaction total.
+     * Reads the next cross-reference record via StatementIoService.
      *
-     * <p>← Post-4000-TRNXFILE-GET in 1000-MAINLINE: Outputs the dash separator
-     * (ST-LINE14), total line (ST-LINE15), and closing star separator for
-     * plain-text.  For HTML, outputs the total row and closes the table.</p>
+     * <p>← 1000-XREFFILE-GET-NEXT: CALL 'CBSTM03B' with M03B-READ on XREFFILE.
+     * Returns {@link Optional#empty()} when EOF is reached (RC='10').</p>
      *
-     * @param total      accumulated transaction total (← WS-TRNX-TOTAL)
-     * @param textWriter plain-text output writer
-     * @param htmlWriter HTML output writer
-     * @throws IOException if a write operation fails
+     * @return next CardXref, or empty if EOF
      */
-    void writeStatementFooter(BigDecimal total,
-                              BufferedWriter textWriter,
-                              BufferedWriter htmlWriter) throws IOException {
-
-        // ── Plain-text footer ──
-
-        // ST-LINE14: Dash separator
-        writeLine(textWriter, DASHES_80);
-
-        // ST-LINE15: Total line
-        writeLine(textWriter, padRight("TOTAL: " + formatAmount(total), LINE_WIDTH));
-
-        // Closing star separator
-        writeLine(textWriter, STARS_80);
-
-        // Blank line between statements
-        textWriter.newLine();
-
-        // ── HTML footer (← #1d1d96b3) ──
-        htmlWriter.write("<tr style=\"background-color:" + COLOR_HEADER_FOOTER
-                + "; color:white;\">\n");
-        htmlWriter.write("<td colspan=\"5\" style=\"padding:8px; text-align:right;\">"
-                + "<strong>TOTAL:</strong></td>\n");
-        htmlWriter.write("<td style=\"padding:8px; text-align:right;\"><strong>"
-                + formatAmount(total) + "</strong></td></tr>\n");
-        htmlWriter.write("</table>\n<br>\n");
+    private Optional<CardXref> getNextXref() {
+        return statementIoService.readNextXref();
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  Utility Methods
-    // ═══════════════════════════════════════════════════════════════════════════
+    /**
+     * Reads a customer record by primary key.
+     *
+     * <p>← 2000-CUSTFILE-GET: CALL 'CBSTM03B' with M03B-READ-K on CUSTFILE
+     * using XREF-CUST-ID as the key. Uses StatementIoService as primary access
+     * path with direct repository as fallback.</p>
+     *
+     * @param custId customer identifier (← XREF-CUST-ID, 9 bytes)
+     * @return customer record
+     * @throws CardDemoException if customer is not found
+     */
+    private Customer getCustomer(String custId) {
+        // Primary: via StatementIoService (← COBOL CBSTM03B M03B-READ-K)
+        Optional<Customer> opt = statementIoService.readCustomerByKey(custId);
+        if (opt.isPresent()) {
+            return opt.get();
+        }
+        // Fallback: direct repository access
+        return customerRepository.findById(custId)
+                .orElseThrow(() -> {
+                    logger.error("Customer not found: custId={}", custId);
+                    return new CardDemoException(
+                            "ERROR READING CUSTFILE — customer not found: " + custId);
+                });
+    }
+
+    /**
+     * Reads an account record by primary key.
+     *
+     * <p>← 3000-ACCTFILE-GET: CALL 'CBSTM03B' with M03B-READ-K on ACCTFILE
+     * using XREF-ACCT-ID as the key. Uses StatementIoService as primary access
+     * path with direct repository as fallback.</p>
+     *
+     * @param acctId account identifier (← XREF-ACCT-ID, 11 bytes)
+     * @return account record
+     * @throws CardDemoException if account is not found
+     */
+    private Account getAccount(String acctId) {
+        // Primary: via StatementIoService (← COBOL CBSTM03B M03B-READ-K)
+        Optional<Account> opt = statementIoService.readAccountByKey(acctId);
+        if (opt.isPresent()) {
+            return opt.get();
+        }
+        // Fallback: direct repository access
+        return accountRepository.findById(acctId)
+                .orElseThrow(() -> {
+                    logger.error("Account not found: acctId={}", acctId);
+                    return new CardDemoException(
+                            "ERROR READING ACCTFILE — account not found: " + acctId);
+                });
+    }
 
     /**
      * Builds the customer full name from first, middle, and last name fields.
      *
-     * <p>← STRING CUST-FIRST-NAME DELIMITED BY '  ' ... INTO WS-CUST-FULL-NAME.
-     * Trims each component and concatenates with single-space separators.</p>
+     * <p>← STRING CUST-FIRST-NAME DELIMITED BY ' ' ' ' DELIMITED BY SIZE
+     * CUST-MIDDLE-NAME DELIMITED BY ' ' ' ' DELIMITED BY SIZE
+     * CUST-LAST-NAME DELIMITED BY ' ' INTO ST-NAME.
+     * Uses {@code trim()} on each field to remove COBOL padding spaces.</p>
      *
      * @param customer customer record
-     * @return full name string, never null
+     * @return formatted full name, never null
      */
-    String buildFullName(Customer customer) {
-        StringBuilder sb = new StringBuilder();
+    private String buildCustomerName(Customer customer) {
         String first = safeStr(customer.getFirstName()).trim();
         String middle = safeStr(customer.getMiddleName()).trim();
         String last = safeStr(customer.getLastName()).trim();
+        StringBuilder sb = new StringBuilder();
         if (!first.isEmpty()) {
             sb.append(first);
         }
@@ -831,25 +850,120 @@ public class StatementEngineService {
     }
 
     /**
-     * Writes a line to the text writer, padded or truncated to {@link #LINE_WIDTH}.
+     * Builds the city/state/country/zip address line.
      *
-     * @param writer text writer
-     * @param line   line content
-     * @throws IOException if the write fails
+     * <p>← STRING CUST-ADDR-LINE-3 DELIMITED BY ' ' ' ' DELIMITED BY SIZE
+     * CUST-ADDR-STATE-CD DELIMITED BY ' ' ' ' DELIMITED BY SIZE
+     * CUST-ADDR-COUNTRY-CD DELIMITED BY ' ' ' ' DELIMITED BY SIZE
+     * CUST-ADDR-ZIP DELIMITED BY ' ' INTO ST-ADD3.
+     * Uses {@code trim()} on each field to remove COBOL padding spaces.</p>
+     *
+     * @param customer customer record
+     * @return formatted city/state/country/zip line, never null
      */
-    private static void writeLine(BufferedWriter writer, String line) throws IOException {
-        writer.write(line);
-        writer.newLine();
+    private String buildCityStateZip(Customer customer) {
+        String city = safeStr(customer.getAddrLine3()).trim();
+        String state = safeStr(customer.getAddrStateCode()).trim();
+        String country = safeStr(customer.getAddrCountryCode()).trim();
+        String zip = safeStr(customer.getAddrZip()).trim();
+        StringBuilder sb = new StringBuilder();
+        if (!city.isEmpty()) {
+            sb.append(city);
+        }
+        if (!state.isEmpty()) {
+            if (!sb.isEmpty()) {
+                sb.append(' ');
+            }
+            sb.append(state);
+        }
+        if (!country.isEmpty()) {
+            if (!sb.isEmpty()) {
+                sb.append(' ');
+            }
+            sb.append(country);
+        }
+        if (!zip.isEmpty()) {
+            if (!sb.isEmpty()) {
+                sb.append(' ');
+            }
+            sb.append(zip);
+        }
+        return sb.toString();
     }
 
     /**
-     * Returns the input string or empty string if null (← SPACES in COBOL).
+     * Formats a monetary amount as COBOL PIC Z(9).99- (13 characters).
      *
-     * @param value input string
-     * @return non-null string
+     * <p>Leading zeros are replaced with spaces (Z-suppression). Trailing sign
+     * character: '-' for negative, ' ' for positive/zero. Total width: 9
+     * (integer with Z-suppression) + '.' + 2 (decimal) + sign = 13.</p>
+     *
+     * <p>Examples: 1234.56 → "     1234.56 ", -99.00 → "       99.00-"</p>
+     *
+     * @param value monetary amount, may be null (treated as zero)
+     * @return 13-character formatted string
      */
-    static String safeStr(String value) {
-        return value != null ? value : "";
+    private static String formatAmountZ9V99(BigDecimal value) {
+        BigDecimal val = value != null ? value : BigDecimal.ZERO;
+        BigDecimal abs = val.abs().setScale(2, RoundingMode.HALF_UP);
+        String plain = abs.toPlainString();
+        int dot = plain.indexOf('.');
+        String intPart = dot >= 0 ? plain.substring(0, dot) : plain;
+        String decPart = dot >= 0 ? plain.substring(dot + 1) : "00";
+        if (decPart.length() < 2) {
+            decPart = decPart + "0";
+        }
+        if (decPart.length() > 2) {
+            decPart = decPart.substring(0, 2);
+        }
+        String sign = val.signum() < 0 ? "-" : " ";
+        // Z(9) = 9-char integer with leading-zero suppression (spaces)
+        return String.format("%9s", intPart) + "." + decPart + sign;
+    }
+
+    /**
+     * Formats a balance amount as COBOL PIC 9(9).99- (13 characters).
+     *
+     * <p>Leading zeros are preserved (not suppressed). Trailing sign character:
+     * '-' for negative, ' ' for positive/zero. Total width: 9 (integer with
+     * leading zeros) + '.' + 2 (decimal) + sign = 13.</p>
+     *
+     * <p>Examples: 1234.56 → "000001234.56 ", -5000.00 → "000005000.00-"</p>
+     *
+     * @param value monetary amount, may be null (treated as zero)
+     * @return 13-character formatted string
+     */
+    private static String formatBalance9V99(BigDecimal value) {
+        BigDecimal val = value != null ? value : BigDecimal.ZERO;
+        BigDecimal abs = val.abs().setScale(2, RoundingMode.HALF_UP);
+        String plain = abs.toPlainString();
+        int dot = plain.indexOf('.');
+        String intPart = dot >= 0 ? plain.substring(0, dot) : plain;
+        String decPart = dot >= 0 ? plain.substring(dot + 1) : "00";
+        if (decPart.length() < 2) {
+            decPart = decPart + "0";
+        }
+        if (decPart.length() > 2) {
+            decPart = decPart.substring(0, 2);
+        }
+        // PIC 9(9) = leading zeros displayed, right-justified with '0' fill
+        String paddedInt = String.format("%9s", intPart).replace(' ', '0');
+        String sign = val.signum() < 0 ? "-" : " ";
+        return paddedInt + "." + decPart + sign;
+    }
+
+    /**
+     * Writes a line to the text output writer followed by a newline.
+     *
+     * <p>← WRITE FD-STMTFILE-REC FROM ST-LINEnn.</p>
+     *
+     * @param writer output writer
+     * @param line   line content (should be exactly {@value #LINE_WIDTH} chars)
+     * @throws IOException if the write fails
+     */
+    private static void writeLine(Writer writer, String line) throws IOException {
+        writer.write(line);
+        writer.write("\n");
     }
 
     /**
@@ -860,9 +974,9 @@ public class StatementEngineService {
      *
      * @param text  input text
      * @param width target width
-     * @return fixed-width string
+     * @return fixed-width string of exactly {@code width} characters
      */
-    static String padRight(String text, int width) {
+    private static String padRight(String text, int width) {
         if (text == null) {
             return " ".repeat(width);
         }
@@ -873,42 +987,24 @@ public class StatementEngineService {
     }
 
     /**
-     * Truncates text to the specified maximum length.
+     * Returns the input string or empty string if null.
      *
-     * @param text   input text
-     * @param maxLen maximum character length
-     * @return truncated string, never null
+     * <p>← COBOL SPACES default for uninitialized PIC X fields.</p>
+     *
+     * @param value input string, may be null
+     * @return non-null string
      */
-    static String truncate(String text, int maxLen) {
-        if (text == null) {
-            return "";
-        }
-        return text.length() <= maxLen ? text : text.substring(0, maxLen);
+    private static String safeStr(String value) {
+        return value != null ? value : "";
     }
 
     /**
-     * Formats a {@link BigDecimal} amount with exactly 2 decimal places.
+     * Escapes HTML special characters to prevent injection in generated output.
      *
-     * <p>← PIC S9(10)V99 display formatting. Uses {@link RoundingMode#HALF_UP}
-     * matching COBOL default rounding behavior.</p>
-     *
-     * @param amount monetary amount, may be null
-     * @return formatted string (e.g., "1234.56"), "0.00" if null
+     * @param text raw text, may be null
+     * @return HTML-safe text, never null
      */
-    static String formatAmount(BigDecimal amount) {
-        if (amount == null) {
-            return "0.00";
-        }
-        return amount.setScale(2, RoundingMode.HALF_UP).toPlainString();
-    }
-
-    /**
-     * Escapes HTML special characters to prevent XSS in generated statements.
-     *
-     * @param text raw text
-     * @return HTML-safe text
-     */
-    static String escapeHtml(String text) {
+    private static String escapeHtml(String text) {
         if (text == null) {
             return "";
         }
