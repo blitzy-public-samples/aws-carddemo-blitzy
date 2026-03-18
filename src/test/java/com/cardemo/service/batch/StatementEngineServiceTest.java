@@ -188,6 +188,22 @@ class StatementEngineServiceTest {
         );
     }
 
+    /**
+     * Creates a test Transaction with given ID and amount, using default card
+     * number "4111111111111111" and standard field values.
+     *
+     * <p>This is the two-parameter factory matching the AAP-specified
+     * {@code createTestTransaction(String tranId, BigDecimal amount)} signature.
+     * Delegates to {@link #createTestTransactionForCard} with the default card.</p>
+     *
+     * @param tranId transaction identifier (← TRAN-ID PIC X(16))
+     * @param amount transaction amount (← TRAN-AMT PIC S9(9)V99 COMP-3)
+     * @return a new Transaction entity with test data
+     */
+    private Transaction createTestTransaction(String tranId, BigDecimal amount) {
+        return createTestTransactionForCard(tranId, amount, "4111111111111111");
+    }
+
     // =========================================================================
     // Test 1: StatementIoService Dependency Injection (← CALL 'CBSTM03B')
     // =========================================================================
@@ -246,6 +262,96 @@ class StatementEngineServiceTest {
                 .map(Transaction::getAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         assertThat(card1Total).isEqualByComparingTo(new BigDecimal("350.00"));
+    }
+
+    // =========================================================================
+    // Test 2b: Customer Resolution via StatementIoService (← 2000-CUSTFILE-GET)
+    // =========================================================================
+
+    /**
+     * Verifies that customer lookup delegates to StatementIoService's keyed read,
+     * which replaces the COBOL pattern: CALL 'CBSTM03B' USING WS-M03B-AREA with
+     * M03B-DD = CUSTFILE, M03B-ESSION = READ-K.
+     *
+     * <p>COBOL paragraph 2000-CUSTFILE-GET resolves the customer record for a
+     * given card's custId obtained from the XREF. The Java service delegates
+     * this to {@code StatementIoService.readCustomerByKey()}.</p>
+     */
+    @Test
+    @DisplayName("Should resolve customer via StatementIoService keyed read (← 2000-CUSTFILE-GET)")
+    void shouldResolveCustomerViaStatementIoService(@TempDir Path tempDir) {
+        // Given: CardXref with custId = "000000001"
+        CardXref xref = createTestXref();
+        Customer customer = createTestCustomer();
+        Account account = createTestAccount();
+
+        // Mock transaction table loading (empty — no transactions to load)
+        when(statementIoService.readNextTransaction()).thenReturn(Optional.empty());
+
+        // Mock XREF iteration — single XREF then EOF (← XREF RC='10' end-of-file)
+        when(statementIoService.readNextXref())
+                .thenReturn(Optional.of(xref))
+                .thenReturn(Optional.empty());
+
+        // Mock customer keyed read via StatementIoService
+        // (← CALL 'CBSTM03B' with M03B-DD=CUSTFILE, M03B-ESSION=READ-K)
+        when(statementIoService.readCustomerByKey("000000001"))
+                .thenReturn(Optional.of(customer));
+
+        // Mock account keyed read via StatementIoService
+        when(statementIoService.readAccountByKey("00000000001"))
+                .thenReturn(Optional.of(account));
+
+        // When: generateStatements processes this card (← 1000-MAINLINE)
+        statementEngineService.generateStatements(tempDir.toString());
+
+        // Then: Customer was resolved via StatementIoService keyed read (← paragraph 2000)
+        verify(statementIoService, times(1)).readCustomerByKey("000000001");
+    }
+
+    // =========================================================================
+    // Test 2c: Account Resolution via StatementIoService (← 3000-ACCTFILE-GET)
+    // =========================================================================
+
+    /**
+     * Verifies that account lookup delegates to StatementIoService's keyed read,
+     * which replaces the COBOL pattern: CALL 'CBSTM03B' USING WS-M03B-AREA with
+     * M03B-DD = ACCTFILE, M03B-ESSION = READ-K.
+     *
+     * <p>COBOL paragraph 3000-ACCTFILE-GET resolves the account record for a
+     * given card's accountId obtained from the XREF. The Java service delegates
+     * this to {@code StatementIoService.readAccountByKey()}.</p>
+     */
+    @Test
+    @DisplayName("Should resolve account via StatementIoService keyed read (← 3000-ACCTFILE-GET)")
+    void shouldResolveAccountViaStatementIoService(@TempDir Path tempDir) {
+        // Given: CardXref with accountId = "00000000001"
+        CardXref xref = createTestXref();
+        Customer customer = createTestCustomer();
+        Account account = createTestAccount();
+
+        // Mock transaction table loading (empty — no transactions to load)
+        when(statementIoService.readNextTransaction()).thenReturn(Optional.empty());
+
+        // Mock XREF iteration — single XREF then EOF
+        when(statementIoService.readNextXref())
+                .thenReturn(Optional.of(xref))
+                .thenReturn(Optional.empty());
+
+        // Mock customer keyed read via StatementIoService
+        when(statementIoService.readCustomerByKey("000000001"))
+                .thenReturn(Optional.of(customer));
+
+        // Mock account keyed read via StatementIoService
+        // (← CALL 'CBSTM03B' with M03B-DD=ACCTFILE, M03B-ESSION=READ-K)
+        when(statementIoService.readAccountByKey("00000000001"))
+                .thenReturn(Optional.of(account));
+
+        // When: generateStatements processes this card (← 1000-MAINLINE)
+        statementEngineService.generateStatements(tempDir.toString());
+
+        // Then: Account was resolved via StatementIoService keyed read (← paragraph 3000)
+        verify(statementIoService, times(1)).readAccountByKey("00000000001");
     }
 
     // =========================================================================
@@ -581,6 +687,46 @@ class StatementEngineServiceTest {
         String htmlOutput = htmlSw.toString();
         assertThat(htmlOutput).contains("End of Statement");
         assertThat(htmlOutput).contains("</html>");
+    }
+
+    // =========================================================================
+    // Test 11b: Edge Case — Missing Customer Record (← COBOL INVALID KEY)
+    // =========================================================================
+
+    /**
+     * Verifies that when a customer record cannot be found through either
+     * StatementIoService or the repository fallback, the service throws a
+     * CardDemoException — matching the COBOL behavior of INVALID KEY / file
+     * status '23' (record not found) in paragraph 2000-CUSTFILE-GET.
+     *
+     * <p>In the original COBOL, a failed keyed READ on CUSTFILE would set
+     * WS-IO-STATUS to a non-zero value, triggering the 9999-ABEND-PROGRAM
+     * paragraph. The Java equivalent throws CardDemoException.</p>
+     */
+    @Test
+    @DisplayName("Should handle missing customer record gracefully")
+    void shouldHandleMissingCustomer(@TempDir Path tempDir) {
+        // Given: CardXref exists but customer lookup returns empty from both sources
+        CardXref xref = createTestXref();
+
+        // Mock transaction table loading (empty — no transactions)
+        when(statementIoService.readNextTransaction()).thenReturn(Optional.empty());
+
+        // Mock XREF iteration — single XREF then EOF
+        when(statementIoService.readNextXref())
+                .thenReturn(Optional.of(xref))
+                .thenReturn(Optional.empty());
+
+        // Both customer sources return empty (← COBOL INVALID KEY / file status '23')
+        when(statementIoService.readCustomerByKey("000000001"))
+                .thenReturn(Optional.empty());
+        when(customerRepository.findById("000000001"))
+                .thenReturn(Optional.empty());
+
+        // Then: CardDemoException is thrown for missing customer (← 9999-ABEND-PROGRAM)
+        assertThatThrownBy(() -> statementEngineService.generateStatements(tempDir.toString()))
+                .isInstanceOf(CardDemoException.class)
+                .hasMessageContaining("customer not found");
     }
 
     // =========================================================================
