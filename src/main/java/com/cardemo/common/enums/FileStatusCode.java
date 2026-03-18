@@ -1,5 +1,6 @@
 /*
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,13 +15,19 @@
  */
 package com.cardemo.common.enums;
 
+import com.cardemo.common.exception.DuplicateRecordException;
+import com.cardemo.common.exception.FileStatusException;
+import com.cardemo.common.exception.RecordNotFoundException;
+
 /**
- * Enumerates VSAM file status codes used throughout the CardDemo application.
+ * Enumerates VSAM two-byte file status codes used throughout the CardDemo
+ * application, mapping each code to its human-readable description and the
+ * corresponding Java exception type.
  *
- * <p>In the original COBOL programs, every VSAM file I/O operation sets a two-byte
- * {@code FILE STATUS} field that is checked after each READ, WRITE, REWRITE, DELETE,
- * STARTBR, READNEXT, and ENDBR operation. The common pattern in CardDemo COBOL
- * programs is:</p>
+ * <p>In the original COBOL programs, every VSAM file I/O operation sets a
+ * two-byte {@code FILE STATUS} field that is inspected after each READ, WRITE,
+ * REWRITE, DELETE, STARTBR, READNEXT, and ENDBR operation. The common
+ * pattern across all 28 CardDemo COBOL programs is:</p>
  *
  * <pre>
  *   EXEC CICS READ
@@ -31,121 +38,198 @@ package com.cardemo.common.enums;
  *        RESP2    (WS-REAS-CD)
  *   END-EXEC
  *   EVALUATE WS-RESP-CD
- *       WHEN DFHRESP(NORMAL)    → STATUS '00'
- *       WHEN DFHRESP(NOTFND)    → STATUS '23'
- *       WHEN DFHRESP(DUPREC)    → STATUS '22'
- *       WHEN DFHRESP(NOTOPEN)   → STATUS '35'
- *       ...
+ *       WHEN DFHRESP(NORMAL)    → STATUS '00' (success)
+ *       WHEN DFHRESP(NOTFND)    → STATUS '23' (record not found)
+ *       WHEN DFHRESP(DUPREC)    → STATUS '22' (duplicate key)
+ *       WHEN DFHRESP(NOTOPEN)   → STATUS '35' (file not available)
+ *       WHEN DFHRESP(ENDFILE)   → STATUS '10' (end of file)
+ *       WHEN OTHER              → 9999-ABEND-PROGRAM
  *   END-EVALUATE
  * </pre>
  *
- * <p>This enum provides the Java equivalent of these two-byte status codes. Each
- * constant maps to a specific VSAM condition and is used to construct the
- * appropriate exception in the CardDemo exception hierarchy:</p>
- * <ul>
- *   <li>{@link #SUCCESS} (00) — Operation completed normally</li>
- *   <li>{@link #DUPLICATE_RECORD} (22) →
- *       {@link com.cardemo.common.exception.DuplicateRecordException}</li>
- *   <li>{@link #RECORD_NOT_FOUND} (23) →
- *       {@link com.cardemo.common.exception.RecordNotFoundException}</li>
- *   <li>{@link #FILE_NOT_AVAILABLE} (35) →
- *       {@link com.cardemo.common.exception.FileStatusException}</li>
- * </ul>
+ * <h2>Batch Programs</h2>
+ * <p>In batch programs (CBTRN02C.cbl, CBSTM03B.CBL), the file status is
+ * captured in a two-byte working storage field:</p>
+ * <pre>
+ *   01  TRANFILE-STATUS.
+ *       05  TRANFILE-STAT1      PIC X.
+ *       05  TRANFILE-STAT2      PIC X.
+ *   01  IO-STATUS.
+ *       05  IO-STAT1            PIC X.
+ *       05  IO-STAT2            PIC X.
+ * </pre>
+ * <p>The {@code 9910-DISPLAY-IO-STATUS} paragraph formats and displays the
+ * two-byte status before invoking {@code 9999-ABEND-PROGRAM}. In
+ * CBSTM03B.CBL, the status is propagated via the linkage area field
+ * {@code LK-M03B-RC PIC X(02)} for callers to inspect.</p>
  *
- * <p>The {@code code} field preserves the original two-character COBOL
- * representation for logging and diagnostic compatibility.</p>
+ * <h2>Status Code to Exception Mapping</h2>
+ * <table>
+ *   <caption>VSAM Status Code to Java Exception Mapping</caption>
+ *   <tr><th>Status</th><th>Constant</th><th>Java Exception</th></tr>
+ *   <tr><td>00</td><td>{@link #SUCCESS}</td>
+ *       <td>{@code null} — no exception</td></tr>
+ *   <tr><td>02</td><td>{@link #DUPLICATE_ALTERNATE_KEY}</td>
+ *       <td>{@link DuplicateRecordException}</td></tr>
+ *   <tr><td>10</td><td>{@link #END_OF_FILE}</td>
+ *       <td>{@link RecordNotFoundException}</td></tr>
+ *   <tr><td>22</td><td>{@link #DUPLICATE_KEY}</td>
+ *       <td>{@link DuplicateRecordException}</td></tr>
+ *   <tr><td>23</td><td>{@link #RECORD_NOT_FOUND}</td>
+ *       <td>{@link RecordNotFoundException}</td></tr>
+ *   <tr><td>35</td><td>{@link #FILE_NOT_AVAILABLE}</td>
+ *       <td>{@link FileStatusException}</td></tr>
+ *   <tr><td>46</td><td>{@link #SEQUENTIAL_READ_NO_POSITION}</td>
+ *       <td>{@link FileStatusException}</td></tr>
+ *   <tr><td>47</td><td>{@link #READ_FILE_NOT_OPEN}</td>
+ *       <td>{@link FileStatusException}</td></tr>
+ * </table>
  *
- * @see com.cardemo.common.exception.FileStatusException
- * @see com.cardemo.common.exception.RecordNotFoundException
- * @see com.cardemo.common.exception.DuplicateRecordException
+ * <h2>Exception Hierarchy</h2>
+ * <pre>
+ * RuntimeException
+ * └── CardDemoException
+ *     └── FileStatusException
+ *         ├── RecordNotFoundException   (STATUS '23', '10')
+ *         └── DuplicateRecordException  (STATUS '22', '02')
+ * </pre>
+ *
+ * @see FileStatusException
+ * @see RecordNotFoundException
+ * @see DuplicateRecordException
  */
 public enum FileStatusCode {
 
     /**
-     * Successful completion — VSAM status '00'.
+     * Successful completion — VSAM status {@code '00'}.
+     *
      * <p>The I/O operation completed without error. This is the normal outcome
-     * for READ, WRITE, REWRITE, DELETE, STARTBR, READNEXT, and ENDBR operations.
-     * In COBOL: {@code DFHRESP(NORMAL)} or {@code FILE STATUS = '00'}.</p>
+     * for READ, WRITE, REWRITE, DELETE, STARTBR, READNEXT, and ENDBR
+     * operations. In COBOL: {@code DFHRESP(NORMAL)} or
+     * {@code FILE STATUS = '00'}.</p>
+     *
+     * <p>The {@link #toException()} method returns {@code null} for this
+     * constant because no exception is warranted for a successful operation.
+     * Callers should check for {@code SUCCESS} before invoking
+     * {@code toException()}.</p>
      */
-    SUCCESS("00", "Successful completion"),
+    SUCCESS("00", "Operation successful"),
 
     /**
-     * Duplicate record — VSAM status '22'.
-     * <p>A WRITE operation attempted to insert a record with a primary key that
-     * already exists in the VSAM KSDS dataset. In COBOL: {@code DFHRESP(DUPREC)}
-     * or {@code FILE STATUS = '22'}.</p>
-     * <p>Maps to {@link com.cardemo.common.exception.DuplicateRecordException}.</p>
+     * Duplicate alternate key — VSAM status {@code '02'}.
+     *
+     * <p>A WRITE or REWRITE operation succeeded on the primary key but
+     * detected a duplicate on an alternate index (AIX). In COBOL, this
+     * occurs when writing to datasets with {@code ALTERNATEINDEX} defined
+     * (e.g., CARDDATA AIX on CARD-ACCT-ID, CARDXREF AIX on XREF-ACCT-ID,
+     * TRANSACT AIX on TRAN-ORIG-TS).</p>
+     *
+     * <p>Maps to {@link DuplicateRecordException} via
+     * {@link #toException()}.</p>
      */
-    DUPLICATE_RECORD("22", "Duplicate record — key already exists"),
+    DUPLICATE_ALTERNATE_KEY("02", "Duplicate alternate key"),
 
     /**
-     * Record not found — VSAM status '23'.
-     * <p>A READ or DELETE operation specified a key that does not exist in the
-     * VSAM KSDS dataset. In COBOL: {@code DFHRESP(NOTFND)} or
-     * {@code FILE STATUS = '23'}.</p>
-     * <p>Maps to {@link com.cardemo.common.exception.RecordNotFoundException}.</p>
-     */
-    RECORD_NOT_FOUND("23", "Record not found — key does not exist"),
-
-    /**
-     * End of file — VSAM status '10'.
+     * End of file reached — VSAM status {@code '10'}.
+     *
      * <p>A READNEXT operation reached the end of the VSAM dataset during a
      * browse operation. In COBOL: {@code DFHRESP(ENDFILE)} or
-     * {@code FILE STATUS = '10'}.</p>
+     * {@code FILE STATUS = '10'}. This is commonly encountered in:</p>
+     * <ul>
+     *   <li>COCRDLIC.cbl — card list browse loop</li>
+     *   <li>COTRN00C.cbl — transaction list browse loop</li>
+     *   <li>COUSR00C.cbl — user list browse loop</li>
+     *   <li>CBTRN02C.cbl — batch sequential read of DALYTRAN</li>
+     * </ul>
+     *
+     * <p>Maps to {@link RecordNotFoundException} via
+     * {@link #toException()}.</p>
      */
-    END_OF_FILE("10", "End of file reached during browse"),
+    END_OF_FILE("10", "End of file reached"),
 
     /**
-     * File not available — VSAM status '35'.
-     * <p>The specified VSAM dataset is not open or not available for processing.
-     * In COBOL: {@code DFHRESP(NOTOPEN)} or {@code FILE STATUS = '35'}.
-     * This typically occurs during the batch window when CLOSEFIL has closed
-     * files for batch processing.</p>
-     * <p>Maps to {@link com.cardemo.common.exception.FileStatusException}.</p>
+     * Duplicate primary key — VSAM status {@code '22'}.
+     *
+     * <p>A WRITE operation attempted to insert a record with a primary key
+     * that already exists in the VSAM KSDS dataset. In COBOL:
+     * {@code DFHRESP(DUPREC)} or {@code FILE STATUS = '22'}. This
+     * condition is handled in:</p>
+     * <ul>
+     *   <li>COTRN02C.cbl — duplicate TRAN-ID on transaction add</li>
+     *   <li>COUSR01C.cbl — duplicate SEC-USR-ID on user add</li>
+     *   <li>COBIL00C.cbl — duplicate transaction during bill payment</li>
+     * </ul>
+     *
+     * <p>Maps to {@link DuplicateRecordException} via
+     * {@link #toException()}.</p>
      */
-    FILE_NOT_AVAILABLE("35", "File not available or not open"),
+    DUPLICATE_KEY("22", "Duplicate primary key"),
 
     /**
-     * Sequence error — VSAM status '21'.
-     * <p>An attempted WRITE violates the ascending key sequence requirement
-     * of the VSAM KSDS. In COBOL: {@code FILE STATUS = '21'}.</p>
+     * Record not found — VSAM status {@code '23'}.
+     *
+     * <p>A READ or DELETE operation specified a key that does not exist in
+     * the VSAM KSDS dataset. In COBOL: {@code DFHRESP(NOTFND)} or
+     * {@code FILE STATUS = '23'}. This is the most commonly handled
+     * non-success condition in CardDemo:</p>
+     * <ul>
+     *   <li>COACTVWC.cbl — account view (ACCTDATA)</li>
+     *   <li>COACTUPC.cbl — account update (ACCTDATA, CUSTDATA, XREFDATA)</li>
+     *   <li>COCRDSLC.cbl — card detail (CARDDATA)</li>
+     *   <li>COSGN00C.cbl — sign-on (USRSEC)</li>
+     *   <li>COBIL00C.cbl — bill payment (ACCTDATA)</li>
+     *   <li>CBTRN02C.cbl — daily posting (reject code 100/101)</li>
+     * </ul>
+     *
+     * <p>Maps to {@link RecordNotFoundException} via
+     * {@link #toException()}.</p>
      */
-    SEQUENCE_ERROR("21", "Sequence error — key out of ascending order"),
+    RECORD_NOT_FOUND("23", "Record not found"),
 
     /**
-     * Invalid key — VSAM status '23' variant for STARTBR.
-     * <p>A STARTBR operation specified an invalid or out-of-range key.
-     * Treated identically to RECORD_NOT_FOUND in most CardDemo programs.</p>
+     * File not available — VSAM status {@code '35'}.
+     *
+     * <p>The specified VSAM dataset is not open or not available for
+     * processing. In COBOL: {@code DFHRESP(NOTOPEN)} or
+     * {@code FILE STATUS = '35'}. This typically occurs during the batch
+     * window when the CLOSEFIL JCL job has closed files for batch
+     * processing via {@code DFHFC TYPE=CLOSE}.</p>
+     *
+     * <p>Maps to {@link FileStatusException} via {@link #toException()}.</p>
      */
-    INVALID_KEY("23", "Invalid key for browse operation"),
+    FILE_NOT_AVAILABLE("35", "File not available"),
 
     /**
-     * I/O error — VSAM status '30'.
-     * <p>A permanent I/O error occurred during a VSAM operation. In COBOL:
-     * {@code FILE STATUS = '30'}. This is a non-recoverable error that
-     * triggers the {@code 9999-ABEND-PROGRAM} paragraph.</p>
+     * Sequential read without position — VSAM status {@code '46'}.
+     *
+     * <p>A READNEXT was issued without a prior STARTBR to establish the
+     * browse position. In COBOL, this condition occurs if the
+     * {@code EXEC CICS STARTBR} was not executed or failed before
+     * issuing {@code EXEC CICS READNEXT}.</p>
+     *
+     * <p>Maps to {@link FileStatusException} via {@link #toException()}.</p>
      */
-    IO_ERROR("30", "Permanent I/O error"),
+    SEQUENTIAL_READ_NO_POSITION("46", "Sequential read without position"),
 
     /**
-     * Logic error — VSAM status '92'.
-     * <p>A logic error occurred (e.g., READ UPDATE without prior READ,
-     * or REWRITE without prior READ UPDATE). In COBOL: {@code FILE STATUS = '92'}.</p>
+     * Read on file not opened — VSAM status {@code '47'}.
+     *
+     * <p>A READ was issued against a file that has not been opened for
+     * input or I/O. In COBOL, this occurs when a batch program attempts
+     * to READ a file before its corresponding OPEN statement has
+     * executed.</p>
+     *
+     * <p>Maps to {@link FileStatusException} via {@link #toException()}.</p>
      */
-    LOGIC_ERROR("92", "Logic error — invalid I/O operation sequence"),
+    READ_FILE_NOT_OPEN("47", "Read on file not opened");
 
     /**
-     * Record locked — VSAM status '68'.
-     * <p>The requested record is currently locked by another task (CICS
-     * multi-user contention). In COBOL: {@code DFHRESP(LOCKED)} or
-     * {@code FILE STATUS = '68'}.</p>
-     */
-    RECORD_LOCKED("68", "Record locked by another task");
-
-    /**
-     * The two-character VSAM file status code.
-     * <p>Preserves the original COBOL two-byte representation for logging
-     * and diagnostic compatibility.</p>
+     * The two-character VSAM file status code (e.g., {@code "00"},
+     * {@code "22"}, {@code "23"}).
+     *
+     * <p>Preserves the original COBOL {@code PIC X(02)} representation
+     * for logging and diagnostic compatibility with the mainframe
+     * system.</p>
      */
     private final String code;
 
@@ -155,9 +239,11 @@ public enum FileStatusCode {
     private final String description;
 
     /**
-     * Constructs a file status code constant.
+     * Constructs a file status code constant with the given two-character
+     * code and human-readable description.
      *
      * @param code        the two-character VSAM file status code
+     *                    (e.g., {@code "00"}, {@code "23"})
      * @param description human-readable description of the condition
      */
     FileStatusCode(String code, String description) {
@@ -168,7 +254,11 @@ public enum FileStatusCode {
     /**
      * Returns the two-character VSAM file status code.
      *
-     * @return the status code (e.g., "00", "22", "23", "35")
+     * <p>The returned value corresponds to the COBOL {@code PIC X(02)}
+     * FILE STATUS field content (e.g., {@code "00"}, {@code "22"},
+     * {@code "23"}, {@code "35"}).</p>
+     *
+     * @return the two-character status code; never {@code null}
      */
     public String getCode() {
         return code;
@@ -177,31 +267,28 @@ public enum FileStatusCode {
     /**
      * Returns the human-readable description of this status condition.
      *
-     * @return the description string
+     * @return the description string; never {@code null}
      */
     public String getDescription() {
         return description;
     }
 
     /**
-     * Indicates whether this status code represents a successful operation.
+     * Resolves a {@code FileStatusCode} from the given two-character code
+     * string.
      *
-     * @return {@code true} if this is {@link #SUCCESS}, {@code false} otherwise
-     */
-    public boolean isSuccess() {
-        return this == SUCCESS;
-    }
-
-    /**
-     * Resolves a {@code FileStatusCode} from the given two-character code string.
+     * <p>Iterates through all enum constants and returns the first one
+     * whose {@link #getCode()} matches the input. If no match is found,
+     * throws {@link IllegalArgumentException}.</p>
      *
-     * <p>Iterates through all enum constants and returns the first one whose
-     * {@code code} field matches the input. If no match is found, throws
-     * {@link IllegalArgumentException}.</p>
+     * <p>This method mirrors the COBOL pattern of inspecting the FILE
+     * STATUS two-byte field after every I/O operation.</p>
      *
      * @param code the two-character VSAM file status code to look up
+     *             (e.g., {@code "00"}, {@code "23"})
      * @return the matching {@code FileStatusCode} constant
-     * @throws IllegalArgumentException if no constant matches the given code
+     * @throws IllegalArgumentException if no constant matches the given
+     *                                  code
      */
     public static FileStatusCode fromCode(String code) {
         for (FileStatusCode status : values()) {
@@ -209,16 +296,71 @@ public enum FileStatusCode {
                 return status;
             }
         }
-        throw new IllegalArgumentException("Unknown VSAM file status code: " + code);
+        throw new IllegalArgumentException(
+                "Unknown VSAM file status code: " + code);
     }
 
     /**
-     * Returns a formatted string including the enum name, code, and description.
+     * Maps this file status code to the corresponding exception in the
+     * CardDemo exception hierarchy.
      *
-     * @return string in format {@code "NAME(code: description)"}
+     * <p>This method translates VSAM FILE STATUS semantics into Java
+     * exceptions, preserving the original COBOL error-handling behavior:</p>
+     * <ul>
+     *   <li>{@link #SUCCESS} → {@code null} (no exception for status
+     *       {@code '00'})</li>
+     *   <li>{@link #DUPLICATE_KEY} → {@link DuplicateRecordException}
+     *       (status {@code '22'})</li>
+     *   <li>{@link #DUPLICATE_ALTERNATE_KEY} →
+     *       {@link DuplicateRecordException} (status {@code '02'})</li>
+     *   <li>{@link #RECORD_NOT_FOUND} → {@link RecordNotFoundException}
+     *       (status {@code '23'})</li>
+     *   <li>{@link #END_OF_FILE} → {@link RecordNotFoundException}
+     *       (status {@code '10'})</li>
+     *   <li>{@link #FILE_NOT_AVAILABLE}, {@link #SEQUENTIAL_READ_NO_POSITION},
+     *       {@link #READ_FILE_NOT_OPEN} → {@link FileStatusException}</li>
+     * </ul>
+     *
+     * <p><strong>Important:</strong> {@link #SUCCESS} returns {@code null}.
+     * Callers should check for {@code SUCCESS} before calling this method
+     * if a non-null result is expected.</p>
+     *
+     * @return the corresponding {@link RuntimeException}, or {@code null}
+     *         if this status represents a successful operation
+     */
+    public RuntimeException toException() {
+        return switch (this) {
+            case SUCCESS -> null;
+            case DUPLICATE_KEY ->
+                    new DuplicateRecordException("Duplicate primary key");
+            case DUPLICATE_ALTERNATE_KEY ->
+                    new DuplicateRecordException("Duplicate alternate key");
+            case RECORD_NOT_FOUND ->
+                    new RecordNotFoundException("Record not found");
+            case END_OF_FILE ->
+                    new RecordNotFoundException("End of file reached");
+            case FILE_NOT_AVAILABLE ->
+                    new FileStatusException(this.code, "File not available");
+            case SEQUENTIAL_READ_NO_POSITION ->
+                    new FileStatusException(this.code,
+                            "Sequential read without position");
+            case READ_FILE_NOT_OPEN ->
+                    new FileStatusException(this.code,
+                            "Read on file not opened");
+        };
+    }
+
+    /**
+     * Returns a formatted string combining the status code and its
+     * description.
+     *
+     * <p>Format: {@code "code: description"} (e.g.,
+     * {@code "23: Record not found"}).</p>
+     *
+     * @return the formatted status code string
      */
     @Override
     public String toString() {
-        return name() + "(" + code + ": " + description + ")";
+        return code + ": " + description;
     }
 }
