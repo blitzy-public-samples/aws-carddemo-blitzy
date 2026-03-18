@@ -185,6 +185,7 @@ CREATE TABLE IF NOT EXISTS user_security (
     sec_usr_lname         VARCHAR(20),             -- PIC X(20) - last name
     sec_usr_pwd           VARCHAR(72)  NOT NULL,   -- PIC X(08) EXPANDED to 72 for BCrypt hash
     sec_usr_type          VARCHAR(1),              -- PIC X(01) - 'A'=Admin, 'U'=User (88-level conditions)
+    version               INTEGER      DEFAULT 0,  -- JPA @Version for optimistic locking (COBOL READ UPDATE → REWRITE)
     CONSTRAINT pk_user_security PRIMARY KEY (sec_usr_id)
 );
 

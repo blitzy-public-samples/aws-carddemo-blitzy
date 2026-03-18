@@ -19,6 +19,7 @@ import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 
 import com.cardemo.common.enums.UserType;
 
@@ -151,6 +152,22 @@ public class UserSecurity {
     private UserType userType;
 
     /**
+     * Optimistic locking version.
+     *
+     * <p>Maps the COBOL {@code EXEC CICS READ UPDATE → REWRITE} pattern
+     * from {@code COUSR02C.cbl} to JPA optimistic locking. In COBOL,
+     * record-level locking was achieved by holding a lock between
+     * READ UPDATE and REWRITE commands. In Java, the {@code @Version}
+     * annotation causes Hibernate to include a WHERE clause with the
+     * version value in UPDATE statements, throwing
+     * {@code OptimisticLockException} if the record was modified
+     * concurrently.</p>
+     */
+    @Version
+    @Column(name = "version")
+    private Long version;
+
+    /**
      * Default no-argument constructor required by JPA specification.
      *
      * <p>Access level is {@code protected} to discourage direct
@@ -281,6 +298,32 @@ public class UserSecurity {
      */
     public void setUserType(UserType userType) {
         this.userType = userType;
+    }
+
+    /**
+     * Returns the optimistic locking version.
+     *
+     * <p>Managed automatically by JPA; starts at {@code 0} on insert
+     * and increments by 1 on each UPDATE. Application code should
+     * never set this value directly.</p>
+     *
+     * @return the current version number, or {@code null} for transient entities
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * Sets the optimistic locking version.
+     *
+     * <p><strong>Warning:</strong> This method exists for JPA framework use
+     * only. Application code should never call this method directly
+     * as it would bypass optimistic locking semantics.</p>
+     *
+     * @param version the version value to set
+     */
+    public void setVersion(Long version) {
+        this.version = version;
     }
 
     /**
