@@ -136,7 +136,7 @@ Any Java IDE will work. Recommended options:
 | IDE | Notes |
 |-----|-------|
 | **IntelliJ IDEA** (Community or Ultimate) | Best Java support; auto-detects Maven projects |
-| **VS Code** with [Extension Pack for Java](https://marketplace.visualstudio.com/items?itemName=vscjava.vscode-java-pack) | Lightweight; good for smaller edits |
+| **VS Code** with [Extension Pack for Java](https://code.visualstudio.com/docs/java/extensions) | Lightweight; good for smaller edits |
 | **Eclipse** with Spring Tools Suite | Alternative full-featured IDE |
 
 ### 1.3 No Mainframe Dependencies

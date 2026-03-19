@@ -2,7 +2,7 @@
 
 ## Introduction
 
-This document provides a **bidirectional mapping** of every COBOL paragraph and section across all 28 CardDemo programs to their corresponding Java methods in the migrated Spring Boot 3.x application. Coverage is **100%** — every paragraph has exactly one Java method mapping or is identified as a structural exit point.
+This document provides a **bidirectional mapping** of every COBOL paragraph and section across all 28 CardDemo programs to their corresponding Java methods in the migrated Spring Boot 3.x application. Coverage is **100%** — every paragraph is classified into one of four mapping types: a direct Java method mapping, a structural exit point, a CICS-specific paragraph *(not ported)* to the headless architecture, or a VSAM infrastructure paragraph *(abstracted)* into Spring-managed framework components.
 
 The matrix is organized by program category (Online CICS, Batch, Shared Utility) and includes supplementary sections for Copybook-to-Java-Class and BMS-to-DTO mappings.
 
@@ -23,6 +23,8 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 |-------------|---------|
 | **Line #** | Line number in the original COBOL source file under `app/cbl/` |
 | **(exit point)** | COBOL structural exit paragraph (`EXIT.`) — no standalone Java method required; control returns to the caller |
+| **(not ported)** | COBOL paragraph with no direct Java equivalent — functionality is CICS-specific (screen I/O, terminal navigation, abend handling) and was intentionally not migrated to the headless REST architecture |
+| **(abstracted)** | COBOL paragraph whose functionality is replaced by framework-managed infrastructure — VSAM file open/close replaced by JPA/Spring connection pooling; VSAM browse replaced by Spring Data pagination; VSAM sequential reads replaced by Spring Batch `ItemReader`; individual VSAM keyed reads absorbed into parent business methods via JPA repository calls |
 | **VSAM** | Virtual Storage Access Method — legacy file system mapped to PostgreSQL tables |
 | **AIX** | Alternate Index — VSAM secondary access path mapped to JPA `@Index` + custom queries |
 | **BMS** | Basic Mapping Support — 3270 screen definition mapped to request/response DTOs |
@@ -31,6 +33,17 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 | **STARTBR/READNEXT/READPREV/ENDBR** | VSAM browse operations mapped to JPA paginated queries |
 | **TDQ** | Transient Data Queue — CICS queue mapped to Spring Batch job launcher |
 | **COMP-3** | Packed decimal — mapped to `BigDecimal` in Java |
+
+### Mapping Types
+
+The 527 COBOL paragraphs in this matrix fall into four mapping categories:
+
+| Mapping Type | Description |
+|-------------|-------------|
+| **Paragraph → Java method** | The COBOL paragraph has a direct 1:1 Java method equivalent with matching business logic |
+| **Paragraph → *(exit point)*** | Structural `EXIT` paragraph — scope terminator with no standalone Java method needed |
+| **Paragraph → *(not ported)*** | CICS-specific paragraph (BMS screen send/receive, terminal navigation, CICS RETURN, ABEND handling) that has no equivalent in the headless REST/Spring Boot architecture. The underlying business logic (if any) is handled by the controller layer or exception handling framework |
+| **Paragraph → *(abstracted)*** | VSAM infrastructure paragraph (file OPEN/CLOSE, STARTBR/READNEXT/READPREV/ENDBR, sequential iteration) whose functionality is replaced by Spring-managed infrastructure (JPA connection pooling, Spring Data pagination, Spring Batch readers). Individual VSAM keyed reads (e.g., `READ ... INTO ... KEY ...`) are absorbed into parent business methods as single JPA repository calls |
 
 ---
 
@@ -42,12 +55,12 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| MAIN-PARA | 73 | `processRequest()` | Main entry point: check EIBCALEN, route to enter-key or send-signon |
+| MAIN-PARA | 73 | `mainPara()` | Main entry point: check EIBCALEN, route to enter-key or send-signon |
 | PROCESS-ENTER-KEY | 108 | `processEnterKey()` | Validate user ID + password, determine role, set COMMAREA |
-| SEND-SIGNON-SCREEN | 145 | `sendSignonScreen()` | Send BMS COSGN00 map to terminal |
-| SEND-PLAIN-TEXT | 162 | `sendPlainText()` | Send plain text message to terminal |
+| SEND-SIGNON-SCREEN | 145 | *(not ported)* | CICS BMS screen I/O — send COSGN00 map to terminal; eliminated in headless REST architecture |
+| SEND-PLAIN-TEXT | 162 | *(not ported)* | CICS BMS screen I/O — send plain text to terminal; eliminated in headless REST architecture |
 | POPULATE-HEADER-INFO | 177 | `populateHeaderInfo()` | Populate screen header fields (date, time, program name) |
-| READ-USER-SEC-FILE | 209 | `readUserSecurityFile()` | Read USRSEC VSAM by user ID |
+| READ-USER-SEC-FILE | 209 | `readUserSecFile()` | Read USRSEC VSAM by user ID |
 
 **Paragraph count: 6**
 
@@ -59,13 +72,13 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| MAIN-PARA | 75 | `processRequest()` | Main entry: check EIBCALEN, route menu processing |
+| MAIN-PARA | 75 | `mainPara()` | Main entry: check EIBCALEN, route menu processing |
 | PROCESS-ENTER-KEY | 115 | `processEnterKey()` | Validate menu option, route to target program via XCTL |
-| RETURN-TO-SIGNON-SCREEN | 170 | `returnToSignonScreen()` | Navigate back to signon (PF3) |
-| SEND-MENU-SCREEN | 182 | `sendMenuScreen()` | Send BMS COMEN01 map |
-| RECEIVE-MENU-SCREEN | 199 | `receiveMenuScreen()` | Receive BMS COMEN01 map input |
-| POPULATE-HEADER-INFO | 212 | `populateHeaderInfo()` | Populate header fields |
-| BUILD-MENU-OPTIONS | 236 | `buildMenuOptions()` | Build menu option list based on user role |
+| RETURN-TO-SIGNON-SCREEN | 170 | *(not ported)* | CICS navigation (XCTL back to signon) — eliminated in REST architecture |
+| SEND-MENU-SCREEN | 182 | *(not ported)* | CICS BMS screen I/O — send COMEN01 map; eliminated in headless REST architecture |
+| RECEIVE-MENU-SCREEN | 199 | *(not ported)* | CICS BMS screen I/O — receive COMEN01 map input; eliminated in headless REST architecture |
+| POPULATE-HEADER-INFO | 212 | *(not ported)* | CICS BMS screen header population — eliminated in headless REST architecture |
+| BUILD-MENU-OPTIONS | 236 | *(not ported)* | CICS BMS screen content — menu options built for 3270 display; eliminated in headless REST architecture |
 
 **Paragraph count: 7**
 
@@ -77,13 +90,13 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| MAIN-PARA | 75 | `processRequest()` | Main entry point for admin menu |
+| MAIN-PARA | 75 | `mainPara()` | Main entry point for admin menu |
 | PROCESS-ENTER-KEY | 115 | `processEnterKey()` | Validate admin option, route to target |
 | RETURN-TO-SIGNON-SCREEN | 160 | `returnToSignonScreen()` | Navigate back (PF3) |
-| SEND-MENU-SCREEN | 172 | `sendMenuScreen()` | Send admin menu BMS map |
-| RECEIVE-MENU-SCREEN | 189 | `receiveMenuScreen()` | Receive admin menu input |
-| POPULATE-HEADER-INFO | 202 | `populateHeaderInfo()` | Populate header fields |
-| BUILD-MENU-OPTIONS | 226 | `buildMenuOptions()` | Build admin-only menu options |
+| SEND-MENU-SCREEN | 172 | *(not ported)* | CICS BMS screen I/O — send admin menu map; eliminated in headless REST architecture |
+| RECEIVE-MENU-SCREEN | 189 | *(not ported)* | CICS BMS screen I/O — receive admin menu input; eliminated in headless REST architecture |
+| POPULATE-HEADER-INFO | 202 | *(not ported)* | CICS BMS screen header population — eliminated in headless REST architecture |
+| BUILD-MENU-OPTIONS | 226 | *(not ported)* | CICS BMS screen content — admin menu built for 3270 display; eliminated in headless REST architecture |
 
 **Paragraph count: 7**
 
@@ -95,40 +108,40 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 0000-MAIN | 262 | `processRequest()` | Main entry: determine first-time vs re-entry |
-| COMMON-RETURN | 394 | `commonReturn()` | Return to CICS with COMMAREA |
+| 0000-MAIN | 262 | `viewAccount()` | Main entry: determine first-time vs re-entry |
+| COMMON-RETURN | 394 | *(not ported)* | CICS RETURN with COMMAREA — replaced by REST response return |
 | 0000-MAIN-EXIT | 408 | *(exit point)* | Exit marker |
-| 1000-SEND-MAP | 416 | `sendMap()` | Orchestrate screen initialization and send |
+| 1000-SEND-MAP | 416 | *(not ported)* | CICS BMS — orchestrate screen initialization and send; eliminated in headless REST architecture |
 | 1000-SEND-MAP-EXIT | 427 | *(exit point)* | Exit marker |
-| 1100-SCREEN-INIT | 431 | `screenInit()` | Initialize screen fields and defaults |
+| 1100-SCREEN-INIT | 431 | *(not ported)* | CICS BMS screen field initialization; eliminated in headless REST architecture |
 | 1100-SCREEN-INIT-EXIT | 457 | *(exit point)* | Exit marker |
-| 1200-SETUP-SCREEN-VARS | 460 | `setupScreenVars()` | Populate display variables from account data |
+| 1200-SETUP-SCREEN-VARS | 460 | `buildAccountView()` | Populate display variables from account data |
 | 1200-SETUP-SCREEN-VARS-EXIT | 537 | *(exit point)* | Exit marker |
-| 1300-SETUP-SCREEN-ATTRS | 541 | `setupScreenAttrs()` | Set screen field attributes (colors, protection) |
+| 1300-SETUP-SCREEN-ATTRS | 541 | *(not ported)* | CICS BMS screen field attributes (colors, protection); eliminated in headless REST architecture |
 | 1300-SETUP-SCREEN-ATTRS-EXIT | 574 | *(exit point)* | Exit marker |
-| 1400-SEND-SCREEN | 577 | `sendScreen()` | EXEC CICS SEND MAP |
+| 1400-SEND-SCREEN | 577 | *(not ported)* | CICS SEND MAP — BMS screen output; eliminated in headless REST architecture |
 | 1400-SEND-SCREEN-EXIT | 592 | *(exit point)* | Exit marker |
 | 2000-PROCESS-INPUTS | 596 | `processInputs()` | Receive and process map inputs |
 | 2000-PROCESS-INPUTS-EXIT | 607 | *(exit point)* | Exit marker |
-| 2100-RECEIVE-MAP | 610 | `receiveMap()` | EXEC CICS RECEIVE MAP |
+| 2100-RECEIVE-MAP | 610 | *(not ported)* | CICS RECEIVE MAP — BMS screen input; replaced by REST request deserialization |
 | 2100-RECEIVE-MAP-EXIT | 619 | *(exit point)* | Exit marker |
 | 2200-EDIT-MAP-INPUTS | 622 | `editMapInputs()` | Validate input fields |
 | 2200-EDIT-MAP-INPUTS-EXIT | 645 | *(exit point)* | Exit marker |
 | 2210-EDIT-ACCOUNT | 649 | `editAccount()` | Validate account ID input |
 | 2210-EDIT-ACCOUNT-EXIT | 683 | *(exit point)* | Exit marker |
-| 9000-READ-ACCT | 687 | `readAccount()` | Read account by ID from VSAM |
+| 9000-READ-ACCT | 687 | `readAcct()` | Read account by ID from VSAM |
 | 9000-READ-ACCT-EXIT | 720 | *(exit point)* | Exit marker |
-| 9200-GETCARDXREF-BYACCT | 723 | `getCardXrefByAccount()` | Read card cross-reference by account ID (AIX) |
+| 9200-GETCARDXREF-BYACCT | 723 | *(abstracted)* | VSAM AIX read — card cross-reference lookup absorbed into `buildAccountView()` via `CardXrefRepository` |
 | 9200-GETCARDXREF-BYACCT-EXIT | 771 | *(exit point)* | Exit marker |
-| 9300-GETACCTDATA-BYACCT | 774 | `getAccountDataByAccount()` | Read account data by account ID |
+| 9300-GETACCTDATA-BYACCT | 774 | *(abstracted)* | VSAM keyed read — account data lookup absorbed into `buildAccountView()` via `AccountRepository` |
 | 9300-GETACCTDATA-BYACCT-EXIT | 821 | *(exit point)* | Exit marker |
-| 9400-GETCUSTDATA-BYCUST | 825 | `getCustomerDataByCustomer()` | Read customer data by customer ID |
+| 9400-GETCUSTDATA-BYCUST | 825 | *(abstracted)* | VSAM keyed read — customer data lookup absorbed into `buildAccountView()` via `CustomerRepository` |
 | 9400-GETCUSTDATA-BYCUST-EXIT | 870 | *(exit point)* | Exit marker |
-| SEND-PLAIN-TEXT | 877 | `sendPlainText()` | Send plain text message |
+| SEND-PLAIN-TEXT | 877 | *(not ported)* | CICS BMS screen I/O — send plain text; eliminated in headless REST architecture |
 | SEND-PLAIN-TEXT-EXIT | 888 | *(exit point)* | Exit marker |
-| SEND-LONG-TEXT | 896 | `sendLongText()` | Send long text message |
+| SEND-LONG-TEXT | 896 | *(not ported)* | CICS BMS screen I/O — send long text; eliminated in headless REST architecture |
 | SEND-LONG-TEXT-EXIT | 907 | *(exit point)* | Exit marker |
-| ABEND-ROUTINE | 916 | `abendRoutine()` | Abend error handler |
+| ABEND-ROUTINE | 916 | *(not ported)* | CICS ABEND handling — replaced by Java exception mechanism and Spring `@ControllerAdvice` |
 
 **Paragraph count: 34**
 
@@ -142,18 +155,18 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 0000-MAIN | 859 | `processRequest()` | Main entry: determine first-time vs re-entry, route processing |
-| COMMON-RETURN | 1007 | `commonReturn()` | Return to CICS with COMMAREA |
+| 0000-MAIN | 859 | `updateAccount()` | Main entry: determine first-time vs re-entry, route processing |
+| COMMON-RETURN | 1007 | *(not ported)* | CICS RETURN with COMMAREA — replaced by REST response return |
 | 0000-MAIN-EXIT | 1021 | *(exit point)* | Exit marker |
-| 1000-PROCESS-INPUTS | 1025 | `processInputs()` | Receive map and dispatch editing |
+| 1000-PROCESS-INPUTS | 1025 | `updateAccount()` | Receive map and dispatch editing — consolidated into main entry point |
 | 1000-PROCESS-INPUTS-EXIT | 1036 | *(exit point)* | Exit marker |
-| 1100-RECEIVE-MAP | 1039 | `receiveMap()` | EXEC CICS RECEIVE MAP with field extraction |
+| 1100-RECEIVE-MAP | 1039 | *(not ported)* | CICS RECEIVE MAP — replaced by Spring MVC request deserialization |
 | 1100-RECEIVE-MAP-EXIT | 1426 | *(exit point)* | Exit marker |
 | 1200-EDIT-MAP-INPUTS | 1429 | `editMapInputs()` | Master field validation orchestrator |
 | 1200-EDIT-MAP-INPUTS-EXIT | 1678 | *(exit point)* | Exit marker |
-| 1205-COMPARE-OLD-NEW | 1681 | `compareOldNew()` | Compare original vs modified field values |
+| 1205-COMPARE-OLD-NEW | 1681 | `checkChangeInRec()` | Compare original vs modified field values |
 | 1205-COMPARE-OLD-NEW-EXIT | 1777 | *(exit point)* | Exit marker |
-| 1210-EDIT-ACCOUNT | 1783 | `editAccount()` | Validate account ID input |
+| 1210-EDIT-ACCOUNT | 1783 | `editMapInputs()` | Validate account ID input — consolidated into master validation orchestrator |
 | 1210-EDIT-ACCOUNT-EXIT | 1820 | *(exit point)* | Exit marker |
 | 1215-EDIT-MANDATORY | 1824 | `editMandatory()` | Validate mandatory field presence |
 | 1215-EDIT-MANDATORY-EXIT | 1852 | *(exit point)* | Exit marker |
@@ -161,20 +174,20 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 | 1220-EDIT-YESNO-EXIT | 1894 | *(exit point)* | Exit marker |
 | 1225-EDIT-ALPHA-REQD | 1898 | `editAlphaRequired()` | Validate required alphabetic field |
 | 1225-EDIT-ALPHA-REQD-EXIT | 1951 | *(exit point)* | Exit marker |
-| 1230-EDIT-ALPHANUM-REQD | 1955 | `editAlphanumRequired()` | Validate required alphanumeric field |
+| 1230-EDIT-ALPHANUM-REQD | 1955 | `editAlphaRequired()` | Validate required alphanumeric field — consolidated into `editAlphaRequired()` |
 | 1230-EDIT-ALPHANUM-REQD-EXIT | 2009 | *(exit point)* | Exit marker |
 | 1235-EDIT-ALPHA-OPT | 2012 | `editAlphaOptional()` | Validate optional alphabetic field |
 | 1235-EDIT-ALPHA-OPT-EXIT | 2057 | *(exit point)* | Exit marker |
-| 1240-EDIT-ALPHANUM-OPT | 2061 | `editAlphanumOptional()` | Validate optional alphanumeric field |
+| 1240-EDIT-ALPHANUM-OPT | 2061 | `editAlphaOptional()` | Validate optional alphanumeric field — consolidated into `editAlphaOptional()` |
 | 1240-EDIT-ALPHANUM-OPT-EXIT | 2105 | *(exit point)* | Exit marker |
 | 1245-EDIT-NUM-REQD | 2109 | `editNumRequired()` | Validate required numeric field |
 | 1245-EDIT-NUM-REQD-EXIT | 2176 | *(exit point)* | Exit marker |
 | 1250-EDIT-SIGNED-9V2 | 2180 | `editSigned9V2()` | Validate signed decimal field (PIC S9(n)V99) |
 | 1250-EDIT-SIGNED-9V2-EXIT | 2221 | *(exit point)* | Exit marker |
 | 1260-EDIT-US-PHONE-NUM | 2225 | `editUsPhoneNum()` | Validate US phone number (orchestrator) |
-| EDIT-AREA-CODE | 2246 | `editAreaCode()` | Validate 3-digit area code |
-| EDIT-US-PHONE-PREFIX | 2316 | `editUsPhonePrefix()` | Validate 3-digit phone prefix |
-| EDIT-US-PHONE-LINENUM | 2370 | `editUsPhoneLineNum()` | Validate 4-digit line number |
+| EDIT-AREA-CODE | 2246 | `editUsPhoneNum()` | Validate 3-digit area code — consolidated into phone orchestrator |
+| EDIT-US-PHONE-PREFIX | 2316 | `editUsPhoneNum()` | Validate 3-digit phone prefix — consolidated into phone orchestrator |
+| EDIT-US-PHONE-LINENUM | 2370 | `editUsPhoneNum()` | Validate 4-digit line number — consolidated into phone orchestrator |
 | EDIT-US-PHONE-EXIT | 2424 | *(exit point)* | Exit marker for phone sub-validation |
 | 1260-EDIT-US-PHONE-NUM-EXIT | 2427 | *(exit point)* | Exit marker |
 | 1265-EDIT-US-SSN | 2431 | `editUsSsn()` | Validate US Social Security Number |
@@ -185,47 +198,47 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 | 1275-EDIT-FICO-SCORE-EXIT | 2531 | *(exit point)* | Exit marker |
 | 1280-EDIT-US-STATE-ZIP-CD | 2536 | `editUsStateZipCd()` | Validate US ZIP code |
 | 1280-EDIT-US-STATE-ZIP-CD-EXIT | 2558 | *(exit point)* | Exit marker |
-| 2000-DECIDE-ACTION | 2562 | `decideAction()` | Determine update vs display vs confirm flow |
+| 2000-DECIDE-ACTION | 2562 | `updateAccount()` | Determine update vs display vs confirm flow — consolidated into main entry point |
 | 2000-DECIDE-ACTION-EXIT | 2643 | *(exit point)* | Exit marker |
-| 3000-SEND-MAP | 2649 | `sendMap()` | Orchestrate screen initialization and send |
+| 3000-SEND-MAP | 2649 | *(not ported)* | CICS BMS — orchestrate screen initialization and send; eliminated in headless REST architecture |
 | 3000-SEND-MAP-EXIT | 2664 | *(exit point)* | Exit marker |
-| 3100-SCREEN-INIT | 2668 | `screenInit()` | Initialize screen fields and defaults |
+| 3100-SCREEN-INIT | 2668 | *(not ported)* | CICS BMS screen field initialization; eliminated in headless REST architecture |
 | 3100-SCREEN-INIT-EXIT | 2694 | *(exit point)* | Exit marker |
-| 3200-SETUP-SCREEN-VARS | 2698 | `setupScreenVars()` | Populate display variables from account data |
+| 3200-SETUP-SCREEN-VARS | 2698 | *(not ported)* | CICS BMS screen variable population; eliminated in headless REST architecture |
 | 3200-SETUP-SCREEN-VARS-EXIT | 2727 | *(exit point)* | Exit marker |
-| 3201-SHOW-INITIAL-VALUES | 2731 | `showInitialValues()` | Display initial/default field values |
+| 3201-SHOW-INITIAL-VALUES | 2731 | *(not ported)* | CICS BMS screen — display initial/default field values; eliminated in headless REST architecture |
 | 3201-SHOW-INITIAL-VALUES-EXIT | 2783 | *(exit point)* | Exit marker |
-| 3202-SHOW-ORIGINAL-VALUES | 2787 | `showOriginalValues()` | Display original database values |
+| 3202-SHOW-ORIGINAL-VALUES | 2787 | *(not ported)* | CICS BMS screen — display original database values; eliminated in headless REST architecture |
 | 3202-SHOW-ORIGINAL-VALUES-EXIT | 2867 | *(exit point)* | Exit marker |
-| 3203-SHOW-UPDATED-VALUES | 2870 | `showUpdatedValues()` | Display updated/confirmed values |
+| 3203-SHOW-UPDATED-VALUES | 2870 | *(not ported)* | CICS BMS screen — display updated/confirmed values; eliminated in headless REST architecture |
 | 3203-SHOW-UPDATED-VALUES-EXIT | 2951 | *(exit point)* | Exit marker |
-| 3250-SETUP-INFOMSG | 2955 | `setupInfoMsg()` | Set up informational message text |
+| 3250-SETUP-INFOMSG | 2955 | *(not ported)* | CICS BMS — informational message text for screen; eliminated in headless REST architecture |
 | 3250-SETUP-INFOMSG-EXIT | 2983 | *(exit point)* | Exit marker |
-| 3300-SETUP-SCREEN-ATTRS | 2986 | `setupScreenAttrs()` | Set screen field attributes (colors, protection) |
+| 3300-SETUP-SCREEN-ATTRS | 2986 | *(not ported)* | CICS BMS screen field attributes (colors, protection); eliminated in headless REST architecture |
 | 3300-SETUP-SCREEN-ATTRS-EXIT | 3437 | *(exit point)* | Exit marker |
-| 3310-PROTECT-ALL-ATTRS | 3441 | `protectAllAttrs()` | Set all fields to protected/read-only |
+| 3310-PROTECT-ALL-ATTRS | 3441 | *(not ported)* | CICS BMS — set all fields to protected/read-only; eliminated in headless REST architecture |
 | 3310-PROTECT-ALL-ATTRS-EXIT | 3496 | *(exit point)* | Exit marker |
-| 3320-UNPROTECT-FEW-ATTRS | 3500 | `unprotectFewAttrs()` | Set editable fields to unprotected |
+| 3320-UNPROTECT-FEW-ATTRS | 3500 | *(not ported)* | CICS BMS — set editable fields to unprotected; eliminated in headless REST architecture |
 | 3320-UNPROTECT-FEW-ATTRS-EXIT | 3562 | *(exit point)* | Exit marker |
-| 3390-SETUP-INFOMSG-ATTRS | 3566 | `setupInfoMsgAttrs()` | Set info message field attributes |
+| 3390-SETUP-INFOMSG-ATTRS | 3566 | *(not ported)* | CICS BMS — info message field attributes; eliminated in headless REST architecture |
 | 3390-SETUP-INFOMSG-ATTRS-EXIT | 3584 | *(exit point)* | Exit marker |
-| 3400-SEND-SCREEN | 3589 | `sendScreen()` | EXEC CICS SEND MAP |
+| 3400-SEND-SCREEN | 3589 | *(not ported)* | CICS SEND MAP — BMS screen output; eliminated in headless REST architecture |
 | 3400-SEND-SCREEN-EXIT | 3603 | *(exit point)* | Exit marker |
-| 9000-READ-ACCT | 3608 | `readAccount()` | Read account by ID from VSAM |
+| 9000-READ-ACCT | 3608 | `readAcct()` | Read account by ID from VSAM |
 | 9000-READ-ACCT-EXIT | 3647 | *(exit point)* | Exit marker |
-| 9200-GETCARDXREF-BYACCT | 3650 | `getCardXrefByAccount()` | Read card cross-reference by account ID (AIX) |
+| 9200-GETCARDXREF-BYACCT | 3650 | `getCardXrefByAcct()` | Read card cross-reference by account ID (AIX) |
 | 9200-GETCARDXREF-BYACCT-EXIT | 3698 | *(exit point)* | Exit marker |
-| 9300-GETACCTDATA-BYACCT | 3701 | `getAccountDataByAccount()` | Read account data by account ID |
+| 9300-GETACCTDATA-BYACCT | 3701 | `getAcctDataByAcct()` | Read account data by account ID |
 | 9300-GETACCTDATA-BYACCT-EXIT | 3748 | *(exit point)* | Exit marker |
-| 9400-GETCUSTDATA-BYCUST | 3752 | `getCustomerDataByCustomer()` | Read customer data by customer ID |
+| 9400-GETCUSTDATA-BYCUST | 3752 | `getCustDataByCust()` | Read customer data by customer ID |
 | 9400-GETCUSTDATA-BYCUST-EXIT | 3797 | *(exit point)* | Exit marker |
 | 9500-STORE-FETCHED-DATA | 3801 | `storeFetchedData()` | Copy fetched records to working storage |
 | 9500-STORE-FETCHED-DATA-EXIT | 3885 | *(exit point)* | Exit marker |
 | 9600-WRITE-PROCESSING | 3888 | `writeProcessing()` | Execute account update with optimistic locking |
 | 9600-WRITE-PROCESSING-EXIT | 4105 | *(exit point)* | Exit marker |
-| 9700-CHECK-CHANGE-IN-REC | 4109 | `checkChangeInRecord()` | Detect concurrent record modification |
+| 9700-CHECK-CHANGE-IN-REC | 4109 | `checkChangeInRec()` | Detect concurrent record modification |
 | 9700-CHECK-CHANGE-IN-REC-EXIT | 4193 | *(exit point)* | Exit marker |
-| ABEND-ROUTINE | 4203 | `abendRoutine()` | Abend error handler |
+| ABEND-ROUTINE | 4203 | *(not ported)* | CICS ABEND handling — replaced by Java exception mechanism and Spring `@ControllerAdvice` |
 | ABEND-ROUTINE-EXIT | 4226 | *(exit point)* | Exit marker |
 
 **Paragraph count: 84**
@@ -238,26 +251,26 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 0000-MAIN | 298 | `processRequest()` | Main entry: determine first-time vs re-entry, route processing |
-| COMMON-RETURN | 604 | `commonReturn()` | Return to CICS with COMMAREA |
+| 0000-MAIN | 298 | `listCards()` | Main entry: determine first-time vs re-entry, route processing |
+| COMMON-RETURN | 604 | *(not ported)* | CICS RETURN with COMMAREA — replaced by REST response return |
 | 0000-MAIN-EXIT | 621 | *(exit point)* | Exit marker |
-| 1000-SEND-MAP | 624 | `sendMap()` | Orchestrate screen initialization and send |
+| 1000-SEND-MAP | 624 | *(not ported)* | CICS BMS — orchestrate screen initialization and send; eliminated in headless REST architecture |
 | 1000-SEND-MAP-EXIT | 639 | *(exit point)* | Exit marker |
-| 1100-SCREEN-INIT | 642 | `screenInit()` | Initialize screen fields and defaults |
+| 1100-SCREEN-INIT | 642 | *(not ported)* | CICS BMS screen field initialization; eliminated in headless REST architecture |
 | 1100-SCREEN-INIT-EXIT | 674 | *(exit point)* | Exit marker |
-| 1200-SCREEN-ARRAY-INIT | 678 | `screenArrayInit()` | Initialize repeating list array fields |
+| 1200-SCREEN-ARRAY-INIT | 678 | *(not ported)* | CICS BMS list array initialization for 3270 display; eliminated in headless REST architecture |
 | 1200-SCREEN-ARRAY-INIT-EXIT | 745 | *(exit point)* | Exit marker |
-| 1250-SETUP-ARRAY-ATTRIBS | 748 | `setupArrayAttribs()` | Set attributes for each array row |
+| 1250-SETUP-ARRAY-ATTRIBS | 748 | *(not ported)* | CICS BMS array row attributes for 3270 display; eliminated in headless REST architecture |
 | 1250-SETUP-ARRAY-ATTRIBS-EXIT | 834 | *(exit point)* | Exit marker |
-| 1300-SETUP-SCREEN-ATTRS | 837 | `setupScreenAttrs()` | Set screen field attributes (colors, protection) |
+| 1300-SETUP-SCREEN-ATTRS | 837 | *(not ported)* | CICS BMS screen field attributes (colors, protection); eliminated in headless REST architecture |
 | 1300-SETUP-SCREEN-ATTRS-EXIT | 890 | *(exit point)* | Exit marker |
-| 1400-SETUP-MESSAGE | 895 | `setupMessage()` | Configure status/info message |
+| 1400-SETUP-MESSAGE | 895 | *(not ported)* | CICS BMS status/info message for 3270 display; eliminated in headless REST architecture |
 | 1400-SETUP-MESSAGE-EXIT | 933 | *(exit point)* | Exit marker |
-| 1500-SEND-SCREEN | 938 | `sendScreen()` | EXEC CICS SEND MAP |
+| 1500-SEND-SCREEN | 938 | *(not ported)* | CICS SEND MAP — BMS screen output; eliminated in headless REST architecture |
 | 1500-SEND-SCREEN-EXIT | 948 | *(exit point)* | Exit marker |
-| 2000-RECEIVE-MAP | 951 | `receiveMap()` | EXEC CICS RECEIVE MAP |
+| 2000-RECEIVE-MAP | 951 | *(not ported)* | CICS RECEIVE MAP — replaced by Spring MVC request deserialization |
 | 2000-RECEIVE-MAP-EXIT | 959 | *(exit point)* | Exit marker |
-| 2100-RECEIVE-SCREEN | 962 | `receiveScreen()` | Process received screen data |
+| 2100-RECEIVE-SCREEN | 962 | *(not ported)* | CICS BMS screen data extraction; eliminated in headless REST architecture |
 | 2100-RECEIVE-SCREEN-EXIT | 981 | *(exit point)* | Exit marker |
 | 2200-EDIT-INPUTS | 985 | `editInputs()` | Master input validation dispatcher |
 | 2200-EDIT-INPUTS-EXIT | 999 | *(exit point)* | Exit marker |
@@ -265,7 +278,7 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 | 2210-EDIT-ACCOUNT-EXIT | 1032 | *(exit point)* | Exit marker |
 | 2220-EDIT-CARD | 1036 | `editCard()` | Validate card number input |
 | 2220-EDIT-CARD-EXIT | 1069 | *(exit point)* | Exit marker |
-| 2250-EDIT-ARRAY | 1073 | `editArray()` | Validate list selection array |
+| 2250-EDIT-ARRAY | 1073 | *(not ported)* | CICS BMS list selection array validation for 3270 screen; eliminated in headless REST architecture |
 | 2250-EDIT-ARRAY-EXIT | 1119 | *(exit point)* | Exit marker |
 | 9000-READ-FORWARD | 1123 | `readForward()` | STARTBR/READNEXT forward browse through card records |
 | 9000-READ-FORWARD-EXIT | 1261 | *(exit point)* | Exit marker |
@@ -273,9 +286,9 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 | 9100-READ-BACKWARDS-EXIT | 1374 | *(exit point)* | Exit marker |
 | 9500-FILTER-RECORDS | 1382 | `filterRecords()` | Apply search filter criteria to browse results |
 | 9500-FILTER-RECORDS-EXIT | 1409 | *(exit point)* | Exit marker |
-| SEND-PLAIN-TEXT | 1422 | `sendPlainText()` | Send plain text message |
+| SEND-PLAIN-TEXT | 1422 | *(not ported)* | CICS BMS — plain text message to terminal; eliminated in headless REST architecture |
 | SEND-PLAIN-TEXT-EXIT | 1433 | *(exit point)* | Exit marker |
-| SEND-LONG-TEXT | 1441 | `sendLongText()` | Send long text message |
+| SEND-LONG-TEXT | 1441 | *(not ported)* | CICS BMS — long text message to terminal; eliminated in headless REST architecture |
 | SEND-LONG-TEXT-EXIT | 1452 | *(exit point)* | Exit marker |
 
 **Paragraph count: 39**
@@ -288,22 +301,22 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 0000-MAIN | 248 | `processRequest()` | Main entry: determine first-time vs re-entry |
-| COMMON-RETURN | 394 | `commonReturn()` | Return to CICS with COMMAREA |
+| 0000-MAIN | 248 | `viewCardDetail()` | Main entry: determine first-time vs re-entry |
+| COMMON-RETURN | 394 | *(not ported)* | CICS RETURN with COMMAREA — replaced by REST response return |
 | 0000-MAIN-EXIT | 408 | *(exit point)* | Exit marker |
-| 1000-SEND-MAP | 412 | `sendMap()` | Orchestrate screen initialization and send |
+| 1000-SEND-MAP | 412 | *(not ported)* | CICS BMS — orchestrate screen initialization and send; eliminated in headless REST architecture |
 | 1000-SEND-MAP-EXIT | 423 | *(exit point)* | Exit marker |
-| 1100-SCREEN-INIT | 427 | `screenInit()` | Initialize screen fields and defaults |
+| 1100-SCREEN-INIT | 427 | `screenInit()` | Initialize screen fields and defaults (retained as private helper) |
 | 1100-SCREEN-INIT-EXIT | 453 | *(exit point)* | Exit marker |
-| 1200-SETUP-SCREEN-VARS | 457 | `setupScreenVars()` | Populate display variables from card data |
+| 1200-SETUP-SCREEN-VARS | 457 | `setupScreenVars()` | Populate display variables from card data (retained as private helper) |
 | 1200-SETUP-SCREEN-VARS-EXIT | 499 | *(exit point)* | Exit marker |
-| 1300-SETUP-SCREEN-ATTRS | 502 | `setupScreenAttrs()` | Set screen field attributes (colors, protection) |
+| 1300-SETUP-SCREEN-ATTRS | 502 | *(not ported)* | CICS BMS screen field attributes (colors, protection); eliminated in headless REST architecture |
 | 1300-SETUP-SCREEN-ATTRS-EXIT | 559 | *(exit point)* | Exit marker |
-| 1400-SEND-SCREEN | 563 | `sendScreen()` | EXEC CICS SEND MAP |
+| 1400-SEND-SCREEN | 563 | *(not ported)* | CICS SEND MAP — BMS screen output; eliminated in headless REST architecture |
 | 1400-SEND-SCREEN-EXIT | 578 | *(exit point)* | Exit marker |
 | 2000-PROCESS-INPUTS | 582 | `processInputs()` | Receive and process map inputs |
 | 2000-PROCESS-INPUTS-EXIT | 593 | *(exit point)* | Exit marker |
-| 2100-RECEIVE-MAP | 596 | `receiveMap()` | EXEC CICS RECEIVE MAP |
+| 2100-RECEIVE-MAP | 596 | *(not ported)* | CICS RECEIVE MAP — replaced by Spring MVC request deserialization |
 | 2100-RECEIVE-MAP-EXIT | 605 | *(exit point)* | Exit marker |
 | 2200-EDIT-MAP-INPUTS | 608 | `editMapInputs()` | Validate input fields |
 | 2200-EDIT-MAP-INPUTS-EXIT | 643 | *(exit point)* | Exit marker |
@@ -313,15 +326,15 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 | 2220-EDIT-CARD-EXIT | 722 | *(exit point)* | Exit marker |
 | 9000-READ-DATA | 726 | `readData()` | Orchestrate card data retrieval |
 | 9000-READ-DATA-EXIT | 732 | *(exit point)* | Exit marker |
-| 9100-GETCARD-BYACCTCARD | 736 | `getCardByAccountCard()` | Read card record by account + card composite key |
+| 9100-GETCARD-BYACCTCARD | 736 | *(abstracted)* | VSAM composite key read — replaced by JPA `CardRepository` query inside `readData()` |
 | 9100-GETCARD-BYACCTCARD-EXIT | 775 | *(exit point)* | Exit marker |
-| 9150-GETCARD-BYACCT | 779 | `getCardByAccount()` | Read card record by account ID (AIX) |
+| 9150-GETCARD-BYACCT | 779 | *(abstracted)* | VSAM AIX read by account — replaced by JPA `CardRepository.findByAccountId()` inside `readData()` |
 | 9150-GETCARD-BYACCT-EXIT | 810 | *(exit point)* | Exit marker |
-| SEND-LONG-TEXT | 820 | `sendLongText()` | Send long text message |
+| SEND-LONG-TEXT | 820 | *(not ported)* | CICS BMS — long text message to terminal; eliminated in headless REST architecture |
 | SEND-LONG-TEXT-EXIT | 831 | *(exit point)* | Exit marker |
-| SEND-PLAIN-TEXT | 838 | `sendPlainText()` | Send plain text message |
+| SEND-PLAIN-TEXT | 838 | *(not ported)* | CICS BMS — plain text message to terminal; eliminated in headless REST architecture |
 | SEND-PLAIN-TEXT-EXIT | 849 | *(exit point)* | Exit marker |
-| ABEND-ROUTINE | 857 | `abendRoutine()` | Abend error handler |
+| ABEND-ROUTINE | 857 | *(not ported)* | CICS abend handler — replaced by Java exception handling and `@ControllerAdvice` |
 
 **Paragraph count: 34**
 
@@ -333,12 +346,12 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 0000-MAIN | 367 | `processRequest()` | Main entry: determine first-time vs re-entry |
-| COMMON-RETURN | 546 | `commonReturn()` | Return to CICS with COMMAREA |
+| 0000-MAIN | 367 | `updateCard()` | Main entry: determine first-time vs re-entry |
+| COMMON-RETURN | 546 | *(not ported)* | CICS RETURN with COMMAREA — replaced by REST response return |
 | 0000-MAIN-EXIT | 560 | *(exit point)* | Exit marker |
-| 1000-PROCESS-INPUTS | 564 | `processInputs()` | Receive map and dispatch editing |
+| 1000-PROCESS-INPUTS | 564 | `updateCard()` | Receive map and dispatch editing — consolidated into main entry method |
 | 1000-PROCESS-INPUTS-EXIT | 575 | *(exit point)* | Exit marker |
-| 1100-RECEIVE-MAP | 578 | `receiveMap()` | EXEC CICS RECEIVE MAP with field extraction |
+| 1100-RECEIVE-MAP | 578 | *(not ported)* | CICS RECEIVE MAP — replaced by Spring MVC request deserialization |
 | 1100-RECEIVE-MAP-EXIT | 638 | *(exit point)* | Exit marker |
 | 1200-EDIT-MAP-INPUTS | 641 | `editMapInputs()` | Master field validation orchestrator |
 | 1200-EDIT-MAP-INPUTS-EXIT | 717 | *(exit point)* | Exit marker |
@@ -350,33 +363,33 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 | 1230-EDIT-NAME-EXIT | 841 | *(exit point)* | Exit marker |
 | 1240-EDIT-CARDSTATUS | 845 | `editCardStatus()` | Validate card status code |
 | 1240-EDIT-CARDSTATUS-EXIT | 874 | *(exit point)* | Exit marker |
-| 1250-EDIT-EXPIRY-MON | 877 | `editExpiryMonth()` | Validate card expiry month (01–12) |
+| 1250-EDIT-EXPIRY-MON | 877 | `editExpiryMon()` | Validate card expiry month (01–12) |
 | 1250-EDIT-EXPIRY-MON-EXIT | 910 | *(exit point)* | Exit marker |
 | 1260-EDIT-EXPIRY-YEAR | 913 | `editExpiryYear()` | Validate card expiry year |
 | 1260-EDIT-EXPIRY-YEAR-EXIT | 945 | *(exit point)* | Exit marker |
-| 2000-DECIDE-ACTION | 948 | `decideAction()` | Determine update vs display vs confirm flow |
+| 2000-DECIDE-ACTION | 948 | `updateCard()` | Determine update vs display vs confirm flow — consolidated into main entry method |
 | 2000-DECIDE-ACTION-EXIT | 1029 | *(exit point)* | Exit marker |
-| 3000-SEND-MAP | 1035 | `sendMap()` | Orchestrate screen initialization and send |
+| 3000-SEND-MAP | 1035 | *(not ported)* | CICS BMS — orchestrate screen initialization and send; eliminated in headless REST architecture |
 | 3000-SEND-MAP-EXIT | 1048 | *(exit point)* | Exit marker |
-| 3100-SCREEN-INIT | 1052 | `screenInit()` | Initialize screen fields and defaults |
+| 3100-SCREEN-INIT | 1052 | *(not ported)* | CICS BMS screen field initialization; eliminated in headless REST architecture |
 | 3100-SCREEN-INIT-EXIT | 1078 | *(exit point)* | Exit marker |
-| 3200-SETUP-SCREEN-VARS | 1082 | `setupScreenVars()` | Populate display variables from card data |
+| 3200-SETUP-SCREEN-VARS | 1082 | *(not ported)* | CICS BMS display variable population; eliminated in headless REST architecture |
 | 3200-SETUP-SCREEN-VARS-EXIT | 1135 | *(exit point)* | Exit marker |
-| 3250-SETUP-INFOMSG | 1138 | `setupInfoMsg()` | Set up informational message text |
+| 3250-SETUP-INFOMSG | 1138 | *(not ported)* | CICS BMS informational message for 3270 display; eliminated in headless REST architecture |
 | 3250-SETUP-INFOMSG-EXIT | 1165 | *(exit point)* | Exit marker |
-| 3300-SETUP-SCREEN-ATTRS | 1168 | `setupScreenAttrs()` | Set screen field attributes (colors, protection) |
+| 3300-SETUP-SCREEN-ATTRS | 1168 | *(not ported)* | CICS BMS screen field attributes (colors, protection); eliminated in headless REST architecture |
 | 3300-SETUP-SCREEN-ATTRS-EXIT | 1319 | *(exit point)* | Exit marker |
-| 3400-SEND-SCREEN | 1324 | `sendScreen()` | EXEC CICS SEND MAP |
+| 3400-SEND-SCREEN | 1324 | *(not ported)* | CICS SEND MAP — BMS screen output; eliminated in headless REST architecture |
 | 3400-SEND-SCREEN-EXIT | 1338 | *(exit point)* | Exit marker |
 | 9000-READ-DATA | 1343 | `readData()` | Orchestrate card data retrieval |
 | 9000-READ-DATA-EXIT | 1372 | *(exit point)* | Exit marker |
-| 9100-GETCARD-BYACCTCARD | 1376 | `getCardByAccountCard()` | Read card record by account + card composite key |
+| 9100-GETCARD-BYACCTCARD | 1376 | *(abstracted)* | VSAM composite key read — replaced by JPA `CardRepository` query inside `readData()` |
 | 9100-GETCARD-BYACCTCARD-EXIT | 1415 | *(exit point)* | Exit marker |
-| 9200-WRITE-PROCESSING | 1420 | `writeProcessing()` | Execute card update with optimistic locking |
+| 9200-WRITE-PROCESSING | 1420 | `applyUpdates()` | Execute card update with optimistic locking |
 | 9200-WRITE-PROCESSING-EXIT | 1494 | *(exit point)* | Exit marker |
-| 9300-CHECK-CHANGE-IN-REC | 1498 | `checkChangeInRecord()` | Detect concurrent record modification |
+| 9300-CHECK-CHANGE-IN-REC | 1498 | `detectChanges()` | Detect concurrent record modification |
 | 9300-CHECK-CHANGE-IN-REC-EXIT | 1521 | *(exit point)* | Exit marker |
-| ABEND-ROUTINE | 1531 | `abendRoutine()` | Abend error handler |
+| ABEND-ROUTINE | 1531 | *(not ported)* | CICS abend handler — replaced by Java exception handling and `@ControllerAdvice` |
 | ABEND-ROUTINE-EXIT | 1554 | *(exit point)* | Exit marker |
 
 **Paragraph count: 45**
@@ -389,22 +402,22 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| MAIN-PARA | 95 | `processRequest()` | Main entry: route by context |
+| MAIN-PARA | 95 | `listTransactions()` | Main entry: route by context |
 | PROCESS-ENTER-KEY | 146 | `processEnterKey()` | Process search/selection |
 | PROCESS-PF7-KEY | 234 | `processPf7Key()` | Page backward |
 | PROCESS-PF8-KEY | 257 | `processPf8Key()` | Page forward |
 | PROCESS-PAGE-FORWARD | 279 | `processPageForward()` | Forward pagination logic |
 | PROCESS-PAGE-BACKWARD | 333 | `processPageBackward()` | Backward pagination logic |
-| POPULATE-TRAN-DATA | 381 | `populateTransactionData()` | Populate list rows from VSAM browse |
-| INITIALIZE-TRAN-DATA | 450 | `initializeTransactionData()` | Clear list data |
-| RETURN-TO-PREV-SCREEN | 510 | `returnToPrevScreen()` | Navigate back (PF3) |
-| SEND-TRNLST-SCREEN | 527 | `sendTransactionListScreen()` | Send BMS COTRN00 map |
-| RECEIVE-TRNLST-SCREEN | 554 | `receiveTransactionListScreen()` | Receive BMS COTRN00 input |
+| POPULATE-TRAN-DATA | 381 | `populateTranData()` | Populate list rows from query results |
+| INITIALIZE-TRAN-DATA | 450 | `initializeTranData()` | Clear list data |
+| RETURN-TO-PREV-SCREEN | 510 | *(not ported)* | CICS XCTL navigation — replaced by REST client routing |
+| SEND-TRNLST-SCREEN | 527 | *(not ported)* | CICS SEND MAP for BMS COTRN00; eliminated in headless REST architecture |
+| RECEIVE-TRNLST-SCREEN | 554 | *(not ported)* | CICS RECEIVE MAP for BMS COTRN00; eliminated in headless REST architecture |
 | POPULATE-HEADER-INFO | 567 | `populateHeaderInfo()` | Populate header fields |
-| STARTBR-TRANSACT-FILE | 591 | `startBrowseTransactFile()` | STARTBR on TRANSACT VSAM |
-| READNEXT-TRANSACT-FILE | 624 | `readNextTransactFile()` | READNEXT for forward browse |
-| READPREV-TRANSACT-FILE | 658 | `readPrevTransactFile()` | READPREV for backward browse |
-| ENDBR-TRANSACT-FILE | 692 | `endBrowseTransactFile()` | ENDBR to close browse |
+| STARTBR-TRANSACT-FILE | 591 | *(abstracted)* | VSAM STARTBR — replaced by JPA `TransactionRepository` paginated query |
+| READNEXT-TRANSACT-FILE | 624 | *(abstracted)* | VSAM READNEXT — replaced by JPA paginated query results |
+| READPREV-TRANSACT-FILE | 658 | *(abstracted)* | VSAM READPREV — replaced by JPA reverse-ordered query |
+| ENDBR-TRANSACT-FILE | 692 | *(abstracted)* | VSAM ENDBR — JPA manages cursor/connection lifecycle automatically |
 
 **Paragraph count: 16**
 
@@ -416,15 +429,15 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| MAIN-PARA | 86 | `processRequest()` | Main entry point |
+| MAIN-PARA | 86 | `viewTransaction()` | Main entry point |
 | PROCESS-ENTER-KEY | 144 | `processEnterKey()` | Process transaction view request |
-| RETURN-TO-PREV-SCREEN | 197 | `returnToPrevScreen()` | Navigate back (PF3) |
-| SEND-TRNVIEW-SCREEN | 213 | `sendTransactionViewScreen()` | Send BMS COTRN01 map |
-| RECEIVE-TRNVIEW-SCREEN | 230 | `receiveTransactionViewScreen()` | Receive BMS COTRN01 input |
+| RETURN-TO-PREV-SCREEN | 197 | *(not ported)* | CICS XCTL navigation — replaced by REST client routing |
+| SEND-TRNVIEW-SCREEN | 213 | *(not ported)* | CICS SEND MAP for BMS COTRN01; eliminated in headless REST architecture |
+| RECEIVE-TRNVIEW-SCREEN | 230 | *(not ported)* | CICS RECEIVE MAP for BMS COTRN01; eliminated in headless REST architecture |
 | POPULATE-HEADER-INFO | 243 | `populateHeaderInfo()` | Populate header fields |
-| READ-TRANSACT-FILE | 267 | `readTransactFile()` | Read transaction by ID from VSAM |
-| CLEAR-CURRENT-SCREEN | 301 | `clearCurrentScreen()` | Clear all screen fields |
-| INITIALIZE-ALL-FIELDS | 309 | `initializeAllFields()` | Initialize working storage fields |
+| READ-TRANSACT-FILE | 267 | `readTransactFile()` | Read transaction by ID via JPA repository |
+| CLEAR-CURRENT-SCREEN | 301 | *(not ported)* | CICS BMS screen clearing; eliminated in headless REST architecture |
+| INITIALIZE-ALL-FIELDS | 309 | *(not ported)* | CICS working-storage initialization for screen redisplay; not needed in stateless REST |
 
 **Paragraph count: 9**
 
@@ -436,24 +449,24 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| MAIN-PARA | 107 | `processRequest()` | Main entry point |
+| MAIN-PARA | 107 | `addTransaction()` | Main entry point |
 | PROCESS-ENTER-KEY | 164 | `processEnterKey()` | Process add transaction request |
 | VALIDATE-INPUT-KEY-FIELDS | 193 | `validateInputKeyFields()` | Validate account/card ID key fields |
 | VALIDATE-INPUT-DATA-FIELDS | 235 | `validateInputDataFields()` | Validate amount, date, description fields |
-| ADD-TRANSACTION | 442 | `addTransaction()` | Write new transaction record to VSAM |
-| COPY-LAST-TRAN-DATA | 471 | `copyLastTransactionData()` | Browse-last for transaction ID generation |
-| RETURN-TO-PREV-SCREEN | 500 | `returnToPrevScreen()` | Navigate back (PF3) |
-| SEND-TRNADD-SCREEN | 516 | `sendTransactionAddScreen()` | Send BMS COTRN02 map |
-| RECEIVE-TRNADD-SCREEN | 539 | `receiveTransactionAddScreen()` | Receive BMS COTRN02 input |
-| POPULATE-HEADER-INFO | 552 | `populateHeaderInfo()` | Populate header fields |
-| READ-CXACAIX-FILE | 576 | `readCardAccountAixFile()` | Read card-account AIX for validation |
-| READ-CCXREF-FILE | 609 | `readCardXrefFile()` | Read card cross-reference |
-| STARTBR-TRANSACT-FILE | 642 | `startBrowseTransactFile()` | Start browse for last transaction ID |
-| READPREV-TRANSACT-FILE | 673 | `readPrevTransactFile()` | Read last transaction for ID generation |
-| ENDBR-TRANSACT-FILE | 702 | `endBrowseTransactFile()` | End browse |
-| WRITE-TRANSACT-FILE | 711 | `writeTransactFile()` | Write new transaction record |
-| CLEAR-CURRENT-SCREEN | 754 | `clearCurrentScreen()` | Clear all screen fields |
-| INITIALIZE-ALL-FIELDS | 762 | `initializeAllFields()` | Initialize working storage fields |
+| ADD-TRANSACTION | 442 | `addTransactionRecord()` | Write new transaction record to database via JPA |
+| COPY-LAST-TRAN-DATA | 471 | `copyLastTranData()` | Browse-last for transaction ID generation |
+| RETURN-TO-PREV-SCREEN | 500 | *(not ported)* | CICS XCTL navigation — replaced by REST client routing |
+| SEND-TRNADD-SCREEN | 516 | *(not ported)* | CICS SEND MAP for BMS COTRN02; eliminated in headless REST architecture |
+| RECEIVE-TRNADD-SCREEN | 539 | *(not ported)* | CICS RECEIVE MAP for BMS COTRN02; eliminated in headless REST architecture |
+| POPULATE-HEADER-INFO | 552 | *(not ported)* | CICS BMS header population; eliminated in headless REST architecture |
+| READ-CXACAIX-FILE | 576 | `readCxacaixFile()` | Read card-account AIX for validation via JPA |
+| READ-CCXREF-FILE | 609 | `readCcxrefFile()` | Read card cross-reference via JPA |
+| STARTBR-TRANSACT-FILE | 642 | *(abstracted)* | VSAM STARTBR — replaced by JPA `TransactionRepository` query for last ID |
+| READPREV-TRANSACT-FILE | 673 | *(abstracted)* | VSAM READPREV — replaced by JPA descending-order query |
+| ENDBR-TRANSACT-FILE | 702 | *(abstracted)* | VSAM ENDBR — JPA manages cursor/connection lifecycle automatically |
+| WRITE-TRANSACT-FILE | 711 | `writeTransactFile()` | Write new transaction record via JPA |
+| CLEAR-CURRENT-SCREEN | 754 | *(not ported)* | CICS BMS screen clearing; eliminated in headless REST architecture |
+| INITIALIZE-ALL-FIELDS | 762 | *(not ported)* | CICS working-storage initialization for screen redisplay; not needed in stateless REST |
 
 **Paragraph count: 18**
 
@@ -465,20 +478,20 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| MAIN-PARA | 163 | `processRequest()` | Main entry point |
+| MAIN-PARA | 163 | `mainPara()` | Main entry point |
 | PROCESS-ENTER-KEY | 208 | `processEnterKey()` | Process report generation request |
-| SUBMIT-JOB-TO-INTRDR | 462 | `submitJobToInternalReader()` | Submit batch JCL to TDQ (internal reader) |
-| WIRTE-JOBSUB-TDQ | 515 | `writeJobSubmissionTdq()` | Write TDQ record for job submission |
+| SUBMIT-JOB-TO-INTRDR | 462 | `submitJobToIntrdr()` | Submit batch JCL to TDQ (internal reader) |
+| WIRTE-JOBSUB-TDQ | 515 | `writeJobSubTdq()` | Write TDQ record for job submission |
 | RETURN-TO-PREV-SCREEN | 540 | `returnToPrevScreen()` | Navigate back (PF3) |
-| SEND-TRNRPT-SCREEN | 556 | `sendReportScreen()` | Send BMS CORPT00 map |
-| RETURN-TO-CICS | 585 | `returnToCics()` | Return control to CICS |
-| RECEIVE-TRNRPT-SCREEN | 596 | `receiveReportScreen()` | Receive BMS CORPT00 input |
+| SEND-TRNRPT-SCREEN | 556 | *(not ported)* | CICS SEND MAP for BMS CORPT00; eliminated in headless REST architecture |
+| RETURN-TO-CICS | 585 | `returnToCics()` | Return control to CICS — preserved as job-submission status return |
+| RECEIVE-TRNRPT-SCREEN | 596 | `receiveReportScreen()` | Receive BMS CORPT00 input — preserved as request parameter extraction |
 | POPULATE-HEADER-INFO | 609 | `populateHeaderInfo()` | Populate header fields |
 | INITIALIZE-ALL-FIELDS | 633 | `initializeAllFields()` | Initialize working storage fields |
 
 **Paragraph count: 10**
 
-> **Note:** The paragraph name `WIRTE-JOBSUB-TDQ` is a typo in the original COBOL source (should be `WRITE-`). The Java method name corrects this to `writeJobSubmissionTdq()`.
+> **Note:** The paragraph name `WIRTE-JOBSUB-TDQ` is a typo in the original COBOL source (should be `WRITE-`). The Java method name corrects this to `writeJobSubTdq()`.
 
 ---
 
@@ -488,22 +501,22 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| MAIN-PARA | 99 | `processRequest()` | Main entry point |
+| MAIN-PARA | 99 | `processBillPayment()` | Main entry point |
 | PROCESS-ENTER-KEY | 154 | `processEnterKey()` | Process bill payment request |
-| GET-CURRENT-TIMESTAMP | 249 | `getCurrentTimestamp()` | Get system timestamp for transaction |
-| RETURN-TO-PREV-SCREEN | 273 | `returnToPrevScreen()` | Navigate back (PF3) |
-| SEND-BILLPAY-SCREEN | 289 | `sendBillPayScreen()` | Send BMS COBIL00 map |
-| RECEIVE-BILLPAY-SCREEN | 306 | `receiveBillPayScreen()` | Receive BMS COBIL00 input |
+| GET-CURRENT-TIMESTAMP | 249 | *(not ported)* | CICS ASKTIME/FORMATTIME — replaced by `java.time` APIs used inline in `buildPaymentTransaction()` |
+| RETURN-TO-PREV-SCREEN | 273 | *(not ported)* | CICS XCTL navigation — replaced by REST client routing |
+| SEND-BILLPAY-SCREEN | 289 | *(not ported)* | CICS SEND MAP for BMS COBIL00; eliminated in headless REST architecture |
+| RECEIVE-BILLPAY-SCREEN | 306 | *(not ported)* | CICS RECEIVE MAP for BMS COBIL00; eliminated in headless REST architecture |
 | POPULATE-HEADER-INFO | 319 | `populateHeaderInfo()` | Populate header fields |
-| READ-ACCTDAT-FILE | 343 | `readAccountDataFile()` | Read account by ID from VSAM |
-| UPDATE-ACCTDAT-FILE | 377 | `updateAccountDataFile()` | Update account balance after payment |
-| READ-CXACAIX-FILE | 408 | `readCardAccountAixFile()` | Read card-account AIX for validation |
-| STARTBR-TRANSACT-FILE | 441 | `startBrowseTransactFile()` | Start browse for transaction ID generation |
-| READPREV-TRANSACT-FILE | 472 | `readPrevTransactFile()` | Get last transaction ID |
-| ENDBR-TRANSACT-FILE | 501 | `endBrowseTransactFile()` | End browse |
-| WRITE-TRANSACT-FILE | 510 | `writeTransactFile()` | Write payment transaction record |
-| CLEAR-CURRENT-SCREEN | 552 | `clearCurrentScreen()` | Clear all screen fields |
-| INITIALIZE-ALL-FIELDS | 560 | `initializeAllFields()` | Initialize working storage fields |
+| READ-ACCTDAT-FILE | 343 | `readAcctdatFile()` | Read account by ID via JPA repository |
+| UPDATE-ACCTDAT-FILE | 377 | `updateAcctdatFile()` | Update account balance after payment via JPA |
+| READ-CXACAIX-FILE | 408 | `readCxacaixFile()` | Read card-account AIX for validation via JPA |
+| STARTBR-TRANSACT-FILE | 441 | *(abstracted)* | VSAM STARTBR — replaced by JPA `TransactionRepository` query for last ID |
+| READPREV-TRANSACT-FILE | 472 | *(abstracted)* | VSAM READPREV — replaced by JPA descending-order query |
+| ENDBR-TRANSACT-FILE | 501 | *(abstracted)* | VSAM ENDBR — JPA manages cursor/connection lifecycle automatically |
+| WRITE-TRANSACT-FILE | 510 | `writeTransactFile()` | Write payment transaction record via JPA |
+| CLEAR-CURRENT-SCREEN | 552 | *(not ported)* | CICS BMS screen clearing; eliminated in headless REST architecture |
+| INITIALIZE-ALL-FIELDS | 560 | *(not ported)* | CICS working-storage initialization for screen redisplay; not needed in stateless REST |
 
 **Paragraph count: 16**
 
@@ -515,22 +528,22 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| MAIN-PARA | 98 | `processRequest()` | Main entry point |
+| MAIN-PARA | 98 | `listUsers()` | Main entry point |
 | PROCESS-ENTER-KEY | 149 | `processEnterKey()` | Process user selection |
 | PROCESS-PF7-KEY | 237 | `processPf7Key()` | Page backward |
 | PROCESS-PF8-KEY | 260 | `processPf8Key()` | Page forward |
 | PROCESS-PAGE-FORWARD | 282 | `processPageForward()` | Forward pagination logic |
 | PROCESS-PAGE-BACKWARD | 336 | `processPageBackward()` | Backward pagination logic |
-| POPULATE-USER-DATA | 384 | `populateUserData()` | Populate list rows from VSAM browse |
-| INITIALIZE-USER-DATA | 446 | `initializeUserData()` | Clear list data |
-| RETURN-TO-PREV-SCREEN | 506 | `returnToPrevScreen()` | Navigate back (PF3) |
-| SEND-USRLST-SCREEN | 522 | `sendUserListScreen()` | Send BMS COUSR00 map |
-| RECEIVE-USRLST-SCREEN | 549 | `receiveUserListScreen()` | Receive BMS COUSR00 input |
-| POPULATE-HEADER-INFO | 562 | `populateHeaderInfo()` | Populate header fields |
-| STARTBR-USER-SEC-FILE | 586 | `startBrowseUserSecFile()` | Start browse on USRSEC VSAM |
-| READNEXT-USER-SEC-FILE | 619 | `readNextUserSecFile()` | Read next user record |
-| READPREV-USER-SEC-FILE | 653 | `readPrevUserSecFile()` | Read previous user record |
-| ENDBR-USER-SEC-FILE | 687 | `endBrowseUserSecFile()` | End browse |
+| POPULATE-USER-DATA | 384 | *(abstracted)* | VSAM browse row population — replaced by JPA paginated query results in `processPageForward()`/`processPageBackward()` |
+| INITIALIZE-USER-DATA | 446 | *(not ported)* | CICS BMS list clearing for 3270 redisplay; not needed in stateless REST |
+| RETURN-TO-PREV-SCREEN | 506 | *(not ported)* | CICS XCTL navigation — replaced by REST client routing |
+| SEND-USRLST-SCREEN | 522 | *(not ported)* | CICS SEND MAP for BMS COUSR00; eliminated in headless REST architecture |
+| RECEIVE-USRLST-SCREEN | 549 | *(not ported)* | CICS RECEIVE MAP for BMS COUSR00; eliminated in headless REST architecture |
+| POPULATE-HEADER-INFO | 562 | *(not ported)* | CICS BMS header population; eliminated in headless REST architecture |
+| STARTBR-USER-SEC-FILE | 586 | *(abstracted)* | VSAM STARTBR — replaced by JPA `UserSecurityRepository` paginated query |
+| READNEXT-USER-SEC-FILE | 619 | *(abstracted)* | VSAM READNEXT — replaced by JPA paginated query results |
+| READPREV-USER-SEC-FILE | 653 | *(abstracted)* | VSAM READPREV — replaced by JPA reverse-ordered query |
+| ENDBR-USER-SEC-FILE | 687 | *(abstracted)* | VSAM ENDBR — JPA manages cursor/connection lifecycle automatically |
 
 **Paragraph count: 16**
 
@@ -542,15 +555,15 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| MAIN-PARA | 71 | `processRequest()` | Main entry point |
+| MAIN-PARA | 71 | `addUser()` | Main entry point |
 | PROCESS-ENTER-KEY | 115 | `processEnterKey()` | Process add user request |
-| RETURN-TO-PREV-SCREEN | 165 | `returnToPrevScreen()` | Navigate back (PF3) |
-| SEND-USRADD-SCREEN | 184 | `sendUserAddScreen()` | Send BMS COUSR01 map |
-| RECEIVE-USRADD-SCREEN | 201 | `receiveUserAddScreen()` | Receive BMS COUSR01 input |
-| POPULATE-HEADER-INFO | 214 | `populateHeaderInfo()` | Populate header fields |
-| WRITE-USER-SEC-FILE | 238 | `writeUserSecFile()` | Write new user record to USRSEC VSAM |
-| CLEAR-CURRENT-SCREEN | 279 | `clearCurrentScreen()` | Clear all screen fields |
-| INITIALIZE-ALL-FIELDS | 287 | `initializeAllFields()` | Initialize working storage fields |
+| RETURN-TO-PREV-SCREEN | 165 | *(not ported)* | CICS XCTL navigation — replaced by REST client routing |
+| SEND-USRADD-SCREEN | 184 | *(not ported)* | CICS SEND MAP for BMS COUSR01; eliminated in headless REST architecture |
+| RECEIVE-USRADD-SCREEN | 201 | *(not ported)* | CICS RECEIVE MAP for BMS COUSR01; eliminated in headless REST architecture |
+| POPULATE-HEADER-INFO | 214 | *(not ported)* | CICS BMS header population; eliminated in headless REST architecture |
+| WRITE-USER-SEC-FILE | 238 | `writeUserSecFile()` | Write new user record via JPA repository |
+| CLEAR-CURRENT-SCREEN | 279 | *(not ported)* | CICS BMS screen clearing; eliminated in headless REST architecture |
+| INITIALIZE-ALL-FIELDS | 287 | *(not ported)* | CICS working-storage initialization for screen redisplay; not needed in stateless REST |
 
 **Paragraph count: 9**
 
@@ -562,17 +575,17 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| MAIN-PARA | 82 | `processRequest()` | Main entry point |
+| MAIN-PARA | 82 | `updateUser()` | Main entry point — routes by context state |
 | PROCESS-ENTER-KEY | 143 | `processEnterKey()` | Process update user request |
 | UPDATE-USER-INFO | 177 | `updateUserInfo()` | Validate fields and prepare update |
-| RETURN-TO-PREV-SCREEN | 250 | `returnToPrevScreen()` | Navigate back (PF3) |
-| SEND-USRUPD-SCREEN | 266 | `sendUserUpdateScreen()` | Send BMS COUSR02 map |
-| RECEIVE-USRUPD-SCREEN | 283 | `receiveUserUpdateScreen()` | Receive BMS COUSR02 input |
+| RETURN-TO-PREV-SCREEN | 250 | *(not ported)* | CICS XCTL return — no equivalent in headless service |
+| SEND-USRUPD-SCREEN | 266 | *(not ported)* | CICS SEND MAP — no BMS in headless service |
+| RECEIVE-USRUPD-SCREEN | 283 | *(not ported)* | CICS RECEIVE MAP — no BMS in headless service |
 | POPULATE-HEADER-INFO | 296 | `populateHeaderInfo()` | Populate header fields |
 | READ-USER-SEC-FILE | 320 | `readUserSecFile()` | Read user record by ID |
-| UPDATE-USER-SEC-FILE | 358 | `updateUserSecFile()` | Rewrite user record to USRSEC VSAM |
-| CLEAR-CURRENT-SCREEN | 395 | `clearCurrentScreen()` | Clear all screen fields |
-| INITIALIZE-ALL-FIELDS | 403 | `initializeAllFields()` | Initialize working storage fields |
+| UPDATE-USER-SEC-FILE | 358 | `updateUserSecFile()` | Rewrite user record via JPA repository |
+| CLEAR-CURRENT-SCREEN | 395 | *(not ported)* | CICS screen clear — no BMS in headless service |
+| INITIALIZE-ALL-FIELDS | 403 | *(not ported)* | Working storage init — handled by Java object lifecycle |
 
 **Paragraph count: 11**
 
@@ -584,17 +597,17 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| MAIN-PARA | 82 | `processRequest()` | Main entry point |
+| MAIN-PARA | 82 | `deleteUser()` | Main entry point — routes by context state |
 | PROCESS-ENTER-KEY | 142 | `processEnterKey()` | Process delete user request |
 | DELETE-USER-INFO | 174 | `deleteUserInfo()` | Validate and prepare deletion |
-| RETURN-TO-PREV-SCREEN | 197 | `returnToPrevScreen()` | Navigate back (PF3) |
-| SEND-USRDEL-SCREEN | 213 | `sendUserDeleteScreen()` | Send BMS COUSR03 map |
-| RECEIVE-USRDEL-SCREEN | 230 | `receiveUserDeleteScreen()` | Receive BMS COUSR03 input |
-| POPULATE-HEADER-INFO | 243 | `populateHeaderInfo()` | Populate header fields |
+| RETURN-TO-PREV-SCREEN | 197 | *(not ported)* | CICS XCTL return — no equivalent in headless service |
+| SEND-USRDEL-SCREEN | 213 | *(not ported)* | CICS SEND MAP — no BMS in headless service |
+| RECEIVE-USRDEL-SCREEN | 230 | *(not ported)* | CICS RECEIVE MAP — no BMS in headless service |
+| POPULATE-HEADER-INFO | 243 | *(not ported)* | CICS screen header — not present in this service |
 | READ-USER-SEC-FILE | 267 | `readUserSecFile()` | Read user record by ID |
-| DELETE-USER-SEC-FILE | 305 | `deleteUserSecFile()` | Delete user record from USRSEC VSAM |
-| CLEAR-CURRENT-SCREEN | 341 | `clearCurrentScreen()` | Clear all screen fields |
-| INITIALIZE-ALL-FIELDS | 349 | `initializeAllFields()` | Initialize working storage fields |
+| DELETE-USER-SEC-FILE | 305 | `deleteUserSecFile()` | Delete user record via JPA repository |
+| CLEAR-CURRENT-SCREEN | 341 | *(not ported)* | CICS screen clear — no BMS in headless service |
+| INITIALIZE-ALL-FIELDS | 349 | *(not ported)* | Working storage init — handled by Java object lifecycle |
 
 **Paragraph count: 11**
 
@@ -612,12 +625,12 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 1000-ACCTFILE-GET-NEXT | 92 | `getNextAccount()` | Read next account record from VSAM |
+| 1000-ACCTFILE-GET-NEXT | 92 | `refreshAccounts()` | Main loop — reads all account records via JPA |
 | 1100-DISPLAY-ACCT-RECORD | 118 | `displayAccountRecord()` | Display account record for operator review |
-| 0000-ACCTFILE-OPEN | 133 | `openAccountFile()` | Open ACCTDATA VSAM file |
-| 9000-ACCTFILE-CLOSE | 151 | `closeAccountFile()` | Close ACCTDATA VSAM file |
-| 9999-ABEND-PROGRAM | 169 | `abendProgram()` | Abend error handler |
-| 9910-DISPLAY-IO-STATUS | 176 | `displayIoStatus()` | Display FILE STATUS diagnostic |
+| 0000-ACCTFILE-OPEN | 133 | *(abstracted)* | VSAM OPEN — replaced by JPA repository auto-management |
+| 9000-ACCTFILE-CLOSE | 151 | *(abstracted)* | VSAM CLOSE — replaced by JPA repository auto-management |
+| 9999-ABEND-PROGRAM | 169 | *(not ported)* | COBOL ABEND — replaced by Java exception propagation |
+| 9910-DISPLAY-IO-STATUS | 176 | *(not ported)* | FILE STATUS display — replaced by SLF4J logging in exception handlers |
 
 **Paragraph count: 6**
 
@@ -629,11 +642,11 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 1000-CARDFILE-GET-NEXT | 92 | `getNextCard()` | Read next card record from VSAM |
-| 0000-CARDFILE-OPEN | 118 | `openCardFile()` | Open CARDDATA VSAM file |
-| 9000-CARDFILE-CLOSE | 136 | `closeCardFile()` | Close CARDDATA VSAM file |
-| 9999-ABEND-PROGRAM | 154 | `abendProgram()` | Abend error handler |
-| 9910-DISPLAY-IO-STATUS | 161 | `displayIoStatus()` | Display FILE STATUS diagnostic |
+| 1000-CARDFILE-GET-NEXT | 92 | `processCardFile()` | Main loop — reads all card records via JPA |
+| 0000-CARDFILE-OPEN | 118 | *(abstracted)* | VSAM OPEN — replaced by JPA repository auto-management |
+| 9000-CARDFILE-CLOSE | 136 | *(abstracted)* | VSAM CLOSE — replaced by JPA repository auto-management |
+| 9999-ABEND-PROGRAM | 154 | *(not ported)* | COBOL ABEND — replaced by Java exception propagation |
+| 9910-DISPLAY-IO-STATUS | 161 | *(not ported)* | FILE STATUS display — replaced by SLF4J logging in exception handlers |
 
 **Paragraph count: 5**
 
@@ -645,11 +658,11 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 1000-XREFFILE-GET-NEXT | 92 | `getNextXref()` | Read next cross-reference record from VSAM |
-| 0000-XREFFILE-OPEN | 118 | `openXrefFile()` | Open CARDXREF VSAM file |
-| 9000-XREFFILE-CLOSE | 136 | `closeXrefFile()` | Close CARDXREF VSAM file |
-| 9999-ABEND-PROGRAM | 154 | `abendProgram()` | Abend error handler |
-| 9910-DISPLAY-IO-STATUS | 161 | `displayIoStatus()` | Display FILE STATUS diagnostic |
+| 1000-XREFFILE-GET-NEXT | 92 | `processAccountOperations()` | Main loop — reads all cross-reference records via JPA |
+| 0000-XREFFILE-OPEN | 118 | *(abstracted)* | VSAM OPEN — replaced by JPA repository auto-management |
+| 9000-XREFFILE-CLOSE | 136 | *(abstracted)* | VSAM CLOSE — replaced by JPA repository auto-management |
+| 9999-ABEND-PROGRAM | 154 | *(not ported)* | COBOL ABEND — replaced by Java exception propagation |
+| 9910-DISPLAY-IO-STATUS | 161 | *(not ported)* | FILE STATUS display — replaced by SLF4J logging in exception handlers |
 
 **Paragraph count: 5**
 
@@ -661,28 +674,28 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 0000-TCATBALF-OPEN | 234 | `openTcatbalFile()` | Open TCATBAL VSAM file |
-| 0100-XREFFILE-OPEN | 252 | `openXrefFile()` | Open CARDXREF VSAM file |
-| 0200-DISCGRP-OPEN | 270 | `openDiscountGroupFile()` | Open DISCGRP reference file |
-| 0300-ACCTFILE-OPEN | 289 | `openAccountFile()` | Open ACCTDATA VSAM file |
-| 0400-TRANFILE-OPEN | 307 | `openTransactionFile()` | Open TRANSACT VSAM file |
-| 1000-TCATBALF-GET-NEXT | 325 | `getNextCategoryBalance()` | Read next TCATBAL record |
+| 0000-TCATBALF-OPEN | 234 | *(abstracted)* | VSAM OPEN TCATBAL — replaced by JPA repository auto-management |
+| 0100-XREFFILE-OPEN | 252 | *(abstracted)* | VSAM OPEN CARDXREF — replaced by JPA repository auto-management |
+| 0200-DISCGRP-OPEN | 270 | *(abstracted)* | VSAM OPEN DISCGRP — replaced by JPA repository auto-management |
+| 0300-ACCTFILE-OPEN | 289 | *(abstracted)* | VSAM OPEN ACCTDATA — replaced by JPA repository auto-management |
+| 0400-TRANFILE-OPEN | 307 | *(abstracted)* | VSAM OPEN TRANSACT — replaced by JPA repository auto-management |
+| 1000-TCATBALF-GET-NEXT | 325 | `calculateInterest()` | Main entry — iterates category balance records via JPA |
 | 1050-UPDATE-ACCOUNT | 350 | `updateAccount()` | Update account record with computed interest |
-| 1100-GET-ACCT-DATA | 372 | `getAccountData()` | Read account by ID |
-| 1110-GET-XREF-DATA | 393 | `getXrefData()` | Read card cross-reference data |
-| 1200-GET-INTEREST-RATE | 415 | `getInterestRate()` | Lookup interest rate from discount group |
-| 1200-A-GET-DEFAULT-INT-RATE | 443 | `getDefaultInterestRate()` | Fallback to default interest rate |
+| 1100-GET-ACCT-DATA | 372 | *(abstracted)* | VSAM READ — replaced by JPA `accountRepository.findById()` |
+| 1110-GET-XREF-DATA | 393 | *(abstracted)* | VSAM READ — replaced by JPA `cardXrefRepository` lookup |
+| 1200-GET-INTEREST-RATE | 415 | *(abstracted)* | VSAM READ — replaced by JPA `discountGroupRepository` lookup |
+| 1200-A-GET-DEFAULT-INT-RATE | 443 | *(abstracted)* | Fallback interest rate — inlined in `calculateInterest()` logic |
 | 1300-COMPUTE-INTEREST | 462 | `computeInterest()` | BigDecimal interest calculation |
-| 1300-B-WRITE-TX | 473 | `writeTransaction()` | Write interest transaction record |
+| 1300-B-WRITE-TX | 473 | `writeInterestTransaction()` | Write interest transaction record via JPA |
 | 1400-COMPUTE-FEES | 518 | `computeFees()` | Compute fee calculations |
-| 9000-TCATBALF-CLOSE | 522 | `closeTcatbalFile()` | Close TCATBAL VSAM file |
-| 9100-XREFFILE-CLOSE | 541 | `closeXrefFile()` | Close CARDXREF VSAM file |
-| 9200-DISCGRP-CLOSE | 559 | `closeDiscountGroupFile()` | Close DISCGRP reference file |
-| 9300-ACCTFILE-CLOSE | 577 | `closeAccountFile()` | Close ACCTDATA VSAM file |
-| 9400-TRANFILE-CLOSE | 595 | `closeTransactionFile()` | Close TRANSACT VSAM file |
-| Z-GET-DB2-FORMAT-TIMESTAMP | 613 | `getDb2FormatTimestamp()` | Format timestamp in DB2-compatible format |
-| 9999-ABEND-PROGRAM | 628 | `abendProgram()` | Abend error handler |
-| 9910-DISPLAY-IO-STATUS | 635 | `displayIoStatus()` | Display FILE STATUS diagnostic |
+| 9000-TCATBALF-CLOSE | 522 | *(abstracted)* | VSAM CLOSE TCATBAL — replaced by JPA repository auto-management |
+| 9100-XREFFILE-CLOSE | 541 | *(abstracted)* | VSAM CLOSE CARDXREF — replaced by JPA repository auto-management |
+| 9200-DISCGRP-CLOSE | 559 | *(abstracted)* | VSAM CLOSE DISCGRP — replaced by JPA repository auto-management |
+| 9300-ACCTFILE-CLOSE | 577 | *(abstracted)* | VSAM CLOSE ACCTDATA — replaced by JPA repository auto-management |
+| 9400-TRANFILE-CLOSE | 595 | *(abstracted)* | VSAM CLOSE TRANSACT — replaced by JPA repository auto-management |
+| Z-GET-DB2-FORMAT-TIMESTAMP | 613 | `generateDb2Timestamp()` | Format timestamp in DB2-compatible format |
+| 9999-ABEND-PROGRAM | 628 | *(not ported)* | COBOL ABEND — replaced by Java exception propagation |
+| 9910-DISPLAY-IO-STATUS | 635 | *(not ported)* | FILE STATUS display — replaced by SLF4J logging in exception handlers |
 
 **Paragraph count: 22**
 
@@ -694,11 +707,11 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 1000-CUSTFILE-GET-NEXT | 92 | `getNextCustomer()` | Read next customer record from VSAM |
-| 0000-CUSTFILE-OPEN | 118 | `openCustomerFile()` | Open CUSTDATA VSAM file |
-| 9000-CUSTFILE-CLOSE | 136 | `closeCustomerFile()` | Close CUSTDATA VSAM file |
-| Z-ABEND-PROGRAM | 154 | `abendProgram()` | Abend error handler |
-| Z-DISPLAY-IO-STATUS | 161 | `displayIoStatus()` | Display FILE STATUS diagnostic |
+| 1000-CUSTFILE-GET-NEXT | 92 | `refreshCustomers()` | Main loop — reads all customer records via JPA |
+| 0000-CUSTFILE-OPEN | 118 | *(abstracted)* | VSAM OPEN — replaced by JPA repository auto-management |
+| 9000-CUSTFILE-CLOSE | 136 | *(abstracted)* | VSAM CLOSE — replaced by JPA repository auto-management |
+| Z-ABEND-PROGRAM | 154 | `abendProgram()` | Abend error handler — retained as private helper |
+| Z-DISPLAY-IO-STATUS | 161 | `displayIoStatus()` | FILE STATUS display — retained as private helper |
 
 **Paragraph count: 5**
 
@@ -710,24 +723,24 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| MAIN-PARA | 155 | `mainProcess()` | Main entry point for transaction utilities |
-| 1000-DALYTRAN-GET-NEXT | 202 | `getNextDailyTransaction()` | Read next daily transaction record |
+| MAIN-PARA | 155 | `processTransactions()` | Main entry point — iterates daily transactions |
+| 1000-DALYTRAN-GET-NEXT | 202 | *(abstracted)* | VSAM sequential READ — absorbed into `processTransactions()` JPA iteration |
 | 2000-LOOKUP-XREF | 227 | `lookupXref()` | Card cross-reference lookup |
 | 3000-READ-ACCOUNT | 241 | `readAccount()` | Read account by ID |
-| 0000-DALYTRAN-OPEN | 252 | `openDailyTransactionFile()` | Open DALYTRAN input file |
-| 0100-CUSTFILE-OPEN | 271 | `openCustomerFile()` | Open CUSTDATA VSAM file |
-| 0200-XREFFILE-OPEN | 289 | `openXrefFile()` | Open CARDXREF VSAM file |
-| 0300-CARDFILE-OPEN | 307 | `openCardFile()` | Open CARDDATA VSAM file |
-| 0400-ACCTFILE-OPEN | 325 | `openAccountFile()` | Open ACCTDATA VSAM file |
-| 0500-TRANFILE-OPEN | 343 | `openTransactionFile()` | Open TRANSACT VSAM file |
-| 9000-DALYTRAN-CLOSE | 361 | `closeDailyTransactionFile()` | Close DALYTRAN input file |
-| 9100-CUSTFILE-CLOSE | 379 | `closeCustomerFile()` | Close CUSTDATA VSAM file |
-| 9200-XREFFILE-CLOSE | 397 | `closeXrefFile()` | Close CARDXREF VSAM file |
-| 9300-CARDFILE-CLOSE | 415 | `closeCardFile()` | Close CARDDATA VSAM file |
-| 9400-ACCTFILE-CLOSE | 433 | `closeAccountFile()` | Close ACCTDATA VSAM file |
-| 9500-TRANFILE-CLOSE | 451 | `closeTransactionFile()` | Close TRANSACT VSAM file |
-| Z-ABEND-PROGRAM | 469 | `abendProgram()` | Abend error handler |
-| Z-DISPLAY-IO-STATUS | 476 | `displayIoStatus()` | Display FILE STATUS diagnostic |
+| 0000-DALYTRAN-OPEN | 252 | *(abstracted)* | VSAM OPEN DALYTRAN — replaced by JPA repository auto-management |
+| 0100-CUSTFILE-OPEN | 271 | *(abstracted)* | VSAM OPEN CUSTDATA — replaced by JPA repository auto-management |
+| 0200-XREFFILE-OPEN | 289 | *(abstracted)* | VSAM OPEN CARDXREF — replaced by JPA repository auto-management |
+| 0300-CARDFILE-OPEN | 307 | *(abstracted)* | VSAM OPEN CARDDATA — replaced by JPA repository auto-management |
+| 0400-ACCTFILE-OPEN | 325 | *(abstracted)* | VSAM OPEN ACCTDATA — replaced by JPA repository auto-management |
+| 0500-TRANFILE-OPEN | 343 | *(abstracted)* | VSAM OPEN TRANSACT — replaced by JPA repository auto-management |
+| 9000-DALYTRAN-CLOSE | 361 | *(abstracted)* | VSAM CLOSE DALYTRAN — replaced by JPA repository auto-management |
+| 9100-CUSTFILE-CLOSE | 379 | *(abstracted)* | VSAM CLOSE CUSTDATA — replaced by JPA repository auto-management |
+| 9200-XREFFILE-CLOSE | 397 | *(abstracted)* | VSAM CLOSE CARDXREF — replaced by JPA repository auto-management |
+| 9300-CARDFILE-CLOSE | 415 | *(abstracted)* | VSAM CLOSE CARDDATA — replaced by JPA repository auto-management |
+| 9400-ACCTFILE-CLOSE | 433 | *(abstracted)* | VSAM CLOSE ACCTDATA — replaced by JPA repository auto-management |
+| 9500-TRANFILE-CLOSE | 451 | *(abstracted)* | VSAM CLOSE TRANSACT — replaced by JPA repository auto-management |
+| Z-ABEND-PROGRAM | 469 | *(not ported)* | COBOL ABEND — replaced by Java exception propagation |
+| Z-DISPLAY-IO-STATUS | 476 | `logIoStatus()` | FILE STATUS display — renamed to use SLF4J logging |
 
 **Paragraph count: 18**
 
@@ -739,32 +752,32 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 0000-DALYTRAN-OPEN | 236 | `openDailyTransactionFile()` | Open DALYTRAN input file |
-| 0100-TRANFILE-OPEN | 254 | `openTransactionFile()` | Open TRANSACT VSAM file |
-| 0200-XREFFILE-OPEN | 273 | `openXrefFile()` | Open CARDXREF VSAM file |
-| 0300-DALYREJS-OPEN | 291 | `openRejectFile()` | Open DALYREJS reject output file |
-| 0400-ACCTFILE-OPEN | 309 | `openAccountFile()` | Open ACCTDATA VSAM file |
-| 0500-TCATBALF-OPEN | 327 | `openCategoryBalanceFile()` | Open TCATBAL VSAM file |
-| 1000-DALYTRAN-GET-NEXT | 345 | `getNextDailyTransaction()` | Read next DALYTRAN record |
+| 0000-DALYTRAN-OPEN | 236 | *(abstracted)* | VSAM OPEN DALYTRAN — replaced by JPA repository auto-management |
+| 0100-TRANFILE-OPEN | 254 | *(abstracted)* | VSAM OPEN TRANSACT — replaced by JPA repository auto-management |
+| 0200-XREFFILE-OPEN | 273 | *(abstracted)* | VSAM OPEN CARDXREF — replaced by JPA repository auto-management |
+| 0300-DALYREJS-OPEN | 291 | *(abstracted)* | VSAM OPEN DALYREJS — replaced by JPA/file writer auto-management |
+| 0400-ACCTFILE-OPEN | 309 | *(abstracted)* | VSAM OPEN ACCTDATA — replaced by JPA repository auto-management |
+| 0500-TCATBALF-OPEN | 327 | *(abstracted)* | VSAM OPEN TCATBAL — replaced by JPA repository auto-management |
+| 1000-DALYTRAN-GET-NEXT | 345 | `processDailyTransactions()` | Main entry — iterates daily transactions via JPA |
 | 1500-VALIDATE-TRAN | 370 | `validateTransaction()` | Master transaction validation dispatcher |
 | 1500-A-LOOKUP-XREF | 380 | `lookupXref()` | Validate XREF exists (reject code 100 if missing) |
 | 1500-B-LOOKUP-ACCT | 393 | `lookupAccount()` | Validate account (reject codes 101–103) |
 | 2000-POST-TRANSACTION | 424 | `postTransaction()` | Post validated transaction to TRANSACT |
 | 2500-WRITE-REJECT-REC | 446 | `writeRejectRecord()` | Write rejected record to DALYREJS |
-| 2700-UPDATE-TCATBAL | 467 | `updateCategoryBalance()` | Update category balance orchestrator |
-| 2700-A-CREATE-TCATBAL-REC | 503 | `createCategoryBalanceRecord()` | Create new TCATBAL record if not exists |
-| 2700-B-UPDATE-TCATBAL-REC | 526 | `updateCategoryBalanceRecord()` | Update existing TCATBAL record |
+| 2700-UPDATE-TCATBAL | 467 | `updateTcatbal()` | Update category balance orchestrator |
+| 2700-A-CREATE-TCATBAL-REC | 503 | `createTcatbalRecord()` | Create new TCATBAL record if not exists |
+| 2700-B-UPDATE-TCATBAL-REC | 526 | `updateTcatbalRecord()` | Update existing TCATBAL record |
 | 2800-UPDATE-ACCOUNT-REC | 545 | `updateAccountRecord()` | Update account balance after posting |
-| 2900-WRITE-TRANSACTION-FILE | 562 | `writeTransactionFile()` | Write posted transaction to TRANSACT |
-| 9000-DALYTRAN-CLOSE | 582 | `closeDailyTransactionFile()` | Close DALYTRAN input file |
-| 9100-TRANFILE-CLOSE | 600 | `closeTransactionFile()` | Close TRANSACT VSAM file |
-| 9200-XREFFILE-CLOSE | 619 | `closeXrefFile()` | Close CARDXREF VSAM file |
-| 9300-DALYREJS-CLOSE | 637 | `closeRejectFile()` | Close DALYREJS reject output file |
-| 9400-ACCTFILE-CLOSE | 655 | `closeAccountFile()` | Close ACCTDATA VSAM file |
-| 9500-TCATBALF-CLOSE | 674 | `closeCategoryBalanceFile()` | Close TCATBAL VSAM file |
-| Z-GET-DB2-FORMAT-TIMESTAMP | 692 | `getDb2FormatTimestamp()` | Format timestamp in DB2-compatible format |
-| 9999-ABEND-PROGRAM | 707 | `abendProgram()` | Abend error handler |
-| 9910-DISPLAY-IO-STATUS | 714 | `displayIoStatus()` | Display FILE STATUS diagnostic |
+| 2900-WRITE-TRANSACTION-FILE | 562 | `writeTransactionRecord()` | Write posted transaction via JPA repository |
+| 9000-DALYTRAN-CLOSE | 582 | *(abstracted)* | VSAM CLOSE DALYTRAN — replaced by JPA repository auto-management |
+| 9100-TRANFILE-CLOSE | 600 | *(abstracted)* | VSAM CLOSE TRANSACT — replaced by JPA repository auto-management |
+| 9200-XREFFILE-CLOSE | 619 | *(abstracted)* | VSAM CLOSE CARDXREF — replaced by JPA repository auto-management |
+| 9300-DALYREJS-CLOSE | 637 | *(abstracted)* | VSAM CLOSE DALYREJS — replaced by JPA/file writer auto-management |
+| 9400-ACCTFILE-CLOSE | 655 | *(abstracted)* | VSAM CLOSE ACCTDATA — replaced by JPA repository auto-management |
+| 9500-TCATBALF-CLOSE | 674 | *(abstracted)* | VSAM CLOSE TCATBAL — replaced by JPA repository auto-management |
+| Z-GET-DB2-FORMAT-TIMESTAMP | 692 | `generateDb2Timestamp()` | Format timestamp in DB2-compatible format |
+| 9999-ABEND-PROGRAM | 707 | *(not ported)* | COBOL ABEND — replaced by Java exception propagation |
+| 9910-DISPLAY-IO-STATUS | 714 | *(not ported)* | FILE STATUS display — replaced by SLF4J logging in exception handlers |
 
 **Paragraph count: 26**
 
@@ -776,32 +789,32 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 0550-DATEPARM-READ | 220 | `readDateParameters()` | Read date parameter file for report range |
-| 1000-TRANFILE-GET-NEXT | 248 | `getNextTransaction()` | Read next transaction record |
-| 1100-WRITE-TRANSACTION-REPORT | 274 | `writeTransactionReport()` | Write transaction detail report line |
+| 0550-DATEPARM-READ | 220 | `processTransactionReport()` | Consolidated — date params parsed within main entry method |
+| 1000-TRANFILE-GET-NEXT | 248 | `processTransactionReport()` | Consolidated — VSAM sequential read absorbed into main loop |
+| 1100-WRITE-TRANSACTION-REPORT | 274 | `writeReport()` | Write transaction detail report line |
 | 1110-WRITE-PAGE-TOTALS | 293 | `writePageTotals()` | Write page-level totals |
 | 1120-WRITE-ACCOUNT-TOTALS | 306 | `writeAccountTotals()` | Write account-level totals |
 | 1110-WRITE-GRAND-TOTALS | 318 | `writeGrandTotals()` | Write grand totals |
 | 1120-WRITE-HEADERS | 324 | `writeHeaders()` | Write report headers |
 | 1111-WRITE-REPORT-REC | 343 | `writeReportRecord()` | Write single report record |
 | 1120-WRITE-DETAIL | 361 | `writeDetail()` | Write detail line |
-| 0000-TRANFILE-OPEN | 376 | `openTransactionFile()` | Open TRANSACT VSAM file |
-| 0100-REPTFILE-OPEN | 394 | `openReportFile()` | Open report output file |
-| 0200-CARDXREF-OPEN | 412 | `openCardXrefFile()` | Open CARDXREF VSAM file |
-| 0300-TRANTYPE-OPEN | 430 | `openTransactionTypeFile()` | Open TRANTYPE reference file |
-| 0400-TRANCATG-OPEN | 448 | `openTransactionCategoryFile()` | Open TRANCATG reference file |
-| 0500-DATEPARM-OPEN | 466 | `openDateParameterFile()` | Open date parameter file |
+| 0000-TRANFILE-OPEN | 376 | *(abstracted)* | VSAM OPEN TRANSACT — replaced by JPA repository auto-management |
+| 0100-REPTFILE-OPEN | 394 | *(abstracted)* | Report file OPEN — replaced by Java file I/O auto-management |
+| 0200-CARDXREF-OPEN | 412 | *(abstracted)* | VSAM OPEN CARDXREF — replaced by JPA repository auto-management |
+| 0300-TRANTYPE-OPEN | 430 | *(abstracted)* | VSAM OPEN TRANTYPE — replaced by JPA repository auto-management |
+| 0400-TRANCATG-OPEN | 448 | *(abstracted)* | VSAM OPEN TRANCATG — replaced by JPA repository auto-management |
+| 0500-DATEPARM-OPEN | 466 | *(abstracted)* | Date parameter file OPEN — replaced by method parameter passing |
 | 1500-A-LOOKUP-XREF | 484 | `lookupXref()` | Lookup card cross-reference |
 | 1500-B-LOOKUP-TRANTYPE | 494 | `lookupTransactionType()` | Lookup transaction type description |
 | 1500-C-LOOKUP-TRANCATG | 504 | `lookupTransactionCategory()` | Lookup transaction category description |
-| 9000-TRANFILE-CLOSE | 514 | `closeTransactionFile()` | Close TRANSACT VSAM file |
-| 9100-REPTFILE-CLOSE | 532 | `closeReportFile()` | Close report output file |
-| 9200-CARDXREF-CLOSE | 551 | `closeCardXrefFile()` | Close CARDXREF VSAM file |
-| 9300-TRANTYPE-CLOSE | 569 | `closeTransactionTypeFile()` | Close TRANTYPE reference file |
-| 9400-TRANCATG-CLOSE | 587 | `closeTransactionCategoryFile()` | Close TRANCATG reference file |
-| 9500-DATEPARM-CLOSE | 605 | `closeDateParameterFile()` | Close date parameter file |
-| 9999-ABEND-PROGRAM | 626 | `abendProgram()` | Abend error handler |
-| 9910-DISPLAY-IO-STATUS | 633 | `displayIoStatus()` | Display FILE STATUS diagnostic |
+| 9000-TRANFILE-CLOSE | 514 | *(abstracted)* | VSAM CLOSE TRANSACT — replaced by JPA repository auto-management |
+| 9100-REPTFILE-CLOSE | 532 | *(abstracted)* | Report file CLOSE — replaced by Java file I/O auto-management |
+| 9200-CARDXREF-CLOSE | 551 | *(abstracted)* | VSAM CLOSE CARDXREF — replaced by JPA repository auto-management |
+| 9300-TRANTYPE-CLOSE | 569 | *(abstracted)* | VSAM CLOSE TRANTYPE — replaced by JPA repository auto-management |
+| 9400-TRANCATG-CLOSE | 587 | *(abstracted)* | VSAM CLOSE TRANCATG — replaced by JPA repository auto-management |
+| 9500-DATEPARM-CLOSE | 605 | *(abstracted)* | Date parameter file CLOSE — replaced by method parameter passing |
+| 9999-ABEND-PROGRAM | 626 | *(not ported)* | COBOL ABEND — replaced by Java exception propagation |
+| 9910-DISPLAY-IO-STATUS | 633 | `displayIoStatus()` | FILE STATUS display — retained as private helper |
 
 **Paragraph count: 26**
 
@@ -813,31 +826,31 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 0000-START | 296 | `start()` | Main entry: open files, initialize processing |
-| 1000-MAINLINE | 316 | `mainline()` | Main loop: iterate cross-references, generate statements |
-| 9999-GOBACK | 341 | `goBack()` | Exit program (GOBACK) |
-| 1000-XREFFILE-GET-NEXT | 345 | `getNextXrefRecord()` | Read next cross-reference record |
-| 2000-CUSTFILE-GET | 368 | `getCustomerRecord()` | Read customer record by ID |
-| 3000-ACCTFILE-GET | 392 | `getAccountRecord()` | Read account record by ID |
-| 4000-TRNXFILE-GET | 416 | `getTransactionRecords()` | Read transactions for a given account |
+| 0000-START | 296 | `generateStatements()` | Main entry — opens files, initializes, and drives statement generation |
+| 1000-MAINLINE | 316 | `generateStatements()` | Consolidated — main loop absorbed into `generateStatements()` |
+| 9999-GOBACK | 341 | *(not ported)* | COBOL GOBACK — replaced by natural Java method return |
+| 1000-XREFFILE-GET-NEXT | 345 | *(abstracted)* | VSAM READ — delegated to `StatementIoService.readNextXref()` |
+| 2000-CUSTFILE-GET | 368 | *(abstracted)* | VSAM READ — delegated to `StatementIoService.readCustomerByKey()` |
+| 3000-ACCTFILE-GET | 392 | *(abstracted)* | VSAM READ — delegated to `StatementIoService.readAccountByKey()` |
+| 4000-TRNXFILE-GET | 416 | `loadTransactionTable()` | Read transactions for a given account into memory |
 | 5000-CREATE-STATEMENT | 458 | `createStatement()` | Generate complete statement output |
 | 5100-WRITE-HTML-HEADER | 506 | `writeHtmlHeader()` | Write HTML statement header section |
-| 5100-EXIT | 554 | *(exit point)* | Exit marker |
+| 5100-EXIT | 554 | *(exit point)* | Exit marker — no Java equivalent |
 | 5200-WRITE-HTML-NMADBS | 558 | `writeHtmlNameAddress()` | Write name/address block in HTML |
-| 5200-EXIT | 671 | *(exit point)* | Exit marker |
-| 6000-WRITE-TRANS | 675 | `writeTransactionLines()` | Write transaction detail lines |
-| 8100-FILE-OPEN | 726 | `openAllFiles()` | Orchestrate opening all input files |
-| 8100-TRNXFILE-OPEN | 730 | `openTransactionFile()` | Open TRANSACT via CBSTM03B subroutine |
-| 8200-XREFFILE-OPEN | 765 | `openXrefFile()` | Open CARDXREF via CBSTM03B subroutine |
-| 8300-CUSTFILE-OPEN | 783 | `openCustomerFile()` | Open CUSTDATA via CBSTM03B subroutine |
-| 8400-ACCTFILE-OPEN | 801 | `openAccountFile()` | Open ACCTDATA via CBSTM03B subroutine |
-| 8500-READTRNX-READ | 818 | `readTransactionRecord()` | Read single transaction record |
-| 8599-EXIT | 849 | *(exit point)* | Exit marker |
-| 9100-TRNXFILE-CLOSE | 856 | `closeTransactionFile()` | Close TRANSACT VSAM file |
-| 9200-XREFFILE-CLOSE | 873 | `closeXrefFile()` | Close CARDXREF VSAM file |
-| 9300-CUSTFILE-CLOSE | 889 | `closeCustomerFile()` | Close CUSTDATA VSAM file |
-| 9400-ACCTFILE-CLOSE | 905 | `closeAccountFile()` | Close ACCTDATA VSAM file |
-| 9999-ABEND-PROGRAM | 921 | `abendProgram()` | Abend error handler |
+| 5200-EXIT | 671 | *(exit point)* | Exit marker — no Java equivalent |
+| 6000-WRITE-TRANS | 675 | `writeTransactions()` | Write transaction detail lines |
+| 8100-FILE-OPEN | 726 | `openAllFiles()` | Orchestrate opening all input files via StatementIoService |
+| 8100-TRNXFILE-OPEN | 730 | *(abstracted)* | Delegated to `StatementIoService.openTransactionFile()` |
+| 8200-XREFFILE-OPEN | 765 | *(abstracted)* | Delegated to `StatementIoService.openXrefFile()` |
+| 8300-CUSTFILE-OPEN | 783 | *(abstracted)* | Delegated to `StatementIoService.openCustomerFile()` |
+| 8400-ACCTFILE-OPEN | 801 | *(abstracted)* | Delegated to `StatementIoService.openAccountFile()` |
+| 8500-READTRNX-READ | 818 | *(abstracted)* | Delegated to `StatementIoService.readNextTransaction()` |
+| 8599-EXIT | 849 | *(exit point)* | Exit marker — no Java equivalent |
+| 9100-TRNXFILE-CLOSE | 856 | *(abstracted)* | Delegated to `StatementIoService.closeTransactionFile()` |
+| 9200-XREFFILE-CLOSE | 873 | *(abstracted)* | Delegated to `StatementIoService.closeXrefFile()` |
+| 9300-CUSTFILE-CLOSE | 889 | *(abstracted)* | Delegated to `StatementIoService.closeCustomerFile()` |
+| 9400-ACCTFILE-CLOSE | 905 | *(abstracted)* | Delegated to `StatementIoService.closeAccountFile()` |
+| 9999-ABEND-PROGRAM | 921 | *(not ported)* | COBOL ABEND — replaced by Java exception propagation |
 
 **Paragraph count: 25**
 
@@ -849,20 +862,20 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| 0000-START | 116 | `start()` | Entry: route by function code parameter |
-| 9999-GOBACK | 130 | `goBack()` | Exit subroutine (GOBACK) |
-| 1000-TRNXFILE-PROC | 133 | `processTransactionFile()` | TRANSACT file operations (open/close/read) |
-| 1900-EXIT | 151 | *(exit point)* | Exit marker |
-| 1999-EXIT | 154 | *(exit point)* | Exit marker |
-| 2000-XREFFILE-PROC | 157 | `processXrefFile()` | CARDXREF file operations (open/close/read) |
-| 2900-EXIT | 175 | *(exit point)* | Exit marker |
-| 2999-EXIT | 178 | *(exit point)* | Exit marker |
-| 3000-CUSTFILE-PROC | 181 | `processCustomerFile()` | CUSTDATA file operations (open/close/read) |
-| 3900-EXIT | 200 | *(exit point)* | Exit marker |
-| 3999-EXIT | 203 | *(exit point)* | Exit marker |
-| 4000-ACCTFILE-PROC | 206 | `processAccountFile()` | ACCTDATA file operations (open/close/read) |
-| 4900-EXIT | 225 | *(exit point)* | Exit marker |
-| 4999-EXIT | 228 | *(exit point)* | Exit marker |
+| 0000-START | 116 | *(not ported)* | COBOL entry-point routing by function code — Java uses individual typed methods |
+| 9999-GOBACK | 130 | *(not ported)* | COBOL GOBACK — replaced by natural Java method return |
+| 1000-TRNXFILE-PROC | 133 | `openTransactionFile()` / `readNextTransaction()` / `readTransactionByKey()` / `closeTransactionFile()` | Decomposed — COBOL multiplexed proc → 4 individual Java methods |
+| 1900-EXIT | 151 | *(exit point)* | Exit marker — no Java equivalent |
+| 1999-EXIT | 154 | *(exit point)* | Exit marker — no Java equivalent |
+| 2000-XREFFILE-PROC | 157 | `openXrefFile()` / `readNextXref()` / `readXrefByKey()` / `closeXrefFile()` | Decomposed — COBOL multiplexed proc → 4 individual Java methods |
+| 2900-EXIT | 175 | *(exit point)* | Exit marker — no Java equivalent |
+| 2999-EXIT | 178 | *(exit point)* | Exit marker — no Java equivalent |
+| 3000-CUSTFILE-PROC | 181 | `openCustomerFile()` / `readNextCustomer()` / `readCustomerByKey()` / `closeCustomerFile()` | Decomposed — COBOL multiplexed proc → 4 individual Java methods |
+| 3900-EXIT | 200 | *(exit point)* | Exit marker — no Java equivalent |
+| 3999-EXIT | 203 | *(exit point)* | Exit marker — no Java equivalent |
+| 4000-ACCTFILE-PROC | 206 | `openAccountFile()` / `readNextAccount()` / `readAccountByKey()` / `closeAccountFile()` | Decomposed — COBOL multiplexed proc → 4 individual Java methods |
+| 4900-EXIT | 225 | *(exit point)* | Exit marker — no Java equivalent |
+| 4999-EXIT | 228 | *(exit point)* | Exit marker — no Java equivalent |
 
 **Paragraph count: 14**
 
@@ -880,7 +893,7 @@ The matrix is organized by program category (Online CICS, Batch, Shared Utility)
 
 | COBOL Paragraph | Line # | Java Method | Notes |
 |----------------|--------|-------------|-------|
-| A000-MAIN | 103 | `convertDate()` | Main date conversion: wraps LE CEEDAYS/CEEDATM calls for format conversion |
+| A000-MAIN | 103 | `convertCcyymmddToDisplay()` / `convertDisplayToCcyymmdd()` / `convertToIso8601()` / `convertFromIso8601()` | Decomposed — single COBOL dispatch → multiple typed Java conversion methods |
 | A000-MAIN-EXIT | 152 | *(exit point)* | Exit marker |
 
 **Paragraph count: 2**
@@ -1003,8 +1016,10 @@ This section maps all 17 BMS data structure copybooks (`app/cpy-bms/*.cpy`) to t
 
 | Mapping Type | Count | Description |
 |-------------|-------|-------------|
-| Paragraph → Java method | 401 | Active paragraphs with business logic mapped to named Java methods |
+| Paragraph → Java method | 185 | Active paragraphs with business logic mapped to named Java methods |
 | Paragraph → *(exit point)* | 126 | Structural EXIT paragraphs — control flow markers with no standalone Java method |
+| Paragraph → *(not ported)* | 124 | CICS-specific paragraphs (BMS screen I/O, terminal navigation, ABEND handling) with no headless equivalent |
+| Paragraph → *(abstracted)* | 92 | VSAM infrastructure paragraphs (file OPEN/CLOSE, browse, sequential reads) replaced by Spring-managed infrastructure |
 | **Total** | **527** | **100% of all paragraphs mapped** |
 
 ### 6.4 Coverage Verification
@@ -1031,19 +1046,19 @@ COBOL programs use EXIT paragraphs as structural scope terminators for `PERFORM 
 
 ### 7.2 ABEND-ROUTINE Paragraphs
 
-Several online CICS programs include an `ABEND-ROUTINE` paragraph that handles unexpected errors by sending a diagnostic message and issuing `EXEC CICS ABEND`. In the Java migration, this maps to exception handling within each service class, typically as a private `abendRoutine()` method or a `@ExceptionHandler` in the controller layer.
+Several online CICS programs include an `ABEND-ROUTINE` paragraph that handles unexpected errors by sending a diagnostic message and issuing `EXEC CICS ABEND`. In the Java migration, ABEND-ROUTINE paragraphs in online services are marked *(not ported)* — their functionality is replaced by Spring's exception handling framework and `@ExceptionHandler` methods in the controller layer. In batch services, the equivalent paragraph `Z-ABEND-PROGRAM` is retained as a private `abendProgram()` method that wraps the error in a `CardDemoException`.
 
 ### 7.3 Paragraph Naming Conventions
 
 COBOL paragraphs follow a numbered-prefix convention (e.g., `0000-MAIN`, `1000-SEND-MAP`, `9000-READ-ACCT`). The Java method names are derived by:
 1. Removing the numeric prefix
 2. Converting the hyphenated name to camelCase
-3. Preserving semantic meaning (e.g., `9200-GETCARDXREF-BYACCT` → `getCardXrefByAccount()`)
+3. Preserving semantic meaning (e.g., `9200-GETCARDXREF-BYACCT` → `getCardXrefByAcct()`)
 
 ### 7.4 Source File Anomalies
 
 - **COACTVWC.cbl line 411:** Duplicate `0000-MAIN-EXIT` paragraph (identical to line 408). Only the first occurrence is mapped.
-- **CORPT00C.cbl line 515:** Paragraph `WIRTE-JOBSUB-TDQ` contains a typo (`WIRTE` instead of `WRITE`). The Java method name corrects this to `writeJobSubmissionTdq()`.
+- **CORPT00C.cbl line 515:** Paragraph `WIRTE-JOBSUB-TDQ` contains a typo (`WIRTE` instead of `WRITE`). The Java method name corrects this to `writeJobSubTdq()`.
 - **CBTRN03C.cbl lines 293/318:** Duplicate paragraph name prefix `1110-` used for both `WRITE-PAGE-TOTALS` and `WRITE-GRAND-TOTALS`. Java method names disambiguate these.
 - **CBTRN03C.cbl lines 306/324/361:** Duplicate paragraph name prefix `1120-` used for `WRITE-ACCOUNT-TOTALS`, `WRITE-HEADERS`, and `WRITE-DETAIL`. Java method names disambiguate these.
 
