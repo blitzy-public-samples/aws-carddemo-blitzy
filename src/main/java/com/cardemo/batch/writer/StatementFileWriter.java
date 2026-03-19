@@ -88,6 +88,19 @@ public class StatementFileWriter
     @Value("${cardemo.batch.statement-html-path:statements.html}")
     private String htmlOutputPath;
 
+    /**
+     * Optional output directory override, typically supplied via Spring Batch
+     * {@code JobParameters} ({@code outputDir}).  When non-null, both
+     * {@link #textOutputPath} and {@link #htmlOutputPath} are resolved relative
+     * to this directory in {@link #open(ExecutionContext)}.  When {@code null}
+     * (the default), the {@code @Value}-injected paths are used as-is.
+     *
+     * <p>This field is set by the dataset lifecycle listener's
+     * {@code beforeStep()} callback, which runs <em>before</em>
+     * {@code ItemStream.open()}.</p>
+     */
+    private String outputDir;
+
     // -----------------------------------------------------------------------
     // Output writers (STMT-FILE and HTML-FILE file descriptors)
     // -----------------------------------------------------------------------
@@ -112,6 +125,32 @@ public class StatementFileWriter
         this.statementIoService = statementIoService;
     }
 
+    /**
+     * Sets an explicit output directory for statement files.
+     *
+     * <p>When set to a non-null, non-blank value, both
+     * {@link #textOutputPath} and {@link #htmlOutputPath} are resolved
+     * relative to this directory during {@link #open(ExecutionContext)}.
+     * This allows integration tests and production batch runs to redirect
+     * output via the {@code outputDir} {@link org.springframework.batch.core.JobParameter}.</p>
+     *
+     * @param outputDir the directory to write output files to, or {@code null}
+     *                  to use the {@code @Value}-injected defaults
+     */
+    public void setOutputDir(String outputDir) {
+        this.outputDir = outputDir;
+    }
+
+    /**
+     * Returns the current output directory override, or {@code null} when
+     * the default {@code @Value}-injected paths are used.
+     *
+     * @return the output directory, or {@code null}
+     */
+    public String getOutputDir() {
+        return this.outputDir;
+    }
+
     // =======================================================================
     // ItemStream lifecycle — OPEN OUTPUT / CLOSE for STMT-FILE and HTML-FILE
     // =======================================================================
@@ -126,10 +165,24 @@ public class StatementFileWriter
     @Override
     public void open(ExecutionContext executionContext) throws ItemStreamException {
         try {
-            textWriter = new BufferedWriter(new FileWriter(textOutputPath));
-            htmlWriter = new BufferedWriter(new FileWriter(htmlOutputPath));
+            // Resolve effective output paths — when outputDir is supplied via
+            // JobParameters (set by the dataset lifecycle listener's beforeStep()),
+            // resolve file names relative to that directory.  Otherwise, fall
+            // through to the @Value-injected defaults (CWD-relative).
+            String effectiveTextPath = textOutputPath;
+            String effectiveHtmlPath = htmlOutputPath;
+            if (outputDir != null && !outputDir.isBlank()) {
+                java.nio.file.Path dir = java.nio.file.Paths.get(outputDir);
+                java.nio.file.Files.createDirectories(dir);
+                effectiveTextPath = dir.resolve(
+                        java.nio.file.Paths.get(textOutputPath).getFileName()).toString();
+                effectiveHtmlPath = dir.resolve(
+                        java.nio.file.Paths.get(htmlOutputPath).getFileName()).toString();
+            }
+            textWriter = new BufferedWriter(new FileWriter(effectiveTextPath));
+            htmlWriter = new BufferedWriter(new FileWriter(effectiveHtmlPath));
             log.info("Statement files opened: text={}, html={}",
-                    textOutputPath, htmlOutputPath);
+                    effectiveTextPath, effectiveHtmlPath);
         } catch (IOException e) {
             log.error("ERROR OPENING STATEMENT FILES: {}", e.getMessage());
             throw new ItemStreamException("Failed to open statement files", e);

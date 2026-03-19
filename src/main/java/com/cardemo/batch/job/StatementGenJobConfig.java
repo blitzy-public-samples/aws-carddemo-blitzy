@@ -310,6 +310,17 @@ public class StatementGenJobConfig {
 
             @Override
             public void beforeStep(StepExecution stepExecution) {
+                // Propagate the outputDir JobParameter to the writer so that
+                // statement files are created in the caller-specified directory
+                // (e.g., a @TempDir during integration tests).  This runs
+                // before ItemStream.open(), which resolves the effective paths.
+                String outputDirParam = stepExecution.getJobParameters()
+                        .getString("outputDir");
+                if (outputDirParam != null && !outputDirParam.isBlank()) {
+                    statementFileWriter.setOutputDir(outputDirParam);
+                    log.info("Statement output directory set from JobParameters: {}",
+                            outputDirParam);
+                }
                 openInputDatasets();
                 verifyInputData();
             }
