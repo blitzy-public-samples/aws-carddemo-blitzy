@@ -1,0 +1,149 @@
+# =============================================================================
+# CardDemo Application — Test Profile Configuration
+# =============================================================================
+# Spring Boot test profile that overrides application.yml defaults for
+# integration and unit test execution.
+#
+# Key overrides:
+#   - DataSource:  Testcontainers PostgreSQL (jdbc:tc:postgresql:16-alpine)
+#   - Flyway:      clean-disabled=false (allow schema reset between tests)
+#   - Batch:       job.enabled=false (prevent auto-launch of batch jobs)
+#   - Actuator:    Disabled for tests (not needed, reduces startup overhead)
+#   - Security:    Hardcoded test user (testuser/testpass) for convenience
+#   - Logging:     Reduced Testcontainers/Docker noise, INFO for app code
+#
+# Activation:
+#   Tests activate this profile via @ActiveProfiles("test") or
+#   spring.profiles.active=test in src/test/resources/application-test.yml
+#
+# Testcontainers JDBC URL format:
+#   jdbc:tc:<image>:///<database>
+#   The Testcontainers JDBC driver intercepts this URL, starts a Docker
+#   container with the specified image (postgres:16-alpine), creates the
+#   database, and proxies all JDBC calls to the container.
+#
+# Compatibility:
+#   - Testcontainers 2.0.2 (org.testcontainers:testcontainers-postgresql)
+#   - PostgreSQL 16+ Docker image (postgres:16-alpine)
+#   - Spring Boot 3.5.11 (Jakarta EE 10 namespace)
+#   - Flyway 10.22.0 (schema migration + seed data)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Spring Core Configuration
+# -----------------------------------------------------------------------------
+spring:
+
+  # ---------------------------------------------------------------------------
+  # DataSource Configuration — Testcontainers PostgreSQL
+  # ---------------------------------------------------------------------------
+  # Overrides the production DataSource (application.yml) with a Testcontainers
+  # managed PostgreSQL 16 container. The Testcontainers JDBC driver:
+  #   1. Intercepts the jdbc:tc: URL prefix
+  #   2. Starts a Docker container (postgres:16-alpine) automatically
+  #   3. Creates the specified database (cardemo_test)
+  #   4. Proxies all JDBC operations to the containerized PostgreSQL
+  #
+  # Test credentials are hardcoded intentionally — no production data risk.
+  # The Testcontainers driver manages container lifecycle automatically.
+  datasource:
+    url: jdbc:tc:postgresql:16-alpine:///cardemo_test
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+    username: test
+    password: test
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate Configuration — Test Overrides
+  # ---------------------------------------------------------------------------
+  # Hibernate ddl-auto remains 'none' because Flyway manages all schema DDL.
+  # SQL logging is disabled to reduce test output noise; enable via logback
+  # if SQL debugging is needed during test development.
+  jpa:
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        # dialect is intentionally omitted — Hibernate 6.x auto-detects PostgreSQL
+        # dialect from the Testcontainers JDBC URL, avoiding HHH90000025 warning.
+        format_sql: true
+    show-sql: false
+
+  # ---------------------------------------------------------------------------
+  # Flyway Database Migration — Test Configuration
+  # ---------------------------------------------------------------------------
+  # Flyway runs all versioned migration and seed scripts in tests:
+  #   V1__create_schema.sql   — CREATE TABLE for all 11 entities
+  #   V2__create_indexes.sql  — Secondary indexes (VSAM AIX equivalents)
+  #   V100__seed_data.sql     — Test fixture data from app/data/ASCII/*.txt
+  #
+  # clean-disabled is set to false (overriding true from application.yml)
+  # to allow Flyway clean operations in the test environment for schema reset.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration,classpath:db/seed
+    clean-disabled: false
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch — Test Isolation
+  # ---------------------------------------------------------------------------
+  # Batch jobs must NOT auto-start during test execution. Each batch test
+  # explicitly launches its job via JobLauncherTestUtils.
+  #   - job.enabled: false — prevents auto-launch of all @Bean Job definitions
+  #   - initialize-schema: always — ensures Spring Batch metadata tables
+  #     (BATCH_JOB_INSTANCE, BATCH_JOB_EXECUTION, BATCH_STEP_EXECUTION, etc.)
+  #     are created in the Testcontainers PostgreSQL instance
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      initialize-schema: always
+
+  # ---------------------------------------------------------------------------
+  # Spring Security — Test Credentials
+  # ---------------------------------------------------------------------------
+  # Default test user credentials for Spring Security's auto-configured
+  # UserDetailsService. Tests requiring specific roles use @WithMockUser
+  # or SecurityMockMvcRequestPostProcessors from spring-security-test.
+  security:
+    user:
+      name: testuser
+      password: testpass
+
+# -----------------------------------------------------------------------------
+# Actuator Configuration — Minimal for Tests
+# -----------------------------------------------------------------------------
+# Actuator endpoints are disabled by default in the test profile to:
+#   1. Reduce application context startup time
+#   2. Avoid unnecessary health check probing during tests
+#   3. Prevent Prometheus/metrics overhead in test execution
+# Individual tests requiring actuator can re-enable specific endpoints.
+management:
+  endpoints:
+    enabled-by-default: false
+
+# -----------------------------------------------------------------------------
+# Logging Configuration — Test-Optimized Levels
+# -----------------------------------------------------------------------------
+# Logging levels are tuned for test execution:
+#   - Application code (com.cardemo): INFO for meaningful test output
+#   - Spring Batch: INFO to track batch job test execution
+#   - Testcontainers: WARN to suppress verbose container lifecycle logging
+#   - Docker Java client: WARN to suppress Docker API call logging
+#   - Hibernate SQL: WARN to reduce noise (override to DEBUG when debugging)
+#   - Flyway: INFO to track migration execution during test setup
+logging:
+  level:
+    com.cardemo: INFO
+    org.springframework.batch: INFO
+    org.testcontainers: WARN
+    com.github.dockerjava: WARN
+    org.hibernate.SQL: WARN
+    org.flywaydb: INFO
+
+# -----------------------------------------------------------------------------
+# CardDemo Application-Specific Test Overrides
+# -----------------------------------------------------------------------------
+# Batch chunk sizes can be reduced in tests for faster execution.
+# The default values from application.yml are sufficient for test data volumes
+# (50 accounts, 50 cards, 50 customers from seed data), so no override needed.
+# This section is reserved for future test-specific tuning if required.
