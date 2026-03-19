@@ -143,6 +143,10 @@ spring:
   jackson:
     serialization:
       write-dates-as-timestamps: false  # ISO-8601 format: "2025-01-15T10:30:00Z"
+    generator:
+      write-bigdecimal-as-plain: true   # Preserve trailing zeros on BigDecimal (e.g., 194.00 not 1.94E2)
+                                         # Works with COBOL PIC S9(n)V99 → BigDecimal(scale=2) to ensure
+                                         # monetary values display with 2 decimal places (0.10 not 0.1)
     time-zone: UTC
     default-property-inclusion: non_null
 

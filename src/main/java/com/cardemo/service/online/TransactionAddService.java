@@ -23,6 +23,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -147,6 +150,31 @@ public class TransactionAddService {
     private final TransactionRepository transactionRepository;
     private final CardXrefRepository cardXrefRepository;
     private final CardDemoContext cardDemoContext;
+
+    /**
+     * JPA entity manager used for PostgreSQL advisory lock acquisition during
+     * transaction ID generation. Advisory locks serialise concurrent
+     * {@link #addTransactionRecord} calls to prevent duplicate-key race
+     * conditions on the browse-last ID generation pattern.
+     *
+     * <p>Injected via {@code @PersistenceContext} rather than constructor
+     * injection because the {@code EntityManager} is a container-managed
+     * proxy that is inherently request-scoped.</p>
+     */
+    @PersistenceContext
+    private EntityManager entityManager;
+
+    /**
+     * Advisory lock key used by {@link #addTransactionRecord} to serialise
+     * transaction ID generation. The value {@code 42} is an arbitrary but
+     * stable identifier reserved exclusively for the transaction-add path.
+     *
+     * <p>PostgreSQL's {@code pg_advisory_xact_lock(bigint)} acquires a
+     * transaction-scoped exclusive advisory lock. The lock is automatically
+     * released when the enclosing {@code @Transactional} method commits or
+     * rolls back — no explicit unlock is required.</p>
+     */
+    private static final long TRAN_ID_ADVISORY_LOCK_KEY = 42L;
 
     /**
      * Constructs the service with required dependencies via Spring constructor
@@ -591,6 +619,23 @@ public class TransactionAddService {
     @Transactional
     public Transaction addTransactionRecord(Transaction transaction) {
         logger.debug("Adding transaction record — generating ID and writing");
+
+        // Step 0: Acquire transaction-scoped advisory lock to serialise
+        // concurrent ID generation. In the original COBOL/CICS system,
+        // pseudo-conversational task processing was single-threaded, so the
+        // browse-last technique (STARTBR HIGH-VALUES → READPREV) never
+        // encountered concurrent callers. In Java/Spring Boot, concurrent
+        // HTTP requests can execute simultaneously, causing the SELECT
+        // MAX(tran_id) → increment → INSERT pattern to race. The advisory
+        // lock serialises the critical section (read-max → increment →
+        // write) without table-level locking overhead. The lock is
+        // automatically released on transaction commit/rollback.
+        entityManager.createNativeQuery(
+                "SELECT pg_advisory_xact_lock(:lockKey)")
+                .setParameter("lockKey", TRAN_ID_ADVISORY_LOCK_KEY)
+                .getSingleResult();
+        logger.debug("Acquired advisory lock {} for transaction ID generation",
+                TRAN_ID_ADVISORY_LOCK_KEY);
 
         // Step 1: Generate transaction ID via browse-last technique
         // Maps to: PERFORM COPY-LAST-TRAN-DATA

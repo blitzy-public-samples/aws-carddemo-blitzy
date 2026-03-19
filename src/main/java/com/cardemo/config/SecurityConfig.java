@@ -196,6 +196,15 @@ public class SecurityConfig {
                 // and /actuator/health/liveness sub-paths.
                 .requestMatchers("/actuator/health/**").permitAll()
 
+                // Actuator metrics, prometheus, and info endpoints — restricted to
+                // admin users for operational monitoring and Prometheus scraping.
+                // These endpoints are exposed via management.endpoints.web.exposure
+                // in application.yml (health,info,metrics,prometheus).
+                // Maps to AAP observability requirement: "Metrics endpoint
+                // (/actuator/metrics, /actuator/prometheus)" and info endpoint.
+                .requestMatchers("/actuator/metrics", "/actuator/metrics/**",
+                        "/actuator/prometheus", "/actuator/info").hasRole("ADMIN")
+
                 // Admin-only endpoints — restricted to users with ROLE_ADMIN.
                 // Maps to COBOL 88-level condition: CDEMO-USRTYP-ADMIN VALUE 'A'
                 // from COCOM01Y.cpy line 27. Only admin users can access

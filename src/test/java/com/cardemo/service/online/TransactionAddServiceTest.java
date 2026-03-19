@@ -14,6 +14,9 @@ import java.math.RoundingMode;
 import java.util.List;
 import java.util.Optional;
 
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -23,6 +26,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import com.cardemo.common.context.CardDemoContext;
 import com.cardemo.common.exception.ValidationException;
@@ -36,7 +40,9 @@ import com.cardemo.repository.TransactionRepository;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -67,6 +73,12 @@ class TransactionAddServiceTest {
 
     @Mock
     private CardDemoContext cardDemoContext;
+
+    @Mock
+    private EntityManager entityManager;
+
+    @Mock
+    private Query advisoryLockQuery;
 
     @InjectMocks
     private TransactionAddService transactionAddService;
@@ -117,6 +129,27 @@ class TransactionAddServiceTest {
                 new BigDecimal("250.00").setScale(2, RoundingMode.HALF_UP),
                 "123456789", "Test Merchant", "Test City", "12345",
                 VALID_CARD_NUM, VALID_TIMESTAMP, VALID_TIMESTAMP);
+
+        // Manually inject the EntityManager mock because @InjectMocks uses
+        // constructor injection for the 3-arg constructor and does not
+        // subsequently perform field injection for the @PersistenceContext
+        // annotated entityManager field.
+        ReflectionTestUtils.setField(transactionAddService,
+                "entityManager", entityManager);
+
+        // Mock the PostgreSQL advisory lock used by addTransactionRecord()
+        // to serialise concurrent transaction ID generation. In unit tests
+        // the EntityManager is mocked, so the native query is a no-op.
+        // Lenient stubs: not every test calls addTransactionRecord(), so
+        // strict Mockito would flag these as UnnecessaryStubbing.
+        org.mockito.Mockito.lenient().when(entityManager.createNativeQuery(
+                eq("SELECT pg_advisory_xact_lock(:lockKey)")))
+                .thenReturn(advisoryLockQuery);
+        org.mockito.Mockito.lenient().when(
+                advisoryLockQuery.setParameter(eq("lockKey"), anyLong()))
+                .thenReturn(advisoryLockQuery);
+        org.mockito.Mockito.lenient().when(
+                advisoryLockQuery.getSingleResult()).thenReturn(null);
     }
 
     /* ------------------------------------------------------------------ */

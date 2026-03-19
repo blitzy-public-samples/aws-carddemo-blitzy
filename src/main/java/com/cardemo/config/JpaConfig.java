@@ -59,7 +59,18 @@
  */
 package com.cardemo.config;
 
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.SerializerProvider;
+import com.fasterxml.jackson.databind.module.SimpleModule;
+import com.fasterxml.jackson.databind.ser.std.StdSerializer;
+
+import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+
 import org.springframework.boot.autoconfigure.domain.EntityScan;
+import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
@@ -107,4 +118,73 @@ public class JpaConfig {
     // Spring Boot auto-configures DataSource, EntityManagerFactory, and
     // TransactionManager from these properties. No additional bean definitions
     // are required for the standard VSAM-to-PostgreSQL migration.
+
+    // =========================================================================
+    // Jackson BigDecimal Serialization — COBOL PIC V99 scale preservation
+    // =========================================================================
+
+    /**
+     * Customizes the Jackson {@code ObjectMapper} to serialize all
+     * {@link BigDecimal} values with exactly 2 decimal places, matching the
+     * COBOL {@code PIC S9(n)V99} format.
+     *
+     * <p>By default, Jackson's JSON number serialization may strip trailing
+     * zeros (e.g., 194.00 becomes 194.0 or 0.10 becomes 0.1). This
+     * customizer ensures all monetary {@code BigDecimal} fields are rendered
+     * with a fixed scale of 2, preserving the COBOL V99 two-decimal-place
+     * contract for downstream consumers.</p>
+     *
+     * <p>Works in conjunction with
+     * {@code spring.jackson.generator.write-bigdecimal-as-plain=true} in
+     * {@code application.yml} which prevents scientific notation.</p>
+     *
+     * @return a Jackson customizer that registers the fixed-scale serializer
+     */
+    @Bean
+    public Jackson2ObjectMapperBuilderCustomizer bigDecimalScaleCustomizer() {
+        return builder -> {
+            SimpleModule module = new SimpleModule("BigDecimalScale2Module");
+            module.addSerializer(BigDecimal.class, new BigDecimalFixedScaleSerializer());
+            builder.modulesToInstall(module);
+        };
+    }
+
+    /**
+     * Custom Jackson serializer that renders every {@link BigDecimal} as a
+     * JSON number with exactly 2 decimal places.
+     *
+     * <p>Ensures COBOL {@code PIC S9(n)V99} semantic parity: monetary
+     * values always display with two decimal digits (e.g., {@code 194.00},
+     * {@code 0.10}, {@code 50.00}) rather than the default Jackson
+     * behaviour of stripping trailing zeros.</p>
+     *
+     * <p>Uses {@link RoundingMode#HALF_UP} matching the COBOL default
+     * rounding mode, as mandated by AAP Section 0.7.4.</p>
+     */
+    static final class BigDecimalFixedScaleSerializer
+            extends StdSerializer<BigDecimal> {
+
+        private static final long serialVersionUID = 1L;
+
+        BigDecimalFixedScaleSerializer() {
+            super(BigDecimal.class);
+        }
+
+        @Override
+        public void serialize(BigDecimal value, JsonGenerator gen,
+                              SerializerProvider provider) throws IOException {
+            if (value != null) {
+                // Force 2 decimal places to match COBOL PIC V99.
+                // Use writeNumber(String) overload so that the raw decimal
+                // text "0.10" is emitted verbatim as a JSON number — the
+                // writeNumber(BigDecimal) overload delegates to JSON number
+                // formatting which strips trailing zeros.
+                BigDecimal scaled =
+                        value.setScale(2, RoundingMode.HALF_UP);
+                gen.writeNumber(scaled.toPlainString());
+            } else {
+                gen.writeNull();
+            }
+        }
+    }
 }
