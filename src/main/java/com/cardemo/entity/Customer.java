@@ -43,6 +43,8 @@
  */
 package com.cardemo.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -187,8 +189,11 @@ public class Customer {
      *
      * <p><strong>PII: Do not log or expose.</strong> This field contains
      * sensitive personally identifiable information and is deliberately
-     * excluded from {@link #toString()} output.</p>
+     * excluded from {@link #toString()} output. Excluded from JSON
+     * serialization via {@code @JsonIgnore} to prevent PII exposure in
+     * REST responses (CWE-200 mitigation per AAP §0.7.1).</p>
      */
+    @JsonIgnore
     @Column(name = "cust_ssn", length = 9)
     private String ssn; // PII: Do not log or expose
 
@@ -198,8 +203,11 @@ public class Customer {
      *
      * <p><strong>PII: Do not log or expose.</strong> This field contains
      * sensitive personally identifiable information and is deliberately
-     * excluded from {@link #toString()} output.</p>
+     * excluded from {@link #toString()} output. Excluded from JSON
+     * serialization via {@code @JsonIgnore} to prevent PII exposure in
+     * REST responses (CWE-200 mitigation per AAP §0.7.1).</p>
      */
+    @JsonIgnore
     @Column(name = "cust_govt_issued_id", length = 20)
     private String govtIssuedId; // PII: Do not log or expose
 

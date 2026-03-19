@@ -20,6 +20,10 @@ import com.cardemo.common.exception.AuthenticationException;
 import com.cardemo.common.exception.ValidationException;
 import com.cardemo.service.online.SignonService;
 
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -150,10 +154,9 @@ public class AuthController {
      * to {@link SignonService#processEnterKey(String, String)} but is NEVER
      * logged, stored in memory beyond the call, or included in any response.</p>
      *
-     * @param credentials JSON request body containing {@code userId} (String,
-     *                    max 8 chars, maps to BMS USERID field PIC X(08)) and
-     *                    {@code password} (String, maps to BMS PASSWD field
-     *                    PIC X(08) with DRK attribute)
+     * @param request typed {@link LoginRequest} DTO with Jakarta Bean Validation
+     *                constraints enforcing non-blank, max-8-char fields matching
+     *                BMS USERID PIC X(08) and PASSWD PIC X(08) DRK
      * @return HTTP 200 with {@code {userId, userType, message}} on success;
      *         HTTP 400 with {@code {error}} for validation failures;
      *         HTTP 401 with {@code {error}} for authentication failures;
@@ -161,10 +164,10 @@ public class AuthController {
      */
     @PostMapping("/login")
     public ResponseEntity<Map<String, String>> login(
-            @RequestBody Map<String, String> credentials) {
+            @Valid @RequestBody LoginRequest request) {
 
-        String userId = credentials.get("userId");
-        String password = credentials.get("password");
+        String userId = request.getUserId();
+        String password = request.getPassword();
 
         // Log the authentication attempt — userId only, NEVER password
         logger.info("Login attempt initiated for userId='{}'", userId);
@@ -255,5 +258,92 @@ public class AuthController {
 
         logger.info("Logout successful for userId='{}'", userId);
         return ResponseEntity.ok(Map.of("message", "Logout successful"));
+    }
+
+    // =========================================================================
+    // Request DTOs
+    // =========================================================================
+
+    /**
+     * Typed login request DTO with Jakarta Bean Validation constraints,
+     * replacing the untyped {@code Map<String, String>} parameter.
+     *
+     * <p>Maps directly to the BMS sign-on screen (COSGN00.bms) input fields:</p>
+     * <ul>
+     *   <li>{@code userId} → USERID field: {@code PIC X(08)}, required, max 8 chars</li>
+     *   <li>{@code password} → PASSWD field: {@code PIC X(08)}, required, max 8 chars,
+     *       DRK attribute (masked)</li>
+     * </ul>
+     *
+     * <p>Validation constraints enforce input requirements at the REST boundary
+     * before business logic (defense-in-depth), matching the COBOL field-level
+     * checks in COSGN00C.cbl lines 117–130 that test for SPACES.</p>
+     */
+    public static class LoginRequest {
+
+        /**
+         * User ID — maps to BMS USERID PIC X(08). Required, max 8 characters.
+         * Validation message matches COBOL COSGN00C.cbl line 118:
+         * {@code IF USERIDI = SPACES → MOVE 'User ID Cannot Be Empty' TO WS-MESSAGE}
+         */
+        @NotBlank(message = "User ID Cannot Be Empty")
+        @Size(max = 8, message = "User ID must be at most 8 characters")
+        private String userId;
+
+        /**
+         * Password — maps to BMS PASSWD PIC X(08) DRK. Required, max 8 characters.
+         * Validation message matches COBOL COSGN00C.cbl line 126:
+         * {@code IF PASSWDI = SPACES → MOVE 'Password Cannot Be Empty' TO WS-MESSAGE}
+         */
+        @NotBlank(message = "Password Cannot Be Empty")
+        @Size(max = 8, message = "Password must be at most 8 characters")
+        private String password;
+
+        /** Default constructor required by Jackson deserialization. */
+        public LoginRequest() {
+        }
+
+        /**
+         * Constructs a LoginRequest with the specified credentials.
+         *
+         * @param userId   the user identifier (max 8 chars)
+         * @param password the user password (max 8 chars)
+         */
+        public LoginRequest(String userId, String password) {
+            this.userId = userId;
+            this.password = password;
+        }
+
+        /**
+         * Returns the user ID.
+         * @return user identifier string
+         */
+        public String getUserId() {
+            return userId;
+        }
+
+        /**
+         * Sets the user ID.
+         * @param userId the user identifier
+         */
+        public void setUserId(String userId) {
+            this.userId = userId;
+        }
+
+        /**
+         * Returns the password.
+         * @return password string
+         */
+        public String getPassword() {
+            return password;
+        }
+
+        /**
+         * Sets the password.
+         * @param password the user password
+         */
+        public void setPassword(String password) {
+            this.password = password;
+        }
     }
 }

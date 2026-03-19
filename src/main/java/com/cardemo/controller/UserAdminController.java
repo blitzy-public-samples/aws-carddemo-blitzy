@@ -23,6 +23,8 @@ import com.cardemo.service.online.UserDeleteService;
 import com.cardemo.service.online.UserListService;
 import com.cardemo.service.online.UserUpdateService;
 
+import jakarta.validation.Valid;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.OptimisticLockingFailureException;
@@ -186,7 +188,7 @@ public class UserAdminController {
         LOG.info("GET /api/admin/users — filter: '{}', page: {}, size: {}",
                 userIdFilter != null ? userIdFilter : "*", page, size);
 
-        Page<UserSecurity> result = userListService.listUsers(userIdFilter, page);
+        Page<UserSecurity> result = userListService.listUsers(userIdFilter, page, size);
 
         // Transform each entity to a password-free response map.
         // Password MUST NEVER appear in any API response.
@@ -264,7 +266,7 @@ public class UserAdminController {
      */
     @PostMapping
     public ResponseEntity<Map<String, Object>> createUser(
-            @RequestBody UserAddService.UserAddRequest request) {
+            @Valid @RequestBody UserAddService.UserAddRequest request) {
 
         // Log userId only — NEVER log password
         LOG.info("POST /api/admin/users — creating user '{}'",
@@ -328,7 +330,7 @@ public class UserAdminController {
     @PutMapping("/{userId}")
     public ResponseEntity<Map<String, Object>> updateUser(
             @PathVariable String userId,
-            @RequestBody UserUpdateService.UserUpdateRequest request) {
+            @Valid @RequestBody UserUpdateService.UserUpdateRequest request) {
 
         // Log userId only — NEVER log password
         LOG.info("PUT /api/admin/users/{} — updating user", userId);

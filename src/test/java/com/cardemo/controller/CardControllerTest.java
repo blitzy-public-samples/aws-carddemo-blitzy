@@ -228,7 +228,8 @@ class CardControllerTest {
         );
 
         // Mock CreditCardListService.listCards — maps COCRDLIC 9000-READ-FORWARD
-        given(creditCardListService.listCards(isNull(), isNull(), eq(0)))
+        // Passes size (default 10) from controller @RequestParam to service
+        given(creditCardListService.listCards(isNull(), isNull(), eq(0), eq(10)))
                 .willReturn(page);
 
         // Act & Assert: Verify HTTP 200 and paginated JSON structure
@@ -247,8 +248,8 @@ class CardControllerTest {
                 .andExpect(jsonPath("$.totalElements").value(2))
                 .andExpect(jsonPath("$.totalPages").value(1));
 
-        // Verify service interaction
-        verify(creditCardListService).listCards(isNull(), isNull(), eq(0));
+        // Verify service interaction — now includes size parameter
+        verify(creditCardListService).listCards(isNull(), isNull(), eq(0), eq(10));
     }
 
     // ========================================================================
@@ -292,8 +293,8 @@ class CardControllerTest {
                 2
         );
 
-        // Mock with account filter — CARDAIX alternate index lookup
-        given(creditCardListService.listCards(eq("00000000001"), isNull(), eq(0)))
+        // Mock with account filter — CARDAIX alternate index lookup; default size=10
+        given(creditCardListService.listCards(eq("00000000001"), isNull(), eq(0), eq(10)))
                 .willReturn(filteredPage);
 
         // Act & Assert: Verify all returned cards match the account filter
@@ -305,7 +306,7 @@ class CardControllerTest {
                 .andExpect(jsonPath("$.content[0].accountId").value("00000000001"))
                 .andExpect(jsonPath("$.content[1].accountId").value("00000000001"));
 
-        verify(creditCardListService).listCards(eq("00000000001"), isNull(), eq(0));
+        verify(creditCardListService).listCards(eq("00000000001"), isNull(), eq(0), eq(10));
     }
 
     // ========================================================================
@@ -324,7 +325,7 @@ class CardControllerTest {
      * <ul>
      *   <li>CARD-NUM PIC X(16) → cardNum (String, 16 chars)</li>
      *   <li>CARD-ACCT-ID PIC 9(11) → accountId (String, 11 digits)</li>
-     *   <li>CARD-CVV-CD PIC 9(03) → cvvCode (String, 3 digits, PII)</li>
+     *   <li>CARD-CVV-CD PIC 9(03) → cvvCode (HIDDEN via @JsonIgnore — PII)</li>
      *   <li>CARD-EMBOSSED-NAME PIC X(50) → embossedName</li>
      *   <li>CARD-EXPIRAION-DATE PIC X(10) → expirationDate</li>
      *   <li>CARD-ACTIVE-STATUS PIC X(01) → activeStatus ('Y'/'N')</li>
@@ -356,7 +357,9 @@ class CardControllerTest {
                 .andExpect(jsonPath("$.embossedName").value("JOHN DOE"))
                 .andExpect(jsonPath("$.expirationDate").value("2028-12-31"))
                 .andExpect(jsonPath("$.activeStatus").value("Y"))
-                .andExpect(jsonPath("$.cvvCode").value("123"));
+                // cvvCode MUST NOT appear in JSON response — @JsonIgnore on
+                // Card.cvvCode prevents PII exposure (CWE-200 / AAP §0.7.1)
+                .andExpect(jsonPath("$.cvvCode").doesNotExist());
 
         // Verify service called once with correct card number
         verify(creditCardDetailService).viewCardDetail(

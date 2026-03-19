@@ -36,6 +36,8 @@
  */
 package com.cardemo.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -117,8 +119,11 @@ public class Card {
      * <p><strong>PII:</strong> This field is highly sensitive payment card data.
      * It must NEVER appear in log output, error messages, or API responses
      * unless explicitly required and properly secured. It is fully masked
-     * in {@link #toString()} output.</p>
+     * in {@link #toString()} output. Excluded from JSON serialization via
+     * {@code @JsonIgnore} to prevent CVV exposure in REST responses
+     * (CWE-200 mitigation per AAP §0.7.1 PII secure handling).</p>
      */
+    @JsonIgnore
     @Column(name = "card_cvv_cd", length = 3)
     private String cvvCode;
 

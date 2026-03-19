@@ -218,11 +218,13 @@ class AuthControllerTest {
     void loginWrongPassword_returns401() throws Exception {
         // Arrange: Mock service to throw AuthenticationException for password mismatch
         // Maps to COSGN00C.cbl line 223: IF SEC-USR-PWD NOT = WS-USER-PWD
+        // Password "wrongpwd" (8 chars) satisfies BMS PASSWD PIC X(08) @Size(max=8)
+        // bean validation so the request reaches service-layer authentication
         willThrow(new AuthenticationException("Wrong Password. Try again ..."))
-                .given(signonService).processEnterKey(eq("USER0001"), eq("wrongpass"));
+                .given(signonService).processEnterKey(eq("USER0001"), eq("wrongpwd"));
 
         String requestBody = objectMapper.writeValueAsString(
-                Map.of("userId", "USER0001", "password", "wrongpass"));
+                Map.of("userId", "USER0001", "password", "wrongpwd"));
 
         // Act & Assert: Expect 401 Unauthorized with error message
         mockMvc.perform(post("/api/auth/login")

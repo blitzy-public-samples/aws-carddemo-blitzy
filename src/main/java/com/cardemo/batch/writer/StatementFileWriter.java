@@ -701,9 +701,38 @@ public class StatementFileWriter
         return value + " ".repeat(width - value.length());
     }
 
-    /** Returns the value if non-null, or empty string if null. */
+    /**
+     * Returns a null-safe, HTML-escaped version of the input value.
+     *
+     * <p>When generating HTML statement output, all dynamic data (customer names,
+     * account numbers, transaction descriptions) must be HTML-escaped to prevent
+     * malformed HTML and stored XSS (CWE-79) if statements are served to browsers.
+     * This method escapes the five standard HTML special characters:</p>
+     * <ul>
+     *   <li>{@code &} → {@code &amp;amp;}</li>
+     *   <li>{@code <} → {@code &amp;lt;}</li>
+     *   <li>{@code >} → {@code &amp;gt;}</li>
+     *   <li>{@code "} → {@code &amp;quot;}</li>
+     *   <li>{@code '} → {@code &amp;#39;}</li>
+     * </ul>
+     *
+     * <p>Mirrors the {@code escapeHtml()} method in {@code StatementEngineService}
+     * for consistent security posture across all statement-related classes.</p>
+     *
+     * @param value the raw string value (may be null)
+     * @return HTML-escaped string, or empty string if null
+     */
     private String safe(String value) {
-        return value != null ? value : "";
+        if (value == null) {
+            return "";
+        }
+        // Escape & first to avoid double-escaping other replacements
+        return value
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
     }
 
     /**

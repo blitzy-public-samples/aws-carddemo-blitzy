@@ -27,6 +27,7 @@ import com.cardemo.service.online.AccountViewService;
 import com.cardemo.service.online.AccountViewService.AccountViewResult;
 
 import jakarta.persistence.OptimisticLockException;
+import jakarta.validation.Valid;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -201,7 +202,7 @@ public class AccountController {
     @PutMapping("/{id}")
     public ResponseEntity<Object> updateAccount(
             @PathVariable("id") String id,
-            @RequestBody AccountUpdateRequest request) {
+            @Valid @RequestBody AccountUpdateRequest request) {
         log.debug("PUT /api/accounts/{} — request received for account update", id);
         log.info("Initiating account update (CAUP) for accountId={}", id);
 

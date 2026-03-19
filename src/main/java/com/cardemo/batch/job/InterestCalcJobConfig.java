@@ -62,7 +62,6 @@ import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.item.ItemReader;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.item.data.builder.RepositoryItemReaderBuilder;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.domain.Sort;
@@ -117,55 +116,54 @@ public class InterestCalcJobConfig {
             InterestCalcJobConfig.class);
 
     // =========================================================================
-    // Injected Dependencies
+    // Injected Dependencies (constructor-injected for consistency with other
+    // job configs and Spring best practices — immutable after construction)
     // =========================================================================
 
-    /**
-     * Spring Batch metadata repository for job/step execution persistence.
-     * Passed to {@link JobBuilder} and {@link StepBuilder} constructors
-     * (Spring Batch 5.x API — no JobBuilderFactory/StepBuilderFactory).
-     */
-    @Autowired
-    private JobRepository jobRepository;
+    /** Spring Batch metadata repository for job/step execution persistence. */
+    private final JobRepository jobRepository;
 
-    /**
-     * Spring transaction manager for chunk-oriented step processing.
-     * Passed to {@link StepBuilder#chunk(int, PlatformTransactionManager)} to
-     * manage database transactions for each chunk of 10 CategoryBalance records.
-     */
-    @Autowired
-    private PlatformTransactionManager transactionManager;
+    /** Spring transaction manager for chunk-oriented step processing. */
+    private final PlatformTransactionManager transactionManager;
 
     /**
      * STATEFUL interest calculation processor (← CBACT04C.cbl business logic).
      * Tracks lastAccountId, totalInterest, and firstTime state across consecutive
-     * {@code process()} invocations for account boundary detection. Also acts as
-     * a {@link StepExecutionListener} via its {@code @AfterStep} method to flush
-     * the last account's accumulated interest after all items are processed.
+     * {@code process()} invocations for account boundary detection.
      */
-    @Autowired
-    private InterestCalculationProcessor interestCalculationProcessor;
+    private final InterestCalculationProcessor interestCalculationProcessor;
 
     /**
      * Interest calculation service providing the underlying business logic for
-     * account balance updates (← paragraph 1050-UPDATE-ACCOUNT), interest
-     * transaction writes (← paragraph 1300-B-WRITE-TX), and fee computation
-     * (← paragraph 1400-COMPUTE-FEES, documented COBOL stub). Used by the
-     * {@link #interestWriter()} bean to delegate persistence operations.
+     * account balance updates, interest transaction writes, and fee computation.
      */
-    @Autowired
-    private InterestCalculationService interestCalculationService;
+    private final InterestCalculationService interestCalculationService;
+
+    /** Spring Data JPA repository for the TCATBALF VSAM dataset. */
+    private final CategoryBalanceRepository categoryBalanceRepository;
 
     /**
-     * Spring Data JPA repository for the TCATBALF VSAM dataset. Used by the
-     * {@link #categoryBalanceReader()} bean to configure the
-     * {@link RepositoryItemReaderBuilder} with {@code findAll()} sorted by
-     * accountId ASC — matching the COBOL sequential indexed read pattern
-     * (paragraph 1000-TCATBALF-GET-NEXT) where records are physically ordered
-     * by KSDS primary key TRANCAT-ACCT-ID.
+     * Constructs the interest calculation job configuration with all required
+     * dependencies injected via constructor (Spring-recommended DI pattern).
+     *
+     * @param jobRepository                   Spring Batch metadata repository
+     * @param transactionManager              transaction manager for chunk steps
+     * @param interestCalculationProcessor    STATEFUL processor for interest logic
+     * @param interestCalculationService      service for persistence operations
+     * @param categoryBalanceRepository       TCATBALF dataset repository
      */
-    @Autowired
-    private CategoryBalanceRepository categoryBalanceRepository;
+    public InterestCalcJobConfig(
+            JobRepository jobRepository,
+            PlatformTransactionManager transactionManager,
+            InterestCalculationProcessor interestCalculationProcessor,
+            InterestCalculationService interestCalculationService,
+            CategoryBalanceRepository categoryBalanceRepository) {
+        this.jobRepository = jobRepository;
+        this.transactionManager = transactionManager;
+        this.interestCalculationProcessor = interestCalculationProcessor;
+        this.interestCalculationService = interestCalculationService;
+        this.categoryBalanceRepository = categoryBalanceRepository;
+    }
 
     // =========================================================================
     // Job Bean — MAIN (← CBACT04C.cbl PROCEDURE DIVISION, lines 180-232)

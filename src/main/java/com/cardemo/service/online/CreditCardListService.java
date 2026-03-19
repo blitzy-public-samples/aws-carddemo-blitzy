@@ -160,6 +160,26 @@ public class CreditCardListService {
      */
     @Transactional(readOnly = true)
     public Page<Card> listCards(String accountFilter, String cardFilter, int page) {
+        return listCards(accountFilter, cardFilter, page, PAGE_SIZE);
+    }
+
+    /**
+     * Lists credit cards with configurable page size.
+     *
+     * <p>Overloaded variant that accepts a custom page size parameter, allowing
+     * REST API consumers to control result set size. The default COBOL-compatible
+     * page size of {@value #PAGE_SIZE} is used when calling the three-argument
+     * variant.</p>
+     *
+     * @param accountFilter account ID filter (11-char string; null/blank = no filter)
+     * @param cardFilter    card number filter (16-char string; null/blank = no filter)
+     * @param page          zero-based page number (PF8 increments, PF7 decrements)
+     * @param size          page size (number of records per page); must be &gt;= 1
+     * @return paginated list of matching Card entities sorted by card number
+     */
+    @Transactional(readOnly = true)
+    public Page<Card> listCards(String accountFilter, String cardFilter,
+            int page, int size) {
         logger.info("Credit card list: program={}, tranId={}, user={}, userType={}, "
                         + "fromProgram={}, pgmContext={}",
                 THIS_PROGRAM, THIS_TRAN_ID,
@@ -180,8 +200,11 @@ public class CreditCardListService {
         // Normalize page number to non-negative value
         int safePage = Math.max(0, page);
 
+        // Constrain size to reasonable bounds (1–100) to prevent excessive memory usage
+        int safeSize = Math.max(1, Math.min(100, size));
+
         // Build pageable matching VSAM KSDS natural key ordering (ascending CARD-NUM)
-        Pageable pageable = PageRequest.of(safePage, PAGE_SIZE, Sort.by("cardNum"));
+        Pageable pageable = PageRequest.of(safePage, safeSize, Sort.by("cardNum"));
 
         // Validate account cross-references when account filter is active
         // Maps STARTBR on CARDAIX path — NOTFND = no cards for this account

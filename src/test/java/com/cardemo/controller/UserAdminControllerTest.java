@@ -167,8 +167,8 @@ class UserAdminControllerTest {
         List<UserSecurity> users = List.of(user1, user2);
         Page<UserSecurity> usersPage = new PageImpl<>(users);
 
-        // Mock service: listUsers(null filter, page 0) returns page of users
-        given(userListService.listUsers(isNull(), eq(0))).willReturn(usersPage);
+        // Mock service: listUsers(null filter, page 0, size 10) returns page of users
+        given(userListService.listUsers(isNull(), eq(0), eq(10))).willReturn(usersPage);
 
         // Act & Assert: GET list endpoint and verify paginated response
         mockMvc.perform(get("/api/admin/users"))
@@ -183,8 +183,8 @@ class UserAdminControllerTest {
                 .andExpect(jsonPath("$.content[1].userId").value("ADMIN001"))
                 .andExpect(jsonPath("$.content[1].userType").value("ADMIN"));
 
-        // Verify: Service called once with null filter and page 0
-        verify(userListService).listUsers(isNull(), eq(0));
+        // Verify: Service called once with null filter, page 0, and default size 10
+        verify(userListService).listUsers(isNull(), eq(0), eq(10));
     }
 
     /**
@@ -248,8 +248,8 @@ class UserAdminControllerTest {
                 "$2a$10$dummyhash1fortest000", UserType.USER);
         Page<UserSecurity> filteredPage = new PageImpl<>(List.of(filteredUser));
 
-        // Mock service with "USER" filter
-        given(userListService.listUsers(eq("USER"), eq(0))).willReturn(filteredPage);
+        // Mock service with "USER" filter and default size 10
+        given(userListService.listUsers(eq("USER"), eq(0), eq(10))).willReturn(filteredPage);
 
         // Act & Assert: GET with filter parameter
         mockMvc.perform(get("/api/admin/users").param("userIdFilter", "USER"))
@@ -258,8 +258,8 @@ class UserAdminControllerTest {
                 .andExpect(jsonPath("$.content.length()").value(1))
                 .andExpect(jsonPath("$.content[0].userId").value("USER0001"));
 
-        // Verify: Service called with filter "USER" and page 0
-        verify(userListService).listUsers(eq("USER"), eq(0));
+        // Verify: Service called with filter "USER", page 0, and default size 10
+        verify(userListService).listUsers(eq("USER"), eq(0), eq(10));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

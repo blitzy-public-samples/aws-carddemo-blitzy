@@ -184,9 +184,28 @@ public class UserListService {
      */
     @Transactional(readOnly = true)
     public Page<UserSecurity> listUsers(String userIdFilter, int page) {
+        return listUsers(userIdFilter, page, PAGE_SIZE);
+    }
+
+    /**
+     * Lists user security records with configurable page size.
+     *
+     * <p>Overloaded variant that accepts a custom page size parameter, allowing
+     * REST API consumers to control result set size. The default COBOL-compatible
+     * page size of {@value #PAGE_SIZE} is used when calling the two-argument
+     * variant.</p>
+     *
+     * @param userIdFilter optional user ID prefix filter (null = no filter);
+     *                     maps to WS-USER-ID-FILTER in COUSR00C.cbl
+     * @param page         zero-based page number; must be &gt;= 0
+     * @param size         page size (number of records per page); must be &gt;= 1
+     * @return a {@link Page} of {@link UserSecurity} records
+     */
+    @Transactional(readOnly = true)
+    public Page<UserSecurity> listUsers(String userIdFilter, int page, int size) {
         // ← MAIN-PARA line 98: Initialize flags
-        logger.debug("listUsers invoked: userIdFilter='{}', page={}, program={}",
-                userIdFilter, page, PROGRAM_NAME);
+        logger.debug("listUsers invoked: userIdFilter='{}', page={}, size={}, program={}",
+                userIdFilter, page, size, PROGRAM_NAME);
 
         // Admin-only authorization check
         // COUSR00C is dispatched from COADM01C (admin menu); non-admin users
@@ -196,8 +215,11 @@ public class UserListService {
         // Normalize page number — COBOL CDEMO-CU00-PAGE-NUM starts at 0
         int normalizedPage = Math.max(0, page);
 
-        // Build pageable request — maps to STARTBR/READNEXT with 10-record window
-        Pageable pageable = PageRequest.of(normalizedPage, PAGE_SIZE, DEFAULT_SORT);
+        // Constrain size to reasonable bounds (1–100) to prevent excessive memory usage
+        int normalizedSize = Math.max(1, Math.min(100, size));
+
+        // Build pageable request — maps to STARTBR/READNEXT with configurable window
+        Pageable pageable = PageRequest.of(normalizedPage, normalizedSize, DEFAULT_SORT);
 
         // Execute query — replaces STARTBR-USER-SEC-FILE (line 586) +
         // READNEXT-USER-SEC-FILE loop (lines 300–306)

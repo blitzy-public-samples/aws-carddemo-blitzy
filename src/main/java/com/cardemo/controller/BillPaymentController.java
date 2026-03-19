@@ -21,6 +21,8 @@ import com.cardemo.service.online.BillPaymentService;
 import com.cardemo.service.online.BillPaymentService.BillPaymentRequest;
 import com.cardemo.service.online.BillPaymentService.BillPaymentResult;
 
+import jakarta.validation.Valid;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -194,7 +196,7 @@ public class BillPaymentController {
      */
     @PostMapping("/pay")
     public ResponseEntity<?> processBillPayment(
-            @RequestBody BillPaymentRequest request) {
+            @Valid @RequestBody BillPaymentRequest request) {
 
         String accountId = request.getAccountId();
         logger.info("Bill payment request received for account: {}",

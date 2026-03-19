@@ -22,6 +22,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import jakarta.validation.Valid;
+
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -290,7 +292,7 @@ public class TransactionController {
      */
     @PostMapping
     public ResponseEntity<Transaction> addTransaction(
-            @RequestBody TransactionAddService.TransactionAddRequest request) {
+            @Valid @RequestBody TransactionAddService.TransactionAddRequest request) {
 
         logger.info("Adding new transaction — accountId: {}, cardNum: {}",
                 request.accountId(),

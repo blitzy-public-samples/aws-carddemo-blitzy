@@ -437,7 +437,33 @@ public class StatementEngineService {
         // ← PERFORM 5200-WRITE-HTML-NMADBS THRU 5200-EXIT
         writeHtmlNameAddress(customer, account, htmlWriter);
 
-        // ── Text output: ST-LINE1 through ST-LINE13 with separators ──
+        // ← 5000-CREATE-STATEMENT text output: ST-LINE1 through ST-LINE13
+        writeTextStatementHeader(customer, stmtWriter, fullName, cityStateZip,
+                acctId, balanceStr, ficoStr);
+    }
+
+    /**
+     * Writes the fixed-width plain-text statement header lines (ST-LINE1 through
+     * ST-LINE13) to the text output file.
+     *
+     * <p>Extracted from {@link #createStatement} to separate text formatting from
+     * HTML formatting. Each line is padded/aligned to exactly {@value #LINE_WIDTH}
+     * characters, matching the COBOL {@code FD-STMTFILE-REC PIC X(80)} output.</p>
+     *
+     * <p>← CBSTM03A WORKING-STORAGE: ST-LINE1 through ST-LINE13 definitions.</p>
+     *
+     * @param customer     customer record for name/address fields
+     * @param stmtWriter   plain-text output writer (← STMT-FILE)
+     * @param fullName     pre-built customer full name (← STRING ... INTO ST-NAME)
+     * @param cityStateZip pre-built city/state/zip string (← STRING ... INTO ST-ADD3)
+     * @param acctId       trimmed account ID string
+     * @param balanceStr   formatted current balance (← PIC 9(9).99-)
+     * @param ficoStr      FICO credit score string
+     * @throws IOException if a write operation fails
+     */
+    private void writeTextStatementHeader(Customer customer, Writer stmtWriter,
+            String fullName, String cityStateZip, String acctId,
+            String balanceStr, String ficoStr) throws IOException {
 
         // ST-LINE1: Customer name (PIC X(75) + FILLER X(5) = 80)
         writeLine(stmtWriter, padRight(fullName, 75) + "     ");

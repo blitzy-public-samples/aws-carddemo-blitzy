@@ -59,7 +59,6 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
 
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -390,13 +389,17 @@ public class StatementGenJobConfig {
      * transaction card lookup (4000-TRNXFILE-GET).</p>
      */
     private void verifyInputData() {
-        // Read all XREF records for count verification (← CardXrefRepository.findAll())
-        List<CardXref> allXrefs = cardXrefRepository.findAll();
-        log.info("XREF records loaded: {} available for statement generation", allXrefs.size());
+        // Count XREF records without loading all into memory (performance fix:
+        // replaced cardXrefRepository.findAll() with count() to avoid loading
+        // potentially thousands of records just to check data presence)
+        long xrefCount = cardXrefRepository.count();
+        log.info("XREF records available: {} for statement generation", xrefCount);
 
-        if (!allXrefs.isEmpty()) {
-            // Sample the first XREF record for linked-data verification
-            CardXref sample = allXrefs.getFirst();
+        if (xrefCount > 0) {
+            // Sample one XREF record for linked-data verification using a
+            // size-1 paginated query instead of loading all records
+            CardXref sample = cardXrefRepository.findAll(Pageable.ofSize(1))
+                    .getContent().getFirst();
             String cardNum = sample.getXrefCardNum();
             String custId = sample.getCustId();
             String acctId = sample.getAccountId();

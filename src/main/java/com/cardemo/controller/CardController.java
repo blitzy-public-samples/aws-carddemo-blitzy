@@ -23,6 +23,7 @@ import com.cardemo.service.online.CreditCardUpdateService;
 import com.cardemo.service.online.CreditCardUpdateService.CardUpdateRequest;
 
 import jakarta.persistence.OptimisticLockException;
+import jakarta.validation.Valid;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -213,7 +214,7 @@ public class CardController {
         try {
             // Delegate to CreditCardListService.listCards — maps to COBOL
             // STARTBR/READNEXT/READPREV browse pattern with 9500-FILTER-RECORDS
-            Page<Card> cards = creditCardListService.listCards(accountId, cardNum, page);
+            Page<Card> cards = creditCardListService.listCards(accountId, cardNum, page, size);
 
             logger.debug("Card list returned {} records (page {} of {})",
                     cards.getNumberOfElements(), cards.getNumber(), cards.getTotalPages());
@@ -318,7 +319,7 @@ public class CardController {
     @PutMapping("/{num}")
     public ResponseEntity<?> updateCard(
             @PathVariable String num,
-            @RequestBody CardUpdateRequest request) {
+            @Valid @RequestBody CardUpdateRequest request) {
 
         logger.info("Card update request: cardNum='{}'", num);
 
