@@ -117,10 +117,7 @@ class CreditCardDetailServiceTest {
     @Test
     @DisplayName("viewCardDetail: primary key read by cardNum from CC list screen")
     void testViewCardDetail_ByCardNum() {
-        // Arrange — Mock COMMAREA context for PGM-ENTER from COCRDLIC
-        when(cardDemoContext.getFromProgram()).thenReturn(CC_LIST_PROGRAM);
-        when(cardDemoContext.getPgmContext()).thenReturn(CardDemoContext.PGM_ENTER);
-        when(cardDemoContext.isReenterContext()).thenReturn(false);
+        // Arrange — REST stateless: pgmContext branching removed.
         // resolveAccountId(null) falls through to context lookup
         when(cardDemoContext.getAcctId()).thenReturn(TEST_ACCOUNT_ID);
 
@@ -156,10 +153,7 @@ class CreditCardDetailServiceTest {
     @Test
     @DisplayName("viewCardDetail: AIX read by accountId from CC list screen")
     void testViewCardDetail_ByAccountId() {
-        // Arrange — Mock COMMAREA context for PGM-ENTER from COCRDLIC
-        when(cardDemoContext.getFromProgram()).thenReturn(CC_LIST_PROGRAM);
-        when(cardDemoContext.getPgmContext()).thenReturn(CardDemoContext.PGM_ENTER);
-        when(cardDemoContext.isReenterContext()).thenReturn(false);
+        // Arrange — REST stateless: pgmContext branching removed.
         // resolveCardNum(null) falls through to context lookup which returns null
         when(cardDemoContext.getCardNum()).thenReturn(null);
 
@@ -338,10 +332,7 @@ class CreditCardDetailServiceTest {
     @Test
     @DisplayName("viewCardDetail: cross-reference lookup via CardXrefRepository")
     void testViewCardDetail_CrossRefLookup() {
-        // Arrange — Mock COMMAREA context for PGM-ENTER from COCRDLIC
-        when(cardDemoContext.getFromProgram()).thenReturn(CC_LIST_PROGRAM);
-        when(cardDemoContext.getPgmContext()).thenReturn(CardDemoContext.PGM_ENTER);
-        when(cardDemoContext.isReenterContext()).thenReturn(false);
+        // Arrange — REST stateless: pgmContext branching removed.
         // No card number in context — forces AIX path through cross-reference
         when(cardDemoContext.getCardNum()).thenReturn(null);
 

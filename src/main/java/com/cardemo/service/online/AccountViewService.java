@@ -204,8 +204,13 @@ public class AccountViewService {
                         MessageConstants.INVALID_KEY_MESSAGE, null);
             }
         } catch (RecordNotFoundException e) {
+            // Let RecordNotFoundException propagate to the controller layer,
+            // which catches it and returns HTTP 404 (Not Found).
+            // In the COBOL original, a RESP(NOTFND) on VSAM READ would display
+            // an error message on the same screen. In a REST API, the appropriate
+            // HTTP semantic is 404 rather than 200 with an error message body.
             log.error("Record not found during account view: {}", e.getMessage());
-            return new AccountViewResult(null, null, null, e.getMessage(), null);
+            throw e;
         }
     }
 
@@ -527,10 +532,12 @@ public class AccountViewService {
                     MessageConstants.THANK_YOU_MESSAGE, null);
         }
 
-        // Account ID available — validate and read
+        // Account ID available — validate and read.
+        // In the REST context, an invalid ID format (non-numeric, all zeros,
+        // etc.) means the resource does not exist. Propagate as
+        // RecordNotFoundException so the controller returns HTTP 404.
         if (!editAccount(resolvedAcctId)) {
-            return new AccountViewResult(null, null, null,
-                    MessageConstants.INVALID_KEY_MESSAGE, null);
+            throw new RecordNotFoundException("Account", resolvedAcctId);
         }
 
         return buildAccountView(resolvedAcctId);

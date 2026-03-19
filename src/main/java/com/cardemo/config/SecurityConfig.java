@@ -42,6 +42,7 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.www.BasicAuthenticationFilter;
 
 /**
  * Spring Security configuration that implements role-based access control,
@@ -85,6 +86,18 @@ import org.springframework.security.web.SecurityFilterChain;
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
+
+    private final CardDemoContextFilter cardDemoContextFilter;
+
+    /**
+     * Constructor injection of the CardDemoContext bridge filter.
+     *
+     * @param cardDemoContextFilter the filter that populates CardDemoContext
+     *                              from Spring Security authentication
+     */
+    public SecurityConfig(CardDemoContextFilter cardDemoContextFilter) {
+        this.cardDemoContextFilter = cardDemoContextFilter;
+    }
 
     /**
      * Creates a BCrypt password encoder bean for secure password hashing.
@@ -206,7 +219,17 @@ public class SecurityConfig {
             // HTTP Basic authentication — minimum auth mechanism for REST API.
             // Replaces BMS map-based credential entry (COSGN0A map fields:
             // USERIDI for user ID, PASSWDI for password) from COSGN00C.cbl.
-            .httpBasic(Customizer.withDefaults());
+            .httpBasic(Customizer.withDefaults())
+
+            // Register the CardDemoContext bridge filter to run immediately
+            // after HTTP Basic authentication. This populates the request-scoped
+            // CardDemoContext with userId and userType from the authenticated
+            // principal — bridging Spring Security with the COBOL-migrated
+            // service layer that reads COMMAREA fields from CardDemoContext.
+            // Without this, services like UserListService, UserAddService,
+            // AccountUpdateService, and CreditCardDetailService cannot determine
+            // the authenticated user's role and fail with security/null errors.
+            .addFilterAfter(cardDemoContextFilter, BasicAuthenticationFilter.class);
 
         return http.build();
     }

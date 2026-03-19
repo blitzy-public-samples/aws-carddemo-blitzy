@@ -639,8 +639,16 @@ public class InterestCalculationService {
                                          String acctId, String cardNum) {
 
         // STRING PARM-DATE WS-TRANID-SUFFIX DELIMITED BY SIZE INTO TRAN-ID
-        // PARM-DATE PIC X(08) + WS-TRANID-SUFFIX PIC 9(08) = 16 chars
-        String tranId = String.format("%s%08d", parmDate, tranIdSuffix);
+        // PARM-DATE PIC X(08) + WS-TRANID-SUFFIX PIC 9(08) = 16 chars total
+        // If parmDate is empty/null, default to current date in CCYYMMDD format
+        // to ensure all transaction IDs are consistently 16 characters.
+        // Mixed-length IDs (8-char vs 16-char) cause VARCHAR sort collision
+        // in the browse-last ID generation logic (TransactionAddService).
+        String effectiveParmDate = (parmDate == null || parmDate.isBlank())
+                ? java.time.LocalDate.now().format(
+                    java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd"))
+                : parmDate;
+        String tranId = String.format("%s%08d", effectiveParmDate, tranIdSuffix);
 
         // PERFORM Z-GET-DB2-FORMAT-TIMESTAMP
         // MOVE DB2-FORMAT-TS TO TRAN-ORIG-TS and TRAN-PROC-TS

@@ -148,6 +148,15 @@ public class RejectFileWriter implements ItemWriter<RejectFileWriter.RejectRecor
     @Override
     public void open(ExecutionContext executionContext) throws ItemStreamException {
         try {
+            // Ensure parent directories exist (equivalent to JCL DD DISP=(NEW,CATLG))
+            java.io.File file = new java.io.File(outputFilePath);
+            java.io.File parentDir = file.getParentFile();
+            if (parentDir != null && !parentDir.exists()) {
+                boolean created = parentDir.mkdirs();
+                if (created) {
+                    log.info("Created output directory: {}", parentDir.getAbsolutePath());
+                }
+            }
             writer = new BufferedWriter(new FileWriter(outputFilePath));
             log.info("DALYREJS reject file opened: {}", outputFilePath);
         } catch (IOException e) {

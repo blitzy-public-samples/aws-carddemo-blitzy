@@ -30,7 +30,6 @@ package com.cardemo;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration;
 
 /**
  * Spring Boot application entry point for the CardDemo credit card management system.
@@ -57,11 +56,17 @@ import org.springframework.boot.autoconfigure.security.servlet.UserDetailsServic
  * This entry point class contains no business logic — it exists solely to bootstrap
  * the Spring application context.</p>
  *
+ * <p>Authentication is provided by a custom {@link com.cardemo.config.CardDemoUserDetailsService}
+ * that loads user credentials from the {@code user_security} table (formerly USRSEC VSAM).
+ * No auto-configuration exclusion is needed — the custom {@code UserDetailsService} bean
+ * takes priority over Spring Boot's default in-memory user store.</p>
+ *
  * @see com.cardemo.config.SecurityConfig
  * @see com.cardemo.config.BatchConfig
  * @see com.cardemo.config.JpaConfig
+ * @see com.cardemo.config.CardDemoUserDetailsService
  */
-@SpringBootApplication(exclude = {UserDetailsServiceAutoConfiguration.class})
+@SpringBootApplication
 public class CardDemoApplication {
 
     /**

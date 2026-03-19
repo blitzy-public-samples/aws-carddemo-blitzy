@@ -105,7 +105,16 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
     private final CategoryBalanceRepository categoryBalanceRepository;
 
     /**
-     * Constructs the processor with required repository dependencies.
+     * Writer for the DALYREJS reject file. Injected to allow the processor to
+     * directly write rejected records, faithfully translating COBOL paragraph
+     * 2500-WRITE-REJECT-REC which is invoked inline during the processing loop.
+     * In Spring Batch, the main ItemWriter only receives non-null (valid) items,
+     * so rejects must be written explicitly from the processor.
+     */
+    private final com.cardemo.batch.writer.RejectFileWriter rejectFileWriter;
+
+    /**
+     * Constructs the processor with required repository and writer dependencies.
      *
      * <p>Uses constructor injection per Spring best practices. With a single constructor,
      * no {@code @Autowired} annotation is needed — Spring auto-detects and injects.</p>
@@ -113,13 +122,16 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
      * @param cardXrefRepository        XREF-FILE access for card-to-account resolution
      * @param accountRepository         ACCOUNT-FILE access for validation and balance updates
      * @param categoryBalanceRepository TCATBAL-FILE access for category balance maintenance
+     * @param rejectFileWriter          DALYREJS reject file writer (← 2500-WRITE-REJECT-REC)
      */
     public TransactionPostingProcessor(CardXrefRepository cardXrefRepository,
                                        AccountRepository accountRepository,
-                                       CategoryBalanceRepository categoryBalanceRepository) {
+                                       CategoryBalanceRepository categoryBalanceRepository,
+                                       com.cardemo.batch.writer.RejectFileWriter rejectFileWriter) {
         this.cardXrefRepository = cardXrefRepository;
         this.accountRepository = accountRepository;
         this.categoryBalanceRepository = categoryBalanceRepository;
+        this.rejectFileWriter = rejectFileWriter;
     }
 
     /**
@@ -240,6 +252,29 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
         if (rejectCode != NO_REJECT) {
             log.warn("Transaction rejected: dalytranId={}, rejectCode={}, reason={}",
                     item.getDalytranId(), rejectCode, rejectDescription);
+
+            // ── Write reject record to DALYREJS file ──────────────────────────
+            // Translates COBOL paragraph 2500-WRITE-REJECT-REC (lines 446-465):
+            //   MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA
+            //   MOVE WS-VALIDATION-TRAILER TO VALIDATION-TRAILER
+            //   WRITE FD-REJS-RECORD FROM REJECT-RECORD
+            // The processor writes rejects directly because Spring Batch's null
+            // return convention means rejected items never reach the step writer.
+            try {
+                String originalData = buildOriginalTransactionData(item);
+                com.cardemo.batch.writer.RejectFileWriter.RejectRecord rejectRecord =
+                        new com.cardemo.batch.writer.RejectFileWriter.RejectRecord(
+                                originalData, rejectCode, rejectDescription);
+                org.springframework.batch.item.Chunk<com.cardemo.batch.writer.RejectFileWriter.RejectRecord> rejectChunk =
+                        new org.springframework.batch.item.Chunk<>(java.util.List.of(rejectRecord));
+                rejectFileWriter.write(rejectChunk);
+            } catch (Exception e) {
+                log.error("Failed to write reject record for dalytranId={}: {}",
+                        item.getDalytranId(), e.getMessage(), e);
+                throw new com.cardemo.common.exception.CardDemoException(
+                        "Failed to write reject record", e);
+            }
+
             return null;
         }
 
@@ -509,5 +544,55 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
      */
     private BigDecimal safeDecimal(BigDecimal value) {
         return value != null ? value : BigDecimal.ZERO;
+    }
+
+    /**
+     * Reconstructs the original daily transaction data as a concatenated string
+     * matching the COBOL DALYTRAN-RECORD layout for inclusion in the reject file.
+     *
+     * <p>Translates COBOL paragraph 2500-WRITE-REJECT-REC reference:
+     * {@code MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA PIC X(350)}.
+     * The entity fields are concatenated in CVTRA06Y.cpy field order to
+     * produce a representation of the original fixed-width record.</p>
+     *
+     * @param item the daily transaction entity
+     * @return a string representation of the original transaction data
+     */
+    private String buildOriginalTransactionData(DailyTransaction item) {
+        StringBuilder sb = new StringBuilder(350);
+        sb.append(padRight(item.getDalytranId(), 16));
+        sb.append(padRight(item.getTypeCode(), 2));
+        sb.append(String.format("%04d", item.getCategoryCode() != null ? item.getCategoryCode() : 0));
+        sb.append(padRight(item.getSource(), 10));
+        sb.append(padRight(item.getDescription(), 100));
+        sb.append(String.format("%012.2f", safeDecimal(item.getAmount())));
+        sb.append(padRight(item.getMerchantId(), 9));
+        sb.append(padRight(item.getMerchantName(), 50));
+        sb.append(padRight(item.getMerchantCity(), 50));
+        sb.append(padRight(item.getMerchantZip(), 10));
+        sb.append(padRight(item.getCardNum(), 16));
+        sb.append(padRight(item.getOrigTimestamp(), 26));
+        sb.append(padRight(item.getProcTimestamp(), 26));
+        // Pad to 350 total if shorter
+        while (sb.length() < 350) {
+            sb.append(' ');
+        }
+        return sb.substring(0, Math.min(sb.length(), 350));
+    }
+
+    /**
+     * Right-pads a string with spaces to the specified length, matching COBOL
+     * {@code PIC X(n)} behavior.
+     *
+     * @param value  the input string (may be null)
+     * @param length the target length
+     * @return the padded or truncated string
+     */
+    private static String padRight(String value, int length) {
+        String safe = (value != null) ? value : "";
+        if (safe.length() >= length) {
+            return safe.substring(0, length);
+        }
+        return String.format("%-" + length + "s", safe);
     }
 }

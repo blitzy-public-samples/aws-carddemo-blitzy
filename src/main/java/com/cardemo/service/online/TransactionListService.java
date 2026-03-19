@@ -192,9 +192,18 @@ public class TransactionListService {
         }
 
         // Build paginated query (← STARTBR/READNEXT browse pattern)
+        // When transactionId is provided, position the browse at that ID
+        // (matches COBOL STARTBR RIDFLD semantics from COTRN00C.cbl)
         int safePage = Math.max(0, page);
         Pageable pageable = PageRequest.of(safePage, PAGE_SIZE, TRAN_ID_SORT);
-        Page<Transaction> result = transactionRepository.findAll(pageable);
+        Page<Transaction> result;
+        if (transactionId != null && !transactionId.isBlank()) {
+            log.debug("Filtering transactions starting from transactionId='{}'", transactionId);
+            result = transactionRepository.findByTranIdGreaterThanEqual(
+                    transactionId.trim(), pageable);
+        } else {
+            result = transactionRepository.findAll(pageable);
+        }
 
         // Populate display data (← PERFORM POPULATE-TRAN-DATA)
         List<TransactionListItem> displayItems = populateTranData(result);

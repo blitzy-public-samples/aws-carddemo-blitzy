@@ -772,16 +772,16 @@ INSERT INTO daily_transactions (dalytran_id, dalytran_type_cd, dalytran_cat_cd,
 -- BCrypt hash: $2a$10$ cost factor, generated from literal string 'PASSWORD'
 -- ============================================================================
 INSERT INTO user_security (sec_usr_id, sec_usr_fname, sec_usr_lname, sec_usr_pwd, sec_usr_type) VALUES
-('ADMIN001', 'MARGARET', 'GOLD', '$2a$10$tz1a5q42YfJoK8B1GVo.4utWwFxj2SnBpgpKFOlN2WyBlB3SjTonS', 'A'),
-('ADMIN002', 'RUSSELL', 'RUSSELL', '$2a$10$tz1a5q42YfJoK8B1GVo.4utWwFxj2SnBpgpKFOlN2WyBlB3SjTonS', 'A'),
-('ADMIN003', 'RAYMOND', 'WHITMORE', '$2a$10$tz1a5q42YfJoK8B1GVo.4utWwFxj2SnBpgpKFOlN2WyBlB3SjTonS', 'A'),
-('ADMIN004', 'EMMANUEL', 'CASGRAIN', '$2a$10$tz1a5q42YfJoK8B1GVo.4utWwFxj2SnBpgpKFOlN2WyBlB3SjTonS', 'A'),
-('ADMIN005', 'GRANVILLE', 'LACHAPELLE', '$2a$10$tz1a5q42YfJoK8B1GVo.4utWwFxj2SnBpgpKFOlN2WyBlB3SjTonS', 'A'),
-('USER0001', 'LAWRENCE', 'THOMAS', '$2a$10$tz1a5q42YfJoK8B1GVo.4utWwFxj2SnBpgpKFOlN2WyBlB3SjTonS', 'U'),
-('USER0002', 'AJITH', 'KUMAR', '$2a$10$tz1a5q42YfJoK8B1GVo.4utWwFxj2SnBpgpKFOlN2WyBlB3SjTonS', 'U'),
-('USER0003', 'LAURITZ', 'ALME', '$2a$10$tz1a5q42YfJoK8B1GVo.4utWwFxj2SnBpgpKFOlN2WyBlB3SjTonS', 'U'),
-('USER0004', 'AVERARDO', 'MAZZI', '$2a$10$tz1a5q42YfJoK8B1GVo.4utWwFxj2SnBpgpKFOlN2WyBlB3SjTonS', 'U'),
-('USER0005', 'LEE', 'TING', '$2a$10$tz1a5q42YfJoK8B1GVo.4utWwFxj2SnBpgpKFOlN2WyBlB3SjTonS', 'U');
+('ADMIN001', 'MARGARET', 'GOLD', '$2a$10$3HrltVsynTfAuxYGoiIP2ObgzJHo6nuTZgy8A9ww.iAMFWWsoIsYu', 'A'),
+('ADMIN002', 'RUSSELL', 'RUSSELL', '$2a$10$3HrltVsynTfAuxYGoiIP2ObgzJHo6nuTZgy8A9ww.iAMFWWsoIsYu', 'A'),
+('ADMIN003', 'RAYMOND', 'WHITMORE', '$2a$10$3HrltVsynTfAuxYGoiIP2ObgzJHo6nuTZgy8A9ww.iAMFWWsoIsYu', 'A'),
+('ADMIN004', 'EMMANUEL', 'CASGRAIN', '$2a$10$3HrltVsynTfAuxYGoiIP2ObgzJHo6nuTZgy8A9ww.iAMFWWsoIsYu', 'A'),
+('ADMIN005', 'GRANVILLE', 'LACHAPELLE', '$2a$10$3HrltVsynTfAuxYGoiIP2ObgzJHo6nuTZgy8A9ww.iAMFWWsoIsYu', 'A'),
+('USER0001', 'LAWRENCE', 'THOMAS', '$2a$10$3HrltVsynTfAuxYGoiIP2ObgzJHo6nuTZgy8A9ww.iAMFWWsoIsYu', 'U'),
+('USER0002', 'AJITH', 'KUMAR', '$2a$10$3HrltVsynTfAuxYGoiIP2ObgzJHo6nuTZgy8A9ww.iAMFWWsoIsYu', 'U'),
+('USER0003', 'LAURITZ', 'ALME', '$2a$10$3HrltVsynTfAuxYGoiIP2ObgzJHo6nuTZgy8A9ww.iAMFWWsoIsYu', 'U'),
+('USER0004', 'AVERARDO', 'MAZZI', '$2a$10$3HrltVsynTfAuxYGoiIP2ObgzJHo6nuTZgy8A9ww.iAMFWWsoIsYu', 'U'),
+('USER0005', 'LEE', 'TING', '$2a$10$3HrltVsynTfAuxYGoiIP2ObgzJHo6nuTZgy8A9ww.iAMFWWsoIsYu', 'U');
 
 -- End of V100 seed data (636 rows across 10 tables)
 

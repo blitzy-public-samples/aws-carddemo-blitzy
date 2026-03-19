@@ -185,7 +185,7 @@ class CreditCardUpdateServiceTest {
         // (maps CCUP-NEW-CRDNAME != CCUP-OLD-CRDNAME → CCUP-CHANGES-MADE)
         CardUpdateRequest request = new CardUpdateRequest(
                 TEST_ACCT_ID, TEST_CARD_NUM, "JANE DOE", TEST_STATUS,
-                "06", "2026", "15");
+                "06", "2026", "15", null);
 
         // Act: invoke updateCard (maps 0000-MAIN orchestration)
         Card result = creditCardUpdateService.updateCard(TEST_CARD_NUM, request);
@@ -219,7 +219,7 @@ class CreditCardUpdateServiceTest {
 
         CardUpdateRequest request = new CardUpdateRequest(
                 TEST_ACCT_ID, TEST_CARD_NUM, "JANE DOE", TEST_STATUS,
-                "06", "2026", "15");
+                "06", "2026", "15", null);
 
         // Act & Assert: should wrap OptimisticLockException in ValidationException
         // with the exact COBOL error message from DATA-WAS-CHANGED-BEFORE-UPDATE
@@ -270,7 +270,7 @@ class CreditCardUpdateServiceTest {
         // Arrange: request with blank embossed name (maps LOW-VALUES / SPACES)
         CardUpdateRequest request = new CardUpdateRequest(
                 TEST_ACCT_ID, TEST_CARD_NUM, "", TEST_STATUS,
-                "06", "2026", "15");
+                "06", "2026", "15", null);
 
         // Act
         List<String> errors = creditCardUpdateService.editMapInputs(request);
@@ -291,7 +291,7 @@ class CreditCardUpdateServiceTest {
         // Arrange: request with status "Y" (active card)
         CardUpdateRequest request = new CardUpdateRequest(
                 TEST_ACCT_ID, TEST_CARD_NUM, TEST_NAME, "Y",
-                "06", "2026", "15");
+                "06", "2026", "15", null);
 
         // Act
         List<String> errors = creditCardUpdateService.editMapInputs(request);
@@ -312,7 +312,7 @@ class CreditCardUpdateServiceTest {
         // Arrange: request with status "N" (inactive card)
         CardUpdateRequest request = new CardUpdateRequest(
                 TEST_ACCT_ID, TEST_CARD_NUM, TEST_NAME, "N",
-                "06", "2026", "15");
+                "06", "2026", "15", null);
 
         // Act
         List<String> errors = creditCardUpdateService.editMapInputs(request);
@@ -334,7 +334,7 @@ class CreditCardUpdateServiceTest {
         // Arrange: request with invalid status "X" (not Y or N)
         CardUpdateRequest request = new CardUpdateRequest(
                 TEST_ACCT_ID, TEST_CARD_NUM, TEST_NAME, "X",
-                "06", "2026", "15");
+                "06", "2026", "15", null);
 
         // Act
         List<String> errors = creditCardUpdateService.editMapInputs(request);
@@ -376,7 +376,7 @@ class CreditCardUpdateServiceTest {
         // Arrange: request with invalid month "13" (exceeds 12)
         CardUpdateRequest request = new CardUpdateRequest(
                 TEST_ACCT_ID, TEST_CARD_NUM, TEST_NAME, TEST_STATUS,
-                "13", "2026", "15");
+                "13", "2026", "15", null);
 
         // Act
         List<String> errors = creditCardUpdateService.editMapInputs(request);
@@ -420,7 +420,7 @@ class CreditCardUpdateServiceTest {
         // Arrange: request with invalid year "0000" (below minimum 1950)
         CardUpdateRequest request = new CardUpdateRequest(
                 TEST_ACCT_ID, TEST_CARD_NUM, TEST_NAME, TEST_STATUS,
-                "06", "0000", "15");
+                "06", "0000", "15", null);
 
         // Act
         List<String> errors = creditCardUpdateService.editMapInputs(request);
@@ -480,7 +480,7 @@ class CreditCardUpdateServiceTest {
         // Account ID and card number are valid; year is valid (2026)
         CardUpdateRequest request = new CardUpdateRequest(
                 TEST_ACCT_ID, TEST_CARD_NUM, "", "X",
-                "13", "2026", "15");
+                "13", "2026", "15", null);
 
         // Act: validate all fields
         List<String> errors = creditCardUpdateService.editMapInputs(request);
@@ -524,7 +524,8 @@ class CreditCardUpdateServiceTest {
                 TEST_STATUS,       // valid: "Y"
                 "06",              // valid: month 1-12
                 "2026",            // valid: year 1950-2099
-                "15"               // valid: day
+                "15",              // valid: day
+                null               // version: null = server-side only locking
         );
     }
 }

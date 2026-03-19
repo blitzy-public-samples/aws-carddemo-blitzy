@@ -336,11 +336,10 @@ class AccountUpdateServiceTest {
     // ========================================================================
 
     @Test
-    @DisplayName("updateAccount: REENTER path → read, validate, write with changes")
+    @DisplayName("updateAccount: read, validate, write with changes (REST stateless)")
     void testUpdateAccount_SuccessWithChanges() {
-        // Arrange: REENTER context (user has already viewed the account)
-        when(cardDemoContext.isEnterContext()).thenReturn(false);
-        when(cardDemoContext.isReenterContext()).thenReturn(true);
+        // Arrange: REST API always proceeds directly to validate + write
+        // (pgmContext ENTER/REENTER branching removed for stateless REST)
         mockReadAcctChain();
         mockValidDateValidation();
 
@@ -368,9 +367,7 @@ class AccountUpdateServiceTest {
     @Test
     @DisplayName("updateAccount: save throws OptimisticLockException → ValidationException")
     void testUpdateAccount_OptimisticLockException() {
-        // Arrange: REENTER context
-        when(cardDemoContext.isEnterContext()).thenReturn(false);
-        when(cardDemoContext.isReenterContext()).thenReturn(true);
+        // Arrange: REST API proceeds directly to validate + write
         mockReadAcctChain();
         mockValidDateValidation();
 
@@ -395,18 +392,23 @@ class AccountUpdateServiceTest {
     // ========================================================================
 
     @Test
-    @DisplayName("updateAccount: ENTER path → read only, no save called")
+    @DisplayName("updateAccount: valid request with identical values still saves successfully")
     void testUpdateAccount_NoChanges() {
-        // Arrange: ENTER context (first entry into the screen)
-        when(cardDemoContext.isEnterContext()).thenReturn(true);
+        // Arrange: REST API always proceeds to validate + write, even if values are unchanged.
+        // The old COBOL ENTER path (read-only display) is handled by GET /api/accounts/{id}
+        // (AccountViewService). PUT always validates and saves.
         mockReadAcctChain();
+        mockValidDateValidation();
+
+        // Mock save to return the existing account (no field changes)
+        when(accountRepository.save(any(Account.class))).thenReturn(testAccount);
+        lenient().when(customerRepository.save(any(Customer.class))).thenReturn(testCustomer);
 
         // Act
         Account result = accountUpdateService.updateAccount(TEST_ACCT_ID, validRequest);
 
-        // Assert: no save called — ENTER path only reads, does not write
-        verify(accountRepository, never()).save(any(Account.class));
-        verify(customerRepository, never()).save(any(Customer.class));
+        // Assert: save was still called (REST PUT always writes)
+        verify(accountRepository, times(1)).save(any(Account.class));
         assertThat(result).isNotNull();
         assertThat(result.getAcctId()).isEqualTo(TEST_ACCT_ID);
     }

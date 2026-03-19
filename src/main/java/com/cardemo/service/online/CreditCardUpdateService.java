@@ -91,6 +91,12 @@ public class CreditCardUpdateService {
      *   <li>{@code expiryMonth}  → EXPMONI  PIC X(2)  — 01–12</li>
      *   <li>{@code expiryYear}   → EXPYEARI PIC X(4)  — 1950–2099</li>
      *   <li>{@code expiryDay}    → EXPDAYI  PIC X(2)  — 01–31</li>
+     *   <li>{@code version}      → optional entity version for client-side optimistic
+     *       locking; when provided, the server validates it matches the current entity
+     *       version before applying updates. Maps to the JPA {@code @Version} field
+     *       on the {@link Card} entity, which translates the COBOL CICS READ UPDATE
+     *       → REWRITE pattern. If {@code null}, server-side-only optimistic locking
+     *       applies.</li>
      * </ul>
      */
     public record CardUpdateRequest(
@@ -100,7 +106,8 @@ public class CreditCardUpdateService {
             String activeStatus,
             String expiryMonth,
             String expiryYear,
-            String expiryDay
+            String expiryDay,
+            Long version
     ) { }
 
     // ========================================================================
@@ -161,6 +168,16 @@ public class CreditCardUpdateService {
 
         logger.debug("[{}] Card record read for update — version: {}, CVV present: {}",
                 PROGRAM_NAME, card.getVersion(), card.getCvvCode() != null);
+
+        // Client-side optimistic locking check — translates COBOL READ UPDATE
+        // detecting stale data. If the client provides a version number, it must
+        // match the current entity version. Stale version → 409 Conflict.
+        if (request.version() != null && !request.version().equals(card.getVersion())) {
+            logger.warn("[{}] Stale version detected: client={}, current={}",
+                    PROGRAM_NAME, request.version(), card.getVersion());
+            throw new OptimisticLockException(
+                    "Record changed by some one else. Please review");
+        }
 
         // 2000-DECIDE-ACTION: detect if any fields actually changed
         // Maps 9300-CHECK-CHANGE-IN-REC (line 1498) case-insensitive comparison

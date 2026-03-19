@@ -29,6 +29,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -176,6 +177,42 @@ public class GlobalExceptionHandler {
         log.warn("Optimistic lock conflict: {}", ex.getMessage());
         return buildErrorResponse(HttpStatus.CONFLICT,
                 "Record was modified by another transaction. Please refresh and retry.");
+    }
+
+    /**
+     * Handles malformed or unreadable HTTP request bodies — maps to HTTP 400 Bad Request.
+     *
+     * <p>This handler catches all Jackson deserialization failures including:</p>
+     * <ul>
+     *   <li>Malformed JSON syntax (missing braces, invalid tokens)</li>
+     *   <li>Empty request bodies where JSON is expected</li>
+     *   <li>Unrecognized JSON properties when {@code @JsonIgnoreProperties(ignoreUnknown = false)}
+     *       is specified (e.g., BillPaymentRequest rejecting unknown 'amount' field)</li>
+     *   <li>Type mismatch during deserialization (e.g., string where number expected)</li>
+     * </ul>
+     *
+     * <p>Without this handler, Spring's default behavior returns HTTP 500 for
+     * these conditions, which is incorrect per HTTP semantics — a client sending
+     * malformed input should receive 400 Bad Request.</p>
+     *
+     * @param ex the HttpMessageNotReadableException wrapping the Jackson parse error
+     * @return 400 response with descriptive error message
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<Map<String, Object>> handleHttpMessageNotReadable(
+            HttpMessageNotReadableException ex) {
+        String detail = "Malformed or unreadable request body";
+        Throwable cause = ex.getCause();
+        if (cause instanceof com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException upe) {
+            detail = "Unrecognized field: '" + upe.getPropertyName()
+                    + "'. Accepted fields: " + upe.getKnownPropertyIds();
+        } else if (cause instanceof com.fasterxml.jackson.core.JsonParseException) {
+            detail = "Malformed JSON in request body";
+        } else if (cause instanceof com.fasterxml.jackson.databind.exc.MismatchedInputException) {
+            detail = "Invalid input: request body could not be parsed";
+        }
+        log.warn("HTTP message not readable: {} — detail: {}", ex.getMessage(), detail);
+        return buildErrorResponse(HttpStatus.BAD_REQUEST, detail);
     }
 
     /**

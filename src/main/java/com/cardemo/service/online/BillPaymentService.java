@@ -841,6 +841,10 @@ public class BillPaymentService {
      * <p>The {@link #action} field maps the CICS EIBAID key detection
      * (DFHENTER, DFHPF3, DFHPF4, DFHCLEAR) from the MAIN-PARA
      * EVALUATE EIBAID block.</p>
+     *
+     * <p>Note: COBOL bill payment (COBIL00C) always pays the full outstanding
+     * balance. There is no user-specified amount field. Unknown JSON properties
+     * (e.g., "amount") are rejected to prevent misleading client behavior.</p>
      */
     public static class BillPaymentRequest {
 
@@ -871,6 +875,29 @@ public class BillPaymentService {
         /** Default constructor for framework (Jackson/Spring MVC) use. */
         public BillPaymentRequest() {
             // Default constructor for deserialization
+        }
+
+        /**
+         * Rejects any JSON property not declared on this request DTO.
+         *
+         * <p>The COBOL bill-payment screen (COBIL00) has <em>no</em> amount
+         * input — the full outstanding balance is always paid.  To prevent
+         * callers from believing an {@code "amount"} field is honoured,
+         * unknown properties are rejected at deserialization time so that
+         * the client receives an explicit 400 rather than a silent
+         * full-balance payment.</p>
+         *
+         * @param key   the unrecognised property name
+         * @param value the value supplied (unused)
+         * @throws IllegalArgumentException always — will surface as
+         *         {@code HttpMessageNotReadableException} (HTTP 400)
+         */
+        @com.fasterxml.jackson.annotation.JsonAnySetter
+        public void handleUnknownProperty(String key, Object value) {
+            throw new IllegalArgumentException(
+                    "Unknown property '" + key
+                    + "' is not accepted. Bill payment accepts only: "
+                    + "accountId, confirm, action.");
         }
 
         /**

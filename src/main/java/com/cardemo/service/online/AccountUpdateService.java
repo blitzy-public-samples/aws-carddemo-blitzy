@@ -295,22 +295,18 @@ public class AccountUpdateService {
                 cardDemoContext.getToTranId(),
                 cardDemoContext.getPgmContext());
 
-        // Maps COBOL 0000-MAIN: EVALUATE TRUE / WHEN CDEMO-PGM-ENTER
-        if (cardDemoContext.isEnterContext()) {
-            // First entry: read and return current account data for display
-            Account account = readAcct(accountId);
-            cardDemoContext.setPgmContext(CardDemoContext.PGM_REENTER);
-            log.debug("Initial account read completed for accountId={}, status={}",
-                    accountId, cardDemoContext.getAcctStatus());
-            return account;
-        }
-
-        // Re-entry path: CDEMO-PGM-REENTER — validate context state
-        if (!cardDemoContext.isReenterContext()) {
-            log.warn("{}", MessageConstants.INVALID_KEY_MESSAGE);
-            throw new ValidationException("context",
-                    MessageConstants.INVALID_KEY_MESSAGE);
-        }
+        // Adaptation note: The COBOL 0000-MAIN uses a pseudo-conversational
+        // pattern (PGM_ENTER → display, PGM_REENTER → process input). In a
+        // stateless REST API, each HTTP PUT request carries the complete update
+        // payload — there is no "first entry" vs "re-entry" cycle. We skip the
+        // pgmContext branching and proceed directly to validation and update.
+        // If the caller needs read-only data, they use GET /api/accounts/{id}
+        // (AccountViewService) instead.
+        //
+        // Original COBOL flow preserved as reference:
+        //   EVALUATE TRUE
+        //     WHEN CDEMO-PGM-ENTER    → 9100-READ-ACCT (read-only display)
+        //     WHEN CDEMO-PGM-REENTER  → 1200-EDIT-MAP-INPUTS → 9600-WRITE-PROCESSING
 
         Account currentAccount = readAcct(accountId);
 

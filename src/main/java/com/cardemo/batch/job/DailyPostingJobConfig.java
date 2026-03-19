@@ -329,6 +329,13 @@ public class DailyPostingJobConfig {
                 .reader(dailyTransactionReader.createReader(dailyTransactionFile))
                 .processor(transactionPostingProcessor)
                 .writer(transactionWriter())
+                // Register RejectFileWriter as an ItemStream so that Spring Batch
+                // calls open() before processing (→ file creation) and close()
+                // after processing (→ flush / close).  The .listener() registration
+                // does NOT trigger ItemStream lifecycle methods — .stream() is
+                // required for that.  This translates COBOL paragraphs
+                // 0300-DALYREJS-OPEN and 9300-DALYREJS-CLOSE.
+                .stream(rejectFileWriter)
                 .listener(rejectFileWriter)
                 .listener(createPostingStepListener())
                 .build();

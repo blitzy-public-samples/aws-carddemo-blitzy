@@ -164,4 +164,27 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *         ascending
      */
     List<Transaction> findAllByOrderByTranIdAsc();
+
+    /**
+     * Finds transactions with a transaction ID greater than or equal to the
+     * specified value, with pagination support.
+     *
+     * <p>Replicates the COBOL {@code STARTBR} (Start Browse) semantics from
+     * {@code COTRN00C.cbl} where a browse is positioned at a specific
+     * transaction ID and reads forward:</p>
+     * <pre>
+     *   EXEC CICS STARTBR DATASET(WS-TRANSACT-FILE)
+     *       RIDFLD(WS-TRAN-ID) RESP(...)
+     *   EXEC CICS READNEXT DATASET(WS-TRANSACT-FILE)
+     *       INTO(TRAN-RECORD) RIDFLD(WS-TRAN-ID) RESP(...)
+     * </pre>
+     *
+     * <p>Used by {@code TransactionListService.listTransactions()} when a
+     * specific {@code transactionId} filter is provided.</p>
+     *
+     * @param tranId   the starting transaction ID for the browse
+     * @param pageable pagination and sorting specification
+     * @return a page of transactions with IDs ≥ the specified value
+     */
+    Page<Transaction> findByTranIdGreaterThanEqual(String tranId, Pageable pageable);
 }

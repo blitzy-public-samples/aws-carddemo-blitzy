@@ -243,48 +243,41 @@ public class CreditCardDetailService {
         // ── Map COBOL 1100-SCREEN-INIT (line 427) ──
         screenInit();
 
-        // ── Determine execution path from COMMAREA context (0000-MAIN EVALUATE) ──
-        String fromProgram = cardDemoContext.getFromProgram();
-        int pgmContext = cardDemoContext.getPgmContext();
-        boolean isReenter = cardDemoContext.isReenterContext();
+        // Adaptation note: The COBOL 0000-MAIN uses a pseudo-conversational pattern:
+        //   PGM_ENTER + from CC_LIST_PROGRAM → read data directly
+        //   PGM_ENTER + from other program   → display empty prompt
+        //   PGM_REENTER                      → process user input
+        //
+        // In a stateless REST API, each GET request carries the card/account
+        // identifiers directly as parameters. There is no "display prompt then
+        // re-enter" cycle — the client provides search criteria with every request.
+        // We adapt by:
+        //   1. If card number or account ID is provided → process inputs directly
+        //   2. If neither is provided → return null (empty prompt equivalent)
 
-        // WHEN CDEMO-PGM-ENTER AND CDEMO-FROM-PROGRAM EQUAL LIT-CCLISTPGM (lines 339-348)
-        // Coming from credit card list screen — selection criteria already validated
-        if (pgmContext == CardDemoContext.PGM_ENTER
-                && CC_LIST_PROGRAM.equals(fromProgram)) {
-            logger.debug("Entry from credit card list screen ({}), "
-                    + "criteria pre-validated", CC_LIST_PROGRAM);
+        // Resolve effective identifiers from parameters or COMMAREA fallback
+        String effectiveCardNum = resolveCardNum(cardNum);
+        String effectiveAcctId = resolveAccountId(accountId);
 
-            // Use COMMAREA card/account IDs if parameters are blank
-            String effectiveAcctId = resolveAccountId(accountId);
-            String effectiveCardNum = resolveCardNum(cardNum);
-
-            Card card = readData(effectiveCardNum, effectiveAcctId);
-            setupScreenVars(card);
-            logger.info("Card detail retrieved successfully for card=****{}: {}",
-                    maskCardNum(effectiveCardNum),
-                    MessageConstants.THANK_YOU_MESSAGE.trim());
-            return card;
+        // If both identifiers are blank/null, signal empty prompt (no search criteria)
+        if ((effectiveCardNum == null || effectiveCardNum.isBlank())
+                && (effectiveAcctId == null || effectiveAcctId.isBlank())) {
+            logger.debug("No card/account identifiers provided, returning empty prompt");
+            return null;
         }
 
-        // WHEN CDEMO-PGM-ENTER (lines 349-356) — first entry from other context
-        if (pgmContext == CardDemoContext.PGM_ENTER) {
-            logger.debug("First entry from program={}, prompting for input",
-                    fromProgram);
-            return null; // Signal to controller to show empty prompt form
-        }
-
-        // WHEN CDEMO-PGM-REENTER (lines 357-371) — re-entry with user input
-        if (isReenter) {
-            logger.debug("Re-entry: processing user inputs");
-            return processInputs(cardNum, accountId);
-        }
-
-        // WHEN OTHER (lines 373-381) — unexpected data scenario
-        logger.error("Unexpected data scenario in {}: pgmContext={}, fromProgram={}",
-                PROGRAM_NAME, pgmContext, fromProgram);
-        throw new IllegalStateException(
-                "Unexpected data scenario in " + PROGRAM_NAME);
+        // REST API: identifiers are already resolved from controller path
+        // variables and query parameters. Skip the COBOL form-level validation
+        // in processInputs() (which rejects blank individual fields even when
+        // the other field is valid) and go directly to data retrieval.
+        // The readData method supports both primary-key (cardNum) and AIX
+        // (accountId-only) lookup paths, matching COBOL paragraphs
+        // 9100-GETCARD-BYACCTCARD and 9150-GETCARD-BYACCT.
+        logger.debug("Processing card detail request: card=****{}, account={}",
+                maskCardNum(effectiveCardNum), effectiveAcctId);
+        Card card = readData(effectiveCardNum, effectiveAcctId);
+        setupScreenVars(card);
+        return card;
     }
 
     /**
