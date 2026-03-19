@@ -620,15 +620,19 @@ public class AccountViewService {
      * </pre>
      *
      * @param ssn the raw 9-digit SSN string (PII — do not log)
-     * @return formatted SSN as "NNN-NN-NNNN", or the original value if
-     *         it cannot be formatted
+     * @return masked SSN as "***-**-NNNN" showing only last 4 digits,
+     *         or the original value if it cannot be formatted
      */
     private static String formatSsn(String ssn) {
         if (ssn == null || ssn.length() < 9) {
             return ssn;
         }
-        // CUST-SSN(1:3) + '-' + CUST-SSN(4:2) + '-' + CUST-SSN(6:4)
-        return ssn.substring(0, 3) + "-" + ssn.substring(3, 5) + "-" + ssn.substring(5, 9);
+        // PII masking: only expose last 4 digits for secure API responses.
+        // The original COBOL BMS map (COACTUP) displayed full SSN on
+        // mainframe 3270 terminals in a controlled-access environment.
+        // For REST API responses, the SSN is masked to comply with
+        // data-protection requirements (PCI-DSS, CCPA, GDPR).
+        return "***-**-" + ssn.substring(5, 9);
     }
 
     /**

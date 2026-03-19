@@ -151,7 +151,7 @@
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
-            <version>42.7.5</version>
+            <version>42.7.9</version>
             <scope>runtime</scope>
         </dependency>
 
@@ -361,6 +361,15 @@
                         <format>JSON</format>
                     </formats>
                     <skip>${dependency-check.skip}</skip>
+                    <!--
+                        NVD API key accelerates vulnerability database downloads from
+                        rate-limited ~10K records/batch to full-speed. Without a key,
+                        the 338K+ record NVD database download takes >1 hour, making
+                        the scan impractical for CI/CD pipelines. Obtain a free key
+                        from https://nvd.nist.gov/developers/request-an-api-key and
+                        set the NVD_API_KEY environment variable.
+                    -->
+                    <nvdApiKey>${env.NVD_API_KEY}</nvdApiKey>
                 </configuration>
                 <executions>
                     <execution>

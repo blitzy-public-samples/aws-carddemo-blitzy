@@ -44,6 +44,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * REST controller for admin-only user CRUD operations — translates CICS
@@ -272,6 +273,20 @@ public class UserAdminController {
         LOG.info("POST /api/admin/users — creating user '{}'",
                 request.getUserId());
 
+        // XSS prevention: reject HTML/script content in name fields
+        try {
+            rejectHtmlContent(
+                    "firstName", request.getFirstName(),
+                    "lastName", request.getLastName(),
+                    "userId", request.getUserId()
+            );
+        } catch (ValidationException ex) {
+            LOG.warn("HTML content rejected in user creation '{}': {}",
+                    request.getUserId(), ex.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(errorBody(ex.getMessage()));
+        }
+
         try {
             UserSecurity created = userAddService.addUser(request);
             LOG.info("User '{}' created successfully — type: {}",
@@ -334,6 +349,19 @@ public class UserAdminController {
 
         // Log userId only — NEVER log password
         LOG.info("PUT /api/admin/users/{} — updating user", userId);
+
+        // XSS prevention: reject HTML/script content in name fields
+        try {
+            rejectHtmlContent(
+                    "firstName", request.getFirstName(),
+                    "lastName", request.getLastName()
+            );
+        } catch (ValidationException ex) {
+            LOG.warn("HTML content rejected in user update '{}': {}",
+                    userId, ex.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(errorBody(ex.getMessage()));
+        }
 
         try {
             UserSecurity updated = userUpdateService.updateUser(userId, request);
@@ -414,6 +442,46 @@ public class UserAdminController {
     // =========================================================================
     // Private Helper Methods
     // =========================================================================
+
+    /**
+     * Compiled regex pattern that detects HTML tags and common script injection
+     * patterns in user input. Used to proactively prevent stored XSS by
+     * rejecting inputs that contain HTML or script content.
+     *
+     * <p>The COBOL 3270 terminal accepted only alphanumeric characters through
+     * BMS field attribute restrictions, making HTML injection impossible.
+     * REST API inputs require explicit validation to achieve the same
+     * protection.</p>
+     */
+    private static final Pattern HTML_PATTERN = Pattern.compile(
+            "<[^>]*>|&#?\\w+;",
+            Pattern.CASE_INSENSITIVE
+    );
+
+    /**
+     * Validates that user-provided text fields do not contain HTML or script
+     * injection payloads. Throws a {@link ValidationException} if potentially
+     * dangerous content is detected.
+     *
+     * <p>This proactive defence prevents stored XSS. Even though the current
+     * API returns {@code application/json} with {@code X-Content-Type-Options:
+     * nosniff}, sanitising at the storage boundary protects any future
+     * HTML-rendering client from reflected or stored XSS attacks.</p>
+     *
+     * @param fields pairs of (fieldName, fieldValue) to validate
+     * @throws ValidationException if any field contains HTML/script content
+     */
+    private static void rejectHtmlContent(String... fields) {
+        // fields are passed as name, value, name, value, ...
+        for (int i = 0; i < fields.length - 1; i += 2) {
+            String name = fields[i];
+            String value = fields[i + 1];
+            if (value != null && HTML_PATTERN.matcher(value).find()) {
+                throw new ValidationException(
+                        name + " must not contain HTML or script content");
+            }
+        }
+    }
 
     /**
      * Converts a {@link UserSecurity} entity to a password-free response map.

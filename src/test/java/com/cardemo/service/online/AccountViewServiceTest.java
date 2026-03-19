@@ -90,7 +90,7 @@ class AccountViewServiceTest {
     private static final String TEST_SSN = "123456789";
 
     /** Formatted SSN as NNN-NN-NNNN — maps COBOL STRING in 1200-SETUP-SCREEN-VARS. */
-    private static final String TEST_SSN_FORMATTED = "123-45-6789";
+    private static final String TEST_SSN_FORMATTED = "***-**-6789";
 
     // =========================================================================
     // Mocked Dependencies
