@@ -1,0 +1,154 @@
+#!/bin/sh
+# =====================================================================
+# CardDemo cobol-check Linux GnuCOBOL runner.
+#
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# =====================================================================
+#
+# cobol-check invokes this script after merging a production program
+# with its `.cut` testsuite.  $1 is the path to the merged COBOL
+# source file (cobol-check writes it as `CC##99.CBL` regardless of the
+# program-under-test).  Any extra COBOL options come in via $COBC_OPTS
+# so that `make coverage` can append profile-arcs / test-coverage
+# flags.
+#
+# Compilation strategy
+# --------------------
+# Step 1.  Extract the original PROGRAM-ID from the merged source and
+#          copy `CC##99.CBL` to `<PROGRAM-ID>.cbl`.  GnuCOBOL refuses
+#          to use `##` in intermediate file names; renaming the input
+#          gives us clean, COBOL-named .c / .gcno / .gcda files which
+#          parse_gcov_summary.sh can map back to the program.
+# Step 2.  Try the standard executable path: `cobc -xj` (build + run).
+# Step 3.  If cobc rejects the merged program because of a USING
+#          clause, fall back to module mode: `cobc -m -o <PUT>.so`
+#          followed by `cobcrun <PUT>`.  cobol-check's injected test
+#          driver (UT-INITIALIZE) runs first; the test author is
+#          expected to MOVE values into LINKAGE fields inside
+#          BEFORE-EACH so the LINKAGE parameters arriving as default
+#          NULL pointers / spaces is acceptable.
+#
+# Stubs (CEEDAYS, CEE3ABD, DFHEI1) are pre-compiled into the merged
+# program's directory so that COB_LIBRARY_PATH can resolve them at
+# load time.
+# =====================================================================
+
+set -u
+
+merged_src="$1"
+shift || true
+
+merged_dir="$(dirname "$merged_src")"
+repo_root="$(cd "${merged_dir}/../.." 2>/dev/null && pwd)"
+
+cd "${merged_dir}"
+
+# ---------------------------------------------------------------------
+# Step 1 - sanitise the merged source filename so GnuCOBOL produces
+# coverage files (.gcno / .gcda / .c) named after the COBOL
+# PROGRAM-ID rather than a `cob<NNNN>_0` temp file.
+# ---------------------------------------------------------------------
+program_id="$(awk '
+    BEGIN { found = 0 }
+    /^[[:space:]]*PROGRAM-ID/ {
+        gsub(/.*PROGRAM-ID\.?[[:space:]]+/, "", $0)
+        gsub(/\..*$/, "", $0)
+        gsub(/[[:space:]]/, "", $0)
+        if (length($0) > 0) {
+            print $0
+            found = 1
+            exit
+        }
+    }
+    END { if (found == 0) print "" }
+' "${merged_src}")"
+
+if [ -z "$program_id" ]; then
+    echo "[runner] ERROR: could not extract PROGRAM-ID from ${merged_src}" >&2
+    exit 2
+fi
+
+sanitised_src="${merged_dir}/${program_id}.cbl"
+cp "${merged_src}" "${sanitised_src}"
+
+# ---------------------------------------------------------------------
+# Pre-compile each LE / CICS shim once per directory.  Using -m makes
+# them dynamically loadable so cobc/cobcrun can find them via
+# COB_LIBRARY_PATH at run time.  We pass -save-temps when the caller
+# requested coverage instrumentation so the corresponding .c / .gcno
+# files end up here named after the stub.
+# ---------------------------------------------------------------------
+case " ${COBC_OPTS:-} " in
+    *fprofile-arcs*) save_temps_opt="-save-temps" ;;
+    *)               save_temps_opt= ;;
+esac
+
+for stub in CEEDAYS CEE3ABD DFHEI1; do
+    if [ -f "${repo_root}/tests/stubs/${stub}.cbl" ] \
+       && [ ! -f "${merged_dir}/${stub}.so" ]; then
+        cobc -m -fixed ${COBC_OPTS:-} ${save_temps_opt} \
+            -I "${repo_root}/app/cpy" \
+            -I "${repo_root}/app/cpy-bms" \
+            -I "${repo_root}/tests/fixtures/cobol-snippets" \
+            -I "${repo_root}/tests/stubs" \
+            "${repo_root}/tests/stubs/${stub}.cbl" 2>&1 || true
+    fi
+done
+
+# ---------------------------------------------------------------------
+# Step 2 - try the standard compile-and-run path used for batch
+# programs.  Capture stderr so we can fall back to the subprogram
+# path if cobc rejects the merged program because of a USING clause.
+# Use the sanitised filename so coverage output is named cleanly.
+# ---------------------------------------------------------------------
+COB_LIBRARY_PATH="${merged_dir}:${repo_root}/tests/stubs:${COB_LIBRARY_PATH:-}" \
+    cobc -xj -fixed ${COBC_OPTS:-} ${save_temps_opt} \
+        -o "${merged_dir}/${program_id}" \
+        -I "${repo_root}/app/cpy" \
+        -I "${repo_root}/app/cpy-bms" \
+        -I "${repo_root}/tests/fixtures/cobol-snippets" \
+        -I "${repo_root}/tests/stubs" \
+        "${sanitised_src}" "$@" 2>"${merged_dir}/cobc.stderr"
+rc=$?
+
+if [ "$rc" -eq 0 ]; then
+    cat "${merged_dir}/cobc.stderr"
+    rm -f "${merged_dir}/cobc.stderr"
+    exit 0
+fi
+
+# Always echo whatever cobc printed so reviewers can debug.
+cat "${merged_dir}/cobc.stderr"
+
+# ---------------------------------------------------------------------
+# Step 3 - fallback for subprograms with PROCEDURE DIVISION USING.
+# Build the merged program as a dynamically loadable module and
+# invoke it via cobcrun.  cobol-check's injected test driver runs
+# first (PERFORM UT-INITIALIZE), so the USING parameters arrive as
+# the COBOL runtime's default: NULL pointers / spaces, which is fine
+# because the test author is expected to MOVE values into LINKAGE
+# fields inside BEFORE-EACH.
+# ---------------------------------------------------------------------
+if grep -q "executable program requested but PROCEDURE/ENTRY has USING clause" \
+        "${merged_dir}/cobc.stderr" 2>/dev/null; then
+    rm -f "${merged_dir}/cobc.stderr"
+    echo "[runner] PROCEDURE DIVISION USING detected; switching to module mode."
+
+    cobc -m -fixed ${COBC_OPTS:-} ${save_temps_opt} \
+        -I "${repo_root}/app/cpy" \
+        -I "${repo_root}/app/cpy-bms" \
+        -I "${repo_root}/tests/fixtures/cobol-snippets" \
+        -I "${repo_root}/tests/stubs" \
+        -o "${merged_dir}/${program_id}.so" \
+        "${sanitised_src}" || exit $?
+
+    COB_LIBRARY_PATH="${merged_dir}:${repo_root}/tests/stubs:${COB_LIBRARY_PATH:-}" \
+        cobcrun "${program_id}"
+    exit $?
+fi
+
+rm -f "${merged_dir}/cobc.stderr"
+exit "$rc"
