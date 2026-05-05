@@ -1,0 +1,53 @@
+# =====================================================================
+# CardDemo .gitignore
+#
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# =====================================================================
+
+# ---- cobol-check / GnuCOBOL build artifacts -------------------------
+# All generated test programs, executables, and gcov spoor go into the
+# `target/` build directory.  Do not commit any of them.
+target/
+*.gcno
+*.gcda
+*.gcov
+ALLTESTS
+ParserErrorLog.txt
+testResults.txt
+
+# Compiled COBOL object / shared modules (regenerated per test run).
+*.o
+*.so
+
+# ---- Cobol-check JAR (bootstrapped via `make init`) -----------------
+# The cobol-check JAR is a binary artifact; it is downloaded on demand
+# and should not be tracked in git.
+tests/cobol-check/lib/cobol-check-*.jar
+
+# ---- Generated COBOL fixture snippets -------------------------------
+# These are recreated by `python3 tests/fixtures/load_fixture.py`
+# (invoked automatically by `make fixtures` and `make test`).
+tests/fixtures/cobol-snippets/*.cpy
+
+# ---- Python helper byte-compilation cache ---------------------------
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- Editor / OS noise ----------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# ---- Local overrides (developer-specific) ---------------------------
+*.local
+.env
+.env.*
+!.env.example
