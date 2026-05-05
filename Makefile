@@ -248,8 +248,8 @@ fixtures:
 	@echo "[fixtures] Regenerating cobol fixture snippets from $(DATA_DIR)/ ..."
 	@mkdir -p $(SNIPPET_DIR)
 	@python3 $(REPO_ROOT)/$(FIXTURE_DIR)/load_fixture.py \
-	    --repo-root $(REPO_ROOT) \
-	    --output-dir $(SNIPPET_DIR) >/dev/null
+	    --input-dir $(REPO_ROOT)/$(DATA_DIR) \
+	    --output-dir $(SNIPPET_DIR)
 	@count=$$(ls -1 $(SNIPPET_DIR)/*.cpy 2>/dev/null | wc -l); \
 	echo "[fixtures] Generated $$count snippet(s) under $(FIXTURE_DIR)/cobol-snippets/"
 
