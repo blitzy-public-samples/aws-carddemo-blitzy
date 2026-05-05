@@ -44,6 +44,61 @@ GitHub provides additional document on [forking a repository](https://help.githu
 Looking at the existing issues is a great way to find something to contribute on. As our projects, by default, use the default GitHub issue labels (enhancement/bug/duplicate/help wanted/invalid/question/wontfix), looking at any 'help wanted' issues is a great place to start.
 
 
+## Adding a new testsuite
+
+CardDemo's automated tests run via the
+[Open Mainframe Project's cobol-check](https://github.com/openmainframeproject/cobol-check)
+framework.  Follow these steps to add a new testsuite:
+
+1. **Create the program directory**:
+   `mkdir -p tests/cobol-check/<PROGRAM>/`.
+2. **Create one or more `.cut` files** inside the new directory.
+   `<PROGRAM>.cut` is the conventional name for the primary
+   testsuite; long suites may be split (for example,
+   `COCRDUPC-validation.cut` and `COCRDUPC-rewrite.cut`).
+3. **Reference the unmodified production source** by setting
+   `cobolcheck.test.program.name = <PROGRAM>` (or by passing
+   `make test-one PROGRAM=<PROGRAM>` on the command line).  *Never*
+   copy production COBOL into a `.cut` file -- cobol-check merges the
+   real source from `app/cbl/` automatically.
+4. **Mock only external dependencies**:
+   - `MOCK FILE <fd-name>` for every VSAM cluster and sequential
+     dataset.
+   - `MOCK CALL "CEEDAYS"` / `MOCK CALL "CEE3ABD"` for Language
+     Environment services.
+   - `MOCK CALL "<other-program>"` for every cross-program subprogram
+     CALL.
+   - `MOCK CICS <verb>` for every `EXEC CICS` verb.
+   - **Never** `MOCK PARAGRAPH` or `MOCK SECTION` against a paragraph
+     of the program-under-test -- that would mock internal logic.
+5. **Author assertions** with `EXPECT <field> TO BE <value>` against
+   real LINKAGE / WORKING-STORAGE / RETURN-CODE / mocked-WRITE-buffer
+   fields.  Add a `VERIFY <mock-target> WAS CALLED N TIMES` clause
+   whenever the testcase declares a `MOCK` directive.
+6. **Reuse fixtures** from `tests/fixtures/cobol-snippets/` via
+   `COPY 'ACCT-FIXTURE-001'.` (or similar).  To add a new fixture
+   record, edit the `FIXTURES` list in
+   `tests/fixtures/load_fixture.py` and re-run `make fixtures`.
+7. **Run the validation gates** locally:
+   ```bash
+   make lint
+   make test-one PROGRAM=<PROGRAM>
+   ```
+8. **Inspect coverage**:
+   ```bash
+   make coverage
+   ```
+   The `tests/lint/parse_gcov_summary.sh` script enforces the
+   per-program targets documented in `tests/README.md`.
+
+The four validation gates under `tests/lint/` run automatically in
+GitHub Actions on every push and pull request.  A pull request cannot
+merge if any gate exits non-zero.
+
+See [`tests/README.md`](tests/README.md) for the full authoring guide,
+fixture catalog, and troubleshooting tips.
+
+
 ## Code of Conduct
 This project has adopted the [Amazon Open Source Code of Conduct](https://aws.github.io/code-of-conduct).
 For more information see the [Code of Conduct FAQ](https://aws.github.io/code-of-conduct-faq) or contact

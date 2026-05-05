@@ -16,6 +16,7 @@
     - [**Admin Menu**](#admin-menu)
 - [Support](#support)
 - [Roadmap](#roadmap)
+- [Testing](#testing)
 - [Contributing](#contributing)
 - [License](#license)
 - [Project status](#project-status)
@@ -296,6 +297,58 @@ The following features are planned for upcoming releases
    * Message queue integration
    
    * Exposure of transactions for distributed application integration
+
+<br/>
+
+## Testing
+
+CardDemo ships with an off-platform automated test harness based on the
+[Open Mainframe Project's cobol-check](https://github.com/openmainframeproject/cobol-check)
+framework, which exercises the production COBOL programs in-place
+while mocking every external boundary (VSAM file I/O, CICS commands,
+Language Environment callable services, and inter-program subprogram
+calls).
+
+### Prerequisites
+
+Install the toolchain on Ubuntu 24.04:
+
+```bash
+sudo apt-get install -y \
+    gnucobol3 libcob4-dev libcob4t64 \
+    openjdk-21-jdk-headless \
+    gcc make python3 curl unzip
+```
+
+Equivalent packages are available on most Linux distributions; the
+suite has no z/OS or Windows-specific requirements.
+
+### Running the suite
+
+```bash
+make init        # one-time: download cobol-check 0.2.16 JAR
+make lint        # run the four validation gates
+make test        # run every testsuite under tests/cobol-check/
+make coverage    # rerun with --coverage and emit gcov summary
+```
+
+For per-program runs and full authoring guidance, see
+[`tests/README.md`](tests/README.md).
+
+### Validation gates
+
+Every push and every pull request runs four lint scripts that enforce
+the user's "import production code, mock external dependencies, do
+not recreate algorithms" rule:
+
+| Gate                                       | Enforces                                                                              |
+| ------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `check_no_business_logic.sh`               | No arithmetic verbs in tests outside `BEFORE-EACH`/`AFTER-EACH` blocks.               |
+| `check_no_production_redeclaration.sh`     | No `IDENTIFICATION DIVISION` or `PROGRAM-ID` redeclaration of any program in `app/cbl/`. |
+| `check_assertion_density.sh`               | Every `TESTCASE` has an `EXPECT`; every `MOCK`-using `TESTCASE` has a `VERIFY`.         |
+| `check_isolation.sh`                       | Every testsuite declares a `BEFORE-EACH` block.                                        |
+
+A pull request cannot merge if any gate exits non-zero.
 
 <br/>
 
