@@ -410,7 +410,7 @@ every CI invocation before any test executes.
   redeclaration in the test file means the contributor copied the
   production source into the test instead of importing it.
 - **Failure message**: `BLITZY VALIDATION GATE FAILED: production-code
-  redeclaration detected in <file>. Configure
+  redeclaration detected in <file>:<line>. Configure
   cobolcheck.test.program.name in config.properties to import the
   production source.`
 
@@ -424,7 +424,7 @@ every CI invocation before any test executes.
   reached the mock — the mock could have been silently bypassed and
   the test would still "pass".
 - **Failure message**: `BLITZY VALIDATION GATE FAILED: testcase
-  '<name>' in <file> has no EXPECT (or has MOCK without VERIFY).`
+  '<name>' in <file>:<line> has no EXPECT (or has MOCK without VERIFY).`
 
 ### `check_isolation.sh`
 
@@ -459,12 +459,12 @@ are repurposed verbatim as fixture inputs.
 | `app/data/ASCII/acctdata.txt`    | 50 records × 300 bytes (CVACT01Y)                   | `CBACT01C`, `CBACT04C`, `CBTRN02C`, `COACTVWC`, `COACTUPC`, `COBIL00C` |
 | `app/data/ASCII/carddata.txt`    | 50 records × 150 bytes (CVACT02Y)                   | `CBACT02C`, `COCRDLIC`, `COCRDSLC`, `COCRDUPC`                       |
 | `app/data/ASCII/custdata.txt`    | 50 records × 500 bytes (CVCUS01Y)                   | `CBCUS01C`, `CBSTM03A`, `COACTVWC`, `COACTUPC`                       |
-| `app/data/ASCII/cardxref.txt`    | 50 records × 34 bytes (CVACT03Y)                    | `CBACT03C`, `CBTRN02C`, `CBTRN03C`                                   |
-| `app/data/ASCII/dailytran.txt`   | variable × 220 bytes (CVTRA06Y)                     | `CBTRN01C`, `CBTRN02C`                                               |
+| `app/data/ASCII/cardxref.txt`    | 50 records × 36 bytes (CVACT03Y)                    | `CBACT03C`, `CBTRN02C`, `CBTRN03C`                                   |
+| `app/data/ASCII/dailytran.txt`   | 300 records × 350 bytes (CVTRA06Y)                  | `CBTRN01C`, `CBTRN02C`                                               |
 | `app/data/ASCII/discgrp.txt`     | 51 records, 3 blocks (A, DEFAULT, ZEROAPR) (CVTRA02Y) | `CBACT04C`                                                         |
 | `app/data/ASCII/tcatbal.txt`     | 50 records × 50 bytes (CVTRA01Y)                    | `CBACT04C`, `CBTRN02C`                                               |
 | `app/data/ASCII/trancatg.txt`    | 18 records × 60 bytes (CVTRA04Y)                    | `CBTRN03C`                                                           |
-| `app/data/ASCII/trantype.txt`    | 7 records × 80 bytes (CVTRA03Y)                     | `CBTRN03C`, `COTRN02C`                                               |
+| `app/data/ASCII/trantype.txt`    | 7 records × 60 bytes (CVTRA03Y)                     | `CBTRN03C`, `COTRN02C`                                               |
 
 Production fixture files are never modified. The
 `tests/fixtures/load_fixture.py` helper reads byte ranges from each
@@ -592,11 +592,32 @@ needed.
 
 ### Mocking CEEDAYS to drive a specific feedback code
 
+Production `app/cbl/CSUTLDTC.cbl` (lines 60-69) declares the LE feedback
+token as `02 FEEDBACK-TOKEN-VALUE PIC X(8)` with 88-level conditions
+matching 8-byte hex values such as `X'000309CB59C3C5C5'`
+(FC-INSUFFICIENT-DATA). The mock therefore moves an **8-byte hex
+literal** into the token:
+
 ```cobol
        MOCK CALL "CEEDAYS"
-            MOVE 2507 TO FEEDBACK-CODE   *> FC-INSUFFICIENT-DATA per CSUTLDTC
+            MOVE X'000309CB59C3C5C5' TO FEEDBACK-TOKEN-VALUE
+                 *> drives EVALUATE branch for FC-INSUFFICIENT-DATA
        END-MOCK
 ```
+
+When the test program-under-test is `CSUTLDTC` itself, the field name
+`FEEDBACK-TOKEN-VALUE` resolves directly. When the test exercises a
+different program that uses the linked CEEDAYS stub at
+`tests/stubs/CEEDAYS.cbl`, set `WS-CEEDAYS-RC-OVERRIDE` (declared in
+`tests/stubs/STUB-CEEDAYS-RC.cpy`, also `PIC X(8)`) in `BEFORE-EACH`
+instead — the stub copies that 8-byte token into the FEEDBACK-CODE it
+returns to the caller.
+
+A literal **decimal** numeric move (e.g., `MOVE 2507 TO FEEDBACK-CODE`)
+will NOT produce a valid 8-byte token comparable to the production
+88-level VALUE clauses; the comparison will silently fail and the
+default `WHEN OTHER` branch (`'Date is invalid'`) will fire, masking
+the test intent.
 
 ### Verifying a mock was invoked the expected number of times
 
@@ -684,11 +705,35 @@ and that `make test` shows the stub being compiled in its log output.
 
 ### "WRN001: No test suite directory for program <X> was found"
 
-cobol-check supports both flat-file and per-program-directory layouts.
-The CardDemo project uses the flat layout:
-`tests/cobol-check/<PROGRAM>.cut`. If the runner reports this warning,
-verify the file extension is lowercase `.cut` and that the file is
-non-empty.
+cobol-check 0.2.16 walks the configured `test.suite.directory`
+looking for a *sub-directory* whose name matches the program-id (i.e.,
+it expects a nested layout `tests/cobol-check/<PROGRAM>/<file>.cut`).
+The CardDemo project, per AAP §0.5.1 / §0.10.2 / §0.9.1, uses the
+**flat layout** `tests/cobol-check/<PROGRAM>.cut` instead — and the
+`Makefile` bridges the two by staging an ephemeral nested-layout
+shadow tree at `target/cobol-check/suites/<PROGRAM>/<PROGRAM>.cut`
+before invoking cobol-check, then pointing
+`test.suite.directory` at that shadow via a runtime-generated
+`target/cobol-check/config.properties`. If you see WRN001 it means
+**you are running cobol-check directly with the canonical
+`tests/cobol-check/config.properties`** (which still names
+`tests/cobol-check` as `test.suite.directory`); use one of:
+
+- `make test`, `make test-one`, `make test-debug`, or `make coverage`
+  — all of these stage the shadow before invoking cobol-check.
+- A direct `java -jar cobol-check.jar` invocation that supplies its
+  own pre-staged nested layout under `tests/cobol-check/<PROGRAM>/`
+  *and* uses the canonical config — the shadow staging is then
+  redundant but harmless.
+
+If the warning persists from the Make targets, confirm:
+
+- The .cut file's name matches the program-id exactly (e.g.,
+  `tests/cobol-check/CSUTLDTC.cut` for `app/cbl/CSUTLDTC.cbl`); the
+  match is case-sensitive on Linux.
+- The file extension is lowercase `.cut` (the auto-discovery glob in
+  the Makefile is `*.cut`, not `*.CUT`).
+- The file is non-empty.
 
 ### "Mock <CALL> <\"X\"> does not reference any construct in the source code"
 

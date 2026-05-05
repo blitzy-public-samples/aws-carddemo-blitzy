@@ -136,33 +136,60 @@ COVERAGE_OPTS       := -O0 -A "-fprofile-arcs" -A "-ftest-coverage" -Q "-lgcov"
 
 #----------------------------------------------------------------------
 # cobol-check artifact paths derived from the configuration above.
-# CC_CONFIG must match application.source.directory etc. inside
-# tests/cobol-check/config.properties.  CC_JAR_PATH is the ABSOLUTE
-# path the recipes use; COBOL_CHECK_JAR (above) is the REPO-relative
-# path documented to users.
+# CC_CONFIG points at the canonical config.properties checked into
+# tests/cobol-check/.  CC_RUN_CONFIG is a synthesised, per-run copy
+# placed under target/ that overrides test.suite.directory so it
+# points at SHADOW_SUITE_DIR (see below).  CC_JAR_PATH is the
+# ABSOLUTE path the recipes use; COBOL_CHECK_JAR (above) is the
+# REPO-relative path documented to users.
 #----------------------------------------------------------------------
 CC_JAR_NAME         := cobol-check-$(COBOL_CHECK_VERSION).jar
 CC_JAR_PATH         := $(REPO_ROOT)/$(COBOL_CHECK_JAR)
 CC_CONFIG           := $(REPO_ROOT)/$(TEST_DIR)/config.properties
+CC_RUN_CONFIG       := $(REPO_ROOT)/$(BUILD_DIR)/config.properties
 
 #----------------------------------------------------------------------
-# Programs the test runner iterates over.  cobol-check expects test
-# suites to live in a per-program directory:
-#     tests/cobol-check/<PROGRAM>/<anything>.cut
-# The list below is the set of immediate sub-directories of
-# tests/cobol-check/ that contain at least one .cut file.  When the
-# suite directory is empty the loop is a no-op (so `make test`
-# remains green-on-empty for the very first commit that introduces
-# the test scaffolding).
+# Shadow suite directory.
+#
+# AAP Sections 0.5.1, 0.9.1, and 0.10.2 mandate the flat-layout
+# convention `tests/cobol-check/<PROGRAM-ID>.cut`, which is also the
+# layout described in README.md, CONTRIBUTING.md, and tests/README.md.
+# However, cobol-check 0.2.16's program-to-test resolver
+# (PrepareMergeController.getMatchingTestDirectoriesForProgram) walks
+# the tree under test.suite.directory looking for a *sub-directory*
+# whose name matches the program-id; if no such sub-directory exists
+# the framework emits WRN001 and silently runs zero test cases while
+# exiting 0.  The framework's `--tests` filename glob filters within
+# matched directories but does not bypass the directory-matching step.
+#
+# To honour the AAP-mandated flat layout while satisfying cobol-check's
+# directory expectation, every test-time recipe stages the flat .cut
+# files into an ephemeral nested-layout shadow tree under
+# `target/cobol-check/suites/<PROGRAM>/<PROGRAM>.cut` and runs
+# cobol-check against a runtime-generated copy of config.properties
+# whose `test.suite.directory` key points at the shadow.  The .cut
+# files in tests/cobol-check/ are never moved or copied at git-tracked
+# locations -- the shadow lives wholly under target/ which is
+# .gitignore-excluded.
 #----------------------------------------------------------------------
-PROGRAMS            := $(sort $(notdir $(patsubst %/,%,\
-                       $(dir $(wildcard $(SUITE_DIR)/*/*.cut)))))
+SHADOW_SUITE_DIR    := $(REPO_ROOT)/$(BUILD_DIR)/suites
+
+#----------------------------------------------------------------------
+# Programs the test runner iterates over.
+#
+# The flat-layout discovery uses the basename of every .cut file under
+# $(SUITE_DIR).  When the suite directory is empty the loop is a no-op
+# (so `make test` remains green-on-empty for the very first commit that
+# introduces the test scaffolding).
+#----------------------------------------------------------------------
+PROGRAMS            := $(sort $(notdir $(basename $(wildcard $(SUITE_DIR)/*.cut))))
 
 #######################################################################
 # Phony targets and default goal.
 #######################################################################
 .PHONY: all help init fixtures lint test test-one test-debug \
-        coverage clean distclean ensure-build-dir _print-config
+        coverage clean distclean ensure-build-dir _print-config \
+        _stage-shadow-suites
 
 # AAP Section 0.4 / detailed instructions Phase 3: a bare `make`
 # invocation runs the full pre-commit sequence (lint -> test ->
@@ -203,7 +230,7 @@ help:
 	@echo "  COV_THRESHOLD_DATA_VALIDATION=$(COV_THRESHOLD_DATA_VALIDATION)"
 	@echo "  COV_THRESHOLD_FILE_IO=$(COV_THRESHOLD_FILE_IO)"
 	@echo ""
-	@echo "Detected programs (sub-directories of $(TEST_DIR) with a .cut file):"
+	@echo "Detected programs (one per .cut file in $(TEST_DIR)/):"
 	@if [ -z "$(strip $(PROGRAMS))" ]; then \
 	    echo "    (none yet)"; \
 	else \
@@ -212,6 +239,33 @@ help:
 
 ensure-build-dir:
 	@mkdir -p $(REPO_ROOT)/$(BUILD_DIR)
+
+#######################################################################
+# _stage-shadow-suites -- internal target.
+#
+# Builds the ephemeral nested-layout shadow tree that cobol-check
+# 0.2.16's directory-walk resolver requires while preserving the AAP-
+# mandated flat layout in tests/cobol-check/.  For every <PROG>.cut
+# file in $(SUITE_DIR), a corresponding $(SHADOW_SUITE_DIR)/<PROG>/
+# <PROG>.cut is created (copy, not symlink, to ensure cobol-check's
+# absolute-path resolution does not surface symlink targets in error
+# messages).  Also synthesises CC_RUN_CONFIG by copying CC_CONFIG and
+# overriding the test.suite.directory key so the shadow tree is the
+# directory cobol-check walks.  The shadow lives wholly under
+# target/, which is .gitignore-excluded; the canonical .cut files in
+# tests/cobol-check/ are never modified.  See the shadow-suite block
+# in the variable section above for the rationale.
+#######################################################################
+_stage-shadow-suites: ensure-build-dir
+	@rm -rf $(SHADOW_SUITE_DIR)
+	@mkdir -p $(SHADOW_SUITE_DIR)
+	@for prog in $(PROGRAMS); do \
+	    mkdir -p $(SHADOW_SUITE_DIR)/$$prog; \
+	    cp $(SUITE_DIR)/$$prog.cut $(SHADOW_SUITE_DIR)/$$prog/$$prog.cut; \
+	done
+	@sed -e 's|^test\.suite\.directory.*|test.suite.directory = $(BUILD_DIR)/suites|' \
+	     -e 's|^cobolcheck\.test\.suite\.directory.*|cobolcheck.test.suite.directory = $(BUILD_DIR)/suites|' \
+	     $(CC_CONFIG) > $(CC_RUN_CONFIG)
 
 #######################################################################
 # init -- bootstrap the cobol-check JAR.
@@ -271,9 +325,13 @@ lint:
 # test -- canonical entry point for the whole suite.
 #
 # Order: init (download JAR if needed) -> fixtures (regen snippets) ->
-# per-program loop.  When PROGRAMS is empty the loop is a no-op and
-# the target exits 0.  Each invocation of cobol-check is wrapped in
-# `timeout $(TEST_TIMEOUT)` so a runaway test cannot hang the run.
+# stage shadow suites -> per-program loop.  When PROGRAMS is empty the
+# loop is a no-op and the target exits 0.  Each invocation of cobol-
+# check is wrapped in `timeout $(TEST_TIMEOUT)` so a runaway test
+# cannot hang the run.  The shadow staging is performed only when
+# PROGRAMS is non-empty so a green-on-empty repository does not pay
+# the cost (and so `make clean && make test` on a brand-new clone
+# remains a no-op).
 #######################################################################
 test: init fixtures ensure-build-dir
 	@set -e; \
@@ -281,6 +339,7 @@ test: init fixtures ensure-build-dir
 	    echo "[test] No .cut files in $(TEST_DIR) -- nothing to run."; \
 	    exit 0; \
 	fi; \
+	$(MAKE) --no-print-directory _stage-shadow-suites; \
 	echo "[test] Running cobol-check for: $(PROGRAMS)"; \
 	cd $(REPO_ROOT) && \
 	for prog in $(PROGRAMS); do \
@@ -288,7 +347,7 @@ test: init fixtures ensure-build-dir
 	    COBC_OPTS='$(COBC_OPTS)' \
 	    timeout $(TEST_TIMEOUT) \
 	        $(JAVA) $(JAVA_OPTS) -jar $(CC_JAR_PATH) \
-	            --config-file    $(CC_CONFIG) \
+	            --config-file    $(CC_RUN_CONFIG) \
 	            --source-context $(REPO_ROOT) \
 	            --run-directory  $(REPO_ROOT) \
 	            --programs       $$prog \
@@ -298,6 +357,11 @@ test: init fixtures ensure-build-dir
 
 #######################################################################
 # test-one -- run a single program's testsuite.
+#
+# Reuses the same shadow-suite staging that `make test` performs.
+# Verifies the requested program's flat .cut file exists before
+# staging so a typo surfaces immediately rather than as a silent
+# zero-test run.
 #######################################################################
 test-one: init fixtures ensure-build-dir
 	@if [ -z "$(PROGRAM)" ]; then \
@@ -305,12 +369,19 @@ test-one: init fixtures ensure-build-dir
 	    echo "  Example: make test-one PROGRAM=CSUTLDTC" >&2; \
 	    exit 1; \
 	fi
+	@if [ ! -f "$(SUITE_DIR)/$(PROGRAM).cut" ]; then \
+	    echo "[test-one] ERROR: $(SUITE_DIR)/$(PROGRAM).cut does not exist" >&2; \
+	    echo "  Detected programs:" >&2; \
+	    for p in $(PROGRAMS); do echo "    $$p" >&2; done; \
+	    exit 1; \
+	fi
+	@$(MAKE) --no-print-directory _stage-shadow-suites
 	@echo "[test-one] Running $(PROGRAM)"
 	@cd $(REPO_ROOT) && \
 	COBC_OPTS='$(COBC_OPTS)' \
 	timeout $(SINGLE_TIMEOUT) \
 	    $(JAVA) $(JAVA_OPTS) -jar $(CC_JAR_PATH) \
-	        --config-file    $(CC_CONFIG) \
+	        --config-file    $(CC_RUN_CONFIG) \
 	        --source-context $(REPO_ROOT) \
 	        --run-directory  $(REPO_ROOT) \
 	        --programs       $(PROGRAM) \
@@ -329,6 +400,11 @@ test-debug: init fixtures ensure-build-dir
 	    echo "[test-debug] ERROR: PROGRAM=<name> is required" >&2; \
 	    exit 1; \
 	fi
+	@if [ ! -f "$(SUITE_DIR)/$(PROGRAM).cut" ]; then \
+	    echo "[test-debug] ERROR: $(SUITE_DIR)/$(PROGRAM).cut does not exist" >&2; \
+	    exit 1; \
+	fi
+	@$(MAKE) --no-print-directory _stage-shadow-suites
 	@echo "[test-debug] Running $(PROGRAM) with DEBUG logging."
 	@if [ -n "$(TESTCASE)" ]; then \
 	    echo "[test-debug] TESTCASE filter requested: $(TESTCASE)"; \
@@ -337,7 +413,7 @@ test-debug: init fixtures ensure-build-dir
 	@cd $(REPO_ROOT) && \
 	COBC_OPTS='$(COBC_OPTS)' \
 	$(JAVA) -Xdebug $(JAVA_OPTS) -jar $(CC_JAR_PATH) \
-	    --config-file    $(CC_CONFIG) \
+	    --config-file    $(CC_RUN_CONFIG) \
 	    --log-level      DEBUG \
 	    --source-context $(REPO_ROOT) \
 	    --run-directory  $(REPO_ROOT) \
@@ -383,11 +459,17 @@ clean:
 #######################################################################
 # distclean -- like clean, plus remove the bootstrapped JAR.  Useful
 # before tagging releases or when upgrading COBOL_CHECK_VERSION.
+#
+# Removes ONLY the version-stamped jar files (cobol-check-*.jar) under
+# tests/cobol-check/lib/.  The directory itself is preserved because
+# tests/cobol-check/lib/.gitkeep is committed to git as the marker
+# that lets `make init` repopulate the directory on a fresh clone;
+# rmdir'ing the directory would fail (it still contains .gitkeep) and
+# any blanket `rm -rf` would corrupt the .gitkeep marker.
 #######################################################################
 distclean: clean
 	@echo "[distclean] Removing bootstrapped cobol-check JAR ..."
-	@rm -f $(CC_JAR_PATH)
-	@rmdir $(REPO_ROOT)/$(dir $(COBOL_CHECK_JAR)) 2>/dev/null || true
+	@rm -f $(REPO_ROOT)/$(dir $(COBOL_CHECK_JAR))cobol-check-*.jar
 	@echo "[distclean] Done."
 
 #######################################################################
