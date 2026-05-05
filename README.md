@@ -302,53 +302,67 @@ The following features are planned for upcoming releases
 
 ## Testing
 
-CardDemo ships with an off-platform automated test harness based on the
-[Open Mainframe Project's cobol-check](https://github.com/openmainframeproject/cobol-check)
-framework, which exercises the production COBOL programs in-place
-while mocking every external boundary (VSAM file I/O, CICS commands,
-Language Environment callable services, and inter-program subprogram
-calls).
+The repository ships with an automated unit-test layer that exercises the production COBOL programs in-place using [cobol-check](https://github.com/openmainframeproject/cobol-check) (Open Mainframe Project) as the test framework and [GnuCOBOL](https://gnucobol.sourceforge.io/) as the off-platform compiler. Tests live under `tests/cobol-check/<PROGRAM-ID>.cut`; they reference the production source from `app/cbl/` without modifying or copying it. The suite is purely off-platform — it does not require z/OS, CICS, or VSAM to run, and all external dependencies (VSAM datasets, CICS commands, Language Environment callable services, and inter-program subprogram calls) are mocked deterministically.
 
-### Prerequisites
-
-Install the toolchain on Ubuntu 24.04:
+### Quick start
 
 ```bash
-sudo apt-get install -y \
-    gnucobol3 libcob4-dev libcob4t64 \
-    openjdk-21-jdk-headless \
-    gcc make python3 curl unzip
+# One-time prerequisites (Ubuntu Noble or compatible)
+sudo apt-get install -y gnucobol3 libcob4-dev openjdk-21-jdk-headless make gcc
+
+# One-time download of the cobol-check JAR
+make init
+
+# Run the full test suite
+make test
+
+# Run a single program's testsuite
+make test-one PROGRAM=CSUTLDTC
+
+# Generate a coverage report
+make coverage
+
+# Run lint validation gates
+make lint
 ```
 
-Equivalent packages are available on most Linux distributions; the
-suite has no z/OS or Windows-specific requirements.
+### Test categories
 
-### Running the suite
+- **Unit tests** - isolated paragraphs and pure subroutines (e.g., `CSUTLDTC`, `CBSTM03B`, `1300-COMPUTE-INTEREST`).
+- **Integration tests** - paragraph chains crossing internal collaborator boundaries (e.g., `CBACT04C` end-to-end interest posting, `CBTRN02C` end-to-end transaction posting).
+- **Edge case tests** - boundary conditions and error pathways (file-status `'10'` EOF, `'23'` not-found, `'35'` no-file, credit-limit boundaries, date-range edges).
+- **Error handling tests** - failure scenarios that should not abend the test process (`CEEDAYS` non-zero feedback codes, `CEE3ABD` invocation pathways, CICS RESP non-zero paths).
 
-```bash
-make init        # one-time: download cobol-check 0.2.16 JAR
-make lint        # run the four validation gates
-make test        # run every testsuite under tests/cobol-check/
-make coverage    # rerun with --coverage and emit gcov summary
-```
+### Coverage targets
 
-For per-program runs and full authoring guidance, see
-[`tests/README.md`](tests/README.md).
+`make coverage` parses the GnuCOBOL `--coverage` (`gcov`) output and fails the build if any of the per-category or per-program thresholds below are missed.
+
+- **Overall**: ≥70% line coverage across the 28 COBOL programs in `app/cbl/`.
+- **Business logic** (1xxx-8xxx paragraphs): ≥80%.
+- **Data validation** (CCYYMMDD validators, `EVALUATE` blocks): ≥90%.
+- **File I/O paths** (`READ`/`WRITE`/`REWRITE`/`STARTBR`/`READNEXT`): ≥70%.
+- Per-program targets (e.g., `CSUTLDTC` 100%, `CBACT04C` ≥80%, all `CO*C` CICS programs ≥75%) are enforced by `make coverage`.
 
 ### Validation gates
 
-Every push and every pull request runs four lint scripts that enforce
-the user's "import production code, mock external dependencies, do
-not recreate algorithms" rule:
+`make lint` enforces four mandatory rules from the project's testing policy:
 
-| Gate                                       | Enforces                                                                              |
-| ------------------------------------------ | ------------------------------------------------------------------------------------- |
-| `check_no_business_logic.sh`               | No arithmetic verbs in tests outside `BEFORE-EACH`/`AFTER-EACH` blocks.               |
-| `check_no_production_redeclaration.sh`     | No `IDENTIFICATION DIVISION` or `PROGRAM-ID` redeclaration of any program in `app/cbl/`. |
-| `check_assertion_density.sh`               | Every `TESTCASE` has an `EXPECT`; every `MOCK`-using `TESTCASE` has a `VERIFY`.         |
-| `check_isolation.sh`                       | Every testsuite declares a `BEFORE-EACH` block.                                        |
+1. **No production redeclaration** - `.cut` files must not contain `IDENTIFICATION DIVISION` or `PROGRAM-ID` for any name in `app/cbl/`.
+2. **No business logic in tests** - `.cut` files must not contain `COMPUTE`, `MULTIPLY`, `DIVIDE`, `ADD`, or `SUBTRACT` outside `BEFORE-EACH`/`AFTER-EACH` blocks.
+3. **Assertion density** - every `TESTCASE` must contain at least one `EXPECT`; every `TESTCASE` with a `MOCK` directive must contain at least one `VERIFY`.
+4. **Test isolation** - every testsuite must declare a `BEFORE-EACH` block to reset working storage.
 
-A pull request cannot merge if any gate exits non-zero.
+Violations fail the build with the documented gate message:
+
+> BLITZY VALIDATION GATE FAILED: business logic detected outside imports/setup/invocation/assertions in &lt;file&gt;:&lt;line&gt;. Re-author the test to PERFORM the production paragraph instead of computing the expected value yourself.
+
+### Where to find more
+
+- [`tests/README.md`](tests/README.md) - full testing guide (prerequisites, authoring guidelines, fixture catalog, validation-gate semantics).
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) - "Adding a new testsuite" section.
+- `tests/cobol-check/CSUTLDTC.cut` - the canonical reference exemplar; all subsequent testsuites copy its structural conventions.
+- [`Makefile`](Makefile) - the canonical command surface for running tests locally.
+- [`.github/workflows/test.yml`](.github/workflows/test.yml) - the CI workflow that runs lint, test, and coverage on every push and pull request.
 
 <br/>
 
