@@ -437,7 +437,12 @@ coverage: ensure-build-dir
 	        gcov -b -c $$f >/dev/null 2>&1 || true; \
 	    done; \
 	    echo "[coverage] Parsing gcov summary against thresholds ..."; \
-	    bash $(REPO_ROOT)/$(LINT_DIR)/parse_gcov_summary.sh; \
+	    bash $(REPO_ROOT)/$(LINT_DIR)/parse_gcov_summary.sh \
+	        --overall    $(COV_THRESHOLD_OVERALL) \
+	        --business   $(COV_THRESHOLD_BUSINESS_LOGIC) \
+	        --validation $(COV_THRESHOLD_DATA_VALIDATION) \
+	        --io         $(COV_THRESHOLD_FILE_IO) \
+	        $(REPO_ROOT)/$(COVERAGE_DIR); \
 	else \
 	    echo "[coverage] No .gcda files found; coverage data unavailable."; \
 	    echo "[coverage] (This is expected when no .cut testsuites exist yet.)"; \
