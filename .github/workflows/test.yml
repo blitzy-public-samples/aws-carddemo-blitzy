@@ -1,0 +1,95 @@
+# =====================================================================
+# CardDemo cobol-check CI pipeline.
+#
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# =====================================================================
+#
+# Runs on every push and every pull request:
+#   1. Installs GnuCOBOL 3.1.2 + libcob4-dev + OpenJDK 21 on Ubuntu.
+#   2. Bootstraps the cobol-check 0.2.16 JAR via `make init`.
+#   3. Regenerates fixture snippets (`make fixtures`).
+#   4. Enforces the four validation gates (`make lint`).
+#   5. Runs the testsuite (`make test`).
+#   6. Optionally runs coverage (`make coverage`) and uploads the
+#      summary as a build artifact.
+#
+# When the testsuite directory is empty, every step exits successfully,
+# making this workflow green-on-empty so it can guard the very first
+# commit that introduces a `.cut` file.
+# =====================================================================
+
+name: cobol-check tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+jobs:
+  cobol-check:
+    name: GnuCOBOL ${{ matrix.gnucobol_version }} / OpenJDK ${{ matrix.java_version }}
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        gnucobol_version: ['3.1.2']
+        java_version: ['21']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+              gnucobol3 \
+              libcob4-dev \
+              openjdk-21-jdk-headless \
+              make \
+              gcc \
+              python3 \
+              curl \
+              unzip
+          cobc --version | head -1
+          java -version 2>&1 | head -1
+
+      - name: Bootstrap cobol-check
+        run: make init
+
+      - name: Run validation gates (lint)
+        run: make lint
+
+      - name: Regenerate fixture snippets
+        run: make fixtures
+
+      - name: Run testsuite
+        run: make test
+
+      - name: Generate coverage report
+        if: always()
+        run: |
+          if ls tests/cobol-check/*/*.cut >/dev/null 2>&1; then
+            make coverage || true
+          else
+            echo "[coverage] No .cut files yet -- skipping."
+          fi
+
+      - name: Upload coverage summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cobol-check-coverage
+          path: |
+            target/cobol-check/coverage-summary.txt
+            target/cobol-check/*.gcov
+            target/cobol-check/testResults.txt
+          if-no-files-found: ignore
+          retention-days: 14
