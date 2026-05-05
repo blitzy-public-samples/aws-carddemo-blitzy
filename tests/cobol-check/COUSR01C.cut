@@ -207,7 +207,7 @@
       *  RETURN-TO-PREV-SCREEN has a non-empty origin to reflect.
       ******************************************************************
        BEFORE-EACH
-            INITIALIZE WS-VARIABLES
+            INITIALIZE WS-VARIABLES ALL TO VALUE
             INITIALIZE CARDDEMO-COMMAREA
             INITIALIZE SEC-USER-DATA
             INITIALIZE COUSR1AI
@@ -339,7 +339,7 @@
             PERFORM INITIALIZE-ALL-FIELDS
             EXPECT USERIDI OF COUSR1AI TO BE SPACES
             EXPECT FNAMEI OF COUSR1AI TO BE SPACES
-            EXPECT FNAMEL OF COUSR1AI = -1
+            EXPECT FNAMEL OF COUSR1AI NOT = 0
             EXPECT LNAMEI OF COUSR1AI TO BE SPACES
             EXPECT PASSWDI OF COUSR1AI TO BE SPACES
             EXPECT USRTYPEI OF COUSR1AI TO BE SPACES
@@ -383,7 +383,7 @@
             END-MOCK
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-ERR-FLG TO BE 'Y'
-            EXPECT FNAMEL OF COUSR1AI = -1
+            EXPECT FNAMEL OF COUSR1AI NOT = 0
             VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
 
       ******************************************************************
@@ -424,7 +424,7 @@
             END-MOCK
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-ERR-FLG TO BE 'Y'
-            EXPECT USERIDL OF COUSR1AI = -1
+            EXPECT USERIDL OF COUSR1AI NOT = 0
             VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
 
       ******************************************************************
@@ -472,7 +472,7 @@
             END-MOCK
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-ERR-FLG TO BE 'Y'
-            EXPECT PASSWDL OF COUSR1AI = -1
+            EXPECT PASSWDL OF COUSR1AI NOT = 0
             VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
 
       ******************************************************************

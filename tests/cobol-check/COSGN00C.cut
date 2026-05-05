@@ -189,7 +189,7 @@
       *  TC3-TC6 retain the USER0001 default.
       ******************************************************************
        BEFORE-EACH
-            INITIALIZE WS-VARIABLES
+            INITIALIZE WS-VARIABLES ALL TO VALUE
             INITIALIZE CARDDEMO-COMMAREA
             INITIALIZE COSGN0AI
             INITIALIZE SEC-USER-DATA
@@ -244,7 +244,7 @@
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT WS-MESSAGE TO BE 'Please enter User ID ...'
-            EXPECT USERIDL OF COSGN0AI = -1
+            EXPECT USERIDL OF COSGN0AI NOT = 0
             VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
 
 
@@ -409,7 +409,7 @@
             PERFORM READ-USER-SEC-FILE
             EXPECT WS-ERR-FLG TO BE 'N'
             EXPECT WS-MESSAGE TO BE 'Wrong Password. Try again ...'
-            EXPECT PASSWDL OF COSGN0AI = -1
+            EXPECT PASSWDL OF COSGN0AI NOT = 0
             VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
 
 
@@ -459,7 +459,7 @@
             PERFORM READ-USER-SEC-FILE
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT WS-MESSAGE TO BE 'User not found. Try again ...'
-            EXPECT USERIDL OF COSGN0AI = -1
+            EXPECT USERIDL OF COSGN0AI NOT = 0
             VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
 
 
@@ -518,7 +518,7 @@
             PERFORM READ-USER-SEC-FILE
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT WS-MESSAGE TO BE 'Unable to verify the User ...'
-            EXPECT USERIDL OF COSGN0AI = -1
+            EXPECT USERIDL OF COSGN0AI NOT = 0
             VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
 
 

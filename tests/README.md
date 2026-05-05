@@ -535,7 +535,69 @@ Practical reference snippets for the most common mock patterns.
 Each pattern shows a minimal `.cut` excerpt; copy and adapt as
 needed.
 
-### Mocking a VSAM file READ (happy path, status '00')
+### cobol-check 0.2.16 framework capabilities
+
+The Mock cookbook below is partitioned into **AVAILABLE** patterns
+(supported by cobol-check 0.2.16 and verified to merge + compile +
+execute deterministically) and **DEFERRED** patterns (described by
+the AAP but not yet supported by the framework — preserved verbatim
+so a future cobol-check upgrade automatically lights them up).
+
+Verified mock-types in cobol-check 0.2.16 (from
+`org.openmainframeproject.cobolcheck.features.testSuiteParser.Keywords`):
+
+| Mock-type   | Supported | Comment                                                            |
+| ----------- | --------- | ------------------------------------------------------------------ |
+| `CALL`      | ✅        | Use for inter-program subprogram CALLs (CEEDAYS, CEE3ABD, DFHEI1). |
+| `PARA`      | ✅        | Alias of `PARAGRAPH`; intended for collaborator-paragraph mocking. |
+| `PARAGRAPH` | ✅        | Use ONLY against paragraphs in collaborator programs (never PUT).  |
+| `SECTION`   | ✅        | Same scope rule as `PARAGRAPH`.                                    |
+| `FILE`      | ❌        | NOT IMPLEMENTED.  See "Pre-set-WS pattern" below.                  |
+| `CICS`      | ❌        | NOT IMPLEMENTED.  Use `MOCK CALL 'DFHEI1'` until upstream support. |
+
+### Pre-set-WS pattern (canonical for VSAM/sequential file mocking)
+
+Because cobol-check 0.2.16 does not implement `MOCK FILE`, this project's
+canonical pattern for driving file-status-dependent production paragraphs
+is the **pre-set-WS pattern**: each TESTCASE explicitly `MOVE`s the desired
+two-byte file-status code into the FD's status field BEFORE `PERFORM`ing
+the file-handling paragraph.  At test-run time, cobol-check has already
+commented out every `OPEN`/`READ`/`WRITE`/`REWRITE`/`CLOSE` statement
+in the merged source (replaced by `CONTINUE`), so the production
+`IF <fd>-STATUS = '00'`/`EVALUATE`/etc. that follows reads the
+deterministic value the test set.
+
+```cobol
+       TESTCASE 'CBACT01C 0000-ACCTFILE-OPEN success APPL-RESULT 0'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO ACCTFILE-STATUS    *> happy-path
+            PERFORM 0000-ACCTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+       TESTCASE 'CBACT01C 0000-ACCTFILE-OPEN failure APPL-RESULT 12'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '99' TO ACCTFILE-STATUS    *> error path
+            PERFORM 0000-ACCTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+```
+
+This pattern achieves identical functional coverage to a hypothetical
+`MOCK FILE` directive (every branch of every file-status-dispatching
+production IF is reachable) while remaining compatible with cobol-check
+0.2.16's actual capabilities.  Sister testsuites `CBACT01C.cut`,
+`CBACT02C.cut`, `CBCUS01C.cut` document this convention with per-TC
+`MOVE '<status>' TO <fd>-STATUS` preludes.
+
+### Mocking a VSAM file READ (DEFERRED — requires cobol-check MOCK FILE support)
+
+Per AAP Section 0.2.1; preserved here so a future framework upgrade
+automatically lights this up:
 
 ```cobol
        MOCK FILE ACCTFILE-FILE ON READ
@@ -544,7 +606,7 @@ needed.
        END-MOCK
 ```
 
-### Mocking EOF on sequential READ
+### Mocking EOF on sequential READ (DEFERRED)
 
 ```cobol
        MOCK FILE ACCTFILE-FILE ON READ
@@ -552,7 +614,7 @@ needed.
        END-MOCK
 ```
 
-### Mocking file-not-found on OPEN
+### Mocking file-not-found on OPEN (DEFERRED)
 
 ```cobol
        MOCK FILE ACCTFILE-FILE ON OPEN

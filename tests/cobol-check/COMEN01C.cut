@@ -152,21 +152,28 @@
       *  TESTCASEs; this block resets the application working-
       *  storage groups COMEN01C reads or writes:
       *
-      *    WS-VARIABLES        production lines 35-48.  After
-      *                        INITIALIZE re-applies VALUE clauses
-      *                        (per GnuCOBOL semantics for grouped
-      *                        elementary items with VALUE):
-      *                          WS-PGMNAME='COMEN01C',
-      *                          WS-TRANID='CM00',
-      *                          WS-MESSAGE=SPACES,
-      *                          WS-USRSEC-FILE='USRSEC  ',
-      *                          WS-ERR-FLG='N',
-      *                          WS-RESP-CD=0,
-      *                          WS-REAS-CD=0,
-      *                          WS-OPTION-X=SPACES,
-      *                          WS-OPTION=0,
-      *                          WS-IDX=0,
-      *                          WS-MENU-OPT-TXT=SPACES.
+      *    WS-VARIABLES        production lines 35-48.  Cleared via
+      *                        INITIALIZE WS-VARIABLES ALL TO VALUE
+      *                        (GnuCOBOL extension that re-applies
+      *                        the production VALUE clauses, restoring
+      *                        the program-load defaults exactly):
+      *                          WS-PGMNAME='COMEN01C' (line 36),
+      *                          WS-TRANID='CM00' (line 37),
+      *                          WS-MESSAGE=SPACES (line 38),
+      *                          WS-USRSEC-FILE='USRSEC  ' (line 39),
+      *                          WS-ERR-FLG='N' (line 40),
+      *                          WS-RESP-CD=0 (line 43),
+      *                          WS-REAS-CD=0 (line 44),
+      *                          WS-OPTION-X=SPACES (line 45),
+      *                          WS-OPTION=0 (line 46),
+      *                          WS-IDX=0 (line 47),
+      *                          WS-MENU-OPT-TXT=SPACES (line 48).
+      *                        Plain INITIALIZE without ALL TO VALUE
+      *                        would clear PIC X fields to SPACES,
+      *                        wiping the production VALUE constants
+      *                        and breaking downstream tests that
+      *                        assert MOVE WS-PGMNAME TO CDEMO-FROM-
+      *                        PROGRAM yields 'COMEN01C'.
       *    CARDDEMO-COMMAREA   COCOM01Y group; COMEN01C reads
       *                        CDEMO-PGM-REENTER and CDEMO-USRTYP-
       *                        USER, writes CDEMO-FROM-TRANID,
@@ -206,7 +213,7 @@
       *  exercised paragraphs.
       ******************************************************************
        BEFORE-EACH
-            INITIALIZE WS-VARIABLES
+            INITIALIZE WS-VARIABLES ALL TO VALUE
             INITIALIZE CARDDEMO-COMMAREA
             INITIALIZE COMEN1AI
             INITIALIZE WS-DATE-TIME
@@ -273,7 +280,7 @@
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-OPTION TO BE 1
             EXPECT WS-OPTION-X TO BE '01'
-            EXPECT OPTIONO OF COMEN1AO TO BE 1
+            EXPECT OPTIONO OF COMEN1AO TO BE '01'
             EXPECT CDEMO-MENU-OPT-PGMNAME(WS-OPTION) TO BE 'COACTVWC'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COMEN01C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CM00'
@@ -327,7 +334,7 @@
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-OPTION TO BE 3
             EXPECT WS-OPTION-X TO BE '03'
-            EXPECT OPTIONO OF COMEN1AO TO BE 3
+            EXPECT OPTIONO OF COMEN1AO TO BE '03'
             EXPECT CDEMO-MENU-OPT-PGMNAME(WS-OPTION) TO BE 'COCRDLIC'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COMEN01C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CM00'
@@ -379,7 +386,7 @@
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-OPTION TO BE 6
             EXPECT WS-OPTION-X TO BE '06'
-            EXPECT OPTIONO OF COMEN1AO TO BE 6
+            EXPECT OPTIONO OF COMEN1AO TO BE '06'
             EXPECT CDEMO-MENU-OPT-PGMNAME(WS-OPTION) TO BE 'COTRN00C'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COMEN01C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CM00'
@@ -430,7 +437,7 @@
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-OPTION TO BE 10
             EXPECT WS-OPTION-X TO BE '10'
-            EXPECT OPTIONO OF COMEN1AO TO BE 10
+            EXPECT OPTIONO OF COMEN1AO TO BE '10'
             EXPECT CDEMO-MENU-OPT-PGMNAME(WS-OPTION) TO BE 'COBIL00C'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COMEN01C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CM00'
@@ -513,7 +520,7 @@
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-OPTION TO BE 12
             EXPECT WS-OPTION-X TO BE '12'
-            EXPECT OPTIONO OF COMEN1AO TO BE 12
+            EXPECT OPTIONO OF COMEN1AO TO BE '12'
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT WS-MESSAGE TO BE 'Please enter a valid option number...'
             VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES

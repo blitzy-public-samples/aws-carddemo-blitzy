@@ -52,15 +52,46 @@ cd "${merged_dir}"
 # PROGRAM-ID rather than a `cob<NNNN>_0` temp file.
 # ---------------------------------------------------------------------
 program_id="$(awk '
-    BEGIN { found = 0 }
+    BEGIN { found = 0; want_next = 0 }
+    # Skip COBOL fixed-format comment / debug lines (column 7).
+    /^.\{6\}[*\/D]/ { next }
+    # When the previous PROGRAM-ID line had no inline name, capture
+    # the next non-blank, non-comment line as the program name.  This
+    # handles the production source style:
+    #     IDENTIFICATION DIVISION.
+    #     PROGRAM-ID.
+    #         COACTUPC.
+    # which the original single-line awk could not extract.
+    want_next == 1 {
+        s = $0
+        # Strip leading whitespace, trailing period & continuation,
+        # any embedded whitespace -- leaving a bare name.
+        sub(/^[[:space:]]+/, "", s)
+        sub(/\..*$/, "", s)
+        gsub(/[[:space:]]/, "", s)
+        if (length(s) > 0) {
+            print s
+            found = 1
+            want_next = 0
+            exit
+        }
+        next
+    }
     /^[[:space:]]*PROGRAM-ID/ {
-        gsub(/.*PROGRAM-ID\.?[[:space:]]+/, "", $0)
-        gsub(/\..*$/, "", $0)
-        gsub(/[[:space:]]/, "", $0)
-        if (length($0) > 0) {
-            print $0
+        s = $0
+        # Strip everything up through "PROGRAM-ID" + optional period
+        # + whitespace, leaving the inline program name (or empty).
+        sub(/.*PROGRAM-ID\.?[[:space:]]+/, "", s)
+        sub(/\..*$/, "", s)
+        gsub(/[[:space:]]/, "", s)
+        if (length(s) > 0) {
+            print s
             found = 1
             exit
+        } else {
+            # Inline name absent -- production used multi-line style.
+            # Defer extraction to the next non-blank, non-comment row.
+            want_next = 1
         }
     }
     END { if (found == 0) print "" }
@@ -72,7 +103,234 @@ if [ -z "$program_id" ]; then
 fi
 
 sanitised_src="${merged_dir}/${program_id}.cbl"
-cp "${merged_src}" "${sanitised_src}"
+
+# ---------------------------------------------------------------------
+# Sanitise every merged-source line before compiling:
+#
+#  1. Truncate to 72 columns.  Standard fixed-format COBOL has Area A
+#     at cols 8-11, Area B at cols 12-72, and sequence/identification
+#     at cols 73-80.  The IBM Enterprise COBOL compiler used in
+#     production ignores cols 73-80 by default, so they may contain
+#     sequence numbers, version stamps, or other vestigial content.
+#
+#  2. Strip a suspicious trailing-digit pattern that cobol-check
+#     0.2.16 introduces.
+#
+# Why step 2 is necessary
+# -----------------------
+# A small number of CardDemo production source lines carry sequence
+# numbers in the cols 73-80 identification area:
+#   app/cbl/COACTVWC.cbl line 672 has '00'      at cols 73-74
+#   app/cbl/COCRDUPC.cbl line 1530 has '340000' at cols 73-78
+# These are vestigial numbers the IBM compiler ignores.  cobol-check
+# 0.2.16 SHIFTS the entire line LEFT by ~3 columns during merge,
+# moving those digits from the sequence area (cols 73-80) into the
+# program-text area (Area B, cols 12-72).  Once inside Area B,
+# GnuCOBOL parses the digits as numeric literals, breaking constructs
+# like:
+#   MOVE
+#     'Account Filter must  be a non-zero 11 digit number'      00
+#                                                          ^^
+#                                                          interpreted
+#                                                          as numeric
+#                                                          literal in
+#                                                          the merged
+#                                                          line; cobc
+#                                                          expects TO
+#                                                          but finds
+#                                                          a Literal.
+#
+# The cobol-check changelog records this as fixed in v0.2.19
+# ("Sequence numbers are handled correct in long lines").  Until
+# upgrade, we apply the deterministic, framework-version-agnostic
+# countermeasure below: scan each line, and if it ends with a run
+# of 4+ spaces followed by 1..8 digits then trailing whitespace
+# (the exact signature of a misshifted sequence number) replace
+# those tail digits with spaces.  The replacement preserves total
+# line length.
+#
+# The pattern is intentionally conservative: it requires AT LEAST
+# four spaces between the last non-digit character and the trailing
+# digits, ensuring we never touch a legitimate numeric literal that
+# happens to land near col 72.  Real COBOL numeric literals never
+# need that much intervening whitespace from preceding content.
+#
+# Step 3 -- Fix unescaped embedded quotes in MOCK CALL VALUE literals.
+#
+# cobol-check 0.2.16's MockGenerator.java emits a WORKING-STORAGE field
+# describing each MOCK CALL target, e.g.:
+#
+#   05 UT-1-1-1-MOCK-NAME       PIC X(40)
+#                   VALUE "CALL "CEEDAYS"".
+#
+# This is malformed COBOL: the inner double-quotes around CEEDAYS are
+# not escaped (COBOL escapes embedded quotes by doubling them).
+# GnuCOBOL rejects this with "syntax error, unexpected Identifier".
+# The bug only triggers when a production CALL site uses the SAME
+# delimiter as the COBOL string framework chose (always double-quote
+# in cobol-check 0.2.16).  CSUTLDTC.cbl line 116 is the only
+# CardDemo CALL site using double-quotes; every other (CALL 'CEE3ABD',
+# CALL 'CSUTLDTC', CALL 'CBSTM03B') uses single quotes and is unaffected.
+#
+# The fix below switches the OUTER delimiter from " to ' on any line
+# that matches the broken pattern.  COBOL accepts both ' and " for
+# alphanumeric literals, so this is semantically equivalent and lets
+# the inner double-quotes stay literal.
+#
+# Pattern matched (case-sensitive, anchored to "VALUE ""):
+#   <ws>VALUE "CALL "<id>"".<trailing-ws>
+# Replacement:
+#   <ws>VALUE 'CALL "<id>"'.<trailing-ws>
+#
+# The replacement preserves total line length so subsequent column-
+# sensitive sanitisation (truncation/digit-strip) still works.
+#
+# Step 4 -- Repair orphan NOT INVALID KEY / END-READ / END-WRITE
+# clauses left behind by incomplete READ / WRITE stripping.
+#
+# cobol-check 0.2.16's TestSuiteParser comments out the first three
+# lines of a `READ FILE ... INVALID KEY ... NOT INVALID KEY ...
+# END-READ` compound statement (the READ verb, the KEY clause, and the
+# INVALID KEY arm-opener) and inserts a CONTINUE to satisfy syntax.
+# However, it FAILS to comment out the NOT INVALID KEY clause and the
+# END-READ terminator, leaving them as orphan tokens that GnuCOBOL
+# rejects with "syntax error, unexpected NOT INVALID KEY" and
+# "syntax error, unexpected END-READ".
+#
+# Repair strategy:
+#   * `NOT INVALID KEY` (no period; mid-statement clause-opener) -->
+#     comment-out by setting col 7 to `*`.  The trailing DISPLAY/
+#     MOVE statements that follow remain as benign orphan statements
+#     after the synthetic CONTINUE that cobol-check inserted.
+#   * `INVALID KEY` (no period; rare orphan when cobol-check strips
+#     differently) --> comment-out same as NOT INVALID KEY.
+#   * `END-READ.`, `END-WRITE.`, `END-REWRITE.`, `END-DELETE.`,
+#     `END-START.` (with terminating period; sentence terminator) -->
+#     replace the keyword in-place with `CONTINUE` while preserving
+#     the trailing period.  The period is essential: it terminates
+#     the implicit sentence chain of the orphan DISPLAY/MOVE
+#     statements that precede it, allowing the following paragraph
+#     header (Area A column 8) to be recognised by the parser.
+#     Substituting `CONTINUE` for `END-READ` is semantically a no-op
+#     (CONTINUE is COBOL's explicit no-op verb) and preserves total
+#     line length: END-READ = 8 chars, CONTINUE = 8 chars; END-WRITE
+#     = 9 chars, no equal-length COBOL no-op exists, so we use
+#     a 1-byte-shorter CONTINUE plus padded space, which is also
+#     semantically valid.  END-REWRITE and END-DELETE are 11 and 10
+#     chars respectively; CONTINUE plus spaces fits.
+#   * `END-READ` / `END-WRITE` / etc. WITHOUT a trailing period
+#     (rare; appears when the compound is mid-sentence) --> comment
+#     out same as NOT INVALID KEY.
+#
+# The match is case-insensitive (toupper) and requires the token to
+# be the FIRST non-whitespace token on the line so that legitimate
+# inline references inside literals are not modified.
+#
+# The replacement preserves total line length and column positions of
+# all surrounding tokens.  Affects programs that use the COBOL
+# READ ... INVALID KEY ... END-READ compound (CBTRN01C, CBTRN02C,
+# CBTRN03C, COACTUPC, COACTVWC, COCRDLIC, COCRDSLC, COCRDUPC, etc.).
+#
+# The truncated, sanitised copy is the source compiled; the original
+# merged_src is preserved for debug.
+# ---------------------------------------------------------------------
+awk '
+    {
+        line = substr($0, 1, 72)
+        # Step 3 -- escape unescaped embedded quotes in MOCK CALL
+        # VALUE literals (cobol-check 0.2.16 bug).
+        # Token shape:  VALUE "CALL "<ID>""
+        # Target shape: VALUE '\''CALL "<ID>"'\''
+        # (outer delimiter switched from double to single; total length
+        # is identical because two outer doubles become two outer singles)
+        if (match(line, /VALUE "CALL "[A-Z0-9_-]+""/)) {
+            tok = substr(line, RSTART, RLENGTH)
+            # Position 7 in tok (1-based) is the leading double-quote.
+            # The last char of tok is the trailing double-quote that
+            # closes the outer literal.  The penultimate char is the
+            # double-quote that closes the inner identifier.
+            tlen = length(tok)
+            new_tok = substr(tok, 1, 6) "\x27" substr(tok, 8, tlen - 8) "\x27"
+            # Verification: substr(tok,1,6)="VALUE "; substr(tok,8,n-8)
+            # is everything between the leading and trailing outer
+            # quotes (i.e. CALL "<ID>" with the id-closing double-quote
+            # preserved); we then append a closing single-quote.
+            line = substr(line, 1, RSTART - 1) new_tok substr(line, RSTART + RLENGTH)
+        }
+        # Detect "<something>    <digits><trailing-ws>" where the
+        # interior whitespace is 4+ spaces.  Replace the digits with
+        # the same number of spaces so column positions of preceding
+        # tokens are preserved.
+        if (match(line, /[[:space:]]{4,}[0-9]+[[:space:]]*$/)) {
+            head = substr(line, 1, RSTART - 1)
+            tail = substr(line, RSTART)
+            # Build a replacement that is the same length as `tail`
+            # but contains only spaces (one space per char).
+            n = length(tail)
+            spaces = ""
+            for (i = 0; i < n; i++) spaces = spaces " "
+            line = head spaces
+        }
+        # Step 4 -- repair orphan clauses left by incomplete
+        # READ/WRITE/REWRITE/DELETE stripping in cobol-check 0.2.16.
+        # Detect lines whose first non-whitespace token (after col 6)
+        # is one of the orphan tokens.  Use uppercased copy for
+        # case-insensitive matching.  Skip lines that are already
+        # comments (col 7 is "*" or "/").
+        upper = toupper(line)
+        is_comment_line = (length(line) >= 7 \
+            && (substr(line, 7, 1) == "*" \
+             || substr(line, 7, 1) == "/"))
+        if (!is_comment_line) {
+            # Case 1: orphan clause-opener WITHOUT a terminating
+            # period (NOT INVALID KEY, INVALID KEY).  Comment out.
+            if (upper ~ /^[[:space:]]+NOT[[:space:]]+INVALID[[:space:]]+KEY([[:space:]]|$)/ \
+             || upper ~ /^[[:space:]]+INVALID[[:space:]]+KEY([[:space:]]|$)/) {
+                if (length(line) > 6) {
+                    line = substr(line, 1, 6) "*" substr(line, 8)
+                } else {
+                    line = substr(line, 1, 6) "*"
+                }
+            }
+            # Case 2: orphan terminator (END-READ, END-WRITE, etc.)
+            # WITH a trailing period.  Replace keyword with CONTINUE
+            # in-place, preserving the period and total line length.
+            # Detect by combining: line begins with whitespace then
+            # END-<verb>, AND the line contains a period after the
+            # keyword.  Use POSIX-portable awk match() (no array).
+            else if (upper ~ /^[[:space:]]+END-READ\.[[:space:]]*$/ \
+                  || upper ~ /^[[:space:]]+END-WRITE\.[[:space:]]*$/ \
+                  || upper ~ /^[[:space:]]+END-REWRITE\.[[:space:]]*$/ \
+                  || upper ~ /^[[:space:]]+END-DELETE\.[[:space:]]*$/ \
+                  || upper ~ /^[[:space:]]+END-START\.[[:space:]]*$/) {
+                # Locate the END- keyword position and length.
+                kw_re = "(END-READ|END-WRITE|END-REWRITE|END-DELETE|END-START)"
+                if (match(upper, kw_re)) {
+                    kw_start = RSTART
+                    kw_len = RLENGTH
+                    pad_len = kw_len - 8  # CONTINUE is 8 chars
+                    pad = ""
+                    for (k = 0; k < pad_len; k++) pad = pad " "
+                    line = substr(line, 1, kw_start - 1) "CONTINUE" pad substr(line, kw_start + kw_len)
+                }
+            }
+            # Case 3: orphan terminator WITHOUT a trailing period
+            # (rare; mid-sentence END-READ).  Comment out.
+            else if (upper ~ /^[[:space:]]+END-READ([[:space:]]|$)/ \
+                  || upper ~ /^[[:space:]]+END-WRITE([[:space:]]|$)/ \
+                  || upper ~ /^[[:space:]]+END-REWRITE([[:space:]]|$)/ \
+                  || upper ~ /^[[:space:]]+END-DELETE([[:space:]]|$)/ \
+                  || upper ~ /^[[:space:]]+END-START([[:space:]]|$)/) {
+                if (length(line) > 6) {
+                    line = substr(line, 1, 6) "*" substr(line, 8)
+                } else {
+                    line = substr(line, 1, 6) "*"
+                }
+            }
+        }
+        print line
+    }
+' "${merged_src}" > "${sanitised_src}"
 
 # ---------------------------------------------------------------------
 # Pre-compile each LE / CICS shim once per directory.  Using -m makes

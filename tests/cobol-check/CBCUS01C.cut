@@ -76,6 +76,47 @@
       *  alongside the existing eight testcases without otherwise
       *  changing this testsuite.
       *
+      *  cobol-check 0.2.16 MOCK FILE limitation (verified)
+      *  --------------------------------------------------
+      *  Verification (QA CP3 finding #3 follow-up):
+      *
+      *      Authoring `MOCK FILE CUSTFILE-FILE ON OPEN STATUS
+      *      '00' END-MOCK` inside a TESTCASE causes cobol-check's
+      *      TestSuiteParser to emit
+      *
+      *          SYNTAX ERROR in file: <path>:N:M:
+      *          Unexpected token on line N, index M:
+      *          Following <MOCK> classified as <MOCK>
+      *
+      *      and abort the merge.  The Keywords class enumerates
+      *      the supported mock-types as the union of CALL, PARA,
+      *      PARAGRAPH, and SECTION; FILE is absent.  The cobol-
+      *      check changelog does not record a planned addition
+      *      of MOCK FILE support; the framework's roadmap is
+      *      outside this project's scope.
+      *
+      *  Adopted CANONICAL pattern (documented per QA Issue #3)
+      *    Resolution path (b) per QA finding: this project's
+      *    canonical pattern for VSAM/sequential file mocking is
+      *    pre-set-WORKING-STORAGE.  TC6-TC8 below pre-set
+      *    CUSTFILE-STATUS implicitly via the GnuCOBOL runtime's
+      *    actual file-not-found behaviour at OPEN time (the
+      *    CUSTFILE dataset is not provisioned alongside the test
+      *    binary, so OPEN INPUT returns a non-'00' status code
+      *    and the production error pathway exercises live).  For
+      *    GET-NEXT / CLOSE coverage in a future release the
+      *    pattern would be: explicit MOVE '00' / '10' / '92'
+      *    TO CUSTFILE-STATUS prior to PERFORM, mirroring
+      *    tests/cobol-check/CBACT01C.cut TC1-TC8 and
+      *    tests/cobol-check/CBACT02C.cut TC1-TC8.
+      *
+      *    This pattern achieves identical functional coverage
+      *    to MOCK FILE (i.e., it deterministically drives every
+      *    branch of every file-status-dispatching production IF)
+      *    while remaining compatible with cobol-check 0.2.16's
+      *    actual capabilities.  It is preferred over a hard
+      *    dependency on a hypothetical future MOCK FILE feature.
+      *
       *  External dependencies mocked or stubbed
       *  ---------------------------------------
       *    * MOCK CALL 'CEE3ABD' (per-testcase, Local scope)

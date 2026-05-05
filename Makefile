@@ -78,6 +78,74 @@ COBOL_CHECK_URL     ?= https://raw.githubusercontent.com/openmainframeproject/co
 # overrides it via $(MAKE) test COBC_OPTS=...
 #----------------------------------------------------------------------
 COBC                ?= cobc
+
+#----------------------------------------------------------------------
+# COBC_OPTS_BASE -- compiler flags ALWAYS applied during cobol-check
+# test runs, even when callers (e.g. `make coverage`) override
+# COBC_OPTS to inject coverage instrumentation.  The flags below
+# resolve issues in production-source artefacts and PERFORM-stack
+# semantics that cannot be changed under the AAP's "production
+# sources are read-only" rule (Section 0.10.2):
+#
+#   -flarger-redefines-ok
+#       app/cpy/COMEN02Y.cpy declares CDEMO-MENU-OPTIONS-DATA as
+#       10 entries of 46 bytes (460 bytes total) and then REDEFINES
+#       it as CDEMO-MENU-OPTIONS OCCURS 12 TIMES (552 bytes).  By
+#       default GnuCOBOL rejects REDEFINES that enlarge the redefined
+#       area; this flag relaxes that check, matching the behaviour of
+#       the IBM Enterprise COBOL compiler used on the original z/OS
+#       platform.
+#
+#   -ftab-width=4
+#       app/cpy/CUSTREC.cpy lines 6-21 use TAB characters (^I^I) in
+#       the indicator-area columns instead of spaces.  GnuCOBOL's
+#       default tab-width=8 expands those TABs past Area B, breaking
+#       fixed-format parsing ("invalid PICTURE character", "unbalanced
+#       parentheses").  Tab-width=4 places the post-TAB content in
+#       Area B exactly where it belongs and the file parses cleanly.
+#       Tab-width=1 also works; tab-width=4 is chosen because it
+#       matches the convention used elsewhere in the codebase.
+#
+#   -fperform-osvs
+#       The IBM OS/VS COBOL PERFORM semantics declare that "the exit
+#       point of any currently executing perform is recognized if
+#       reached" -- i.e., if execution flows past the THRU exit point
+#       of an outer PERFORM (even after a GO TO has escaped an inner
+#       PERFORM range and leaked the inner stack frame), the outer
+#       PERFORM still returns cleanly.  GnuCOBOL's default behaviour
+#       is the stricter ANSI/ISO COBOL'85 form which treats a leaked
+#       inner frame as undefined behaviour and frequently leads to
+#       the outer PERFORM never returning, with control falling off
+#       the end of the program (silent termination, exit code 0,
+#       NO testcase summary).
+#
+#       This pattern is endemic in CardDemo CICS programs: every
+#       online transaction (CORPT00C, COSGN00C, COTRN0xC, COUSR0xC,
+#       etc.) has a SEND-MAP paragraph that ends with `GO TO
+#       RETURN-TO-CICS.` followed by a chain of paragraphs ending in
+#       `EXEC CICS RETURN`.  When cobol-check 0.2.16 strips the
+#       EXEC CICS verbs to CONTINUE, the GO TO escapes whatever
+#       inner PERFORM SEND-MAP-PARA was made by the production
+#       paragraph being unit-tested, the inner frame is leaked, and
+#       under the default ANSI'85 PERFORM semantics the outer
+#       `PERFORM <para> THRU <last-para>` invocation that cobol-check
+#       generates around the testcase NEVER returns -- yielding the
+#       silent-failure mode that Adversarial Issue #2 of the QA
+#       report was tasked to surface.
+#
+#       Verified reproducer (saved at /tmp/blitzy_diag/):
+#           PERFORM A THRU D.   *> outer
+#           A. PERFORM X.       *> inner
+#           X. GO TO C.         *> escape
+#           C. CONTINUE.
+#           D. CONTINUE.
+#       Default flags:   AFTER-PERFORM never reached.
+#       -fperform-osvs:  AFTER-PERFORM reached cleanly.
+#
+# Caller-supplied COBC_OPTS are appended AFTER these defaults so that
+# coverage flags (-fprofile-arcs -ftest-coverage) compose cleanly.
+#----------------------------------------------------------------------
+COBC_OPTS_BASE      := -flarger-redefines-ok -ftab-width=4 -fperform-osvs
 COBC_OPTS           ?=
 JAVA                ?= java
 JAVA_OPTS           ?=
@@ -344,14 +412,17 @@ test: init fixtures ensure-build-dir
 	cd $(REPO_ROOT) && \
 	for prog in $(PROGRAMS); do \
 	    echo "[test] === $$prog ==="; \
-	    COBC_OPTS='$(COBC_OPTS)' \
+	    COBC_OPTS='$(COBC_OPTS_BASE) $(COBC_OPTS)' \
 	    timeout $(TEST_TIMEOUT) \
 	        $(JAVA) $(JAVA_OPTS) -jar $(CC_JAR_PATH) \
 	            --config-file    $(CC_RUN_CONFIG) \
 	            --source-context $(REPO_ROOT) \
 	            --run-directory  $(REPO_ROOT) \
 	            --programs       $$prog \
-	            || { echo "[test] FAIL: $$prog"; exit 1; }; \
+	            || { echo "[test] FAIL: $$prog (cobol-check exit non-zero)"; exit 1; }; \
+	    bash $(REPO_ROOT)/$(LINT_DIR)/check_test_results.sh \
+	        "$$prog" "$(REPO_ROOT)/$(BUILD_DIR)/testResults.txt" \
+	        || { echo "[test] FAIL: $$prog (silent failure or assertion failures)"; exit 1; }; \
 	done; \
 	echo "[test] All testsuites passed."
 
@@ -378,14 +449,17 @@ test-one: init fixtures ensure-build-dir
 	@$(MAKE) --no-print-directory _stage-shadow-suites
 	@echo "[test-one] Running $(PROGRAM)"
 	@cd $(REPO_ROOT) && \
-	COBC_OPTS='$(COBC_OPTS)' \
+	COBC_OPTS='$(COBC_OPTS_BASE) $(COBC_OPTS)' \
 	timeout $(SINGLE_TIMEOUT) \
 	    $(JAVA) $(JAVA_OPTS) -jar $(CC_JAR_PATH) \
 	        --config-file    $(CC_RUN_CONFIG) \
 	        --source-context $(REPO_ROOT) \
 	        --run-directory  $(REPO_ROOT) \
 	        --programs       $(PROGRAM) \
-	    || { echo "[test-one] FAIL: $(PROGRAM)"; exit 1; }
+	    || { echo "[test-one] FAIL: $(PROGRAM) (cobol-check exit non-zero)"; exit 1; }
+	@bash $(REPO_ROOT)/$(LINT_DIR)/check_test_results.sh \
+	    "$(PROGRAM)" "$(REPO_ROOT)/$(BUILD_DIR)/testResults.txt" \
+	    || { echo "[test-one] FAIL: $(PROGRAM) (silent failure or assertion failures)"; exit 1; }
 	@echo "[test-one] $(PROGRAM) testsuite passed."
 
 #######################################################################
@@ -411,7 +485,7 @@ test-debug: init fixtures ensure-build-dir
 	    echo "[test-debug] (informational; v0.2.16 has no per-testcase CLI filter)"; \
 	fi
 	@cd $(REPO_ROOT) && \
-	COBC_OPTS='$(COBC_OPTS)' \
+	COBC_OPTS='$(COBC_OPTS_BASE) $(COBC_OPTS)' \
 	$(JAVA) -Xdebug $(JAVA_OPTS) -jar $(CC_JAR_PATH) \
 	    --config-file    $(CC_RUN_CONFIG) \
 	    --log-level      DEBUG \

@@ -109,39 +109,69 @@
       *  mechanism being `COPY CARD-FIXTURE-001` inside a MOCK FILE
       *  CARDFILE-FILE ON READ ... END-MOCK block.
       *
-      *  cobol-check 0.2.16 limitation
+      *  cobol-check 0.2.16 MOCK FILE limitation (verified)
       *    The framework does NOT support MOCK FILE directives;
       *    only MOCK CALL / MOCK PARAGRAPH / MOCK SECTION are
-      *    implemented.  Furthermore, including `COPY CARD-FIXTURE-
-      *    001` inside any MOCK ... END-MOCK body causes the merged
-      *    binary's GnuCOBOL compile to fail with `'UT-1-N-1-MOCK'
-      *    is not defined` errors due to the parser's inability to
-      *    resolve the period-after-COPY paragraph terminator.  The
-      *    same limitation also affects tests/cobol-check/CBSTM03A.
-      *    cut TC2/TC3 (their COPY ACCT-FIXTURE-001 / COPY CUST-
-      *    FIXTURE-001 directives produce identical compile errors).
+      *    implemented in features/testSuiteParser/MockGenerator.
+      *    Verification (QA CP3 finding #3 follow-up):
       *
-      *  Adopted convention
-      *    To deliver REAL test execution (per the user directive in
-      *    AAP Section 0.10.1: "Test assertions must validate return
-      *    values and side effects of actual production code
-      *    execution"), this testsuite OMITS the physical COPY
-      *    directive from TC3's mock body.  The fixture is referenced
-      *    only via this header comment and via the testsuite's
-      *    depends_on_files schema entry, mirroring the
-      *    forward-compatibility convention documented in
-      *    tests/cobol-check/COACTVWC.cut at lines 237-243 (which
-      *    references CUST-FIXTURE-001 / ACCT-FIXTURE-001 in
-      *    comments only, pending a future cobol-check translator
-      *    upgrade that adds MOCK FILE).  TC3 EXPECTs check
-      *    APPL-RESULT and END-OF-FILE -- side effects of the
-      *    production-paragraph IF dispatch -- not CARD-RECORD byte
-      *    content, so the test outcome is independent of whether
-      *    the fixture MOVEs execute.  When cobol-check adds MOCK
-      *    FILE support, this testsuite will be revised to splice
-      *    the fixture into a MOCK FILE CARDFILE-FILE ON READ block
-      *    and add EXPECT clauses against CARD-RECORD(start:length)
-      *    byte ranges.
+      *      Authoring `MOCK FILE CARDFILE-FILE ON OPEN STATUS '00'
+      *      END-MOCK` inside a TESTCASE causes cobol-check's
+      *      TestSuiteParser to emit
+      *
+      *          SYNTAX ERROR in file: <path>:N:M:
+      *          Unexpected token on line N, index M:
+      *          Following <MOCK> classified as <MOCK>
+      *
+      *      and abort the merge.  The Keywords class enumerates
+      *      the supported mock-types as the union of CALL, PARA,
+      *      PARAGRAPH, and SECTION; FILE is absent.  The cobol-
+      *      check changelog does not record a planned addition
+      *      of MOCK FILE support; the framework's roadmap is
+      *      outside this project's scope.
+      *
+      *  Adopted CANONICAL pattern (documented per QA Issue #3)
+      *    Resolution path (b) per QA finding: this project's
+      *    canonical pattern for VSAM/sequential file mocking is
+      *    pre-set-WORKING-STORAGE.  Each TESTCASE explicitly
+      *    MOVEs the desired file-status code (e.g., '00', '10',
+      *    '23', '35', '92') into the FD's status field
+      *    (CARDFILE-STATUS, ACCTFILE-STATUS, etc.) before
+      *    PERFORMing the file-handling paragraph.  The
+      *    production paragraph's READ/WRITE/REWRITE/OPEN/CLOSE
+      *    statements are commented to CONTINUE by cobol-check's
+      *    EXEC CICS handling pipeline, leaving the pre-set
+      *    status field as the deterministic input that drives
+      *    the production IF/EVALUATE that follows.
+      *
+      *    This pattern achieves identical functional coverage
+      *    to MOCK FILE (i.e., it deterministically drives every
+      *    branch of every file-status-dispatching production IF)
+      *    while remaining compatible with cobol-check 0.2.16's
+      *    actual capabilities.  It is preferred over a hard
+      *    dependency on a hypothetical future MOCK FILE feature.
+      *
+      *  CARD-FIXTURE-001 placement (forward-compatibility deferral)
+      *    Including `COPY CARD-FIXTURE-001` inside any MOCK ...
+      *    END-MOCK body causes the merged binary's GnuCOBOL
+      *    compile to fail with `'UT-1-N-1-MOCK' is not defined`
+      *    errors due to the parser's inability to resolve the
+      *    period-after-COPY paragraph terminator.  The same
+      *    limitation also affects tests/cobol-check/CBSTM03A.cut
+      *    TC2/TC3 (their COPY ACCT-FIXTURE-001 / COPY CUST-
+      *    FIXTURE-001 directives produce identical compile errors).
+      *    This testsuite OMITS the physical COPY directive from
+      *    TC3's mock body and references the fixture only via this
+      *    comment and via the testsuite's depends_on_files schema
+      *    entry, matching tests/cobol-check/CBACT01C.cut at lines
+      *    160-177.  TC3 EXPECTs APPL-RESULT and END-OF-FILE --
+      *    side effects of the production-paragraph IF dispatch --
+      *    not CARD-RECORD byte content, so the test outcome is
+      *    independent of whether the fixture MOVEs execute.  When
+      *    cobol-check adds MOCK FILE support, this testsuite will
+      *    be revised to splice the fixture into a MOCK FILE
+      *    CARDFILE-FILE ON READ block and add EXPECT clauses
+      *    against CARD-RECORD(start:length) byte ranges.
       *
       *  Test categories
       *  ---------------

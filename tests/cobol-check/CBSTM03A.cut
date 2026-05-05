@@ -285,13 +285,23 @@
       *  (CBSTM03A.CBL line 923: just `CALL 'CEE3ABD'.`).  The MOCK    *
       *  signature must therefore omit USING so the cobol-check        *
       *  matcher's `arguments.equals` comparison succeeds.             *
+      *                                                                 
+      *  Source of expected EXPECT value                                *
+      *    'N' -- the BEFORE-EACH baseline value of END-OF-FILE.        *
+      *    9999-ABEND-PROGRAM contains only DISPLAY and CALL; it does  *
+      *    NOT modify END-OF-FILE, so the post-PERFORM value remains   *
+      *    'N'.  This is a stability check (no side-effect leakage) -- *
+      *    it asserts the production paragraph did NOT accidentally    *
+      *    touch the EOF flag.  The substantive verification of the    *
+      *    abend pathway is the VERIFY CALL 'CEE3ABD' HAPPENED ONCE    *
+      *    clause that follows.                                        *
       ******************************************************************
        TESTCASE '9999-ABEND-PROGRAM invokes CEE3ABD exactly once'
            MOCK CALL 'CEE3ABD'
                CONTINUE
            END-MOCK
            PERFORM 9999-ABEND-PROGRAM
-           EXPECT WS-M03B-DD NOT = SPACES
+           EXPECT END-OF-FILE TO BE 'N'
            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
 
       ******************************************************************

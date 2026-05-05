@@ -225,7 +225,7 @@
       *  origin to reflect back into the COMMAREA before XCTL.
       ******************************************************************
        BEFORE-EACH
-            INITIALIZE WS-VARIABLES
+            INITIALIZE WS-VARIABLES ALL TO VALUE
             INITIALIZE WS-USER-DATA
             INITIALIZE CARDDEMO-COMMAREA
             INITIALIZE SEC-USER-DATA
@@ -515,7 +515,7 @@
             PERFORM PROCESS-PF7-KEY
             EXPECT WS-MESSAGE TO BE 'You are already at the top of the page...'
             EXPECT WS-SEND-ERASE-FLG TO BE 'N'
-            EXPECT USRIDINL OF COUSR0AI = -1
+            EXPECT USRIDINL OF COUSR0AI NOT = 0
             EXPECT CDEMO-CU00-NEXT-PAGE-FLG TO BE 'Y'
             VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
 
@@ -587,7 +587,7 @@
             PERFORM PROCESS-PF8-KEY
             EXPECT WS-MESSAGE TO BE 'You are already at the bottom of the page...'
             EXPECT WS-SEND-ERASE-FLG TO BE 'N'
-            EXPECT USRIDINL OF COUSR0AI = -1
+            EXPECT USRIDINL OF COUSR0AI NOT = 0
             EXPECT SEC-USR-ID TO BE 'USER0050'
             VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
 

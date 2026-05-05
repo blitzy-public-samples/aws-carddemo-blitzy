@@ -346,9 +346,9 @@
             MOCK CALL 'DFHEI1'
                  CONTINUE
             END-MOCK
-            PERFORM 2210-EDIT-ACCOUNT
+            PERFORM 2210-EDIT-ACCOUNT THRU 2210-EDIT-ACCOUNT-EXIT
             EXPECT WS-EDIT-ACCT-FLAG TO BE '1'
-            EXPECT CDEMO-ACCT-ID TO BE 1
+            EXPECT CDEMO-ACCT-ID TO BE '00000000001'
             EXPECT WS-RETURN-MSG TO BE SPACES
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
@@ -399,10 +399,10 @@
             MOCK CALL 'DFHEI1'
                  CONTINUE
             END-MOCK
-            PERFORM 2210-EDIT-ACCOUNT
+            PERFORM 2210-EDIT-ACCOUNT THRU 2210-EDIT-ACCOUNT-EXIT
             EXPECT WS-INPUT-FLAG TO BE '1'
             EXPECT WS-EDIT-ACCT-FLAG TO BE ' '
-            EXPECT CDEMO-ACCT-ID TO BE 0
+            EXPECT CDEMO-ACCT-ID TO BE '00000000000'
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
@@ -460,12 +460,12 @@
             MOCK CALL 'DFHEI1'
                  CONTINUE
             END-MOCK
-            PERFORM 2210-EDIT-ACCOUNT
+            PERFORM 2210-EDIT-ACCOUNT THRU 2210-EDIT-ACCOUNT-EXIT
             EXPECT WS-INPUT-FLAG TO BE '1'
             EXPECT WS-EDIT-ACCT-FLAG TO BE '0'
             EXPECT WS-RETURN-MSG TO BE
                 'Account Filter must  be a non-zero 11 digit number'
-            EXPECT CDEMO-ACCT-ID TO BE 0
+            EXPECT CDEMO-ACCT-ID TO BE '00000000000'
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
@@ -508,12 +508,12 @@
             MOCK CALL 'DFHEI1'
                  CONTINUE
             END-MOCK
-            PERFORM 2210-EDIT-ACCOUNT
+            PERFORM 2210-EDIT-ACCOUNT THRU 2210-EDIT-ACCOUNT-EXIT
             EXPECT WS-INPUT-FLAG TO BE '1'
             EXPECT WS-EDIT-ACCT-FLAG TO BE '0'
             EXPECT WS-RETURN-MSG TO BE
                 'Account Filter must  be a non-zero 11 digit number'
-            EXPECT CDEMO-ACCT-ID TO BE 0
+            EXPECT CDEMO-ACCT-ID TO BE '00000000000'
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 

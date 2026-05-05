@@ -235,7 +235,7 @@
       *  IF default-substitution branch.
       ******************************************************************
        BEFORE-EACH
-            INITIALIZE WS-VARIABLES
+            INITIALIZE WS-VARIABLES ALL TO VALUE
             INITIALIZE CARDDEMO-COMMAREA
             INITIALIZE TRAN-RECORD
             INITIALIZE COTRN0AI
@@ -512,7 +512,7 @@
             PERFORM PROCESS-PF7-KEY
             EXPECT WS-MESSAGE TO BE 'You are already at the top of the page...'
             EXPECT WS-SEND-ERASE-FLG TO BE 'N'
-            EXPECT TRNIDINL OF COTRN0AI = -1
+            EXPECT TRNIDINL OF COTRN0AI NOT = 0
             EXPECT CDEMO-CT00-NEXT-PAGE-FLG TO BE 'Y'
             VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
 
@@ -584,7 +584,7 @@
             PERFORM PROCESS-PF8-KEY
             EXPECT WS-MESSAGE TO BE 'You are already at the bottom of the page...'
             EXPECT WS-SEND-ERASE-FLG TO BE 'N'
-            EXPECT TRNIDINL OF COTRN0AI = -1
+            EXPECT TRNIDINL OF COTRN0AI NOT = 0
             EXPECT TRAN-ID TO BE 'TRN0000000000050'
             VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
 

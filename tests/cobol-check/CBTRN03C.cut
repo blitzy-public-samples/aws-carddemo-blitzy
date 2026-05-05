@@ -1,0 +1,586 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : CBTRN03C TRANSACTION REPORT GENERATOR
+      *  Program-under-test : app/cbl/CBTRN03C.cbl
+      *
+      *  Purpose
+      *  -------
+      *  Exercise the testable production paragraphs of CBTRN03C --
+      *  the CardDemo batch program that opens TRANFILE, REPORT-FILE,
+      *  CARDXREF, TRANTYPE, TRANCATG, and DATE-PARMS files; reads
+      *  the transaction file with date-range filtering; emits a
+      *  paginated, totalled report.  Twelve TESTCASEs span the
+      *  open/get-next/close lifecycle plus the date-parameter read
+      *  paragraph and the diagnostic display paragraph:
+      *
+      *    0000-TRANFILE-OPEN     lines 376-392; OPEN INPUT;
+      *                           success -> APPL-RESULT = 0;
+      *                           failure -> APPL-RESULT = 12 +
+      *                           PERFORM 9910-DISPLAY-IO-STATUS +
+      *                           PERFORM 9999-ABEND-PROGRAM.
+      *    0500-DATEPARM-OPEN     lines 466-482; same pattern.
+      *    0550-DATEPARM-READ     lines 220-243; READ INTO record;
+      *                           EVALUATE DATEPARM-STATUS:
+      *                           '00' -> APPL-RESULT = 0 + DISPLAY;
+      *                           '10' -> APPL-RESULT = 16 +
+      *                                   END-OF-FILE = 'Y';
+      *                           OTHER -> APPL-RESULT = 12 +
+      *                                    PERFORM 9999-ABEND.
+      *    1000-TRANFILE-GET-NEXT lines 248-272; READ INTO record;
+      *                           EVALUATE TRANFILE-STATUS:
+      *                           '00' -> APPL-RESULT = 0;
+      *                           '10' -> APPL-RESULT = 16 +
+      *                                   END-OF-FILE = 'Y';
+      *                           OTHER -> APPL-RESULT = 12 +
+      *                                    PERFORM 9999-ABEND.
+      *    9000-TRANFILE-CLOSE    lines 514-530; CLOSE;
+      *                           '00' -> APPL-RESULT = 0;
+      *                           other -> APPL-RESULT = 12 + abend.
+      *    9910-DISPLAY-IO-STATUS lines 633-646; formats IO-STATUS
+      *                           into 4-byte IO-STATUS-04 via
+      *                           ELSE-arm overlay or THEN-arm
+      *                           TWO-BYTES-BINARY pack.
+      *    9999-ABEND-PROGRAM     lines 626-630; LE abend wrapper
+      *                           invoked transitively from every
+      *                           error branch above; CALLs
+      *                           'CEE3ABD' (mocked per-testcase).
+      *
+      *  Note on numbered paragraph naming (vs CBTRN01C Z-prefix)
+      *  --------------------------------------------------------
+      *  CBTRN03C uses 9999-ABEND-PROGRAM and 9910-DISPLAY-IO-STATUS
+      *  (numbered convention, like CBACT01C-CBACT04C) instead of
+      *  the Z-prefix convention used by CBTRN01C (Z-ABEND-PROGRAM,
+      *  Z-DISPLAY-IO-STATUS).  Tests below PERFORM these production
+      *  paragraphs by their actual numbered names.
+      *
+      *  Note on duplicate paragraph names (1110, 1120)
+      *  ----------------------------------------------
+      *  CBTRN03C contains TWO paragraphs named 1110-* (1110-WRITE-
+      *  PAGE-TOTALS at line 293 and 1110-WRITE-GRAND-TOTALS at line
+      *  318) and THREE paragraphs named 1120-* (1120-WRITE-ACCOUNT-
+      *  TOTALS at line 306, 1120-WRITE-HEADERS at line 324, and
+      *  1120-WRITE-DETAIL at line 361).  Standard COBOL allows
+      *  duplicate paragraph names within a section, requiring
+      *  qualified PERFORM ... THRU ... or PERFORM ... IN section
+      *  syntax to disambiguate.  cobol-check 0.2.16's parser may
+      *  not handle qualified PERFORM cleanly; this testsuite
+      *  therefore does NOT directly PERFORM the duplicate-named
+      *  paragraphs.  These paragraphs are exercised transitively
+      *  by the production main-loop's PERFORM at lines 183, 187,
+      *  190, 195, 196, 202, 203 (covered by integration-style
+      *  tests once cobol-check adds qualified-PERFORM support).
+      *
+      *  Note on cobol-check 0.2.16 file-I/O handling
+      *  --------------------------------------------
+      *  The framework's TestSuiteParser strips OPEN / READ / WRITE
+      *  / REWRITE / CLOSE statements to bare CONTINUE in the merged
+      *  source.  This means the production file-I/O verbs do NOT
+      *  execute at test time; the file-status fields retain
+      *  whatever the testcase prelude MOVEd into them.  Each
+      *  testcase therefore pre-sets the relevant file status
+      *  (TRANFILE-STATUS, DATEPARM-STATUS, etc.) to drive the
+      *  production EVALUATE / IF arms deterministically, mirroring
+      *  the canonical convention in CBACT01C.cut TC1-TC8 and
+      *  CBTRN01C.cut TC1-TC11.
+      *
+      *  Note on 1500-A/B/C-LOOKUP-* paragraphs
+      *  --------------------------------------
+      *  These three paragraphs use the COBOL READ ... INVALID KEY
+      *  ... END-READ compound statement.  cobol-check 0.2.16's
+      *  TestSuiteParser strips the READ verb to CONTINUE but
+      *  leaves orphan INVALID KEY/END-READ tokens that GnuCOBOL
+      *  rejects.  The runner script's Step 4 sanitisation pass
+      *  (tests/cobol-check/scripts/linux_gnucobol_run_tests)
+      *  comments out NOT INVALID KEY/INVALID KEY clause-openers
+      *  and substitutes CONTINUE for END-READ. terminators,
+      *  preserving syntax integrity.  The lookup paragraphs are
+      *  not directly PERFORMed by this testsuite; they are
+      *  transitively covered by production-main-loop logic that
+      *  invokes them at lines 187, 190, 195.
+      *
+      *  External dependencies mocked or stubbed
+      *  ---------------------------------------
+      *    * MOCK CALL 'CEE3ABD' (per-testcase, Local scope)
+      *      replaces the IBM Language Environment abend service
+      *      with a no-op CONTINUE body so the test process is
+      *      not torn down when 9999-ABEND-PROGRAM is reached.
+      *      cobol-check 0.2.16 binds the mock to the surrounding
+      *      TESTCASE so the matching VERIFY clause resolves to
+      *      the per-testcase Local mock with the per-testcase
+      *      expected count.  The runtime stub at tests/stubs/
+      *      CEE3ABD.cbl is pre-compiled by the runner and linked
+      *      into the merged binary so any unmocked CALL 'CEE3ABD'
+      *      (none in this testsuite) resolves at load time and
+      *      GOBACKs without terminating the test process.
+      *
+      *  Internal CBTRN03C paragraphs (every numbered paragraph,
+      *  9999-ABEND-PROGRAM, 9910-DISPLAY-IO-STATUS, and the
+      *  duplicate 1110/1120 paragraphs) are NEVER mocked.  Each
+      *  TESTCASE exercises a production paragraph LIVE via PERFORM
+      *  so every assertion validates side effects of actual
+      *  production-code execution (per AAP Section 0.10.1).
+      *
+      *  cobol-check 0.2.16 MOCK FILE limitation (verified)
+      *    The framework does NOT support MOCK FILE directives;
+      *    only MOCK CALL / MOCK PARAGRAPH / MOCK SECTION are
+      *    implemented in features/testSuiteParser/MockGenerator.
+      *    See CBACT01C.cut header for full verification details.
+      *    This testsuite therefore uses the CANONICAL pre-set-
+      *    WORKING-STORAGE pattern for every file-status-dependent
+      *    TESTCASE.
+      *
+      *  Test categories
+      *  ---------------
+      *    TC1  - 0000-TRANFILE-OPEN '00' -> APPL-RESULT 0; no abend
+      *    TC2  - 0000-TRANFILE-OPEN '99' -> APPL-RESULT 12; abend
+      *    TC3  - 0500-DATEPARM-OPEN '00' -> APPL-RESULT 0; no abend
+      *    TC4  - 0500-DATEPARM-OPEN '99' -> APPL-RESULT 12; abend
+      *    TC5  - 0550-DATEPARM-READ '00' -> APPL-RESULT 0;
+      *           END-OF-FILE 'N'
+      *    TC6  - 0550-DATEPARM-READ '10' -> APPL-RESULT 16;
+      *           END-OF-FILE flips to 'Y'; no abend
+      *    TC7  - 1000-TRANFILE-GET-NEXT '00' -> APPL-RESULT 0;
+      *           END-OF-FILE 'N'
+      *    TC8  - 1000-TRANFILE-GET-NEXT '10' -> APPL-RESULT 16;
+      *           END-OF-FILE flips to 'Y'; no abend
+      *    TC9  - 1000-TRANFILE-GET-NEXT '92' -> APPL-RESULT 12;
+      *           abend HAPPENED ONCE
+      *    TC10 - 9000-TRANFILE-CLOSE '00' -> APPL-RESULT 0; no abend
+      *    TC11 - 9000-TRANFILE-CLOSE '99' -> APPL-RESULT 12; abend
+      *    TC12 - 9910-DISPLAY-IO-STATUS '23' -> IO-STATUS-04 '0023'
+      *
+      *  References
+      *  ----------
+      *    AAP Sections 0.10.1, 0.5.1, 0.7.1, 0.10.2, 0.4.1
+      *    app/cbl/CBTRN03C.cbl lines 220-243 (0550-DATEPARM-READ)
+      *    app/cbl/CBTRN03C.cbl lines 248-272 (1000-TRANFILE-GET-NEXT)
+      *    app/cbl/CBTRN03C.cbl lines 376-392 (0000-TRANFILE-OPEN)
+      *    app/cbl/CBTRN03C.cbl lines 466-482 (0500-DATEPARM-OPEN)
+      *    app/cbl/CBTRN03C.cbl lines 514-530 (9000-TRANFILE-CLOSE)
+      *    app/cbl/CBTRN03C.cbl lines 626-630 (9999-ABEND-PROGRAM)
+      *    app/cbl/CBTRN03C.cbl lines 633-646 (9910-DISPLAY-IO-STATUS)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy (link-time stub state)
+      *    tests/stubs/CEE3ABD.cbl         (LE abend stub)
+      *    tests/cobol-check/CBACT01C.cut  (canonical pattern)
+      *    tests/cobol-check/CBTRN01C.cut  (sister batch processor)
+      ******************************************************************
+
+       TESTSUITE 'CBTRN03C TRANSACTION REPORT GENERATOR'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset
+      *
+      *  Resets every file-status field, the IO-STATUS buffer, the
+      *  IO-STATUS-04 display field, the APPL-RESULT discriminant,
+      *  the ABCODE/TIMING abend slots, and the END-OF-FILE flag.
+      *  cobol-check 0.2.16 resets MOCK invocation counters
+      *  automatically.
+      *
+      *  Each testcase prelude additionally MOVEs '00', '10', '92',
+      *  or '99' into the relevant file-status field to drive the
+      *  production EVALUATE / IF arm (OPEN/READ/CLOSE are stripped
+      *  to CONTINUE so the runtime never assigns this field).
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE TRANFILE-STATUS
+            INITIALIZE CARDXREF-STATUS
+            INITIALIZE TRANTYPE-STATUS
+            INITIALIZE TRANCATG-STATUS
+            INITIALIZE TRANREPT-STATUS
+            INITIALIZE DATEPARM-STATUS
+            INITIALIZE IO-STATUS
+            INITIALIZE IO-STATUS-04
+            INITIALIZE APPL-RESULT
+            INITIALIZE ABCODE
+            INITIALIZE TIMING
+            MOVE 'N'  TO END-OF-FILE
+            MOVE ZERO TO RETURN-CODE
+       END-BEFORE.
+
+      ******************************************************************
+      *  TC1 -- 0000-TRANFILE-OPEN success: APPL-RESULT = 0
+      *
+      *  PERFORMs 0000-TRANFILE-OPEN with TRANFILE-STATUS = '00'
+      *  to drive the SUCCESS branch:
+      *      MOVE 8 TO APPL-RESULT       (line 377, seed)
+      *      OPEN INPUT TRANSACT-FILE    (line 378; stripped)
+      *      IF TRANFILE-STATUS = '00'   (line 379)
+      *          MOVE 0 TO APPL-RESULT   (line 380) <-- success
+      *      ELSE
+      *          MOVE 12 TO APPL-RESULT  (line 382)
+      *      END-IF
+      *      IF APPL-AOK CONTINUE        (line 384-385) <-- exits
+      *      ELSE PERFORM 9910 + PERFORM 9999
+      *
+      *  Source of expected value
+      *    0  -- the production literal at line 380; not recomputed.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- SUCCESS branch (CONTINUE at line 385)
+      *              does not PERFORM 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0000-TRANFILE-OPEN success APPL-RESULT 0'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0000-TRANFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC2 -- 0000-TRANFILE-OPEN failure: APPL-RESULT = 12, abend
+      *
+      *  Mirror of TC1 with TRANFILE-STATUS = '99' to force the
+      *  line-379 IF ELSE arm.  Line 382 sets APPL-RESULT to 12;
+      *  APPL-AOK evaluates false; the line-389-390 PERFORM 9910-
+      *  DISPLAY-IO-STATUS + PERFORM 9999-ABEND-PROGRAM run, and
+      *  9999-ABEND-PROGRAM CALLs CEE3ABD exactly once at line 630.
+      *
+      *  Source of expected value
+      *    12 -- the production literal at line 382; not recomputed.
+      *
+      *  CEE3ABD verification
+      *    HAPPENED ONCE -- failure branch reaches 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0000-TRANFILE-OPEN failure APPL-RESULT 12'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '99' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0000-TRANFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC3 -- 0500-DATEPARM-OPEN success: APPL-RESULT = 0
+      *
+      *  Mirrors TC1 but for the DATE-PARMS-FILE OPEN paragraph
+      *  (lines 466-482).  Pre-setting DATEPARM-STATUS = '00'
+      *  drives line 469's IF guard to its THEN branch
+      *  (MOVE 0 TO APPL-RESULT at line 470).
+      *
+      *  Source of expected value
+      *    0  -- the production literal at line 470; not recomputed.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- SUCCESS branch does not abend.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0500-DATEPARM-OPEN success APPL-RESULT 0'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO DATEPARM-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0500-DATEPARM-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC4 -- 0500-DATEPARM-OPEN failure: APPL-RESULT = 12, abend
+      *
+      *  Mirrors TC2 but for 0500-DATEPARM-OPEN.  Pre-setting
+      *  DATEPARM-STATUS = '99' drives line 469's IF ELSE arm;
+      *  line 472 sets APPL-RESULT to 12; the line-479-480 PERFORM
+      *  9910-DISPLAY-IO-STATUS + PERFORM 9999-ABEND-PROGRAM
+      *  pathway runs, CALLing CEE3ABD once.
+      *
+      *  Source of expected value
+      *    12 -- the production literal at line 472; not recomputed.
+      *
+      *  CEE3ABD verification
+      *    HAPPENED ONCE -- failure branch reaches 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0500-DATEPARM-OPEN failure APPL-RESULT 12'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '99' TO DATEPARM-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0500-DATEPARM-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC5 -- 0550-DATEPARM-READ success: APPL-RESULT = 0
+      *
+      *  PERFORMs 0550-DATEPARM-READ (lines 220-243) with
+      *  DATEPARM-STATUS = '00' to drive the EVALUATE WHEN '00' arm:
+      *      READ DATE-PARMS-FILE INTO WS-DATEPARM-RECORD (line 221;
+      *                                                  stripped)
+      *      EVALUATE DATEPARM-STATUS                    (line 222)
+      *        WHEN '00' MOVE 0 TO APPL-RESULT           (line 224) <-
+      *        WHEN '10' MOVE 16 TO APPL-RESULT          (line 226)
+      *        WHEN OTHER MOVE 12 TO APPL-RESULT         (line 228)
+      *      END-EVALUATE                                (line 229)
+      *      IF APPL-AOK
+      *        DISPLAY 'Reporting from ' WS-START-DATE   (line 232-3)
+      *      ELSE [error path]
+      *
+      *  Source of expected values
+      *    APPL-RESULT = 0   -- production literal at line 224.
+      *    END-OF-FILE = 'N' -- BEFORE-EACH baseline; SUCCESS branch
+      *                          does not execute line-236 EOF MOVE.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- SUCCESS branch (DISPLAY at line 232)
+      *              does not PERFORM 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0550-DATEPARM-READ success APPL-RESULT 0'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO DATEPARM-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0550-DATEPARM-READ
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT END-OF-FILE TO BE 'N'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC6 -- 0550-DATEPARM-READ EOF: END-OF-FILE flips to 'Y'
+      *
+      *  Mirror of TC5 with DATEPARM-STATUS = '10' to drive the
+      *  EVALUATE WHEN '10' arm.  Production line 226 sets
+      *  APPL-RESULT to 16 (the 88-level VALUE for APPL-EOF declared
+      *  at line 152).  APPL-AOK evaluates false; APPL-EOF evaluates
+      *  true; the line-236 MOVE flips END-OF-FILE to 'Y'.
+      *
+      *  Source of expected values
+      *    APPL-RESULT = 16  -- production literal at line 226
+      *                          (matches APPL-EOF VALUE).
+      *    END-OF-FILE = 'Y' -- production literal at line 236.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- EOF branch terminates without invoking
+      *              9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0550-DATEPARM-READ EOF flips Y'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '10' TO DATEPARM-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0550-DATEPARM-READ
+            EXPECT APPL-RESULT TO BE 16
+            EXPECT END-OF-FILE TO BE 'Y'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC7 -- 1000-TRANFILE-GET-NEXT happy: APPL-RESULT = 0
+      *
+      *  PERFORMs 1000-TRANFILE-GET-NEXT (lines 248-272) with
+      *  TRANFILE-STATUS = '00' to drive the EVALUATE WHEN '00' arm:
+      *      READ TRANSACT-FILE INTO TRAN-RECORD       (line 249;
+      *                                              stripped)
+      *      EVALUATE TRANFILE-STATUS                  (line 251)
+      *        WHEN '00' MOVE 0 TO APPL-RESULT         (line 253) <-
+      *        WHEN '10' MOVE 16 TO APPL-RESULT        (line 255)
+      *        WHEN OTHER MOVE 12 TO APPL-RESULT       (line 257)
+      *      END-EVALUATE                              (line 258)
+      *      IF APPL-AOK CONTINUE                       (line 260-1)
+      *      ELSE [error path: EOF or abend]
+      *
+      *  Source of expected values
+      *    APPL-RESULT = 0   -- production literal at line 253.
+      *    END-OF-FILE = 'N' -- BEFORE-EACH baseline; SUCCESS branch
+      *                          does not execute line-264 EOF MOVE.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- SUCCESS branch (CONTINUE at line 261)
+      *              does not PERFORM 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 1000-TRANFILE-GET-NEXT happy APPL-RESULT 0'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-TRANFILE-GET-NEXT
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT END-OF-FILE TO BE 'N'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC8 -- 1000-TRANFILE-GET-NEXT EOF: END-OF-FILE flips to 'Y'
+      *
+      *  Mirror of TC7 with TRANFILE-STATUS = '10' to drive the
+      *  EVALUATE WHEN '10' arm.  Production line 255 sets
+      *  APPL-RESULT to 16; APPL-AOK evaluates false; APPL-EOF
+      *  evaluates true; the line-264 MOVE flips END-OF-FILE to 'Y'.
+      *
+      *  Source of expected values
+      *    APPL-RESULT = 16  -- production literal at line 255
+      *                          (matches APPL-EOF VALUE).
+      *    END-OF-FILE = 'Y' -- production literal at line 264.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- EOF branch terminates without invoking
+      *              9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 1000-TRANFILE-GET-NEXT EOF flips Y'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '10' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-TRANFILE-GET-NEXT
+            EXPECT APPL-RESULT TO BE 16
+            EXPECT END-OF-FILE TO BE 'Y'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC9 -- 1000-TRANFILE-GET-NEXT non-EOF error: abend pathway
+      *
+      *  Mirror of TC7/TC8 with TRANFILE-STATUS = '92' to drive the
+      *  EVALUATE WHEN OTHER arm.  Production line 257 sets
+      *  APPL-RESULT to 12; both 88-levels evaluate false, and the
+      *  line-268-269 PERFORM 9910-DISPLAY-IO-STATUS + PERFORM 9999-
+      *  ABEND-PROGRAM runs, CALLing CEE3ABD once.
+      *
+      *  Source of expected value
+      *    12 -- the production literal at line 257; not recomputed.
+      *
+      *  CEE3ABD verification
+      *    HAPPENED ONCE -- ERROR branch reaches 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 1000-TRANFILE-GET-NEXT error APPL-RESULT 12'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '92' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-TRANFILE-GET-NEXT
+            EXPECT APPL-RESULT TO BE 12
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC10 -- 9000-TRANFILE-CLOSE success: APPL-RESULT = 0
+      *
+      *  PERFORMs 9000-TRANFILE-CLOSE (lines 514-530) with
+      *  TRANFILE-STATUS = '00' to drive the SUCCESS branch:
+      *      ADD 8 TO ZERO GIVING APPL-RESULT          (line 515)
+      *      CLOSE TRANSACT-FILE                       (line 516;
+      *                                                stripped to
+      *                                                CONTINUE)
+      *      IF TRANFILE-STATUS = '00'                 (line 517)
+      *          SUBTRACT APPL-RESULT FROM APPL-RESULT (line 518) <-
+      *      ELSE
+      *          ADD 12 TO ZERO GIVING APPL-RESULT     (line 520)
+      *      END-IF
+      *      IF APPL-AOK CONTINUE (line 522-523) <-- exits
+      *      ELSE PERFORM 9910 + PERFORM 9999
+      *
+      *  Source of expected value
+      *    0 -- the deterministic result of production-side SUBTRACT
+      *         at line 518 (x - x = 0); not recomputed by the test.
+      *         The 0 literal is a mathematical identity that the
+      *         test asserts the production code executed; it is
+      *         NOT a re-derivation of any business formula.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- SUCCESS branch (CONTINUE at line 523)
+      *              does not PERFORM 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9000-TRANFILE-CLOSE success APPL-RESULT 0'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9000-TRANFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC11 -- 9000-TRANFILE-CLOSE failure: APPL-RESULT = 12, abend
+      *
+      *  Mirror of TC10 with TRANFILE-STATUS = '99' to force the
+      *  line-517 IF ELSE arm.  Line 520 sets APPL-RESULT to 12
+      *  (the result of "ADD 12 TO ZERO GIVING").  APPL-AOK
+      *  evaluates false; the line-527-528 PERFORM 9910-DISPLAY-IO-
+      *  STATUS + PERFORM 9999-ABEND-PROGRAM runs, CALLing CEE3ABD
+      *  exactly once.
+      *
+      *  Source of expected value
+      *    12 -- the production literal at line 520 (the immediate
+      *          result of "ADD 12 TO ZERO GIVING APPL-RESULT");
+      *          not recomputed by the test.
+      *
+      *  CEE3ABD verification
+      *    HAPPENED ONCE -- FAILURE branch reaches 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9000-TRANFILE-CLOSE failure APPL-RESULT 12'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '99' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9000-TRANFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC12 -- 9910-DISPLAY-IO-STATUS formats numeric '23' as '0023'
+      *
+      *  PERFORMs 9910-DISPLAY-IO-STATUS (lines 633-646) with
+      *  IO-STATUS = '23' to drive the ELSE arm:
+      *      IF IO-STATUS NOT NUMERIC OR IO-STAT1 = '9'  (634-635)
+      *          [THEN arm: TWO-BYTES-BINARY pack]
+      *      ELSE
+      *          MOVE '0000'    TO IO-STATUS-04          (line 642)
+      *          MOVE IO-STATUS TO IO-STATUS-04(3:2)     (line 643)
+      *          DISPLAY ...
+      *      END-IF
+      *      EXIT.                                       (line 646)
+      *
+      *  IO-STATUS = '23' is numeric (NOT NUMERIC false) and
+      *  IO-STAT1 = '2' (not '9') so the OR-guard evaluates false
+      *  and the ELSE arm executes.  Line 642 MOVEs literal '0000'
+      *  into IO-STATUS-04; line 643 reference-modifies positions
+      *  3-4 with '23', yielding '0023'.
+      *
+      *  Source of expected value
+      *    '0023' -- the production literal '0000' MOVEd at line
+      *              642, with the test-author IO-STATUS = '23'
+      *              overlaid at positions 3-4 by the production
+      *              reference-modified MOVE at line 643.  Directly
+      *              observable from the production MOVEs; the test
+      *              does not recompute or paraphrase the formatting.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- 9910-DISPLAY-IO-STATUS contains no
+      *              CALL site for CEE3ABD; the abend service must
+      *              not be reached from this paragraph.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9910-DISPLAY-IO-STATUS formats numeric 23'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '23' TO IO-STATUS
+            PERFORM 9910-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04 TO BE '0023'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  End of testsuite CBTRN03C TRANSACTION REPORT GENERATOR
+      ******************************************************************

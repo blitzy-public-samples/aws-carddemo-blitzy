@@ -58,12 +58,43 @@ def write_snippet(out_dir, name, src, field, rlen, recs):
         "      * SPDX-License-Identifier: Apache-2.0",
         "      *****************************************************************",
     ]
+    # Build all MOVE pairs across all records first, then attach a
+    # terminating period to the FINAL `TO <field>(start:len)` line so
+    # the snippet's last sentence is properly terminated when the
+    # snippet is expanded by COPY inside a procedure paragraph.
+    #
+    # Why the trailing period matters
+    # -------------------------------
+    # When a host paragraph contains:
+    #     MOVE '00' TO WS-FIELD
+    #     COPY ACCT-FIXTURE-001
+    #     .
+    # the standalone period on the line following the COPY directive
+    # is consumed by the COBOL preprocessor as the COPY directive's
+    # SYNTACTIC terminator, NOT as a sentence terminator inside the
+    # paragraph.  After expansion, the merged source effectively
+    # becomes:
+    #     MOVE '00' TO WS-FIELD
+    #     <expanded MOVE pairs from .cpy>     <-- no trailing period
+    # leaving the paragraph's last sentence unterminated and the
+    # following paragraph header (e.g. UT-1-3-1-MOCK.) merged into
+    # it as a phantom identifier reference -- GnuCOBOL emits
+    # "'UT-1-3-1-MOCK' is not defined".  Anchoring the period
+    # inside the .cpy on the final TO-clause prevents this.
+    move_lines = []
     for rec_num, off, chunk in recs:
-        L.append(f"      * Record #{rec_num} at byte offset {off}")
+        move_lines.append((True, f"      * Record #{rec_num} at byte offset {off}"))
         for i in range(0, rlen, BYTES_PER_MOVE):
             seg = chunk[i:i + BYTES_PER_MOVE]
-            L.append(f"           MOVE X'{seg.hex().upper()}'")
-            L.append(f"             TO {field}({i + 1}:{len(seg)})")
+            move_lines.append((False, f"           MOVE X'{seg.hex().upper()}'"))
+            move_lines.append((False, f"             TO {field}({i + 1}:{len(seg)})"))
+    # Append a period to the last non-comment line.
+    for idx in range(len(move_lines) - 1, -1, -1):
+        is_comment, text = move_lines[idx]
+        if not is_comment:
+            move_lines[idx] = (False, text + ".")
+            break
+    L.extend(text for _, text in move_lines)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{name}.cpy").write_text("\n".join(L) + "\n")
 
