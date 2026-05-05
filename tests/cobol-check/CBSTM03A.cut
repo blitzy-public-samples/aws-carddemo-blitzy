@@ -1,0 +1,299 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.                   
+      * All Rights Reserved.                                            
+      *                                                                 
+      * Licensed under the Apache License, Version 2.0 (the "License"). 
+      * You may not use this file except in compliance with the         
+      * License. You may obtain a copy of the License at                
+      *                                                                 
+      *    http://www.apache.org/licenses/LICENSE-2.0                   
+      *                                                                 
+      * Unless required by applicable law or agreed to in writing,      
+      * software distributed under the License is distributed on an     
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,    
+      * either express or implied. See the License for the specific     
+      * language governing permissions and limitations under the        
+      * License.                                                        
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : CBSTM03A STATEMENT AGGREGATION                     
+      *  Program-under-test : app/cbl/CBSTM03A.CBL                      
+      *                                                                 
+      *  Purpose                                                        
+      *  -------                                                        
+      *  Exercise CBSTM03A's I/O orchestration and abend pathways by    
+      *  mocking only the program's external boundaries:                
+      *                                                                 
+      *    * MOCK CALL 'CBSTM03B' -- the file-handling subprogram that  
+      *      fronts every VSAM and sequential file operation in         
+      *      CBSTM03A; mocking it replaces the real file I/O with       
+      *      deterministic file-status return codes (and, for the keyed 
+      *      read tests, byte-exact fixture record images via COPY).    
+      *                                                                 
+      *    * MOCK CALL 'CEE3ABD' -- the IBM Language Environment        
+      *      callable abend service invoked from 9999-ABEND-PROGRAM;    
+      *      mocking it lets the test verify that the abend pathway    *
+      *      was reached without terminating the test process.          
+      *                                                                 
+      *  Internal CBSTM03A paragraphs are NEVER mocked.  Every TESTCASE 
+      *  exercises a production paragraph LIVE via PERFORM so the       
+      *  testsuite asserts against side effects of actual production-   
+      *  code execution (per the user's directive in the AAP            
+      *  Section 0.10.1 -- "Mock or stub ONLY external dependencies").  
+      *                                                                 
+      *  Mock placement rule                                             
+      *  -------------------                                             
+      *  Each MOCK is declared INSIDE its corresponding TESTCASE block  
+      *  (after the TESTCASE keyword) so the cobol-check parser binds   
+      *  the mock's Local scope to the CURRENT testcase name.  This     
+      *  guarantees that the matching VERIFY clause inside the same     
+      *  testcase resolves to the testcase-specific Local mock with the 
+      *  testcase-specific mock body.                                   
+      *                                                                 
+      *  Test categories                                                 
+      *  ---------------                                                 
+      *    TC1 - PERFORM 9100-TRNXFILE-CLOSE; M03B-CLOSE op; RC '00';   *
+      *          production sets WS-M03B-DD = 'TRNXFILE'.               *
+      *    TC2 - PERFORM 3000-ACCTFILE-GET; M03B-READ-K op; RC '00';    *
+      *          ACCT-FIXTURE-001 spliced into mock body via COPY;      *
+      *          production sets WS-M03B-DD = 'ACCTFILE'.               *
+      *    TC3 - PERFORM 2000-CUSTFILE-GET; M03B-READ-K op; RC '00';    *
+      *          CUST-FIXTURE-001 spliced into mock body via COPY;      *
+      *          production sets WS-M03B-DD = 'CUSTFILE'.               *
+      *    TC4 - PERFORM 1000-XREFFILE-GET-NEXT happy path; RC '00';    *
+      *          production sets WS-M03B-DD = 'XREFFILE';               *
+      *          END-OF-FILE remains 'N' (EVALUATE WHEN '00'            *
+      *          falls through to CONTINUE).                            *
+      *    TC5 - PERFORM 1000-XREFFILE-GET-NEXT EOF path; RC '10';      *
+      *          END-OF-FILE flips to 'Y' (EVALUATE WHEN '10' branch    *
+      *          executes the production MOVE 'Y' TO END-OF-FILE).      *
+      *    TC6 - PERFORM 9999-ABEND-PROGRAM invokes CEE3ABD; the        *
+      *          abend pathway is verified via VERIFY mock-invocation   *
+      *          count (CEE3ABD is mocked with an empty body so the     *
+      *          test process is not terminated).                       *
+      *                                                                 
+      *  References                                                    *
+      *  ----------                                                    *
+      *    AAP Section 0.10.1 -- user directive on test structure      *
+      *    AAP Section 0.5.1  -- file-by-file test plan for CBSTM03A   *
+      *    app/cbl/CBSTM03A.CBL lines 345-366 (1000-XREFFILE-GET-NEXT) *
+      *    app/cbl/CBSTM03A.CBL lines 368-390 (2000-CUSTFILE-GET)      *
+      *    app/cbl/CBSTM03A.CBL lines 392-414 (3000-ACCTFILE-GET)      *
+      *    app/cbl/CBSTM03A.CBL lines 856-870 (9100-TRNXFILE-CLOSE)    *
+      *    app/cbl/CBSTM03A.CBL lines 921-923 (9999-ABEND-PROGRAM)     *
+      *    tests/fixtures/cobol-snippets/ACCT-FIXTURE-001.cpy          *
+      *    tests/fixtures/cobol-snippets/CUST-FIXTURE-001.cpy          *
+      *                                                                 
+      ******************************************************************
+
+       TESTSUITE 'CBSTM03A STATEMENT AGGREGATION'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset                    
+      *                                                                 
+      *  Restores deterministic baseline state so every TESTCASE        
+      *  starts from a known, identical configuration.  cobol-check     
+      *  resets MOCK invocation counters automatically between          
+      *  TESTCASEs; this block resets the application working-storage   
+      *  fields the production code under test reads or writes:         
+      *                                                                 
+      *    WS-M03B-AREA       - linkage area for CALL "CBSTM03B" (DD,   
+      *                         OPER, RC, KEY, KEY-LN, FLDT)            
+      *    WS-TRNX-TABLE      - aggregation OCCURS 51 cards x 10 trans  
+      *    WS-TRN-TBL-CNTR    - per-card transaction counter array     *
+      *    END-OF-FILE        - main-loop EOF flag set by EVALUATE '10' 
+      *    RETURN-CODE        - implicit special register reset for    *
+      *                         deterministic post-test inspection     *
+      ******************************************************************
+       BEFORE-EACH
+           INITIALIZE WS-M03B-AREA
+           INITIALIZE WS-TRNX-TABLE
+           INITIALIZE WS-TRN-TBL-CNTR
+           MOVE 'N' TO END-OF-FILE
+           MOVE ZERO TO RETURN-CODE
+       END-BEFORE.
+
+      ******************************************************************
+      *  TC1 -- PERFORM 9100-TRNXFILE-CLOSE; mocked CBSTM03B returns    *
+      *  file-status '00'                                                
+      *                                                                 
+      *  Exercises the M03B-CLOSE operation against the TRNXFILE DD.    
+      *  The production paragraph (CBSTM03A.CBL lines 856-870) ends    *
+      *  with EXIT, making it PERFORM-safe.  The paragraph executes:    
+      *                                                                 
+      *    MOVE 'TRNXFILE' TO WS-M03B-DD                                
+      *    SET M03B-CLOSE TO TRUE                                       
+      *    MOVE ZERO TO WS-M03B-RC                                      
+      *    CALL 'CBSTM03B' USING WS-M03B-AREA   <-- intercepted by mock 
+      *    IF WS-M03B-RC = '00' OR '04' CONTINUE ELSE PERFORM ABEND     
+      *    EXIT                                                         
+      *                                                                 
+      *  The MOCK is declared INSIDE the TESTCASE so its Local scope    
+      *  is bound to the current testcase name at registration time.    
+      *                                                                 
+      *  Source of expected values:                                     
+      *    '00'       - the mock returns this; standard COBOL "OK"     *
+      *    'TRNXFILE' - production literal MOVE'd to WS-M03B-DD by     *
+      *                 line 857 of CBSTM03A.CBL (NOT computed in test)*
+      ******************************************************************
+       TESTCASE '9100-TRNXFILE-CLOSE invokes CBSTM03B M03B-CLOSE RC 00'
+           MOCK CALL 'CBSTM03B' USING WS-M03B-AREA
+               MOVE '00' TO WS-M03B-RC
+           END-MOCK
+           PERFORM 9100-TRNXFILE-CLOSE
+           EXPECT WS-M03B-RC TO BE '00'
+           EXPECT WS-M03B-DD TO BE 'TRNXFILE'
+           VERIFY CALL 'CBSTM03B' USING WS-M03B-AREA HAPPENED ONCE
+
+      ******************************************************************
+      *  TC2 -- PERFORM 3000-ACCTFILE-GET; mocked CBSTM03B returns     *
+      *  file-status '00' and supplies the ACCT-FIXTURE-001 byte-      *
+      *  exact record from app/data/ASCII/acctdata.txt                 *
+      *                                                                 
+      *  Exercises the M03B-READ-K operation against the ACCTFILE DD.  *
+      *  The production paragraph (CBSTM03A.CBL lines 392-414) ends    *
+      *  with EXIT.  The paragraph executes:                            
+      *                                                                 
+      *    MOVE 'ACCTFILE' TO WS-M03B-DD                                
+      *    SET M03B-READ-K TO TRUE                                      
+      *    MOVE XREF-ACCT-ID TO WS-M03B-KEY                             
+      *    MOVE ZERO TO WS-M03B-KEY-LN                                  
+      *    COMPUTE WS-M03B-KEY-LN = LENGTH OF XREF-ACCT-ID              
+      *    MOVE ZERO TO WS-M03B-RC                                      
+      *    MOVE SPACES TO WS-M03B-FLDT                                  
+      *    CALL 'CBSTM03B' USING WS-M03B-AREA   <-- intercepted by mock 
+      *    EVALUATE WS-M03B-RC ... WHEN '00' CONTINUE                   
+      *    MOVE WS-M03B-FLDT TO ACCOUNT-RECORD                          
+      *    EXIT                                                         
+      *                                                                 
+      *  COPY ACCT-FIXTURE-001 inside the mock body splices the byte-  *
+      *  exact 300-byte ACCOUNT-RECORD image (record 1 of acctdata.txt)*
+      *  into the merged source so the mock substitution carries the   *
+      *  fixture data through the substituted CALL site.               *
+      *                                                                 
+      *  Source of expected values:                                     
+      *    '00'       - mock-controlled return code                    *
+      *    'ACCTFILE' - production literal MOVE'd to WS-M03B-DD by    *
+      *                 line 394 of CBSTM03A.CBL                       *
+      ******************************************************************
+       TESTCASE '3000-ACCTFILE-GET invokes CBSTM03B M03B-READ-K RC 00'
+           MOCK CALL 'CBSTM03B' USING WS-M03B-AREA
+               MOVE '00' TO WS-M03B-RC
+               COPY ACCT-FIXTURE-001
+           END-MOCK
+           PERFORM 3000-ACCTFILE-GET
+           EXPECT WS-M03B-RC TO BE '00'
+           EXPECT WS-M03B-DD TO BE 'ACCTFILE'
+           VERIFY CALL 'CBSTM03B' USING WS-M03B-AREA HAPPENED ONCE
+
+      ******************************************************************
+      *  TC3 -- PERFORM 2000-CUSTFILE-GET; mocked CBSTM03B returns     *
+      *  file-status '00' and supplies the CUST-FIXTURE-001 byte-      *
+      *  exact record from app/data/ASCII/custdata.txt                 *
+      *                                                                 
+      *  Mirror of TC2 against the CUSTFILE dataset.  The production   *
+      *  paragraph (CBSTM03A.CBL lines 368-390) ends with EXIT.        *
+      *                                                                 
+      *  COPY CUST-FIXTURE-001 inside the mock body splices the byte- *
+      *  exact 500-byte CUSTOMER-RECORD image (record 1 of             *
+      *  custdata.txt) into the merged source.                         *
+      *                                                                 
+      *  Source of expected values:                                     
+      *    '00'       - mock-controlled return code                    *
+      *    'CUSTFILE' - production literal MOVE'd to WS-M03B-DD by    *
+      *                 line 370 of CBSTM03A.CBL                       *
+      ******************************************************************
+       TESTCASE '2000-CUSTFILE-GET invokes CBSTM03B M03B-READ-K RC 00'
+           MOCK CALL 'CBSTM03B' USING WS-M03B-AREA
+               MOVE '00' TO WS-M03B-RC
+               COPY CUST-FIXTURE-001
+           END-MOCK
+           PERFORM 2000-CUSTFILE-GET
+           EXPECT WS-M03B-RC TO BE '00'
+           EXPECT WS-M03B-DD TO BE 'CUSTFILE'
+           VERIFY CALL 'CBSTM03B' USING WS-M03B-AREA HAPPENED ONCE
+
+      ******************************************************************
+      *  TC4 -- 1000-XREFFILE-GET-NEXT happy path; RC '00'              
+      *                                                                 
+      *  Exercises the M03B-READ operation against the XREFFILE DD.    *
+      *  The production paragraph (CBSTM03A.CBL lines 345-366) ends    *
+      *  with EXIT.  The EVALUATE block has three branches:             
+      *                                                                 
+      *    WHEN '00'  -> CONTINUE (this branch is exercised in TC4)    *
+      *    WHEN '10'  -> MOVE 'Y' TO END-OF-FILE (TC5 exercises this)  *
+      *    WHEN OTHER -> PERFORM 9999-ABEND-PROGRAM                    *
+      *                                                                 
+      *  Post-conditions verified:                                     *
+      *    WS-M03B-RC  = '00' (mock supplied)                          *
+      *    WS-M03B-DD  = 'XREFFILE' (production literal at line 347)   *
+      *    END-OF-FILE = 'N' (BEFORE-EACH baseline; the WHEN '10'      *
+      *                       branch is NOT taken so 'N' persists)     *
+      ******************************************************************
+       TESTCASE '1000-XREFFILE-GET-NEXT happy path keeps END-OF-FILE N'
+           MOCK CALL 'CBSTM03B' USING WS-M03B-AREA
+               MOVE '00' TO WS-M03B-RC
+           END-MOCK
+           PERFORM 1000-XREFFILE-GET-NEXT
+           EXPECT WS-M03B-RC TO BE '00'
+           EXPECT WS-M03B-DD TO BE 'XREFFILE'
+           EXPECT END-OF-FILE TO BE 'N'
+           VERIFY CALL 'CBSTM03B' USING WS-M03B-AREA HAPPENED ONCE
+
+      ******************************************************************
+      *  TC5 -- 1000-XREFFILE-GET-NEXT EOF path; RC '10'                
+      *                                                                 
+      *  Same paragraph as TC4 but mocked CBSTM03B returns file-status *
+      *  '10' (end-of-file).  The production EVALUATE block then takes *
+      *  the WHEN '10' branch which executes:                          *
+      *                                                                 
+      *    MOVE 'Y' TO END-OF-FILE   (line 357 of CBSTM03A.CBL)        *
+      *                                                                 
+      *  Post-conditions verified:                                     *
+      *    WS-M03B-RC  = '10' (mock supplied)                          *
+      *    END-OF-FILE = 'Y' (the production MOVE flipped it; the      *
+      *                       test asserts the SIDE EFFECT of the      *
+      *                       production-code MOVE -- it does NOT      *
+      *                       recompute or paraphrase the logic)       *
+      ******************************************************************
+       TESTCASE '1000-XREFFILE-GET-NEXT EOF flips END-OF-FILE to Y'
+           MOCK CALL 'CBSTM03B' USING WS-M03B-AREA
+               MOVE '10' TO WS-M03B-RC
+           END-MOCK
+           PERFORM 1000-XREFFILE-GET-NEXT
+           EXPECT WS-M03B-RC TO BE '10'
+           EXPECT END-OF-FILE TO BE 'Y'
+           VERIFY CALL 'CBSTM03B' USING WS-M03B-AREA HAPPENED ONCE
+
+      ******************************************************************
+      *  TC6 -- 9999-ABEND-PROGRAM invokes CEE3ABD                      
+      *                                                                 
+      *  PERFORMs the production paragraph 9999-ABEND-PROGRAM           
+      *  (CBSTM03A.CBL lines 921-923).  The paragraph executes:         
+      *                                                                 
+      *    DISPLAY 'ABENDING PROGRAM'                                  *
+      *    CALL 'CEE3ABD'.                                             *
+      *                                                                 
+      *  CEE3ABD on z/OS is the IBM Language Environment abnormal-     *
+      *  termination service.  Mocking it with a CONTINUE body lets    *
+      *  the test exercise the abend pathway without terminating the   *
+      *  test process.  The VERIFY clause confirms the production code 
+      *  reached the CALL CEE3ABD site exactly once.                   *
+      *                                                                 
+      *  Note: the production CALL 'CEE3ABD' has NO USING clause       *
+      *  (CBSTM03A.CBL line 923: just `CALL 'CEE3ABD'.`).  The MOCK    *
+      *  signature must therefore omit USING so the cobol-check        *
+      *  matcher's `arguments.equals` comparison succeeds.             *
+      ******************************************************************
+       TESTCASE '9999-ABEND-PROGRAM invokes CEE3ABD exactly once'
+           MOCK CALL 'CEE3ABD'
+               CONTINUE
+           END-MOCK
+           PERFORM 9999-ABEND-PROGRAM
+           EXPECT WS-M03B-DD NOT = SPACES
+           VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  End of testsuite CBSTM03A STATEMENT AGGREGATION                
+      ******************************************************************
