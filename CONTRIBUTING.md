@@ -44,61 +44,6 @@ GitHub provides additional document on [forking a repository](https://help.githu
 Looking at the existing issues is a great way to find something to contribute on. As our projects, by default, use the default GitHub issue labels (enhancement/bug/duplicate/help wanted/invalid/question/wontfix), looking at any 'help wanted' issues is a great place to start.
 
 
-## Adding a new testsuite
-
-CardDemo's automated tests run via the
-[Open Mainframe Project's cobol-check](https://github.com/openmainframeproject/cobol-check)
-framework.  Follow these steps to add a new testsuite:
-
-1. **Create the program directory**:
-   `mkdir -p tests/cobol-check/<PROGRAM>/`.
-2. **Create one or more `.cut` files** inside the new directory.
-   `<PROGRAM>.cut` is the conventional name for the primary
-   testsuite; long suites may be split (for example,
-   `COCRDUPC-validation.cut` and `COCRDUPC-rewrite.cut`).
-3. **Reference the unmodified production source** by setting
-   `cobolcheck.test.program.name = <PROGRAM>` (or by passing
-   `make test-one PROGRAM=<PROGRAM>` on the command line).  *Never*
-   copy production COBOL into a `.cut` file -- cobol-check merges the
-   real source from `app/cbl/` automatically.
-4. **Mock only external dependencies**:
-   - `MOCK FILE <fd-name>` for every VSAM cluster and sequential
-     dataset.
-   - `MOCK CALL "CEEDAYS"` / `MOCK CALL "CEE3ABD"` for Language
-     Environment services.
-   - `MOCK CALL "<other-program>"` for every cross-program subprogram
-     CALL.
-   - `MOCK CICS <verb>` for every `EXEC CICS` verb.
-   - **Never** `MOCK PARAGRAPH` or `MOCK SECTION` against a paragraph
-     of the program-under-test -- that would mock internal logic.
-5. **Author assertions** with `EXPECT <field> TO BE <value>` against
-   real LINKAGE / WORKING-STORAGE / RETURN-CODE / mocked-WRITE-buffer
-   fields.  Add a `VERIFY <mock-target> WAS CALLED N TIMES` clause
-   whenever the testcase declares a `MOCK` directive.
-6. **Reuse fixtures** from `tests/fixtures/cobol-snippets/` via
-   `COPY 'ACCT-FIXTURE-001'.` (or similar).  To add a new fixture
-   record, edit the `FIXTURES` list in
-   `tests/fixtures/load_fixture.py` and re-run `make fixtures`.
-7. **Run the validation gates** locally:
-   ```bash
-   make lint
-   make test-one PROGRAM=<PROGRAM>
-   ```
-8. **Inspect coverage**:
-   ```bash
-   make coverage
-   ```
-   The `tests/lint/parse_gcov_summary.sh` script enforces the
-   per-program targets documented in `tests/README.md`.
-
-The four validation gates under `tests/lint/` run automatically in
-GitHub Actions on every push and pull request.  A pull request cannot
-merge if any gate exits non-zero.
-
-See [`tests/README.md`](tests/README.md) for the full authoring guide,
-fixture catalog, and troubleshooting tips.
-
-
 ## Code of Conduct
 This project has adopted the [Amazon Open Source Code of Conduct](https://aws.github.io/code-of-conduct).
 For more information see the [Code of Conduct FAQ](https://aws.github.io/code-of-conduct-faq) or contact
@@ -112,3 +57,67 @@ If you discover a potential security issue in this project we ask that you notif
 ## Licensing
 
 See the [LICENSE](LICENSE) file for our project's licensing. We will ask you to confirm the licensing of your contribution.
+
+
+## Adding a new testsuite
+
+CardDemo uses [cobol-check](https://github.com/openmainframeproject/cobol-check) (Open Mainframe Project, version 0.2.16) as its automated unit-test framework, and every testsuite lives at `tests/cobol-check/<PROGRAM-ID>.cut`. The canonical pattern is that each testsuite **imports** its program-under-test by setting `cobolcheck.test.program.name` in `tests/cobol-check/config.properties` (or by passing the `-p PROGRAMNAME` CLI flag through `make test-one PROGRAM=<PROGRAM-ID>`); the production source under `app/cbl/` is never modified, copied, or re-declared inside a `.cut` file.
+
+### Prerequisites
+
+Local-machine prerequisites (the same versions are pinned in `.github/workflows/test.yml` for CI):
+
+- `gnucobol3` (3.1.2-5.1ubuntu1) and `libcob4-dev` (3.1.2-5.1ubuntu1) — off-platform COBOL compiler.
+- `openjdk-21-jdk-headless` (21.0.10+7-1~24.04) — hosts the cobol-check JAR.
+- `make` (4.3-4.1build2) — test orchestration.
+- `gcc` (4:13.2.0-7ubuntu1) — provides `gcov` for coverage reporting.
+- A one-time `make init` to download `cobol-check-0.2.16.jar` into `tests/cobol-check/lib/`.
+
+```bash
+sudo apt-get install -y gnucobol3 libcob4-dev openjdk-21-jdk-headless make gcc
+make init
+```
+
+### Authoring rules
+
+These four rules are non-negotiable; the lint scripts under `tests/lint/` enforce each one in CI:
+
+1. **Import production code, never copy it.** The testsuite references the production program via `cobolcheck.test.program.name`; never declare an `IDENTIFICATION DIVISION` or `PROGRAM-ID` for any name in `app/cbl/` inside a `.cut` file.
+2. **Mock or stub ONLY external dependencies.** Permitted mock targets are listed in `tests/README.md`: VSAM file operations (`MOCK FILE`), CICS commands (`MOCK CICS`), and Language Environment / inter-program calls (`MOCK CALL`). Internal paragraphs of the program-under-test must never appear in `MOCK PARAGRAPH` or `MOCK SECTION`.
+3. **Test structure must contain only:** imports (`COPY`), test setup/fixtures (`BEFORE-EACH` / `MOVE` / `SET`), function invocation (`PERFORM <production-paragraph>` or `CALL "<production-program>"`), and assertions (`EXPECT`, `VERIFY`).
+4. **Do NOT recreate algorithms.** No `COMPUTE`, `MULTIPLY`, `DIVIDE`, `ADD`, or `SUBTRACT` outside `BEFORE-EACH` / `AFTER-EACH` blocks. Expected values must be literal constants taken from the user's example, byte-exact records from `app/data/ASCII/*.txt`, or deterministic mock-controlled return values.
+
+The validation gate (`make lint`) enforces these rules and fails with the following message:
+
+> BLITZY VALIDATION GATE FAILED: business logic detected outside imports/setup/invocation/assertions in &lt;file&gt;:&lt;line&gt;. Re-author the test to PERFORM the production paragraph instead of computing the expected value yourself.
+
+### Step-by-step
+
+1. Choose the production program to test from `app/cbl/` (for example, `CSUTLDTC.cbl`).
+2. Create `tests/cobol-check/<PROGRAM-ID>.cut` (use the same casing as the production filename, drop the `.cbl` / `.CBL` extension).
+3. Open `tests/cobol-check/CSUTLDTC.cut` (the canonical reference exemplar) and copy its structural conventions: Apache 2.0 license preamble, `TESTSUITE` banner, `BEFORE-EACH` initializer, `MOCK` blocks before each `TESTCASE`, `EXPECT` clauses alphabetized by field name when multiple are present, and `VERIFY` clauses appended after `EXPECT` for testcases that declare mocks.
+4. For every external boundary the program-under-test touches, declare the appropriate mock:
+   - VSAM file operations → `MOCK FILE <fd-name> ON OPEN/READ/WRITE/REWRITE/CLOSE STATUS '<two-byte>' END-MOCK`
+   - CICS commands → `MOCK CICS <verb> <discriminator> END-MOCK`
+   - LE / subprogram calls → `MOCK CALL "<program-name>" END-MOCK`
+5. For every paragraph or feature being tested, write a `TESTCASE 'description' ... END-TESTCASE` block whose body contains only `MOVE` setup, `PERFORM` / `CALL` invocation, and `EXPECT` / `VERIFY` assertions.
+6. Run the new suite locally:
+   ```bash
+   make test-one PROGRAM=<PROGRAM-ID>
+   ```
+7. Run the lint gates:
+   ```bash
+   make lint
+   ```
+8. Run coverage and confirm the per-program target from `tests/README.md` is met:
+   ```bash
+   make coverage
+   ```
+9. Commit and push; CI (`.github/workflows/test.yml`) will rerun lint, test, and coverage on every push and pull request. A pull request cannot merge if any lint, test, or coverage gate exits non-zero.
+
+### Where to find more
+
+- `tests/README.md` — full testing guide including coverage targets and the validation-gate semantics.
+- `tests/cobol-check/CSUTLDTC.cut` — canonical reference exemplar.
+- `tests/cobol-check/config.properties` — runtime configuration consumed by the cobol-check JAR.
+- `Makefile` — the canonical command surface (`make init`, `make fixtures`, `make lint`, `make test`, `make test-one PROGRAM=…`, `make coverage`, `make clean`).
