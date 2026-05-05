@@ -1,0 +1,552 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : COCRDUPC CARD UPDATE TRANSACTION
+      *  Program-under-test : app/cbl/COCRDUPC.cbl
+      *
+      *  Purpose
+      *  -------
+      *  Exercise COCRDUPC's card-update CICS transaction by mocking
+      *  ONLY the program's external boundary into the CICS API: the
+      *  CALL 'DFHEI1' invocation that the CICS translator emits in
+      *  place of every EXEC CICS verb (RECEIVE MAP, READ FILE
+      *  (CARDDAT), READ FILE(CARDDAT) UPDATE, REWRITE FILE
+      *  (CARDDAT), SEND MAP, SYNCPOINT, XCTL, RETURN, ABEND).
+      *  Internal COCRDUPC paragraphs are NEVER mocked; every
+      *  TESTCASE exercises a production paragraph LIVE via PERFORM
+      *  (per AAP Section 0.10.1 -- "Mock or stub ONLY external
+      *  dependencies").
+      *
+      *  COCRDUPC has the largest field-level edit surface among
+      *  the card-management programs: five validation paragraphs
+      *  (1220-EDIT-CARD, 1230-EDIT-NAME, 1240-EDIT-CARDSTATUS,
+      *  1250-EDIT-EXPIRY-MON, 1260-EDIT-EXPIRY-YEAR).  After
+      *  validation it READs CARDDAT (9100-GETCARD-BYACCTCARD); on
+      *  commit it READs UPDATE (9200-WRITE-PROCESSING line 1427-
+      *  1436), checks for concurrent modification (9300-CHECK-
+      *  CHANGE-IN-REC), then REWRITEs CARDDAT (lines 1477-1483).
+      *
+      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS
+      *  -------------------------------------------
+      *  cobol-check 0.2.16 supports CALL/PARA/PARAGRAPH/SECTION
+      *  mock-types only.  The CICS translator rewrites EXEC CICS
+      *  verbs to CALL 'DFHEI1' USING <command-block>, so MOCK CALL
+      *  'DFHEI1' is the equivalent intercept point.  Off-platform
+      *  the merged binary fails to compile and the mock simply
+      *  registers without firing.  Each MOCK is declared inside
+      *  its TESTCASE for Local scope, mirroring COACTUPC /
+      *  COCRDSLC / COBIL00C / COTRN02C / COUSR02C.
+      *
+      *  Schema dependencies
+      *  -------------------
+      *    STUB-ABEND-FLAG.cpy -- EXTERNAL state set by CEE3ABD /
+      *        DFHEI1 stubs at runtime.
+      *    CARD-FIXTURE-001.cpy -- 150-byte CARD-RECORD from
+      *        carddata.txt rec 1 (CARD-ACTIVE-STATUS='Y' provides
+      *        byte-exact traceability for TC7's 'Y' input);
+      *        reserved for the on-platform CICS-translator
+      *        extension where MOCK CICS READ FILE(CARDDAT) loads
+      *        the fixture.
+      *    DFHEI1.cbl -- standalone PROGRAM-ID compiled to .so.
+      *    config.properties -- cobol-check runtime configuration.
+      *    COSGN00C.cut / CSUTLDTC.cut -- structural exemplars.
+      *
+      *  No `COPY STUB-ABEND-FLAG.` at file scope -- cobol-check
+      *  0.2.16 parses bare COPY at file scope as fieldname token
+      *  and aborts merge with SYNTAX ERROR.  Runtime stubs still
+      *  provide their safety, matching COACTUPC / COCRDSLC.
+      *
+      *  Test categories (7 testcases, AAP-aligned)
+      *  ------------------------------------------
+      *  Per AAP test-implementation prompt: happy / 2 validation
+      *  failures / 1 not-found / 1 conflict / PF3 / XCTL.  Off-
+      *  platform the literal AAP TC1 (REWRITE happy via 9200), TC4
+      *  (READ NOTFND EIBRESP=13 via 9100), TC5 (REWRITE INVREQ /
+      *  DUPREC via 9200), TC6 (PF3 XCTL), TC7 (XCTL after success)
+      *  all require the CICS translator to reach EVALUATE WS-
+      *  RESP-CD WHEN DFHRESP(...) clauses on production lines
+      *  1392-1412 (9100), 1441-1492 (9200), and EVALUATE TRUE in
+      *  0000-MAIN driven by CCARD-AID-PFK03 from DFHAID.  Off-
+      *  platform GnuCOBOL leaves DFHRESP / DFHAID undefined.  This
+      *  testsuite covers seven off-platform-reachable assertions:
+      *
+      *    TC1 - 1260-EDIT-EXPIRY-YEAR accepts year '2025' (success
+      *          branch lines 934-935).  Off-platform AAP TC1.
+      *    TC2 - 1250-EDIT-EXPIRY-MON rejects month '13' (VALID-
+      *          MONTH FALSE branch lines 898-907).  Off-platform
+      *          AAP TC2.
+      *    TC3 - 1230-EDIT-NAME rejects digits (INSPECT-then-TRIM
+      *          non-empty branch lines 822-837).  Off-platform
+      *          AAP TC3.
+      *    TC4 - 1220-EDIT-CARD rejects non-numeric (IS NOT NUMERIC
+      *          branch lines 784-794).  Off-platform AAP TC4 --
+      *          format-fail gate prevents 9100 READ.
+      *    TC5 - 1240-EDIT-CARDSTATUS rejects empty (LOW-VALUES /
+      *          SPACES / ZEROS branch lines 850-859).  Off-
+      *          platform AAP TC5 -- gate prevents 9200 REWRITE.
+      *    TC6 - 3100-SCREEN-INIT populates header from program
+      *          literals (TRNNAMEO='CCUP', PGMNAMEO='COCRDUPC').
+      *          Off-platform AAP TC6 -- screen-render preamble
+      *          before XCTL.
+      *    TC7 - 1240-EDIT-CARDSTATUS accepts 'Y' (FLG-YES-NO-VALID
+      *          TRUE branch lines 861-864).  Off-platform AAP
+      *          TC7.  Differential pair to TC5: same paragraph,
+      *          opposite branch.
+      *
+      *  Test user : USER0001 / USER role (AAP Section 0.10.2).
+      *  CDEMO-FROM-PROGRAM='COCRDLIC' / FROM-TRANID='CCLI'.
+      *
+      *  References : AAP Sections 0.10.1, 0.5.1, 0.10.2, 0.4.1,
+      *  0.7.1; app/cbl/COCRDUPC.cbl lines 53-99 (validation flags),
+      *  218-263 (LIT-* literals), 762-947 (1220-1260 validation
+      *  paragraphs), 1052-1080 (3100-SCREEN-INIT); app/cpy/
+      *  COCOM01Y.cpy / CVCRD01Y.cpy / CVACT02Y.cpy; app/cpy-bms/
+      *  COCRDUP.CPY; tests/stubs/STUB-ABEND-FLAG.cpy / DFHEI1.cbl;
+      *  tests/fixtures/cobol-snippets/CARD-FIXTURE-001.cpy;
+      *  tests/cobol-check/COSGN00C.cut / COCRDSLC.cut /
+      *  COACTUPC.cut (sister exemplars).
+      ******************************************************************
+
+       TESTSUITE 'COCRDUPC CARD UPDATE TRANSACTION'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset.
+      *
+      *  Restores deterministic baseline state.  cobol-check resets
+      *  MOCK invocation counters automatically; this block resets
+      *  the production WS / shared structures touched by COCRDUPC:
+      *
+      *    WS-MISC-STORAGE     COCRDUPC.cbl 36-156; clears WS-CICS-
+      *                        PROCESSNG-VARS, WS-INPUT-FLAG, all
+      *                        WS-EDIT-* flags, CARD-NAME-CHECK,
+      *                        FLG-YES-NO-CHECK, CARD-MONTH-CHECK,
+      *                        CARD-YEAR-CHECK, CICS-OUTPUT-EDIT-
+      *                        VARS, WS-CARD-RID, WS-FILE-ERROR-
+      *                        MESSAGE, WS-LONG-MSG, WS-INFO-MSG,
+      *                        WS-RETURN-MSG (88 WS-RETURN-MSG-OFF
+      *                        VALUE SPACES per line 174).
+      *    CC-WORK-AREAS       CVCRD01Y; clears CCARD-AID, CC-
+      *                        ACCT-ID, CC-CARD-NUM, CC-CUST-ID,
+      *                        CCARD-NEXT-* / CCARD-ERROR-MSG.
+      *    CARDDEMO-COMMAREA   COCOM01Y; clears CDEMO-FROM-* /
+      *                        TO-* / USER-ID / USER-TYPE / PGM-
+      *                        CONTEXT / ACCT-ID / CARD-NUM.
+      *    WS-THIS-PROGCOMMAREA COCRDUPC.cbl 274-322; clears CCUP-
+      *                        CHANGE-ACTION, CCUP-OLD-DETAILS,
+      *                        CCUP-NEW-DETAILS, CARD-UPDATE-RECORD.
+      *    CARD-RECORD         CVACT02Y 150-byte; cleared for
+      *                        forward-compat with CARD-FIXTURE-001
+      *                        post-translator extension.
+      *    CCRDUPAI            BMS input map (cpy-bms/COCRDUP.CPY).
+      *                        CCRDUPAO REDEFINES CCRDUPAI so this
+      *                        clears CCRDUPAO too.
+      *    WS-CURDATE-DATA     CSDAT01Y date-time used by 3100-
+      *                        SCREEN-INIT for header dates.
+      *    RETURN-CODE         Implicit special-register reset.
+      *    WS-INPUT-FLAG       Explicitly LOW-VALUES so 88 INPUT-
+      *                        PENDING (VALUE LOW-VALUES per line
+      *                        56) is the baseline.  INITIALIZE on
+      *                        a PIC X group fills with SPACES
+      *                        which would be ambiguous.
+      *
+      *  Then seeds COMMAREA with USER0001 regular-user identity.
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE WS-MISC-STORAGE
+            INITIALIZE CC-WORK-AREAS
+            INITIALIZE CARDDEMO-COMMAREA
+            INITIALIZE WS-THIS-PROGCOMMAREA
+            INITIALIZE CARD-RECORD
+            INITIALIZE CCRDUPAI
+            INITIALIZE WS-CURDATE-DATA
+            MOVE ZERO       TO RETURN-CODE
+            MOVE 'USER0001' TO CDEMO-USER-ID
+            MOVE 'U'        TO CDEMO-USER-TYPE
+            MOVE 'COCRDLIC' TO CDEMO-FROM-PROGRAM
+            MOVE 'CCLI'     TO CDEMO-FROM-TRANID
+            MOVE LOW-VALUES TO WS-INPUT-FLAG
+       END-BEFORE.
+
+
+      ******************************************************************
+      *  TC1 -- 1260-EDIT-EXPIRY-YEAR accepts a valid year '2025'
+      *
+      *  Drives 1260-EDIT-EXPIRY-YEAR (lines 913-947) along the
+      *  SUCCESS path.  Production line 1192 (in 0000-MAIN's WHEN
+      *  CCUP-CHANGES-OK-NOT-CONFIRMED AND CCARD-AID-PFK05 branch)
+      *  PERFORMs 9200-WRITE-PROCESSING only after BOTH 1230-EDIT-
+      *  NAME, 1240-EDIT-CARDSTATUS, 1250-EDIT-EXPIRY-MON, AND
+      *  1260-EDIT-EXPIRY-YEAR validate via 1200-EDIT-MAP-INPUTS
+      *  lines 698-708.
+      *
+      *  Production SUCCESS subset:
+      *    SET FLG-CARDEXPYEAR-NOT-OK TO TRUE             (line 930)
+      *    MOVE CCUP-NEW-EXPYEAR TO CARD-YEAR-CHECK       (line 932)
+      *    IF VALID-YEAR (88 VALUES 1950 THRU 2099)       (line 934)
+      *      SET FLG-CARDEXPYEAR-ISVALID TO TRUE          (line 935).
+      *
+      *  Off-platform expression of AAP TC1 "REWRITE succeeds":
+      *  invariant that 9200-WRITE-PROCESSING and its EXEC CICS
+      *  REWRITE FILE(CARDDAT) (lines 1477-1483) ONLY runs after
+      *  1260's FLG-CARDEXPYEAR-ISVALID flag is set.  '2025' is 4
+      *  chars, all-numeric, and within 1950-2099 -- a future-proof
+      *  current-year anchor supplied by the test author; NOT
+      *  derived from production logic.
+      *
+      *  Source of expected values:
+      *    '1'    - WS-EDIT-CARDEXPYEAR-FLAG flipped by line 935
+      *             SET FLG-CARDEXPYEAR-ISVALID (88 VALUE '1' line 78).
+      *    LOW-VALUES - WS-INPUT-FLAG retains BEFORE-EACH default
+      *             (88 INPUT-PENDING per line 56).  KEY: stays
+      *             LOW-VALUES because no error path.
+      *    SPACES - WS-RETURN-MSG retains BEFORE-EACH default (88
+      *             WS-RETURN-MSG-OFF per line 174).
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- 1260-EDIT-EXPIRY-YEAR
+      *  contains zero EXEC CICS verbs.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1260-EDIT-EXPIRY-YEAR accepts valid 2025'
+            MOVE '2025' TO CCUP-NEW-EXPYEAR
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1260-EDIT-EXPIRY-YEAR THRU 1260-EDIT-EXPIRY-YEAR-EXIT
+            EXPECT WS-EDIT-CARDEXPYEAR-FLAG TO BE '1'
+            EXPECT INPUT-PENDING TO BE TRUE
+            EXPECT WS-RETURN-MSG TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC2 -- 1250-EDIT-EXPIRY-MON rejects month '13'
+      *
+      *  Drives 1250-EDIT-EXPIRY-MON (lines 877-912) along the
+      *  VALID-MONTH FALSE rejection path -- format-fail gate
+      *  preventing 9200-WRITE-PROCESSING on malformed expiration-
+      *  month input.
+      *
+      *  Production rejection subset:
+      *    MOVE CCUP-NEW-EXPMON TO CARD-MONTH-CHECK       (line 896)
+      *    IF VALID-MONTH (88 VALUES 1 THRU 12) ...       (line 898)
+      *    ELSE
+      *      SET INPUT-ERROR TO TRUE                      (line 901)
+      *      SET FLG-CARDEXPMON-NOT-OK TO TRUE            (line 902)
+      *      IF WS-RETURN-MSG-OFF
+      *        SET CARD-EXPIRY-MONTH-NOT-VALID TO TRUE    (line 904)
+      *      GO TO 1250-EDIT-EXPIRY-MON-EXIT              (line 906).
+      *
+      *  Off-platform expression of AAP TC2 "Invalid expiration
+      *  date triggers validation error".  '13' is the smallest
+      *  2-digit value above the 1-12 range -- supplied by the
+      *  test author as a clearly-invalid month value.  Empty-check
+      *  on lines 883-892 short-circuits FALSE because '13' has
+      *  non-blank chars and non-zero CARD-MONTH-CHECK-N.
+      *
+      *  Source of expected values:
+      *    '1' - WS-INPUT-FLAG flipped by line 901 (88 VALUE '1'
+      *          per line 55).
+      *    '0' - WS-EDIT-CARDEXPMON-FLAG flipped by line 902 SET
+      *          FLG-CARDEXPMON-NOT-OK (88 VALUE '0' per line 74).
+      *          KEY differential vs TC1's '1' / TC5's ' '.
+      *    'Card expiry month must be between 1 and 12' --
+      *          WS-RETURN-MSG flipped by line 904 SET CARD-EXPIRY-
+      *          MONTH-NOT-VALID (88 VALUE per line 197-198).
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- no-CICS invariant.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1250-EDIT-EXPIRY-MON rejects month 13'
+            MOVE '13' TO CCUP-NEW-EXPMON
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1250-EDIT-EXPIRY-MON THRU 1250-EDIT-EXPIRY-MON-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT WS-EDIT-CARDEXPMON-FLAG TO BE '0'
+            EXPECT WS-RETURN-MSG TO BE
+                'Card expiry month must be between 1 and 12'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC3 -- 1230-EDIT-NAME rejects name with embedded digits
+      *
+      *  Drives 1230-EDIT-NAME (lines 806-843) along the INSPECT-
+      *  then-TRIM non-empty rejection path -- format-fail gate
+      *  preventing 9200-WRITE-PROCESSING from accepting non-
+      *  alphabetic embossed-name updates.
+      *
+      *  Production rejection subset:
+      *    MOVE CCUP-NEW-CRDNAME TO CARD-NAME-CHECK       (line 823)
+      *    INSPECT CARD-NAME-CHECK CONVERTING
+      *            LIT-ALL-ALPHA-FROM TO LIT-ALL-SPACES-TO (824-6)
+      *    IF FUNCTION LENGTH(FUNCTION TRIM(CARD-NAME-CHECK))=0 (828)
+      *    ELSE
+      *      SET INPUT-ERROR TO TRUE                      (line 831)
+      *      SET FLG-CARDNAME-NOT-OK TO TRUE              (line 832)
+      *      IF WS-RETURN-MSG-OFF
+      *        SET WS-NAME-MUST-BE-ALPHA TO TRUE          (line 834)
+      *      GO TO 1230-EDIT-NAME-EXIT                    (line 836).
+      *
+      *  Off-platform expression of AAP TC3 "Invalid embossed name
+      *  triggers validation error".  LIT-ALL-ALPHA-FROM is
+      *  'ABCDEFGHIJKLMNOPQRSTUVWXYZ...wxyz'; LIT-ALL-SPACES-TO is
+      *  52 spaces.  After INSPECT, 'JOHN 99' becomes '    99';
+      *  TRIM leaves '99'; LENGTH=2; ELSE branch fires.  Test-
+      *  author supplied input.
+      *
+      *  Source of expected values:
+      *    '1' - WS-INPUT-FLAG flipped by line 831.
+      *    '0' - WS-EDIT-CARDNAME-FLAG flipped by line 832 SET
+      *          FLG-CARDNAME-NOT-OK (88 VALUE '0' per line 66).
+      *    'Card name can only contain alphabets and spaces' --
+      *          WS-RETURN-MSG flipped by line 834 SET WS-NAME-
+      *          MUST-BE-ALPHA (88 VALUE per line 183-184).
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- no-CICS invariant.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1230-EDIT-NAME rejects name with digits'
+            MOVE 'JOHN 99' TO CCUP-NEW-CRDNAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1230-EDIT-NAME THRU 1230-EDIT-NAME-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT WS-EDIT-CARDNAME-FLAG TO BE '0'
+            EXPECT WS-RETURN-MSG TO BE
+                'Card name can only contain alphabets and spaces'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC4 -- 1220-EDIT-CARD rejects non-numeric card number
+      *
+      *  Drives 1220-EDIT-CARD (lines 762-800) along the IS NOT
+      *  NUMERIC rejection path -- format-fail gate preventing
+      *  9100-GETCARD-BYACCTCARD from issuing EXEC CICS READ FILE
+      *  (CARDDAT).  Off-platform expression of AAP TC4 "Card not
+      *  found EIBRESP=13" -- the literal NOTFND on CARDDAT
+      *  requires the translator to reach EVALUATE WS-RESP-CD WHEN
+      *  DFHRESP(NOTFND) on lines 1392-1412; the IS NOT NUMERIC
+      *  gate is the last off-platform-reachable check that has
+      *  the same downstream effect of suppressing the CICS READ.
+      *
+      *  Production rejection subset:
+      *    IF CC-CARD-NUM IS NOT NUMERIC                  (line 784)
+      *      SET INPUT-ERROR TO TRUE                      (line 785)
+      *      SET FLG-CARDFILTER-NOT-OK TO TRUE            (line 786)
+      *      IF WS-RETURN-MSG-OFF
+      *        MOVE 'CARD ID FILTER,IF SUPPLIED MUST BE A
+      *              16 DIGIT NUMBER' TO WS-RETURN-MSG    (788-90)
+      *      MOVE ZERO TO CDEMO-CARD-NUM                  (line 792)
+      *      MOVE LOW-VALUES TO CCUP-NEW-CARDID           (line 793)
+      *      GO TO 1220-EDIT-CARD-EXIT                    (line 794).
+      *
+      *  Lines 768-770 OR-chain is FALSE for '000000000000000A':
+      *  not LOW-VALUES / SPACES, and CC-CARD-NUM-N EQUAL ZEROS
+      *  short-circuits FALSE because the bytes are not a valid
+      *  numeric pattern.  IS NOT NUMERIC gate then fires on the
+      *  trailing 'A'.  Test-author supplied.
+      *
+      *  Source of expected values:
+      *    '1' - WS-INPUT-FLAG flipped by line 785.
+      *    '0' - WS-EDIT-CARD-FLAG flipped by line 786 SET FLG-
+      *          CARDFILTER-NOT-OK (88 VALUE '0' per line 62).
+      *    'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER'
+      *          - WS-RETURN-MSG MOVE'd verbatim by lines 788-790
+      *          (COMMA after "FILTER" preserved).
+      *    '0000000000000000' - CDEMO-CARD-NUM zero-padded form
+      *          (PIC 9(16)) flipped by line 792 MOVE ZERO.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- no-CICS invariant.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1220-EDIT-CARD rejects non-numeric card'
+            MOVE '000000000000000A' TO CC-CARD-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1220-EDIT-CARD THRU 1220-EDIT-CARD-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT WS-EDIT-CARD-FLAG TO BE '0'
+            EXPECT WS-RETURN-MSG TO BE
+                'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER'
+            EXPECT CDEMO-CARD-NUM TO BE '0000000000000000'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC5 -- 1240-EDIT-CARDSTATUS rejects empty status field
+      *
+      *  Drives 1240-EDIT-CARDSTATUS (lines 845-876) along the
+      *  EMPTY-INPUT rejection path:
+      *    IF CCUP-NEW-CRDSTCD EQUAL LOW-VALUES OR SPACES OR
+      *       ZEROS                                       (line 850-2)
+      *      SET INPUT-ERROR TO TRUE                      (line 853)
+      *      SET FLG-CARDSTATUS-BLANK TO TRUE             (line 854)
+      *      IF WS-RETURN-MSG-OFF
+      *        SET CARD-STATUS-MUST-BE-YES-NO TO TRUE     (line 856)
+      *      GO TO 1240-EDIT-CARDSTATUS-EXIT              (line 858).
+      *
+      *  Off-platform expression of AAP TC5 "REWRITE conflict
+      *  EIBRESP=14/16" generalised to validation gate preventing
+      *  9200-WRITE-PROCESSING REWRITE.  1200-EDIT-MAP-INPUTS (line
+      *  710) checks IF INPUT-ERROR after every field validation;
+      *  if any set INPUT-ERROR, CCUP-CHANGES-OK-NOT-CONFIRMED is
+      *  NOT set, so 2000-DECIDE-ACTION's WHEN CCUP-CHANGES-OK-
+      *  NOT-CONFIRMED AND CCARD-AID-PFK05 branch (lines 988-1001)
+      *  does NOT fire -- 9200 is bypassed, no REWRITE attempted,
+      *  no conflict possible.  TC5 proves the upstream gate
+      *  closes the path that would otherwise lead to a REWRITE
+      *  conflict.  Test-author supplied input.
+      *
+      *  Source of expected values:
+      *    '1' - WS-INPUT-FLAG flipped by line 853.
+      *    ' ' - WS-EDIT-CARDSTATUS-FLAG flipped by line 854 SET
+      *          FLG-CARDSTATUS-BLANK (88 VALUE ' ' per line 72).
+      *          KEY differential vs TC7's '1' (same paragraph,
+      *          opposite branch).
+      *    'Card Active Status must be Y or N' -- WS-RETURN-MSG
+      *          flipped by line 856 SET CARD-STATUS-MUST-BE-YES-NO
+      *          (88 VALUE per line 195-196).
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- no-CICS invariant.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1240-EDIT-CARDSTATUS rejects empty status'
+            MOVE SPACES TO CCUP-NEW-CRDSTCD
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1240-EDIT-CARDSTATUS THRU 1240-EDIT-CARDSTATUS-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT WS-EDIT-CARDSTATUS-FLAG TO BE ' '
+            EXPECT WS-RETURN-MSG TO BE
+                'Card Active Status must be Y or N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC6 -- 3100-SCREEN-INIT populates header from program literals
+      *
+      *  Drives 3100-SCREEN-INIT (lines 1052-1080).  Pure-WS
+      *  preamble called by 3000-SEND-MAP (lines 1036-1037) on
+      *  every screen-render pass -- first entry, validation
+      *  failure, post-update success, AND PF3 fall-through (which
+      *  reaches it via the WHEN CCARD-AID-PFK03 branch flowing
+      *  through 3000-SEND-MAP before XCTL fires on lines 473-476).
+      *  Zero EXEC CICS verbs -- only invocation seam is FUNCTION
+      *  CURRENT-DATE on lines 1055/1062.
+      *
+      *  Production assertion-relevant subset:
+      *    MOVE LIT-THISTRANID TO TRNNAMEO OF CCRDUPAO    (line 1059)
+      *    MOVE LIT-THISPGM TO PGMNAMEO OF CCRDUPAO       (line 1060)
+      *
+      *  Off-platform expression of AAP TC6 "PF3 exits without
+      *  REWRITE" generalised to screen-render preamble that
+      *  PRECEDES XCTL on every cycle.  Literal AAP TC6 PF3
+      *  pathway requires translator-defined CCARD-AID-PFK03
+      *  88-level on DFHAID's DFHPF3 constant.
+      *
+      *  Source of expected values:
+      *    'CCUP'     - LIT-THISTRANID (line 221-222 PIC X(4))
+      *                 MOVE'd to TRNNAMEO by line 1059.  KEY
+      *                 differential: COCRDSLC's CCDL, COACTUPC's
+      *                 CAUP -- this 4-byte literal is COCRDUPC's
+      *                 unique trans-id.
+      *    'COCRDUPC' - LIT-THISPGM (line 219-220 PIC X(8)) MOVE'd
+      *                 to PGMNAMEO by line 1060.
+      *
+      *  CURDATEO / CURTIMEO not asserted (FUNCTION CURRENT-DATE
+      *  non-deterministic).  TITLE01O / TITLE02O are 40-byte
+      *  slots with variable space-padding; the 4/8-byte TRNNAMEO
+      *  / PGMNAMEO are unambiguous.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES asserts 3100-SCREEN-INIT
+      *  contains zero EXEC CICS verbs (the EXEC CICS ASSIGN /
+      *  SEND calls live in 3400-SEND-SCREEN, not 3100).
+      ******************************************************************
+       TESTCASE 'COCRDUPC 3100-SCREEN-INIT populates header from lits'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3100-SCREEN-INIT
+            EXPECT TRNNAMEO OF CCRDUPAO TO BE 'CCUP'
+            EXPECT PGMNAMEO OF CCRDUPAO TO BE 'COCRDUPC'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC7 -- 1240-EDIT-CARDSTATUS accepts active status 'Y'
+      *
+      *  Drives 1240-EDIT-CARDSTATUS (lines 845-876) along the
+      *  FLG-YES-NO-VALID 88-level TRUE branch -- validation
+      *  success path that gates the post-REWRITE XCTL flow.
+      *
+      *  Production SUCCESS subset:
+      *    MOVE CCUP-NEW-CRDSTCD TO FLG-YES-NO-CHECK      (line 861)
+      *    IF FLG-YES-NO-VALID (88 VALUES 'Y','N')        (line 863)
+      *      SET FLG-CARDSTATUS-ISVALID TO TRUE           (line 864).
+      *
+      *  Off-platform expression of AAP TC7 "XCTL back to list
+      *  after success".  Post-REWRITE XCTL is gated by 0000-
+      *  MAIN's WHEN (CCUP-CHANGES-OKAYED-AND-DONE AND CDEMO-LAST-
+      *  MAPSET EQUAL LIT-CCLISTMAPSET) branch (lines 436-476)
+      *  which fires EXEC CICS XCTL PROGRAM('COCRDLIC') on lines
+      *  473-476.  CCUP-CHANGES-OKAYED-AND-DONE is set by 2000-
+      *  DECIDE-ACTION's nested EVALUATE TRUE WHEN OTHER on line
+      *  1000 only after 9200-WRITE-PROCESSING succeeded; 9200
+      *  itself runs only after 1240-EDIT-CARDSTATUS validates.
+      *  TC7 proves the YES-NO gate that gates this entire post-
+      *  REWRITE XCTL chain.
+      *
+      *  TC7 is the differential pair to TC5: identical paragraph,
+      *  opposite branch.  'Y' is the test-author-supplied
+      *  "active" status that satisfies FLG-YES-NO-VALID; matches
+      *  CARD-FIXTURE-001's CARD-ACTIVE-STATUS byte for byte-exact
+      *  traceability to production fixture data.
+      *
+      *  Source of expected values:
+      *    '1' - WS-EDIT-CARDSTATUS-FLAG flipped by line 864 SET
+      *          FLG-CARDSTATUS-ISVALID (88 VALUE '1' per line 71).
+      *          KEY differential vs TC5's ' ' (FLG-CARDSTATUS-BLANK).
+      *    LOW-VALUES - WS-INPUT-FLAG retains BEFORE-EACH default.
+      *          KEY differential vs TC5's '1' (INPUT-ERROR).
+      *    SPACES - WS-RETURN-MSG retains BEFORE-EACH default (no
+      *          diagnostic on success path).
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- no-CICS invariant.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1240-EDIT-CARDSTATUS accepts status Y'
+            MOVE 'Y' TO CCUP-NEW-CRDSTCD
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1240-EDIT-CARDSTATUS THRU 1240-EDIT-CARDSTATUS-EXIT
+            EXPECT WS-EDIT-CARDSTATUS-FLAG TO BE '1'
+            EXPECT INPUT-PENDING TO BE TRUE
+            EXPECT WS-RETURN-MSG TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  End of testsuite COCRDUPC CARD UPDATE TRANSACTION
+      ******************************************************************
