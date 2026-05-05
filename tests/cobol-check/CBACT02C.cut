@@ -1,0 +1,578 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : CBACT02C CARD-FILE SEQUENTIAL DUMP
+      *  Program-under-test : app/cbl/CBACT02C.cbl
+      *
+      *  Purpose
+      *  -------
+      *  Exercise the testable production paragraphs of CBACT02C --
+      *  the CardDemo batch dumper that opens CARDFILE-FILE (VSAM
+      *  KSDS CARDDAT), reads it sequentially, DISPLAYs each
+      *  CARD-RECORD, and CLOSEs the file.  Five production
+      *  paragraphs are covered by direct PERFORM-based tests:
+      *
+      *    0000-CARDFILE-OPEN      lines 118-134; OPEN INPUT;
+      *                            success -> APPL-RESULT = 0;
+      *                            failure -> APPL-RESULT = 12 +
+      *                            PERFORM 9999-ABEND-PROGRAM.
+      *    1000-CARDFILE-GET-NEXT  lines 92-116; READ INTO record;
+      *                            '00' -> APPL-RESULT = 0;
+      *                            '10' -> APPL-RESULT = 16 +
+      *                            END-OF-FILE = 'Y';
+      *                            other -> APPL-RESULT = 12 +
+      *                            PERFORM 9999-ABEND-PROGRAM.
+      *    9000-CARDFILE-CLOSE     lines 136-152; CLOSE;
+      *                            '00' -> APPL-RESULT = 0;
+      *                            other -> APPL-RESULT = 12 +
+      *                            PERFORM 9999-ABEND-PROGRAM.
+      *    9910-DISPLAY-IO-STATUS  lines 161-174; formats IO-STATUS
+      *                            into 4-byte IO-STATUS-04 via
+      *                            ELSE-arm overlay or THEN-arm
+      *                            TWO-BYTES-BINARY pack.
+      *    9999-ABEND-PROGRAM      lines 154-158; LE abend wrapper
+      *                            invoked transitively from the
+      *                            error branches above; CALLs
+      *                            'CEE3ABD' (mocked per-testcase).
+      *
+      *  Note on cobol-check 0.2.16 file-I/O handling
+      *  --------------------------------------------
+      *  The framework's TestSuiteParser strips OPEN / READ / WRITE
+      *  / REWRITE / CLOSE statements to bare CONTINUE in the merged
+      *  source.  This means the production file-I/O verbs do NOT
+      *  execute at test time; CARDFILE-STATUS retains whatever the
+      *  testcase prelude MOVEd into it.  Each testcase therefore
+      *  pre-sets CARDFILE-STATUS to drive the production IF / ELSE
+      *  arms deterministically, mirroring the canonical convention
+      *  in tests/cobol-check/CBCUS01C.cut TC6-TC8.
+      *
+      *  External dependencies mocked or stubbed
+      *  ---------------------------------------
+      *    * MOCK CALL 'CEE3ABD' (per-testcase, Local scope) --
+      *      replaces the IBM Language Environment abend service
+      *      with a no-op CONTINUE body so the test process is
+      *      not torn down when 9999-ABEND-PROGRAM is reached.
+      *      cobol-check 0.2.16 binds the mock to the surrounding
+      *      TESTCASE so the matching VERIFY clause inside the
+      *      same testcase resolves to the per-testcase Local
+      *      mock with the per-testcase expected count.  The
+      *      pattern follows tests/cobol-check/CBSTM03A.cut TC6
+      *      and tests/cobol-check/CBCUS01C.cut TC1-TC8.
+      *
+      *  Internal CBACT02C paragraphs (0000-CARDFILE-OPEN,
+      *  1000-CARDFILE-GET-NEXT, 9000-CARDFILE-CLOSE, 9999-ABEND-
+      *  PROGRAM, 9910-DISPLAY-IO-STATUS) are NEVER mocked.  Each
+      *  TESTCASE exercises a production paragraph LIVE via PERFORM
+      *  so every assertion validates side effects of actual
+      *  production-code execution (per AAP Section 0.10.1 -- "Mock
+      *  or stub ONLY external dependencies").
+      *
+      *  Why no `COPY STUB-ABEND-FLAG.` at testsuite scope
+      *  -------------------------------------------------
+      *  cobol-check 0.2.16's TestSuiteParser does not recognise
+      *  file-scope COPY directives in .cut testsuites; a bare COPY
+      *  at testsuite level is parsed as a fieldname token and
+      *  aborts the merge.  COPY directives are honoured only inside
+      *  MOCK ... END-MOCK bodies and inside the production source
+      *  itself.  Consequently the testsuite cannot reference WS-
+      *  ABEND-FLAG / WS-ABEND-CODE directly via EXPECT clauses; the
+      *  abend pathway is asserted instead via VERIFY CALL 'CEE3ABD'
+      *  HAPPENED ONCE.  The CEE3ABD stub at tests/stubs/CEE3ABD.cbl
+      *  is still pre-compiled and linked into the merged binary so
+      *  any unmocked CALL 'CEE3ABD' resolves at load time and
+      *  GOBACKs without terminating the test process.  This
+      *  rationale matches tests/cobol-check/CBCUS01C.cut.
+      *
+      *  CARD-FIXTURE-001 placement (forward-compatibility)
+      *  --------------------------------------------------
+      *  CARD-FIXTURE-001.cpy supplies byte-exact MOVE statements
+      *  populating CARD-RECORD with the 150-byte record 1 of
+      *  app/data/ASCII/carddata.txt.  The AAP Section 0.6.2 import
+      *  schema designates this fixture as a build-time dependency
+      *  of TC3 (1000-CARDFILE-GET-NEXT happy path), with the stated
+      *  mechanism being `COPY CARD-FIXTURE-001` inside a MOCK FILE
+      *  CARDFILE-FILE ON READ ... END-MOCK block.
+      *
+      *  cobol-check 0.2.16 limitation
+      *    The framework does NOT support MOCK FILE directives;
+      *    only MOCK CALL / MOCK PARAGRAPH / MOCK SECTION are
+      *    implemented.  Furthermore, including `COPY CARD-FIXTURE-
+      *    001` inside any MOCK ... END-MOCK body causes the merged
+      *    binary's GnuCOBOL compile to fail with `'UT-1-N-1-MOCK'
+      *    is not defined` errors due to the parser's inability to
+      *    resolve the period-after-COPY paragraph terminator.  The
+      *    same limitation also affects tests/cobol-check/CBSTM03A.
+      *    cut TC2/TC3 (their COPY ACCT-FIXTURE-001 / COPY CUST-
+      *    FIXTURE-001 directives produce identical compile errors).
+      *
+      *  Adopted convention
+      *    To deliver REAL test execution (per the user directive in
+      *    AAP Section 0.10.1: "Test assertions must validate return
+      *    values and side effects of actual production code
+      *    execution"), this testsuite OMITS the physical COPY
+      *    directive from TC3's mock body.  The fixture is referenced
+      *    only via this header comment and via the testsuite's
+      *    depends_on_files schema entry, mirroring the
+      *    forward-compatibility convention documented in
+      *    tests/cobol-check/COACTVWC.cut at lines 237-243 (which
+      *    references CUST-FIXTURE-001 / ACCT-FIXTURE-001 in
+      *    comments only, pending a future cobol-check translator
+      *    upgrade that adds MOCK FILE).  TC3 EXPECTs check
+      *    APPL-RESULT and END-OF-FILE -- side effects of the
+      *    production-paragraph IF dispatch -- not CARD-RECORD byte
+      *    content, so the test outcome is independent of whether
+      *    the fixture MOVEs execute.  When cobol-check adds MOCK
+      *    FILE support, this testsuite will be revised to splice
+      *    the fixture into a MOCK FILE CARDFILE-FILE ON READ block
+      *    and add EXPECT clauses against CARD-RECORD(start:length)
+      *    byte ranges.
+      *
+      *  Test categories
+      *  ---------------
+      *    TC1 - 0000-CARDFILE-OPEN '00' -> APPL-RESULT 0; no abend
+      *    TC2 - 0000-CARDFILE-OPEN '99' -> APPL-RESULT 12; abend
+      *    TC3 - 1000-CARDFILE-GET-NEXT '00' -> APPL-RESULT 0;
+      *          CARD-FIXTURE-001 attached; END-OF-FILE 'N'
+      *    TC4 - 1000-CARDFILE-GET-NEXT '10' -> APPL-RESULT 16;
+      *          END-OF-FILE flips to 'Y'; no abend
+      *    TC5 - 1000-CARDFILE-GET-NEXT '92' -> APPL-RESULT 12;
+      *          abend HAPPENED ONCE
+      *    TC6 - 9000-CARDFILE-CLOSE '00' -> APPL-RESULT 0; no abend
+      *    TC7 - 9000-CARDFILE-CLOSE '99' -> APPL-RESULT 12; abend
+      *    TC8 - 9910-DISPLAY-IO-STATUS '23' -> IO-STATUS-04 '0023'
+      *
+      *  References
+      *  ----------
+      *    AAP Sections 0.10.1, 0.5.1, 0.7.1, 0.10.2, 0.4.1, 0.6.2
+      *    app/cbl/CBACT02C.cbl lines 92-116  (1000-GET-NEXT)
+      *    app/cbl/CBACT02C.cbl lines 118-134 (0000-OPEN)
+      *    app/cbl/CBACT02C.cbl lines 136-152 (9000-CLOSE)
+      *    app/cbl/CBACT02C.cbl lines 154-158 (9999-ABEND-PROGRAM)
+      *    app/cbl/CBACT02C.cbl lines 161-174 (9910-DISPLAY-IO)
+      *    app/cpy/CVACT02Y.cpy            (CARD-RECORD layout)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy (link-time stub state)
+      *    tests/stubs/CEE3ABD.cbl         (LE abend stub)
+      *    tests/fixtures/cobol-snippets/CARD-FIXTURE-001.cpy
+      *    tests/cobol-check/CBCUS01C.cut  (sister read-only exempl)
+      *    tests/cobol-check/CBSTM03A.cut  (CEE3ABD mock pattern)
+      ******************************************************************
+
+       TESTSUITE 'CBACT02C CARD-FILE SEQUENTIAL DUMP'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset
+      *
+      *  Restores deterministic baseline state so every TESTCASE
+      *  starts from a known, identical configuration.  cobol-check
+      *  0.2.16 resets MOCK invocation counters automatically;
+      *  this block resets the application-level fields the
+      *  production code reads or writes:
+      *
+      *    CARDFILE-STATUS  2-byte VSAM file-status group; cleared
+      *                     to SPACES.  Each testcase prelude then
+      *                     MOVEs '00' / '10' / '92' / '99' to drive
+      *                     production IF arms (OPEN/READ/CLOSE are
+      *                     stripped to CONTINUE so runtime never
+      *                     assigns this field).
+      *    IO-STATUS        2-byte error buffer copied from
+      *                     CARDFILE-STATUS by error branches and
+      *                     consumed by 9910-DISPLAY-IO-STATUS.
+      *                     TC8 MOVEs '23' before invoking 9910
+      *                     directly.
+      *    CARD-RECORD      150-byte CVACT02Y group; cleared so any
+      *                     post-PERFORM EXPECT against record
+      *                     content sees a known baseline.  No TC
+      *                     asserts on CARD-RECORD content.
+      *    IO-STATUS-04     4-byte numeric-edited display field
+      *                     (IO-STATUS-0401 PIC 9 + IO-STATUS-0403
+      *                     PIC 999); cleared to '0000' for the TC8
+      *                     formatter test.
+      *    APPL-RESULT      PIC S9(9) COMP scratch; APPL-AOK
+      *                     (88-level VALUE 0) and APPL-EOF (VALUE
+      *                     16).  Each testcase additionally MOVEs
+      *                     sentinel 7777 before PERFORM so the
+      *                     post-condition (0/12/16) is provably a
+      *                     production side effect, not an
+      *                     INITIALIZE residue.
+      *    ABCODE / TIMING  PIC S9(9) BINARY; INITIALIZE -> 0;
+      *                     production 9999-ABEND-PROGRAM lines
+      *                     156-157 set TIMING=0 / ABCODE=999 in
+      *                     TC2/TC5/TC7.
+      *    END-OF-FILE      PIC X main-loop EOF flag; restored to
+      *                     literal 'N' (the original VALUE) after
+      *                     INITIALIZE clears it to a SPACE.  TC4
+      *                     watches it flip to 'Y'.
+      *    RETURN-CODE      implicit special register; reset to
+      *                     ZERO for deterministic post-test
+      *                     inspection.
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE CARDFILE-STATUS
+            INITIALIZE IO-STATUS
+            INITIALIZE CARD-RECORD
+            INITIALIZE IO-STATUS-04
+            INITIALIZE APPL-RESULT
+            INITIALIZE ABCODE
+            INITIALIZE TIMING
+            MOVE 'N'  TO END-OF-FILE
+            MOVE ZERO TO RETURN-CODE
+       END-BEFORE.
+
+      ******************************************************************
+      *  TC1 -- 0000-CARDFILE-OPEN success: APPL-RESULT = 0
+      *
+      *  PERFORMs 0000-CARDFILE-OPEN (CBACT02C.cbl lines 118-134).
+      *  Pre-setting CARDFILE-STATUS = '00' drives the production
+      *  IF guard at line 121 to its THEN branch:
+      *      MOVE 8 TO APPL-RESULT       (line 119, seed)
+      *      OPEN INPUT CARDFILE-FILE    (line 120; stripped to
+      *                                  CONTINUE by cobol-check)
+      *      IF CARDFILE-STATUS = '00'   (line 121)
+      *          MOVE 0 TO APPL-RESULT   (line 122) <-- success
+      *      ELSE
+      *          MOVE 12 TO APPL-RESULT  (line 124)
+      *      END-IF
+      *      IF APPL-AOK CONTINUE        (line 126-127) <-- exits
+      *      ELSE PERFORM 9999-ABEND-PROGRAM
+      *
+      *  TC1 prelude
+      *    MOVE '00' TO CARDFILE-STATUS  -- forces SUCCESS branch
+      *    MOVE 7777 TO APPL-RESULT      -- sentinel; overwritten
+      *                                     by line 119 (-> 8) then
+      *                                     line 122 (-> 0).
+      *
+      *  Source of expected value
+      *    0  -- the production literal at line 122; not recomputed.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- the SUCCESS branch (CONTINUE at line
+      *              127) does not PERFORM 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBACT02C 0000-CARDFILE-OPEN success APPL-RESULT 0'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO CARDFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0000-CARDFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC2 -- 0000-CARDFILE-OPEN failure: APPL-RESULT = 12, abend
+      *
+      *  Mirror of TC1 with CARDFILE-STATUS = '99' (any non-'00'
+      *  sentinel) to force the line-121 IF ELSE arm.  Line 124
+      *  sets APPL-RESULT to 12; APPL-AOK evaluates false; the
+      *  error path runs through PERFORM 9999-ABEND-PROGRAM at
+      *  line 132 which CALLs CEE3ABD exactly once.  The non-'35'
+      *  sentinel keeps the test independent of GnuCOBOL's
+      *  missing-file convention.
+      *
+      *  TC1/TC2 differential
+      *    TC1 SUCCESS '00': APPL-RESULT = 0; CEE3ABD never called.
+      *    TC2 FAILURE '99': APPL-RESULT = 12; CEE3ABD once.
+      *  Together they prove BOTH branches of the line-121 IF.
+      *
+      *  Source of expected value
+      *    12 -- the production literal at line 124; not recomputed.
+      *
+      *  CEE3ABD verification
+      *    HAPPENED ONCE -- failure branch reaches line 132 PERFORM
+      *              9999-ABEND-PROGRAM, which CALLs CEE3ABD once.
+      ******************************************************************
+       TESTCASE 'CBACT02C 0000-CARDFILE-OPEN failure APPL-RESULT 12'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '99' TO CARDFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0000-CARDFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC3 -- 1000-CARDFILE-GET-NEXT happy: APPL-RESULT = 0
+      *
+      *  PERFORMs 1000-CARDFILE-GET-NEXT (CBACT02C.cbl lines 92-116)
+      *  with CARDFILE-STATUS = '00' to drive the SUCCESS branch:
+      *      READ CARDFILE-FILE INTO CARD-RECORD  (line 93;
+      *                                           stripped to
+      *                                           CONTINUE)
+      *      IF CARDFILE-STATUS = '00'            (line 94)
+      *          MOVE 0 TO APPL-RESULT            (line 95) <--
+      *      ELSE [IF '10' MOVE 16 ELSE MOVE 12]
+      *      IF APPL-AOK CONTINUE (line 105) <-- exits
+      *      ELSE [IF APPL-EOF MOVE 'Y' ELSE error path]
+      *
+      *  CARD-FIXTURE-001 reference (comment-only)
+      *    See the testsuite header for the rationale.  The fixture
+      *    is referenced as a build-time dependency via the
+      *    depends_on_files schema entry but is NOT physically
+      *    spliced into TC3's mock body, because cobol-check 0.2.16
+      *    fails to compile a merged binary that contains COPY
+      *    inside a MOCK ... END-MOCK block (the period-after-COPY
+      *    paragraph terminator is dropped by the parser, breaking
+      *    forward references to the next mock paragraph).  TC3's
+      *    EXPECT assertions check APPL-RESULT and END-OF-FILE --
+      *    side effects of the production IF dispatch -- not
+      *    CARD-RECORD byte content; the test outcome is therefore
+      *    independent of whether the fixture MOVEs execute.
+      *
+      *  TC3 prelude
+      *    MOVE '00' TO CARDFILE-STATUS  -- forces SUCCESS branch
+      *    MOVE 7777 TO APPL-RESULT      -- sentinel; overwritten
+      *                                     by line 95 (-> 0).
+      *
+      *  Source of expected values
+      *    APPL-RESULT = 0   -- production literal at line 95.
+      *    END-OF-FILE = 'N' -- BEFORE-EACH baseline; SUCCESS branch
+      *                          does not execute line-108 EOF MOVE.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- SUCCESS branch (CONTINUE at line 105)
+      *              does not PERFORM 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBACT02C 1000-CARDFILE-GET-NEXT happy APPL-RESULT 0'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO CARDFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-CARDFILE-GET-NEXT
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT END-OF-FILE TO BE 'N'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC4 -- 1000-CARDFILE-GET-NEXT EOF: END-OF-FILE flips to 'Y'
+      *
+      *  Mirror of TC3 with CARDFILE-STATUS = '10' to drive the EOF
+      *  branch.  Production line 99 sets APPL-RESULT to 16 (the
+      *  88-level VALUE for APPL-EOF declared at line 63).  APPL-AOK
+      *  evaluates false; APPL-EOF evaluates true; the line-108
+      *  MOVE flips END-OF-FILE to 'Y'.  The error pathway is NOT
+      *  taken on EOF.
+      *
+      *  TC3/TC4/TC5 differential
+      *    TC3 '00' SUCCESS: APPL-RESULT = 0,  END-OF-FILE = 'N'.
+      *    TC4 '10' EOF:     APPL-RESULT = 16, END-OF-FILE = 'Y'.
+      *    TC5 '92' ERROR:   APPL-RESULT = 12, abend HAPPENED ONCE.
+      *  Together they prove all three branches of the CARDFILE-
+      *  STATUS dispatch and the post-status APPL-AOK / APPL-EOF /
+      *  abend dispatch are reachable and correct.
+      *
+      *  TC4 prelude
+      *    MOVE '10' TO CARDFILE-STATUS  -- forces EOF branch
+      *    MOVE 7777 TO APPL-RESULT      -- sentinel; overwritten
+      *                                     by line 99 (-> 16).
+      *
+      *  Source of expected values
+      *    APPL-RESULT = 16  -- production literal at line 99
+      *                          (matches APPL-EOF VALUE).
+      *    END-OF-FILE = 'Y' -- production literal at line 108.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- EOF branch terminates without
+      *              invoking 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBACT02C 1000-CARDFILE-GET-NEXT EOF END-OF-FILE Y'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '10' TO CARDFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-CARDFILE-GET-NEXT
+            EXPECT APPL-RESULT TO BE 16
+            EXPECT END-OF-FILE TO BE 'Y'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC5 -- 1000-CARDFILE-GET-NEXT non-EOF error: abend pathway
+      *
+      *  Mirror of TC3/TC4 with CARDFILE-STATUS = '92' (GnuCOBOL
+      *  "logic error") to drive the fatal-error branch.  Production
+      *  line 101 sets APPL-RESULT to 12 (neither APPL-AOK nor
+      *  APPL-EOF); both 88-levels evaluate false, and the line-113
+      *  PERFORM 9999-ABEND-PROGRAM runs, CALLing CEE3ABD once.
+      *
+      *  TC5 prelude
+      *    MOVE '92' TO CARDFILE-STATUS  -- forces ERROR branch
+      *    MOVE 7777 TO APPL-RESULT      -- sentinel; overwritten
+      *                                     by line 101 (-> 12).
+      *
+      *  Source of expected value
+      *    12 -- the production literal at line 101; not recomputed.
+      *
+      *  CEE3ABD verification
+      *    HAPPENED ONCE -- ERROR branch reaches line 113 PERFORM
+      *              9999-ABEND-PROGRAM, which CALLs CEE3ABD once.
+      ******************************************************************
+       TESTCASE 'CBACT02C 1000-CARDFILE-GET-NEXT error APPL-RESULT 12'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '92' TO CARDFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-CARDFILE-GET-NEXT
+            EXPECT APPL-RESULT TO BE 12
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC6 -- 9000-CARDFILE-CLOSE success: APPL-RESULT = 0
+      *
+      *  PERFORMs 9000-CARDFILE-CLOSE (CBACT02C.cbl lines 136-152)
+      *  with CARDFILE-STATUS = '00' to drive the SUCCESS branch:
+      *      ADD 8 TO ZERO GIVING APPL-RESULT          (line 137)
+      *      CLOSE CARDFILE-FILE                       (line 138;
+      *                                                stripped to
+      *                                                CONTINUE)
+      *      IF CARDFILE-STATUS = '00'                 (line 139)
+      *          SUBTRACT APPL-RESULT FROM APPL-RESULT (line 140)
+      *      ELSE
+      *          ADD 12 TO ZERO GIVING APPL-RESULT     (line 142)
+      *      END-IF
+      *      IF APPL-AOK CONTINUE (line 145) <-- exits
+      *      ELSE PERFORM 9999-ABEND-PROGRAM
+      *
+      *  Lines 137, 140, 142 use ADD / SUBTRACT verbs INSIDE the
+      *  production paragraph being tested -- not test-side
+      *  recomputation -- so they do not violate the AAP "no
+      *  business logic in tests" rule.  The test merely PERFORMs
+      *  the paragraph and EXPECTs the post-state.
+      *
+      *  Branch flow on TC6
+      *    Line 137 seeds APPL-RESULT = 8.  Line 138 CLOSE is
+      *    stripped to CONTINUE so CARDFILE-STATUS retains '00'.
+      *    Line 139 IF takes the THEN branch and line 140
+      *    SUBTRACTs APPL-RESULT from itself (8 - 8 = 0).  APPL-AOK
+      *    evaluates true and line 145 CONTINUE executes.
+      *
+      *  TC6 prelude
+      *    MOVE '00' TO CARDFILE-STATUS  -- forces SUCCESS branch
+      *    MOVE 7777 TO APPL-RESULT      -- sentinel; overwritten
+      *                                     by line 137 (-> 8) then
+      *                                     line 140 (-> 0).
+      *
+      *  Source of expected value
+      *    0 -- the deterministic result of production-side SUBTRACT
+      *         at line 140 (x - x = 0); not recomputed by the test.
+      *         The 0 literal is a mathematical identity that the
+      *         test asserts the production code executed; it is
+      *         NOT a re-derivation of any business formula.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- SUCCESS branch (CONTINUE at line 145)
+      *              does not PERFORM 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBACT02C 9000-CARDFILE-CLOSE success APPL-RESULT 0'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO CARDFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9000-CARDFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC7 -- 9000-CARDFILE-CLOSE failure: APPL-RESULT = 12, abend
+      *
+      *  Mirror of TC6 with CARDFILE-STATUS = '99' to force the
+      *  line-139 IF ELSE branch.  Line 142 sets APPL-RESULT to 12
+      *  (the result of "ADD 12 TO ZERO GIVING").  APPL-AOK
+      *  evaluates false; the line-150 PERFORM 9999-ABEND-PROGRAM
+      *  runs, CALLing CEE3ABD exactly once.
+      *
+      *  TC6/TC7 differential
+      *    TC6 SUCCESS '00': APPL-RESULT = 0;  CEE3ABD never called.
+      *    TC7 FAILURE '99': APPL-RESULT = 12; CEE3ABD once.
+      *  Together they prove BOTH branches of the line-139 IF.
+      *
+      *  TC7 prelude
+      *    MOVE '99' TO CARDFILE-STATUS  -- forces FAILURE branch
+      *    MOVE 7777 TO APPL-RESULT      -- sentinel; overwritten
+      *                                     by line 137 (-> 8) then
+      *                                     line 142 (-> 12).
+      *
+      *  Source of expected value
+      *    12 -- the production literal at line 142 (the immediate
+      *          result of "ADD 12 TO ZERO GIVING APPL-RESULT");
+      *          not recomputed by the test.
+      *
+      *  CEE3ABD verification
+      *    HAPPENED ONCE -- FAILURE branch reaches line 150 PERFORM
+      *              9999-ABEND-PROGRAM, which CALLs CEE3ABD once.
+      ******************************************************************
+       TESTCASE 'CBACT02C 9000-CARDFILE-CLOSE failure APPL-RESULT 12'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '99' TO CARDFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9000-CARDFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC8 -- 9910-DISPLAY-IO-STATUS formats numeric '23' as '0023'
+      *
+      *  PERFORMs 9910-DISPLAY-IO-STATUS (CBACT02C.cbl lines 161-174)
+      *  with IO-STATUS = '23' (numeric, first byte != '9') to
+      *  drive the ELSE arm:
+      *      IF IO-STATUS NOT NUMERIC OR IO-STAT1 = '9'  (162-163)
+      *          [THEN arm: TWO-BYTES-BINARY pack]
+      *      ELSE
+      *          MOVE '0000'    TO IO-STATUS-04          (line 170)
+      *          MOVE IO-STATUS TO IO-STATUS-04(3:2)     (line 171)
+      *          DISPLAY ...
+      *      END-IF
+      *      EXIT.                                       (line 174)
+      *
+      *  IO-STATUS = '23' is numeric (NOT NUMERIC false) and
+      *  IO-STAT1 = '2' (not '9') so the OR-guard evaluates false
+      *  and the ELSE arm executes.  Line 170 MOVEs literal '0000'
+      *  into IO-STATUS-04; line 171 reference-modifies positions
+      *  3-4 with '23', yielding '0023'.
+      *
+      *  Source of expected value
+      *    '0023' -- the production literal '0000' MOVEd at line
+      *              170, with the test-author IO-STATUS = '23'
+      *              overlaid at positions 3-4 by the production
+      *              reference-modified MOVE at line 171.  Directly
+      *              observable from the production MOVEs; the test
+      *              does not recompute or paraphrase the formatting.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- 9910-DISPLAY-IO-STATUS contains no
+      *              CALL site for CEE3ABD; the abend service must
+      *              not be reached from this paragraph.
+      ******************************************************************
+       TESTCASE 'CBACT02C 9910-DISPLAY-IO-STATUS formats numeric 23'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '23' TO IO-STATUS
+            PERFORM 9910-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04 TO BE '0023'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  End of testsuite CBACT02C CARD-FILE SEQUENTIAL DUMP
+      ******************************************************************
