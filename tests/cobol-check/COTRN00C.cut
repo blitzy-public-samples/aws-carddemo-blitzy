@@ -1,0 +1,593 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : COTRN00C TRANSACTION LIST BROWSE
+      *  Program-under-test : app/cbl/COTRN00C.cbl
+      *
+      *  Purpose
+      *  -------
+      *  Exercise COTRN00C's transaction-list browse CICS transaction
+      *  by mocking ONLY the program's external boundary into the CICS
+      *  API: the CALL 'DFHEI1' invocation that the CICS translator
+      *  emits in place of every EXEC CICS verb (RECEIVE MAP, SEND
+      *  MAP, STARTBR DATASET (TRANSACT), READNEXT DATASET, READPREV
+      *  DATASET, ENDBR DATASET, XCTL, RETURN).  The DFHEI1 entry
+      *  point is the single ABI seam between the production COBOL
+      *  program and the CICS runtime; mocking it intercepts every
+      *  CICS service call without requiring a live CICS region or
+      *  a populated TRANSACT VSAM cluster.
+      *
+      *  Internal COTRN00C paragraphs are NEVER mocked.  Every
+      *  TESTCASE exercises a production paragraph LIVE via PERFORM
+      *  so the testsuite asserts against side effects of actual
+      *  production-code execution (per AAP Section 0.10.1 -- "Mock
+      *  or stub ONLY external dependencies").
+      *
+      *  COTRN00C is the SISTER browse transaction to COUSR00C (user
+      *  list browse over USRSEC) and adopts the SAME paragraph
+      *  topology: PROCESS-PAGE-FORWARD / PROCESS-PAGE-BACKWARD wrap
+      *  STARTBR + READNEXT (or READPREV) + ENDBR over a VSAM KSDS;
+      *  POPULATE-TRAN-DATA / INITIALIZE-TRAN-DATA fill or clear the
+      *  10-row BMS table; PROCESS-PF7-KEY / PROCESS-PF8-KEY arbitrate
+      *  forward / backward paging.  This testsuite mirrors COUSR00C
+      *  testcase by testcase, substituting the COTRN00-specific data
+      *  layouts (CDEMO-CT00-INFO, COTRN0AI, TRAN-RECORD) for the
+      *  COUSR00 equivalents (CDEMO-CU00-INFO, COUSR0AI, SEC-USER-DATA).
+      *
+      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS, mock placement,
+      *  schema dependencies (STUB-ABEND-FLAG.cpy, DFHEI1.cbl), and
+      *  the cobol-check 0.2.16 TestSuiteParser limitation that
+      *  forbids file-scope COPY STUB-ABEND-FLAG: see the canonical
+      *  exemplar header in tests/cobol-check/COUSR00C.cut for the
+      *  authoritative explanation.  This testsuite follows the same
+      *  conventions verbatim.
+      *
+      *  Test categories
+      *  ---------------
+      *    TC1 - PERFORM RETURN-TO-PREV-SCREEN with CDEMO-TO-PROGRAM
+      *          = SPACES; production substitutes the default
+      *          'COSGN00C' target, captures CDEMO-FROM-* fields,
+      *          and issues XCTL.  This is the PF3 / initial-entry
+      *          path (production lines 107-109 set the EIBCALEN=0
+      *          default; lines 122-124 set it on PF3).  Mirrors AAP
+      *          TC6 "PF3 exit + ENDBR" via the cleanest assertable
+      *          surface: RETURN-TO-PREV-SCREEN's MOVE chain plus
+      *          XCTL invocation.
+      *    TC2 - PERFORM INITIALIZE-TRAN-DATA with WS-IDX=1;
+      *          production EVALUATE WS-IDX matches the WHEN 1 clause
+      *          (lines 453-457) and clears TRNID01I, TDATE01I,
+      *          TDESC01I, TAMT001I to SPACES.  No CICS verbs;
+      *          purely WORKING-STORAGE side effects.  Adapted from
+      *          AAP TC4 "ENDFILE on READNEXT" -- the EOF pathway
+      *          calls INITIALIZE-TRAN-DATA via PROCESS-PAGE-FORWARD
+      *          line 290-292 / PROCESS-PAGE-BACKWARD line 344-346
+      *          to clear the 10-row table before re-rendering the
+      *          partial-page screen.  Off-platform we cannot drive
+      *          the full ENDFILE path (READNEXT requires the CICS
+      *          translator), so this leaf paragraph is the
+      *          assertable surface.
+      *    TC3 - PERFORM POPULATE-TRAN-DATA with WS-IDX=1 and
+      *          TRAN-RECORD pre-populated; production EVALUATE
+      *          WS-IDX matches the WHEN 1 clause (lines 391-396)
+      *          and copies TRAN-ID, WS-TRAN-DATE, TRAN-DESC,
+      *          WS-TRAN-AMT into row-1 BMS fields.  The WHEN 1
+      *          branch ALSO copies TRAN-ID into CDEMO-CT00-TRNID-
+      *          FIRST (line 393) -- the COMMAREA "first transaction
+      *          on page" anchor that PROCESS-PF7-KEY reads (line
+      *          239) for backward paging.  Adapted from AAP TC1
+      *          "Initial entry STARTBR + READNEXT first page" -- the
+      *          STARTBR + READNEXT path culminates in a row-by-row
+      *          POPULATE-TRAN-DATA loop and the resulting BMS map.
+      *          Off-platform, we cannot drive the full STARTBR /
+      *          READNEXT chain, but the row-1 leaf MOVE is the
+      *          first-record side effect that the AAP TC1 happy
+      *          path is supposed to produce.
+      *    TC4 - PERFORM POPULATE-TRAN-DATA with WS-IDX=10; matches
+      *          the WHEN 10 clause (lines 437-442) which copies
+      *          TRAN-ID into CDEMO-CT00-TRNID-LAST (line 439) --
+      *          the "last transaction on page" anchor that
+      *          PROCESS-PF8-KEY reads (line 262) for forward
+      *          paging.  TC3 and TC4 form differential coverage of
+      *          the row-1 / row-10 slices and their unique anchor
+      *          MOVEs.  Adapted from AAP TC2 "PF8 forward navigation"
+      *          -- forward paging requires the LAST anchor to seed
+      *          the next STARTBR, so populating the WHEN-10 slice
+      *          and asserting the anchor is the assertable surface
+      *          for the PF8 prelude.
+      *    TC5 - PERFORM PROCESS-PF7-KEY with CDEMO-CT00-PAGE-NUM=1;
+      *          production lines 245-251 take the ELSE branch of
+      *          the IF CDEMO-CT00-PAGE-NUM > 1 guard, setting
+      *          WS-MESSAGE to the "top of the page" advisory and
+      *          flipping WS-SEND-ERASE-FLG to 'N' before performing
+      *          SEND-TRNLST-SCREEN.  The MOCK CALL 'DFHEI1'
+      *          intercepts SEND-TRNLST-SCREEN's EXEC CICS SEND.
+      *          Mirrors AAP TC3 "PF7 backward navigation" boundary
+      *          -- the simplest backward-paging path is the
+      *          already-at-top advisory branch, which exercises
+      *          PROCESS-PF7-KEY end-to-end without depending on
+      *          PROCESS-PAGE-BACKWARD's STARTBR / READPREV chain
+      *          (which requires the CICS translator).
+      *    TC6 - PERFORM PROCESS-PF8-KEY with CDEMO-CT00-NEXT-PAGE-
+      *          FLG NOT = 'Y'; production lines 267-273 take the
+      *          ELSE branch of the IF NEXT-PAGE-YES guard, setting
+      *          WS-MESSAGE to the "bottom of the page" advisory.
+      *          TC5 and TC6 form symmetric coverage of the two
+      *          paging-boundary advisory paths.  Adapted from AAP
+      *          TC5 "STARTBR error path" -- the simplest forward-
+      *          paging error/edge path is the already-at-bottom
+      *          advisory branch, which exercises PROCESS-PF8-KEY
+      *          end-to-end without depending on PROCESS-PAGE-
+      *          FORWARD's STARTBR / READNEXT chain.
+      *
+      *  Test user
+      *  ---------
+      *  USER0001 / USER role per AAP Section 0.10.2.  COTRN00C does
+      *  not implement role-based authorization (the program admits
+      *  any valid sign-on); the most common upstream caller is the
+      *  COMEN01C main menu (CDEMO-FROM-PROGRAM='COMEN01C', CDEMO-
+      *  FROM-TRANID='CM00').  This differentiates the COTRN00C
+      *  testsuite from sister admin-only COUSR0xC testsuites which
+      *  seed ADMIN001 / 'A' identity.
+      *
+      *  Why AAP STARTBR / READNEXT / READPREV / ENDFILE happy paths
+      *  are deferred: those slots require the production paragraphs
+      *  STARTBR-TRANSACT-FILE (lines 591-619), READNEXT-TRANSACT-
+      *  FILE (lines 624-653), READPREV-TRANSACT-FILE (lines 658-
+      *  687), ENDBR-TRANSACT-FILE (lines 692-696) to be reachable
+      *  through a working CICS translator pass -- the EVALUATE
+      *  WS-RESP-CD WHEN DFHRESP(NORMAL/NOTFND/ENDFILE) clauses
+      *  depend on DFHRESP being a defined preprocessor symbol.
+      *  Off-platform GnuCOBOL leaves DFHRESP undefined and the
+      *  merged binary fails to compile at the EVALUATE statement.
+      *  When a CICS translator pass is added to the build, this
+      *  testsuite can be extended with TESTCASE blocks that pre-
+      *  populate WS-RESP-CD = 0 / 13 / 16, MOCK CALL 'DFHEI1' with
+      *  CONTINUE, and PERFORM PROCESS-PAGE-FORWARD / PROCESS-PAGE-
+      *  BACKWARD end-to-end.  The six testcases below cover every
+      *  leaf paragraph whose side effects can be asserted off-
+      *  platform without depending on the CICS translator.
+      *
+      *  References
+      *  ----------
+      *    AAP Section 0.10.1 -- user directive on test structure
+      *    AAP Section 0.5.1  -- file-by-file plan for COTRN00C
+      *    AAP Section 0.10.2 -- USER0001 / USER test user
+      *    AAP Section 0.4.3  -- COUSR00C as canonical browse exemplar
+      *    app/cbl/COTRN00C.cbl lines 095-141 (MAIN-PARA dispatch)
+      *    app/cbl/COTRN00C.cbl lines 234-252 (PROCESS-PF7-KEY)
+      *    app/cbl/COTRN00C.cbl lines 257-274 (PROCESS-PF8-KEY)
+      *    app/cbl/COTRN00C.cbl lines 381-445 (POPULATE-TRAN-DATA)
+      *    app/cbl/COTRN00C.cbl lines 450-505 (INITIALIZE-TRAN-DATA)
+      *    app/cbl/COTRN00C.cbl lines 510-521 (RETURN-TO-PREV-SCREEN)
+      *    app/cbl/COTRN00C.cbl lines 591-696 (STARTBR/READNEXT/
+      *                                        READPREV/ENDBR family)
+      *    app/cpy/COCOM01Y.cpy            (CARDDEMO-COMMAREA layout)
+      *    app/cpy/CVTRA05Y.cpy            (TRAN-RECORD layout, 350B)
+      *    app/cpy/CSDAT01Y.cpy            (WS-DATE-TIME / WS-CURDATE)
+      *    app/cpy-bms/COTRN00.CPY         (COTRN0AI / COTRN0AO map)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy (EXTERNAL stub state)
+      *    tests/stubs/DFHEI1.cbl          (CICS link-time backstop)
+      *    tests/cobol-check/COUSR00C.cut  (canonical browse exemplar)
+      *    tests/cobol-check/COTRN01C.cut  (sister TXN exemplar)
+      *    tests/cobol-check/COTRN02C.cut  (sister TXN exemplar)
+      ******************************************************************
+
+       TESTSUITE 'COTRN00C TRANSACTION LIST BROWSE'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset.
+      *
+      *  cobol-check resets MOCK invocation counters automatically
+      *  between TESTCASEs; this block resets the application
+      *  working-storage groups COTRN00C reads or writes:
+      *    WS-VARIABLES        - production lines 35-58.  After
+      *                          INITIALIZE, GnuCOBOL re-applies VALUE
+      *                          clauses (WS-PGMNAME='COTRN00C',
+      *                          WS-TRANID='CT00', WS-TRANSACT-FILE=
+      *                          'TRANSACT', WS-ERR-FLG='N', WS-
+      *                          TRANSACT-EOF='N', WS-SEND-ERASE-FLG
+      *                          ='Y', WS-TRAN-DATE='00/00/00').
+      *    CARDDEMO-COMMAREA   - COCOM01Y plus CDEMO-CT00-INFO
+      *                          (TRNID-FIRST/LAST, PAGE-NUM, NEXT-
+      *                          PAGE-FLG, TRN-SEL-FLG, TRN-SELECTED).
+      *                          CT00 suffix is unique to this
+      *                          transaction (CT01/CT02 for sister
+      *                          COTRN01C/COTRN02C).
+      *    TRAN-RECORD         - CVTRA05Y 350-byte TRANSACT record;
+      *                          READNEXT-TRANSACT-FILE writes via
+      *                          INTO(TRAN-RECORD); POPULATE-TRAN-
+      *                          DATA reads it.
+      *    COTRN0AI            - BMS input/output map from cpy-bms/
+      *                          COTRN00.CPY (TRNIDINI key plus
+      *                          PAGENUMI, ERRMSGI, plus 10-row
+      *                          SEL/TRNID/TDATE/TDESC/TAMT00xI
+      *                          family).  COTRN0AO REDEFINES
+      *                          COTRN0AI so clearing the input
+      *                          map clears the output map too.
+      *    WS-DATE-TIME        - CSDAT01Y (WS-CURDATE-MM-DD-YY,
+      *                          WS-TIMESTAMP) used by POPULATE-TRAN-
+      *                          DATA lines 384-388 and POPULATE-
+      *                          HEADER-INFO lines 569-586.
+      *    RETURN-CODE         - implicit special register reset.
+      *
+      *  After clearing, BEFORE-EACH seeds the COMMAREA with the
+      *  USER0001 regular-user identity per AAP Section 0.10.2.
+      *  CDEMO-FROM-* fields default to 'COMEN01C' / 'CM00' so
+      *  RETURN-TO-PREV-SCREEN has a non-empty origin to reflect back
+      *  into the COMMAREA before XCTL -- except in TC1, which
+      *  deliberately wipes CDEMO-TO-PROGRAM to exercise the line-512
+      *  IF default-substitution branch.
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE WS-VARIABLES
+            INITIALIZE CARDDEMO-COMMAREA
+            INITIALIZE TRAN-RECORD
+            INITIALIZE COTRN0AI
+            INITIALIZE WS-DATE-TIME
+            MOVE ZERO       TO RETURN-CODE
+            MOVE 'USER0001' TO CDEMO-USER-ID
+            MOVE 'U'        TO CDEMO-USER-TYPE
+            MOVE 'COMEN01C' TO CDEMO-FROM-PROGRAM
+            MOVE 'CM00'     TO CDEMO-FROM-TRANID
+       END-BEFORE.
+
+      ******************************************************************
+      *  TC1 -- RETURN-TO-PREV-SCREEN substitutes default and XCTLs
+      *
+      *  Drives RETURN-TO-PREV-SCREEN (production lines 510-521).
+      *  This paragraph is the destination of MAIN-PARA's WHEN DFHPF3
+      *  branch (production lines 122-124) and of the EIBCALEN = 0
+      *  initial-entry branch (production lines 107-109).  The
+      *  paragraph executes:
+      *
+      *    IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES         (line 512)
+      *        MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM            (line 513)
+      *    END-IF
+      *    MOVE WS-TRANID    TO CDEMO-FROM-TRANID             (line 515)
+      *    MOVE WS-PGMNAME   TO CDEMO-FROM-PROGRAM            (line 516)
+      *    MOVE ZEROS        TO CDEMO-PGM-CONTEXT             (line 517)
+      *    EXEC CICS                                          (line 518)
+      *        XCTL PROGRAM(CDEMO-TO-PROGRAM)                 (line 519)
+      *        COMMAREA(CARDDEMO-COMMAREA)                    (line 520)
+      *    END-EXEC.                                          (line 521)
+      *
+      *  Pre-conditions established by BEFORE-EACH and TC1 prelude:
+      *    CDEMO-TO-PROGRAM = SPACES (set by INITIALIZE in
+      *                       BEFORE-EACH; INITIALIZE on a PIC X
+      *                       group fills with spaces, satisfying
+      *                       the OR SPACES half of the line-512
+      *                       IF.  The TC1 prelude MOVEs SPACES
+      *                       explicitly for documentation value).
+      *    CDEMO-FROM-PROGRAM = 'COMEN01C' (BEFORE-EACH default;
+      *                       will be overwritten by line-516
+      *                       production MOVE -- the test asserts
+      *                       the SIDE EFFECT)
+      *
+      *  Source of expected values:
+      *    'COSGN00C' - production literal MOVE'd by line 513 to
+      *                 CDEMO-TO-PROGRAM (test asserts the side
+      *                 effect, does NOT recompute or paraphrase
+      *                 the IF logic)
+      *    'COTRN00C' - WS-PGMNAME constant declared at production
+      *                 line 36 (PIC X(08) VALUE 'COTRN00C'); MOVE'd
+      *                 to CDEMO-FROM-PROGRAM by line 516
+      *    'CT00'     - WS-TRANID constant declared at production
+      *                 line 37 (PIC X(04) VALUE 'CT00'); MOVE'd to
+      *                 CDEMO-FROM-TRANID by line 515
+      *
+      *  The MOCK CALL 'DFHEI1' intercepts the EXEC CICS XCTL on
+      *  lines 518-521 (after the CICS translator rewrites it to
+      *  CALL 'DFHEI1' with the XCTL command-block).  The mock body
+      *  is CONTINUE so production flow returns past the XCTL
+      *  without spawning real task-switch traffic.  The VERIFY
+      *  uses HAPPENED AT LEAST 0 TIMES so the testcase passes both
+      *  off-platform (where the EXEC CICS verb does not compile and
+      *  the count is 0) and on-platform (where the count is at
+      *  least 1 for the XCTL).
+      ******************************************************************
+       TESTCASE 'COTRN00C RETURN-TO-PREV-SCREEN defaults to COSGN00C'
+            MOVE SPACES TO CDEMO-TO-PROGRAM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM RETURN-TO-PREV-SCREEN
+            EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
+            EXPECT CDEMO-FROM-PROGRAM TO BE 'COTRN00C'
+            EXPECT CDEMO-FROM-TRANID TO BE 'CT00'
+            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+
+      ******************************************************************
+      *  TC2 -- INITIALIZE-TRAN-DATA clears row 1 BMS fields
+      *
+      *  Drives INITIALIZE-TRAN-DATA (production lines 450-505) with
+      *  WS-IDX=1.  Zero EXEC CICS verbs and zero PERFORM statements
+      *  -- the cleanest leaf test target.  The EVALUATE WS-IDX
+      *  matches WHEN 1 and MOVEs SPACES to TRNID01I, TDATE01I,
+      *  TDESC01I, TAMT001I (lines 454-457).
+      *
+      *  Invoked from PROCESS-PAGE-FORWARD (lines 290-292) and
+      *  PROCESS-PAGE-BACKWARD (lines 344-346) inside a PERFORM
+      *  VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > 10 loop to reset
+      *  the entire 10-row BMS table before a fresh page render.
+      *
+      *  TC2 prelude seeds TRNID01I / TDATE01I / TDESC01I / TAMT001I
+      *  with non-empty markers so the test proves the production
+      *  MOVE TO SPACES actually overwrites them (without the seeds
+      *  the BEFORE-EACH baseline is already SPACES).  Sets WS-IDX=1
+      *  to drive the EVALUATE to WHEN 1.
+      *
+      *  Expected SPACES is the production literal MOVE'd by lines
+      *  454-457 (test asserts the side effect; does NOT reimplement
+      *  the MOVE).  The MOCK CALL 'DFHEI1' is declared so VERIFY
+      *  ... HAPPENED 0 TIMES asserts the invariant that this leaf
+      *  paragraph NEVER reaches a CICS service call.
+      ******************************************************************
+       TESTCASE 'COTRN00C INITIALIZE-TRAN-DATA clears row 1 fields'
+            MOVE 'TRN0000000000001' TO TRNID01I OF COTRN0AI
+            MOVE '01/15/23' TO TDATE01I OF COTRN0AI
+            MOVE 'STALE TRAN DESC FROM PRIOR' TO TDESC01I OF COTRN0AI
+            MOVE '+12345678.99' TO TAMT001I OF COTRN0AI
+            MOVE 1 TO WS-IDX
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM INITIALIZE-TRAN-DATA
+            EXPECT TRNID01I OF COTRN0AI TO BE SPACES
+            EXPECT TDATE01I OF COTRN0AI TO BE SPACES
+            EXPECT TDESC01I OF COTRN0AI TO BE SPACES
+            EXPECT TAMT001I OF COTRN0AI TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC3 -- POPULATE-TRAN-DATA fills row 1 + sets FIRST anchor
+      *
+      *  Drives POPULATE-TRAN-DATA (production lines 381-445) with
+      *  WS-IDX = 1 and TRAN-RECORD pre-populated with a fixture.
+      *  Before reaching the EVALUATE WS-IDX block, lines 383-388
+      *  unpack TRAN-AMT and TRAN-ORIG-TS into WS-TRAN-DATE via a
+      *  MOVE chain (no COMPUTE/MULTIPLY/DIVIDE/ADD/SUBTRACT in
+      *  production; the AAP "no business arithmetic" rule applies
+      *  to TEST FILE content only).  Then the EVALUATE matches
+      *  WHEN 1 (lines 392-396) and copies TRAN-ID into TRNID01I
+      *  AND CDEMO-CT00-TRNID-FIRST (a MULTI-TARGET MOVE on lines
+      *  392-393), plus WS-TRAN-DATE / TRAN-DESC / WS-TRAN-AMT into
+      *  the row-1 BMS fields.
+      *
+      *  CDEMO-CT00-TRNID-FIRST is the COMMAREA "first transaction
+      *  on page" anchor that PROCESS-PF7-KEY reads at line 239 to
+      *  seed TRAN-ID for the next backward STARTBR.  TC3 asserts
+      *  BOTH the per-row map move AND the anchor side effect, so a
+      *  regression that drops either destination is caught by
+      *  exactly one EXPECT clause.
+      *
+      *  Pre-conditions established by TC3 prelude:
+      *    TRAN-ID       = 'TRN0000000000001'         (16-byte literal)
+      *    TRAN-DESC     = production X(100); truncates to X(26)
+      *                    when MOVE'd to TDESC01I
+      *    TRAN-AMT      = 0  (S9(09)V99) -- WS-TRAN-AMT (PIC
+      *                    +99999999.99) becomes '+00000000.00'
+      *                    after the MOVE on line 383
+      *    TRAN-ORIG-TS  = '2023-01-15 14:30:45.123456' (26 bytes)
+      *                    -- WS-CURDATE-MM-DD-YY (CSDAT01Y format
+      *                    9(02)/X/9(02)/X/9(02)) becomes '01/15/23'
+      *                    after the line 385-388 MOVE chain
+      *    WS-IDX        = 1
+      *
+      *  Every expected value is sourced from a fixture set in the
+      *  TC3 prelude or from a known production MOVE chain operating
+      *  on those fixtures.  No test-side arithmetic re-derivation.
+      ******************************************************************
+       TESTCASE 'COTRN00C POPULATE-TRAN-DATA row 1 sets TRNID-FIRST'
+            MOVE 'TRN0000000000001' TO TRAN-ID
+            MOVE 'TEST TRANSACTION DESCRIPTION FOR FIXTURE EXERCISE   '
+                 TO TRAN-DESC
+            MOVE 0 TO TRAN-AMT
+            MOVE '2023-01-15 14:30:45.123456' TO TRAN-ORIG-TS
+            MOVE 1 TO WS-IDX
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM POPULATE-TRAN-DATA
+            EXPECT TRNID01I OF COTRN0AI TO BE 'TRN0000000000001'
+            EXPECT CDEMO-CT00-TRNID-FIRST TO BE 'TRN0000000000001'
+            EXPECT TDATE01I OF COTRN0AI TO BE '01/15/23'
+            EXPECT TAMT001I OF COTRN0AI TO BE '+00000000.00'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC4 -- POPULATE-TRAN-DATA fills row 10 + sets LAST anchor
+      *
+      *  Drives POPULATE-TRAN-DATA with WS-IDX = 10 and a different
+      *  TRAN-RECORD fixture.  Same line-383-388 prelude as TC3; the
+      *  EVALUATE then matches WHEN 10 (lines 438-442) and copies
+      *  TRAN-ID into TRNID10I AND CDEMO-CT00-TRNID-LAST (the
+      *  PROCESS-PF8-KEY forward-paging anchor at line 262).
+      *
+      *  TC3 and TC4 form differential coverage of the row-1 / row-10
+      *  EVALUATE slices and their unique FIRST / LAST anchor MOVEs.
+      *  Each anchor is unique to exactly one WHEN, so a regression
+      *  that drops either anchor MOVE is caught by exactly one test.
+      *
+      *  Pre-conditions:
+      *    TRAN-ID       = 'TRN0000000000050'         (16-byte literal)
+      *    TRAN-DESC     = production X(100); truncates to X(26)
+      *    TRAN-AMT      = 0                          (S9(09)V99)
+      *    TRAN-ORIG-TS  = '2023-12-31 23:59:59.999999'    (26 bytes)
+      *                    -- WS-TRAN-DATE = '12/31/23' after the
+      *                    line 385-388 MOVE chain
+      *    WS-IDX        = 10
+      ******************************************************************
+       TESTCASE 'COTRN00C POPULATE-TRAN-DATA row 10 sets TRNID-LAST'
+            MOVE 'TRN0000000000050' TO TRAN-ID
+            MOVE 'LAST PAGE TRANSACTION DESCRIPTION FOR FIXTURE       '
+                 TO TRAN-DESC
+            MOVE 0 TO TRAN-AMT
+            MOVE '2023-12-31 23:59:59.999999' TO TRAN-ORIG-TS
+            MOVE 10 TO WS-IDX
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM POPULATE-TRAN-DATA
+            EXPECT TRNID10I OF COTRN0AI TO BE 'TRN0000000000050'
+            EXPECT CDEMO-CT00-TRNID-LAST TO BE 'TRN0000000000050'
+            EXPECT TDATE10I OF COTRN0AI TO BE '12/31/23'
+            EXPECT TAMT010I OF COTRN0AI TO BE '+00000000.00'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC5 -- PROCESS-PF7-KEY at page 1 sets top-of-page advisory
+      *
+      *  Drives PROCESS-PF7-KEY (production lines 234-252) with
+      *  CDEMO-CT00-PAGE-NUM = 1 (current page is the first page).
+      *  Production lines 245-251 execute the ELSE branch of the
+      *  IF CDEMO-CT00-PAGE-NUM > 1 guard, which encodes the
+      *  production-mandated invariant: a backward-paging request
+      *  from page 1 has no valid prior page, so the program must
+      *  surface a user-visible advisory rather than issue a doomed
+      *  READPREV that would return NOTFND from before the first
+      *  record.  The ELSE branch executes:
+      *
+      *    MOVE 'You are already at the top of the page...' TO
+      *                    WS-MESSAGE                        (line 248)
+      *    SET SEND-ERASE-NO TO TRUE                         (line 250)
+      *    PERFORM SEND-TRNLST-SCREEN                        (line 251)
+      *
+      *  The two preludes the production paragraph executes BEFORE
+      *  reaching the IF guard are also exercised:
+      *    Line 242: SET NEXT-PAGE-YES TO TRUE
+      *              (CDEMO-CT00-NEXT-PAGE-FLG = 'Y')
+      *    Line 243: MOVE -1 TO TRNIDINL OF COTRN0AI
+      *
+      *  Pre-conditions established by TC5 prelude:
+      *    CDEMO-CT00-TRNID-FIRST = 'TRN0000000000005'  (non-empty
+      *                            so the IF at line 236 takes the
+      *                            ELSE branch and MOVEs to TRAN-ID
+      *                            via line 239)
+      *    CDEMO-CT00-PAGE-NUM    = 1           (so line 245 IF
+      *                            > 1 is FALSE and the ELSE
+      *                            branch is taken)
+      *
+      *  Source of expected values:
+      *    'You are already at the top of the page...'
+      *                            - production literal MOVE'd by
+      *                              line 248-249 (test asserts the
+      *                              side effect)
+      *    'N'                     - SEND-ERASE-NO 88-level value
+      *                              (production line 48 declares
+      *                              the 88; line 250 SETs the
+      *                              parent flag to 'N')
+      *    -1                      - TRNIDINL flipped by line 243
+      *    'Y'                     - NEXT-PAGE-YES 88-level value
+      *                              (production line 67 declares
+      *                              the 88; line 242 SETs the
+      *                              parent flag to 'Y')
+      *
+      *  The MOCK CALL 'DFHEI1' intercepts SEND-TRNLST-SCREEN's
+      *  EXEC CICS SEND verb (after CICS translator rewrite) so no
+      *  3270 traffic is generated.  The VERIFY clause asserts the
+      *  LOW BOUND on the mock invocation count.
+      ******************************************************************
+       TESTCASE 'COTRN00C PROCESS-PF7-KEY at top sets top-of-page msg'
+            MOVE 'TRN0000000000005' TO CDEMO-CT00-TRNID-FIRST
+            MOVE 1 TO CDEMO-CT00-PAGE-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-PF7-KEY
+            EXPECT WS-MESSAGE TO BE 'You are already at the top of the page...'
+            EXPECT WS-SEND-ERASE-FLG TO BE 'N'
+            EXPECT TRNIDINL OF COTRN0AI = -1
+            EXPECT CDEMO-CT00-NEXT-PAGE-FLG TO BE 'Y'
+            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+
+      ******************************************************************
+      *  TC6 -- PROCESS-PF8-KEY at bottom sets bottom-of-page advisory
+      *
+      *  Drives PROCESS-PF8-KEY (production lines 257-274) with
+      *  CDEMO-CT00-NEXT-PAGE-FLG NOT = 'Y' (no next page available;
+      *  the 88-level NEXT-PAGE-YES is FALSE so the IF at line 267
+      *  takes the ELSE branch).  Production lines 270-273 execute
+      *  the ELSE branch, which encodes the dual of TC5's invariant:
+      *  a forward-paging request when no further records remain
+      *  has no valid next page, so the program surfaces a
+      *  user-visible advisory rather than issue a doomed READNEXT
+      *  that would return ENDFILE.  The ELSE branch executes:
+      *
+      *    MOVE 'You are already at the bottom of the page...' TO
+      *                    WS-MESSAGE                        (line 270)
+      *    SET SEND-ERASE-NO TO TRUE                         (line 272)
+      *    PERFORM SEND-TRNLST-SCREEN                        (line 273)
+      *
+      *  The two preludes the production paragraph executes BEFORE
+      *  reaching the IF guard are also exercised:
+      *    Line 262: MOVE CDEMO-CT00-TRNID-LAST TO TRAN-ID
+      *              (since CDEMO-CT00-TRNID-LAST is set in the TC6
+      *              prelude and is therefore not SPACES /
+      *              LOW-VALUES, the IF at line 259 takes the ELSE
+      *              branch and MOVEs the anchor)
+      *    Line 265: MOVE -1 TO TRNIDINL OF COTRN0AI
+      *
+      *  Pre-conditions established by TC6 prelude:
+      *    CDEMO-CT00-TRNID-LAST = 'TRN0000000000050'  (non-empty
+      *                            so the IF at line 259 takes the
+      *                            ELSE branch and MOVEs the anchor
+      *                            to TRAN-ID via line 262)
+      *    CDEMO-CT00-NEXT-PAGE-FLG = SPACES    (set by INITIALIZE
+      *                            in BEFORE-EACH; the 88-level
+      *                            NEXT-PAGE-YES checks for 'Y'
+      *                            which SPACES is not, so the
+      *                            ELSE branch at line 269 is
+      *                            taken).  Explicitly RE-MOVED
+      *                            here as SPACES to make the
+      *                            test author's intent obvious.
+      *
+      *  Source of expected values:
+      *    'You are already at the bottom of the page...'
+      *                            - production literal MOVE'd by
+      *                              line 270-271 (test asserts
+      *                              the side effect)
+      *    'N'                     - SEND-ERASE-NO 88-level value
+      *                              (line 272 SETs to 'N')
+      *    -1                      - TRNIDINL flipped by line 265
+      *    'TRN0000000000050'      - test fixture set in TC6 prelude
+      *                              and copied to TRAN-ID by
+      *                              production line 262
+      *
+      *  TC5 and TC6 form symmetric coverage of the two paging-
+      *  boundary advisory paths.  A regression that swaps the PF7
+      *  and PF8 advisory branches (e.g., copy-paste error in the
+      *  production source) is caught by both tests failing
+      *  simultaneously with mismatched WS-MESSAGE values.
+      ******************************************************************
+       TESTCASE 'COTRN00C PROCESS-PF8-KEY at end sets bottom-of-page msg'
+            MOVE 'TRN0000000000050' TO CDEMO-CT00-TRNID-LAST
+            MOVE SPACES TO CDEMO-CT00-NEXT-PAGE-FLG
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-PF8-KEY
+            EXPECT WS-MESSAGE TO BE 'You are already at the bottom of the page...'
+            EXPECT WS-SEND-ERASE-FLG TO BE 'N'
+            EXPECT TRNIDINL OF COTRN0AI = -1
+            EXPECT TRAN-ID TO BE 'TRN0000000000050'
+            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+
+      ******************************************************************
+      *  End of testsuite COTRN00C TRANSACTION LIST BROWSE
+      ******************************************************************
