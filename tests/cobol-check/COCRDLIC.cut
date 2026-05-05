@@ -1,0 +1,638 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : COCRDLIC CARD LIST BROWSE TRANSACTION
+      *  Program-under-test : app/cbl/COCRDLIC.cbl
+      *
+      *  Purpose
+      *  -------
+      *  Exercise COCRDLIC's card-list browse CICS transaction by
+      *  mocking ONLY the program's external boundary into the CICS
+      *  API: the CALL 'DFHEI1' invocation that the CICS translator
+      *  emits in place of every EXEC CICS verb (RECEIVE MAP, SEND
+      *  MAP, STARTBR DATASET (CARDDAT), READNEXT DATASET, READPREV
+      *  DATASET, ENDBR DATASET, XCTL, RETURN, SEND TEXT).  Internal
+      *  COCRDLIC paragraphs are NEVER mocked; every TESTCASE
+      *  exercises a production paragraph LIVE via PERFORM so the
+      *  testsuite asserts against side effects of actual production
+      *  -code execution (per AAP Section 0.10.1 -- "Mock or stub
+      *  ONLY external dependencies").
+      *
+      *  COCRDLIC is the credit-card list browse CICS transaction.
+      *  It RECEIVEs an optional account-id and card-number filter
+      *  from the BMS map (CCRDLIAI), validates both fields (2210-
+      *  EDIT-ACCOUNT and 2220-EDIT-CARD), then enters the canonical
+      *  CICS browse pattern: STARTBR DATASET(CARDDAT) GTEQ on
+      *  WS-CARD-RID-CARDNUM, looped READNEXT INTO CARD-RECORD up
+      *  to WS-MAX-SCREEN-LINES (= 7 rows per page), ENDBR FILE.
+      *  PF8 advances forward via 9000-READ-FORWARD; PF7 reverses
+      *  via 9100-READ-BACKWARDS (STARTBR + READPREV loop + ENDBR);
+      *  9500-FILTER-RECORDS gates whether each read record is
+      *  admitted to the 7-row OCCURS table based on the FLG-
+      *  ACCTFILTER-ISVALID / FLG-CARDFILTER-ISVALID filter state.
+      *  PF3 issues XCTL PROGRAM(LIT-MENUPGM) to return to the main
+      *  menu; ENTER on a selected row XCTLs to COCRDSLC (view) or
+      *  COCRDUPC (update).
+      *
+      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS, mock placement,
+      *  schema dependencies (STUB-ABEND-FLAG.cpy, DFHEI1.cbl), and
+      *  the cobol-check 0.2.16 TestSuiteParser limitation that
+      *  forbids file-scope COPY directives: see the canonical
+      *  exemplar header in tests/cobol-check/COSGN00C.cut for the
+      *  authoritative explanation.  This testsuite follows the same
+      *  conventions verbatim, including the local-scope MOCK CALL
+      *  'DFHEI1' inside each TESTCASE block per the COCRDSLC /
+      *  COTRN00C / COACTVWC / COBIL00C exemplar pattern.  The
+      *  testsuite does NOT contain a file-scope COPY STUB-ABEND-
+      *  FLAG or COPY CARD-FIXTURE-001; the runtime stubs continue
+      *  to provide their intended safety regardless.
+      *
+      *  Schema dependencies (link/runtime, not COPY-included)
+      *  -----------------------------------------------------
+      *    STUB-ABEND-FLAG.cpy -- EXTERNAL state group written by
+      *        DFHEI1 / CEE3ABD stubs at runtime.
+      *    CARD-FIXTURE-001.cpy -- 150-byte CARD-RECORD from
+      *        carddata.txt rec 1 (CARD-NUM=0500024453765740,
+      *        embossed name 'Aniya Von', expiration 2023-03-09,
+      *        active-status Y).  Reserved for the on-platform
+      *        extension where MOCK CICS READNEXT FILE(CARDDAT)
+      *        will supply this fixture once the translator pass
+      *        exists.
+      *    DFHEI1.cbl -- standalone PROGRAM-ID compiled to a .so
+      *        so any unmocked EXEC CICS verb resolves at load
+      *        time with EIBRESP=27 (NOTAUTH).
+      *    config.properties -- cobol-check runtime configuration.
+      *
+      *  Test categories
+      *  ---------------
+      *    TC1 - 2220-EDIT-CARD accepts a valid 16-digit card
+      *          number (production lines 1036-1067 ELSE branch);
+      *          off-platform expression of AAP TC1 "Initial entry
+      *          STARTBRs and READNEXTs first page" prelude --
+      *          2220-EDIT-CARD is the validation gate that runs
+      *          via 2200-EDIT-INPUTS before 9000-READ-FORWARD's
+      *          STARTBR is issued.
+      *    TC2 - YYYY-STORE-PFKEY maps DFHPF8 to CCARD-AID-PFK08
+      *          (CSSTRPFY copybook lines 44-45); off-platform
+      *          expression of AAP TC2 "PF8 forward page READNEXT
+      *          continues" -- the PF8 dispatch is the gate that
+      *          drives 0000-MAIN's WHEN CCARD-AID-PFK08 branch
+      *          (production lines 486-497) into 9000-READ-FORWARD.
+      *    TC3 - YYYY-STORE-PFKEY maps DFHPF7 to CCARD-AID-PFK07
+      *          (CSSTRPFY lines 42-43); off-platform expression
+      *          of AAP TC3 "PF7 backward page READPREV navigates
+      *          back" -- drives 0000-MAIN's WHEN CCARD-AID-PFK07
+      *          branch (lines 501-513) into 9100-READ-BACKWARDS.
+      *    TC4 - 1400-SETUP-MESSAGE PF8-at-end advisory branch
+      *          (lines 905-909) sets WS-ERROR-MSG to 'NO MORE
+      *          PAGES TO DISPLAY'; off-platform expression of AAP
+      *          TC4 "End-of-file (READNEXT EIBRESP=20 ENDFILE)
+      *          handled gracefully" -- ENDFILE on READNEXT
+      *          culminates in this no-more-pages user advisory.
+      *    TC5 - 2210-EDIT-ACCOUNT rejects non-numeric account id
+      *          (lines 1017-1029); off-platform expression of AAP
+      *          TC5 "STARTBR fails" along the input-error short-
+      *          circuit branch -- a non-numeric filter sets
+      *          INPUT-ERROR which prevents 0000-MAIN from reaching
+      *          9000-READ-FORWARD's STARTBR (line-433 condition
+      *          requires NOT FLG-ACCTFILTER-NOT-OK).
+      *    TC6 - YYYY-STORE-PFKEY maps DFHPF3 to CCARD-AID-PFK03
+      *          (CSSTRPFY lines 34-35); off-platform expression
+      *          of AAP TC6 "PF3 exits with ENDBR" -- drives
+      *          0000-MAIN's IF CCARD-AID-PFK03 branch (lines 384-
+      *          406) which issues XCTL PROGRAM(LIT-MENUPGM).
+      *    TC7 - 9500-FILTER-RECORDS excludes record on account
+      *          mismatch (lines 1385-1394); off-platform
+      *          expression of AAP TC7 "Filter by card number
+      *          prefix" -- 9500-FILTER-RECORDS is the production
+      *          paragraph that decides admission to the 7-row
+      *          screen table; the account-mismatch ELSE branch
+      *          is the canonical exclusion path.
+      *
+      *  Test user
+      *  ---------
+      *  USER0001 / USER role per AAP Section 0.10.2.  COCRDLIC
+      *  does not implement role-based authorization; the most
+      *  common upstream caller is COMEN01C main menu (CDEMO-FROM-
+      *  PROGRAM='COMEN01C', CDEMO-FROM-TRANID='CM00') per
+      *  COMEN02Y line 40 mapping option 3 to 'COCRDLIC'.
+      *
+      *  Off-platform deferrals
+      *  ----------------------
+      *  Literal AAP TC1-TC7 STARTBR / READNEXT / READPREV / ENDBR
+      *  / XCTL pathways all require the translator pass to reach
+      *  the EVALUATE WS-RESP-CD WHEN DFHRESP(NORMAL/DUPREC/
+      *  ENDFILE) clauses on production lines 1156-1255 and 1304-
+      *  1370 -- same off-platform limitation as COCRDSLC /
+      *  COACTVWC / COBIL00C / COTRN01C / COUSR02C / COUSR03C.
+      *  When the translator is added, this suite can be extended
+      *  with MOCK CICS STARTBR / READNEXT FILE(CARDDAT) using
+      *  CARD-FIXTURE-001 and PERFORM 9000-READ-FORWARD THRU
+      *  9000-READ-FORWARD-EXIT end-to-end.
+      *
+      *  Source of expected values (per AAP Section 0.10.1)
+      *  --------------------------------------------------
+      *  Each EXPECT compares a production-side WS / COMMAREA /
+      *  BMS-map field against either: (a) a literal MOVE'd verbatim
+      *  by a production statement, (b) an 88-level VALUE declared
+      *  in the production source, (c) a constant declared in
+      *  production WS, or (d) a deterministic-default flag value
+      *  reset by BEFORE-EACH INITIALIZE.  None of the expected
+      *  values is computed by recomputing the production formula;
+      *  all are sourced from production source verbatim or from
+      *  test-author external knowledge of the input fixture.
+      *
+      *  References
+      *  ----------
+      *    AAP Section 0.10.1 / 0.5.1 / 0.10.2 / 0.4.1 / 0.7.1
+      *    app/cbl/COCRDLIC.cbl lines 297-602   (0000-MAIN)
+      *    app/cbl/COCRDLIC.cbl lines 642-672   (1100-SCREEN-INIT)
+      *    app/cbl/COCRDLIC.cbl lines 895-932   (1400-SETUP-MESSAGE)
+      *    app/cbl/COCRDLIC.cbl lines 1003-1030 (2210-EDIT-ACCOUNT)
+      *    app/cbl/COCRDLIC.cbl lines 1036-1067 (2220-EDIT-CARD)
+      *    app/cbl/COCRDLIC.cbl lines 1123-1260 (9000-READ-FORWARD)
+      *    app/cbl/COCRDLIC.cbl lines 1264-1372 (9100-READ-BACKWARDS)
+      *    app/cbl/COCRDLIC.cbl lines 1382-1411 (9500-FILTER-RECORDS)
+      *    app/cpy/CSSTRPFY.cpy   lines 17-79   (YYYY-STORE-PFKEY)
+      *    app/cpy/CVCRD01Y.cpy   (CC-WORK-AREAS / CCARD-AID-* 88s)
+      *    app/cpy/COCOM01Y.cpy   (CARDDEMO-COMMAREA)
+      *    app/cpy/CVACT02Y.cpy   (CARD-RECORD layout, 150 bytes)
+      *    app/cpy-bms/COCRDLI.CPY (CCRDLIAI / CCRDLIAO map)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy  (EXTERNAL stub state)
+      *    tests/stubs/DFHEI1.cbl           (CICS link-time backstop)
+      *    tests/fixtures/cobol-snippets/CARD-FIXTURE-001.cpy
+      *    tests/cobol-check/COSGN00C.cut   (structural exemplar)
+      *    tests/cobol-check/COCRDSLC.cut   (sister card-program)
+      *    tests/cobol-check/COTRN00C.cut   (sister browse-program)
+      ******************************************************************
+
+       TESTSUITE 'COCRDLIC CARD LIST BROWSE TRANSACTION'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset.
+      *
+      *  Restores deterministic baseline state so every TESTCASE
+      *  starts from a known, identical configuration.  cobol-check
+      *  resets MOCK invocation counters automatically between
+      *  TESTCASEs; this block resets the production WS / shared
+      *  structures COCRDLIC reads or writes:
+      *
+      *    WS-MISC-STORAGE     COCRDLIC.cbl lines 41-172; clears
+      *                        WS-CICS-PROCESSNG-VARS, WS-INPUT-FLAG,
+      *                        WS-EDIT-ACCT-FLAG, WS-EDIT-CARD-FLAG,
+      *                        CICS-OUTPUT-EDIT-VARS, WS-ERROR-MSG
+      *                        (88-level WS-ERROR-MSG-OFF VALUE
+      *                        SPACES line 118), WS-PFK-FLAG, WS-
+      *                        FILE-HANDLING-VARS (WS-CARD-RID),
+      *                        WS-SCRN-COUNTER, WS-FILTER-RECORD-
+      *                        FLAG, WS-RECORDS-TO-PROCESS-FLAG,
+      *                        WS-FILE-ERROR-MESSAGE.
+      *    CC-WORK-AREAS       CVCRD01Y; clears CCARD-AID (target
+      *                        of YYYY-STORE-PFKEY), CC-ACCT-ID,
+      *                        CC-CARD-NUM, CCARD-NEXT-* / CCARD-
+      *                        ERROR-MSG / CCARD-RETURN-MSG.
+      *    CARDDEMO-COMMAREA   COCOM01Y; clears CDEMO-FROM-* /
+      *                        CDEMO-TO-* / CDEMO-USER-ID / CDEMO-
+      *                        USER-TYPE / CDEMO-PGM-CONTEXT /
+      *                        CDEMO-ACCT-ID / CDEMO-CARD-NUM.
+      *    WS-THIS-PROGCOMMAREA  COCRDLIC.cbl lines 229-248; clears
+      *                        WS-CA-* paging anchors and 88-level
+      *                        controllers (CA-FIRST-PAGE, CA-LAST-
+      *                        PAGE-SHOWN, CA-NEXT-PAGE-EXISTS).
+      *    WS-SCREEN-DATA      COCRDLIC.cbl lines 252-260; the 196-
+      *                        byte 7x28 OCCURS scratchpad.
+      *    CARD-RECORD         CVACT02Y 150-byte group; cleared for
+      *                        forward-compatibility with the COPY
+      *                        CARD-FIXTURE-001 post-translator
+      *                        extension on 9000-READ-FORWARD.
+      *    CCRDLIAI            BMS input map (cpy-bms/COCRDLI.CPY);
+      *                        CCRDLIAO REDEFINES CCRDLIAI so this
+      *                        also clears CCRDLIAO.
+      *    WS-DATE-TIME        CSDAT01Y date-time group used by
+      *                        1100-SCREEN-INIT for header dates.
+      *    WS-COMMAREA         COCRDLIC.cbl line 262; outbound
+      *                        2000-byte buffer; cleared so prior-
+      *                        test leakage does not corrupt
+      *                        assertion comparisons.
+      *    RETURN-CODE         Implicit special-register reset.
+      *
+      *  After clearing, BEFORE-EACH seeds the COMMAREA with the
+      *  USER0001 regular-user identity per AAP Section 0.10.2.
+      *  CDEMO-FROM-PROGRAM defaults to 'COMEN01C' / CDEMO-FROM-
+      *  TRANID = 'CM00' to reflect the upstream caller.
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE WS-MISC-STORAGE
+            INITIALIZE CC-WORK-AREAS
+            INITIALIZE CARDDEMO-COMMAREA
+            INITIALIZE WS-THIS-PROGCOMMAREA
+            INITIALIZE WS-SCREEN-DATA
+            INITIALIZE CARD-RECORD
+            INITIALIZE CCRDLIAI
+            INITIALIZE WS-DATE-TIME
+            MOVE SPACES     TO WS-COMMAREA
+            MOVE ZERO       TO RETURN-CODE
+            MOVE 'USER0001' TO CDEMO-USER-ID
+            MOVE 'U'        TO CDEMO-USER-TYPE
+            MOVE 'COMEN01C' TO CDEMO-FROM-PROGRAM
+            MOVE 'CM00'     TO CDEMO-FROM-TRANID
+       END-BEFORE.
+
+
+      ******************************************************************
+      *  TC1 -- 2220-EDIT-CARD accepts a valid 16-digit card number
+      *
+      *  Drives 2220-EDIT-CARD (production lines 1036-1067) along
+      *  the SUCCESS path that gates 9000-READ-FORWARD downstream.
+      *  The paragraph executes:
+      *
+      *    SET FLG-CARDFILTER-BLANK TO TRUE                (line 1039)
+      *    IF CC-CARD-NUM = LOW-VALUES OR SPACES OR
+      *       CC-CARD-NUM-N EQUAL ZEROS                    (line 1042-4)
+      *        ... (FALSE; '0500024453765740' is non-zero)
+      *    IF CC-CARD-NUM IS NOT NUMERIC                   (line 1052)
+      *        ... (FALSE; '0500024453765740' is all-numeric)
+      *    ELSE                                            (line 1063)
+      *        MOVE CC-CARD-NUM-N TO CDEMO-CARD-NUM        (line 1064)
+      *        SET FLG-CARDFILTER-ISVALID TO TRUE          (line 1065)
+      *    END-IF.
+      *
+      *  Off-platform expression of AAP TC1 prelude: production
+      *  invariant is that 9000-READ-FORWARD's STARTBR (line 1129)
+      *  only runs when both 2210-EDIT-ACCOUNT and 2220-EDIT-CARD
+      *  validate their respective filter inputs (the line-431-435
+      *  IF guard requires NOT FLG-ACCTFILTER-NOT-OK AND NOT FLG-
+      *  CARDFILTER-NOT-OK).  A regression that broadened the IS
+      *  NOT NUMERIC clause would surface here as a failed FLG-
+      *  CARDFILTER-ISVALID assertion.
+      *
+      *  Why '0500024453765740' is the chosen valid input
+      *  ------------------------------------------------
+      *  CARD-NUM byte-extracted from app/data/ASCII/carddata.txt
+      *  record 1 via CARD-FIXTURE-001 (per the schema dependency).
+      *  Using a fixture-sourced card number rather than a synthetic
+      *  literal keeps the testsuite traceable to its production
+      *  seed data per AAP Section 0.4.4.  16 chars (matches CC-
+      *  CARD-NUM PIC X(16)), all-numeric, non-zero.
+      *
+      *  Source of expected values:
+      *    '1'         - WS-EDIT-CARD-FLAG flipped by SET FLG-
+      *                  CARDFILTER-ISVALID (line 1065; 88-level
+      *                  VALUE '1' per COCRDLIC.cbl line 67).
+      *    0500024453765740
+      *                - CDEMO-CARD-NUM populated by line 1064 MOVE
+      *                  CC-CARD-NUM-N TO CDEMO-CARD-NUM (PIC 9(16)
+      *                  per COCOM01Y line 41).
+      *    SPACES      - WS-ERROR-MSG retains BEFORE-EACH default
+      *                  (88-level WS-ERROR-MSG-OFF on VALUE SPACES
+      *                  per line 118).  No diagnostic on success.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES asserts the production
+      *  invariant that 2220-EDIT-CARD contains zero EXEC CICS
+      *  verbs.  Same pattern as COCRDSLC TC1 / COTRN00C TC2 --
+      *  pure-WS validation paragraphs.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 2220-EDIT-CARD accepts valid 16-digit num'
+            MOVE '0500024453765740' TO CC-CARD-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2220-EDIT-CARD THRU 2220-EDIT-CARD-EXIT
+            EXPECT WS-EDIT-CARD-FLAG TO BE '1'
+            EXPECT CDEMO-CARD-NUM TO BE 0500024453765740
+            EXPECT WS-ERROR-MSG TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC2 -- YYYY-STORE-PFKEY maps DFHPF8 to CCARD-AID-PFK08
+      *
+      *  Drives YYYY-STORE-PFKEY (CSSTRPFY copybook lines 17-79,
+      *  COPY-included into COCRDLIC's PROCEDURE DIVISION at line
+      *  1416).  This paragraph is the dispatch table 0000-MAIN
+      *  performs at line 349-350 BEFORE entering the EVALUATE TRUE
+      *  block at line 418.  It maps the EIBAID byte to a 5-char
+      *  keyword stored in CCARD-AID; downstream code tests CCARD-
+      *  AID via the 88-level conditions in CVCRD01Y lines 4-19.
+      *
+      *  TC2 tests the PF8 forward-paging arm:
+      *
+      *    WHEN EIBAID IS EQUAL TO DFHPF8                   (line 44)
+      *      SET CCARD-AID-PFK08 TO TRUE                    (line 45)
+      *
+      *  CCARD-AID-PFK08 is the 88-level VALUE 'PFK08' on CCARD-AID
+      *  (CVCRD01Y line 21); the SET TO TRUE writes 'PFK08' into
+      *  the parent group field.
+      *
+      *  Off-platform expression of AAP TC2 "PF8 forward page
+      *  READNEXT continues".  The literal AAP TC2 requires driving
+      *  0000-MAIN's WHEN CCARD-AID-PFK08 AND CA-NEXT-PAGE-EXISTS
+      *  branch (lines 486-497) end-to-end through 9000-READ-
+      *  FORWARD's STARTBR + READNEXT loop -- both require the
+      *  CICS translator pass.  TC2 substitutes a direct PERFORM of
+      *  YYYY-STORE-PFKEY with EIBAID=DFHPF8 to validate the FIRST
+      *  mapping in the dispatch chain that reaches the WHEN
+      *  CCARD-AID-PFK08 branch.
+      *
+      *  Differential vs TC3 / TC6: TC3 tests DFHPF7 -> 'PFK07',
+      *  TC6 tests DFHPF3 -> 'PFK03'; the three together prove the
+      *  PFKey arms route to distinct 88-level VALUEs and cannot
+      *  be conflated.
+      *
+      *  Source of expected values:
+      *    'PFK08'    - CCARD-AID populated by SET CCARD-AID-PFK08
+      *                 TO TRUE (CSSTRPFY line 45).  88-level VALUE
+      *                 declared on CVCRD01Y line 21.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- pure dispatch paragraph.
+      ******************************************************************
+       TESTCASE 'COCRDLIC YYYY-STORE-PFKEY maps DFHPF8 to PFK08'
+            MOVE DFHPF8 TO EIBAID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM YYYY-STORE-PFKEY THRU YYYY-STORE-PFKEY-EXIT
+            EXPECT CCARD-AID TO BE 'PFK08'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC3 -- YYYY-STORE-PFKEY maps DFHPF7 to CCARD-AID-PFK07
+      *
+      *  Drives YYYY-STORE-PFKEY (CSSTRPFY) along the PF7 backward-
+      *  paging arm:
+      *
+      *    WHEN EIBAID IS EQUAL TO DFHPF7                   (line 42)
+      *      SET CCARD-AID-PFK07 TO TRUE                    (line 43)
+      *
+      *  Off-platform expression of AAP TC3 "PF7 backward page
+      *  READPREV navigates back".  The literal AAP TC3 requires
+      *  driving 0000-MAIN's WHEN CCARD-AID-PFK07 AND NOT CA-FIRST
+      *  -PAGE branch (lines 501-513) end-to-end through 9100-
+      *  READ-BACKWARDS' STARTBR + READPREV loop -- both require
+      *  the CICS translator pass.
+      *
+      *  Differential vs TC2: a regression that swaps the PF7 / PF8
+      *  arms of the EVALUATE would be detected by TC3 failing
+      *  (CCARD-AID would become 'PFK08') while TC2 still passed.
+      *  Hence both arms are required for differential coverage.
+      *
+      *  Source of expected values:
+      *    'PFK07'    - CCARD-AID populated by SET CCARD-AID-PFK07
+      *                 TO TRUE (CSSTRPFY line 43).  88-level VALUE
+      *                 declared on CVCRD01Y line 20.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- no-CICS invariant.
+      ******************************************************************
+       TESTCASE 'COCRDLIC YYYY-STORE-PFKEY maps DFHPF7 to PFK07'
+            MOVE DFHPF7 TO EIBAID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM YYYY-STORE-PFKEY THRU YYYY-STORE-PFKEY-EXIT
+            EXPECT CCARD-AID TO BE 'PFK07'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC4 -- 1400-SETUP-MESSAGE PF8-at-end emits 'NO MORE PAGES'
+      *
+      *  Drives 1400-SETUP-MESSAGE (production lines 895-932) along
+      *  the PF8-at-end advisory branch (lines 905-909):
+      *
+      *    WHEN CCARD-AID-PFK08                             (line 905)
+      *     AND CA-NEXT-PAGE-NOT-EXISTS                     (line 906)
+      *     AND CA-LAST-PAGE-SHOWN                          (line 907)
+      *      MOVE 'NO MORE PAGES TO DISPLAY'                (line 908)
+      *      TO WS-ERROR-MSG                                (line 909)
+      *
+      *  Off-platform expression of AAP TC4 "End-of-file (READNEXT
+      *  EIBRESP=20 ENDFILE) handled gracefully": when 9000-READ-
+      *  FORWARD's READNEXT (line 1146) returns DFHRESP(ENDFILE)
+      *  at line 1233, production sets CA-NEXT-PAGE-NOT-EXISTS at
+      *  line 1235; on the NEXT PF8 press, 1400-SETUP-MESSAGE sees
+      *  both CA-NEXT-PAGE-NOT-EXISTS and CA-LAST-PAGE-SHOWN TRUE
+      *  and emits the user advisory.  The branch encodes the
+      *  invariant that a forward-page request after the last page
+      *  has already been shown surfaces a user-visible advisory
+      *  rather than issuing a doomed STARTBR / READNEXT.
+      *
+      *  88-level conditional names exercised:
+      *    CCARD-AID-PFK08         CVCRD01Y line 21 VALUE 'PFK08';
+      *                            set TRUE via TC4 prelude MOVE.
+      *    CA-NEXT-PAGE-NOT-EXISTS COCRDLIC.cbl line 243 VALUE
+      *                            LOW-VALUES; set TRUE via MOVE.
+      *    CA-LAST-PAGE-SHOWN      COCRDLIC.cbl line 240 VALUE 0;
+      *                            explicitly MOVE 0 for documented
+      *                            intent.
+      *
+      *  Source of expected values:
+      *    'NO MORE PAGES TO DISPLAY' - WS-ERROR-MSG literal MOVE'd
+      *               verbatim by production line 908; ERRMSGO OF
+      *               CCRDLIAO populated by line 924 MOVE WS-ERROR-
+      *               MSG TO ERRMSGO.  Asserting BOTH source and
+      *               target proves the MOVE chain is intact.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES asserts that 1400-SETUP-
+      *  MESSAGE contains zero EXEC CICS verbs (1500-SEND-SCREEN
+      *  is a separate paragraph).
+      ******************************************************************
+       TESTCASE 'COCRDLIC 1400-SETUP-MESSAGE PF8-at-end advisory'
+            MOVE 'PFK08'    TO CCARD-AID
+            MOVE LOW-VALUES TO WS-CA-NEXT-PAGE-IND
+            MOVE 0          TO WS-CA-LAST-PAGE-DISPLAYED
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1400-SETUP-MESSAGE THRU 1400-SETUP-MESSAGE-EXIT
+            EXPECT WS-ERROR-MSG TO BE 'NO MORE PAGES TO DISPLAY'
+            EXPECT ERRMSGO OF CCRDLIAO TO BE 'NO MORE PAGES TO DISPLAY'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC5 -- 2210-EDIT-ACCOUNT rejects non-numeric account id
+      *
+      *  Drives 2210-EDIT-ACCOUNT (production lines 1003-1030) along
+      *  the IS NOT NUMERIC rejection path -- the format-fail gate
+      *  that prevents 9000-READ-FORWARD's STARTBR from being
+      *  invoked on a malformed filter input.  The relevant branch:
+      *
+      *    IF CC-ACCT-ID IS NOT NUMERIC                    (line 1017)
+      *        SET INPUT-ERROR TO TRUE                     (line 1018)
+      *        SET FLG-ACCTFILTER-NOT-OK TO TRUE           (line 1019)
+      *        SET FLG-PROTECT-SELECT-ROWS-YES TO TRUE     (line 1020)
+      *        MOVE 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 ...'
+      *                                  TO WS-ERROR-MSG   (line 1021-3)
+      *        MOVE ZERO     TO CDEMO-ACCT-ID              (line 1024)
+      *        GO TO 2210-EDIT-ACCOUNT-EXIT                (line 1025)
+      *    END-IF.
+      *
+      *  Off-platform expression of AAP TC5 "STARTBR fails (EIBRESP
+      *  =12 NOTOPEN)" along the input-error short-circuit branch.
+      *  Production line 433 in 0000-MAIN guards 9000-READ-FORWARD
+      *  with `IF NOT FLG-ACCTFILTER-NOT-OK AND NOT FLG-CARDFILTER
+      *  -NOT-OK`; when 2210-EDIT-ACCOUNT sets FLG-ACCTFILTER-NOT-
+      *  OK at line 1019, the guard is FALSE and STARTBR is never
+      *  issued -- the production invariant equivalent to the AAP
+      *  TC5 STARTBR-failure path.
+      *
+      *  Input '0000000000A' is 11 chars (matches CC-ACCT-ID PIC
+      *  X(11) so line-1007 OR SPACES is FALSE), alphanumeric
+      *  (trailing 'A' fails IS NOT NUMERIC TRUE on line 1017),
+      *  and the redefined CC-ACCT-ID-N PIC 9(11) view is not
+      *  packed-decimal-zero so line-1009 EQUAL ZEROS is FALSE.
+      *  Test-author supplied; NOT derived from production logic.
+      *
+      *  Source of expected values:
+      *    '1'         - WS-INPUT-FLAG flipped by line 1018 SET
+      *                  INPUT-ERROR (88-level VALUE '1' per line 60).
+      *    '0'         - WS-EDIT-ACCT-FLAG flipped by line 1019 SET
+      *                  FLG-ACCTFILTER-NOT-OK (88-level VALUE '0'
+      *                  per line 62).  KEY differential -- a non-
+      *                  NOT-OK result here would break the line-
+      *                  433 STARTBR-suppression invariant.
+      *    'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER'
+      *                - WS-ERROR-MSG literal MOVE'd verbatim by
+      *                  production lines 1021-1023.  COMMA
+      *                  IMMEDIATELY after "FILTER" preserved
+      *                  exactly as in production source.
+      *    '00000000000' - CDEMO-ACCT-ID flipped by line 1024 MOVE
+      *                  ZERO (PIC 9(11) zero per COCOM01Y line 38).
+      *                  cobol-check 0.2.16 EXPECT compares the field's
+      *                  byte image as 11 ASCII '0' characters.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- no-CICS invariant.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 2210-EDIT-ACCOUNT rejects non-numeric acct'
+            MOVE '0000000000A' TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2210-EDIT-ACCOUNT THRU 2210-EDIT-ACCOUNT-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT WS-EDIT-ACCT-FLAG TO BE '0'
+            EXPECT WS-ERROR-MSG TO BE
+                'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER'
+            EXPECT CDEMO-ACCT-ID TO BE '00000000000'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC6 -- YYYY-STORE-PFKEY maps DFHPF3 to CCARD-AID-PFK03
+      *
+      *  Drives YYYY-STORE-PFKEY (CSSTRPFY) along the PF3 exit arm:
+      *
+      *    WHEN EIBAID IS EQUAL TO DFHPF3                   (line 34)
+      *      SET CCARD-AID-PFK03 TO TRUE                    (line 35)
+      *
+      *  Off-platform expression of AAP TC6 "PF3 exits with ENDBR".
+      *  The literal AAP TC6 requires driving 0000-MAIN's IF CCARD
+      *  -AID-PFK03 AND CDEMO-FROM-PROGRAM EQUAL LIT-THISPGM branch
+      *  (lines 384-406) end-to-end through XCTL PROGRAM(LIT-MENU
+      *  PGM) -- requires the CICS translator pass.  TC6 substitutes
+      *  a direct PERFORM of YYYY-STORE-PFKEY with EIBAID=DFHPF3
+      *  to validate the FIRST mapping in the dispatch chain that
+      *  reaches the IF CCARD-AID-PFK03 guard.
+      *
+      *  Together with TC2 (DFHPF8 -> 'PFK08') and TC3 (DFHPF7 ->
+      *  'PFK07'), TC6 covers the three operationally-significant
+      *  PF arms -- exit (PF3), backward (PF7), forward (PF8).
+      *  The production 0000-MAIN dispatch on lines 371-380 remaps
+      *  any PFKey OTHER than ENTER / PF3 / PF7 / PF8 back to ENTER
+      *  (lines 378-380), so the PF1/PF2/PF4-PF6/PF9-PF12 arms of
+      *  YYYY-STORE-PFKEY are not operationally reachable for
+      *  COCRDLIC -- testing only PF3/PF7/PF8 covers the surface.
+      *
+      *  Source of expected values:
+      *    'PFK03'    - CCARD-AID populated by SET CCARD-AID-PFK03
+      *                 TO TRUE (CSSTRPFY line 35).  88-level VALUE
+      *                 declared on CVCRD01Y line 11.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- no-CICS invariant.
+      ******************************************************************
+       TESTCASE 'COCRDLIC YYYY-STORE-PFKEY maps DFHPF3 to PFK03'
+            MOVE DFHPF3 TO EIBAID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM YYYY-STORE-PFKEY THRU YYYY-STORE-PFKEY-EXIT
+            EXPECT CCARD-AID TO BE 'PFK03'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC7 -- 9500-FILTER-RECORDS excludes record on account mismatch
+      *
+      *  Drives 9500-FILTER-RECORDS (production lines 1382-1411)
+      *  along the FLG-ACCTFILTER-ISVALID + non-matching-account
+      *  EXCLUSION arm:
+      *
+      *    SET WS-DONOT-EXCLUDE-THIS-RECORD TO TRUE        (line 1383)
+      *    IF FLG-ACCTFILTER-ISVALID                       (line 1385)
+      *       IF  CARD-ACCT-ID = CC-ACCT-ID                (line 1386)
+      *           CONTINUE                                 (line 1387)
+      *       ELSE                                         (line 1388)
+      *           SET WS-EXCLUDE-THIS-RECORD  TO TRUE      (line 1389)
+      *           GO TO 9500-FILTER-RECORDS-EXIT           (line 1390)
+      *       END-IF
+      *    ...
+      *
+      *  Off-platform expression of AAP TC7 "Filter by card number
+      *  prefix": 9500-FILTER-RECORDS is the production paragraph
+      *  that decides whether each READNEXT record (in 9000-READ-
+      *  FORWARD line 1159 / 9100-READ-BACKWARDS line 1335) is
+      *  admitted to the 7-row WS-SCREEN-DATA table or skipped.
+      *  The implementation supports filtering by either CC-ACCT-
+      *  ID (lines 1385-1394) or CC-CARD-NUM (lines 1396-1405);
+      *  TC7 exercises the account-id arm (the more common upstream
+      *  dispatch -- a non-admin user entering via COMEN01C carries
+      *  CDEMO-ACCT-ID in the COMMAREA which becomes CC-ACCT-ID
+      *  via 1300-SETUP-SCREEN-ATTRS).
+      *
+      *  Test sets FLG-ACCTFILTER-ISVALID TO TRUE so the outer guard
+      *  is TRUE, then sets CC-ACCT-ID and CARD-ACCT-ID to DIFFERENT
+      *  values so the IF on line 1386 is FALSE and the ELSE branch
+      *  fires.  CARD-ACCT-ID is a CARD-RECORD field via COPY
+      *  CVACT02Y; populated directly to drive the EXCLUSION arm.
+      *
+      *  Source of expected values:
+      *    '0'        - WS-FILTER-RECORD-FLAG flipped by line 1389
+      *                 SET WS-EXCLUDE-THIS-RECORD (88-level VALUE
+      *                 '0' per COCRDLIC.cbl line 148).  KEY
+      *                 differential -- if line 1389 were inverted
+      *                 (KEEP instead of EXCLUDE), this would fail.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- no-CICS invariant.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 9500-FILTER-RECORDS excludes acct mismatch'
+            MOVE '1'           TO WS-EDIT-ACCT-FLAG
+            MOVE '00000000001' TO CC-ACCT-ID
+            MOVE '00000000002' TO CARD-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9500-FILTER-RECORDS THRU 9500-FILTER-RECORDS-EXIT
+            EXPECT WS-FILTER-RECORD-FLAG TO BE '0'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  End of testsuite COCRDLIC CARD LIST BROWSE TRANSACTION
+      ******************************************************************

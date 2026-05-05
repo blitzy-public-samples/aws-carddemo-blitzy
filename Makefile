@@ -142,10 +142,31 @@ COBC                ?= cobc
 #       Default flags:   AFTER-PERFORM never reached.
 #       -fperform-osvs:  AFTER-PERFORM reached cleanly.
 #
+#   -frelax-level-hierarchy
+#       app/cbl/COCRDLIC.cbl line 252 introduces `05 WS-SCREEN-DATA.`
+#       inside `01 WS-THIS-PROGCOMMAREA.` (which already has level-10
+#       items at lines 230-248).  Strict ANSI/ISO COBOL hierarchy
+#       requires all sub-items of a level-10 group to use levels >10
+#       (i.e., 11..49); a level 05 cannot follow a level 10 within
+#       the same record without rolling back to a new level 01.
+#       GnuCOBOL rejects this with "no previous data item of level
+#       05" and aborts compilation before the PROCEDURE DIVISION is
+#       parsed.  IBM Enterprise COBOL accepts the construct (treating
+#       the level 05 as an implicit new sub-record peer of the
+#       enclosing 10-group, equivalent to `05 WS-SCREEN-DATA REDEFINES
+#       WS-THIS-PROGCOMMAREA`).  -frelax-level-hierarchy downgrades
+#       the strict-level error to a non-fatal warning so the merged
+#       cobol-check program compiles and the testcases run.  This
+#       flag does NOT alter runtime data layout; the level-mismatch
+#       only affects the conceptual "subordinate" relationship in
+#       the data hierarchy, not the byte offsets, which are
+#       sequential by source-order regardless of level numbers.
+#
 # Caller-supplied COBC_OPTS are appended AFTER these defaults so that
 # coverage flags (-fprofile-arcs -ftest-coverage) compose cleanly.
 #----------------------------------------------------------------------
-COBC_OPTS_BASE      := -flarger-redefines-ok -ftab-width=4 -fperform-osvs
+COBC_OPTS_BASE      := -flarger-redefines-ok -ftab-width=4 -fperform-osvs \
+                       -frelax-level-hierarchy
 COBC_OPTS           ?=
 JAVA                ?= java
 JAVA_OPTS           ?=
