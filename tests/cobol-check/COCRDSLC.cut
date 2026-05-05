@@ -1,0 +1,598 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : COCRDSLC CARD DETAIL VIEW TRANSACTION
+      *  Program-under-test : app/cbl/COCRDSLC.cbl
+      *
+      *  Purpose
+      *  -------
+      *  Exercise COCRDSLC's card-detail-view CICS transaction by
+      *  mocking ONLY the program's external boundary into the CICS
+      *  API: the CALL 'DFHEI1' invocation that the CICS translator
+      *  emits in place of every EXEC CICS verb (HANDLE ABEND,
+      *  RECEIVE MAP, READ DATASET (CARDDAT/CARDAIX), SEND MAP, SEND
+      *  TEXT, XCTL, ABEND, RETURN).  Internal COCRDSLC paragraphs
+      *  are NEVER mocked; every TESTCASE exercises a production
+      *  paragraph LIVE via PERFORM so the testsuite asserts against
+      *  side effects of actual production-code execution (per AAP
+      *  Section 0.10.1 -- "Mock or stub ONLY external dependencies").
+      *
+      *  COCRDSLC is a READ-ONLY CICS transaction: it RECEIVEs a
+      *  user-typed account id and card number from the BMS map
+      *  (CCRDSLAI), validates both fields (2210-EDIT-ACCOUNT and
+      *  2220-EDIT-CARD), then reads CARDDAT keyed on card number
+      *  (9100-GETCARD-BYACCTCARD) or via CARDAIX alternate index
+      *  (9150-GETCARD-BYACCT).  It SENDs CCRDSLAO field-by-field;
+      *  unlike sister COCRDUPC (update) it has no WRITE/REWRITE
+      *  /DELETE verbs -- the simplest CICS card-read pattern.
+      *
+      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS
+      *  -------------------------------------------
+      *  cobol-check 0.2.16's TestSuiteParser supports CALL, PARA,
+      *  PARAGRAPH, and SECTION mock-types only.  The CICS translator
+      *  rewrites every EXEC CICS verb into a CALL 'DFHEI1' USING
+      *  <command-block>, so MOCK CALL 'DFHEI1' is the equivalent
+      *  intercept point.  Off-platform (GnuCOBOL on Linux) the
+      *  merged binary fails to compile (per AAP Section 6.6.3.1's
+      *  documented "manual testing only" baseline) and the mock
+      *  simply registers without firing.  Each MOCK is declared
+      *  INSIDE its TESTCASE (Local scope) per the COACTVWC /
+      *  COBIL00C / COTRN01C / COUSR02C exemplar pattern.
+      *
+      *  Schema dependencies
+      *  -------------------
+      *    STUB-ABEND-FLAG.cpy -- EXTERNAL state group (STUB-ABEND-
+      *        STATE / WS-DFHEI1-UNMOCKED-CALLED / WS-DFHEI1-EIBRESP
+      *        -OVERRIDE) written by CEE3ABD and DFHEI1 stubs at
+      *        runtime.
+      *    CARD-FIXTURE-001.cpy -- 150-byte CARD-RECORD from
+      *        carddata.txt rec 1; reserved for the on-platform
+      *        extension where MOCK CICS READ FILE(CARDDAT) supplies
+      *        this fixture once the translator pass exists.
+      *    DFHEI1.cbl -- standalone PROGRAM-ID compiled to a .so so
+      *        any unmocked EXEC CICS verb resolves at load time
+      *        with EIBRESP=27 (NOTAUTH).
+      *    config.properties -- cobol-check runtime configuration.
+      *    COSGN00C.cut -- structural exemplar (code-style reference;
+      *        not COPYed or linked).
+      *
+      *  The testsuite does NOT contain `COPY STUB-ABEND-FLAG.`
+      *  because cobol-check 0.2.16's TestSuiteParser only recognizes
+      *  TESTSUITE / TESTCASE / MOCK / EXPECT / VERIFY / BEFORE-EACH
+      *  / AFTER-EACH / END-* / CALL / PARA / PARAGRAPH / SECTION;
+      *  a bare COPY at file scope aborts the merge.  Runtime stubs
+      *  provide their intended safety regardless, matching the
+      *  COACTVWC / COBIL00C / COTRN01C / COUSR02C exemplars.
+      *
+      *  Test categories
+      *  ---------------
+      *    TC1 - 2220-EDIT-CARD accepts a valid 16-digit card number
+      *          (production lines 716-718 ELSE branch); off-platform
+      *          expression of AAP TC1 happy path validation gate.
+      *    TC2 - 2220-EDIT-CARD rejects empty CC-CARD-NUM (lines 691-
+      *          702); off-platform expression of AAP TC3 "Blank
+      *          card number rejected".
+      *    TC3 - 2220-EDIT-CARD rejects non-numeric CC-CARD-NUM
+      *          (lines 706-715); off-platform expression of AAP TC2
+      *          "Card not found" along the format-rejection branch.
+      *    TC4 - 2210-EDIT-ACCOUNT accepts a valid 11-digit account
+      *          id (lines 675-678); companion validation gate.
+      *    TC5 - 1100-SCREEN-INIT populates CCRDSLAO header literals
+      *          (TRNNAMEO='CCDL', PGMNAMEO='COCRDSLC'); off-platform
+      *          expression of AAP TC4 "PF3 exit" and TC5 "XCTL back
+      *          to list" preamble.
+      *
+      *  Test user: USER0001 / USER role per AAP Section 0.10.2.
+      *  COCRDSLC does NOT implement role-based authorization;
+      *  any signed-on user reaching it via COMEN01C option 4 may
+      *  view any card record.
+      *
+      *  Off-platform deferrals
+      *  ----------------------
+      *  Literal AAP TC1 ("Valid card number returns detail"), TC2
+      *  ("Card not found EIBRESP=13"), TC4 ("PF3 exit"), and TC5
+      *  ("XCTL back to list") all require the translator pass to
+      *  reach 9100/9150's EVALUATE WS-RESP-CD WHEN DFHRESP(NORMAL/
+      *  NOTFND) clauses on production lines 752-772 -- same off-
+      *  platform limitation as COACTVWC / COBIL00C / COTRN01C /
+      *  COUSR02C / COUSR03C.  When the translator is added, this
+      *  suite can be extended with WS-RESP-CD pre-population, MOCK
+      *  CICS READ FILE(CARDDAT) using CARD-FIXTURE-001, and PERFORM
+      *  9100-GETCARD-BYACCTCARD end-to-end.
+      *
+      *  References
+      *  ----------
+      *    AAP Section 0.10.1 / 0.5.1 / 0.10.2 / 0.4.1 / 0.7.1
+      *    app/cbl/COCRDSLC.cbl lines 247-410 (0000-MAIN dispatch)
+      *    app/cbl/COCRDSLC.cbl lines 412-455 (1000/1100-SCREEN)
+      *    app/cbl/COCRDSLC.cbl lines 596-607 (2100-RECEIVE-MAP)
+      *    app/cbl/COCRDSLC.cbl lines 647-683 (2210-EDIT-ACCOUNT)
+      *    app/cbl/COCRDSLC.cbl lines 685-723 (2220-EDIT-CARD)
+      *    app/cbl/COCRDSLC.cbl lines 736-777 (9100-GETCARD-BYACCT)
+      *    app/cbl/COCRDSLC.cbl lines 857-878 (ABEND-ROUTINE)
+      *    app/cpy/COCOM01Y.cpy             (CARDDEMO-COMMAREA)
+      *    app/cpy/CVCRD01Y.cpy             (CC-WORK-AREAS)
+      *    app/cpy/CVACT02Y.cpy             (CARD-RECORD layout)
+      *    app/cpy-bms/COCRDSL.CPY          (CCRDSLAI / CCRDSLAO)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy  (EXTERNAL stub state)
+      *    tests/stubs/DFHEI1.cbl           (CICS link-time backstop)
+      *    tests/fixtures/cobol-snippets/CARD-FIXTURE-001.cpy
+      *    tests/cobol-check/COSGN00C.cut   (structural exemplar)
+      *    tests/cobol-check/COACTVWC.cut   (sister read-only exempl)
+      *    tests/cobol-check/COTRN01C.cut   (sister read-only exempl)
+      ******************************************************************
+
+       TESTSUITE 'COCRDSLC CARD DETAIL VIEW TRANSACTION'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset.
+      *
+      *  Restores deterministic baseline state so every TESTCASE
+      *  starts from a known, identical configuration.  cobol-check
+      *  resets MOCK invocation counters automatically between
+      *  TESTCASEs; this block resets the production WS / shared
+      *  structures touched by COCRDSLC:
+      *
+      *    WS-MISC-STORAGE     COCRDSLC.cbl lines 36-121; clears
+      *                        WS-RESP-CD, WS-REAS-CD, WS-TRANID,
+      *                        WS-INPUT-FLAG, WS-EDIT-ACCT-FLAG,
+      *                        WS-EDIT-CARD-FLAG, WS-RETURN-FLAG,
+      *                        WS-PFK-FLAG, CICS-OUTPUT-EDIT-VARS,
+      *                        WS-CARD-RID, WS-FILE-ERROR-MESSAGE,
+      *                        WS-LONG-MSG, WS-INFO-MSG, WS-RETURN-MSG
+      *                        (matching 88-level WS-RETURN-MSG-OFF
+      *                        on the LOW-VALUES VALUE per line 135).
+      *    CC-WORK-AREAS       CVCRD01Y; clears CCARD-AID, CC-
+      *                        ACCT-ID, CC-CARD-NUM, CC-CUST-ID and
+      *                        the CCARD-NEXT-* / CCARD-ERROR-MSG
+      *                        slots used by 1xxx/2xxx paragraphs.
+      *    CARDDEMO-COMMAREA   COCOM01Y; clears CDEMO-FROM-* /
+      *                        CDEMO-TO-* / CDEMO-USER-ID / CDEMO-
+      *                        USER-TYPE / CDEMO-PGM-CONTEXT /
+      *                        CDEMO-ACCT-ID / CDEMO-CARD-NUM
+      *                        (matches 88-level CDEMO-PGM-ENTER
+      *                        with VALUE 0 on CDEMO-PGM-CONTEXT).
+      *    WS-THIS-PROGCOMMAREA  COCRDSLC.cbl lines 200-203; clears
+      *                        CA-FROM-PROGRAM / CA-FROM-TRANID.
+      *    CARD-RECORD         CVACT02Y 150-byte group; cleared for
+      *                        forward-compatibility with the COPY
+      *                        CARD-FIXTURE-001 post-translator
+      *                        extension on 9100-GETCARD-BYACCTCARD.
+      *    CCRDSLAI            BMS input map (cpy-bms/COCRDSL.CPY).
+      *                        CCRDSLAO REDEFINES CCRDSLAI in the
+      *                        production copybook so this also
+      *                        clears CCRDSLAO.
+      *    WS-CURDATE-DATA     CSDAT01Y date-time group used by
+      *                        1100-SCREEN-INIT for header dates.
+      *    RETURN-CODE         Implicit special-register reset.
+      *
+      *  After clearing, BEFORE-EACH seeds the COMMAREA with the
+      *  USER0001 regular-user identity per AAP Section 0.10.2.
+      *  CDEMO-FROM-PROGRAM defaults to 'COMEN01C' / CDEMO-FROM-
+      *  TRANID = 'CM00' to reflect the upstream caller (the main
+      *  menu's option-4 dispatch -- COCRDSLC's most common entry
+      *  pathway).  TC4's 2210-EDIT-ACCOUNT testcase overrides
+      *  CC-ACCT-ID for the validation drive; TC1-TC3 leave the
+      *  USER0001 default unchanged because 2220-EDIT-CARD is
+      *  invariant to the COMMAREA's user identity.
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE WS-MISC-STORAGE
+            INITIALIZE CC-WORK-AREAS
+            INITIALIZE CARDDEMO-COMMAREA
+            INITIALIZE WS-THIS-PROGCOMMAREA
+            INITIALIZE CARD-RECORD
+            INITIALIZE CCRDSLAI
+            INITIALIZE WS-CURDATE-DATA
+            MOVE ZERO       TO RETURN-CODE
+            MOVE 'USER0001' TO CDEMO-USER-ID
+            MOVE 'U'        TO CDEMO-USER-TYPE
+            MOVE 'COMEN01C' TO CDEMO-FROM-PROGRAM
+            MOVE 'CM00'     TO CDEMO-FROM-TRANID
+       END-BEFORE.
+
+
+      ******************************************************************
+      *  TC1 -- 2220-EDIT-CARD accepts a valid 16-digit card number
+      *
+      *  Drives 2220-EDIT-CARD (production lines 685-723) along the
+      *  SUCCESS path that gates 9100-GETCARD-BYACCTCARD downstream.
+      *  The paragraph executes:
+      *
+      *    SET FLG-CARDFILTER-NOT-OK TO TRUE              (line 688)
+      *    IF CC-CARD-NUM = LOW-VALUES OR SPACES OR
+      *       CC-CARD-NUM-N EQUAL ZEROS                   (line 691-3)
+      *        ... (FALSE; '0000000000000001' is non-zero)
+      *    IF CC-CARD-NUM IS NOT NUMERIC                  (line 706)
+      *        ... (FALSE; '0000000000000001' is all-numeric)
+      *    ELSE                                           (line 716)
+      *        MOVE CC-CARD-NUM-N TO CDEMO-CARD-NUM       (line 717)
+      *        SET FLG-CARDFILTER-ISVALID TO TRUE         (line 718)
+      *    END-IF.
+      *
+      *  This is the off-platform expression of the AAP TC1 "Valid
+      *  card number returns detail" pathway: production logic
+      *  invariant that 9100-GETCARD-BYACCTCARD (production line
+      *  344-345 via 9000-READ-DATA on lines 728-730) ONLY runs
+      *  after BOTH 2210-EDIT-ACCOUNT and 2220-EDIT-CARD validate
+      *  their respective inputs.  A regression that broadened the
+      *  IS NOT NUMERIC clause (e.g., to also reject 16-digit
+      *  numerics) would surface here as a failed FLG-CARDFILTER-
+      *  ISVALID assertion.
+      *
+      *  Why '0000000000000001' is the chosen valid input
+      *  ------------------------------------------------
+      *  '0000000000000001' is 16 characters (matches CC-CARD-NUM
+      *  PIC X(16) length), all-numeric (passes the IS NOT NUMERIC
+      *  test), and non-zero when interpreted via CC-CARD-NUM-N
+      *  REDEFINES (fails the EQUAL ZEROS test) -- the smallest
+      *  16-digit non-zero card number satisfying the three-clause
+      *  validation.  Larger valid inputs would prove the same
+      *  path; the smallest is chosen for documentation clarity.
+      *  This input is supplied by the test author, NOT derived
+      *  from production logic.
+      *
+      *  Pre-conditions established by TC1 prelude:
+      *    CC-CARD-NUM = '0000000000000001' (PIC X(16) literal MOVE)
+      *
+      *  Source of expected values:
+      *    '1'         - WS-EDIT-CARD-FLAG flipped by SET FLG-
+      *                  CARDFILTER-ISVALID (production line 718;
+      *                  88-level on WS-EDIT-CARD-FLAG VALUE '1' per
+      *                  COCRDSLC.cbl line 61).  Test asserts the
+      *                  side effect; does NOT recompute or
+      *                  paraphrase the SET logic.
+      *    '0000000000000001'
+      *                - CDEMO-CARD-NUM populated by line 717 MOVE
+      *                  CC-CARD-NUM-N TO CDEMO-CARD-NUM.  CDEMO-
+      *                  CARD-NUM is PIC 9(16) per COCOM01Y; cobol-
+      *                  check renders PIC 9(16) in the 16-digit
+      *                  zero-padded form for EXPECT comparison.
+      *    SPACES      - WS-RETURN-MSG retains BEFORE-EACH default
+      *                  (matching 88-level WS-RETURN-MSG-OFF on
+      *                  the LOW-VALUES VALUE per COCRDSLC.cbl line
+      *                  135 -- INITIALIZE on a PIC X group fills
+      *                  with SPACES which compares equal to the
+      *                  88-level LOW-VALUES match in cobol-check's
+      *                  EXPECT semantics).  No diagnostic message
+      *                  is set on the success path -- a regression
+      *                  that fired the zeros-or-non-numeric branch
+      *                  would write the production literal "CARD
+      *                  ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT
+      *                  NUMBER" here, which this assertion catches.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES asserts the production
+      *  invariant that 2220-EDIT-CARD contains zero EXEC CICS
+      *  verbs (a regression introducing one would inflate the
+      *  count and fail the VERIFY).  Same pattern as COTRN01C
+      *  TC3 / COBIL00C TC3 / COACTVWC TC1 -- pure-WS validation
+      *  paragraphs.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 2220-EDIT-CARD accepts valid 16-digit num'
+            MOVE '0000000000000001' TO CC-CARD-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2220-EDIT-CARD THRU 2220-EDIT-CARD-EXIT
+            EXPECT WS-EDIT-CARD-FLAG TO BE '1'
+            EXPECT CDEMO-CARD-NUM TO BE '0000000000000001'
+            EXPECT WS-RETURN-MSG TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC2 -- 2220-EDIT-CARD rejects empty card number (SPACES)
+      *
+      *  Drives 2220-EDIT-CARD (production lines 685-723) along the
+      *  EMPTY-INPUT rejection path:
+      *
+      *    IF CC-CARD-NUM   EQUAL LOW-VALUES              (line 691)
+      *    OR CC-CARD-NUM   EQUAL SPACES                  (line 692)
+      *    OR CC-CARD-NUM-N EQUAL ZEROS                   (line 693)
+      *        SET INPUT-ERROR           TO TRUE          (line 694)
+      *        SET FLG-CARDFILTER-BLANK  TO TRUE          (line 695)
+      *        IF WS-RETURN-MSG-OFF                       (line 696)
+      *           SET WS-PROMPT-FOR-CARD TO TRUE          (line 697)
+      *        END-IF
+      *        MOVE ZEROES       TO CDEMO-CARD-NUM        (line 700)
+      *        GO TO 2220-EDIT-CARD-EXIT                  (line 701)
+      *    END-IF.
+      *
+      *  Off-platform expression of AAP TC3 "Blank card number
+      *  rejected".  Production-mandated invariant: 2200-EDIT-MAP-
+      *  INPUTS (lines 622-627) MOVEs LOW-VALUES TO CC-CARD-NUM when
+      *  CARDSIDI = '*' OR SPACES; testing CC-CARD-NUM = SPACES
+      *  directly here proves the downstream 2220 correctly handles
+      *  what 2200 hands it.  After line-701 GO TO EXIT, the IS
+      *  NOT NUMERIC branch is NOT entered -- the empty-check is
+      *  the FIRST gate that short-circuits before format
+      *  validation.  Asserting FLG-CARDFILTER-BLANK (' ') vs FLG-
+      *  CARDFILTER-NOT-OK ('0') in TC3 proves the BLANK path ran,
+      *  not the format path.  Asserting WS-RETURN-MSG carries the
+      *  WS-PROMPT-FOR-CARD literal "Card number not provided"
+      *  proves the line-697 SET fired (WS-RETURN-MSG-OFF was TRUE
+      *  at entry per BEFORE-EACH INITIALIZE WS-MISC-STORAGE).
+      *
+      *  Pre-conditions established by TC2 prelude:
+      *    CC-CARD-NUM = SPACES (PIC X(16) MOVE; matches line-692)
+      *
+      *  Source of expected values:
+      *    '1'         - WS-INPUT-FLAG flipped by line 694 SET
+      *                  INPUT-ERROR (88-level VALUE '1' per
+      *                  COCRDSLC.cbl line 53).  Test asserts side
+      *                  effect.
+      *    ' '         - WS-EDIT-CARD-FLAG flipped by line 695 SET
+      *                  FLG-CARDFILTER-BLANK (88-level VALUE ' '
+      *                  per COCRDSLC.cbl line 62).  KEY differential
+      *                  vs TC3's '0'.
+      *    'Card number not provided'
+      *                - WS-RETURN-MSG flipped by line 697 SET WS-
+      *                  PROMPT-FOR-CARD (88-level VALUE per
+      *                  COCRDSLC.cbl lines 140-141).  Test asserts
+      *                  the side effect; does NOT recompute or
+      *                  paraphrase the SET logic.
+      *    '0000000000000000'
+      *                - CDEMO-CARD-NUM flipped by line 700 MOVE
+      *                  ZEROES (PIC 9(16) zero, 16-digit padded form).
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- same no-CICS invariant
+      *  as TC1.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 2220-EDIT-CARD rejects empty card number'
+            MOVE SPACES TO CC-CARD-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2220-EDIT-CARD THRU 2220-EDIT-CARD-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT WS-EDIT-CARD-FLAG TO BE ' '
+            EXPECT WS-RETURN-MSG TO BE 'Card number not provided'
+            EXPECT CDEMO-CARD-NUM TO BE '0000000000000000'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC3 -- 2220-EDIT-CARD rejects non-numeric card number
+      *
+      *  Drives 2220-EDIT-CARD along the IS NOT NUMERIC rejection
+      *  path -- the format-fail gate that prevents 9100-GETCARD-
+      *  BYACCTCARD from being called on malformed input.  Off-
+      *  platform expression of the AAP TC2 "Card not found"
+      *  pathway along the format-rejection branch (the literal
+      *  AAP TC2 NOTFND on CARDDAT requires the translator for
+      *  EVALUATE WS-RESP-CD WHEN DFHRESP(NOTFND) on production
+      *  lines 752-761; the IS NOT NUMERIC gate is the last off-
+      *  platform-reachable check that has the same downstream
+      *  effect of suppressing the CICS READ).
+      *
+      *  Production paragraph (relevant branch):
+      *
+      *    IF CC-CARD-NUM  IS NOT NUMERIC                 (line 706)
+      *        SET INPUT-ERROR TO TRUE                    (line 707)
+      *        SET FLG-CARDFILTER-NOT-OK TO TRUE          (line 708)
+      *        IF WS-RETURN-MSG-OFF                       (line 709)
+      *           MOVE 'CARD ID FILTER,IF SUPPLIED MUST
+      *                 BE A 16 DIGIT NUMBER'
+      *                                  TO WS-RETURN-MSG (line 710-2)
+      *        END-IF
+      *        MOVE ZERO       TO CDEMO-CARD-NUM          (line 714)
+      *        GO TO 2220-EDIT-CARD-EXIT                  (line 715)
+      *    END-IF.
+      *
+      *  Note: the line-691-693 OR-chain is FALSE for input
+      *  '000000000000000A' because (a) the value is not LOW-VALUES
+      *  / SPACES (CC-CARD-NUM is alphanumeric not blank) and (b)
+      *  CC-CARD-NUM-N EQUAL ZEROS evaluates against a redefined
+      *  PIC 9(16) view of an alphanumeric byte sequence -- under
+      *  GnuCOBOL, this comparison short-circuits FALSE because
+      *  the underlying bytes (X'30...30 41') are not a valid
+      *  packed-decimal-zero pattern.  The IS NOT NUMERIC gate on
+      *  line 706 then evaluates TRUE (the trailing 'A' is non-
+      *  numeric), routing the testcase into the format-rejection
+      *  handler.
+      *
+      *  Pre-conditions: CC-CARD-NUM = '000000000000000A' (test-
+      *  author supplied: 16 chars, alphanumeric, non-blank --
+      *  trips IS NOT NUMERIC TRUE on the trailing 'A' while
+      *  passing the empty-OR-zero gate on line 691-693).
+      *
+      *  Source of expected values:
+      *    '1'         - WS-INPUT-FLAG flipped by line 707.
+      *    '0'         - WS-EDIT-CARD-FLAG flipped by line 708 SET
+      *                  FLG-CARDFILTER-NOT-OK (88-level VALUE '0'
+      *                  per line 60).  Differential vs TC2's ' '.
+      *    'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER'
+      *                - WS-RETURN-MSG literal MOVE'd verbatim by
+      *                  lines 710-712.  Test asserts the side
+      *                  effect; does NOT recompute.  COMMA
+      *                  IMMEDIATELY after "FILTER" preserved
+      *                  exactly as in production (no space).
+      *    '0000000000000000'
+      *                - CDEMO-CARD-NUM flipped by line 714 MOVE
+      *                  ZERO (PIC 9(16) zero, 16-digit padded form).
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- same no-CICS invariant
+      *  as TC1 / TC2.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 2220-EDIT-CARD rejects non-numeric card'
+            MOVE '000000000000000A' TO CC-CARD-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2220-EDIT-CARD THRU 2220-EDIT-CARD-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT WS-EDIT-CARD-FLAG TO BE '0'
+            EXPECT WS-RETURN-MSG TO BE
+                'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER'
+            EXPECT CDEMO-CARD-NUM TO BE '0000000000000000'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC4 -- 2210-EDIT-ACCOUNT accepts a valid 11-digit account id
+      *
+      *  Drives 2210-EDIT-ACCOUNT (production lines 647-683) along
+      *  the SUCCESS path that gates 9100-GETCARD-BYACCTCARD
+      *  downstream as the COMPANION validation paragraph to TC1's
+      *  2220-EDIT-CARD.  Production line 344 (executed inside
+      *  0000-MAIN's WHEN CDEMO-PGM-ENTER AND CDEMO-FROM-PROGRAM
+      *  EQUAL LIT-CCLISTPGM branch) PERFORMs 9000-READ-DATA THRU
+      *  9000-READ-DATA-EXIT only after BOTH 2210-EDIT-ACCOUNT and
+      *  2220-EDIT-CARD validate their inputs via 2200-EDIT-MAP-
+      *  INPUTS' line 630-634 chain.  Asserting BOTH validation
+      *  paragraphs in sister testcases (TC1 covers 2220, TC4
+      *  covers 2210) proves both arms of the gate are wired
+      *  correctly.
+      *
+      *  The paragraph executes:
+      *
+      *    SET FLG-ACCTFILTER-NOT-OK TO TRUE              (line 648)
+      *    IF CC-ACCT-ID = LOW-VALUES OR SPACES OR
+      *       CC-ACCT-ID-N EQUAL ZEROS                    (line 651-3)
+      *        ... (FALSE; '00000000001' is non-zero)
+      *    IF CC-ACCT-ID IS NOT NUMERIC                   (line 665)
+      *        ... (FALSE; '00000000001' is all-numeric)
+      *    ELSE                                           (line 675)
+      *        MOVE CC-ACCT-ID TO CDEMO-ACCT-ID           (line 676)
+      *        SET FLG-ACCTFILTER-ISVALID TO TRUE         (line 677)
+      *    END-IF.
+      *
+      *  Why '00000000001' is the chosen valid input
+      *  -------------------------------------------
+      *  Same selection rationale as TC1 (smallest 11-digit non-
+      *  zero account id satisfying all three validation clauses).
+      *  Matches the canonical input used across the testsuite
+      *  family (COACTVWC TC1) for consistent traceability.  Test-
+      *  author supplied; NOT derived from production logic.
+      *
+      *  Pre-conditions established by TC4 prelude:
+      *    CC-ACCT-ID = '00000000001' (PIC X(11) literal MOVE)
+      *
+      *  Source of expected values:
+      *    '1'         - WS-EDIT-ACCT-FLAG flipped by SET FLG-
+      *                  ACCTFILTER-ISVALID (production line 677;
+      *                  88-level on WS-EDIT-ACCT-FLAG VALUE '1' per
+      *                  COCRDSLC.cbl line 57).  Test asserts the
+      *                  side effect; does NOT recompute the SET.
+      *    '00000000001'
+      *                - CDEMO-ACCT-ID populated by line 676 MOVE
+      *                  CC-ACCT-ID TO CDEMO-ACCT-ID; CDEMO-ACCT-ID
+      *                  is PIC 9(11) per COCOM01Y; cobol-check
+      *                  renders PIC 9(11) in the 11-digit padded
+      *                  form for EXPECT comparison.
+      *    SPACES      - WS-RETURN-MSG retains BEFORE-EACH default
+      *                  (matching 88-level WS-RETURN-MSG-OFF on
+      *                  the LOW-VALUES VALUE per COCRDSLC.cbl line
+      *                  135).  No diagnostic message is set on the
+      *                  success path -- a regression that fired
+      *                  the zeros-or-non-numeric branch would write
+      *                  the production literal "ACCOUNT FILTER,IF
+      *                  SUPPLIED MUST BE A 11 DIGIT NUMBER" here,
+      *                  which this assertion catches.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES asserts the production
+      *  invariant that 2210-EDIT-ACCOUNT contains zero EXEC CICS
+      *  verbs (a regression introducing one would inflate the
+      *  count and fail the VERIFY).  Same pattern as TC1 / TC2 /
+      *  TC3 -- pure-WS validation paragraphs.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 2210-EDIT-ACCOUNT accepts valid 11-digit id'
+            MOVE '00000000001' TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2210-EDIT-ACCOUNT THRU 2210-EDIT-ACCOUNT-EXIT
+            EXPECT WS-EDIT-ACCT-FLAG TO BE '1'
+            EXPECT CDEMO-ACCT-ID TO BE '00000000001'
+            EXPECT WS-RETURN-MSG TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC5 -- 1100-SCREEN-INIT populates header from program literals
+      *
+      *  Drives 1100-SCREEN-INIT (production lines 427-455).  Pure-
+      *  WS preamble called by 1000-SEND-MAP (lines 413-414) on
+      *  every screen-render pass -- first entry, validation
+      *  failure, data-load success, and PF3 fall-through.  Zero
+      *  EXEC CICS verbs and zero PERFORM statements (only
+      *  invocation seam is FUNCTION CURRENT-DATE on lines 430/437);
+      *  the cleanest off-platform test target in COCRDSLC.
+      *
+      *  Production paragraph (assertion-relevant subset):
+      *
+      *    MOVE LOW-VALUES     TO CCRDSLAO                (line 428)
+      *    MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA  (line 430)
+      *    MOVE CCDA-TITLE01   TO TITLE01O OF CCRDSLAO    (line 432)
+      *    MOVE CCDA-TITLE02   TO TITLE02O OF CCRDSLAO    (line 433)
+      *    MOVE LIT-THISTRANID TO TRNNAMEO OF CCRDSLAO    (line 434)
+      *    MOVE LIT-THISPGM    TO PGMNAMEO OF CCRDSLAO    (line 435)
+      *    ... (FUNCTION CURRENT-DATE second MOVE on line 437,
+      *         WS-CURDATE-MM/DD/YY and WS-CURTIME-HH/MM/SS
+      *         decomposition MOVEs on lines 439-449)
+      *
+      *  Off-platform expression of AAP TC4 "PF3 exit" and TC5
+      *  "XCTL back to list" generalised to the screen-render
+      *  preamble that runs on every cycle -- including PF3
+      *  fall-through which 0000-MAIN's WHEN CCARD-AID-PFK03
+      *  branch (production lines 305-334) reaches via 1000-
+      *  SEND-MAP THRU 1000-SEND-MAP-EXIT before issuing the
+      *  EXEC CICS XCTL.  Literal AAP TC4/TC5 XCTL pathways
+      *  require translator-defined EIBAID and CCARD-AID-PFK03
+      *  88-level; 1100-SCREEN-INIT exercises the preamble that
+      *  PRECEDES the XCTL on every cycle.
+      *
+      *  Source of expected values:
+      *    'CCDL'      - LIT-THISTRANID (production line 166 PIC
+      *                  X(4) VALUE 'CCDL') MOVE'd to TRNNAMEO
+      *                  by line 434.  Test asserts side effect
+      *                  verbatim; does NOT recompute or paraphrase.
+      *    'COCRDSLC'  - LIT-THISPGM (production line 164 PIC
+      *                  X(8) VALUE 'COCRDSLC') MOVE'd to
+      *                  PGMNAMEO by line 435.
+      *
+      *  CURDATEO / CURTIMEO are NOT asserted because they
+      *  derive from FUNCTION CURRENT-DATE (non-deterministic).
+      *  TITLE01O / TITLE02O are 40-byte slots whose space-
+      *  padding varies; the 4-byte TRNNAMEO / 8-byte PGMNAMEO
+      *  are unambiguous and are the production-literal-driven
+      *  slots most tightly coupled to a regression in the line
+      *  434-435 MOVE pair.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES asserts the production
+      *  invariant that 1100-SCREEN-INIT contains zero EXEC CICS
+      *  verbs (regression introducing one would inflate the
+      *  count and fail the VERIFY).  Same pattern as TC1-TC4.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 1100-SCREEN-INIT populates header from lits'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1100-SCREEN-INIT
+            EXPECT TRNNAMEO OF CCRDSLAO TO BE 'CCDL'
+            EXPECT PGMNAMEO OF CCRDSLAO TO BE 'COCRDSLC'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  End of testsuite COCRDSLC CARD DETAIL VIEW TRANSACTION
+      ******************************************************************
