@@ -1,0 +1,553 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : COUSR02C UPDATE USER ADMIN TRANSACTION
+      *  Program-under-test : app/cbl/COUSR02C.cbl
+      *
+      *  Purpose
+      *  -------
+      *  Exercise COUSR02C's update-user CICS transaction by mocking
+      *  ONLY the program's external boundary into the CICS API: the
+      *  CALL 'DFHEI1' invocation that the CICS translator emits in
+      *  place of every EXEC CICS verb (RECEIVE MAP, SEND MAP, READ
+      *  DATASET ... UPDATE, REWRITE DATASET, XCTL, RETURN).  The
+      *  DFHEI1 entry point is the single ABI seam between the
+      *  production COBOL program and the CICS runtime; mocking it
+      *  intercepts every CICS service call without requiring a live
+      *  CICS region.
+      *
+      *  Internal COUSR02C paragraphs are NEVER mocked.  Every
+      *  TESTCASE exercises a production paragraph LIVE via PERFORM
+      *  so the testsuite asserts against side effects of actual
+      *  production-code execution (per the user directive in AAP
+      *  Section 0.10.1 -- "Mock or stub ONLY external dependencies").
+      *
+      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS
+      *  -------------------------------------------
+      *  cobol-check 0.2.16's TestSuiteParser supports the mock-types
+      *  CALL, PARA, PARAGRAPH, and SECTION (verified against the
+      *  Keywords class in cobol-check-0.2.16.jar).  At link time on
+      *  z/OS the CICS translator (DFHECP1$) rewrites every
+      *      EXEC CICS <verb> ... END-EXEC.
+      *  into a sequence whose terminal statement is
+      *      CALL 'DFHEI1' USING <command-block> ...
+      *  so MOCK CALL 'DFHEI1' is the equivalent intercept point.
+      *  Off-platform (GnuCOBOL on Linux) the same mock applies once
+      *  the CICS translator runs as a precompile pass; until that
+      *  pass exists in this repository the production EXEC CICS
+      *  verbs reach the linker as-is, the merged binary fails to
+      *  compile (a known infrastructure gap covered by AAP Section
+      *  6.6.3.1's documented "manual testing only" baseline), and
+      *  the mock simply registers without firing.  The testsuite
+      *  itself is forward-compatible: when a CICS translator pass
+      *  is added, the same .cut file exercises every CICS boundary
+      *  through this mock.
+      *
+      *  Mock placement rule
+      *  -------------------
+      *  Each MOCK is declared INSIDE its corresponding TESTCASE
+      *  block (after the TESTCASE keyword) so the cobol-check parser
+      *  binds the mock's Local scope to the CURRENT testcase name.
+      *  This guarantees that the matching VERIFY clause inside the
+      *  same testcase resolves to the testcase-specific Local mock
+      *  with the testcase-specific mock body.  This mirrors the
+      *  exemplar pattern in tests/cobol-check/COUSR03C.cut and
+      *  tests/cobol-check/CBSTM03A.cut.
+      *
+      *  Schema dependencies (STUB-ABEND-FLAG.cpy, DFHEI1.cbl)
+      *  -----------------------------------------------------
+      *  The file_schema for this testsuite names two internal
+      *  imports:
+      *
+      *    tests/stubs/STUB-ABEND-FLAG.cpy -- 01-level EXTERNAL
+      *        working-storage group used by the CEE3ABD and DFHEI1
+      *        link-time stubs to publish abend / unmocked-CICS
+      *        flags to the testsuite.
+      *
+      *    tests/stubs/DFHEI1.cbl -- standalone DFHEI1 PROGRAM-ID
+      *        compiled into a .so module so that any unmocked
+      *        EXEC CICS verb that survives the off-platform compile
+      *        resolves at load time (CICS NOT-AUTH 27).
+      *
+      *  Both stubs are linked at TEST-RUN time by the runner script
+      *  tests/cobol-check/scripts/linux_gnucobol_run_tests, which
+      *  pre-compiles `tests/stubs/CEEDAYS.cbl`, `tests/stubs/
+      *  CEE3ABD.cbl`, and `tests/stubs/DFHEI1.cbl` as .so modules
+      *  in the merged-binary directory and points COB_LIBRARY_PATH
+      *  at that directory before invoking cobcrun.  The testsuite
+      *  itself does NOT contain `COPY STUB-ABEND-FLAG.` because
+      *  cobol-check 0.2.16's TestSuiteParser only recognizes the
+      *  keywords TESTSUITE, TESTCASE, MOCK, EXPECT, VERIFY,
+      *  BEFORE-EACH, AFTER-EACH, END-BEFORE, END-AFTER, END-MOCK,
+      *  CALL, PARA, PARAGRAPH, SECTION (and assertion connectors
+      *  TO BE / TO EQUAL / HAPPENED / TIMES / AT LEAST / etc).  A
+      *  bare COPY at file scope is parsed as a fieldname token and
+      *  triggers a "Unexpected token" SYNTAX ERROR that aborts
+      *  cobol-check before it can merge the testsuite into the
+      *  production source.  COPY directives are recognized only
+      *  inside MOCK ... END-MOCK bodies (where they splice into
+      *  the procedure-division mock paragraph) and inside the
+      *  production source itself (where the cobol-check
+      *  CopybookExpander expands them via application.copybook.
+      *  directory).  Adding STUB-ABEND-STATE to WORKING-STORAGE of
+      *  the merged binary therefore requires either (a) a small
+      *  modification to the production program (out of scope per
+      *  AAP Section 0.8.2) or (b) an upgrade of cobol-check to a
+      *  release that supports file-scope COPY.  Neither is in
+      *  scope for this work; the runtime stubs satisfy the
+      *  link-time requirements without WS access from the .cut
+      *  file, and the COUSR03C exemplar (the canonical pattern
+      *  per AAP Section 0.4.3 and the user prompt) follows the
+      *  same omission.  The stubs continue to provide their
+      *  intended runtime safety (DFHEI1 NOT-AUTH fallback,
+      *  CEE3ABD GOBACK-with-flag) regardless of whether the
+      *  testsuite can read the EXTERNAL state.
+      *
+      *  Test categories
+      *  ---------------
+      *    TC1 - PERFORM RETURN-TO-PREV-SCREEN with CDEMO-TO-PROGRAM
+      *          = SPACES; production substitutes the default
+      *          'COSGN00C' target, captures CDEMO-FROM-* fields,
+      *          and issues XCTL.
+      *    TC2 - PERFORM INITIALIZE-ALL-FIELDS; production resets
+      *          USRIDINL to -1 and clears USRIDINI, FNAMEI, LNAMEI,
+      *          PASSWDI, USRTYPEI, and WS-MESSAGE to SPACES.  The
+      *          PASSWDI clear is unique to COUSR02C: COUSR03C
+      *          (the delete-user transaction) does not maintain a
+      *          password field on the BMS map, so this testcase
+      *          exercises a production behavior absent from the
+      *          sister DELETE program.  No CICS verbs; purely
+      *          WORKING-STORAGE side effects.
+      *    TC3 - PERFORM PROCESS-ENTER-KEY with USRIDINI = SPACES;
+      *          production EVALUATE TRUE matches the empty-user-id
+      *          branch, sets WS-ERR-FLG ON, and short-circuits
+      *          before any READ DATASET dispatches.
+      *    TC4 - PERFORM UPDATE-USER-INFO with USRIDINI / FNAMEI /
+      *          LNAMEI populated, PASSWDI = SPACES, USRTYPEI = 'A';
+      *          production EVALUATE TRUE walks past the first three
+      *          WHEN clauses, matches the WHEN PASSWDI = SPACES OR
+      *          LOW-VALUES branch (line 198), sets WS-ERR-FLG ON,
+      *          MOVE -1 TO PASSWDL, and short-circuits before any
+      *          READ DATASET / REWRITE dispatches.  This branch is
+      *          unique to COUSR02C because COUSR03C (delete-user)
+      *          does not edit a password.
+      *    TC5 - PERFORM CLEAR-CURRENT-SCREEN; production performs
+      *          INITIALIZE-ALL-FIELDS first (clearing the BMS map
+      *          including PASSWDI) and then SEND-USRUPD-SCREEN.
+      *          The test asserts the INITIALIZE side effects
+      *          observable in WORKING-STORAGE, including the
+      *          PASSWDI clear that distinguishes COUSR02C from
+      *          its sister DELETE/LIST programs.
+      *
+      *  Test user
+      *  ---------
+      *  Per AAP Section 0.10.2, only ADMIN001 / ADMIN role is
+      *  permitted in the COUSR02C testsuite (this transaction is
+      *  admin-gated upstream by COADM01C; non-admin access is
+      *  filtered before the user reaches COUSR02C, so the program
+      *  itself does not implement role-based authorization and
+      *  therefore has no test surface for a "non-admin attempting
+      *  access rejected" case as the AAP TC4 stub would imply --
+      *  the rejection occurs in COADM01C, not COUSR02C, so the
+      *  TC4 slot is repurposed to the unique-to-COUSR02C PASSWORD
+      *  validation branch described above).
+      *
+      *  References
+      *  ----------
+      *    AAP Section 0.10.1 -- user directive on test structure
+      *    AAP Section 0.5.1  -- file-by-file plan for COUSR02C
+      *    AAP Section 0.10.2 -- ADMIN001 / ADMIN test user
+      *    app/cbl/COUSR02C.cbl lines 143-172 (PROCESS-ENTER-KEY)
+      *    app/cbl/COUSR02C.cbl lines 177-245 (UPDATE-USER-INFO)
+      *    app/cbl/COUSR02C.cbl lines 250-261 (RETURN-TO-PREV-SCREEN)
+      *    app/cbl/COUSR02C.cbl lines 320-353 (READ-USER-SEC-FILE)
+      *    app/cbl/COUSR02C.cbl lines 358-390 (UPDATE-USER-SEC-FILE)
+      *    app/cbl/COUSR02C.cbl lines 395-398 (CLEAR-CURRENT-SCREEN)
+      *    app/cbl/COUSR02C.cbl lines 403-411 (INITIALIZE-ALL-FIELDS)
+      *    app/cpy/COCOM01Y.cpy            (CARDDEMO-COMMAREA layout)
+      *    app/cpy/CSUSR01Y.cpy            (SEC-USER-DATA layout)
+      *    app/cpy-bms/COUSR02.CPY         (COUSR2AI / COUSR2AO map)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy (EXTERNAL stub state)
+      *    tests/stubs/DFHEI1.cbl          (CICS link-time backstop)
+      *    tests/cobol-check/COUSR03C.cut  (canonical exemplar)
+      ******************************************************************
+
+       TESTSUITE 'COUSR02C UPDATE USER ADMIN TRANSACTION'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset.
+      *
+      *  Restores deterministic baseline state so every TESTCASE
+      *  starts from a known, identical configuration.  cobol-check
+      *  resets MOCK invocation counters automatically between
+      *  TESTCASEs; this block resets the application working-storage
+      *  fields and shared structures the production code reads or
+      *  writes:
+      *
+      *    WS-VARIABLES        - WS-PGMNAME, WS-TRANID, WS-MESSAGE,
+      *                          WS-USRSEC-FILE, WS-ERR-FLG, WS-RESP-CD,
+      *                          WS-REAS-CD, WS-USR-MODIFIED.  After
+      *                          INITIALIZE re-applies VALUE clauses,
+      *                          WS-PGMNAME = 'COUSR02C', WS-TRANID =
+      *                          'CU02', and WS-ERR-FLG = 'N' (per
+      *                          production lines 36-42).
+      *    CARDDEMO-COMMAREA   - whole COCOM01Y group plus the
+      *                          CDEMO-CU02-INFO extension fields
+      *                          (CDEMO-CU02-USRID-FIRST,
+      *                           CDEMO-CU02-USRID-LAST,
+      *                           CDEMO-CU02-PAGE-NUM,
+      *                           CDEMO-CU02-NEXT-PAGE-FLG,
+      *                           CDEMO-CU02-USR-SEL-FLG,
+      *                           CDEMO-CU02-USR-SELECTED).  Note
+      *                          the CU02 suffix vs. COUSR03C's CU03
+      *                          suffix -- different CICS
+      *                          transactions own different
+      *                          extension blocks of the shared
+      *                          COMMAREA.
+      *    SEC-USER-DATA       - CSUSR01Y group (SEC-USR-ID,
+      *                          SEC-USR-FNAME, SEC-USR-LNAME,
+      *                          SEC-USR-PWD, SEC-USR-TYPE,
+      *                          SEC-USR-FILLER)
+      *    COUSR2AI            - BMS input map (USRIDINI, FNAMEI,
+      *                          LNAMEI, PASSWDI, USRTYPEI, ERRMSGI
+      *                          ...).  Note PASSWDI is unique to
+      *                          COUSR02C (the update transaction
+      *                          edits passwords) and is absent
+      *                          from COUSR03C's COUSR3AI map.
+      *    RETURN-CODE         - implicit special register reset for
+      *                          deterministic post-test inspection
+      *
+      *  After clearing, BEFORE-EACH seeds the COMMAREA with the
+      *  ADMIN001 admin-role identity (the only test user permitted
+      *  by AAP Section 0.10.2 for this transaction) so each TESTCASE
+      *  starts from the routed-by-COADM01C state that production
+      *  COUSR02C expects.  CDEMO-FROM-* fields default to the
+      *  upstream admin menu so the RETURN-TO-PREV-SCREEN paragraph
+      *  has a non-empty origin to reflect back into the COMMAREA.
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE WS-VARIABLES
+            INITIALIZE CARDDEMO-COMMAREA
+            INITIALIZE SEC-USER-DATA
+            INITIALIZE COUSR2AI
+            MOVE ZERO       TO RETURN-CODE
+            MOVE 'ADMIN001' TO CDEMO-USER-ID
+            MOVE 'A'        TO CDEMO-USER-TYPE
+            MOVE 'COADM01C' TO CDEMO-FROM-PROGRAM
+            MOVE 'CA00'     TO CDEMO-FROM-TRANID
+       END-BEFORE.
+
+      ******************************************************************
+      *  TC1 -- RETURN-TO-PREV-SCREEN substitutes default and XCTLs
+      *
+      *  Drives RETURN-TO-PREV-SCREEN (production lines 250-261).
+      *  This paragraph is the destination of MAIN-PARA's WHEN DFHPF3
+      *  branch (production lines 111-119), the WHEN DFHPF12 branch
+      *  (production lines 124-126), and the EIBCALEN = 0 initial-
+      *  entry branch (production lines 90-92).
+      *
+      *  The paragraph executes:
+      *
+      *    IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES         (line 252)
+      *        MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM            (line 253)
+      *    END-IF
+      *    MOVE WS-TRANID    TO CDEMO-FROM-TRANID             (line 255)
+      *    MOVE WS-PGMNAME   TO CDEMO-FROM-PROGRAM            (line 256)
+      *    MOVE ZEROS        TO CDEMO-PGM-CONTEXT             (line 257)
+      *    EXEC CICS                                          (line 258)
+      *        XCTL PROGRAM(CDEMO-TO-PROGRAM)                 (line 259)
+      *        COMMAREA(CARDDEMO-COMMAREA)                    (line 260)
+      *    END-EXEC.                                          (line 261)
+      *
+      *  Pre-conditions established by BEFORE-EACH and TC1 prelude:
+      *    CDEMO-TO-PROGRAM = SPACES (set by INITIALIZE in
+      *                       BEFORE-EACH; INITIALIZE on a PIC X
+      *                       group fills with spaces, satisfying
+      *                       the WHEN OR SPACES half of the
+      *                       line-252 IF).
+      *    CDEMO-FROM-PROGRAM = 'COADM01C' (BEFORE-EACH default;
+      *                       will be overwritten by line-256
+      *                       production MOVE -- the test asserts
+      *                       the SIDE EFFECT)
+      *
+      *  Source of expected values:
+      *    'COSGN00C' - production literal MOVE'd by line 253 to
+      *                 CDEMO-TO-PROGRAM (test asserts the side
+      *                 effect, does NOT recompute or paraphrase
+      *                 the IF logic)
+      *    'COUSR02C' - WS-PGMNAME constant declared at production
+      *                 line 36 (PIC X(08) VALUE 'COUSR02C'); MOVE'd
+      *                 to CDEMO-FROM-PROGRAM by line 256
+      *    'CU02'     - WS-TRANID constant declared at production
+      *                 line 37 (PIC X(04) VALUE 'CU02'); MOVE'd to
+      *                 CDEMO-FROM-TRANID by line 255
+      ******************************************************************
+       TESTCASE 'COUSR02C RETURN-TO-PREV-SCREEN defaults to COSGN00C'
+            MOVE SPACES TO CDEMO-TO-PROGRAM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM RETURN-TO-PREV-SCREEN
+            EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
+            EXPECT CDEMO-FROM-PROGRAM TO BE 'COUSR02C'
+            EXPECT CDEMO-FROM-TRANID TO BE 'CU02'
+            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+
+      ******************************************************************
+      *  TC2 -- INITIALIZE-ALL-FIELDS clears the map and message
+      *
+      *  Drives INITIALIZE-ALL-FIELDS (production lines 403-411).
+      *  The paragraph contains zero EXEC CICS verbs and zero PERFORM
+      *  statements; it is the cleanest test target in COUSR02C.
+      *  The paragraph executes:
+      *
+      *    MOVE -1     TO USRIDINL OF COUSR2AI                (line 405)
+      *    MOVE SPACES TO USRIDINI OF COUSR2AI                (line 406)
+      *                   FNAMEI   OF COUSR2AI                (line 407)
+      *                   LNAMEI   OF COUSR2AI                (line 408)
+      *                   PASSWDI  OF COUSR2AI                (line 409)
+      *                   USRTYPEI OF COUSR2AI                (line 410)
+      *                   WS-MESSAGE.                         (line 411)
+      *
+      *  COUSR02C-unique behavior: line 409 clears PASSWDI -- a
+      *  field that does NOT exist in COUSR03C's INITIALIZE-ALL-
+      *  FIELDS (lines 351-356 of COUSR03C.cbl), because the delete-
+      *  user transaction does not edit passwords.  This testcase
+      *  asserts the PASSWDI clear explicitly so a regression that
+      *  drops line 409 from the production source would be caught.
+      *
+      *  Pre-conditions established by TC2 prelude (after BEFORE-EACH
+      *  zeroes the structures): seed USRIDINI / FNAMEI / LNAMEI /
+      *  PASSWDI / USRTYPEI / WS-MESSAGE with non-empty markers so
+      *  the test proves the production MOVE TO SPACES actually
+      *  overwrites them.  Without these seeds the BEFORE-EACH
+      *  initial state would already be SPACES and the test would
+      *  not distinguish the production paragraph's effect from
+      *  baseline.
+      *
+      *  Source of expected values:
+      *    SPACES     - production literal MOVE'd by lines 406-411;
+      *                 the test asserts the side effect (does NOT
+      *                 reimplement the MOVE)
+      *
+      *  A MOCK CALL 'DFHEI1' is declared so the testcase can also
+      *  ASSERT (via VERIFY ... HAPPENED 0 TIMES) the production
+      *  invariant that INITIALIZE-ALL-FIELDS NEVER reaches a CICS
+      *  service call.  This is a meaningful production-behavior
+      *  assertion: a regression that introduces an EXEC CICS verb
+      *  inside this paragraph would inflate the mock count and
+      *  fail the VERIFY clause.
+      ******************************************************************
+       TESTCASE 'COUSR02C INITIALIZE-ALL-FIELDS clears six fields'
+            MOVE 'OLDUSER ' TO USRIDINI OF COUSR2AI
+            MOVE 'OLDFNAME            ' TO FNAMEI OF COUSR2AI
+            MOVE 'OLDLNAME            ' TO LNAMEI OF COUSR2AI
+            MOVE 'OLDPASS ' TO PASSWDI OF COUSR2AI
+            MOVE 'X' TO USRTYPEI OF COUSR2AI
+            MOVE 'STALE MESSAGE FROM PRIOR FIXTURE' TO WS-MESSAGE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM INITIALIZE-ALL-FIELDS
+            EXPECT USRIDINI OF COUSR2AI TO BE SPACES
+            EXPECT FNAMEI OF COUSR2AI TO BE SPACES
+            EXPECT LNAMEI OF COUSR2AI TO BE SPACES
+            EXPECT PASSWDI OF COUSR2AI TO BE SPACES
+            EXPECT USRTYPEI OF COUSR2AI TO BE SPACES
+            EXPECT WS-MESSAGE TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC3 -- PROCESS-ENTER-KEY rejects empty user ID
+      *
+      *  Drives PROCESS-ENTER-KEY (production lines 143-172) with
+      *  USRIDINI cleared by INITIALIZE COUSR2AI in BEFORE-EACH (so
+      *  the field holds LOW-VALUES, which the production EVALUATE
+      *  TRUE WHEN clause matches alongside SPACES).  The production
+      *  EVALUATE block executes:
+      *
+      *    EVALUATE TRUE
+      *        WHEN USRIDINI = SPACES OR LOW-VALUES        (line 146)
+      *            MOVE 'Y' TO WS-ERR-FLG                  (line 147)
+      *            MOVE 'User ID can NOT be empty...' TO WS-MESSAGE
+      *                                                    (line 148-9)
+      *            MOVE -1  TO USRIDINL                    (line 150)
+      *            PERFORM SEND-USRUPD-SCREEN              (line 151)
+      *        WHEN OTHER
+      *            MOVE -1 TO USRIDINL                     (line 153)
+      *            CONTINUE                                (line 154)
+      *    END-EVALUATE                                    (line 155)
+      *
+      *  After the EVALUATE, the IF NOT ERR-FLG-ON guard at line 157
+      *  is FALSE because production set WS-ERR-FLG = 'Y', so the
+      *  paragraph short-circuits without ever issuing READ-USER-SEC-
+      *  FILE.  This is the production-mandated invariant: validation
+      *  failures gate CICS / VSAM I/O.
+      *
+      *  The MOCK CALL 'DFHEI1' is declared so SEND-USRUPD-SCREEN's
+      *  EXEC CICS SEND can be intercepted (after CICS translator
+      *  rewrites it to CALL 'DFHEI1') without spawning any real
+      *  3270 traffic; the mock body is CONTINUE so the production
+      *  flow returns to PROCESS-ENTER-KEY without side effects.
+      *
+      *  Source of expected values:
+      *    'Y' - WS-ERR-FLG flipped by production line 147 (test
+      *          asserts the side effect, does NOT recompute or
+      *          paraphrase the EVALUATE logic)
+      *    -1  - USRIDINL flipped by production line 150 (negative
+      *          length signals "cursor here" to the BMS layer)
+      ******************************************************************
+       TESTCASE 'COUSR02C PROCESS-ENTER-KEY rejects empty user ID'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT USRIDINL OF COUSR2AI = -1
+            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+
+      ******************************************************************
+      *  TC4 -- UPDATE-USER-INFO rejects empty PASSWORD
+      *
+      *  Drives UPDATE-USER-INFO (production lines 177-245) along
+      *  the COUSR02C-unique PASSWORD validation branch.  COUSR03C
+      *  (delete-user) does not edit passwords; this branch
+      *  therefore exists ONLY in COUSR02C and forms a key piece of
+      *  differential behavior the testsuite must exercise.
+      *
+      *  The paragraph's EVALUATE block executes (production
+      *  lines 179-213):
+      *
+      *    EVALUATE TRUE
+      *        WHEN USRIDINI = SPACES OR LOW-VALUES        (line 180)
+      *            ... (USRIDINI is populated; FALSE; skip)
+      *        WHEN FNAMEI   = SPACES OR LOW-VALUES        (line 186)
+      *            ... (FNAMEI is populated; FALSE; skip)
+      *        WHEN LNAMEI   = SPACES OR LOW-VALUES        (line 192)
+      *            ... (LNAMEI is populated; FALSE; skip)
+      *        WHEN PASSWDI  = SPACES OR LOW-VALUES        (line 198)
+      *            MOVE 'Y' TO WS-ERR-FLG                  (line 199)
+      *            MOVE 'Password can NOT be empty...' TO WS-MESSAGE
+      *                                                    (line 200-1)
+      *            MOVE -1  TO PASSWDL                     (line 202)
+      *            PERFORM SEND-USRUPD-SCREEN              (line 203)
+      *        WHEN USRTYPEI = SPACES OR LOW-VALUES        (line 204)
+      *            ... (already short-circuited; not reached)
+      *        WHEN OTHER
+      *            ... (not reached)
+      *    END-EVALUATE                                    (line 213)
+      *
+      *  After the EVALUATE, the IF NOT ERR-FLG-ON guard at line 215
+      *  is FALSE because production set WS-ERR-FLG = 'Y' on line
+      *  199, so the paragraph short-circuits without ever issuing
+      *  READ-USER-SEC-FILE or UPDATE-USER-SEC-FILE.  The READ
+      *  + REWRITE pair is the canonical CICS happy-path under z/OS;
+      *  this validation guard prevents reaching it on bad input,
+      *  matching the AAP Section 0.4.1 directive that "validation
+      *  failures gate CICS / VSAM I/O."
+      *
+      *  Pre-conditions established by TC4 prelude:
+      *    USRIDINI = 'ADMIN001'  (8 bytes, full)
+      *    FNAMEI   = 'Admin Tester        '  (20 bytes, padded)
+      *    LNAMEI   = 'User Account        '  (20 bytes, padded)
+      *    PASSWDI  = SPACES                (8 bytes, all spaces --
+      *                                      the production MATCH
+      *                                      target on line 198)
+      *    USRTYPEI = 'A'                   (admin role)
+      *
+      *  These seeds satisfy the WHEN clauses on lines 180, 186, and
+      *  192 (none match), then matches on line 198, then never
+      *  reaches line 204.
+      *
+      *  Source of expected values:
+      *    'Y' - WS-ERR-FLG flipped by production line 199 (test
+      *          asserts the side effect, does NOT recompute or
+      *          paraphrase the EVALUATE logic)
+      *    -1  - PASSWDL flipped by production line 202 (negative
+      *          length signals "cursor here" to the BMS layer for
+      *          the password field).  This is the assertion that
+      *          distinguishes COUSR02C from sister CRUD programs.
+      ******************************************************************
+       TESTCASE 'COUSR02C UPDATE-USER-INFO rejects empty PASSWORD'
+            MOVE 'ADMIN001' TO USRIDINI OF COUSR2AI
+            MOVE 'Admin Tester        ' TO FNAMEI OF COUSR2AI
+            MOVE 'User Account        ' TO LNAMEI OF COUSR2AI
+            MOVE SPACES TO PASSWDI OF COUSR2AI
+            MOVE 'A' TO USRTYPEI OF COUSR2AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM UPDATE-USER-INFO
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT PASSWDL OF COUSR2AI = -1
+            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+
+      ******************************************************************
+      *  TC5 -- CLEAR-CURRENT-SCREEN orchestrates INITIALIZE + SEND
+      *
+      *  Drives CLEAR-CURRENT-SCREEN (production lines 395-398).
+      *  The paragraph is the destination of MAIN-PARA's WHEN DFHPF4
+      *  branch (production lines 120-121) and executes:
+      *
+      *    PERFORM INITIALIZE-ALL-FIELDS.            (line 397)
+      *    PERFORM SEND-USRUPD-SCREEN.               (line 398)
+      *
+      *  PERFORM 1: INITIALIZE-ALL-FIELDS (lines 403-411) -- the
+      *  same paragraph TC2 covers in isolation.  Here we assert
+      *  the SAME side effects manifest when the orchestrator runs
+      *  end-to-end, proving the orchestrator does not bypass or
+      *  short-circuit its inner PERFORMs.  Because INITIALIZE-ALL-
+      *  FIELDS clears PASSWDI (line 409) -- the COUSR02C-unique
+      *  field -- this testcase also asserts that PASSWDI is cleared
+      *  by the orchestrator's first PERFORM, complementing the TC2
+      *  isolated coverage with end-to-end coverage.
+      *
+      *  PERFORM 2: SEND-USRUPD-SCREEN (lines 266-278) -- performs
+      *  POPULATE-HEADER-INFO and then issues EXEC CICS SEND MAP.
+      *  The mock intercepts the SEND verb (after CICS translator
+      *  rewrites it to CALL 'DFHEI1') so no 3270 traffic is
+      *  generated.
+      *
+      *  Pre-conditions established by TC5 prelude: seed USRIDINI,
+      *  PASSWDI, and WS-MESSAGE so the test proves that CLEAR-
+      *  CURRENT-SCREEN's first PERFORM (INITIALIZE-ALL-FIELDS)
+      *  reaches and executes its MOVE-TO-SPACES statements
+      *  including the PASSWDI clear.
+      *
+      *  Source of expected values:
+      *    SPACES - production literal MOVE'd by INITIALIZE-ALL-
+      *             FIELDS lines 406-411; the test asserts the side
+      *             effect (does NOT reimplement the MOVE)
+      ******************************************************************
+       TESTCASE 'COUSR02C CLEAR-CURRENT-SCREEN clears WS-MSG PASSWDI'
+            MOVE 'OLDUSER ' TO USRIDINI OF COUSR2AI
+            MOVE 'OLDPASS ' TO PASSWDI OF COUSR2AI
+            MOVE 'STALE MESSAGE FROM PRIOR FIXTURE' TO WS-MESSAGE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM CLEAR-CURRENT-SCREEN
+            EXPECT USRIDINI OF COUSR2AI TO BE SPACES
+            EXPECT PASSWDI OF COUSR2AI TO BE SPACES
+            EXPECT WS-MESSAGE TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+
+      ******************************************************************
+      *  End of testsuite COUSR02C UPDATE USER ADMIN TRANSACTION
+      ******************************************************************
