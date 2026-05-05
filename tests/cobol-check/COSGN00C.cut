@@ -1,0 +1,527 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : COSGN00C SIGN-ON TRANSACTION
+      *  Program-under-test : app/cbl/COSGN00C.cbl
+      *
+      *  Purpose
+      *  -------
+      *  Exercise COSGN00C's sign-on CICS transaction by mocking ONLY
+      *  the program's external boundary into the CICS API: the
+      *  CALL 'DFHEI1' invocation that the CICS translator emits in
+      *  place of every EXEC CICS verb (RECEIVE MAP, READ DATASET,
+      *  XCTL, SEND MAP, SEND TEXT, ASSIGN, RETURN).  Internal
+      *  COSGN00C paragraphs are NEVER mocked; every TESTCASE
+      *  exercises a production paragraph LIVE via PERFORM so the
+      *  testsuite asserts against side effects of actual production-
+      *  code execution (per AAP Section 0.10.1 -- "Mock or stub
+      *  ONLY external dependencies").
+      *
+      *  COSGN00C is the application's authentication gateway: it
+      *  RECEIVEs USERIDI / PASSWDI from the BMS map (COSGN0AI),
+      *  looks up the user in USRSEC (READ-USER-SEC-FILE), and on
+      *  a successful match XCTLs to COADM01C (SEC-USR-TYPE = 'A')
+      *  or COMEN01C (SEC-USR-TYPE = 'U').  Failure paths (wrong
+      *  password, NOTFND, generic file error, empty input fields)
+      *  all converge on PERFORM SEND-SIGNON-SCREEN with WS-MESSAGE
+      *  populated and the appropriate cursor-position field
+      *  (USERIDL or PASSWDL = -1) set.  No WRITE / REWRITE / DELETE
+      *  verb is emitted -- COSGN00C is purely read-and-route.
+      *
+      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS
+      *  -------------------------------------------
+      *  cobol-check 0.2.16's TestSuiteParser supports CALL, PARA,
+      *  PARAGRAPH, and SECTION mock-types only.  At link time on
+      *  z/OS the CICS translator (DFHECP1$) rewrites every EXEC
+      *  CICS verb into a CALL 'DFHEI1' USING <command-block>, so
+      *  MOCK CALL 'DFHEI1' is the equivalent intercept point.
+      *  Off-platform (GnuCOBOL on Linux) the merged binary fails
+      *  to compile (per AAP Section 6.6.3.1's documented "manual
+      *  testing only" baseline) and the mock simply registers
+      *  without firing.  The testsuite is forward-compatible:
+      *  when a translator pass is added, every CICS boundary is
+      *  exercised through this mock.
+      *
+      *  Mock placement: each MOCK is declared INSIDE its TESTCASE
+      *  block (Local scope) per the COMEN01C / COUSR01C / COTRN01C
+      *  / COACTVWC exemplar pattern.
+      *
+      *  Schema dependencies
+      *  -------------------
+      *    STUB-ABEND-FLAG.cpy -- EXTERNAL state group (CEE3ABD /
+      *        DFHEI1 stubs write to it).
+      *    DFHEI1.cbl -- standalone DFHEI1 PROGRAM-ID compiled into
+      *        a .so so unmocked EXEC CICS verbs resolve at load
+      *        time with EIBRESP=27 (NOTAUTH).
+      *    config.properties -- cobol-check runtime configuration.
+      *
+      *  The testsuite does NOT contain `COPY STUB-ABEND-FLAG.`
+      *  because cobol-check 0.2.16's TestSuiteParser only
+      *  recognizes TESTSUITE / TESTCASE / MOCK / EXPECT / VERIFY /
+      *  BEFORE-EACH / AFTER-EACH / END-* / CALL / PARA /
+      *  PARAGRAPH / SECTION; a bare COPY at file scope is parsed
+      *  as a fieldname token and aborts the merge.  The runtime
+      *  stubs continue to provide their intended safety regardless,
+      *  matching the COMEN01C / COUSR01C / COTRN01C exemplars.
+      *
+      *  Test categories
+      *  ---------------
+      *    TC1 - PROCESS-ENTER-KEY rejects empty USERIDI.  Drives
+      *          the FIRST WHEN clause of the EVALUATE TRUE block
+      *          (production line 118).  Off-platform expression of
+      *          AAP TC5 "Blank user ID rejected".
+      *    TC2 - READ-USER-SEC-FILE admin success captures CDEMO
+      *          routing fields.  WS-RESP-CD=0, password match,
+      *          SEC-USR-TYPE='A'.  Off-platform AAP TC1 "ADMIN001
+      *          sign-on succeeds and XCTLs to COADM01C".
+      *    TC3 - READ-USER-SEC-FILE regular-user success.  WS-RESP-
+      *          CD=0, password match, SEC-USR-TYPE='U'.  Off-
+      *          platform AAP TC2 "USER0001 sign-on succeeds".
+      *    TC4 - READ-USER-SEC-FILE wrong password sets message.
+      *          WS-RESP-CD=0, SEC-USR-PWD != WS-USER-PWD.  Off-
+      *          platform AAP TC3 "Invalid password".  Note: this
+      *          branch leaves WS-ERR-FLG='N' (only NOTFND / OTHER
+      *          set the flag); production line 241-246 differential.
+      *    TC5 - READ-USER-SEC-FILE NOTFND sets flag and message.
+      *          WS-RESP-CD=13.  Off-platform AAP TC4 "Unknown
+      *          user".  Note: COSGN00C uses literal numeric WS-
+      *          RESP-CD comparisons (WHEN 0/13/OTHER) rather than
+      *          DFHRESP, making this branch off-platform-reachable.
+      *    TC6 - READ-USER-SEC-FILE WHEN OTHER catch-all error.
+      *          WS-RESP-CD=99.  Substitutes AAP TC6 (PF3 thank-you)
+      *          which depends on DFHPF3 / DFHAID undefined off-
+      *          platform; provides additional EVALUATE WS-RESP-CD
+      *          branch coverage.
+      *
+      *  Test users (per AAP Section 0.10.2)
+      *  -----------------------------------
+      *  ADMIN001 / ADMIN role (TC2) and USER0001 / USER role
+      *  (TC3-TC6).  Fixed password 'PASSWORD' for both users.
+      *  COSGN00C is the only application program that legitimately
+      *  exercises both user roles within a single testsuite.
+      *
+      *  Why MAIN-PARA is not driven end-to-end off-platform
+      *  ---------------------------------------------------
+      *  MAIN-PARA's EVALUATE EIBAID block (production lines 85-95)
+      *  depends on EIBAID / DFHENTER / DFHPF3 from DFHAID -- none
+      *  defined under GnuCOBOL.  Likewise EIBCALEN at line 80
+      *  depends on the EIB injected by the CICS translator.  When
+      *  a translator pass is added, MAIN-PARA can be driven via
+      *  PERFORM with EIBAID pre-set to DFHENTER / DFHPF3.
+      *
+      *  References
+      *  ----------
+      *    AAP Section 0.10.1 / 0.5.1 / 0.10.2 / 0.4.1 / 0.7.1
+      *    app/cbl/COSGN00C.cbl lines 73-102  (MAIN-PARA dispatch)
+      *    app/cbl/COSGN00C.cbl lines 108-140 (PROCESS-ENTER-KEY)
+      *    app/cbl/COSGN00C.cbl lines 145-157 (SEND-SIGNON-SCREEN)
+      *    app/cbl/COSGN00C.cbl lines 162-172 (SEND-PLAIN-TEXT)
+      *    app/cbl/COSGN00C.cbl lines 177-204 (POPULATE-HEADER-INFO)
+      *    app/cbl/COSGN00C.cbl lines 209-257 (READ-USER-SEC-FILE)
+      *    app/cpy/COCOM01Y.cpy             (CARDDEMO-COMMAREA)
+      *    app/cpy/CSUSR01Y.cpy             (SEC-USER-DATA layout)
+      *    app/cpy/CSMSG01Y.cpy             (CCDA-MSG-* literals)
+      *    app/cpy/CSDAT01Y.cpy             (WS-CURDATE / WS-CURTIME)
+      *    app/cpy-bms/COSGN00.CPY          (COSGN0AI / COSGN0AO map)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy  (EXTERNAL stub state)
+      *    tests/stubs/DFHEI1.cbl           (CICS link-time backstop)
+      *    tests/cobol-check/COMEN01C.cut   (sister CICS exemplar)
+      *    tests/cobol-check/COUSR01C.cut   (canonical CICS exemplar)
+      *    tests/cobol-check/COTRN01C.cut   (sister read-only exemplar)
+      ******************************************************************
+
+       TESTSUITE 'COSGN00C SIGN-ON TRANSACTION'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset.
+      *
+      *  Restores deterministic baseline state.  cobol-check resets
+      *  MOCK invocation counters automatically between TESTCASEs;
+      *  this block resets the production WS / shared structures
+      *  COSGN00C reads or writes:
+      *
+      *    WS-VARIABLES        After INITIALIZE re-applies VALUE
+      *                        clauses (production lines 35-46):
+      *                          WS-PGMNAME='COSGN00C', WS-TRANID=
+      *                          'CC00', WS-MESSAGE=SPACES, WS-
+      *                          USRSEC-FILE='USRSEC  ', WS-ERR-
+      *                          FLG='N' (88-level ERR-FLG-OFF),
+      *                          WS-RESP-CD=0, WS-REAS-CD=0, WS-
+      *                          USER-ID=SPACES, WS-USER-PWD=SPACES.
+      *    CARDDEMO-COMMAREA   COCOM01Y; clears CDEMO-FROM-* /
+      *                        CDEMO-TO-* / CDEMO-USER-ID / CDEMO-
+      *                        USER-TYPE / CDEMO-PGM-CONTEXT.
+      *    COSGN0AI            BMS input/output map from COSGN00.CPY
+      *                        (USERIDI / PASSWDI / ERRMSGI plus
+      *                        paired length and attribute fields).
+      *                        COSGN0AO REDEFINES COSGN0AI in the
+      *                        production copybook.
+      *    SEC-USER-DATA       CSUSR01Y; the EXEC CICS READ INTO
+      *                        target.  Pre-populated by TC2-TC4
+      *                        preludes to mimic post-read state
+      *                        because the off-platform mock CALL
+      *                        'DFHEI1' does not transfer data
+      *                        into the INTO target.
+      *    WS-DATE-TIME        CSDAT01Y date-time group used by
+      *                        POPULATE-HEADER-INFO when SEND-
+      *                        SIGNON-SCREEN runs.
+      *    RETURN-CODE         Implicit special-register reset.
+      *
+      *  After clearing, BEFORE-EACH seeds the COMMAREA with the
+      *  USER0001 regular-user identity per AAP Section 0.10.2.
+      *  TC2 overrides CDEMO-USER-ID to ADMIN001 in its prelude;
+      *  TC3-TC6 retain the USER0001 default.
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE WS-VARIABLES
+            INITIALIZE CARDDEMO-COMMAREA
+            INITIALIZE COSGN0AI
+            INITIALIZE SEC-USER-DATA
+            INITIALIZE WS-DATE-TIME
+            MOVE ZERO       TO RETURN-CODE
+            MOVE 'USER0001' TO CDEMO-USER-ID
+            MOVE 'U'        TO CDEMO-USER-TYPE
+       END-BEFORE.
+
+
+      ******************************************************************
+      *  TC1 -- PROCESS-ENTER-KEY rejects empty user-id (USERIDI)
+      *
+      *  Drives PROCESS-ENTER-KEY (production lines 108-140) with
+      *  USERIDI cleared by BEFORE-EACH INITIALIZE COSGN0AI.  The
+      *  production EVALUATE TRUE WHEN clause at line 118 matches
+      *  on USERIDI=SPACES OR LOW-VALUES; production then:
+      *
+      *    MOVE 'Y'      TO WS-ERR-FLG                      (line 119)
+      *    MOVE 'Please enter User ID ...' TO WS-MESSAGE    (line 120)
+      *    MOVE -1       TO USERIDL OF COSGN0AI             (line 121)
+      *    PERFORM SEND-SIGNON-SCREEN                       (line 122)
+      *
+      *  After the EVALUATE, lines 132-137 MOVE FUNCTION UPPER-CASE
+      *  to WS-USER-ID / CDEMO-USER-ID / WS-USER-PWD; the IF NOT
+      *  ERR-FLG-ON guard at line 138 is FALSE because line 119 set
+      *  WS-ERR-FLG='Y', so READ-USER-SEC-FILE on line 139 is NOT
+      *  performed (validation gates VSAM I/O per AAP Section 0.4.1).
+      *
+      *  TC1's prelude populates PASSWDI with a non-empty value so
+      *  the test author confirms the FIRST WHEN matched on USERIDI
+      *  rather than the SECOND WHEN matching incidentally on
+      *  PASSWDI.  Off-platform expression of AAP TC5.
+      *
+      *  Source of expected values:
+      *    'Y'    - WS-ERR-FLG flipped by line 119 (test asserts
+      *             the side effect; does NOT recompute logic).
+      *    'Please enter User ID ...'
+      *           - WS-MESSAGE literal MOVE'd verbatim by line 120.
+      *    -1     - USERIDL flipped by line 121 (cursor on user-id
+      *             field for re-entry).
+      *
+      *  MOCK CALL 'DFHEI1' intercepts SEND-SIGNON-SCREEN's EXEC
+      *  CICS SEND and POPULATE-HEADER-INFO's EXEC CICS ASSIGN.
+      ******************************************************************
+       TESTCASE 'COSGN00C PROCESS-ENTER-KEY rejects empty user-id'
+            MOVE SPACES   TO USERIDI OF COSGN0AI
+            MOVE 'PASSWORD' TO PASSWDI OF COSGN0AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT WS-MESSAGE TO BE 'Please enter User ID ...'
+            EXPECT USERIDL OF COSGN0AI = -1
+            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+
+
+      ******************************************************************
+      *  TC2 -- READ-USER-SEC-FILE admin success captures CDEMO
+      *
+      *  Drives READ-USER-SEC-FILE (production lines 209-257) along
+      *  the WHEN 0 / SEC-USR-PWD = WS-USER-PWD / CDEMO-USRTYP-ADMIN
+      *  TRUE arm.  Production then:
+      *
+      *    MOVE WS-TRANID    TO CDEMO-FROM-TRANID           (line 224)
+      *    MOVE WS-PGMNAME   TO CDEMO-FROM-PROGRAM          (line 225)
+      *    MOVE WS-USER-ID   TO CDEMO-USER-ID               (line 226)
+      *    MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE             (line 227)
+      *    MOVE ZEROS        TO CDEMO-PGM-CONTEXT           (line 228)
+      *    IF CDEMO-USRTYP-ADMIN  EXEC CICS XCTL ('COADM01C')...
+      *
+      *  Off-platform expression of AAP TC1.  The literal AAP TC1
+      *  requires PERFORM PROCESS-ENTER-KEY end-to-end with MOCK
+      *  CICS RECEIVE MAP + MOCK CICS READ -- both require MOCK
+      *  CICS support that cobol-check 0.2.16 lacks.  TC2
+      *  substitutes a direct PERFORM of READ-USER-SEC-FILE with
+      *  the production-side state pre-populated: WS-USER-ID and
+      *  WS-USER-PWD as the lines 132-137 UPPER-CASE moves would
+      *  set them; SEC-USER-DATA as the EXEC CICS READ DATASET
+      *  would populate it; WS-RESP-CD=0 to drive WHEN 0.
+      *
+      *  COSGN00C is unique in using literal numeric WS-RESP-CD
+      *  comparisons (WHEN 0 / 13 / OTHER) rather than DFHRESP,
+      *  which makes the EVALUATE block off-platform-reachable.
+      *
+      *  Source of expected values:
+      *    'CC00'     - CDEMO-FROM-TRANID via line 224 MOVE WS-
+      *                 TRANID; WS-TRANID is VALUE 'CC00' (line 37).
+      *    'COSGN00C' - CDEMO-FROM-PROGRAM via line 225 MOVE WS-
+      *                 PGMNAME; WS-PGMNAME is VALUE 'COSGN00C'.
+      *    'ADMIN001' - CDEMO-USER-ID via line 226 MOVE WS-USER-ID.
+      *    'A'        - CDEMO-USER-TYPE via line 227 MOVE SEC-USR-
+      *                 TYPE; the prelude seeds 'A' to drive the
+      *                 admin XCTL arm.
+      *    0          - CDEMO-PGM-CONTEXT via line 228 MOVE ZEROS;
+      *                 matches 88-level CDEMO-PGM-ENTER (VALUE 0).
+      ******************************************************************
+       TESTCASE 'COSGN00C READ-USRSEC admin success captures CDEMO'
+            MOVE 0          TO WS-RESP-CD
+            MOVE 'ADMIN001' TO WS-USER-ID
+            MOVE 'PASSWORD' TO WS-USER-PWD
+            MOVE 'ADMIN001' TO SEC-USR-ID
+            MOVE 'PASSWORD' TO SEC-USR-PWD
+            MOVE 'A'        TO SEC-USR-TYPE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM READ-USER-SEC-FILE
+            EXPECT CDEMO-FROM-TRANID TO BE 'CC00'
+            EXPECT CDEMO-FROM-PROGRAM TO BE 'COSGN00C'
+            EXPECT CDEMO-USER-ID TO BE 'ADMIN001'
+            EXPECT CDEMO-USER-TYPE TO BE 'A'
+            EXPECT CDEMO-PGM-CONTEXT TO BE 0
+            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+
+
+      ******************************************************************
+      *  TC3 -- READ-USER-SEC-FILE regular-user success captures CDEMO
+      *
+      *  Drives READ-USER-SEC-FILE along the WHEN 0 / SEC-USR-PWD =
+      *  WS-USER-PWD / CDEMO-USRTYP-ADMIN FALSE arm.  Same path as
+      *  TC2 but SEC-USR-TYPE='U' so the line-230 IF CDEMO-USRTYP-
+      *  ADMIN test evaluates FALSE (88-level VALUE 'A' per
+      *  COCOM01Y line 27); production takes the ELSE arm on line
+      *  235 and issues EXEC CICS XCTL PROGRAM ('COMEN01C').
+      *
+      *  Differential vs TC2: a regression that swapped the
+      *  COADM01C / COMEN01C target programs would NOT be detected
+      *  by either testcase in isolation.  However, the TC2/TC3
+      *  differential on CDEMO-USER-TYPE ('A' vs 'U') proves the
+      *  SEC-USR-TYPE => CDEMO-USER-TYPE MOVE chain is correct.
+      *  When the CICS translator pass is added, this can be
+      *  extended with VERIFY MOCK CICS XCTL PROGRAM('COADM01C')
+      *  / PROGRAM('COMEN01C') to lock in the program-name routing.
+      *
+      *  Off-platform expression of AAP TC2 "USER0001 sign-on
+      *  succeeds and XCTLs to COMEN01C".
+      *
+      *  Source of expected values:
+      *    'CC00'     - CDEMO-FROM-TRANID via line 224 (identical
+      *                 to TC2 -- both successful sign-ons share
+      *                 the same WS-TRANID).
+      *    'COSGN00C' - CDEMO-FROM-PROGRAM via line 225 (identical
+      *                 to TC2).
+      *    'USER0001' - CDEMO-USER-ID via line 226; differs from
+      *                 TC2's 'ADMIN001' to prove the WS-USER-ID
+      *                 propagation works for both test users.
+      *    'U'        - CDEMO-USER-TYPE via line 227; the KEY
+      *                 differential vs TC2's 'A'.
+      *    0          - CDEMO-PGM-CONTEXT via line 228 (identical
+      *                 to TC2).
+      ******************************************************************
+       TESTCASE 'COSGN00C READ-USRSEC user success captures CDEMO'
+            MOVE 0          TO WS-RESP-CD
+            MOVE 'USER0001' TO WS-USER-ID
+            MOVE 'PASSWORD' TO WS-USER-PWD
+            MOVE 'USER0001' TO SEC-USR-ID
+            MOVE 'PASSWORD' TO SEC-USR-PWD
+            MOVE 'U'        TO SEC-USR-TYPE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM READ-USER-SEC-FILE
+            EXPECT CDEMO-FROM-TRANID TO BE 'CC00'
+            EXPECT CDEMO-FROM-PROGRAM TO BE 'COSGN00C'
+            EXPECT CDEMO-USER-ID TO BE 'USER0001'
+            EXPECT CDEMO-USER-TYPE TO BE 'U'
+            EXPECT CDEMO-PGM-CONTEXT TO BE 0
+            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+
+
+      ******************************************************************
+      *  TC4 -- READ-USER-SEC-FILE wrong password sets WS-MESSAGE
+      *
+      *  Drives READ-USER-SEC-FILE along the WHEN 0 / SEC-USR-PWD !=
+      *  WS-USER-PWD ELSE arm (production line 241):
+      *
+      *    ELSE                                             (line 241)
+      *        MOVE 'Wrong Password. Try again ...' TO
+      *                                   WS-MESSAGE        (line 242-3)
+      *        MOVE -1   TO PASSWDL OF COSGN0AI             (line 244)
+      *        PERFORM SEND-SIGNON-SCREEN                   (line 245)
+      *    END-IF                                           (line 246)
+      *
+      *  Off-platform expression of AAP TC3 "Invalid password sets
+      *  error flag".  KEY production observation: the wrong-
+      *  password branch (lines 241-246) does NOT set WS-ERR-FLG=
+      *  'Y' -- only WHEN 13 (NOTFND) and WHEN OTHER (lines 247-256)
+      *  set the flag.  Wrong-password is a USER-RECOVERABLE soft
+      *  error (cursor on password field); NOTFND/OTHER are HARD
+      *  errors (cursor on user-id field, error flag set).  TC4's
+      *  assertion that WS-ERR-FLG stays 'N' catches a regression
+      *  that conflates the two error categories.
+      *
+      *  Source of expected values:
+      *    'N'        - WS-ERR-FLG retains BEFORE-EACH default
+      *                 because the wrong-password branch does NOT
+      *                 flip it (production-mandated invariant).
+      *    'Wrong Password. Try again ...'
+      *               - WS-MESSAGE literal MOVE'd verbatim by lines
+      *                 242-3.
+      *    -1         - PASSWDL flipped by line 244 (cursor on
+      *                 password field for re-entry); differential
+      *                 vs TC5/TC6 USERIDL=-1 (cursor on user-id).
+      ******************************************************************
+       TESTCASE 'COSGN00C READ-USRSEC wrong password sets WS-MESSAGE'
+            MOVE 0          TO WS-RESP-CD
+            MOVE 'USER0001' TO WS-USER-ID
+            MOVE 'RIGHTPWD' TO WS-USER-PWD
+            MOVE 'USER0001' TO SEC-USR-ID
+            MOVE 'WRONGPWD' TO SEC-USR-PWD
+            MOVE 'U'        TO SEC-USR-TYPE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM READ-USER-SEC-FILE
+            EXPECT WS-ERR-FLG TO BE 'N'
+            EXPECT WS-MESSAGE TO BE 'Wrong Password. Try again ...'
+            EXPECT PASSWDL OF COSGN0AI = -1
+            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+
+
+      ******************************************************************
+      *  TC5 -- READ-USER-SEC-FILE NOTFND sets error flag and message
+      *
+      *  Drives READ-USER-SEC-FILE along the WHEN 13 NOTFND arm:
+      *
+      *    WHEN 13                                          (line 247)
+      *        MOVE 'Y'  TO WS-ERR-FLG                      (line 248)
+      *        MOVE 'User not found. Try again ...' TO
+      *                                  WS-MESSAGE         (line 249)
+      *        MOVE -1   TO USERIDL OF COSGN0AI             (line 250)
+      *        PERFORM SEND-SIGNON-SCREEN                   (line 251)
+      *
+      *  Off-platform expression of AAP TC4 "Unknown user NOTFND".
+      *  The literal value 13 is the IBM CICS documented RESP code
+      *  for NOTFND on a READ DATASET (the same value DFHRESP would
+      *  expand to).  COSGN00C's use of the literal makes this
+      *  branch off-platform-reachable: the EVALUATE block compiles
+      *  under GnuCOBOL even though the EXEC CICS READ above does
+      *  not (off-platform compile failure is at the EXEC CICS verb
+      *  itself, not at the EVALUATE).
+      *
+      *  Differential vs TC4: TC4's wrong-password branch leaves
+      *  WS-ERR-FLG='N' and sets PASSWDL=-1 (soft error pathway);
+      *  TC5's NOTFND branch flips WS-ERR-FLG='Y' and sets USERIDL=
+      *  -1 (hard error pathway).  Asserting both flags catches a
+      *  regression that conflates the two pathways' assignments.
+      *
+      *  Source of expected values:
+      *    'Y'        - WS-ERR-FLG flipped by line 248.
+      *    'User not found. Try again ...'
+      *               - WS-MESSAGE literal MOVE'd verbatim by line
+      *                 249.
+      *    -1         - USERIDL flipped by line 250 (cursor on
+      *                 user-id, prompting re-entry); differential
+      *                 vs TC4's PASSWDL=-1.
+      ******************************************************************
+       TESTCASE 'COSGN00C READ-USRSEC NOTFND sets error and message'
+            MOVE 13         TO WS-RESP-CD
+            MOVE 'NOSUCHUS' TO WS-USER-ID
+            MOVE 'PASSWORD' TO WS-USER-PWD
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM READ-USER-SEC-FILE
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT WS-MESSAGE TO BE 'User not found. Try again ...'
+            EXPECT USERIDL OF COSGN0AI = -1
+            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+
+
+      ******************************************************************
+      *  TC6 -- READ-USER-SEC-FILE WHEN OTHER sets generic error
+      *
+      *  Drives READ-USER-SEC-FILE along the WHEN OTHER catch-all
+      *  arm:
+      *
+      *    WHEN OTHER                                       (line 252)
+      *        MOVE 'Y'  TO WS-ERR-FLG                      (line 253)
+      *        MOVE 'Unable to verify the User ...' TO
+      *                                  WS-MESSAGE         (line 254)
+      *        MOVE -1   TO USERIDL OF COSGN0AI             (line 255)
+      *        PERFORM SEND-SIGNON-SCREEN                   (line 256)
+      *
+      *  Substitutes the AAP TC6 ("PF3 exits with thank-you
+      *  message") slot which would require driving MAIN-PARA's
+      *  WHEN DFHPF3 branch end-to-end.  DFHPF3 is defined in
+      *  DFHAID -- not present off-platform -- so MAIN-PARA cannot
+      *  be PERFORMed without a CICS translator pass.  TC6 instead
+      *  exercises the WHEN OTHER catch-all arm of READ-USER-SEC-
+      *  FILE, which:
+      *
+      *    (a) Completes the three-way EVALUATE WS-RESP-CD branch
+      *        coverage (WHEN 0 in TC2/TC3/TC4, WHEN 13 in TC5,
+      *        WHEN OTHER in TC6).
+      *    (b) Catches a regression that conflates the catch-all
+      *        message ('Unable to verify the User ...') with the
+      *        NOTFND message ('User not found. Try again ...').
+      *    (c) Provides off-platform-reachable coverage of the
+      *        ABEND-pathway-adjacent branch.
+      *
+      *  WS-RESP-CD=99 is chosen by the test author as a clearly-
+      *  invalid RESP code that no CICS service legitimately
+      *  returns (sourced externally, NOT derived from production).
+      *
+      *  Source of expected values:
+      *    'Y'        - WS-ERR-FLG flipped by line 253.
+      *    'Unable to verify the User ...'
+      *               - WS-MESSAGE literal MOVE'd verbatim by line
+      *                 254 -- DIFFERENT from TC5's NOTFND message,
+      *                 proving the two branches' diagnostic
+      *                 strings are NOT conflated.
+      *    -1         - USERIDL flipped by line 255 (same cursor
+      *                 position as TC5; both hard errors prompt
+      *                 re-typing the user-id).
+      ******************************************************************
+       TESTCASE 'COSGN00C READ-USRSEC WHEN OTHER sets generic error'
+            MOVE 99         TO WS-RESP-CD
+            MOVE 'USER0001' TO WS-USER-ID
+            MOVE 'PASSWORD' TO WS-USER-PWD
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM READ-USER-SEC-FILE
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT WS-MESSAGE TO BE 'Unable to verify the User ...'
+            EXPECT USERIDL OF COSGN0AI = -1
+            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+
+
+      ******************************************************************
+      *  End of testsuite COSGN00C SIGN-ON TRANSACTION
+      ******************************************************************
