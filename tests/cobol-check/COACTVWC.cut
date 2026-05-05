@@ -1,0 +1,580 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : COACTVWC ACCOUNT VIEW TRANSACTION
+      *  Program-under-test : app/cbl/COACTVWC.cbl
+      *
+      *  Purpose
+      *  -------
+      *  Exercise COACTVWC's account-view CICS transaction by mocking
+      *  ONLY the program's external boundary into the CICS API: the
+      *  CALL 'DFHEI1' invocation that the CICS translator emits in
+      *  place of every EXEC CICS verb (HANDLE ABEND, RECEIVE MAP,
+      *  READ DATASET (CXACAIX, ACCTDAT, CUSTDAT), SEND MAP, SEND
+      *  TEXT, XCTL, ABEND, RETURN).  Internal COACTVWC paragraphs
+      *  are NEVER mocked; every TESTCASE exercises a production
+      *  paragraph LIVE via PERFORM so the testsuite asserts against
+      *  side effects of actual production-code execution (per AAP
+      *  Section 0.10.1 -- "Mock or stub ONLY external dependencies").
+      *
+      *  COACTVWC is a READ-ONLY CICS transaction: it RECEIVEs a
+      *  user-typed account id from the BMS map (CACTVWAI), looks up
+      *  the card-cross-reference VSAM via alternate index CXACAIX
+      *  (paragraph 9200-GETCARDXREF-BYACCT), then reads the account
+      *  master ACCTDAT (paragraph 9300-GETACCTDATA-BYACCT) for the
+      *  matched account id, then reads the customer master CUSTDAT
+      *  (paragraph 9400-GETCUSTDATA-BYCUST) using the CUST-ID
+      *  retrieved from the cross-reference.  Finally it SENDs the
+      *  populated CACTVWAO map field-by-field.  Unlike sister
+      *  transaction COACTUPC (update), COACTVWC never writes back:
+      *  there is no WRITE, REWRITE, or DELETE verb in the program
+      *  -- the simplest CICS multi-file read pattern in the
+      *  application's account-view family.
+      *
+      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS
+      *  -------------------------------------------
+      *  cobol-check 0.2.16's TestSuiteParser supports CALL, PARA,
+      *  PARAGRAPH, and SECTION mock-types (verified against the
+      *  Keywords class in cobol-check-0.2.16.jar).  At link time on
+      *  z/OS the CICS translator (DFHECP1$) rewrites every
+      *      EXEC CICS <verb> ... END-EXEC.
+      *  into a sequence whose terminal statement is
+      *      CALL 'DFHEI1' USING <command-block> ...
+      *  so MOCK CALL 'DFHEI1' is the equivalent intercept point.
+      *  Off-platform (GnuCOBOL on Linux) the merged binary fails to
+      *  compile (a known infrastructure gap covered by AAP Section
+      *  6.6.3.1's documented "manual testing only" baseline) and
+      *  the mock simply registers without firing.  The testsuite
+      *  is forward-compatible: when a CICS translator pass is added
+      *  to the build, the same .cut file exercises every CICS
+      *  boundary through this mock.
+      *
+      *  Mock placement rule: Each MOCK is declared INSIDE its
+      *  corresponding TESTCASE block (after the TESTCASE keyword)
+      *  so the cobol-check parser binds the mock's Local scope to
+      *  the current testcase, mirroring the COBIL00C / COTRN01C /
+      *  COTRN02C / COUSR02C exemplar pattern.
+      *
+      *  Schema dependencies (STUB-ABEND-FLAG.cpy, DFHEI1.cbl)
+      *  -----------------------------------------------------
+      *  The file_schema names five internal imports:
+      *    STUB-ABEND-FLAG.cpy -- EXTERNAL state group exposing
+      *        STUB-ABEND-STATE / WS-DFHEI1-UNMOCKED-CALLED /
+      *        WS-DFHEI1-EIBRESP-OVERRIDE; written by the CEE3ABD
+      *        and DFHEI1 stubs at runtime.
+      *    ACCT-FIXTURE-001.cpy -- 300-byte ACCOUNT-RECORD from
+      *        acctdata.txt rec 1; reserved for the on-platform
+      *        extension where MOCK CICS READ FILE(ACCTDAT) includes
+      *        this fixture as the mock-read response for AAP TC1.
+      *    CUST-FIXTURE-001.cpy -- 500-byte CUSTOMER-RECORD from
+      *        custdata.txt rec 1; reserved for the on-platform
+      *        extension where MOCK CICS READ FILE(CUSTDAT) supplies
+      *        the customer record after a successful ACCTDAT lookup.
+      *    DFHEI1.cbl -- standalone DFHEI1 PROGRAM-ID compiled into
+      *        a .so so any unmocked EXEC CICS verb resolves at load
+      *        time with EIBRESP=27 (NOTAUTH).
+      *    config.properties -- cobol-check runtime configuration.
+      *  All stubs are linked at test-run time by the runner script
+      *  tests/cobol-check/scripts/linux_gnucobol_run_tests.  The
+      *  testsuite itself does NOT contain `COPY STUB-ABEND-FLAG.`
+      *  because cobol-check 0.2.16's TestSuiteParser only recognizes
+      *  TESTSUITE / TESTCASE / MOCK / EXPECT / VERIFY / BEFORE-EACH
+      *  / AFTER-EACH / END-* / CALL / PARA / PARAGRAPH / SECTION;
+      *  a bare COPY at file scope is parsed as a fieldname token
+      *  and triggers a SYNTAX ERROR that aborts the merge.  The
+      *  runtime stubs continue to provide their intended safety
+      *  regardless, and the COBIL00C / COTRN01C / COUSR0xC
+      *  canonical exemplars follow the same omission.
+      *
+      *  Test categories
+      *  ---------------
+      *    TC1 - 2210-EDIT-ACCOUNT validates a non-zero 11-digit
+      *          account id.  Drives the production ELSE branch
+      *          (lines 677-680) that sets FLG-ACCTFILTER-ISVALID
+      *          and copies CC-ACCT-ID into CDEMO-ACCT-ID.  Off-
+      *          platform expression of the AAP TC1 happy-path
+      *          pathway: this is the validation gate that must
+      *          pass before 9000-READ-ACCT will fire.  Pure WS
+      *          side effects, no CICS verbs.
+      *    TC2 - 2210-EDIT-ACCOUNT rejects empty CC-ACCT-ID via
+      *          the SPACES branch (lines 653-662).  Off-platform
+      *          expression of AAP TC4 "Blank account ID rejected".
+      *          Sets INPUT-ERROR, FLG-ACCTFILTER-BLANK, prompts
+      *          for input via WS-PROMPT-FOR-ACCT, zeroes CDEMO-
+      *          ACCT-ID.  Pure WS side effects.
+      *    TC3 - 2210-EDIT-ACCOUNT rejects all-zero CC-ACCT-ID
+      *          via the EQUAL ZEROES branch (lines 666-676).
+      *          Off-platform expression of AAP TC2 "Account not
+      *          found" generalised to the upstream format-fail
+      *          gate that prevents 9300-GETACCTDATA-BYACCT from
+      *          ever being called.  Asserts WS-RETURN-MSG carries
+      *          the production-literal "Account Filter must  be
+      *          a non-zero 11 digit number" diagnostic.  Pure WS.
+      *    TC4 - 2210-EDIT-ACCOUNT rejects non-numeric CC-ACCT-ID
+      *          via the IS NOT NUMERIC branch (lines 666-676).
+      *          Differential vs TC3: TC3 trips EQUAL ZEROES, TC4
+      *          trips IS NOT NUMERIC.  Both share the same downstream
+      *          MOVE WS-RETURN-MSG, MOVE ZERO TO CDEMO-ACCT-ID side
+      *          effects -- the test confirms BOTH OR-clauses route
+      *          to the identical handler block.  Pure WS.
+      *    TC5 - 1100-SCREEN-INIT populates CACTVWAO header from
+      *          program literals: TRNNAMEO='CAVW', PGMNAMEO=
+      *          'COACTVWC', and date/time slots from FUNCTION
+      *          CURRENT-DATE.  Off-platform expression of the
+      *          common screen-rendering preamble that runs both
+      *          on first-entry and on every PF3 / re-entry pass.
+      *          Pure WS side effects, no CICS verbs.
+      *
+      *  Test user
+      *  ---------
+      *  USER0001 / USER role per AAP Section 0.10.2.  COACTVWC does
+      *  NOT implement role-based authorization at the program level;
+      *  any signed-on user reaching it via COMEN01C option 1 may
+      *  view any account.  USER0001 reflects the most common
+      *  upstream caller (the regular-user main menu).
+      *
+      *  Off-platform deferrals
+      *  ----------------------
+      *  Literal AAP TC1 ("Valid account ID returns view"), TC2
+      *  ("Account not found EIBRESP=13"), and TC3 ("Customer not
+      *  found after ACCTDAT success") all require the CICS
+      *  translator pass to reach 9200/9300/9400-GETCUSTDATA's
+      *  EVALUATE WS-RESP-CD WHEN DFHRESP(NORMAL/NOTFND) clauses
+      *  (same off-platform limitation as COBIL00C / COTRN01C /
+      *  COTRN02C / COUSR02C / COUSR03C).  When the translator is
+      *  added, this suite can be extended with testcases that
+      *  pre-populate WS-RESP-CD = 0/13, MOCK CALL 'DFHEI1' with
+      *  command-block responses (or MOCK CICS READ FILE(ACCTDAT)
+      *  ON READ ... using ACCT-FIXTURE-001 / CUST-FIXTURE-001
+      *  payloads), and PERFORM 9000-READ-ACCT end-to-end.
+      *
+      *  Literal AAP TC5 "PF3 exits / XCTL back to menu" depends
+      *  on 0000-MAIN's WHEN CCARD-AID-PFK03 branch (production
+      *  lines 324-352) which inlines the XCTL rather than
+      *  factoring it into a named paragraph -- driving it off-
+      *  platform would require EIBCALEN, EIBAID = DFHPF3, and
+      *  EXEC CICS HANDLE ABEND none reachable without the
+      *  translator.  TC5 (1100-SCREEN-INIT) provides the closest
+      *  off-platform assertion against the screen-render preamble
+      *  that PF3 fall-through traverses on every cycle.
+      *
+      *  References
+      *  ----------
+      *    AAP Section 0.10.1 / 0.5.1 / 0.10.2 / 0.4.1 / 0.7.1
+      *    app/cbl/COACTVWC.cbl lines 262-410 (0000-MAIN dispatch)
+      *    app/cbl/COACTVWC.cbl lines 416-429 (1000-SEND-MAP)
+      *    app/cbl/COACTVWC.cbl lines 431-459 (1100-SCREEN-INIT)
+      *    app/cbl/COACTVWC.cbl lines 460-539 (1200-SETUP-SCREEN-VARS)
+      *    app/cbl/COACTVWC.cbl lines 541-576 (1300-SETUP-SCREEN-ATTRS)
+      *    app/cbl/COACTVWC.cbl lines 577-594 (1400-SEND-SCREEN)
+      *    app/cbl/COACTVWC.cbl lines 596-647 (2000/2100/2200-INPUTS)
+      *    app/cbl/COACTVWC.cbl lines 649-685 (2210-EDIT-ACCOUNT)
+      *    app/cbl/COACTVWC.cbl lines 687-722 (9000-READ-ACCT)
+      *    app/cbl/COACTVWC.cbl lines 723-872 (9200/9300/9400 reads)
+      *    app/cbl/COACTVWC.cbl lines 916-937 (ABEND-ROUTINE)
+      *    app/cpy/COCOM01Y.cpy             (CARDDEMO-COMMAREA)
+      *    app/cpy/CVCRD01Y.cpy             (CC-WORK-AREAS / CC-ACCT-ID)
+      *    app/cpy/CVACT01Y.cpy             (ACCOUNT-RECORD layout)
+      *    app/cpy/CVACT03Y.cpy             (CARD-XREF-RECORD layout)
+      *    app/cpy/CVCUS01Y.cpy             (CUSTOMER-RECORD layout)
+      *    app/cpy/COTTL01Y.cpy             (CCDA-TITLE01/02)
+      *    app/cpy/CSDAT01Y.cpy             (WS-CURDATE / WS-CURTIME)
+      *    app/cpy-bms/COACTVW.CPY          (CACTVWAI / CACTVWAO)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy  (EXTERNAL stub state)
+      *    tests/stubs/DFHEI1.cbl           (CICS link-time backstop)
+      *    tests/fixtures/cobol-snippets/ACCT-FIXTURE-001.cpy
+      *                                     (300-byte ACCT fixture)
+      *    tests/fixtures/cobol-snippets/CUST-FIXTURE-001.cpy
+      *                                     (500-byte CUST fixture)
+      *    tests/cobol-check/COBIL00C.cut   (sister read+write exempl)
+      *    tests/cobol-check/COTRN01C.cut   (sister read-only exempl)
+      ******************************************************************
+
+       TESTSUITE 'COACTVWC ACCOUNT VIEW TRANSACTION'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset.
+      *
+      *  Restores deterministic baseline state so every TESTCASE
+      *  starts from a known, identical configuration.  cobol-check
+      *  resets MOCK invocation counters automatically between
+      *  TESTCASEs; this block resets the production WS / shared
+      *  structures touched by COACTVWC:
+      *
+      *    WS-MISC-STORAGE     COACTVWC.cbl lines 35-138; clears
+      *                        WS-RESP-CD, WS-REAS-CD, WS-TRANID,
+      *                        WS-INPUT-FLAG, WS-PFK-FLAG, WS-EDIT-
+      *                        ACCT-FLAG, WS-EDIT-CUST-FLAG, WS-
+      *                        XREF-RID, WS-FILE-READ-FLAGS, WS-
+      *                        LONG-MSG, WS-INFO-MSG, WS-RETURN-MSG
+      *                        (matching 88-level WS-RETURN-MSG-OFF).
+      *    CC-WORK-AREAS       CVCRD01Y; clears CCARD-AID, CC-
+      *                        ACCT-ID, CC-CARD-NUM, CC-CUST-ID and
+      *                        the CCARD-NEXT-* / CCARD-ERROR-MSG
+      *                        slots used by 1xxx/2xxx paragraphs.
+      *    CARDDEMO-COMMAREA   COCOM01Y; clears CDEMO-FROM-* /
+      *                        CDEMO-TO-* and CDEMO-PGM-CONTEXT
+      *                        (matches 88-level CDEMO-PGM-ENTER).
+      *    WS-THIS-PROGCOMMAREA  COACTVWC.cbl lines 213-216; clears
+      *                        CA-FROM-PROGRAM / CA-FROM-TRANID.
+      *    ACCOUNT-RECORD      CVACT01Y 300-byte group; cleared for
+      *                        forward-compatibility with the COPY
+      *                        ACCT-FIXTURE-001 post-translator
+      *                        extension on 9300-GETACCTDATA-BYACCT.
+      *    CARD-XREF-RECORD    CVACT03Y 50-byte group; cleared for
+      *                        9200-GETCARDXREF-BYACCT extension.
+      *    CUSTOMER-RECORD     CVCUS01Y 500-byte group; cleared for
+      *                        the COPY CUST-FIXTURE-001 extension
+      *                        on 9400-GETCUSTDATA-BYCUST.
+      *    CACTVWAI            BMS input map (cpy-bms/COACTVW.CPY).
+      *                        CACTVWAO REDEFINES CACTVWAI so this
+      *                        also clears CACTVWAO.
+      *    WS-CURDATE-DATA     CSDAT01Y date-time group used by
+      *                        1100-SCREEN-INIT for header dates.
+      *    RETURN-CODE         Implicit special-register reset.
+      *
+      *  After clearing, BEFORE-EACH seeds the COMMAREA with the
+      *  USER0001 regular-user identity per AAP Section 0.10.2.
+      *  CDEMO-FROM-PROGRAM defaults to 'COMEN01C' / CDEMO-FROM-
+      *  TRANID = 'CM00' to reflect the upstream caller (the
+      *  main menu's option-1 dispatch per COMEN02Y line 28 --
+      *  COACTVWC is the option-1 target of the OCCURS-12 PGMNAME
+      *  table).
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE WS-MISC-STORAGE
+            INITIALIZE CC-WORK-AREAS
+            INITIALIZE CARDDEMO-COMMAREA
+            INITIALIZE WS-THIS-PROGCOMMAREA
+            INITIALIZE ACCOUNT-RECORD
+            INITIALIZE CARD-XREF-RECORD
+            INITIALIZE CUSTOMER-RECORD
+            INITIALIZE CACTVWAI
+            INITIALIZE WS-CURDATE-DATA
+            MOVE ZERO       TO RETURN-CODE
+            MOVE 'USER0001' TO CDEMO-USER-ID
+            MOVE 'U'        TO CDEMO-USER-TYPE
+            MOVE 'COMEN01C' TO CDEMO-FROM-PROGRAM
+            MOVE 'CM00'     TO CDEMO-FROM-TRANID
+       END-BEFORE.
+
+
+      ******************************************************************
+      *  TC1 -- 2210-EDIT-ACCOUNT accepts a valid 11-digit account id
+      *
+      *  Drives 2210-EDIT-ACCOUNT (production lines 649-685) along
+      *  the SUCCESS path that gates 9000-READ-ACCT downstream.  The
+      *  paragraph executes:
+      *
+      *    SET FLG-ACCTFILTER-NOT-OK TO TRUE              (line 650)
+      *    IF CC-ACCT-ID = LOW-VALUES OR SPACES           (line 653-4)
+      *        ... (FALSE; '00000000001' has digits)
+      *    IF CC-ACCT-ID IS NOT NUMERIC                   (line 666)
+      *    OR CC-ACCT-ID EQUAL ZEROES                     (line 667)
+      *        ... (BOTH FALSE; '00000000001' is numeric, non-zero)
+      *    ELSE
+      *        MOVE CC-ACCT-ID TO CDEMO-ACCT-ID           (line 678)
+      *        SET FLG-ACCTFILTER-ISVALID TO TRUE         (line 679)
+      *    END-IF.
+      *
+      *  This is the off-platform expression of the AAP TC1
+      *  "Valid account ID returns view" pathway: production logic
+      *  invariant that 9000-READ-ACCT (production line 369-370)
+      *  ONLY runs after 2210-EDIT-ACCOUNT validates the input.  A
+      *  regression that broadens the IF NOT NUMERIC clause (e.g.,
+      *  to also reject 11-digit numerics) would surface here as a
+      *  failed FLG-ACCTFILTER-ISVALID assertion.
+      *
+      *  Why '00000000001' is the chosen valid input
+      *  -------------------------------------------
+      *  '00000000001' is 11 characters (matches CC-ACCT-ID PIC
+      *  X(11) length), all-numeric (passes the IS NOT NUMERIC
+      *  test), and non-zero (fails the EQUAL ZEROES test) -- the
+      *  smallest 11-digit non-zero account id satisfying the
+      *  three-clause validation.  Larger valid inputs would
+      *  prove the same path; the smallest is chosen for
+      *  documentation clarity.  This input is supplied by the
+      *  test author, NOT derived from production logic.
+      *
+      *  Pre-conditions established by TC1 prelude:
+      *    CC-ACCT-ID = '00000000001' (PIC X(11) literal MOVE)
+      *
+      *  Source of expected values:
+      *    '1'         - WS-EDIT-ACCT-FLAG flipped by SET FLG-
+      *                  ACCTFILTER-ISVALID (production line 679;
+      *                  88-level on WS-EDIT-ACCT-FLAG VALUE '1').
+      *                  Test asserts the side effect; does NOT
+      *                  recompute or paraphrase the SET logic.
+      *    1           - CDEMO-ACCT-ID populated by line 678 MOVE
+      *                  CC-ACCT-ID TO CDEMO-ACCT-ID.  CDEMO-ACCT-
+      *                  ID is PIC 9(11), so '00000000001' as
+      *                  PIC X(11) maps to numeric value 1.
+      *    SPACES      - WS-RETURN-MSG retains BEFORE-EACH default
+      *                  (matching 88-level WS-RETURN-MSG-OFF on
+      *                  the SPACES VALUE per copybook).  No
+      *                  diagnostic message is set on the success
+      *                  path -- a regression that fired the
+      *                  zeros-or-non-numeric branch would write
+      *                  the production literal "Account Filter
+      *                  must  be a non-zero 11 digit number"
+      *                  here, which this assertion catches.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES asserts the production
+      *  invariant that 2210-EDIT-ACCOUNT contains zero EXEC CICS
+      *  verbs (a regression introducing one would inflate the
+      *  count and fail the VERIFY).  Same pattern as COTRN01C
+      *  TC3 / COBIL00C TC3 -- pure-WS validation paragraphs.
+      ******************************************************************
+       TESTCASE 'COACTVWC 2210-EDIT-ACCOUNT accepts valid 11-digit id'
+            MOVE '00000000001' TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2210-EDIT-ACCOUNT
+            EXPECT WS-EDIT-ACCT-FLAG TO BE '1'
+            EXPECT CDEMO-ACCT-ID TO BE 1
+            EXPECT WS-RETURN-MSG TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC2 -- 2210-EDIT-ACCOUNT rejects empty account id (SPACES)
+      *
+      *  Drives 2210-EDIT-ACCOUNT (production lines 649-685) along
+      *  the EMPTY-INPUT rejection path:
+      *
+      *    IF CC-ACCT-ID = LOW-VALUES                     (line 653)
+      *    OR CC-ACCT-ID = SPACES                         (line 654)
+      *        SET INPUT-ERROR           TO TRUE          (line 655)
+      *        SET FLG-ACCTFILTER-BLANK  TO TRUE          (line 656)
+      *        ... (WS-PROMPT-FOR-ACCT, MOVE ZEROES, GO TO EXIT)
+      *    END-IF.
+      *
+      *  Off-platform expression of AAP TC4 "Blank account ID
+      *  rejected".  Production-mandated invariant: 2200-EDIT-
+      *  MAP-INPUTS (lines 628-630) MOVEs LOW-VALUES TO CC-ACCT-ID
+      *  when ACCTSIDI = '*' OR SPACES; testing CC-ACCT-ID = SPACES
+      *  directly here proves the downstream 2210 correctly
+      *  handles what 2200 hands it.  After line-661 GO TO EXIT,
+      *  the IS NOT NUMERIC / EQUAL ZEROES branch is NOT entered
+      *  -- the empty-check is the FIRST gate that short-circuits
+      *  before format validation.  Asserting FLG-ACCTFILTER-BLANK
+      *  (' ') vs FLG-ACCTFILTER-NOT-OK ('0') in TC3/TC4 proves
+      *  the BLANK path ran, not the format path.
+      *
+      *  Pre-conditions established by TC2 prelude:
+      *    CC-ACCT-ID = SPACES (PIC X(11) MOVE; matches line-654)
+      *
+      *  Source of expected values:
+      *    '1'    - WS-INPUT-FLAG flipped by line 655 SET INPUT-
+      *             ERROR (88-level VALUE '1' per line 52).  Test
+      *             asserts side effect.
+      *    ' '    - WS-EDIT-ACCT-FLAG flipped by line 656 SET FLG-
+      *             ACCTFILTER-BLANK (88-level VALUE ' ' per line
+      *             61).  KEY differential vs TC3/TC4 ('0').
+      *    0      - CDEMO-ACCT-ID flipped by line 660 MOVE ZEROES.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- same no-CICS invariant
+      *  as TC1.
+      ******************************************************************
+       TESTCASE 'COACTVWC 2210-EDIT-ACCOUNT rejects empty account id'
+            MOVE SPACES TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2210-EDIT-ACCOUNT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT WS-EDIT-ACCT-FLAG TO BE ' '
+            EXPECT CDEMO-ACCT-ID TO BE 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC3 -- 2210-EDIT-ACCOUNT rejects all-zero account id
+      *
+      *  Drives 2210-EDIT-ACCOUNT along the EQUAL ZEROES rejection
+      *  path.  Off-platform expression of AAP TC2 "Account not
+      *  found", generalised to "format gate prevents 9300-
+      *  GETACCTDATA-BYACCT from being called on an unparseable
+      *  account id".  The literal AAP TC2 (READ NOTFND on ACCTDAT)
+      *  requires the translator for EVALUATE WS-RESP-CD WHEN
+      *  DFHRESP(NOTFND) on production lines 789-806; the EQUAL
+      *  ZEROES gate is the last off-platform-reachable check that
+      *  has the same downstream effect (no account read fires).
+      *
+      *  Production paragraph (relevant branch):
+      *
+      *    IF CC-ACCT-ID  IS NOT NUMERIC                  (line 666)
+      *    OR CC-ACCT-ID  EQUAL ZEROES                    (line 667)
+      *        SET INPUT-ERROR TO TRUE                    (line 668)
+      *        SET FLG-ACCTFILTER-NOT-OK TO TRUE          (line 669)
+      *        MOVE 'Account Filter must  be a non-zero
+      *              11 digit number' TO WS-RETURN-MSG    (line 671-3)
+      *        MOVE ZERO  TO CDEMO-ACCT-ID                (line 675)
+      *        GO TO 2210-EDIT-ACCOUNT-EXIT               (line 676)
+      *    END-IF.
+      *
+      *  Note the OR on line 667: '00000000000' IS NUMERIC (the
+      *  IS NOT NUMERIC clause is FALSE) but EQUAL ZEROES (the OR
+      *  short-circuits TRUE).  TC4 covers the alternate OR-clause
+      *  via the IS NOT NUMERIC trip, proving both clauses route
+      *  to the SAME handler block.
+      *
+      *  Pre-conditions: CC-ACCT-ID = '00000000000' (test-author
+      *  supplied: 11 chars, all-numeric, all-zero -- the
+      *  smallest input that trips EQUAL ZEROES while passing
+      *  IS NOT NUMERIC).
+      *
+      *  Source of expected values:
+      *    '1'    - WS-INPUT-FLAG flipped by line 668.
+      *    '0'    - WS-EDIT-ACCT-FLAG flipped by line 669 SET FLG-
+      *             ACCTFILTER-NOT-OK (line 59 VALUE '0').
+      *             Differential vs TC2's ' '.
+      *    'Account Filter must  be a non-zero 11 digit number'
+      *           - WS-RETURN-MSG literal MOVE'd verbatim by lines
+      *             671-3.  Test asserts the side effect; does NOT
+      *             recompute.  DOUBLE SPACE between "must" and
+      *             "be" preserved exactly as in production.
+      *    0      - CDEMO-ACCT-ID flipped by line 675.
+      ******************************************************************
+       TESTCASE 'COACTVWC 2210-EDIT-ACCOUNT rejects all-zero account'
+            MOVE '00000000000' TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2210-EDIT-ACCOUNT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT WS-EDIT-ACCT-FLAG TO BE '0'
+            EXPECT WS-RETURN-MSG TO BE
+                'Account Filter must  be a non-zero 11 digit number'
+            EXPECT CDEMO-ACCT-ID TO BE 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC4 -- 2210-EDIT-ACCOUNT rejects non-numeric account id
+      *
+      *  Drives 2210-EDIT-ACCOUNT along the IS NOT NUMERIC
+      *  rejection path -- the alternate OR-clause to TC3 (TC3
+      *  trips EQUAL ZEROES, TC4 trips IS NOT NUMERIC).  Both share
+      *  the same downstream handler (production lines 668-676);
+      *  reaching it via the alternate OR-clause proves the IS NOT
+      *  NUMERIC predicate is wired correctly.
+      *
+      *  Off-platform expression of AAP TC2 "Account not found"
+      *  along the format-rejection branch (companion to TC3's
+      *  all-zero branch).  A regression that loosened the IS NOT
+      *  NUMERIC predicate (e.g., to accept alphanumeric chars in
+      *  CC-ACCT-ID) would let malformed input slip through to
+      *  9300-GETACCTDATA-BYACCT, which would then fail with
+      *  EIBRESP=14 (RECNOTFND) rather than displaying the format
+      *  diagnostic.
+      *
+      *  Note: '0000000000A' IS NOT NUMERIC TRUE (trailing 'A').
+      *  EQUAL ZEROES is FALSE (10 zeros + 'A').  The OR short-
+      *  circuits TRUE on the FIRST clause (in TC3 it was the
+      *  SECOND); identical handler invocation.
+      *
+      *  Pre-conditions: CC-ACCT-ID = '0000000000A' (test-author
+      *  supplied: 11 chars, alphanumeric, non-blank -- minimises
+      *  diff vs TC3's '00000000000' so the assertion difference
+      *  is purely the OR-clause routing).
+      *
+      *  Source of expected values: identical to TC3 since the
+      *  handler is shared.  Differential is in INPUT only; the
+      *  OUTPUT is identical -- the property under test.
+      ******************************************************************
+       TESTCASE 'COACTVWC 2210-EDIT-ACCOUNT rejects non-numeric id'
+            MOVE '0000000000A' TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2210-EDIT-ACCOUNT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT WS-EDIT-ACCT-FLAG TO BE '0'
+            EXPECT WS-RETURN-MSG TO BE
+                'Account Filter must  be a non-zero 11 digit number'
+            EXPECT CDEMO-ACCT-ID TO BE 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC5 -- 1100-SCREEN-INIT populates header from program literals
+      *
+      *  Drives 1100-SCREEN-INIT (production lines 431-459).  Pure-
+      *  WS preamble called by 1000-SEND-MAP (lines 417-418) on
+      *  every screen-render pass -- first entry, validation
+      *  failure, data-load success, and PF3 fall-through.  Zero
+      *  EXEC CICS verbs and zero PERFORM statements (only
+      *  invocation seam is FUNCTION CURRENT-DATE on lines 434/441);
+      *  the cleanest off-platform test target in COACTVWC.
+      *
+      *  Production paragraph (assertion-relevant subset):
+      *
+      *    MOVE LOW-VALUES     TO CACTVWAO                (line 432)
+      *    MOVE LIT-THISTRANID TO TRNNAMEO OF CACTVWAO    (line 438)
+      *    MOVE LIT-THISPGM    TO PGMNAMEO OF CACTVWAO    (line 439)
+      *    ... (CCDA-TITLE01/02 MOVEs to 40-byte slots,
+      *         WS-CURDATE-MM/DD/YY decomposition, etc.)
+      *
+      *  Off-platform expression of AAP TC5 "PF3 exits / XCTL"
+      *  generalised to the screen-render preamble that runs on
+      *  every cycle -- including PF3 fall-through which 0000-
+      *  MAIN's WHEN CCARD-AID-PFK03 branch reaches via 1000-
+      *  SEND-MAP THRU 1000-SEND-MAP-EXIT.  Literal AAP TC5
+      *  XCTL pathway requires translator-defined EIBAID and
+      *  CCARD-AID-PFK03 88-level; 1100-SCREEN-INIT exercises
+      *  the preamble that PRECEDES the XCTL on every cycle.
+      *
+      *  Source of expected values:
+      *    'CAVW'      - LIT-THISTRANID (production line 146 PIC
+      *                  X(4) VALUE 'CAVW') MOVE'd to TRNNAMEO
+      *                  by line 438.  Test asserts side effect
+      *                  verbatim; does NOT recompute.
+      *    'COACTVWC'  - LIT-THISPGM (production line 144 PIC
+      *                  X(8) VALUE 'COACTVWC') MOVE'd to
+      *                  PGMNAMEO by line 439.
+      *
+      *  CURDATEO / CURTIMEO are NOT asserted because they
+      *  derive from FUNCTION CURRENT-DATE (non-deterministic).
+      *  TITLE01O / TITLE02O are 40-byte slots whose space-
+      *  padding varies; the 4-byte TRNNAMEO / 8-byte PGMNAMEO
+      *  are unambiguous.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES asserts the production
+      *  invariant that 1100-SCREEN-INIT contains zero EXEC CICS
+      *  verbs (regression introducing one would inflate the
+      *  count and fail the VERIFY).  Same pattern as TC1-TC4.
+      ******************************************************************
+       TESTCASE 'COACTVWC 1100-SCREEN-INIT populates header from lits'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1100-SCREEN-INIT
+            EXPECT TRNNAMEO OF CACTVWAO TO BE 'CAVW'
+            EXPECT PGMNAMEO OF CACTVWAO TO BE 'COACTVWC'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  End of testsuite COACTVWC ACCOUNT VIEW TRANSACTION
+      ******************************************************************
