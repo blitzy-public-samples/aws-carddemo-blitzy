@@ -532,6 +532,28 @@ test-debug: init fixtures ensure-build-dir
 # parse_gcov_summary.sh can derive line-coverage percentages without
 # depending on a behaviour that varies across gcov versions.  The
 # .summary.txt file is gitignored (target/* is gitignored already).
+#
+# AAP Section 0.9.1 specifies that `make coverage` MUST capture the
+# parser script's output to `target/coverage-summary.txt`; this recipe
+# mirrors that intent under the project's actual BUILD_DIR layout
+# ($(BUILD_DIR)/coverage-summary.txt == target/cobol-check/coverage-summary.txt).
+# The .github/workflows/test.yml `Upload coverage report` step (Step 9)
+# references this path as the FIRST entry in its `path:` artifact list,
+# so the file MUST be produced on every successful coverage run for the
+# CI artifact to be complete.  We use `bash -c 'set -o pipefail; ...
+# 2>&1 | tee'` to:
+#   * Capture BOTH stdout (per-program PASS/FAIL log lines, OVERALL
+#     verdict, BLITZY COVERAGE GATE PASSED message) AND stderr
+#     (BLITZY VALIDATION GATE FAILED message on threshold misses) into
+#     a single human-readable summary file -- reviewers downloading
+#     the artifact see the complete diagnostic record.
+#   * Preserve the parser's exit status through `tee` (which always
+#     exits 0 on its own) -- without `pipefail` a coverage threshold
+#     miss would silently succeed.  bash is invoked explicitly because
+#     the default Make shell on Ubuntu Noble (`/bin/sh` -> dash 0.5.12)
+#     does not support `set -o pipefail`.
+# A non-empty stub summary is also produced in the no-.gcda branch so
+# that the CI artifact is always populated regardless of test outcome.
 #######################################################################
 coverage: ensure-build-dir
 	@echo "[coverage] Recompiling with profile-arcs + test-coverage ..."
@@ -543,15 +565,21 @@ coverage: ensure-build-dir
 	        gcov -b -c $$f > $$f.summary.txt 2>&1 || true; \
 	    done; \
 	    echo "[coverage] Parsing gcov summary against thresholds ..."; \
-	    bash $(REPO_ROOT)/$(LINT_DIR)/parse_gcov_summary.sh \
+	    bash -c 'set -o pipefail; bash "$(REPO_ROOT)/$(LINT_DIR)/parse_gcov_summary.sh" \
 	        --overall    $(COV_THRESHOLD_OVERALL) \
 	        --business   $(COV_THRESHOLD_BUSINESS_LOGIC) \
 	        --validation $(COV_THRESHOLD_DATA_VALIDATION) \
 	        --io         $(COV_THRESHOLD_FILE_IO) \
-	        $(REPO_ROOT)/$(COVERAGE_DIR); \
+	        "$(REPO_ROOT)/$(COVERAGE_DIR)" 2>&1 \
+	        | tee "$(REPO_ROOT)/$(BUILD_DIR)/coverage-summary.txt"'; \
 	else \
 	    echo "[coverage] No .gcda files found; coverage data unavailable."; \
 	    echo "[coverage] (This is expected when no .cut testsuites exist yet.)"; \
+	    { \
+	        echo "[lint:parse_gcov_summary] No coverage data available."; \
+	        echo "[lint:parse_gcov_summary] No *.gcda files were produced under $(REPO_ROOT)/$(BUILD_DIR)."; \
+	        echo "[lint:parse_gcov_summary] Expected when no .cut testsuites compiled successfully or when the suite is empty."; \
+	    } > "$(REPO_ROOT)/$(BUILD_DIR)/coverage-summary.txt"; \
 	fi
 
 #######################################################################

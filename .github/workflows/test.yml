@@ -114,11 +114,25 @@ jobs:
       # key embeds the version so a COBOL_CHECK_VERSION bump invalidates
       # the cache automatically.  The path is the canonical JAR
       # location used by the Makefile's COBOL_CHECK_JAR variable.
+      #
+      # `restore-keys` provides a partial-prefix fallback that lets a
+      # version bump (e.g. 0.2.16 -> 0.2.17) reuse a previous cache
+      # entry as a "warm start" when no exact-key match exists.  When
+      # the partial-match candidate is the wrong version the JAR file
+      # restored from cache will not match `make init`'s expected path
+      # (cobol-check-${COBOL_CHECK_VERSION}.jar), and `make init`'s
+      # idempotent existence-check rule will trigger a fresh download
+      # to the new version-stamped path.  The fallback therefore
+      # cannot cause incorrect behaviour; it only narrows the window
+      # in which the cache is fully cold.  AAP Section 0.5.4
+      # ("JAR caching strategy ... restore-keys provide fallback").
       - name: Cache cobol-check JAR
         uses: actions/cache@v4
         with:
           path: tests/cobol-check/lib/cobol-check-${{ env.COBOL_CHECK_VERSION }}.jar
           key: cobol-check-jar-${{ env.COBOL_CHECK_VERSION }}
+          restore-keys: |
+            cobol-check-jar-
 
       # -------------------------------------------------------------
       # Step 5: Initialize cobol-check
