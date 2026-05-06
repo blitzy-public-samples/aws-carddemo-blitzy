@@ -20,180 +20,44 @@
       *  Testsuite : COTRN00C TRANSACTION LIST BROWSE
       *  Program-under-test : app/cbl/COTRN00C.cbl
       *
-      *  Purpose
-      *  -------
-      *  Exercise COTRN00C's transaction-list browse CICS transaction
-      *  by mocking ONLY the program's external boundary into the CICS
-      *  API: the CALL 'DFHEI1' invocation that the CICS translator
-      *  emits in place of every EXEC CICS verb (RECEIVE MAP, SEND
-      *  MAP, STARTBR DATASET (TRANSACT), READNEXT DATASET, READPREV
-      *  DATASET, ENDBR DATASET, XCTL, RETURN).  The DFHEI1 entry
-      *  point is the single ABI seam between the production COBOL
-      *  program and the CICS runtime; mocking it intercepts every
-      *  CICS service call without requiring a live CICS region or
-      *  a populated TRANSACT VSAM cluster.
+      *  Exercises COTRN00C's transaction-list browse CICS transaction
+      *  by mocking ONLY the CICS-API boundary (CALL 'DFHEI1').
+      *  Internal paragraphs are NEVER mocked; every TESTCASE PERFORMs
+      *  a production paragraph LIVE per AAP Section 0.10.1.
       *
-      *  Internal COTRN00C paragraphs are NEVER mocked.  Every
-      *  TESTCASE exercises a production paragraph LIVE via PERFORM
-      *  so the testsuite asserts against side effects of actual
-      *  production-code execution (per AAP Section 0.10.1 -- "Mock
-      *  or stub ONLY external dependencies").
+      *  COTRN00C is the SISTER browse transaction to COUSR00C and
+      *  adopts the SAME paragraph topology over a different VSAM
+      *  KSDS (TRANSACT vs USRSEC).  This testsuite mirrors COUSR00C
+      *  testcase-by-testcase substituting COTRN00-specific layouts
+      *  (CDEMO-CT00-INFO, COTRN0AI, TRAN-RECORD).
       *
-      *  COTRN00C is the SISTER browse transaction to COUSR00C (user
-      *  list browse over USRSEC) and adopts the SAME paragraph
-      *  topology: PROCESS-PAGE-FORWARD / PROCESS-PAGE-BACKWARD wrap
-      *  STARTBR + READNEXT (or READPREV) + ENDBR over a VSAM KSDS;
-      *  POPULATE-TRAN-DATA / INITIALIZE-TRAN-DATA fill or clear the
-      *  10-row BMS table; PROCESS-PF7-KEY / PROCESS-PF8-KEY arbitrate
-      *  forward / backward paging.  This testsuite mirrors COUSR00C
-      *  testcase by testcase, substituting the COTRN00-specific data
-      *  layouts (CDEMO-CT00-INFO, COTRN0AI, TRAN-RECORD) for the
-      *  COUSR00 equivalents (CDEMO-CU00-INFO, COUSR0AI, SEC-USER-DATA).
+      *  Test categories (6 testcases)
+      *  -----------------------------
+      *    TC1 - RETURN-TO-PREV-SCREEN default 'COSGN00C' (PF3 path)
+      *    TC2 - INITIALIZE-TRAN-DATA WS-IDX=1 clears row-1 fields
+      *          (lines 453-457); pure WS side effects.
+      *    TC3 - POPULATE-TRAN-DATA WS-IDX=1 row-1 plus CDEMO-CT00-
+      *          TRNID-FIRST anchor (line 393) for PF7 backward.
+      *    TC4 - POPULATE-TRAN-DATA WS-IDX=10 row-10 plus CDEMO-CT00-
+      *          TRNID-LAST anchor (line 439) for PF8 forward.
+      *    TC5 - PROCESS-PF7-KEY with PAGE-NUM=1 hits ELSE "top of
+      *          the page" advisory (lines 245-251).
+      *    TC6 - PROCESS-PF8-KEY with NEXT-PAGE-FLG NOT='Y' hits ELSE
+      *          "bottom of the page" advisory (lines 267-273).
       *
-      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS, mock placement,
-      *  schema dependencies (STUB-ABEND-FLAG.cpy, DFHEI1.cbl), and
-      *  the cobol-check 0.2.16 TestSuiteParser limitation that
-      *  forbids file-scope COPY STUB-ABEND-FLAG: see the canonical
-      *  exemplar header in tests/cobol-check/COUSR00C.cut for the
-      *  authoritative explanation.  This testsuite follows the same
-      *  conventions verbatim.
-      *
-      *  Test categories
-      *  ---------------
-      *    TC1 - PERFORM RETURN-TO-PREV-SCREEN with CDEMO-TO-PROGRAM
-      *          = SPACES; production substitutes the default
-      *          'COSGN00C' target, captures CDEMO-FROM-* fields,
-      *          and issues XCTL.  This is the PF3 / initial-entry
-      *          path (production lines 107-109 set the EIBCALEN=0
-      *          default; lines 122-124 set it on PF3).  Mirrors AAP
-      *          TC6 "PF3 exit + ENDBR" via the cleanest assertable
-      *          surface: RETURN-TO-PREV-SCREEN's MOVE chain plus
-      *          XCTL invocation.
-      *    TC2 - PERFORM INITIALIZE-TRAN-DATA with WS-IDX=1;
-      *          production EVALUATE WS-IDX matches the WHEN 1 clause
-      *          (lines 453-457) and clears TRNID01I, TDATE01I,
-      *          TDESC01I, TAMT001I to SPACES.  No CICS verbs;
-      *          purely WORKING-STORAGE side effects.  Adapted from
-      *          AAP TC4 "ENDFILE on READNEXT" -- the EOF pathway
-      *          calls INITIALIZE-TRAN-DATA via PROCESS-PAGE-FORWARD
-      *          line 290-292 / PROCESS-PAGE-BACKWARD line 344-346
-      *          to clear the 10-row table before re-rendering the
-      *          partial-page screen.  Off-platform we cannot drive
-      *          the full ENDFILE path (READNEXT requires the CICS
-      *          translator), so this leaf paragraph is the
-      *          assertable surface.
-      *    TC3 - PERFORM POPULATE-TRAN-DATA with WS-IDX=1 and
-      *          TRAN-RECORD pre-populated; production EVALUATE
-      *          WS-IDX matches the WHEN 1 clause (lines 391-396)
-      *          and copies TRAN-ID, WS-TRAN-DATE, TRAN-DESC,
-      *          WS-TRAN-AMT into row-1 BMS fields.  The WHEN 1
-      *          branch ALSO copies TRAN-ID into CDEMO-CT00-TRNID-
-      *          FIRST (line 393) -- the COMMAREA "first transaction
-      *          on page" anchor that PROCESS-PF7-KEY reads (line
-      *          239) for backward paging.  Adapted from AAP TC1
-      *          "Initial entry STARTBR + READNEXT first page" -- the
-      *          STARTBR + READNEXT path culminates in a row-by-row
-      *          POPULATE-TRAN-DATA loop and the resulting BMS map.
-      *          Off-platform, we cannot drive the full STARTBR /
-      *          READNEXT chain, but the row-1 leaf MOVE is the
-      *          first-record side effect that the AAP TC1 happy
-      *          path is supposed to produce.
-      *    TC4 - PERFORM POPULATE-TRAN-DATA with WS-IDX=10; matches
-      *          the WHEN 10 clause (lines 437-442) which copies
-      *          TRAN-ID into CDEMO-CT00-TRNID-LAST (line 439) --
-      *          the "last transaction on page" anchor that
-      *          PROCESS-PF8-KEY reads (line 262) for forward
-      *          paging.  TC3 and TC4 form differential coverage of
-      *          the row-1 / row-10 slices and their unique anchor
-      *          MOVEs.  Adapted from AAP TC2 "PF8 forward navigation"
-      *          -- forward paging requires the LAST anchor to seed
-      *          the next STARTBR, so populating the WHEN-10 slice
-      *          and asserting the anchor is the assertable surface
-      *          for the PF8 prelude.
-      *    TC5 - PERFORM PROCESS-PF7-KEY with CDEMO-CT00-PAGE-NUM=1;
-      *          production lines 245-251 take the ELSE branch of
-      *          the IF CDEMO-CT00-PAGE-NUM > 1 guard, setting
-      *          WS-MESSAGE to the "top of the page" advisory and
-      *          flipping WS-SEND-ERASE-FLG to 'N' before performing
-      *          SEND-TRNLST-SCREEN.  The MOCK CALL 'DFHEI1'
-      *          intercepts SEND-TRNLST-SCREEN's EXEC CICS SEND.
-      *          Mirrors AAP TC3 "PF7 backward navigation" boundary
-      *          -- the simplest backward-paging path is the
-      *          already-at-top advisory branch, which exercises
-      *          PROCESS-PF7-KEY end-to-end without depending on
-      *          PROCESS-PAGE-BACKWARD's STARTBR / READPREV chain
-      *          (which requires the CICS translator).
-      *    TC6 - PERFORM PROCESS-PF8-KEY with CDEMO-CT00-NEXT-PAGE-
-      *          FLG NOT = 'Y'; production lines 267-273 take the
-      *          ELSE branch of the IF NEXT-PAGE-YES guard, setting
-      *          WS-MESSAGE to the "bottom of the page" advisory.
-      *          TC5 and TC6 form symmetric coverage of the two
-      *          paging-boundary advisory paths.  Adapted from AAP
-      *          TC5 "STARTBR error path" -- the simplest forward-
-      *          paging error/edge path is the already-at-bottom
-      *          advisory branch, which exercises PROCESS-PF8-KEY
-      *          end-to-end without depending on PROCESS-PAGE-
-      *          FORWARD's STARTBR / READNEXT chain.
-      *
-      *  Test user
-      *  ---------
-      *  USER0001 / USER role per AAP Section 0.10.2.  COTRN00C does
-      *  not implement role-based authorization (the program admits
-      *  any valid sign-on); the most common upstream caller is the
-      *  COMEN01C main menu (CDEMO-FROM-PROGRAM='COMEN01C', CDEMO-
-      *  FROM-TRANID='CM00').  This differentiates the COTRN00C
-      *  testsuite from sister admin-only COUSR0xC testsuites which
-      *  seed ADMIN001 / 'A' identity.
-      *
-      *  Why AAP STARTBR / READNEXT / READPREV / ENDFILE happy paths
-      *  are deferred: those slots require the production paragraphs
-      *  STARTBR-TRANSACT-FILE (lines 591-619), READNEXT-TRANSACT-
-      *  FILE (lines 624-653), READPREV-TRANSACT-FILE (lines 658-
-      *  687), ENDBR-TRANSACT-FILE (lines 692-696) to be reachable
-      *  through a working CICS translator pass -- the EVALUATE
-      *  WS-RESP-CD WHEN DFHRESP(NORMAL/NOTFND/ENDFILE) clauses
-      *  depend on DFHRESP being a defined preprocessor symbol.
-      *  Off-platform GnuCOBOL leaves DFHRESP undefined and the
-      *  merged binary fails to compile at the EVALUATE statement.
-      *  When a CICS translator pass is added to the build, this
-      *  testsuite can be extended with TESTCASE blocks that pre-
-      *  populate WS-RESP-CD = 0 / 13 / 16, MOCK CALL 'DFHEI1' with
-      *  CONTINUE, and PERFORM PROCESS-PAGE-FORWARD / PROCESS-PAGE-
-      *  BACKWARD end-to-end.  The six testcases below cover every
-      *  leaf paragraph whose side effects can be asserted off-
-      *  platform without depending on the CICS translator.
-      *
-      *  References
-      *  ----------
-      *    AAP Section 0.10.1 -- user directive on test structure
-      *    AAP Section 0.5.1  -- file-by-file plan for COTRN00C
-      *    AAP Section 0.10.2 -- USER0001 / USER test user
-      *    AAP Section 0.4.3  -- COUSR00C as canonical browse exemplar
-      *    app/cbl/COTRN00C.cbl lines 095-141 (MAIN-PARA dispatch)
-      *    app/cbl/COTRN00C.cbl lines 234-252 (PROCESS-PF7-KEY)
-      *    app/cbl/COTRN00C.cbl lines 257-274 (PROCESS-PF8-KEY)
-      *    app/cbl/COTRN00C.cbl lines 381-445 (POPULATE-TRAN-DATA)
-      *    app/cbl/COTRN00C.cbl lines 450-505 (INITIALIZE-TRAN-DATA)
-      *    app/cbl/COTRN00C.cbl lines 510-521 (RETURN-TO-PREV-SCREEN)
-      *    app/cbl/COTRN00C.cbl lines 591-696 (STARTBR/READNEXT/
-      *                                        READPREV/ENDBR family)
-      *    app/cpy/COCOM01Y.cpy            (CARDDEMO-COMMAREA layout)
-      *    app/cpy/CVTRA05Y.cpy            (TRAN-RECORD layout, 350B)
-      *    app/cpy/CSDAT01Y.cpy            (WS-DATE-TIME / WS-CURDATE)
-      *    app/cpy-bms/COTRN00.CPY         (COTRN0AI / COTRN0AO map)
-      *    tests/stubs/STUB-ABEND-FLAG.cpy (EXTERNAL stub state)
-      *    tests/stubs/DFHEI1.cbl          (CICS link-time backstop)
-      *    tests/cobol-check/COUSR00C.cut  (canonical browse exemplar)
-      *    tests/cobol-check/COTRN01C.cut  (sister TXN exemplar)
-      *    tests/cobol-check/COTRN02C.cut  (sister TXN exemplar)
-      ******************************************************************
+      *  Test user: USER0001 (AAP 0.10.2).  AAP STARTBR/READNEXT/
+      *  READPREV/ENDFILE happy paths deferred to MOCK CICS support
+      *  (DFHRESP undefined off-platform).
+      *  References: AAP 0.10.1, 0.5.1, 0.10.2, 0.4.3;
+      *  app/cbl/COTRN00C.cbl L95-141, L234-274, L381-505, L510-521,
+      *  L591-696; app/cpy/{COCOM01Y, CVTRA05Y, CSDAT01Y}.cpy;
+      *  cpy-bms/COTRN00.CPY; tests/stubs/{STUB-ABEND-FLAG.cpy,
+      *  DFHEI1.cbl}; tests/cobol-check/COUSR00C.cut (exemplar).
       *
       *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
-      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
-      *  the actual EXTERNAL field declarations into merged WS;
-      *  cobol-check 0.2.16 drops the directive below silently --
-      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
-      *  CALLED so a stub-fired condition is assertable per test.
+      *  Runner-script Step 5 injects EXTERNAL field declarations
+      *  into merged WS; BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED for per-testcase isolation of the safety-net flag.
       ******************************************************************
        COPY STUB-ABEND-FLAG.
 

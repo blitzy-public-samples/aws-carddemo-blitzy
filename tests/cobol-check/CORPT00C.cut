@@ -20,142 +20,43 @@
       *  Testsuite : CORPT00C REPORT SUBMIT TRANSACTION
       *  Program-under-test : app/cbl/CORPT00C.cbl
       *
-      *  Purpose
-      *  -------
-      *  Exercise CORPT00C's report-submit CICS transaction by mocking
-      *  ONLY the program's external boundary into the CICS API: the
-      *  CALL 'DFHEI1' invocation that the CICS translator emits in
-      *  place of every EXEC CICS verb (RECEIVE MAP, SEND MAP,
-      *  WRITEQ TD, XCTL, RETURN).  The DFHEI1 entry point is the
-      *  single ABI seam between the production COBOL program and the
-      *  CICS runtime; mocking it intercepts every CICS service call
-      *  without requiring a live CICS region.
+      *  Exercises CORPT00C's report-submit CICS transaction by mocking
+      *  ONLY the CICS-API boundary (CALL 'DFHEI1').  Internal
+      *  paragraphs are NEVER mocked; every TESTCASE PERFORMs a
+      *  production paragraph LIVE per AAP Section 0.10.1.
       *
-      *  CORPT00C is the AAP-mandated "Report-submit transaction (TDQ
-      *  JCL emission)" target (AAP Section 0.3.1 / 0.5.1 / 0.7.1).
-      *  The program orchestrates online JCL submission for batch
-      *  transaction-report production: the user picks a report type
-      *  on the BMS map (Monthly / Yearly / Custom date range), the
-      *  program builds an 80-byte-per-record JCL stream from the
-      *  hard-coded JOB-DATA-1 group plus user-supplied date parms,
-      *  and writes the stream line-by-line to the CICS Transient
-      *  Data Queue named 'JOBS'.  The CICS region's job-submit task
-      *  initiator (configured outside this program) reads the queue
-      *  and submits the JCL to JES for execution.  The single
-      *  external boundary of interest for this testsuite is the
-      *  EXEC CICS WRITEQ TD QUEUE('JOBS') call inside paragraph
-      *  WIRTE-JOBSUB-TDQ (production line 517 -- yes, the production
-      *  spelling 'WIRTE' is preserved verbatim per the AAP "ONLY
-      *  modify test files" rule).
+      *  CORPT00C is AAP's "Report-submit transaction (TDQ JCL
+      *  emission)" target.  Picks report type (Monthly/Yearly/
+      *  Custom) from BMS, builds 80-byte JCL stream, writes line-
+      *  by-line to TDQ 'JOBS' (production WIRTE-JOBSUB-TDQ at
+      *  L515-535 -- production spelling preserved verbatim per
+      *  AAP "ONLY modify test files" rule).
       *
-      *  Internal CORPT00C paragraphs are NEVER mocked.  Every
-      *  TESTCASE exercises a production paragraph LIVE via PERFORM
-      *  so the testsuite asserts against side effects of actual
-      *  production-code execution (per the user directive in AAP
-      *  Section 0.10.1 -- "Mock or stub ONLY external dependencies").
+      *  Test categories (5 testcases)
+      *  -----------------------------
+      *    TC1 - RETURN-TO-PREV-SCREEN default 'COSGN00C' (PF3 path)
+      *    TC2 - INITIALIZE-ALL-FIELDS clears MONTHLYL=-1 + 11 fields
+      *    TC3 - POPULATE-HEADER-INFO TITLE01O/TITLE02O/TRNNAMEO/
+      *          PGMNAMEO from constants
+      *    TC4 - PROCESS-ENTER-KEY all three report-type fields
+      *          empty; WHEN OTHER (L437-442) "Select a report type"
+      *    TC5 - SUBMIT-JOB-TO-INTRDR CONFIRMI=SPACES rejects with
+      *          "Please confirm" (L464-474); WRITEQ not reached
       *
-      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS, mock placement
-      *  rule, and the file-scope COPY caveat are documented at
-      *  length in tests/cobol-check/COUSR03C.cut (the canonical
-      *  CICS exemplar) and are followed verbatim here.  In short:
-      *  cobol-check 0.2.16 supports CALL / PARA / PARAGRAPH / SECTION
-      *  mock-types, the CICS translator rewrites every EXEC CICS to
-      *  CALL 'DFHEI1', mocks are nested inside their TESTCASE for
-      *  Local scope, and file-scope `COPY STUB-ABEND-FLAG.` is
-      *  omitted because cobol-check 0.2.16's TestSuiteParser does
-      *  not recognize file-scope COPY (the link-time STUB-ABEND-
-      *  FLAG.cpy / DFHEI1.cbl backstops still provide runtime
-      *  safety).
-      *
-      *  Test categories
-      *  ---------------
-      *    TC1 - PERFORM RETURN-TO-PREV-SCREEN with CDEMO-TO-PROGRAM
-      *          = SPACES; production substitutes the default
-      *          'COSGN00C' target, captures CDEMO-FROM-* fields, and
-      *          issues XCTL.  Maps to AAP TC5 ("PF3 exits without
-      *          WRITEQ") -- the cancel pathway short-circuits before
-      *          reaching SUBMIT-JOB-TO-INTRDR.
-      *    TC2 - PERFORM INITIALIZE-ALL-FIELDS; production resets
-      *          MONTHLYL to -1 and clears MONTHLYI, YEARLYI, CUSTOMI,
-      *          SDTMMI, SDTDDI, SDTYYYYI, EDTMMI, EDTDDI, EDTYYYYI,
-      *          CONFIRMI, and WS-MESSAGE to SPACES.  No CICS verbs;
-      *          purely WORKING-STORAGE side effects.
-      *    TC3 - PERFORM POPULATE-HEADER-INFO; production populates
-      *          TITLE01O / TITLE02O / TRNNAMEO / PGMNAMEO output
-      *          fields from CCDA-TITLE01 / CCDA-TITLE02 / WS-TRANID
-      *          / WS-PGMNAME constants.  Pure WS side effects (the
-      *          paragraph also issues two EXEC CICS ASSIGN verbs in
-      *          COSGN00C, but CORPT00C's variant does not -- the
-      *          testcase asserts the pure-MOVE outputs only).
-      *    TC4 - PERFORM PROCESS-ENTER-KEY with all three report-
-      *          type input fields (MONTHLYI, YEARLYI, CUSTOMI) =
-      *          SPACES; production EVALUATE TRUE matches the WHEN
-      *          OTHER branch (line 437-442), sets WS-ERR-FLG ON,
-      *          and reports "Select a report type ...".  Maps to
-      *          AAP TC4 ("Invalid date format rejected") -- this
-      *          variant chooses the cleanest failure path: missing
-      *          report selection short-circuits before any date
-      *          parsing or CSUTLDTC dispatch is attempted.
-      *    TC5 - PERFORM SUBMIT-JOB-TO-INTRDR with CONFIRMI = SPACES;
-      *          production rejects with "Please confirm to print
-      *          the <report> report..." (line 464-474) WITHOUT
-      *          reaching the JOB-LINES VARYING loop and the WIRTE-
-      *          JOBSUB-TDQ paragraph that issues EXEC CICS WRITEQ
-      *          TD QUEUE('JOBS').  This testcase asserts the
-      *          production invariant that the WRITEQ boundary is
-      *          gated by both report-type selection (TC4) AND
-      *          confirmation (TC5).  Maps to AAP TC1 + TC2 + TC3
-      *          ("report submission writes to TDQ") in negative
-      *          form: the WRITEQ does NOT fire when confirmation
-      *          is absent -- the production guard is the deterministic
-      *          safety check that keeps a stale or accidental ENTER
-      *          press from generating spurious JCL.
-      *
-      *  Why AAP categories adapt to validation pathways
-      *  -----------------------------------------------
-      *  AAP TC1 ("Daily report submission writes to TDQ") refers to
-      *  a report-frequency CORPT00C does not implement (production
-      *  offers Monthly / Yearly / Custom only).  AAP TC2 / TC3
-      *  ("Monthly" / "Custom date-range") would require a working
-      *  CICS translator pass AND the JOB-LINES OCCURS-1000 loop to
-      *  drive 100+ CALL 'DFHEI1' invocations -- not viable off-
-      *  platform.  AAP TC4 / TC5 ("Invalid date format rejected" /
-      *  "PF3 exits without WRITEQ") are the two pathways that DO
-      *  complete entirely in WORKING-STORAGE and DO NOT require a
-      *  translated CICS pass; this testsuite covers TC4 + TC5 fully
-      *  and adapts the TC1-TC3 happy paths to negative tests of
-      *  the same validation gates that production uses to keep an
-      *  unintended WRITEQ from firing.  Test user is USER0001 /
-      *  USER role per AAP Section 0.10.2.
-      *
-      *  References
-      *  ----------
-      *    AAP Section 0.10.1 -- user directive on test structure
-      *    AAP Section 0.5.1  -- file-by-file plan for CORPT00C
-      *    AAP Section 0.7.1  -- coverage targets (>=75% for CORPT00C)
-      *    AAP Section 0.4.2  -- TC blueprint per CICS template
-      *    app/cbl/CORPT00C.cbl lines 163-203 (MAIN-PARA dispatch)
-      *    app/cbl/CORPT00C.cbl lines 208-456 (PROCESS-ENTER-KEY)
-      *    app/cbl/CORPT00C.cbl lines 462-510 (SUBMIT-JOB-TO-INTRDR)
-      *    app/cbl/CORPT00C.cbl lines 515-535 (WIRTE-JOBSUB-TDQ)
-      *    app/cbl/CORPT00C.cbl lines 540-551 (RETURN-TO-PREV-SCREEN)
-      *    app/cbl/CORPT00C.cbl lines 556-580 (SEND-TRNRPT-SCREEN)
-      *    app/cbl/CORPT00C.cbl lines 609-628 (POPULATE-HEADER-INFO)
-      *    app/cbl/CORPT00C.cbl lines 633-646 (INITIALIZE-ALL-FIELDS)
-      *    app/cpy/COCOM01Y.cpy            (CARDDEMO-COMMAREA layout)
-      *    app/cpy-bms/CORPT00.CPY         (CORPT0AI / CORPT0AO map)
-      *    tests/stubs/STUB-ABEND-FLAG.cpy (EXTERNAL stub state)
-      *    tests/stubs/DFHEI1.cbl          (CICS link-time backstop)
-      *    tests/cobol-check/COUSR03C.cut  (canonical CICS exemplar)
-      *    tests/cobol-check/COTRN02C.cut  (sister CICS exemplar)
-      ******************************************************************
+      *  Test user: USER0001 (AAP 0.10.2).  AAP TC1-TC3 happy paths
+      *  (full Monthly/Yearly/Custom WRITEQ TDQ submission) deferred
+      *  to MOCK CICS support (DFHRESP undefined off-platform plus
+      *  JOB-LINES OCCURS-1000 loop drives 100+ CALL 'DFHEI1').
+      *  References: AAP 0.10.1, 0.5.1, 0.7.1, 0.4.2;
+      *  app/cbl/CORPT00C.cbl L163-456, L462-580, L609-646;
+      *  app/cpy/COCOM01Y.cpy; cpy-bms/CORPT00.CPY;
+      *  tests/stubs/{STUB-ABEND-FLAG.cpy, DFHEI1.cbl};
+      *  tests/cobol-check/{COUSR03C, COTRN02C}.cut (exemplars).
       *
       *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
-      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
-      *  the actual EXTERNAL field declarations into merged WS;
-      *  cobol-check 0.2.16 drops the directive below silently --
-      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
-      *  CALLED so a stub-fired condition is assertable per test.
+      *  Runner-script Step 5 injects EXTERNAL field declarations
+      *  into merged WS; BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED for per-testcase isolation of the safety-net flag.
       ******************************************************************
        COPY STUB-ABEND-FLAG.
 

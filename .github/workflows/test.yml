@@ -138,11 +138,12 @@ jobs:
       # step exit provides this abort automatically -- subsequent
       # steps are skipped.
       #
-      # The four lint gates enforced by `make lint` are:
+      # The five lint gates enforced by `make lint` are:
       #   1. tests/lint/check_no_business_logic.sh
       #   2. tests/lint/check_no_production_redeclaration.sh
       #   3. tests/lint/check_assertion_density.sh
       #   4. tests/lint/check_isolation.sh
+      #   5. tests/lint/check_dfhei1_safety_net.sh
       - name: Run lint gates (must pass before tests run)
         run: make lint
 

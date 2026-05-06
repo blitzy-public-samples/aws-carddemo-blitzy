@@ -20,154 +20,59 @@
       *  Testsuite : COCRDLIC CARD LIST BROWSE TRANSACTION
       *  Program-under-test : app/cbl/COCRDLIC.cbl
       *
-      *  Purpose
-      *  -------
       *  COCRDLIC is the credit-card list browse CICS transaction.
-      *  It RECEIVEs optional account-id and card-number filters from
-      *  the BMS map (CCRDLIAI), validates via 2210-EDIT-ACCOUNT and
-      *  2220-EDIT-CARD, then enters the canonical CICS browse pattern:
-      *  STARTBR DATASET(CARDDAT) GTEQ on WS-CARD-RID-CARDNUM, looped
-      *  READNEXT INTO CARD-RECORD up to WS-MAX-SCREEN-LINES (7 rows
-      *  per page), ENDBR FILE.  PF8 advances via 9000-READ-FORWARD,
-      *  PF7 reverses via 9100-READ-BACKWARDS, 9500-FILTER-RECORDS
-      *  gates row admission to the 7-row OCCURS table.  PF3 XCTLs
-      *  to COMEN01C; ENTER XCTLs to COCRDSLC/COCRDUPC.
+      *  RECEIVEs optional account-id/card-number filters, validates
+      *  via 2210-EDIT-ACCOUNT and 2220-EDIT-CARD, enters the
+      *  canonical CICS browse pattern (STARTBR/READNEXT/ENDBR),
+      *  PF8 forward via 9000-READ-FORWARD, PF7 back via 9100-READ-
+      *  BACKWARDS, 9500-FILTER-RECORDS gates row admission.
       *
-      *  This testsuite mocks ONLY the CICS-API boundary (CALL
-      *  'DFHEI1') and exercises every other paragraph LIVE via
-      *  PERFORM per AAP Section 0.10.1.  Conventions are inherited
-      *  verbatim from the canonical exemplar tests/cobol-check/
-      *  COSGN00C.cut (mock placement, schema dependencies, the
-      *  cobol-check 0.2.16 TestSuiteParser COPY-at-file-scope
-      *  limitation, and link-time stub usage).
+      *  External dependency mocked: CALL 'DFHEI1' (CICS API stand-in
+      *  used by CICS translator).  Internal paragraphs are NEVER
+      *  mocked; structural conventions inherit from the canonical
+      *  exemplar tests/cobol-check/COSGN00C.cut.
       *
-      *  Schema dependencies (link/runtime, not COPY-included):
-      *    STUB-ABEND-FLAG.cpy  EXTERNAL state group (CEE3ABD/DFHEI1).
-      *    CARD-FIXTURE-001.cpy 150-byte CARD-RECORD; reserved for
-      *                         the post-translator MOCK CICS READNEXT
-      *                         extension.
-      *    DFHEI1.cbl           Link-time CICS backstop returning
-      *                         EIBRESP=27 for unmocked verbs.
+      *  Test categories (7 testcases)
+      *  -----------------------------
+      *    TC1 - 2220-EDIT-CARD accepts valid 16-digit card (L1036)
+      *    TC2 - YYYY-STORE-PFKEY DFHPF8 -> CCARD-AID-PFK08
+      *    TC3 - YYYY-STORE-PFKEY DFHPF7 -> CCARD-AID-PFK07
+      *    TC4 - 1400-SETUP-MESSAGE EOF advisory (L905-909)
+      *    TC5 - 2210-EDIT-ACCOUNT rejects non-numeric (L1017)
+      *    TC6 - YYYY-STORE-PFKEY DFHPF3 -> CCARD-AID-PFK03
+      *    TC7 - 9500-FILTER-RECORDS excludes account mismatch
       *
-      *  Test categories
-      *  ---------------
-      *    TC1 - 2220-EDIT-CARD accepts a valid 16-digit card
-      *          number (L1036-1067 ELSE branch).  Off-platform
-      *          expression of AAP TC1 (validation gate before
-      *          9000-READ-FORWARD's STARTBR).
-      *    TC2 - YYYY-STORE-PFKEY maps DFHPF8 to CCARD-AID-PFK08
-      *          (CSSTRPFY L44-45); gate for PF8-forward dispatch
-      *          (0000-MAIN L486-497).
-      *    TC3 - YYYY-STORE-PFKEY maps DFHPF7 to CCARD-AID-PFK07
-      *          (CSSTRPFY L42-43); gate for PF7-back dispatch
-      *          (0000-MAIN L501-513).
-      *    TC4 - 1400-SETUP-MESSAGE end-of-file advisory (L905-909)
-      *          sets WS-ERROR-MSG = 'NO MORE PAGES TO DISPLAY'.
-      *    TC5 - 2210-EDIT-ACCOUNT rejects non-numeric account-id
-      *          (L1017-1029); INPUT-ERROR short-circuit prevents
-      *          STARTBR (L433 guard).
-      *    TC6 - YYYY-STORE-PFKEY maps DFHPF3 to CCARD-AID-PFK03
-      *          (CSSTRPFY L34-35); gate for PF3-exit dispatch
-      *          (0000-MAIN L384-406, XCTL LIT-MENUPGM).
-      *    TC7 - 9500-FILTER-RECORDS excludes record on account
-      *          mismatch (L1385-1394); the canonical exclusion path.
-      *
-      *  Test user: USER0001 per AAP Section 0.10.2; upstream caller
-      *  COMEN01C ('CM00') per COMEN02Y option-3 mapping.
-      *
-      *  Off-platform deferrals
-      *  ----------------------
-      *  Literal AAP STARTBR/READNEXT/READPREV/ENDBR/XCTL pathways
-      *  require a CICS translator to reach EVALUATE WS-RESP-CD
-      *  WHEN DFHRESP(...) clauses (L1156-1255, 1304-1370).  When
-      *  the translator is added, MOCK CICS READNEXT FILE(CARDDAT)
-      *  with CARD-FIXTURE-001 enables end-to-end PERFORM coverage.
-      *
-      *  Source of expected values (per AAP Section 0.10.1)
-      *  --------------------------------------------------
-      *  Each EXPECT compares a production-side field against
-      *  (a) a literal MOVE'd verbatim by production, (b) an 88-level
-      *  VALUE, (c) a production WS constant, or (d) a deterministic-
-      *  default reset by BEFORE-EACH.  No expected value is
-      *  recomputed from the production formula.
+      *  Test user: USER0001 per AAP 0.10.2; upstream COMEN01C/CM00.
+      *  Off-platform deferral: CICS-translator-dependent EVALUATE
+      *  WS-RESP-CD pathways require MOCK CICS support (cobol-check
+      *  > 0.2.16) for end-to-end PERFORM coverage.
       *
       *  References
       *  ----------
-      *    AAP Sections 0.5.1, 0.7.1, 0.10.1, 0.10.2
-      *    app/cbl/COCRDLIC.cbl L297-602, 642-672, 895-932,
-      *                         1003-1030, 1036-1067, 1123-1260,
-      *                         1264-1372, 1382-1411
-      *    app/cpy/CSSTRPFY.cpy L17-79  (YYYY-STORE-PFKEY)
-      *    app/cpy/CVCRD01Y.cpy / COCOM01Y.cpy / CVACT02Y.cpy
-      *    app/cpy-bms/COCRDLI.CPY      (CCRDLIAI / CCRDLIAO map)
+      *    AAP 0.5.1, 0.7.1, 0.10.1, 0.10.2
+      *    app/cbl/COCRDLIC.cbl / app/cpy/CSSTRPFY.cpy
       *    tests/stubs/STUB-ABEND-FLAG.cpy / DFHEI1.cbl
       *    tests/fixtures/cobol-snippets/CARD-FIXTURE-001.cpy
-      *    tests/cobol-check/COSGN00C.cut (structural exemplar)
-      *    tests/cobol-check/COCRDSLC.cut / COTRN00C.cut (sister)
       *
-      *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
-      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
-      *  the actual EXTERNAL field declarations into merged WS;
-      *  cobol-check 0.2.16 drops the directive below silently --
-      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
-      *  CALLED so a stub-fired condition is assertable per test.
+      *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2): the
+      *  COPY STUB-ABEND-FLAG anchor below is dropped silently by
+      *  cobol-check 0.2.16; runner-script Step 5 injects the
+      *  EXTERNAL field declarations into merged WS, and BEFORE-
+      *  EACH resets WS-DFHEI1-UNMOCKED-CALLED for per-testcase
+      *  isolation of the safety-net flag.
       ******************************************************************
        COPY STUB-ABEND-FLAG.
 
        TESTSUITE 'COCRDLIC CARD LIST BROWSE TRANSACTION'.
 
       ******************************************************************
-      *  BEFORE-EACH -- per-testcase isolation reset.
-      *
-      *  Restores deterministic baseline state so every TESTCASE
-      *  starts from a known, identical configuration.  cobol-check
-      *  resets MOCK invocation counters automatically between
-      *  TESTCASEs; this block resets the production WS / shared
-      *  structures COCRDLIC reads or writes:
-      *
-      *    WS-MISC-STORAGE     COCRDLIC.cbl lines 41-172; clears
-      *                        WS-CICS-PROCESSNG-VARS, WS-INPUT-FLAG,
-      *                        WS-EDIT-ACCT-FLAG, WS-EDIT-CARD-FLAG,
-      *                        CICS-OUTPUT-EDIT-VARS, WS-ERROR-MSG
-      *                        (88-level WS-ERROR-MSG-OFF VALUE
-      *                        SPACES line 118), WS-PFK-FLAG, WS-
-      *                        FILE-HANDLING-VARS (WS-CARD-RID),
-      *                        WS-SCRN-COUNTER, WS-FILTER-RECORD-
-      *                        FLAG, WS-RECORDS-TO-PROCESS-FLAG,
-      *                        WS-FILE-ERROR-MESSAGE.
-      *    CC-WORK-AREAS       CVCRD01Y; clears CCARD-AID (target
-      *                        of YYYY-STORE-PFKEY), CC-ACCT-ID,
-      *                        CC-CARD-NUM, CCARD-NEXT-* / CCARD-
-      *                        ERROR-MSG / CCARD-RETURN-MSG.
-      *    CARDDEMO-COMMAREA   COCOM01Y; clears CDEMO-FROM-* /
-      *                        CDEMO-TO-* / CDEMO-USER-ID / CDEMO-
-      *                        USER-TYPE / CDEMO-PGM-CONTEXT /
-      *                        CDEMO-ACCT-ID / CDEMO-CARD-NUM.
-      *    WS-THIS-PROGCOMMAREA  COCRDLIC.cbl lines 229-248; clears
-      *                        WS-CA-* paging anchors and 88-level
-      *                        controllers (CA-FIRST-PAGE, CA-LAST-
-      *                        PAGE-SHOWN, CA-NEXT-PAGE-EXISTS).
-      *    WS-SCREEN-DATA      COCRDLIC.cbl lines 252-260; the 196-
-      *                        byte 7x28 OCCURS scratchpad.
-      *    CARD-RECORD         CVACT02Y 150-byte group; cleared for
-      *                        forward-compatibility with the COPY
-      *                        CARD-FIXTURE-001 post-translator
-      *                        extension on 9000-READ-FORWARD.
-      *    CCRDLIAI            BMS input map (cpy-bms/COCRDLI.CPY);
-      *                        CCRDLIAO REDEFINES CCRDLIAI so this
-      *                        also clears CCRDLIAO.
-      *    WS-DATE-TIME        CSDAT01Y date-time group used by
-      *                        1100-SCREEN-INIT for header dates.
-      *    WS-COMMAREA         COCRDLIC.cbl line 262; outbound
-      *                        2000-byte buffer; cleared so prior-
-      *                        test leakage does not corrupt
-      *                        assertion comparisons.
-      *    RETURN-CODE         Implicit special-register reset.
-      *
-      *  After clearing, BEFORE-EACH seeds the COMMAREA with the
-      *  USER0001 regular-user identity per AAP Section 0.10.2.
-      *  CDEMO-FROM-PROGRAM defaults to 'COMEN01C' / CDEMO-FROM-
-      *  TRANID = 'CM00' to reflect the upstream caller.
+      *  BEFORE-EACH -- per-testcase isolation reset.  Clears all WS
+      *  groups COCRDLIC reads/writes (MISC-STORAGE, CC-WORK-AREAS,
+      *  COMMAREA, PROGCOMMAREA, SCREEN-DATA, CARD-RECORD, CCRDLIAI,
+      *  DATE-TIME, COMMAREA buffer), resets RETURN-CODE and the
+      *  WS-DFHEI1-UNMOCKED-CALLED safety-net flag, then seeds the
+      *  COMMAREA with USER0001 (per AAP 0.10.2) and FROM-PROGRAM
+      *  COMEN01C/CM00 to reflect the upstream caller.
       ******************************************************************
        BEFORE-EACH
             INITIALIZE WS-MISC-STORAGE

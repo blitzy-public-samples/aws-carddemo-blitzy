@@ -20,130 +20,37 @@
       *  Testsuite : COCRDSLC CARD DETAIL VIEW TRANSACTION
       *  Program-under-test : app/cbl/COCRDSLC.cbl
       *
-      *  Purpose
-      *  -------
-      *  Exercise COCRDSLC's card-detail-view CICS transaction by
-      *  mocking ONLY the program's external boundary into the CICS
-      *  API: the CALL 'DFHEI1' invocation that the CICS translator
-      *  emits in place of every EXEC CICS verb (HANDLE ABEND,
-      *  RECEIVE MAP, READ DATASET (CARDDAT/CARDAIX), SEND MAP, SEND
-      *  TEXT, XCTL, ABEND, RETURN).  Internal COCRDSLC paragraphs
-      *  are NEVER mocked; every TESTCASE exercises a production
-      *  paragraph LIVE via PERFORM so the testsuite asserts against
-      *  side effects of actual production-code execution (per AAP
-      *  Section 0.10.1 -- "Mock or stub ONLY external dependencies").
+      *  Exercises COCRDSLC's card-detail-view CICS transaction by
+      *  mocking ONLY the CICS-API boundary (CALL 'DFHEI1').  Internal
+      *  paragraphs are NEVER mocked; every TESTCASE PERFORMs a
+      *  production paragraph LIVE per AAP Section 0.10.1.
       *
-      *  COCRDSLC is a READ-ONLY CICS transaction: it RECEIVEs a
-      *  user-typed account id and card number from the BMS map
-      *  (CCRDSLAI), validates both fields (2210-EDIT-ACCOUNT and
-      *  2220-EDIT-CARD), then reads CARDDAT keyed on card number
-      *  (9100-GETCARD-BYACCTCARD) or via CARDAIX alternate index
-      *  (9150-GETCARD-BYACCT).  It SENDs CCRDSLAO field-by-field;
-      *  unlike sister COCRDUPC (update) it has no WRITE/REWRITE
-      *  /DELETE verbs -- the simplest CICS card-read pattern.
+      *  COCRDSLC is the simplest CICS card-read pattern: READ-ONLY
+      *  with no WRITE/REWRITE/DELETE.  RECEIVE MAP -> 2210/2220
+      *  edit -> 9100/9150 READ CARDDAT/CARDAIX -> SEND MAP.
       *
-      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS
-      *  -------------------------------------------
-      *  cobol-check 0.2.16's TestSuiteParser supports CALL, PARA,
-      *  PARAGRAPH, and SECTION mock-types only.  The CICS translator
-      *  rewrites every EXEC CICS verb into a CALL 'DFHEI1' USING
-      *  <command-block>, so MOCK CALL 'DFHEI1' is the equivalent
-      *  intercept point.  Off-platform (GnuCOBOL on Linux) the
-      *  merged binary fails to compile (per AAP Section 6.6.3.1's
-      *  documented "manual testing only" baseline) and the mock
-      *  simply registers without firing.  Each MOCK is declared
-      *  INSIDE its TESTCASE (Local scope) per the COACTVWC /
-      *  COBIL00C / COTRN01C / COUSR02C exemplar pattern.
+      *  Test categories (5 testcases, off-platform-reachable subset)
+      *  -----------------------------------------------------------
+      *    TC1 - 2220-EDIT-CARD accepts 16-digit number (L716-718)
+      *    TC2 - 2220-EDIT-CARD rejects empty CC-CARD-NUM (L691-702)
+      *    TC3 - 2220-EDIT-CARD rejects non-numeric (L706-715)
+      *    TC4 - 2210-EDIT-ACCOUNT accepts 11-digit id (L675-678)
+      *    TC5 - 1100-SCREEN-INIT populates CCRDSLAO headers
       *
-      *  Schema dependencies
-      *  -------------------
-      *    STUB-ABEND-FLAG.cpy -- EXTERNAL state group (STUB-ABEND-
-      *        STATE / WS-DFHEI1-UNMOCKED-CALLED / WS-DFHEI1-EIBRESP
-      *        -OVERRIDE) written by CEE3ABD and DFHEI1 stubs at
-      *        runtime.
-      *    CARD-FIXTURE-001.cpy -- 150-byte CARD-RECORD from
-      *        carddata.txt rec 1; reserved for the on-platform
-      *        extension where MOCK CICS READ FILE(CARDDAT) supplies
-      *        this fixture once the translator pass exists.
-      *    DFHEI1.cbl -- standalone PROGRAM-ID compiled to a .so so
-      *        any unmocked EXEC CICS verb resolves at load time
-      *        with EIBRESP=27 (NOTAUTH).
-      *    config.properties -- cobol-check runtime configuration.
-      *    COSGN00C.cut -- structural exemplar (code-style reference;
-      *        not COPYed or linked).
-      *
-      *  The testsuite does NOT contain `COPY STUB-ABEND-FLAG.`
-      *  because cobol-check 0.2.16's TestSuiteParser only recognizes
-      *  TESTSUITE / TESTCASE / MOCK / EXPECT / VERIFY / BEFORE-EACH
-      *  / AFTER-EACH / END-* / CALL / PARA / PARAGRAPH / SECTION;
-      *  a bare COPY at file scope aborts the merge.  Runtime stubs
-      *  provide their intended safety regardless, matching the
-      *  COACTVWC / COBIL00C / COTRN01C / COUSR02C exemplars.
-      *
-      *  Test categories
-      *  ---------------
-      *    TC1 - 2220-EDIT-CARD accepts a valid 16-digit card number
-      *          (production lines 716-718 ELSE branch); off-platform
-      *          expression of AAP TC1 happy path validation gate.
-      *    TC2 - 2220-EDIT-CARD rejects empty CC-CARD-NUM (lines 691-
-      *          702); off-platform expression of AAP TC3 "Blank
-      *          card number rejected".
-      *    TC3 - 2220-EDIT-CARD rejects non-numeric CC-CARD-NUM
-      *          (lines 706-715); off-platform expression of AAP TC2
-      *          "Card not found" along the format-rejection branch.
-      *    TC4 - 2210-EDIT-ACCOUNT accepts a valid 11-digit account
-      *          id (lines 675-678); companion validation gate.
-      *    TC5 - 1100-SCREEN-INIT populates CCRDSLAO header literals
-      *          (TRNNAMEO='CCDL', PGMNAMEO='COCRDSLC'); off-platform
-      *          expression of AAP TC4 "PF3 exit" and TC5 "XCTL back
-      *          to list" preamble.
-      *
-      *  Test user: USER0001 / USER role per AAP Section 0.10.2.
-      *  COCRDSLC does NOT implement role-based authorization;
-      *  any signed-on user reaching it via COMEN01C option 4 may
-      *  view any card record.
-      *
-      *  Off-platform deferrals
-      *  ----------------------
-      *  Literal AAP TC1 ("Valid card number returns detail"), TC2
-      *  ("Card not found EIBRESP=13"), TC4 ("PF3 exit"), and TC5
-      *  ("XCTL back to list") all require the translator pass to
-      *  reach 9100/9150's EVALUATE WS-RESP-CD WHEN DFHRESP(NORMAL/
-      *  NOTFND) clauses on production lines 752-772 -- same off-
-      *  platform limitation as COACTVWC / COBIL00C / COTRN01C /
-      *  COUSR02C / COUSR03C.  When the translator is added, this
-      *  suite can be extended with WS-RESP-CD pre-population, MOCK
-      *  CICS READ FILE(CARDDAT) using CARD-FIXTURE-001, and PERFORM
-      *  9100-GETCARD-BYACCTCARD end-to-end.
-      *
-      *  References
-      *  ----------
-      *    AAP Section 0.10.1 / 0.5.1 / 0.10.2 / 0.4.1 / 0.7.1
-      *    app/cbl/COCRDSLC.cbl lines 247-410 (0000-MAIN dispatch)
-      *    app/cbl/COCRDSLC.cbl lines 412-455 (1000/1100-SCREEN)
-      *    app/cbl/COCRDSLC.cbl lines 596-607 (2100-RECEIVE-MAP)
-      *    app/cbl/COCRDSLC.cbl lines 647-683 (2210-EDIT-ACCOUNT)
-      *    app/cbl/COCRDSLC.cbl lines 685-723 (2220-EDIT-CARD)
-      *    app/cbl/COCRDSLC.cbl lines 736-777 (9100-GETCARD-BYACCT)
-      *    app/cbl/COCRDSLC.cbl lines 857-878 (ABEND-ROUTINE)
-      *    app/cpy/COCOM01Y.cpy             (CARDDEMO-COMMAREA)
-      *    app/cpy/CVCRD01Y.cpy             (CC-WORK-AREAS)
-      *    app/cpy/CVACT02Y.cpy             (CARD-RECORD layout)
-      *    app/cpy-bms/COCRDSL.CPY          (CCRDSLAI / CCRDSLAO)
-      *    tests/stubs/STUB-ABEND-FLAG.cpy  (EXTERNAL stub state)
-      *    tests/stubs/DFHEI1.cbl           (CICS link-time backstop)
-      *    tests/fixtures/cobol-snippets/CARD-FIXTURE-001.cpy
-      *    tests/cobol-check/COSGN00C.cut   (structural exemplar)
-      *    tests/cobol-check/COACTVWC.cut   (sister read-only exempl)
-      *    tests/cobol-check/COTRN01C.cut   (sister read-only exempl)
-      ******************************************************************
+      *  Test user: USER0001 (AAP 0.10.2).  AAP TC1/TC2/TC4/TC5 (full
+      *  read / NOTFND / PF3 / XCTL) deferred to MOCK CICS support
+      *  (DFHRESP undefined off-platform).
+      *  References: AAP 0.10.1, 0.5.1, 0.10.2, 0.4.1, 0.7.1;
+      *  app/cbl/COCRDSLC.cbl L247-410, L412-455, L596-723, L736-878;
+      *  app/cpy/{COCOM01Y, CVCRD01Y, CVACT02Y}.cpy; cpy-bms/COCRDSL;
+      *  tests/stubs/{STUB-ABEND-FLAG.cpy, DFHEI1.cbl};
+      *  tests/fixtures/cobol-snippets/CARD-FIXTURE-001.cpy;
+      *  tests/cobol-check/{COSGN00C, COACTVWC, COTRN01C}.cut.
       *
       *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
-      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
-      *  the actual EXTERNAL field declarations into merged WS;
-      *  cobol-check 0.2.16 drops the directive below silently --
-      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
-      *  CALLED so a stub-fired condition is assertable per test.
+      *  Runner-script Step 5 injects EXTERNAL field declarations
+      *  into merged WS; BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED for per-testcase isolation of the safety-net flag.
       ******************************************************************
        COPY STUB-ABEND-FLAG.
 

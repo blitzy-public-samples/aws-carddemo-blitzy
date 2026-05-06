@@ -345,12 +345,13 @@ make lint
 
 ### Validation gates
 
-`make lint` enforces four mandatory rules from the project's testing policy:
+`make lint` enforces five mandatory rules from the project's testing policy:
 
 1. **No production redeclaration** - `.cut` files must not contain `IDENTIFICATION DIVISION` or `PROGRAM-ID` for any name in `app/cbl/`.
 2. **No business logic in tests** - `.cut` files must not contain `COMPUTE`, `MULTIPLY`, `DIVIDE`, `ADD`, or `SUBTRACT` outside `BEFORE-EACH`/`AFTER-EACH` blocks.
 3. **Assertion density** - every `TESTCASE` must contain at least one `EXPECT`; every `TESTCASE` with a `MOCK` directive must contain at least one `VERIFY`.
 4. **Test isolation** - every testsuite must declare a `BEFORE-EACH` block to reset working storage.
+5. **DFHEI1 safety net** - every CICS testsuite (`CO*.cut`) must include `COPY STUB-ABEND-FLAG.` at file scope, reset `WS-DFHEI1-UNMOCKED-CALLED` to `'N'` in `BEFORE-EACH`, and assert it remains `'N'` in at least one `TESTCASE` to detect un-mocked CICS verbs falling through to the link-time stub.
 
 Violations fail the build with the documented gate message:
 

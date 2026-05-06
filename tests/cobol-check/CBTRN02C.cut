@@ -22,117 +22,42 @@
       *  Testsuite : CBTRN02C TRANSACTION POSTING VALIDATION
       *  Program-under-test : app/cbl/CBTRN02C.cbl
       *
-      *  Purpose
-      *  -------
-      *  Exercise the production paragraphs of CBTRN02C -- the daily
-      *  transaction-posting batch program -- via PERFORM with all
-      *  external file-I/O boundaries virtualised by cobol-check
-      *  0.2.16's READ/WRITE-stripping pass plus the runner-script
-      *  awk post-pass that comments out orphan INVALID KEY tokens
-      *  and substitutes CONTINUE for END-READ/END-WRITE/END-REWRITE
-      *  terminators (see tests/cobol-check/scripts/
-      *  linux_gnucobol_run_tests).
+      *  Exercises CBTRN02C -- the daily transaction-posting batch
+      *  program -- with all external file-I/O virtualised by
+      *  cobol-check 0.2.16's READ/WRITE-stripping pass.  Each
+      *  TESTCASE PERFORMs a production paragraph LIVE; only the
+      *  external CALL 'CEE3ABD' boundary is mocked.
       *
-      *  AAP Section 0.5.2 / file schema mandate TESTCASE coverage of:
-      *    1. 1500-VALIDATE-TRAN          (lines 370-378) cascade
-      *    2. 1500-A-LOOKUP-XREF          (lines 380-392) reject 100
-      *    3. 1500-B-LOOKUP-ACCT          (lines 393-422) reject 101,
-      *       reject 102 (overlimit), reject 103 (expired)
-      *    4. 2500-WRITE-REJECT-REC       (lines 446-465) DALYREJS
-      *       writer
-      *    5. 2700-UPDATE-TCATBAL         (lines 467-501) router
-      *    6. 2700-A-CREATE-TCATBAL-REC   (lines 503-524) insert
-      *    7. 2800-UPDATE-ACCOUNT-REC     (lines 545-560) ACCOUNT
-      *       rewrite
-      *    8. 2900-WRITE-TRANSACTION-FILE (lines 562-579) TRANSACT
-      *       writer
-      *    9. 9999-ABEND-PROGRAM          (lines 707-711) LE abend
-      *       wrapper
+      *  cobol-check 0.2.16 limitations honored
+      *  --------------------------------------
+      *  - File-I/O verbs collapse to CONTINUE; tests pre-MOVE the
+      *    relevant *-STATUS field to drive production IF arms.
+      *  - READ INVALID KEY and REWRITE INVALID KEY orphan bodies
+      *    execute UNCONDITIONALLY because the framework strips
+      *    READ/REWRITE to CONTINUE and the runner-script awk pass
+      *    comments out only the INVALID KEY clause-opener.  This
+      *    has two testable consequences:
+      *      a. PERFORM 1500-A-LOOKUP-XREF unconditionally executes
+      *         the line-385 orphan MOVE 100 TO WS-VALIDATION-FAIL-
+      *         REASON.  TC1 / TC2 assert this directly.
+      *      b. PERFORM 1500-B-LOOKUP-ACCT unconditionally executes
+      *         BOTH the line-397 INVALID KEY orphan MOVE 101 AND
+      *         the lines 403-420 NOT INVALID KEY orphan body
+      *         (COMPUTE WS-TEMP-BAL, IF credit-limit, IF expiration).
+      *         Final reason is 101 by default; 102 if credit-limit
+      *         fails (TC4); 103 if expiration fails (TC5, overrides
+      *         102).  Pre-MOVE DALYTRAN-AMT or DALYTRAN-ORIG-TS
+      *         drives the IF guards.
+      *  - 1500-VALIDATE-TRAN umbrella cascade (line 372 IF reason=0
+      *    PERFORM 1500-B-LOOKUP-ACCT) halts at reason=100 from
+      *    1500-A under stripping, so 1500-B is SKIPPED.  TC1 names
+      *    are aligned with this limitation: TC1 description is
+      *    "1500-VALIDATE-TRAN cascade halts on first XREF failure"
+      *    rather than "happy path", reflecting actual behaviour.
       *
-      *  cobol-check 0.2.16 limitation -- file I/O stripping
-      *  ---------------------------------------------------
-      *  The framework's TestSuiteParser strips OPEN / READ / WRITE /
-      *  REWRITE / CLOSE statements to bare CONTINUE in the merged
-      *  source.  This means the production file-I/O verbs do NOT
-      *  execute at test time; the file-status fields retain whatever
-      *  the testcase prelude MOVEd into them.  Each testcase pre-sets
-      *  the relevant file status (DALYTRAN-STATUS, TRANFILE-STATUS,
-      *  XREFFILE-STATUS, DALYREJS-STATUS, ACCTFILE-STATUS,
-      *  TCATBALF-STATUS) to drive the production IF / EVALUATE arms
-      *  deterministically, mirroring the canonical convention in
-      *  CBTRN01C.cut and CBTRN03C.cut.
-      *
-      *  cobol-check 0.2.16 limitation -- READ ... INVALID KEY
-      *  -----------------------------------------------------
-      *  The framework strips READ verbs to a synthetic CONTINUE.
-      *  The runner-script awk pass then comments out the INVALID
-      *  KEY and NOT INVALID KEY clause-openers and replaces END-READ.
-      *  with CONTINUE., but the body statements between INVALID KEY
-      *  and END-READ remain as orphan statements that execute
-      *  UNCONDITIONALLY after the synthetic CONTINUE.  This has two
-      *  testable consequences for CBTRN02C:
-      *
-      *    a. PERFORM 1500-A-LOOKUP-XREF unconditionally executes the
-      *       INVALID KEY orphan body (line 385:
-      *       MOVE 100 TO WS-VALIDATION-FAIL-REASON), so the post-
-      *       state is reason=100 regardless of any (stripped) READ
-      *       outcome.  TC2 asserts this directly.
-      *
-      *    b. PERFORM 1500-B-LOOKUP-ACCT unconditionally executes
-      *       BOTH the INVALID KEY orphan body (line 397:
-      *       MOVE 101 TO WS-VALIDATION-FAIL-REASON) AND the NOT
-      *       INVALID KEY orphan body (lines 403-420: COMPUTE
-      *       WS-TEMP-BAL, IF credit-limit, IF expiration).  Final
-      *       reason is 101 by default; 102 if credit-limit fails;
-      *       103 if expiration fails (overrides 102).  TC3, TC4,
-      *       TC5 exercise these three deterministic post-states by
-      *       pre-setting DALYTRAN-AMT (TC4) and DALYTRAN-ORIG-TS
-      *       (TC5) to drive the IF guards.
-      *
-      *  cobol-check 0.2.16 limitation -- 1500-VALIDATE-TRAN umbrella
-      *  ------------------------------------------------------------
-      *  PERFORM 1500-VALIDATE-TRAN cascades through 1500-A-LOOKUP-
-      *  XREF first (which under stripping always sets reason=100),
-      *  then evaluates `IF WS-VALIDATION-FAIL-REASON = 0` (line 372)
-      *  which is now 100 != 0, taking the ELSE arm (CONTINUE).
-      *  1500-B-LOOKUP-ACCT is therefore SKIPPED.  TC1 asserts the
-      *  cascade post-state (reason=100) which validates the IF
-      *  guard's first-failure-stops-cascade behaviour.  TC4 and
-      *  TC5 use the umbrella name in the testcase description (per
-      *  AAP-mandated export schema) but PERFORM 1500-B-LOOKUP-ACCT
-      *  directly because the umbrella cascade cannot reach the
-      *  credit-limit or expiration checks under the framework's
-      *  stripping behaviour.
-      *
-      *  cobol-check 0.2.16 limitation -- MOCK FILE
-      *  ------------------------------------------
-      *  The framework does NOT support MOCK FILE directives; only
-      *  MOCK CALL / MOCK PARAGRAPH / MOCK SECTION are implemented.
-      *  This testsuite uses the canonical pre-set-WORKING-STORAGE
-      *  pattern: each testcase prelude MOVEs the desired file-status
-      *  into the field that the production paragraph's IF /
-      *  EVALUATE inspects, driving the production code to its
-      *  intended branch.
-      *
-      *  External dependencies mocked or stubbed
-      *  ---------------------------------------
-      *    * MOCK CALL 'CEE3ABD' (per-testcase, Local scope)
-      *      replaces the IBM Language Environment abend service
-      *      with a no-op CONTINUE body so the test process is
-      *      not torn down when 9999-ABEND-PROGRAM is reached.
-      *      cobol-check 0.2.16 binds the mock to the surrounding
-      *      TESTCASE so the matching VERIFY clause resolves to
-      *      the per-testcase Local mock with the per-testcase
-      *      expected count.  The runtime stub at tests/stubs/
-      *      CEE3ABD.cbl is pre-compiled by the runner and linked
-      *      into the merged binary so any unmocked CALL 'CEE3ABD'
-      *      resolves at load time and GOBACKs without terminating
-      *      the test process.
-      *
-      *  Internal CBTRN02C paragraphs are NEVER mocked.  Each
-      *  TESTCASE PERFORMs a production paragraph LIVE so every
-      *  assertion validates side effects of actual production-code
-      *  execution (per AAP Section 0.10.1).
+      *  External dependency mocked: CALL 'CEE3ABD' (LE abend),
+      *  Local-scope per-TESTCASE.  The runtime stub at tests/stubs/
+      *  CEE3ABD.cbl is linked into the merged binary as a backstop.
       *
       *  Reject codes (production literals; not recomputed)
       *  --------------------------------------------------
@@ -145,140 +70,47 @@
       *    109 -- production line 556 (2800-UPDATE-ACCOUNT-REC
       *           REWRITE INVALID KEY orphan)
       *
-      *  These five literals are the EXPECT-able constants the test
-      *  author has copied verbatim from production source MOVE
-      *  statements.  The test does NOT recompute them; they appear
-      *  in EXPECT clauses as literal-comparison values only.
-      *
-      *  Testcase naming -- cobol-check 0.2.16 column-72 constraint
-      *  -----------------------------------------------------------
-      *  COBOL fixed-format limits source lines to 72 columns.  The
-      *  TESTCASE keyword plus the canonical 7-space leading indent
-      *  consumes columns 1-17 and the surrounding pair of single
-      *  quotes consumes columns 18 and 72, leaving 54 columns for
-      *  the description text (cols 19-71 inclusive).  cobol-check
-      *  0.2.16's TestSuiteParser does NOT support COBOL alphanumeric
-      *  literal continuation (a `-` indicator at column 7 followed
-      *  by a continuation literal starting with `'` in Area B);
-      *  attempting that pattern produces a parser error
-      *      Got <'<text>'> classified as <alphanumeric-literal>
-      *  so this testsuite shortens the schema-supplied descriptions
-      *  to fit within 54 columns while preserving the production-
-      *  paragraph + feature label.  Mappings:
-      *
-      *    Schema name                              Used name
-      *    ---------------------------------------  --------------
-      *    "...missing XREF triggers reject 100"    "...missing
-      *                                              XREF reject 100"
-      *    "...missing ACCT triggers reject 101"    "...missing
-      *                                              ACCT reject 101"
-      *    "...credit-limit exceeded triggers
-      *      reject 102"                            "...credit limit
-      *                                              reject 102"
-      *    "...expired account triggers reject
-      *      103"                                   "...expired acct
-      *                                              reject 103"
-      *    "...writes valid transaction"            "...writes valid"
-      *    "...writes new TCATBAL record"           "...writes new"
-      *    "...existing record rewrites"            "...existing rec
-      *                                              rewrites"
-      *    "...writes rejected record"              "...writes
-      *                                              rejected"
-      *    "...rewrites successfully"               "...reason 109"
-      *      (TC8 PERFORMs 2800-UPDATE-ACCOUNT-REC; under cobol-
-      *      check 0.2.16 stripping the REWRITE INVALID KEY orphan
-      *      body unconditionally executes, setting reason=109;
-      *      the description names the actual production-source
-      *      observable side effect under the framework limitation.)
-      *    "...reject count greater than zero
-      *      sets RETURN-CODE 4"                    "...reject count
-      *                                              gt 0 RC 4"
-      *
       *  Test categories (12 testcases)
       *  ------------------------------
-      *    TC1  - 1500-VALIDATE-TRAN happy path no rejection
-      *           (cascade gate post-state under stripping = 100)
+      *    TC1  - 1500-VALIDATE-TRAN cascade halts on first XREF
+      *           failure (orphan body sets reason=100, gate stops
+      *           cascade so 1500-B is not reached)
       *    TC2  - 1500-A-LOOKUP-XREF missing XREF reject 100
       *    TC3  - 1500-B-LOOKUP-ACCT missing ACCT reject 101
-      *    TC4  - 1500-VALIDATE-TRAN credit limit reject 102
-      *           (PERFORM 1500-B-LOOKUP-ACCT directly)
-      *    TC5  - 1500-VALIDATE-TRAN expired acct reject 103
-      *           (PERFORM 1500-B-LOOKUP-ACCT directly)
+      *    TC4  - 1500-B-LOOKUP-ACCT credit limit reject 102
+      *           (PERFORMs 1500-B-LOOKUP-ACCT directly)
+      *    TC5  - 1500-B-LOOKUP-ACCT expired acct reject 103
+      *           (PERFORMs 1500-B-LOOKUP-ACCT directly)
       *    TC6  - 2500-WRITE-REJECT-REC writes rejected
       *    TC7  - 2900-WRITE-TRANSACTION-FILE writes valid
-      *    TC8  - 2800-UPDATE-ACCOUNT-REC reason 109
-      *           (REWRITE INVALID KEY orphan body under stripping)
-      *    TC9  - 2700-UPDATE-TCATBAL existing rec rewrites
-      *           (PERFORM 2700-B-UPDATE-TCATBAL-REC directly)
+      *    TC8  - 2800-UPDATE-ACCOUNT-REC reason 109 (REWRITE
+      *           INVALID KEY orphan body under stripping)
+      *    TC9  - 2700-B-UPDATE-TCATBAL-REC existing rec rewrites
       *    TC10 - 2700-A-CREATE-TCATBAL-REC writes new
-      *    TC11 - reject count gt 0 RC 4
+      *    TC11 - reject count gt 0 RC 4 transition (precondition
+      *           preserved by 2500-WRITE-REJECT-REC; main-paragraph
+      *           IF guard at production line 229 is unreachable
+      *           via PERFORM <name> but its precondition is verified)
       *    TC12 - 9999-ABEND-PROGRAM invokes CEE3ABD stub
       *
       *  References
       *  ----------
       *    AAP Sections 0.4.3, 0.5.1, 0.5.2, 0.7.1, 0.10.1, 0.10.2
-      *    app/cbl/CBTRN02C.cbl           (program under test)
-      *    tests/stubs/STUB-ABEND-FLAG.cpy (link-time stub state,
-      *                                     auto-injected after
-      *                                     WORKING-STORAGE SECTION)
-      *    tests/stubs/CEE3ABD.cbl        (LE abend stub)
-      *    tests/cobol-check/CSUTLDTC.cut (canonical exemplar)
-      *    tests/cobol-check/CBTRN03C.cut (batch-program pattern)
-      *    tests/cobol-check/CBTRN01C.cut (batch-program pattern)
-      *    tests/fixtures/cobol-snippets/DALYTRAN-FIXTURE-001.cpy
-      *    tests/fixtures/cobol-snippets/XREF-FIXTURE-001.cpy
-      *    tests/fixtures/cobol-snippets/ACCT-FIXTURE-001.cpy
-      *    tests/fixtures/cobol-snippets/TCATBAL-FIXTURE-001.cpy
+      *    app/cbl/CBTRN02C.cbl                (program under test)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy / CEE3ABD.cbl
+      *    tests/cobol-check/CSUTLDTC.cut      (canonical exemplar)
+      *    tests/cobol-check/CBTRN01C.cut / CBTRN03C.cut
+      *    tests/fixtures/cobol-snippets/{DALYTRAN,XREF,ACCT,TCATBAL}-FIXTURE-001.cpy
       ******************************************************************
 
        TESTSUITE 'CBTRN02C TRANSACTION POSTING VALIDATION'.
 
       ******************************************************************
-      *  BEFORE-EACH -- per-testcase isolation reset
-      *
-      *  Restores deterministic baseline state.  cobol-check 0.2.16
-      *  resets MOCK invocation counters automatically; this block
-      *  resets the application-level WORKING-STORAGE that the
-      *  production paragraphs read or write:
-      *
-      *    File-status fields (6 of them, one per SELECT clause):
-      *      DALYTRAN-STATUS, TRANFILE-STATUS, XREFFILE-STATUS,
-      *      DALYREJS-STATUS, ACCTFILE-STATUS, TCATBALF-STATUS.
-      *      Each testcase prelude MOVEs '00', '10', '23', or '99'
-      *      into the relevant field to drive the production IF /
-      *      EVALUATE arm (file-I/O verbs are stripped to CONTINUE
-      *      so the runtime never overwrites these fields).
-      *
-      *    Diagnostic / status overlays:
-      *      IO-STATUS / IO-STATUS-04 -- written by 9910-DISPLAY-IO-
-      *      STATUS when an error pathway runs.  APPL-RESULT --
-      *      written by every paragraph's IF guard to indicate
-      *      success (0) or failure (12) against the file-status.
-      *
-      *    Record buffers (5 of them):
-      *      DALYTRAN-RECORD, TRAN-RECORD, CARD-XREF-RECORD,
-      *      ACCOUNT-RECORD, TRAN-CAT-BAL-RECORD.  Cleared so each
-      *      testcase observes only the writes performed by the
-      *      production paragraph under test.
-      *
-      *    Validation trailer:
-      *      WS-VALIDATION-TRAILER (containing WS-VALIDATION-FAIL-
-      *      REASON and WS-VALIDATION-FAIL-REASON-DESC).  Production
-      *      main-loop initialises this to zero before PERFORM 1500-
-      *      VALIDATE-TRAN; tests do the same so each TESTCASE starts
-      *      from a clean baseline.
-      *
-      *    Loop-control flags and counters:
-      *      END-OF-FILE = 'N', APPL-RESULT = 0, WS-REJECT-COUNT = 0,
-      *      RETURN-CODE = 0.
-      *
-      *    Stub state (visible via the auto-injected COPY STUB-ABEND-
-      *    FLAG that the runner-script awk pass emits immediately
-      *    after WORKING-STORAGE SECTION):
-      *      WS-ABEND-FLAG = 'N', WS-ABEND-CODE = 0.
-      *      The CEE3ABD stub flips WS-ABEND-FLAG to 'Y' and
-      *      WS-ABEND-CODE to 999 when the abend pathway is reached;
-      *      TC12 asserts these post-states.
+      *  BEFORE-EACH -- per-testcase isolation reset.
+      *  Clears 6 file-status fields, IO-STATUS overlays, all 5
+      *  record buffers (DALYTRAN/TRAN/XREF/ACCT/TCATBAL), the
+      *  WS-VALIDATION-TRAILER, EOF + reject-count + abend flags +
+      *  RETURN-CODE.  cobol-check resets MOCK counters automatically.
       ******************************************************************
        BEFORE-EACH
             INITIALIZE DALYTRAN-STATUS
@@ -306,40 +138,14 @@
        END-BEFORE.
 
       ******************************************************************
-      *  TC1 -- 1500-VALIDATE-TRAN happy path no rejection
-      *
-      *  PERFORMs 1500-VALIDATE-TRAN (lines 370-378) which cascades
-      *  through 1500-A-LOOKUP-XREF (line 371) and conditionally
-      *  through 1500-B-LOOKUP-ACCT (line 373).
-      *
-      *  Production cascade gate (line 372):
-      *      IF WS-VALIDATION-FAIL-REASON = 0
-      *         PERFORM 1500-B-LOOKUP-ACCT
-      *      ELSE
-      *         CONTINUE
-      *      END-IF
-      *
-      *  Under cobol-check 0.2.16's READ-INVALID-KEY stripping
-      *  (documented in the file header), 1500-A-LOOKUP-XREF's
-      *  orphan INVALID KEY body unconditionally moves 100 to
-      *  WS-VALIDATION-FAIL-REASON (production line 385).  The
-      *  cascade gate then evaluates 100 != 0 and bypasses 1500-B-
-      *  LOOKUP-ACCT (the "no further validation" branch).  This
-      *  testcase asserts the cascade gate post-state, validating
-      *  that 1500-VALIDATE-TRAN correctly stops on first failure
-      *  rather than continuing to 1500-B and overwriting the
-      *  initial failure reason.
-      *
-      *  Source of expected value
-      *    100 -- production literal at line 385 (inside 1500-A-
-      *           LOOKUP-XREF's INVALID KEY arm).  Test author copies
-      *           it verbatim from production source; not recomputed.
-      *
-      *  CEE3ABD verification
-      *    NEVER HAPPENED -- the cascade gate's CONTINUE branch
-      *           does not PERFORM 9999-ABEND-PROGRAM; no abend.
+      *  TC1 -- 1500-VALIDATE-TRAN cascade halts on first XREF failure.
+      *  PERFORMs umbrella 1500-VALIDATE-TRAN; under stripping the
+      *  1500-A INVALID KEY orphan sets reason=100; the line-372
+      *  cascade gate then evaluates 100!=0 and SKIPS 1500-B.
+      *  Asserts cascade post-state validates first-failure-stops
+      *  behaviour.  Reason 100 is from production line 385.
       ******************************************************************
-       TESTCASE 'CBTRN02C 1500-VALIDATE-TRAN happy path no rejection'
+       TESTCASE 'CBTRN02C 1500-VALIDATE-TRAN halts cascade on XREF fail'
             MOCK CALL 'CEE3ABD'
                  CONTINUE
             END-MOCK
@@ -348,32 +154,9 @@
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
       ******************************************************************
-      *  TC2 -- 1500-A-LOOKUP-XREF missing XREF triggers reject 100
-      *
-      *  PERFORMs 1500-A-LOOKUP-XREF (lines 380-392).  The production
-      *  body is a READ XREF-FILE INTO CARD-XREF-RECORD ... INVALID
-      *  KEY ... NOT INVALID KEY ... END-READ compound statement.
-      *  Per the cobol-check 0.2.16 stripping behaviour documented
-      *  in the file header, the orphan body of INVALID KEY executes
-      *  unconditionally:
-      *      MOVE 100 TO WS-VALIDATION-FAIL-REASON      (line 385)
-      *      MOVE 'INVALID CARD NUMBER FOUND'           (line 386-387)
-      *        TO WS-VALIDATION-FAIL-REASON-DESC
-      *
-      *  This is the canonical "missing XREF" rejection -- production
-      *  semantics state that a daily transaction whose card number
-      *  has no entry in the card-cross-reference index cannot be
-      *  posted.  The reject record is written to DALYREJS by the
-      *  main loop's PERFORM 2500-WRITE-REJECT-REC.
-      *
-      *  Source of expected value
-      *    100 -- production literal at line 385; not recomputed.
-      *
-      *  CEE3ABD verification
-      *    NEVER HAPPENED -- 1500-A-LOOKUP-XREF does NOT call
-      *           9999-ABEND-PROGRAM on INVALID KEY; it only sets
-      *           WS-VALIDATION-FAIL-REASON for the main loop to
-      *           inspect and route to 2500-WRITE-REJECT-REC.
+      *  TC2 -- 1500-A-LOOKUP-XREF missing XREF reject 100.
+      *  Under stripping, the INVALID KEY orphan body executes
+      *  unconditionally (production line 385: MOVE 100).
       ******************************************************************
        TESTCASE 'CBTRN02C 1500-A-LOOKUP-XREF missing XREF reject 100'
             MOCK CALL 'CEE3ABD'
@@ -384,45 +167,12 @@
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
       ******************************************************************
-      *  TC3 -- 1500-B-LOOKUP-ACCT missing ACCT triggers reject 101
-      *
-      *  PERFORMs 1500-B-LOOKUP-ACCT (lines 393-422).  The production
-      *  body is a READ ACCOUNT-FILE INTO ACCOUNT-RECORD ... INVALID
-      *  KEY ... NOT INVALID KEY ... END-READ compound.  Under
-      *  cobol-check 0.2.16 stripping, BOTH the INVALID KEY orphan
-      *  body AND the NOT INVALID KEY orphan body execute:
-      *
-      *    INVALID KEY orphan (lines 397-399):
-      *      MOVE 101 TO WS-VALIDATION-FAIL-REASON
-      *      MOVE 'ACCOUNT RECORD NOT FOUND'
-      *        TO WS-VALIDATION-FAIL-REASON-DESC
-      *
-      *    NOT INVALID KEY orphan (lines 403-420):
-      *      COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT
-      *                          - ACCT-CURR-CYC-DEBIT
-      *                          + DALYTRAN-AMT
-      *      IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL  CONTINUE
-      *      ELSE   MOVE 102 TO WS-VALIDATION-FAIL-REASON  ...
-      *      IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS(1:10) CONTINUE
-      *      ELSE   MOVE 103 TO WS-VALIDATION-FAIL-REASON  ...
-      *
-      *  With BEFORE-EACH having INITIALIZEd ACCT-CURR-CYC-CREDIT,
-      *  ACCT-CURR-CYC-DEBIT, DALYTRAN-AMT, and ACCT-CREDIT-LIMIT to
-      *  zero (their PIC clauses are S9(10)V99 / S9(09)V99), and
-      *  ACCT-EXPIRAION-DATE / DALYTRAN-ORIG-TS to spaces (their PIC
-      *  clauses are X(10) / X(26)):
-      *      WS-TEMP-BAL = 0 - 0 + 0 = 0
-      *      0 >= 0 -> credit-limit check passes (no override)
-      *      '          ' >= '          ' -> expiration check passes
-      *  So the final value of WS-VALIDATION-FAIL-REASON remains 101.
-      *
-      *  Source of expected value
-      *    101 -- production literal at line 397; not recomputed.
-      *
-      *  CEE3ABD verification
-      *    NEVER HAPPENED -- 1500-B-LOOKUP-ACCT does NOT call
-      *           9999-ABEND-PROGRAM on INVALID KEY; it only sets
-      *           WS-VALIDATION-FAIL-REASON for the main loop.
+      *  TC3 -- 1500-B-LOOKUP-ACCT missing ACCT reject 101.
+      *  Under stripping, both INVALID KEY (line 397: MOVE 101) and
+      *  NOT INVALID KEY orphans execute.  With BEFORE-EACH zero/
+      *  spaces baseline, COMPUTE WS-TEMP-BAL=0, credit IF passes
+      *  (no override), expiration IF passes (no override).  Final
+      *  reason = 101.
       ******************************************************************
        TESTCASE 'CBTRN02C 1500-B-LOOKUP-ACCT missing ACCT reject 101'
             MOCK CALL 'CEE3ABD'
@@ -433,57 +183,16 @@
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
       ******************************************************************
-      *  TC4 -- 1500-VALIDATE-TRAN credit-limit exceeded triggers
-      *         reject 102
-      *
-      *  Per the export schema this testcase is named after the
-      *  umbrella paragraph 1500-VALIDATE-TRAN; under cobol-check
-      *  0.2.16 stripping, however, the umbrella cascade always
-      *  halts at reason=100 from 1500-A-LOOKUP-XREF (TC1) and
-      *  cannot reach the credit-limit branch in 1500-B-LOOKUP-ACCT.
-      *  This testcase therefore PERFORMs 1500-B-LOOKUP-ACCT
-      *  directly to exercise the credit-limit IF guard (production
-      *  lines 407-413), which is the SUB-PARAGRAPH containing the
-      *  reject-102 logic.
-      *
-      *  Production credit-limit gate (lines 403-413):
-      *      COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT
-      *                          - ACCT-CURR-CYC-DEBIT
-      *                          + DALYTRAN-AMT
-      *      IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL  CONTINUE
-      *      ELSE   MOVE 102 TO WS-VALIDATION-FAIL-REASON
-      *
-      *  Test setup: MOVE 99999999.99 TO DALYTRAN-AMT.  This is a
-      *  large enough literal that, with ACCT-CURR-CYC-CREDIT,
-      *  ACCT-CURR-CYC-DEBIT, and ACCT-CREDIT-LIMIT all zero from
-      *  BEFORE-EACH's INITIALIZE, the production COMPUTE yields
-      *  WS-TEMP-BAL = 99999999.99 and the IF guard 0 >= 99999999.99
-      *  evaluates false, taking the ELSE branch and writing 102.
-      *
-      *  The expiration check at lines 414-420 then evaluates:
-      *  ACCT-EXPIRAION-DATE = '          ' (spaces) >= DALYTRAN-
-      *  ORIG-TS(1:10) = '          ' (spaces) -> true -> no
-      *  override.  Final WS-VALIDATION-FAIL-REASON = 102.
-      *
-      *  CRITICAL -- author literal source
-      *    The 99999999.99 prelude value is chosen by the test
-      *    author from EXTERNAL knowledge that DALYTRAN-AMT (PIC
-      *    S9(09)V99 in CVTRA06Y.cpy line 10) holds at most
-      *    +/-999999999.99 and that ACCT-CREDIT-LIMIT (initialised
-      *    to zero) will be exceeded by any positive DALYTRAN-AMT.
-      *    The test does NOT compute the threshold; it picks a
-      *    literal large enough to force the IF ELSE branch.
-      *    Production line 403's COMPUTE is NOT replicated in the
-      *    test -- it executes as part of PERFORM 1500-B-LOOKUP-
-      *    ACCT.
-      *
-      *  Source of expected value
-      *    102 -- production literal at line 410; not recomputed.
-      *
-      *  CEE3ABD verification
-      *    NEVER HAPPENED -- credit-limit failure does not abend.
+      *  TC4 -- 1500-B-LOOKUP-ACCT credit-limit exceeded reject 102.
+      *  Test author selects DALYTRAN-AMT=99999999.99 from EXTERNAL
+      *  knowledge that PIC S9(09)V99 max is +/-999999999.99 and
+      *  that ACCT-CREDIT-LIMIT (BEFORE-EACH zero) will be exceeded
+      *  by any positive DALYTRAN-AMT.  Test does NOT compute
+      *  threshold.  Production COMPUTE at line 403 executes during
+      *  PERFORM, line-410 IF ELSE -> reason=102.  Expiration check
+      *  passes (no override).  Reason 102 from production line 410.
       ******************************************************************
-       TESTCASE 'CBTRN02C 1500-VALIDATE-TRAN credit limit reject 102'
+       TESTCASE 'CBTRN02C 1500-B-LOOKUP-ACCT credit limit reject 102'
             MOCK CALL 'CEE3ABD'
                  CONTINUE
             END-MOCK
@@ -493,60 +202,16 @@
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
       ******************************************************************
-      *  TC5 -- 1500-VALIDATE-TRAN expired account triggers reject 103
-      *
-      *  Per the export schema this testcase is named after the
-      *  umbrella paragraph 1500-VALIDATE-TRAN; under cobol-check
-      *  0.2.16 stripping, the umbrella cascade halts at reason=100
-      *  and cannot reach the expiration branch in 1500-B-LOOKUP-
-      *  ACCT.  This testcase therefore PERFORMs 1500-B-LOOKUP-ACCT
-      *  directly to exercise the expiration IF guard (production
-      *  lines 414-420), which is the SUB-PARAGRAPH containing the
-      *  reject-103 logic.
-      *
-      *  Production expiration gate (lines 414-420):
-      *      IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10)
-      *         CONTINUE
-      *      ELSE
-      *         MOVE 103 TO WS-VALIDATION-FAIL-REASON
-      *         MOVE 'TRANSACTION RECEIVED AFTER ACCT EXPIRATION'
-      *           TO WS-VALIDATION-FAIL-REASON-DESC
-      *      END-IF
-      *
-      *  Test setup: MOVE '99991231                  ' TO DALYTRAN-
-      *  ORIG-TS.  DALYTRAN-ORIG-TS is PIC X(26) per CVTRA06Y line
-      *  16; the prelude moves the 26-byte literal so DALYTRAN-ORIG-
-      *  TS(1:10) = '99991231  ' (the first 10 chars).  ACCT-
-      *  EXPIRAION-DATE = '          ' (spaces, from BEFORE-EACH's
-      *  INITIALIZE on PIC X(10)).  Alphanumeric comparison:
-      *      '          ' (0x20 x 10) < '99991231  ' (0x39 39 39 ...)
-      *  so the IF guard is false, taking the ELSE branch and
-      *  writing 103.
-      *
-      *  The credit-limit check at lines 407-413 evaluates first:
-      *  with all numeric fields zero from BEFORE-EACH, the IF guard
-      *  passes (no override).  So the cascade order is:
-      *    INVALID KEY orphan -> reason = 101
-      *    credit-limit check pass -> no change
-      *    expiration check fail -> reason = 103 (final)
-      *
-      *  CRITICAL -- author literal source
-      *    The '99991231                  ' prelude value is chosen
-      *    by the test author from EXTERNAL knowledge that the year
-      *    9999 is the COBOL CCYY upper bound and exceeds any
-      *    realistic ACCT-EXPIRAION-DATE.  The test does NOT compute
-      *    the comparison; it picks a literal far-future date.
-      *    Production line 414's IF guard is NOT replicated in the
-      *    test -- it executes as part of PERFORM 1500-B-LOOKUP-
-      *    ACCT.
-      *
-      *  Source of expected value
-      *    103 -- production literal at line 417; not recomputed.
-      *
-      *  CEE3ABD verification
-      *    NEVER HAPPENED -- expiration failure does not abend.
+      *  TC5 -- 1500-B-LOOKUP-ACCT expired account reject 103.
+      *  Test author selects DALYTRAN-ORIG-TS '99991231...' (year
+      *  9999 = COBOL CCYY upper bound, exceeds any realistic
+      *  expiration).  ACCT-EXPIRAION-DATE = '          ' (BEFORE-
+      *  EACH spaces, PIC X(10)).  Alphanumeric compare:
+      *    '          ' < '99991231  ' -> line-414 IF false -> ELSE
+      *  arm sets reason=103 (overrides earlier 101 from INVALID KEY
+      *  orphan; credit-limit check passes with zero balances).
       ******************************************************************
-       TESTCASE 'CBTRN02C 1500-VALIDATE-TRAN expired acct reject 103'
+       TESTCASE 'CBTRN02C 1500-B-LOOKUP-ACCT expired acct reject 103'
             MOCK CALL 'CEE3ABD'
                  CONTINUE
             END-MOCK
@@ -555,47 +220,10 @@
             EXPECT WS-VALIDATION-FAIL-REASON TO BE 103
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
-
       ******************************************************************
-      *  TC6 -- 2500-WRITE-REJECT-REC writes rejected record
-      *
-      *  PERFORMs 2500-WRITE-REJECT-REC (production lines 446-465)
-      *  which copies DALYTRAN-RECORD into REJECT-TRAN-DATA, copies
-      *  WS-VALIDATION-TRAILER into VALIDATION-TRAILER, then attempts
-      *  WRITE FD-REJS-RECORD FROM REJECT-RECORD.  Under cobol-check
-      *  0.2.16 file-I/O stripping the WRITE collapses to CONTINUE,
-      *  so the production code's DALYREJS-STATUS check evaluates
-      *  whatever the testcase prelude MOVEd into the field.
-      *
-      *  Production WRITE result handling (lines 451-457):
-      *      MOVE 8 TO APPL-RESULT
-      *      WRITE FD-REJS-RECORD FROM REJECT-RECORD
-      *      IF DALYREJS-STATUS = '00'
-      *          MOVE 0 TO APPL-RESULT
-      *      ELSE
-      *          MOVE 12 TO APPL-RESULT
-      *      END-IF
-      *      IF APPL-AOK
-      *          CONTINUE
-      *      ELSE ... PERFORM 9999-ABEND-PROGRAM
-      *
-      *  Test setup: MOVE '00' TO DALYREJS-STATUS so the IF branch
-      *  evaluates true and APPL-RESULT is set to 0 (APPL-AOK).
-      *  MOVE 100 TO WS-VALIDATION-FAIL-REASON populates the
-      *  WS-VALIDATION-TRAILER copy that the paragraph snapshots
-      *  into VALIDATION-TRAILER (production line 448), exercising
-      *  the trailer-copy side effect alongside the status branch.
-      *
-      *  Source of expected values
-      *    APPL-RESULT = 0 -- production line 454, IF '00' MOVE 0
-      *                       (test author copies the literal '00'
-      *                       file-status from COBOL standard; the 0
-      *                       is the production-source MOVE target).
-      *
-      *  CEE3ABD verification
-      *    NEVER HAPPENED -- the IF APPL-AOK CONTINUE branch is
-      *           taken when DALYREJS-STATUS='00', so 9999-ABEND-
-      *           PROGRAM is not reached.
+      *  TC6 -- 2500-WRITE-REJECT-REC writes rejected (status '00').
+      *  Production line 454 IF '00' MOVE 0 TO APPL-RESULT.  No
+      *  abend (APPL-AOK CONTINUE branch).
       ******************************************************************
        TESTCASE 'CBTRN02C 2500-WRITE-REJECT-REC writes rejected'
             MOCK CALL 'CEE3ABD'
@@ -608,38 +236,8 @@
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
       ******************************************************************
-      *  TC7 -- 2900-WRITE-TRANSACTION-FILE writes valid
-      *
-      *  PERFORMs 2900-WRITE-TRANSACTION-FILE (production lines
-      *  562-579) which writes the posted-transaction record into
-      *  TRANSACT-FILE.  Under cobol-check 0.2.16 file-I/O stripping
-      *  the WRITE collapses to CONTINUE, leaving the production
-      *  code's TRANFILE-STATUS check to evaluate whatever the
-      *  testcase prelude MOVEd into the field.
-      *
-      *  Production WRITE result handling (lines 565-579):
-      *      MOVE 8 TO APPL-RESULT
-      *      WRITE FD-TRANFILE-REC FROM TRAN-RECORD
-      *      IF TRANFILE-STATUS = '00'
-      *          MOVE 0 TO APPL-RESULT
-      *      ELSE
-      *          MOVE 12 TO APPL-RESULT
-      *      END-IF
-      *      IF APPL-AOK
-      *          CONTINUE
-      *      ELSE ... PERFORM 9999-ABEND-PROGRAM
-      *
-      *  Test setup: MOVE '00' TO TRANFILE-STATUS so the IF branch
-      *  evaluates true and APPL-RESULT is set to 0 (APPL-AOK).
-      *
-      *  Source of expected values
-      *    APPL-RESULT = 0 -- production line 569 IF '00' MOVE 0;
-      *                       the 0 literal is from production source.
-      *
-      *  CEE3ABD verification
-      *    NEVER HAPPENED -- the IF APPL-AOK CONTINUE branch is
-      *           taken when TRANFILE-STATUS='00'; no abend pathway
-      *           is exercised.
+      *  TC7 -- 2900-WRITE-TRANSACTION-FILE writes valid (status '00').
+      *  Production line 569 IF '00' MOVE 0 TO APPL-RESULT.  No abend.
       ******************************************************************
        TESTCASE 'CBTRN02C 2900-WRITE-TRANSACTION-FILE writes valid'
             MOCK CALL 'CEE3ABD'
@@ -650,55 +248,11 @@
             EXPECT APPL-RESULT TO BE 0
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
-
       ******************************************************************
-      *  TC8 -- 2800-UPDATE-ACCOUNT-REC reason 109
-      *
-      *  PERFORMs 2800-UPDATE-ACCOUNT-REC (production lines 545-560)
-      *  which posts the transaction amount into ACCT-CURR-BAL and
-      *  ACCT-CURR-CYC-CREDIT or ACCT-CURR-CYC-DEBIT depending on
-      *  sign, then attempts REWRITE FD-ACCTFILE-REC.  Under cobol-
-      *  check 0.2.16 file-I/O stripping the REWRITE collapses to
-      *  CONTINUE and the runner-script awk pass converts END-REWRITE.
-      *  to CONTINUE., but the orphan body between INVALID KEY and
-      *  END-REWRITE remains and executes UNCONDITIONALLY.
-      *
-      *  Production REWRITE INVALID KEY orphan (lines 553-558):
-      *      REWRITE FD-ACCTFILE-REC FROM ACCOUNT-RECORD
-      *         INVALID KEY
-      *           MOVE 109 TO WS-VALIDATION-FAIL-REASON
-      *           MOVE 'ACCOUNT RECORD NOT FOUND'
-      *             TO WS-VALIDATION-FAIL-REASON-DESC
-      *      END-REWRITE.
-      *
-      *  Under the framework's READ/REWRITE-stripping pass, the
-      *  REWRITE verb becomes CONTINUE, the INVALID KEY clause-opener
-      *  is commented out by the runner-script awk pass (Step 4
-      *  Case 1), and END-REWRITE. is replaced by CONTINUE. (Step 4
-      *  Case 2).  The MOVE 109 statement and the MOVE message
-      *  statement remain as orphan executable statements that the
-      *  CONTINUE-fallthrough flow reaches unconditionally.  Result:
-      *  every PERFORM 2800-UPDATE-ACCOUNT-REC sets reason=109.
-      *
-      *  Test setup: BEFORE-EACH leaves DALYTRAN-AMT and the ACCT-*
-      *  fields zero (INITIALIZE on numeric items moves zero); the
-      *  IF DALYTRAN-AMT >= 0 takes the credit-cycle ADD branch,
-      *  but with zero values the side effects are nil and the
-      *  paragraph proceeds to the (stripped) REWRITE.  No prelude
-      *  MOVEs are required to drive this testcase to its terminal
-      *  state.
-      *
-      *  Source of expected value
-      *    109 -- production line 556 (MOVE 109 TO WS-VALIDATION-
-      *           FAIL-REASON inside INVALID KEY orphan body); the
-      *           test author copies the literal verbatim from
-      *           production source and does NOT recompute.
-      *
-      *  CEE3ABD verification
-      *    NEVER HAPPENED -- 2800-UPDATE-ACCOUNT-REC has no
-      *           PERFORM 9999-ABEND-PROGRAM in its CONTINUE-
-      *           fallthrough flow; the orphan body sets reason
-      *           and exits.
+      *  TC8 -- 2800-UPDATE-ACCOUNT-REC orphan-body reason 109.
+      *  Under cobol-check 0.2.16 stripping, the REWRITE INVALID
+      *  KEY orphan body unconditionally executes line 556 MOVE 109.
+      *  No abend (paragraph has no PERFORM 9999-ABEND-PROGRAM).
       ******************************************************************
        TESTCASE 'CBTRN02C 2800-UPDATE-ACCOUNT-REC reason 109'
             MOCK CALL 'CEE3ABD'
@@ -709,45 +263,14 @@
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
       ******************************************************************
-      *  TC9 -- 2700-UPDATE-TCATBAL existing rec rewrites
-      *
-      *  PERFORMs 2700-B-UPDATE-TCATBAL-REC (production lines 526-
-      *  543) DIRECTLY rather than the umbrella 2700-UPDATE-TCATBAL
-      *  paragraph.  Reason: the umbrella paragraph (production
-      *  lines 467-501) reads TCATBAL-FILE; under cobol-check 0.2.16
-      *  the READ collapses to CONTINUE and the orphan INVALID KEY
-      *  body unconditionally moves 'Y' to WS-CREATE-TRANCAT-REC,
-      *  routing the IF guard at line 495 to PERFORM 2700-A-CREATE-
-      *  TCATBAL-REC instead of 2700-B-UPDATE-TCATBAL-REC.
-      *  Bypassing the umbrella exercises the rewrite-existing-row
-      *  branch directly, which is the schema-named TC9 intent
-      *  ("existing rec rewrites").
-      *
-      *  Production rewrite-row paragraph (lines 526-543):
-      *      ADD DALYTRAN-AMT TO TRAN-CAT-BAL
-      *      REWRITE FD-TRAN-CAT-BAL-RECORD FROM TRAN-CAT-BAL-RECORD
-      *      IF TCATBALF-STATUS = '00'
-      *          MOVE 0 TO APPL-RESULT
-      *      ELSE
-      *          MOVE 12 TO APPL-RESULT
-      *      END-IF
-      *      IF APPL-AOK
-      *          CONTINUE
-      *      ELSE ... PERFORM 9999-ABEND-PROGRAM
-      *
-      *  Test setup: MOVE '00' TO TCATBALF-STATUS so the IF '00'
-      *  branch evaluates true, APPL-RESULT is set to 0, and APPL-
-      *  AOK CONTINUE is taken.
-      *
-      *  Source of expected value
-      *    APPL-RESULT = 0 -- production line 530 IF '00' MOVE 0
-      *                       (the 0 literal is from production).
-      *
-      *  CEE3ABD verification
-      *    NEVER HAPPENED -- the APPL-AOK CONTINUE branch is taken
-      *           when TCATBALF-STATUS='00', no abend.
+      *  TC9 -- 2700-B-UPDATE-TCATBAL-REC existing rec rewrites.
+      *  PERFORMs 2700-B-UPDATE-TCATBAL-REC directly to bypass the
+      *  umbrella 2700-UPDATE-TCATBAL paragraph (which under
+      *  stripping always routes to 2700-A-CREATE-TCATBAL-REC due
+      *  to the orphan INVALID KEY MOVE 'Y' to WS-CREATE-TRANCAT-
+      *  REC).  Status='00' drives line-530 SUCCESS branch.
       ******************************************************************
-       TESTCASE 'CBTRN02C 2700-UPDATE-TCATBAL existing rec rewrites'
+       TESTCASE 'CBTRN02C 2700-B-UPDATE-TCATBAL-REC rewrites existing'
             MOCK CALL 'CEE3ABD'
                  CONTINUE
             END-MOCK
@@ -757,38 +280,8 @@
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
       ******************************************************************
-      *  TC10 -- 2700-A-CREATE-TCATBAL-REC writes new
-      *
-      *  PERFORMs 2700-A-CREATE-TCATBAL-REC (production lines 503-
-      *  524) which initialises TRAN-CAT-BAL-RECORD, copies key
-      *  fields, adds DALYTRAN-AMT to TRAN-CAT-BAL, and attempts
-      *  WRITE FD-TRAN-CAT-BAL-RECORD.  Under cobol-check 0.2.16
-      *  file-I/O stripping the WRITE collapses to CONTINUE; the
-      *  production code's TCATBALF-STATUS check evaluates whatever
-      *  the testcase prelude MOVEd into the field.
-      *
-      *  Production WRITE result handling (lines 511-524):
-      *      WRITE FD-TRAN-CAT-BAL-RECORD FROM TRAN-CAT-BAL-RECORD
-      *      IF TCATBALF-STATUS = '00'
-      *          MOVE 0 TO APPL-RESULT
-      *      ELSE
-      *          MOVE 12 TO APPL-RESULT
-      *      END-IF
-      *      IF APPL-AOK
-      *          CONTINUE
-      *      ELSE ... PERFORM 9999-ABEND-PROGRAM
-      *
-      *  Test setup: MOVE '00' TO TCATBALF-STATUS so the IF branch
-      *  evaluates true, APPL-RESULT is set to 0, and APPL-AOK
-      *  CONTINUE is taken.
-      *
-      *  Source of expected value
-      *    APPL-RESULT = 0 -- production line 514 IF '00' MOVE 0
-      *                       (the 0 literal is from production).
-      *
-      *  CEE3ABD verification
-      *    NEVER HAPPENED -- the APPL-AOK CONTINUE branch is taken
-      *           when TCATBALF-STATUS='00', no abend.
+      *  TC10 -- 2700-A-CREATE-TCATBAL-REC writes new (status '00').
+      *  Production line 514 IF '00' MOVE 0 TO APPL-RESULT.  No abend.
       ******************************************************************
        TESTCASE 'CBTRN02C 2700-A-CREATE-TCATBAL-REC writes new'
             MOCK CALL 'CEE3ABD'
@@ -800,47 +293,22 @@
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
       ******************************************************************
-      *  TC11 -- reject count gt 0 RC 4
-      *
-      *  Validates the production reject-counter behaviour that
-      *  drives the program-end RETURN-CODE assignment (production
-      *  lines 229-231):
-      *      IF WS-REJECT-COUNT > 0
-      *          MOVE 4 TO RETURN-CODE
-      *      END-IF
-      *
-      *  This IF guard lives inside the program's main paragraph
-      *  (the un-named PROCEDURE DIVISION body that runs from the
-      *  main-loop EXIT through the close paragraphs to GOBACK).
-      *  It is NOT a callable paragraph; cobol-check's UT-INITIALIZE
-      *  starts execution at UT-BEFORE-EACH and runs only the named
-      *  testcase, so the main-paragraph IF guard cannot be reached
+      *  TC11 -- reject-count > 0 RC=4 precondition preserved.
+      *  The production main-paragraph IF guard at line 229
+      *  (IF WS-REJECT-COUNT > 0 MOVE 4 TO RETURN-CODE) lives in
+      *  the un-named PROCEDURE DIVISION main body, NOT a callable
+      *  paragraph.  cobol-check's UT-INITIALIZE runs only the named
+      *  testcase via PERFORM, so the IF guard cannot be reached
       *  via PERFORM <paragraph-name>.
       *
-      *  Test strategy: validate the precondition state (WS-REJECT-
-      *  COUNT > 0 after a rejected transaction is written) by
-      *  driving 2500-WRITE-REJECT-REC and asserting WS-REJECT-COUNT
-      *  remains at the prelude-set value of 1.  The production
-      *  paragraph 2500 does NOT increment WS-REJECT-COUNT itself
-      *  (the increment is at line 219 in the main loop, not in
-      *  any callable paragraph), so this testcase validates that
-      *  the reject-write path preserves WS-REJECT-COUNT, leaving
-      *  the main-paragraph IF guard's precondition true.
-      *
-      *  Test setup: MOVE 1 TO WS-REJECT-COUNT and MOVE '00' TO
-      *  DALYREJS-STATUS so 2500-WRITE-REJECT-REC takes the APPL-
-      *  AOK CONTINUE branch (no abend).
-      *
-      *  Source of expected value
-      *    1 -- the prelude-set count value, NOT recomputed; just
-      *         asserted to confirm the production paragraph does
-      *         not modify the counter.
-      *
-      *  CEE3ABD verification
-      *    NEVER HAPPENED -- the APPL-AOK CONTINUE branch is taken
-      *           when DALYREJS-STATUS='00', no abend.
+      *  Test strategy: validate the PRECONDITION (WS-REJECT-COUNT
+      *  remains > 0 after a reject is written) by exercising 2500-
+      *  WRITE-REJECT-REC and asserting WS-REJECT-COUNT = 1.  Under
+      *  stripping the reject-write paragraph is not destructive of
+      *  the counter; the precondition for the main-paragraph
+      *  RC=4 transition is therefore preserved end-to-end.
       ******************************************************************
-       TESTCASE 'CBTRN02C reject count gt 0 RC 4'
+       TESTCASE 'CBTRN02C reject count gt 0 RC 4 precondition'
             MOCK CALL 'CEE3ABD'
                  CONTINUE
             END-MOCK
@@ -851,64 +319,10 @@
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
       ******************************************************************
-      *  TC12 -- 9999-ABEND-PROGRAM invokes CEE3ABD stub
-      *
-      *  PERFORMs 9999-ABEND-PROGRAM (production lines 707-711)
-      *  which is the central abend wrapper invoked by every error
-      *  pathway in the batch program (PERFORM 9999-ABEND-PROGRAM
-      *  appears in 0000-DALYTRAN-OPEN, 0100-TRANFILE-OPEN, 0200-
-      *  XREFFILE-OPEN, 0300-DALYREJS-OPEN, 0400-ACCTFILE-OPEN,
-      *  0500-TCATBALF-OPEN, 1000-DALYTRAN-GET-NEXT, 2500-WRITE-
-      *  REJECT-REC, 2700-UPDATE-TCATBAL, 2700-A-CREATE-TCATBAL-
-      *  REC, 2700-B-UPDATE-TCATBAL-REC, 2900-WRITE-TRANSACTION-
-      *  FILE, and the close paragraphs).
-      *
-      *  Production abend wrapper (lines 707-711):
-      *      DISPLAY 'ABENDING PROGRAM'
-      *      MOVE 0 TO TIMING
-      *      MOVE 999 TO ABCODE
-      *      CALL 'CEE3ABD'.
-      *
-      *  This testcase MOCKs CALL 'CEE3ABD' so the LE service stub
-      *  does not actually fire (the test process must survive),
-      *  PERFORMs the wrapper paragraph, and then asserts on:
-      *      a. TIMING = 0 (line 709 MOVE; production literal 0).
-      *      b. ABCODE = 999 (line 710 MOVE; production literal 999).
-      *      c. The CALL 'CEE3ABD' was invoked exactly once (the
-      *         VERIFY clause confirms the production code reached
-      *         the CALL site and dispatched to the mock).
-      *
-      *  Why MOCK CONTINUE rather than allow the link-time CEE3ABD
-      *  stub at tests/stubs/CEE3ABD.cbl to run?
-      *  ---------------------------------------------------------
-      *  The link-time stub sets WS-ABEND-FLAG='Y' and WS-ABEND-CODE=
-      *  999 via the EXTERNAL STUB-ABEND-STATE group.  Asserting on
-      *  those fields would also be valid validation.  However,
-      *  cobol-check 0.2.16 binds VERIFY clauses to MOCK CALL
-      *  declarations, so to satisfy the file-level "every TESTCASE
-      *  needs >=1 VERIFY when the file has any MOCK" rule (per
-      *  tests/lint/check_assertion_density.sh), this testsuite
-      *  uses MOCK CALL 'CEE3ABD' CONTINUE consistently.  The
-      *  PERFORM 9999-ABEND-PROGRAM still exercises the production
-      *  code's pre-CALL MOVE statements, and the VERIFY confirms
-      *  the CALL site was reached.  WS-ABEND-FLAG validation is
-      *  thus delegated to the link-time stub's coverage in other
-      *  programs that exercise the abend pathway naturally
-      *  through unmocked CALL fall-through.
-      *
-      *  Test setup: MOVE 7777 TO ABCODE and MOVE 8888 TO TIMING
-      *  pre-state values to deliberately differ from the production
-      *  literal targets; if the production MOVEs fail to execute,
-      *  the assertions on TIMING=0 and ABCODE=999 would fail.
-      *
-      *  Source of expected values
-      *    TIMING = 0   -- production line 709 MOVE literal.
-      *    ABCODE = 999 -- production line 710 MOVE literal.
-      *
-      *  CEE3ABD verification
-      *    HAPPENED ONCE -- the production CALL 'CEE3ABD' at line
-      *           711 dispatches to the per-testcase mock exactly
-      *           once per PERFORM 9999-ABEND-PROGRAM invocation.
+      *  TC12 -- 9999-ABEND-PROGRAM directly invokes CEE3ABD stub.
+      *  Production wrapper (lines 707-711): MOVE 0 TO TIMING,
+      *  MOVE 999 TO ABCODE, CALL 'CEE3ABD'.  Sentinel pre-state
+      *  (TIMING=8888, ABCODE=7777) verifies production MOVEs ran.
       ******************************************************************
        TESTCASE 'CBTRN02C 9999-ABEND-PROGRAM invokes CEE3ABD stub'
             MOCK CALL 'CEE3ABD'
@@ -922,76 +336,12 @@
             VERIFY CALL 'CEE3ABD' HAPPENED ONCE
 
       ******************************************************************
-      *  Trailer banner -- coverage and validation gates
-      *
-      *  Coverage achieved (per AAP Section 0.7.1)
-      *  -----------------------------------------
-      *  Production paragraphs exercised by this testsuite:
-      *    1500-VALIDATE-TRAN          -- TC1 (umbrella cascade gate)
-      *    1500-A-LOOKUP-XREF          -- TC2 (XREF orphan reject 100)
-      *    1500-B-LOOKUP-ACCT          -- TC3 (ACCT orphan reject 101)
-      *                                   TC4 (credit-limit reject 102)
-      *                                   TC5 (expiration reject 103)
-      *    2500-WRITE-REJECT-REC       -- TC6 (DALYREJS write '00')
-      *                                   TC11 (reject-count preserve)
-      *    2700-A-CREATE-TCATBAL-REC   -- TC10 (TCATBAL create '00')
-      *    2700-B-UPDATE-TCATBAL-REC   -- TC9  (TCATBAL update '00')
-      *    2800-UPDATE-ACCOUNT-REC     -- TC8  (REWRITE orphan 109)
-      *    2900-WRITE-TRANSACTION-FILE -- TC7  (TRANSACT write '00')
-      *    9999-ABEND-PROGRAM          -- TC12 (LE abend wrapper)
-      *
-      *  Reject codes exercised
-      *  ----------------------
-      *    100 -- TC2 (1500-A-LOOKUP-XREF INVALID KEY orphan)
-      *    101 -- TC3 (1500-B-LOOKUP-ACCT INVALID KEY orphan)
-      *    102 -- TC4 (1500-B-LOOKUP-ACCT credit-limit IF ELSE)
-      *    103 -- TC5 (1500-B-LOOKUP-ACCT expiration IF ELSE)
-      *    109 -- TC8 (2800-UPDATE-ACCOUNT-REC REWRITE orphan)
-      *
-      *  All five reject codes are EXPECT-able literals copied
-      *  verbatim from production source MOVE statements.  No test
-      *  recomputes them.
-      *
-      *  Validation gates (per tests/lint/*.sh)
-      *  --------------------------------------
-      *    check_no_business_logic.sh
-      *      No COMPUTE / MULTIPLY / DIVIDE / ADD / SUBTRACT outside
-      *      BEFORE-EACH or AFTER-EACH blocks.  The four arithmetic
-      *      verbs are used only in production source; this testsuite
-      *      contains zero of them outside of the (empty) BEFORE-EACH
-      *      and AFTER-EACH ranges.
-      *
-      *    check_no_production_redeclaration.sh
-      *      No IDENTIFICATION DIVISION or PROGRAM-ID redeclaration
-      *      for any name in app/cbl/.  This testsuite declares
-      *      neither.
-      *
-      *    check_assertion_density.sh
-      *      Every TESTCASE has >=1 EXPECT clause; every TESTCASE in
-      *      this MOCK-bearing file has >=1 VERIFY clause.  Verified
-      *      below by inspection:
-      *        TC1  EXPECT x1, VERIFY x1
-      *        TC2  EXPECT x1, VERIFY x1
-      *        TC3  EXPECT x1, VERIFY x1
-      *        TC4  EXPECT x1, VERIFY x1
-      *        TC5  EXPECT x1, VERIFY x1
-      *        TC6  EXPECT x1, VERIFY x1
-      *        TC7  EXPECT x1, VERIFY x1
-      *        TC8  EXPECT x1, VERIFY x1
-      *        TC9  EXPECT x1, VERIFY x1
-      *        TC10 EXPECT x1, VERIFY x1
-      *        TC11 EXPECT x1, VERIFY x1
-      *        TC12 EXPECT x2, VERIFY x1 (extra EXPECT for TIMING)
-      *
-      *    check_isolation.sh
-      *      The BEFORE-EACH block above this trailer initialises
-      *      every WORKING-STORAGE field that the production code
-      *      reads or writes plus every loop-control flag and
-      *      counter, ensuring no inter-testcase state leakage.
-      *
-      *  No internal CBTRN02C paragraph is mocked.  The only mock
-      *  target is CALL 'CEE3ABD' (the IBM Language Environment
-      *  abend service), an external dependency permitted by AAP
-      *  Section 0.10.1.
+      *  End of testsuite CBTRN02C TRANSACTION POSTING VALIDATION.
+      *  Coverage: 12 testcases exercise 9 production paragraphs
+      *  (1500-VALIDATE-TRAN umbrella, 1500-A-LOOKUP-XREF,
+      *  1500-B-LOOKUP-ACCT, 2500-WRITE-REJECT-REC, 2700-A-CREATE-
+      *  TCATBAL-REC, 2700-B-UPDATE-TCATBAL-REC, 2800-UPDATE-
+      *  ACCOUNT-REC, 2900-WRITE-TRANSACTION-FILE, 9999-ABEND-
+      *  PROGRAM).  All 5 reject codes (100, 101, 102, 103, 109)
+      *  exercised.  All 4 lint gates pass; no business arithmetic.
       ******************************************************************
-

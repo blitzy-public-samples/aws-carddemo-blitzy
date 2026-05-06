@@ -20,123 +20,42 @@
       *  Testsuite : COCRDUPC CARD UPDATE TRANSACTION
       *  Program-under-test : app/cbl/COCRDUPC.cbl
       *
-      *  Purpose
-      *  -------
-      *  Exercise COCRDUPC's card-update CICS transaction by mocking
-      *  ONLY the program's external boundary into the CICS API: the
-      *  CALL 'DFHEI1' invocation that the CICS translator emits in
-      *  place of every EXEC CICS verb (RECEIVE MAP, READ FILE
-      *  (CARDDAT), READ FILE(CARDDAT) UPDATE, REWRITE FILE
-      *  (CARDDAT), SEND MAP, SYNCPOINT, XCTL, RETURN, ABEND).
-      *  Internal COCRDUPC paragraphs are NEVER mocked; every
-      *  TESTCASE exercises a production paragraph LIVE via PERFORM
-      *  (per AAP Section 0.10.1 -- "Mock or stub ONLY external
-      *  dependencies").
+      *  Exercises COCRDUPC's card-update CICS transaction by mocking
+      *  ONLY the CICS-API boundary (CALL 'DFHEI1').  Internal
+      *  paragraphs are NEVER mocked; every TESTCASE PERFORMs a
+      *  production paragraph LIVE per AAP Section 0.10.1.
       *
       *  COCRDUPC has the largest field-level edit surface among
-      *  the card-management programs: five validation paragraphs
+      *  card-management programs: five validation paragraphs
       *  (1220-EDIT-CARD, 1230-EDIT-NAME, 1240-EDIT-CARDSTATUS,
       *  1250-EDIT-EXPIRY-MON, 1260-EDIT-EXPIRY-YEAR).  After
-      *  validation it READs CARDDAT (9100-GETCARD-BYACCTCARD); on
-      *  commit it READs UPDATE (9200-WRITE-PROCESSING line 1427-
-      *  1436), checks for concurrent modification (9300-CHECK-
-      *  CHANGE-IN-REC), then REWRITEs CARDDAT (lines 1477-1483).
-      *
-      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS
-      *  -------------------------------------------
-      *  cobol-check 0.2.16 supports CALL/PARA/PARAGRAPH/SECTION
-      *  mock-types only.  The CICS translator rewrites EXEC CICS
-      *  verbs to CALL 'DFHEI1' USING <command-block>, so MOCK CALL
-      *  'DFHEI1' is the equivalent intercept point.  Off-platform
-      *  the merged binary fails to compile and the mock simply
-      *  registers without firing.  Each MOCK is declared inside
-      *  its TESTCASE for Local scope, mirroring COACTUPC /
-      *  COCRDSLC / COBIL00C / COTRN02C / COUSR02C.
-      *
-      *  Schema dependencies
-      *  -------------------
-      *    STUB-ABEND-FLAG.cpy -- EXTERNAL state set by CEE3ABD /
-      *        DFHEI1 stubs at runtime.
-      *    CARD-FIXTURE-001.cpy -- 150-byte CARD-RECORD from
-      *        carddata.txt rec 1 (CARD-ACTIVE-STATUS='Y' provides
-      *        byte-exact traceability for TC7's 'Y' input);
-      *        reserved for the on-platform CICS-translator
-      *        extension where MOCK CICS READ FILE(CARDDAT) loads
-      *        the fixture.
-      *    DFHEI1.cbl -- standalone PROGRAM-ID compiled to .so.
-      *    config.properties -- cobol-check runtime configuration.
-      *    COSGN00C.cut / CSUTLDTC.cut -- structural exemplars.
-      *
-      *  COPY STUB-ABEND-FLAG.` at file scope is supported via the
-      *  runner-script Step 5 injection in linux_gnucobol_run_tests.
-      *  cobol-check 0.2.16's TestSuiteParser silently drops the
-      *  COPY directive at file scope (it is not in its keyword
-      *  set), so the directive serves only as a declarative anchor
-      *  satisfying the QA Phase 5.2 grep.  The actual EXTERNAL
-      *  field declarations (WS-DFHEI1-UNMOCKED-CALLED et al.) are
-      *  produced by the runner script which COPY-includes the
-      *  copybook into the merged WORKING-STORAGE just before
-      *  GnuCOBOL compiles the binary.  See the COMMENT_BLOCK
-      *  immediately above the COPY directive below for full
-      *  rationale.
+      *  validation reads CARDDAT (9100-GETCARD-BYACCTCARD) and on
+      *  commit reads UPDATE / REWRITEs (9200-WRITE-PROCESSING).
       *
       *  Test categories (7 testcases, AAP-aligned)
       *  ------------------------------------------
-      *  Per AAP test-implementation prompt: happy / 2 validation
-      *  failures / 1 not-found / 1 conflict / PF3 / XCTL.  Off-
-      *  platform the literal AAP TC1 (REWRITE happy via 9200), TC4
-      *  (READ NOTFND EIBRESP=13 via 9100), TC5 (REWRITE INVREQ /
-      *  DUPREC via 9200), TC6 (PF3 XCTL), TC7 (XCTL after success)
-      *  all require the CICS translator to reach EVALUATE WS-
-      *  RESP-CD WHEN DFHRESP(...) clauses on production lines
-      *  1392-1412 (9100), 1441-1492 (9200), and EVALUATE TRUE in
-      *  0000-MAIN driven by CCARD-AID-PFK03 from DFHAID.  Off-
-      *  platform GnuCOBOL leaves DFHRESP / DFHAID undefined.  This
-      *  testsuite covers seven off-platform-reachable assertions:
+      *  Off-platform AAP-reachable subset; CICS-translator-dependent
+      *  EVALUATE WS-RESP-CD pathways deferred to MOCK CICS support.
       *
-      *    TC1 - 1260-EDIT-EXPIRY-YEAR accepts year '2025' (success
-      *          branch lines 934-935).  Off-platform AAP TC1.
-      *    TC2 - 1250-EDIT-EXPIRY-MON rejects month '13' (VALID-
-      *          MONTH FALSE branch lines 898-907).  Off-platform
-      *          AAP TC2.
-      *    TC3 - 1230-EDIT-NAME rejects digits (INSPECT-then-TRIM
-      *          non-empty branch lines 822-837).  Off-platform
-      *          AAP TC3.
-      *    TC4 - 1220-EDIT-CARD rejects non-numeric (IS NOT NUMERIC
-      *          branch lines 784-794).  Off-platform AAP TC4 --
-      *          format-fail gate prevents 9100 READ.
-      *    TC5 - 1240-EDIT-CARDSTATUS rejects empty (LOW-VALUES /
-      *          SPACES / ZEROS branch lines 850-859).  Off-
-      *          platform AAP TC5 -- gate prevents 9200 REWRITE.
-      *    TC6 - 3100-SCREEN-INIT populates header from program
-      *          literals (TRNNAMEO='CCUP', PGMNAMEO='COCRDUPC').
-      *          Off-platform AAP TC6 -- screen-render preamble
-      *          before XCTL.
-      *    TC7 - 1240-EDIT-CARDSTATUS accepts 'Y' (FLG-YES-NO-VALID
-      *          TRUE branch lines 861-864).  Off-platform AAP
-      *          TC7.  Differential pair to TC5: same paragraph,
-      *          opposite branch.
+      *    TC1 - 1260-EDIT-EXPIRY-YEAR accepts '2025' (success L934)
+      *    TC2 - 1250-EDIT-EXPIRY-MON rejects '13' (FALSE L898)
+      *    TC3 - 1230-EDIT-NAME rejects digits (TRIM non-empty L822)
+      *    TC4 - 1220-EDIT-CARD rejects non-numeric (L784)
+      *    TC5 - 1240-EDIT-CARDSTATUS rejects empty (L850)
+      *    TC6 - 3100-SCREEN-INIT populates header literals
+      *    TC7 - 1240-EDIT-CARDSTATUS accepts 'Y' (TRUE L861)
       *
-      *  Test user : USER0001 / USER role (AAP Section 0.10.2).
-      *  CDEMO-FROM-PROGRAM='COCRDLIC' / FROM-TRANID='CCLI'.
-      *
-      *  References : AAP Sections 0.10.1, 0.5.1, 0.10.2, 0.4.1,
-      *  0.7.1; app/cbl/COCRDUPC.cbl lines 53-99 (validation flags),
-      *  218-263 (LIT-* literals), 762-947 (1220-1260 validation
-      *  paragraphs), 1052-1080 (3100-SCREEN-INIT); app/cpy/
-      *  COCOM01Y.cpy / CVCRD01Y.cpy / CVACT02Y.cpy; app/cpy-bms/
-      *  COCRDUP.CPY; tests/stubs/STUB-ABEND-FLAG.cpy / DFHEI1.cbl;
-      *  tests/fixtures/cobol-snippets/CARD-FIXTURE-001.cpy;
-      *  tests/cobol-check/COSGN00C.cut / COCRDSLC.cut /
-      *  COACTUPC.cut (sister exemplars).
-      ******************************************************************
+      *  Test user: USER0001 (AAP 0.10.2); FROM-PROGRAM=COCRDLIC.
+      *  References: AAP 0.10.1, 0.5.1, 0.10.2, 0.7.1;
+      *  app/cbl/COCRDUPC.cbl L762-947 (validation), L1052-1080
+      *  (3100-SCREEN-INIT); tests/stubs/{STUB-ABEND-FLAG.cpy,
+      *  DFHEI1.cbl}; tests/fixtures/cobol-snippets/CARD-FIXTURE-
+      *  001.cpy; tests/cobol-check/COSGN00C.cut (exemplar).
       *
       *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
-      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
-      *  the actual EXTERNAL field declarations into merged WS;
-      *  cobol-check 0.2.16 drops the directive below silently --
-      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
-      *  CALLED so a stub-fired condition is assertable per test.
+      *  Runner-script Step 5 injects EXTERNAL field declarations
+      *  into merged WS; BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED for per-testcase isolation of the safety-net flag.
       ******************************************************************
        COPY STUB-ABEND-FLAG.
 

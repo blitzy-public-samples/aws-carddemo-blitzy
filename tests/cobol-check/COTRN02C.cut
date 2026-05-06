@@ -20,124 +20,39 @@
       *  Testsuite : COTRN02C ADD-TRANSACTION
       *  Program-under-test : app/cbl/COTRN02C.cbl
       *
-      *  Purpose
-      *  -------
-      *  Exercise COTRN02C's add-transaction CICS transaction by
-      *  mocking ONLY the program's external boundary into the CICS
-      *  API: the CALL 'DFHEI1' invocation that the CICS translator
-      *  emits in place of every EXEC CICS verb (RECEIVE MAP, SEND
-      *  MAP, READ DATASET, STARTBR, READPREV, ENDBR, WRITE DATASET,
-      *  XCTL, RETURN).  Internal COTRN02C paragraphs are NEVER
-      *  mocked; every TESTCASE exercises a production paragraph
-      *  LIVE via PERFORM so the testsuite asserts against side
-      *  effects of actual production-code execution (per AAP
-      *  Section 0.10.1 -- "Mock or stub ONLY external dependencies").
+      *  Exercises COTRN02C's add-transaction CICS transaction by
+      *  mocking ONLY the CICS-API boundary (CALL 'DFHEI1').  Internal
+      *  paragraphs are NEVER mocked; every TESTCASE PERFORMs a
+      *  production paragraph LIVE per AAP Section 0.10.1.
       *
-      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS
-      *  -------------------------------------------
-      *  cobol-check 0.2.16's TestSuiteParser supports CALL, PARA,
-      *  PARAGRAPH, and SECTION mock-types.  At link time on z/OS
-      *  the CICS translator rewrites every EXEC CICS verb into a
-      *  CALL 'DFHEI1' USING <command-block>, so MOCK CALL 'DFHEI1'
-      *  is the equivalent intercept point.  Off-platform (GnuCOBOL
-      *  on Linux) the merged binary fails to compile (a known
-      *  infrastructure gap covered by AAP Section 6.6.3.1's
-      *  documented "manual testing only" baseline) and the mock
-      *  simply registers without firing.  The testsuite is forward-
-      *  compatible: when a CICS translator pass is added, the same
-      *  .cut file exercises every CICS boundary through this mock.
-      *
-      *  Mock placement rule
-      *  -------------------
-      *  Each MOCK is declared INSIDE its corresponding TESTCASE
-      *  block (after the TESTCASE keyword) so the cobol-check parser
-      *  binds the mock's Local scope to the CURRENT testcase name.
-      *  This mirrors the exemplar pattern in COUSR03C.cut /
-      *  COUSR02C.cut.  This testsuite does NOT contain a file-scope
-      *  `COPY STUB-ABEND-FLAG.` because cobol-check 0.2.16's
-      *  TestSuiteParser does not recognize file-scope COPY (it
-      *  parses as a fieldname token and aborts the merge).  The
-      *  STUB-ABEND-FLAG.cpy and DFHEI1.cbl link-time backstops
-      *  continue to provide their intended runtime safety
-      *  regardless of whether the testsuite reads the EXTERNAL
-      *  state -- the COUSR0xC canonical exemplars follow the same
-      *  omission.
-      *
-      *  Test categories
-      *  ---------------
+      *  Test categories (6 testcases, off-platform-reachable subset)
+      *  -----------------------------------------------------------
       *    TC1 - RETURN-TO-PREV-SCREEN substitutes default COSGN00C
       *          (AAP TC6 "PF3 exits without WRITE" pathway).
-      *    TC2 - INITIALIZE-ALL-FIELDS clears 14 BMS map fields plus
-      *          WS-MESSAGE; production lines 762-779.  Pure WS
-      *          side effects; no CICS verbs.
-      *    TC3 - VALIDATE-INPUT-KEY-FIELDS rejects empty ACCT and
-      *          CARD via the WHEN OTHER branch (production lines
-      *          224-229) -- the cleanest validation test target.
-      *    TC4 - VALIDATE-INPUT-DATA-FIELDS rejects empty Type CD
-      *          via the FIRST WHEN clause (production lines 252-
-      *          257); aligns with AAP TC2 "Invalid TRAN-TYPE
-      *          rejected".
+      *    TC2 - INITIALIZE-ALL-FIELDS clears 14 BMS fields + WS-MSG
+      *          (lines 762-779).  Pure WS side effects.
+      *    TC3 - VALIDATE-INPUT-KEY-FIELDS rejects empty ACCT/CARD
+      *          via WHEN OTHER (lines 224-229).
+      *    TC4 - VALIDATE-INPUT-DATA-FIELDS rejects empty Type CD via
+      *          FIRST WHEN clause (lines 252-257); AAP TC2 align.
       *    TC5 - VALIDATE-INPUT-DATA-FIELDS rejects empty Amount via
-      *          the FIFTH WHEN clause (production lines 276-281);
-      *          aligns with AAP TC3 "Invalid amount format
-      *          rejected".  Demonstrates EVALUATE TRUE short-
-      *          circuit semantics at a middle-of-chain position.
-      *    TC6 - CLEAR-CURRENT-SCREEN orchestrates INITIALIZE-ALL-
-      *          FIELDS + SEND-TRNADD-SCREEN; destination of MAIN-
-      *          PARA's WHEN DFHPF4 branch.
+      *          FIFTH WHEN clause (lines 276-281); AAP TC3 align.
+      *    TC6 - CLEAR-CURRENT-SCREEN INITIALIZE + SEND-TRNADD;
+      *          MAIN-PARA WHEN DFHPF4 destination.
       *
-      *  Test user
-      *  ---------
-      *  USER0001 / USER role per AAP Section 0.10.2.  COTRN02C does
-      *  not implement role-based authorization; the program admits
-      *  any valid sign-on, so seeding the regular-user identity
-      *  reflects the most common upstream caller (the COMEN01C
-      *  main menu) and differentiates this testsuite from sister
-      *  admin-only COUSR0xC testsuites (ADMIN001).
-      *
-      *  Why AAP categories adapt to validation pathways
-      *  -----------------------------------------------
-      *  AAP TC1 ("happy path") requires a working CICS translator
-      *  pass -- not available off-platform.  AAP TC5 ("duplicate
-      *  key") requires WRITE TRANSACT to fire and return DUPREC --
-      *  same translator dependency.  AAP TC4 ("invalid date format")
-      *  requires CALL 'CSUTLDTC' which calls 'CEEDAYS' -- not
-      *  linked at COTRN02C compile time today.  The AAP TC2 / TC3
-      *  slots adapt cleanly to the empty-field validation pathway
-      *  in production lines 252-281: an empty Type CD or empty
-      *  Amount is the simplest scenario that exercises the same
-      *  VALIDATE-INPUT-DATA-FIELDS paragraph with the same
-      *  EVALUATE branches that catch the more elaborate format
-      *  failures.  When a CICS translator pass is added, this
-      *  testsuite can be extended with happy-path / duplicate-key
-      *  TESTCASE blocks that PERFORM ADD-TRANSACTION end-to-end.
-      *
-      *  References
-      *  ----------
-      *    AAP Section 0.10.1 / 0.5.1 / 0.10.2 / 0.4.1
-      *    app/cbl/COTRN02C.cbl lines 107-159 (MAIN-PARA dispatch)
-      *    app/cbl/COTRN02C.cbl lines 193-230 (VALIDATE-INPUT-KEY-FIELDS)
-      *    app/cbl/COTRN02C.cbl lines 235-437 (VALIDATE-INPUT-DATA-FIELDS)
-      *    app/cbl/COTRN02C.cbl lines 442-466 (ADD-TRANSACTION)
-      *    app/cbl/COTRN02C.cbl lines 500-511 (RETURN-TO-PREV-SCREEN)
-      *    app/cbl/COTRN02C.cbl lines 711-749 (WRITE-TRANSACT-FILE)
-      *    app/cbl/COTRN02C.cbl lines 754-757 (CLEAR-CURRENT-SCREEN)
-      *    app/cbl/COTRN02C.cbl lines 762-779 (INITIALIZE-ALL-FIELDS)
-      *    app/cpy/COCOM01Y.cpy            (CARDDEMO-COMMAREA layout)
-      *    app/cpy/CVTRA05Y.cpy            (TRAN-RECORD layout)
-      *    app/cpy-bms/COTRN02.CPY         (COTRN2AI / COTRN2AO map)
-      *    tests/stubs/STUB-ABEND-FLAG.cpy (EXTERNAL stub state)
-      *    tests/stubs/DFHEI1.cbl          (CICS link-time backstop)
-      *    tests/cobol-check/COUSR03C.cut  (canonical exemplar)
-      *    tests/cobol-check/COUSR02C.cut  (sister CRUD exemplar)
-      ******************************************************************
+      *  Test user: USER0001 (AAP 0.10.2).  AAP TC1/TC4/TC5 (full
+      *  happy / duplicate-key / invalid-date) deferred to MOCK CICS
+      *  support (DFHRESP undefined off-platform; CSUTLDTC not linked).
+      *  References: AAP 0.10.1, 0.5.1, 0.10.2, 0.4.1;
+      *  app/cbl/COTRN02C.cbl L107-466, L500-779;
+      *  app/cpy/{COCOM01Y, CVTRA05Y}.cpy; app/cpy-bms/COTRN02.CPY;
+      *  tests/stubs/{STUB-ABEND-FLAG.cpy, DFHEI1.cbl};
+      *  tests/cobol-check/{COUSR03C, COUSR02C}.cut (exemplars).
       *
       *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
-      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
-      *  the actual EXTERNAL field declarations into merged WS;
-      *  cobol-check 0.2.16 drops the directive below silently --
-      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
-      *  CALLED so a stub-fired condition is assertable per test.
+      *  Runner-script Step 5 injects EXTERNAL field declarations
+      *  into merged WS; BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED for per-testcase isolation of the safety-net flag.
       ******************************************************************
        COPY STUB-ABEND-FLAG.
 

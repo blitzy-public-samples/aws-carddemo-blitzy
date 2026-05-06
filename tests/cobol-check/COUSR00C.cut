@@ -20,168 +20,38 @@
       *  Testsuite : COUSR00C USER LIST BROWSE TRANSACTION
       *  Program-under-test : app/cbl/COUSR00C.cbl
       *
-      *  Purpose
-      *  -------
-      *  Exercise COUSR00C's user-list browse CICS transaction by
-      *  mocking ONLY the program's external boundary into the CICS
-      *  API: the CALL 'DFHEI1' invocation that the CICS translator
-      *  emits in place of every EXEC CICS verb (RECEIVE MAP, SEND
-      *  MAP, STARTBR DATASET (USRSEC), READNEXT DATASET, READPREV
-      *  DATASET, ENDBR DATASET, XCTL, RETURN).  The DFHEI1 entry
-      *  point is the single ABI seam between the production COBOL
-      *  program and the CICS runtime; mocking it intercepts every
-      *  CICS service call without requiring a live CICS region or
-      *  a populated USRSEC VSAM cluster.
+      *  Exercises COUSR00C's user-list browse CICS transaction by
+      *  mocking ONLY the CICS-API boundary (CALL 'DFHEI1').  Internal
+      *  paragraphs are NEVER mocked; every TESTCASE PERFORMs a
+      *  production paragraph LIVE per AAP Section 0.10.1.
       *
-      *  Internal COUSR00C paragraphs are NEVER mocked.  Every
-      *  TESTCASE exercises a production paragraph LIVE via PERFORM
-      *  so the testsuite asserts against side effects of actual
-      *  production-code execution (per the user directive in AAP
-      *  Section 0.10.1 -- "Mock or stub ONLY external dependencies").
+      *  Test categories (6 testcases)
+      *  -----------------------------
+      *    TC1 - RETURN-TO-PREV-SCREEN default 'COSGN00C' (PF3 path)
+      *    TC2 - INITIALIZE-USER-DATA WS-IDX=1 clears row-1 fields
+      *          (lines 449-453); pure WS side effects.
+      *    TC3 - POPULATE-USER-DATA WS-IDX=1 row-1 plus CDEMO-CU00-
+      *          USRID-FIRST anchor (line 389) for PF7 backward page.
+      *    TC4 - POPULATE-USER-DATA WS-IDX=10 row-10 plus CDEMO-CU00-
+      *          USRID-LAST anchor (line 435) for PF8 forward page.
+      *    TC5 - PROCESS-PF7-KEY with PAGE-NUM=1 hits ELSE "top of
+      *          the page" advisory (lines 248-255).
+      *    TC6 - PROCESS-PF8-KEY with NEXT-PAGE-FLG NOT='Y' hits ELSE
+      *          "bottom of the page" advisory (lines 270-277).
       *
-      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS
-      *  -------------------------------------------
-      *  cobol-check 0.2.16's TestSuiteParser supports the mock-types
-      *  CALL, PARA, PARAGRAPH, and SECTION (verified against the
-      *  Keywords class in cobol-check-0.2.16.jar).  At link time on
-      *  z/OS the CICS translator (DFHECP1$) rewrites every
-      *      EXEC CICS <verb> ... END-EXEC.
-      *  into a sequence whose terminal statement is
-      *      CALL 'DFHEI1' USING <command-block> ...
-      *  so MOCK CALL 'DFHEI1' is the equivalent intercept point.
-      *  Off-platform (GnuCOBOL on Linux) the same mock applies once
-      *  the CICS translator runs as a precompile pass; until that
-      *  pass exists the merged binary fails to compile (a known
-      *  infrastructure gap covered by AAP Section 6.6.3.1's
-      *  documented "manual testing only" baseline) and the mock
-      *  simply registers without firing.  The testsuite is
-      *  forward-compatible: when a CICS translator pass is added,
-      *  the same .cut file exercises every CICS boundary through
-      *  this mock.
-      *
-      *  Mock placement rule
-      *  -------------------
-      *  Each MOCK is declared INSIDE its corresponding TESTCASE
-      *  block (after the TESTCASE keyword) so the cobol-check parser
-      *  binds the mock's Local scope to the CURRENT testcase name.
-      *  Mirrors the exemplar pattern in COUSR03C.cut, COUSR02C.cut,
-      *  and COUSR01C.cut.
-      *
-      *  Schema dependencies (STUB-ABEND-FLAG.cpy, DFHEI1.cbl)
-      *  -----------------------------------------------------
-      *  The file_schema names two internal imports:
-      *
-      *    tests/stubs/STUB-ABEND-FLAG.cpy -- 01-level EXTERNAL
-      *        working-storage group used by the CEE3ABD and DFHEI1
-      *        link-time stubs to publish abend / unmocked-CICS
-      *        flags to the testsuite.
-      *
-      *    tests/stubs/DFHEI1.cbl -- standalone DFHEI1 PROGRAM-ID
-      *        compiled into a .so module so that any unmocked
-      *        EXEC CICS verb that survives the off-platform compile
-      *        resolves at load time (CICS NOT-AUTH 27).
-      *
-      *  Both stubs are linked at TEST-RUN time by the runner script
-      *  tests/cobol-check/scripts/linux_gnucobol_run_tests.  The
-      *  testsuite itself does NOT contain `COPY STUB-ABEND-FLAG.`
-      *  because cobol-check 0.2.16's TestSuiteParser only recognizes
-      *  the keywords TESTSUITE, TESTCASE, MOCK, EXPECT, VERIFY,
-      *  BEFORE-EACH, AFTER-EACH, END-BEFORE, END-AFTER, END-MOCK,
-      *  CALL, PARA, PARAGRAPH, SECTION (and assertion connectors
-      *  TO BE / TO EQUAL / HAPPENED / TIMES / AT LEAST / etc).  A
-      *  bare COPY at file scope is parsed as a fieldname token and
-      *  triggers a "Unexpected token" SYNTAX ERROR that aborts
-      *  cobol-check before it can merge the testsuite into the
-      *  production source.  The COUSR03C / COUSR02C / COUSR01C
-      *  exemplars (the canonical pattern per AAP Section 0.4.3 and
-      *  the user prompt) follow the same omission.  The runtime
-      *  stubs satisfy the link-time requirements without WS access
-      *  from the .cut file (DFHEI1 NOT-AUTH fallback, CEE3ABD
-      *  GOBACK-with-flag).
-      *
-      *  Test categories
-      *  ---------------
-      *    TC1 - PERFORM RETURN-TO-PREV-SCREEN with CDEMO-TO-PROGRAM
-      *          = SPACES; production substitutes the default
-      *          'COSGN00C' target, captures CDEMO-FROM-* fields,
-      *          and issues XCTL.  This is the PF3 / initial-entry
-      *          path (production lines 110-112 set the EIBCALEN=0
-      *          default; lines 125-127 set it on PF3).
-      *    TC2 - PERFORM INITIALIZE-USER-DATA with WS-IDX=1;
-      *          production EVALUATE WS-IDX matches the WHEN 1
-      *          clause (lines 449-453) and clears USRID01I, FNAME01I,
-      *          LNAME01I, UTYPE01I to SPACES.  No CICS verbs;
-      *          purely WORKING-STORAGE side effects.
-      *    TC3 - PERFORM POPULATE-USER-DATA with WS-IDX=1 and
-      *          SEC-USER-DATA pre-populated; production EVALUATE
-      *          WS-IDX matches the WHEN 1 clause (lines 387-392)
-      *          and copies SEC-USR-* into row-1 BMS fields.  The
-      *          WHEN 1 branch ALSO copies SEC-USR-ID into
-      *          CDEMO-CU00-USRID-FIRST (line 389) -- the COMMAREA
-      *          "first user on page" anchor that PROCESS-PF7-KEY
-      *          reads (line 242) for backward paging.
-      *    TC4 - PERFORM POPULATE-USER-DATA with WS-IDX=10; matches
-      *          the WHEN 10 clause (lines 433-438) which copies
-      *          SEC-USR-ID into CDEMO-CU00-USRID-LAST (line 435) --
-      *          the "last user on page" anchor that PROCESS-PF8-KEY
-      *          reads (line 265) for forward paging.  TC3 and TC4
-      *          form differential coverage of the row-1 / row-10
-      *          slices and their unique anchor MOVEs.
-      *    TC5 - PERFORM PROCESS-PF7-KEY with CDEMO-CU00-PAGE-NUM=1;
-      *          production lines 248-255 take the ELSE branch of
-      *          the IF CDEMO-CU00-PAGE-NUM > 1 guard, setting
-      *          WS-MESSAGE to the "top of the page" advisory and
-      *          flipping WS-SEND-ERASE-FLG to 'N' before performing
-      *          SEND-USRLST-SCREEN.  The MOCK CALL 'DFHEI1'
-      *          intercepts SEND-USRLST-SCREEN's EXEC CICS SEND.
-      *    TC6 - PERFORM PROCESS-PF8-KEY with CDEMO-CU00-NEXT-PAGE-
-      *          FLG NOT = 'Y'; production lines 270-277 take the
-      *          ELSE branch of the IF NEXT-PAGE-YES guard, setting
-      *          WS-MESSAGE to the "bottom of the page" advisory.
-      *          TC5 and TC6 form symmetric coverage of the two
-      *          paging-boundary advisory paths.
-      *
-      *  Test user
-      *  ---------
-      *  Per AAP Section 0.10.2 and the user prompt, only ADMIN001 /
-      *  ADMIN role is permitted in the COUSR00C testsuite (this
-      *  transaction is admin-gated upstream by COADM01C; non-admin
-      *  access is filtered before the user reaches COUSR00C, so the
-      *  program itself does not implement role-based authorization
-      *  and therefore has no test surface for a "non-admin attempting
-      *  access rejected" case as the user-prompt TC2 stub would
-      *  imply -- the rejection occurs in COADM01C, not COUSR00C, so
-      *  the TC2 slot is repurposed to the INITIALIZE-USER-DATA
-      *  WS-only test described above, mirroring COUSR02C and
-      *  COUSR03C which made the identical repurposing decision).
-      *
-      *  References
-      *  ----------
-      *    AAP Section 0.10.1 -- user directive on test structure
-      *    AAP Section 0.5.1  -- file-by-file plan for COUSR00C
-      *    AAP Section 0.10.2 -- ADMIN001 / ADMIN test user
-      *    app/cbl/COUSR00C.cbl lines 098-144 (MAIN-PARA)
-      *    app/cbl/COUSR00C.cbl lines 237-255 (PROCESS-PF7-KEY)
-      *    app/cbl/COUSR00C.cbl lines 260-277 (PROCESS-PF8-KEY)
-      *    app/cbl/COUSR00C.cbl lines 384-441 (POPULATE-USER-DATA)
-      *    app/cbl/COUSR00C.cbl lines 446-501 (INITIALIZE-USER-DATA)
-      *    app/cbl/COUSR00C.cbl lines 506-517 (RETURN-TO-PREV-SCREEN)
-      *    app/cpy/COCOM01Y.cpy            (CARDDEMO-COMMAREA layout)
-      *    app/cpy/CSUSR01Y.cpy            (SEC-USER-DATA layout)
-      *    app/cpy-bms/COUSR00.CPY         (COUSR0AI / COUSR0AO map)
-      *    tests/stubs/STUB-ABEND-FLAG.cpy (EXTERNAL stub state)
-      *    tests/stubs/DFHEI1.cbl          (CICS link-time backstop)
-      *    tests/cobol-check/COUSR03C.cut  (canonical exemplar)
-      *    tests/cobol-check/COUSR02C.cut  (sister CRUD exemplar)
-      *    tests/cobol-check/COUSR01C.cut  (sister CRUD exemplar)
-      ******************************************************************
+      *  Test user: ADMIN001 (AAP 0.10.2; admin-gated upstream by
+      *  COADM01C).  AAP TC1 (full browse) deferred to MOCK CICS
+      *  support (DFHRESP undefined off-platform).
+      *  References: AAP 0.10.1, 0.5.1, 0.10.2;
+      *  app/cbl/COUSR00C.cbl L98-144, L237-277, L384-501, L506-517;
+      *  app/cpy/{COCOM01Y, CSUSR01Y}.cpy; cpy-bms/COUSR00.CPY;
+      *  tests/stubs/{STUB-ABEND-FLAG.cpy, DFHEI1.cbl};
+      *  tests/cobol-check/{COUSR03C, COUSR02C, COUSR01C}.cut.
       *
       *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
-      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
-      *  the actual EXTERNAL field declarations into merged WS;
-      *  cobol-check 0.2.16 drops the directive below silently --
-      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
-      *  CALLED so a stub-fired condition is assertable per test.
+      *  Runner-script Step 5 injects EXTERNAL field declarations
+      *  into merged WS; BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED for per-testcase isolation of the safety-net flag.
       ******************************************************************
        COPY STUB-ABEND-FLAG.
 

@@ -20,169 +20,41 @@
       *  Testsuite : COBIL00C BILL PAY TRANSACTION
       *  Program-under-test : app/cbl/COBIL00C.cbl
       *
-      *  Purpose
-      *  -------
-      *  Exercise COBIL00C's bill-pay CICS transaction by mocking
-      *  ONLY the program's external boundary into the CICS API:
-      *  the CALL 'DFHEI1' invocation that the CICS translator emits
-      *  in place of every EXEC CICS verb (RECEIVE MAP, SEND MAP,
-      *  READ DATASET ... UPDATE, REWRITE DATASET, READ DATASET
-      *  (CXACAIX), STARTBR / READPREV / ENDBR / WRITE DATASET
-      *  (TRANSACT), ASKTIME, FORMATTIME, XCTL, RETURN).  Internal
-      *  COBIL00C paragraphs are NEVER mocked; every TESTCASE
-      *  exercises a production paragraph LIVE via PERFORM so the
-      *  testsuite asserts against side effects of actual production-
-      *  code execution (per AAP Section 0.10.1 -- "Mock or stub
-      *  ONLY external dependencies").
+      *  Exercises COBIL00C's bill-pay CICS transaction by mocking
+      *  ONLY the CICS-API boundary (CALL 'DFHEI1').  Internal
+      *  paragraphs are NEVER mocked; every TESTCASE PERFORMs a
+      *  production paragraph LIVE per AAP Section 0.10.1.
       *
-      *  COBIL00C bill-pay flow (production lines 154-244)
-      *  -------------------------------------------------
-      *  RECEIVE MAP COBIL0A -> validate ACTIDINI / CONFIRMI -> READ
-      *  DATASET (ACCTDAT) UPDATE -> guard IF ACCT-CURR-BAL <= ZEROS
-      *  (line 198, "You have nothing to pay..." -- AAP TC2 with
-      *  production semantics "balance must be POSITIVE" because
-      *  line 224 sets TRAN-AMT = ACCT-CURR-BAL paying the balance
-      *  in full; a COMPARISON not arithmetic) -> if CONF-PAY-YES,
-      *  READ-CXACAIX-FILE -> STARTBR/READPREV/ENDBR TRANSACT ->
-      *  WRITE TRANSACT -> debit ACCT-CURR-BAL -> REWRITE ACCTDAT
-      *  -> SEND MAP.
+      *  COBIL00C bill-pay flow: RECEIVE MAP -> validate ACTIDINI/
+      *  CONFIRMI -> READ ACCTDAT UPDATE -> IF ACCT-CURR-BAL <= 0
+      *  guard -> READ CXACAIX -> STARTBR/READPREV/ENDBR TRANSACT
+      *  -> WRITE TRANSACT -> debit ACCT-CURR-BAL -> REWRITE ACCTDAT
+      *  -> SEND MAP.  PROCESS-ENTER-KEY's CONFIRMI EVALUATE (lines
+      *  173-191) is COBIL00C-unique: WHEN OTHER catches anything
+      *  not in {Y, y, N, n, SPACES, LOW-VALUES}.
       *
-      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS
-      *  -------------------------------------------
-      *  cobol-check 0.2.16's TestSuiteParser supports CALL, PARA,
-      *  PARAGRAPH, SECTION mock-types.  At link time on z/OS the
-      *  CICS translator rewrites every EXEC CICS verb into a
-      *  CALL 'DFHEI1' USING <command-block>, so MOCK CALL 'DFHEI1'
-      *  is the equivalent intercept point.  Off-platform (GnuCOBOL
-      *  on Linux) the merged binary fails to compile (AAP 6.6.3.1
-      *  "manual testing only" baseline) and the mock simply
-      *  registers without firing.  The testsuite is forward-
-      *  compatible: when a CICS translator pass is added, this
-      *  .cut file exercises every CICS boundary through the mock.
-      *
-      *  Mock placement and COPY STUB-ABEND-FLAG omission
-      *  ------------------------------------------------
-      *  Each MOCK is declared INSIDE its corresponding TESTCASE
-      *  block so the cobol-check parser binds the mock's Local
-      *  scope to that testcase name (mirrors COTRN02C / COUSR02C /
-      *  COTRN01C exemplars).  This testsuite does NOT contain a
-      *  file-scope `COPY STUB-ABEND-FLAG.` because cobol-check
-      *  0.2.16's TestSuiteParser does not recognize file-scope
-      *  COPY (parses as a fieldname token and aborts the merge).
-      *  The STUB-ABEND-FLAG.cpy and DFHEI1.cbl link-time backstops
-      *  continue to provide their intended runtime safety
-      *  regardless of whether the testsuite reads the EXTERNAL
-      *  state -- canonical exemplars follow the same omission.
-      *
-      *  Schema dependencies (file_schema)
-      *  ---------------------------------
-      *    tests/stubs/STUB-ABEND-FLAG.cpy -- EXTERNAL state group
-      *        for CEE3ABD/DFHEI1 stubs.
-      *    tests/stubs/DFHEI1.cbl -- standalone DFHEI1 PROGRAM-ID
-      *        compiled into a .so so unmocked EXEC CICS resolves
-      *        at load time with EIBRESP=27 (NOTAUTH).
-      *    tests/fixtures/cobol-snippets/ACCT-FIXTURE-001.cpy --
-      *        300-byte ACCOUNT-RECORD from acctdata.txt rec 1.
-      *        Reserved for on-platform extension where MOCK CICS
-      *        READ DATASET (ACCTDAT) includes this fixture as the
-      *        mock-read response for AAP TC1/TC2 with ACCT-CURR-BAL
-      *        overrides driving line-198 IF ACCT-CURR-BAL <= ZEROS.
-      *        Off-platform testcases here short-circuit before
-      *        READ-ACCTDAT-FILE; the fixture remains the canonical
-      *        source when the CICS translator pass is added.
-      *
-      *  COBIL00C-distinct behaviors
-      *  ---------------------------
-      *  1. INITIALIZE-ALL-FIELDS clears 4 fields (ACTIDINI, CURBALI,
-      *     CONFIRMI, WS-MESSAGE) plus ACTIDINL = -1.  Smallest in
-      *     the CICS program set (COTRN02C/COTRN01C clear 14,
-      *     COUSR02C clears 6).
-      *  2. PROCESS-ENTER-KEY empty-acct-id rejection (line 159) is
-      *     the gate that prevents READ ACCTDAT from firing on bad
-      *     input.
-      *  3. PROCESS-ENTER-KEY CONFIRMI EVALUATE (lines 173-191) is
-      *     COBIL00C-unique: no sister implements a Y/N confirmation
-      *     dialogue.  WHEN OTHER (line 185) catches anything not
-      *     in {Y, y, N, n, SPACES, LOW-VALUES}.
-      *
-      *  Test categories
-      *  ---------------
-      *    TC1 - RETURN-TO-PREV-SCREEN defaults to 'COSGN00C' when
-      *          CDEMO-TO-PROGRAM is empty.  AAP TC6 "PF3 exits
-      *          without WRITE/REWRITE" empty-FROM fallback.
-      *    TC2 - RETURN-TO-PREV-SCREEN preserves 'COMEN01C' explicit
-      *          target.  AAP TC6 explicit-FROM, differential vs TC1.
-      *    TC3 - INITIALIZE-ALL-FIELDS clears 4 fields + WS-MESSAGE.
-      *          Pure WS side effects.  VERIFY DFHEI1 HAPPENED 0
-      *          TIMES asserts no-CICS invariant.
-      *    TC4 - PROCESS-ENTER-KEY with ACTIDINI = SPACES rejects
-      *          via line-159 WHEN.  Short-circuits before READ
-      *          ACCTDAT.  AAP TC3 "Account not found" generalised
-      *          to "empty before READ even attempts".
-      *    TC5 - PROCESS-ENTER-KEY with ACTIDINI populated and
-      *          CONFIRMI = 'Z' hits COBIL00C-unique line-185 WHEN
-      *          OTHER.  Short-circuits the bill-pay write chain.
-      *          AAP TC2 generalised to "Confirmation field invalid".
-      *    TC6 - CLEAR-CURRENT-SCREEN orchestrates INITIALIZE +
-      *          SEND.  Asserts INITIALIZE side effects + DFHEI1
-      *          HAPPENED 0 TIMES.
-      *
-      *  Test user: USER0001 / USER role per AAP Section 0.10.2.
-      *  COBIL00C does not implement role-based authorization at
-      *  program level; any signed-on user reaching it via COMEN01C
-      *  option 7 may bill-pay their own account.
-      *
-      *  Why AAP TC1 / TC4 / TC5 (full happy / DUPREC / REWRITE-fail)
-      *  are deferred
+      *  Test categories (6 testcases, off-platform-reachable subset)
       *  -----------------------------------------------------------
-      *  AAP TC1 ("Happy path"), TC4 ("WRITE fails DUPREC"), TC5
-      *  ("REWRITE fails after WRITE") all require the production
-      *  paragraphs READ-ACCTDAT/CXACAIX/STARTBR/READPREV/ENDBR/
-      *  WRITE-TRANSACT/UPDATE-ACCTDAT to be reachable through a
-      *  working CICS translator pass -- their EVALUATE WS-RESP-CD
-      *  WHEN DFHRESP(NORMAL/NOTFND/DUPREC/ENDFILE) clauses depend
-      *  on DFHRESP being a defined preprocessor symbol.  Off-
-      *  platform GnuCOBOL leaves DFHRESP undefined and the merged
-      *  binary fails to compile (same failure in COTRN01C/COTRN02C/
-      *  COUSR02C/COUSR03C).  When the translator pass is added,
-      *  this testsuite can be extended with testcases that pre-
-      *  populate WS-RESP-CD = 0/13/14/16, MOCK CALL 'DFHEI1' with
-      *  command-block responses, and PERFORM PROCESS-ENTER-KEY
-      *  end-to-end with ACCT-CURR-BAL from ACCT-FIXTURE-001
-      *  (overrides drive the line-198 guard for AAP TC2).  The six
-      *  testcases below cover every paragraph whose side effects
-      *  can be asserted off-platform.
+      *    TC1 - RETURN-TO-PREV-SCREEN default 'COSGN00C' (empty FROM)
+      *    TC2 - RETURN-TO-PREV-SCREEN preserves 'COMEN01C' explicit
+      *    TC3 - INITIALIZE-ALL-FIELDS clears 4 fields + WS-MESSAGE
+      *    TC4 - PROCESS-ENTER-KEY ACTIDINI=SPACES rejects (L159)
+      *    TC5 - PROCESS-ENTER-KEY CONFIRMI='Z' hits WHEN OTHER (L185)
+      *    TC6 - CLEAR-CURRENT-SCREEN INITIALIZE + SEND
       *
-      *  References
-      *  ----------
-      *    AAP Section 0.10.1 / 0.5.1 / 0.10.2 / 0.4.1 / 0.7.1
-      *    app/cbl/COBIL00C.cbl lines 99-149 (MAIN-PARA dispatch)
-      *    app/cbl/COBIL00C.cbl lines 154-244 (PROCESS-ENTER-KEY)
-      *    app/cbl/COBIL00C.cbl lines 273-284 (RETURN-TO-PREV-SCREEN)
-      *    app/cbl/COBIL00C.cbl lines 289-301 (SEND-BILLPAY-SCREEN)
-      *    app/cbl/COBIL00C.cbl lines 343-372 (READ-ACCTDAT-FILE)
-      *    app/cbl/COBIL00C.cbl lines 552-555 (CLEAR-CURRENT-SCREEN)
-      *    app/cbl/COBIL00C.cbl lines 560-566 (INITIALIZE-ALL-FIELDS)
-      *    app/cpy/COCOM01Y.cpy             (CARDDEMO-COMMAREA)
-      *    app/cpy/CVACT01Y.cpy             (ACCOUNT-RECORD layout)
-      *    app/cpy/CVACT03Y.cpy             (CARD-XREF-RECORD layout)
-      *    app/cpy/CVTRA05Y.cpy             (TRAN-RECORD layout, 350B)
-      *    app/cpy-bms/COBIL00.CPY          (COBIL0AI / COBIL0AO)
-      *    tests/stubs/STUB-ABEND-FLAG.cpy  (EXTERNAL stub state)
-      *    tests/stubs/DFHEI1.cbl           (CICS link-time backstop)
-      *    tests/fixtures/cobol-snippets/ACCT-FIXTURE-001.cpy
-      *                                     (300-byte ACCT fixture)
-      *    tests/cobol-check/COTRN02C.cut   (canonical exemplar)
-      *    tests/cobol-check/COUSR02C.cut   (sister UPDATE exemplar)
-      *    tests/cobol-check/COTRN01C.cut   (sister read-only excpr)
-      ******************************************************************
+      *  Test user: USER0001 (AAP 0.10.2).  AAP TC1/TC4/TC5 (full
+      *  happy / DUPREC / REWRITE-fail) deferred to MOCK CICS support
+      *  (DFHRESP undefined off-platform under GnuCOBOL).
+      *  References: AAP 0.10.1, 0.5.1, 0.10.2, 0.4.1, 0.7.1;
+      *  app/cbl/COBIL00C.cbl L99-244, L273-301, L343-372, L552-566;
+      *  tests/stubs/{STUB-ABEND-FLAG.cpy, DFHEI1.cbl};
+      *  tests/fixtures/cobol-snippets/ACCT-FIXTURE-001.cpy;
+      *  tests/cobol-check/COTRN02C.cut (exemplar).
       *
       *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
-      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
-      *  the actual EXTERNAL field declarations into merged WS;
-      *  cobol-check 0.2.16 drops the directive below silently --
-      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
-      *  CALLED so a stub-fired condition is assertable per test.
+      *  Runner-script Step 5 injects EXTERNAL field declarations
+      *  into merged WS; BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED for per-testcase isolation of the safety-net flag.
       ******************************************************************
        COPY STUB-ABEND-FLAG.
 
