@@ -519,6 +519,238 @@
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
+      *  TC7 -- POPULATE-HEADER-INFO sets PGMNAMEO + TRNNAMEO
+      *  Drives POPULATE-HEADER-INFO (production lines 552-571) along
+      *  the deterministic header-fill path.  CCDA-TITLE01/02, WS-
+      *  TRANID, WS-PGMNAME literals MOVE to output map fields plus
+      *  FUNCTION CURRENT-DATE values.  Pure WS side effects; zero
+      *  EXEC CICS verbs reached.
+      ******************************************************************
+       TESTCASE 'COTRN02C POPULATE-HEADER-INFO sets PGMNAMEO TRNNAMEO'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM POPULATE-HEADER-INFO
+            EXPECT TRNNAMEO OF COTRN2AO TO BE 'CT02'
+            EXPECT PGMNAMEO OF COTRN2AO TO BE 'COTRN02C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC8 -- VALIDATE-INPUT-DATA-FIELDS rejects empty Category CD
+      *  Production line 258 WHEN TCATCDI = SPACES OR LOW-VALUES fires:
+      *  WS-ERR-FLG='Y', TCATCDL=-1.  TC8 covers the SECOND WHEN.
+      ******************************************************************
+       TESTCASE 'COTRN02C VALIDATE-INPUT-DATA-FIELDS rejects empty cat'
+            MOVE '01' TO TTYPCDI OF COTRN2AI
+            MOVE SPACES TO TCATCDI OF COTRN2AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM VALIDATE-INPUT-DATA-FIELDS
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT TCATCDL OF COTRN2AI NOT = 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC9 -- VALIDATE-INPUT-DATA-FIELDS rejects empty Source
+      *  Production line 264 WHEN TRNSRCI = SPACES OR LOW-VALUES fires:
+      *  WS-ERR-FLG='Y', TRNSRCL=-1.  TC9 covers the THIRD WHEN.
+      ******************************************************************
+       TESTCASE 'COTRN02C VALIDATE-INPUT-DATA-FIELDS rejects empty src'
+            MOVE '01' TO TTYPCDI OF COTRN2AI
+            MOVE '0001' TO TCATCDI OF COTRN2AI
+            MOVE SPACES TO TRNSRCI OF COTRN2AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM VALIDATE-INPUT-DATA-FIELDS
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT TRNSRCL OF COTRN2AI NOT = 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC10 -- VALIDATE-INPUT-DATA-FIELDS rejects empty Description
+      *  Production line 270 WHEN TDESCI = SPACES OR LOW-VALUES fires:
+      *  WS-ERR-FLG='Y', TDESCL=-1.  TC10 covers the FOURTH WHEN.
+      ******************************************************************
+       TESTCASE 'COTRN02C VALIDATE-INPUT-DATA-FIELDS rejects empty desc'
+            MOVE '01' TO TTYPCDI OF COTRN2AI
+            MOVE '0001' TO TCATCDI OF COTRN2AI
+            MOVE 'POS       ' TO TRNSRCI OF COTRN2AI
+            MOVE SPACES TO TDESCI OF COTRN2AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM VALIDATE-INPUT-DATA-FIELDS
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT TDESCL OF COTRN2AI NOT = 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC11 -- VALIDATE-INPUT-DATA-FIELDS rejects empty Orig Date
+      *  Production line 282 WHEN TORIGDTI = SPACES OR LOW-VALUES fires:
+      *  WS-ERR-FLG='Y', TORIGDTL=-1.  TC11 covers the SIXTH WHEN.
+      ******************************************************************
+       TESTCASE 'COTRN02C VALIDATE-INPUT-DATA-FIELDS rejects empty orig'
+            MOVE '01' TO TTYPCDI OF COTRN2AI
+            MOVE '0001' TO TCATCDI OF COTRN2AI
+            MOVE 'POS       ' TO TRNSRCI OF COTRN2AI
+            MOVE 'TEST DESCRIPTION FOR FIXTURE EXERCISE             '
+                          TO TDESCI OF COTRN2AI
+            MOVE '+00000100.00' TO TRNAMTI OF COTRN2AI
+            MOVE SPACES TO TORIGDTI OF COTRN2AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM VALIDATE-INPUT-DATA-FIELDS
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT TORIGDTL OF COTRN2AI NOT = 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC12 -- VALIDATE-INPUT-DATA-FIELDS rejects empty Proc Date
+      *  Production line 288 WHEN TPROCDTI = SPACES OR LOW-VALUES fires.
+      ******************************************************************
+       TESTCASE 'COTRN02C VALIDATE-INPUT-DATA-FIELDS rejects empty proc'
+            MOVE '01' TO TTYPCDI OF COTRN2AI
+            MOVE '0001' TO TCATCDI OF COTRN2AI
+            MOVE 'POS       ' TO TRNSRCI OF COTRN2AI
+            MOVE 'TEST DESCRIPTION FOR FIXTURE EXERCISE             '
+                          TO TDESCI OF COTRN2AI
+            MOVE '+00000100.00' TO TRNAMTI OF COTRN2AI
+            MOVE '2023-01-15' TO TORIGDTI OF COTRN2AI
+            MOVE SPACES TO TPROCDTI OF COTRN2AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM VALIDATE-INPUT-DATA-FIELDS
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT TPROCDTL OF COTRN2AI NOT = 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC13 -- VALIDATE-INPUT-DATA-FIELDS rejects empty Merchant ID
+      *  Production line 294 WHEN MIDI = SPACES OR LOW-VALUES fires.
+      ******************************************************************
+       TESTCASE 'COTRN02C VALIDATE-INPUT-DATA-FIELDS rejects empty mid'
+            MOVE '01' TO TTYPCDI OF COTRN2AI
+            MOVE '0001' TO TCATCDI OF COTRN2AI
+            MOVE 'POS       ' TO TRNSRCI OF COTRN2AI
+            MOVE 'TEST DESCRIPTION FOR FIXTURE EXERCISE             '
+                          TO TDESCI OF COTRN2AI
+            MOVE '+00000100.00' TO TRNAMTI OF COTRN2AI
+            MOVE '2023-01-15' TO TORIGDTI OF COTRN2AI
+            MOVE '2023-01-15' TO TPROCDTI OF COTRN2AI
+            MOVE SPACES TO MIDI OF COTRN2AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM VALIDATE-INPUT-DATA-FIELDS
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT MIDL OF COTRN2AI NOT = 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC14 -- VALIDATE-INPUT-KEY-FIELDS routes ACCT-ID to lookup
+      *  Production lines 196-209 fire when ACTIDINI is non-empty
+      *  numeric.  This drives the COMPUTE WS-ACCT-ID-N + READ-
+      *  CXACAIX-FILE chain.  WS-RESP-CD initial 0=DFHRESP(NORMAL)
+      *  takes line-589 NORMAL arm (CONTINUE) so no error flag set.
+      *
+      *  BMS field ACTIDINI is PIC X(11) so MOVE of '00000012345' is
+      *  legal and FUNCTION NUMVAL converts to 12345 numeric value.
+      *  The READ-CXACAIX-FILE EXEC CICS READ is intercepted by the
+      *  DFHEI1 mock; WS-RESP-CD remains 0.
+      ******************************************************************
+       TESTCASE 'COTRN02C VALIDATE-INPUT-KEY-FIELDS reads CXACAIX OK'
+            MOVE '00000012345' TO ACTIDINI OF COTRN2AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM VALIDATE-INPUT-KEY-FIELDS
+            EXPECT WS-ERR-FLG TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC15 -- VALIDATE-INPUT-KEY-FIELDS routes CARD to lookup
+      *  Production lines 210-223 fire when ACTIDINI is empty AND
+      *  CARDNINI is non-empty numeric.  Drives the COMPUTE
+      *  WS-CARD-NUM-N + READ-CCXREF-FILE chain.
+      ******************************************************************
+       TESTCASE 'COTRN02C VALIDATE-INPUT-KEY-FIELDS reads CCXREF OK'
+            MOVE SPACES TO ACTIDINI OF COTRN2AI
+            MOVE '0123456789012345' TO CARDNINI OF COTRN2AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM VALIDATE-INPUT-KEY-FIELDS
+            EXPECT WS-ERR-FLG TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC16 -- READ-CXACAIX-FILE NORMAL response (line 589).
+      *  WS-RESP-CD=0 takes line-589 NORMAL arm (CONTINUE).  No error
+      *  flag set; ACTIDINL not modified by NORMAL arm.
+      ******************************************************************
+       TESTCASE 'COTRN02C READ-CXACAIX-FILE NORMAL response'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 0 TO WS-RESP-CD
+            PERFORM READ-CXACAIX-FILE
+            EXPECT WS-ERR-FLG TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC17 -- READ-CCXREF-FILE NORMAL response (line 622).
+      ******************************************************************
+       TESTCASE 'COTRN02C READ-CCXREF-FILE NORMAL response'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 0 TO WS-RESP-CD
+            PERFORM READ-CCXREF-FILE
+            EXPECT WS-ERR-FLG TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC18 -- STARTBR-TRANSACT-FILE NORMAL response.
+      ******************************************************************
+       TESTCASE 'COTRN02C STARTBR-TRANSACT-FILE NORMAL response'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 0 TO WS-RESP-CD
+            PERFORM STARTBR-TRANSACT-FILE
+            EXPECT WS-ERR-FLG TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC19 -- READPREV-TRANSACT-FILE NORMAL response.
+      ******************************************************************
+       TESTCASE 'COTRN02C READPREV-TRANSACT-FILE NORMAL response'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 0 TO WS-RESP-CD
+            PERFORM READPREV-TRANSACT-FILE
+            EXPECT WS-ERR-FLG TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC20 -- ENDBR-TRANSACT-FILE invokes EXEC CICS ENDBR.
+      *  Production line 702-709 issues EXEC CICS ENDBR; the mock
+      *  intercepts so no 3270 traffic.  Pure CICS-API exercise.
+      ******************************************************************
+       TESTCASE 'COTRN02C ENDBR-TRANSACT-FILE issues ENDBR'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM ENDBR-TRANSACT-FILE
+            EXPECT WS-ERR-FLG TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
       *  End of testsuite COTRN02C ADD-TRANSACTION
       ******************************************************************
 

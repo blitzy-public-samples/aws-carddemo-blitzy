@@ -365,11 +365,315 @@
             VERIFY CALL 'CEE3ABD' HAPPENED ONCE
 
       ******************************************************************
+      *  TC15 -- 0100-XREFFILE-OPEN succeeds with status '00'.
+      *  Pre-set XREFFILE-STATUS='00' drives line-256 SUCCESS arm
+      *  (APPL-RESULT=0).  Abend pathway not reached.
+      ******************************************************************
+       TESTCASE 'CBACT04C 0100-XREFFILE-OPEN succeeds with status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0100-XREFFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT XREFFILE-STATUS TO BE '00'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC16 -- 0100-XREFFILE-OPEN failure ('35') triggers abend.
+      *  Line 258 -> APPL-RESULT=12; line 266 PERFORM 9999-ABEND-
+      *  PROGRAM CALLs CEE3ABD once.  IO-STATUS receives the non-zero
+      *  status code (line 264) for downstream display.
+      ******************************************************************
+       TESTCASE 'CBACT04C 0100-XREFFILE-OPEN error 35 abends'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0100-XREFFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC17 -- 0200-DISCGRP-OPEN succeeds with status '00'.
+      ******************************************************************
+       TESTCASE 'CBACT04C 0200-DISCGRP-OPEN succeeds with status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO DISCGRP-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0200-DISCGRP-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT DISCGRP-STATUS TO BE '00'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC18 -- 0200-DISCGRP-OPEN failure ('35') triggers abend.
+      ******************************************************************
+       TESTCASE 'CBACT04C 0200-DISCGRP-OPEN error 35 abends'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO DISCGRP-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0200-DISCGRP-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC19 -- 0300-ACCTFILE-OPEN succeeds with status '00'.
+      ******************************************************************
+       TESTCASE 'CBACT04C 0300-ACCTFILE-OPEN succeeds with status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO ACCTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0300-ACCTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT ACCTFILE-STATUS TO BE '00'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC20 -- 0300-ACCTFILE-OPEN failure ('35') triggers abend.
+      ******************************************************************
+       TESTCASE 'CBACT04C 0300-ACCTFILE-OPEN error 35 abends'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO ACCTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0300-ACCTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC21 -- 0400-TRANFILE-OPEN succeeds with status '00'.
+      ******************************************************************
+       TESTCASE 'CBACT04C 0400-TRANFILE-OPEN succeeds with status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0400-TRANFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT TRANFILE-STATUS TO BE '00'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC22 -- 0400-TRANFILE-OPEN failure ('35') triggers abend.
+      ******************************************************************
+       TESTCASE 'CBACT04C 0400-TRANFILE-OPEN error 35 abends'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0400-TRANFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC23 -- 1100-GET-ACCT-DATA SUCCESS branch ('00').
+      *  Production line 379 sets APPL-RESULT=0 on file-status='00'.
+      ******************************************************************
+       TESTCASE 'CBACT04C 1100-GET-ACCT-DATA returns matched record'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO ACCTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1100-GET-ACCT-DATA
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT ACCTFILE-STATUS TO BE '00'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC24 -- 1100-GET-ACCT-DATA FAILURE branch ('23') abends.
+      *  Line 381 -> APPL-RESULT=12; line-389 PERFORM 9999-ABEND-
+      *  PROGRAM CALLs CEE3ABD once.
+      ******************************************************************
+       TESTCASE 'CBACT04C 1100-GET-ACCT-DATA missing ACCT status 23'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '23' TO ACCTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1100-GET-ACCT-DATA
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT ACCTFILE-STATUS TO BE '23'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC25 -- 1000-TCATBALF-GET-NEXT FAILURE ('92') triggers abend.
+      *  Production line 333 (status NOT='00' AND NOT='10') ->
+      *  APPL-RESULT=12; not APPL-EOF, so line 345 PERFORM 9999-
+      *  ABEND-PROGRAM CALLs CEE3ABD once.  This case complements TC2
+      *  (NORMAL) and TC3 (EOF).
+      ******************************************************************
+       TESTCASE 'CBACT04C 1000-TCATBALF-GET-NEXT error 92 abends'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '92' TO TCATBALF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-TCATBALF-GET-NEXT
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT END-OF-FILE TO BE 'N'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC26 -- 9000-TCATBALF-CLOSE succeeds with status '00'.
+      ******************************************************************
+       TESTCASE 'CBACT04C 9000-TCATBALF-CLOSE succeeds with status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TCATBALF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9000-TCATBALF-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT TCATBALF-STATUS TO BE '00'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC27 -- 9000-TCATBALF-CLOSE failure ('92') triggers abend.
+      ******************************************************************
+       TESTCASE 'CBACT04C 9000-TCATBALF-CLOSE error 92 abends'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '92' TO TCATBALF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9000-TCATBALF-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '92'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC28 -- 9100-XREFFILE-CLOSE succeeds with status '00'.
+      ******************************************************************
+       TESTCASE 'CBACT04C 9100-XREFFILE-CLOSE succeeds with status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9100-XREFFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT XREFFILE-STATUS TO BE '00'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC29 -- 9200-DISCGRP-CLOSE succeeds with status '00'.
+      ******************************************************************
+       TESTCASE 'CBACT04C 9200-DISCGRP-CLOSE succeeds with status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO DISCGRP-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9200-DISCGRP-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT DISCGRP-STATUS TO BE '00'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC30 -- 9300-ACCTFILE-CLOSE succeeds with status '00'.
+      ******************************************************************
+       TESTCASE 'CBACT04C 9300-ACCTFILE-CLOSE succeeds with status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO ACCTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9300-ACCTFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT ACCTFILE-STATUS TO BE '00'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC31 -- 9400-TRANFILE-CLOSE succeeds with status '00'.
+      ******************************************************************
+       TESTCASE 'CBACT04C 9400-TRANFILE-CLOSE succeeds with status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9400-TRANFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT TRANFILE-STATUS TO BE '00'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC32 -- Z-GET-DB2-FORMAT-TIMESTAMP fills DB2-format
+      *  separators ('-' and '.') and the trailing '0000' fraction.
+      *  Production lines 622-624 MOVE the literal separators into
+      *  the DB2-FORMAT-TS structure; date/time digits are runtime-
+      *  dependent (FUNCTION CURRENT-DATE) so we assert only the
+      *  deterministic separator positions.
+      ******************************************************************
+       TESTCASE 'CBACT04C Z-GET-DB2-FORMAT-TIMESTAMP fills separators'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            PERFORM Z-GET-DB2-FORMAT-TIMESTAMP
+            EXPECT DB2-STREEP-1 TO BE '-'
+            EXPECT DB2-STREEP-2 TO BE '-'
+            EXPECT DB2-STREEP-3 TO BE '-'
+            EXPECT DB2-DOT-1 TO BE '.'
+            EXPECT DB2-DOT-2 TO BE '.'
+            EXPECT DB2-DOT-3 TO BE '.'
+            EXPECT DB2-REST TO BE '0000'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC33 -- 9910-DISPLAY-IO-STATUS numeric branch.
+      *  Production line 636 IF NOT NUMERIC -- false for IO-STATUS='00'.
+      *  Line 644 MOVE '0000' to IO-STATUS-04; line 645 MOVE
+      *  IO-STATUS to IO-STATUS-04(3:2), so IO-STATUS-04='0000' for
+      *  status '00' (positions 3-4 overwritten with '00').
+      ******************************************************************
+       TESTCASE 'CBACT04C 9910-DISPLAY-IO-STATUS numeric 00 yields 0000'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO IO-STATUS
+            PERFORM 9910-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04 TO BE '0000'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC34 -- 9910-DISPLAY-IO-STATUS non-numeric/9-prefix branch.
+      *  Production line 637 IO-STAT1 = '9' fires (status '92' has
+      *  IO-STAT1='9'); line 638 MOVE '9' to IO-STATUS-04(1:1);
+      *  line 640 MOVE IO-STAT2 ('2') to TWO-BYTES-RIGHT.  Test
+      *  asserts IO-STATUS-04(1:1) = '9' as the canonical evidence
+      *  that the 9-prefix branch executed.
+      ******************************************************************
+       TESTCASE 'CBACT04C 9910-DISPLAY-IO-STATUS 9-prefix 92 fills'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '92' TO IO-STATUS
+            PERFORM 9910-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04(1:1) TO BE '9'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
       *  End of testsuite CBACT04C INTEREST POSTING.
-      *  Coverage: 14 testcases exercise 11 production paragraphs
-      *  (0000-TCATBALF-OPEN, 1000-TCATBALF-GET-NEXT, 1110-GET-XREF-
-      *  DATA, 1200-GET-INTEREST-RATE, 1200-A-GET-DEFAULT-INT-RATE,
-      *  1300-COMPUTE-INTEREST, 1300-B-WRITE-TX, 1050-UPDATE-ACCOUNT,
-      *  9999-ABEND-PROGRAM, plus Z-GET-DB2-FORMAT-TIMESTAMP transit-
-      *  ively).  All 4 lint gates pass; no business arithmetic.
+      *  Coverage: 34 testcases exercise all production paragraphs
+      *  (open/close x 5 files, get-next/get-data x 4, compute-interest
+      *  x 3 inputs, write-tx, update-account, abend-program, db2-
+      *  timestamp, display-io-status branches).  All 4 lint gates
+      *  pass; no business arithmetic.
       ******************************************************************

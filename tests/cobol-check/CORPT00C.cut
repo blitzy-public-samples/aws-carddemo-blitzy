@@ -499,6 +499,343 @@
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
+      *  TC9 -- PROCESS-ENTER-KEY CUSTOM with empty SDTMMI rejected
+      *
+      *  Drives PROCESS-ENTER-KEY through WHEN CUSTOMI != SPACES
+      *  branch (line 256) -> nested EVALUATE -> WHEN SDTMMI =
+      *  SPACES (lines 259-265).  Production sets WS-MESSAGE='Start
+      *  Date - Month can NOT be empty...' and WS-ERR-FLG='Y'.
+      ******************************************************************
+       TESTCASE 'CORPT00C PROCESS-ENTER-KEY CUSTOM rejects empty SDTMMI'
+            MOVE 'Y' TO CUSTOMI OF CORPT0AI
+            MOVE LOW-VALUES TO SDTMMI OF CORPT0AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY THRU INITIALIZE-ALL-FIELDS
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC10 -- PROCESS-ENTER-KEY CUSTOM with non-empty SDTMMI/SDTDDI
+      *          but empty SDTYYYYI rejected
+      ******************************************************************
+       TESTCASE 'CORPT00C PROCESS-ENTER-KEY CUSTOM rejects empty year'
+            MOVE 'Y' TO CUSTOMI OF CORPT0AI
+            MOVE '06' TO SDTMMI OF CORPT0AI
+            MOVE '15' TO SDTDDI OF CORPT0AI
+            MOVE LOW-VALUES TO SDTYYYYI OF CORPT0AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY THRU INITIALIZE-ALL-FIELDS
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC11 -- PROCESS-ENTER-KEY CUSTOM with empty SDTDDI rejected
+      ******************************************************************
+       TESTCASE 'CORPT00C PROCESS-ENTER-KEY CUSTOM rejects empty day'
+            MOVE 'Y' TO CUSTOMI OF CORPT0AI
+            MOVE '06' TO SDTMMI OF CORPT0AI
+            MOVE LOW-VALUES TO SDTDDI OF CORPT0AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY THRU INITIALIZE-ALL-FIELDS
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC12 -- SEND-TRNRPT-SCREEN propagates WS-MESSAGE with
+      *           SEND-ERASE-YES (default) branch
+      *
+      *  Drives SEND-TRNRPT-SCREEN (production lines 556-580).  This
+      *  paragraph is the destination of every error and success
+      *  pathway in CORPT00C: every reject path in PROCESS-ENTER-KEY
+      *  and SUBMIT-JOB-TO-INTRDR funnels here, and the MAIN-PARA
+      *  WHEN OTHER (PF-key invalid) branch also lands here.  The
+      *  paragraph executes:
+      *
+      *    PERFORM POPULATE-HEADER-INFO                       (line 558)
+      *    MOVE WS-MESSAGE TO ERRMSGO OF CORPT0AO             (line 560)
+      *    IF SEND-ERASE-YES                                  (line 562)
+      *        EXEC CICS SEND ... ERASE                       (lines 563-569)
+      *    ELSE
+      *        EXEC CICS SEND ...                             (lines 571-577)
+      *    END-IF.
+      *    GO TO RETURN-TO-CICS.                              (line 580)
+      *
+      *  This testcase exercises the SEND-ERASE-YES branch (line
+      *  562 IF arm) - the default established by line 47 PIC X(01)
+      *  VALUE 'Y' and re-applied by BEFORE-EACH INITIALIZE.  The
+      *  production GO TO RETURN-TO-CICS jumps out of the paragraph;
+      *  PERFORM ... THRU INITIALIZE-ALL-FIELDS extends the THRU
+      *  range so RETURN-TO-CICS, RECEIVE-TRNRPT-SCREEN, POPULATE-
+      *  HEADER-INFO, and INITIALIZE-ALL-FIELDS all run in sequence,
+      *  ending the PERFORM at INITIALIZE-ALL-FIELDS' last line.
+      *
+      *  The test asserts the SIDE EFFECT of line 560: ERRMSGO equals
+      *  the seeded WS-MESSAGE.  INITIALIZE-ALL-FIELDS clears WS-
+      *  MESSAGE itself but does NOT touch CORPT0AO output map
+      *  (CORPT0AO is a distinct group from CORPT0AI input map),
+      *  so ERRMSGO retains the value MOVE'd by line 560.  This
+      *  proves the production paragraph actually executed: a
+      *  regression that drops line 560 would leave ERRMSGO as
+      *  SPACES (BEFORE-EACH default for output map).
+      *
+      *  Pre-conditions: BEFORE-EACH leaves WS-SEND-ERASE-FLG='Y'
+      *  via INITIALIZE WS-VARIABLES ALL TO VALUE (production line
+      *  47 VALUE clause).  TC12 prelude seeds WS-MESSAGE with a
+      *  recognizable 80-byte string so the assertion can detect it.
+      ******************************************************************
+       TESTCASE 'CORPT00C SEND-TRNRPT-SCREEN ERASE-YES propagates msg'
+            MOVE 'TC12 SENTINEL MESSAGE'             TO WS-MESSAGE
+            SET SEND-ERASE-YES TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM SEND-TRNRPT-SCREEN THRU INITIALIZE-ALL-FIELDS
+            EXPECT ERRMSGO OF CORPT0AO TO BE
+            'TC12 SENTINEL MESSAGE'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC13 -- SEND-TRNRPT-SCREEN propagates WS-MESSAGE with
+      *           SEND-ERASE-NO (alternate) branch
+      *
+      *  Drives SEND-TRNRPT-SCREEN line-562 ELSE arm (lines 570-577).
+      *  The only structural difference from TC12 is which EXEC CICS
+      *  SEND verb fires; both verbs are stripped by cobol-check
+      *  0.2.16, so the ELSE arm's coverage gain is the IF condition
+      *  evaluator and the ELSE-block gcov line counters at 570-577.
+      *  Pre-condition flips SEND-ERASE-NO via SET (88-level toggle
+      *  of WS-SEND-ERASE-FLG to 'N').  The test asserts the same
+      *  WS-MESSAGE -> ERRMSGO propagation as TC12.
+      ******************************************************************
+       TESTCASE 'CORPT00C SEND-TRNRPT-SCREEN ERASE-NO propagates msg'
+            MOVE 'TC13 SENTINEL ALTERNATE'           TO WS-MESSAGE
+            SET SEND-ERASE-NO TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM SEND-TRNRPT-SCREEN THRU INITIALIZE-ALL-FIELDS
+            EXPECT ERRMSGO OF CORPT0AO TO BE
+            'TC13 SENTINEL ALTERNATE'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC14 -- RECEIVE-TRNRPT-SCREEN traverses
+      *
+      *  Drives RECEIVE-TRNRPT-SCREEN (production lines 596-604).
+      *  The paragraph contains a single EXEC CICS RECEIVE verb that
+      *  cobol-check strips during merge.  The PERFORM completes
+      *  immediately at end-of-paragraph.  The test asserts the
+      *  production invariant that the paragraph contains NO
+      *  unmocked CALL site (line 591 EIBCALEN side effect would be
+      *  set by a real CICS region; the safety-net flag remains 'N'
+      *  off-platform).
+      *
+      *  Coverage gain: paragraph entry, exit, and the EXEC CICS
+      *  RECEIVE site's gcov line counters.  This is the structural
+      *  cover-the-paragraph pattern needed because the production
+      *  EXEC CICS verb cannot run off-platform.
+      ******************************************************************
+       TESTCASE 'CORPT00C RECEIVE-TRNRPT-SCREEN traverses'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM RECEIVE-TRNRPT-SCREEN
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC15 -- WIRTE-JOBSUB-TDQ NORMAL response (CONTINUE arm)
+      *
+      *  Drives WIRTE-JOBSUB-TDQ (production lines 515-535).
+      *  Production paragraph spelling preserved verbatim per AAP
+      *  "ONLY modify test files" rule.  Paragraph executes:
+      *
+      *    EXEC CICS WRITEQ TD                                (line 517)
+      *      QUEUE ('JOBS')
+      *      FROM (JCL-RECORD)
+      *      LENGTH (LENGTH OF JCL-RECORD)
+      *      RESP(WS-RESP-CD)
+      *      RESP2(WS-REAS-CD)
+      *    END-EXEC.                                          (line 523)
+      *
+      *    EVALUATE WS-RESP-CD                                (line 525)
+      *        WHEN DFHRESP(NORMAL)                           (line 526)
+      *            CONTINUE                                   (line 527)
+      *        WHEN OTHER                                     (line 528)
+      *            ... error block ...                        (lines 529-534)
+      *    END-EVALUATE.                                      (line 535)
+      *
+      *  cobol-check 0.2.16 strips the EXEC CICS WRITEQ TD during
+      *  merge; WS-RESP-CD is unchanged from BEFORE-EACH default
+      *  (zero, from production line 54 VALUE ZEROS).  GnuCOBOL
+      *  resolves DFHRESP(NORMAL) to integer 0, so EVALUATE WS-
+      *  RESP-CD takes WHEN NORMAL arm at line 526.  CONTINUE
+      *  fires at line 527; WS-ERR-FLG remains BEFORE-EACH default
+      *  'N'.
+      *
+      *  Coverage gain: paragraph entry, EXEC CICS WRITEQ site, the
+      *  EVALUATE WS-RESP-CD setup, and the WHEN NORMAL CONTINUE
+      *  arm.  The complementary WHEN OTHER arm is exercised by
+      *  TC16.
+      *
+      *  Pre-conditions: BEFORE-EACH INITIALIZE WS-VARIABLES ALL
+      *  TO VALUE re-applies WS-RESP-CD = 0 (production line 54)
+      *  and WS-ERR-FLG = 'N' (production line 41).  No prelude
+      *  needed.
+      ******************************************************************
+       TESTCASE 'CORPT00C WIRTE-JOBSUB-TDQ NORMAL response'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM WIRTE-JOBSUB-TDQ
+            EXPECT WS-ERR-FLG TO BE 'N'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC16 -- WIRTE-JOBSUB-TDQ OTHER response (error path)
+      *
+      *  Drives WIRTE-JOBSUB-TDQ (production lines 515-535) along
+      *  the WHEN OTHER branch (lines 528-534).  TC16 prelude pre-
+      *  loads WS-RESP-CD with a non-NORMAL value (99).  After the
+      *  EXEC CICS WRITEQ TD strip, WS-RESP-CD remains 99; EVALUATE
+      *  takes WHEN OTHER.  The error block executes:
+      *
+      *    DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD     (line 529)
+      *    MOVE 'Y'     TO WS-ERR-FLG                         (line 530)
+      *    MOVE 'Unable to Write TDQ (JOBS)...' TO            (line 531)
+      *                    WS-MESSAGE                         (line 532)
+      *    MOVE -1       TO MONTHLYL OF CORPT0AI              (line 533)
+      *    PERFORM SEND-TRNRPT-SCREEN                         (line 534)
+      *
+      *  PERFORM SEND-TRNRPT-SCREEN at line 534 transfers control
+      *  through SEND-TRNRPT-SCREEN whose terminal GO TO RETURN-TO-
+      *  CICS (line 580) jumps out of the paragraph.  The outer
+      *  PERFORM WIRTE-JOBSUB-TDQ THRU INITIALIZE-ALL-FIELDS
+      *  catches the GO TO target within its THRU range; control
+      *  falls through RETURN-TO-CICS, RECEIVE-TRNRPT-SCREEN,
+      *  POPULATE-HEADER-INFO, and INITIALIZE-ALL-FIELDS, ending
+      *  the THRU at the latter's last line.
+      *
+      *  Side effects asserted:
+      *    WS-ERR-FLG = 'Y' (line 530; INITIALIZE-ALL-FIELDS does
+      *                      NOT touch this field, so it survives)
+      *    ERRMSGO contains 'Unable' (SEND-TRNRPT-SCREEN line 560
+      *                      MOVE'd WS-MESSAGE to ERRMSGO before
+      *                      INITIALIZE-ALL-FIELDS cleared WS-
+      *                      MESSAGE; ERRMSGO is in CORPT0AO output
+      *                      map, NOT cleared by INITIALIZE-ALL-
+      *                      FIELDS which only clears CORPT0AI
+      *                      input map plus WS-MESSAGE)
+      *
+      *  Pre-conditions: TC16 prelude moves 99 (any non-zero) to
+      *  WS-RESP-CD to force EVALUATE off the WHEN NORMAL arm.
+      *  The literal 99 is NOT a re-derivation of production
+      *  semantics - it is simply any value that is "not zero",
+      *  satisfying the test author's external knowledge that
+      *  DFHRESP(NORMAL) = 0 in GnuCOBOL.
+      ******************************************************************
+       TESTCASE 'CORPT00C WIRTE-JOBSUB-TDQ OTHER response error path'
+            MOVE 99 TO WS-RESP-CD
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM WIRTE-JOBSUB-TDQ THRU INITIALIZE-ALL-FIELDS
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT ERRMSGO OF CORPT0AO TO BE
+            'Unable to Write TDQ (JOBS)...                                                 '
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC17 -- PROCESS-ENTER-KEY MONTHLY happy path reaches confirm
+      *
+      *  Drives PROCESS-ENTER-KEY (production lines 208-456) along
+      *  the WHEN MONTHLYI != SPACES branch (line 213).  Pre-loads
+      *  MONTHLYI with 'M'.  The production paragraph executes:
+      *
+      *    WHEN MONTHLYI NOT = SPACES AND LOW-VALUES          (line 213)
+      *        MOVE 'Monthly' TO WS-REPORT-NAME               (line 214)
+      *        MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA  (line 215)
+      *        MOVE WS-CURDATE-YEAR     TO WS-START-DATE-YYYY (line 217)
+      *        ... ADD/COMPUTE date arithmetic ...            (lines 218-236)
+      *        PERFORM SUBMIT-JOB-TO-INTRDR                   (line 238)
+      *
+      *  SUBMIT-JOB-TO-INTRDR sees CONFIRMI = SPACES (BEFORE-EACH
+      *  INITIALIZE CORPT0AI default) and rejects per its line 464
+      *  IF block: STRING 'Please confirm to print the Monthly
+      *  report...' INTO WS-MESSAGE, MOVE 'Y' TO WS-ERR-FLG,
+      *  MOVE -1 TO CONFIRML, PERFORM SEND-TRNRPT-SCREEN.  After
+      *  the rejection, IF NOT ERR-FLG-ON at line 476 is FALSE,
+      *  so the JOB-LINES loop is skipped.
+      *
+      *  Coverage gain: production lines 213-238 (the WHEN MONTHLYI
+      *  arm in the outer EVALUATE TRUE).  This is approximately 25
+      *  uncovered lines including the date-arithmetic block 218-
+      *  236, raising PROCESS-ENTER-KEY coverage by approximately
+      *  5-7 percentage points.
+      *
+      *  Side effects asserted:
+      *    WS-REPORT-NAME = 'Monthly' (line 214)
+      *    WS-ERR-FLG = 'Y' (set by SUBMIT-JOB-TO-INTRDR line 471
+      *                       on the empty-confirm rejection)
+      *
+      *  PERFORM ... THRU INITIALIZE-ALL-FIELDS extends the THRU
+      *  range so the SEND-TRNRPT-SCREEN GO TO RETURN-TO-CICS
+      *  chain lands within scope.
+      ******************************************************************
+       TESTCASE 'CORPT00C PROCESS-ENTER-KEY MONTHLY reaches confirm'
+            MOVE 'M' TO MONTHLYI OF CORPT0AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY THRU INITIALIZE-ALL-FIELDS
+            EXPECT WS-REPORT-NAME TO BE 'Monthly   '
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC18 -- PROCESS-ENTER-KEY YEARLY happy path reaches confirm
+      *
+      *  Drives PROCESS-ENTER-KEY along the WHEN YEARLYI != SPACES
+      *  branch (line 239) with same gating mechanism as TC17.  The
+      *  YEARLY block (lines 239-255) uses hard-coded MM='01' DD='01'
+      *  / MM='12' DD='31' instead of date arithmetic, so the
+      *  coverage gain is approximately 17 lines.  Side effects:
+      *  WS-REPORT-NAME = 'Yearly', WS-ERR-FLG = 'Y' (rejection
+      *  on empty CONFIRMI).
+      ******************************************************************
+       TESTCASE 'CORPT00C PROCESS-ENTER-KEY YEARLY reaches confirm'
+            MOVE 'Y' TO YEARLYI OF CORPT0AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY THRU INITIALIZE-ALL-FIELDS
+            EXPECT WS-REPORT-NAME TO BE 'Yearly    '
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
       *  End of testsuite CORPT00C REPORT SUBMIT TRANSACTION
       ******************************************************************
 

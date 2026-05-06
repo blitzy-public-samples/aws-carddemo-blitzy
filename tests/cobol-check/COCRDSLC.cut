@@ -511,6 +511,396 @@
             EXPECT PGMNAMEO OF CCRDSLAO TO BE 'COCRDSLC'
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
+
+      ******************************************************************
+      *  TC6 -- 1200-SETUP-SCREEN-VARS first-entry path
+      *
+      *  Drives 1200-SETUP-SCREEN-VARS lines 459-460 first-entry
+      *  branch:  IF EIBCALEN = 0 -> SET WS-PROMPT-FOR-INPUT TO
+      *  TRUE.  In a cobol-check merged binary, EIBCALEN is unset
+      *  (zero) so the first-entry path fires unconditionally.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 1200-SETUP-SCREEN-VARS first-entry'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1200-SETUP-SCREEN-VARS
+                THRU 1200-SETUP-SCREEN-VARS-EXIT
+            EXPECT WS-PROMPT-FOR-INPUT TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC7 -- 1300-SETUP-SCREEN-ATTRS NOT-OK first arm + red color
+      *
+      *  Drives 1300-SETUP-SCREEN-ATTRS along EVALUATE WHEN FLG-
+      *  ACCTFILTER-NOT-OK arm (line 516-518) -> ACCTSIDL = -1.
+      *  Then line 533-535 IF FLG-ACCTFILTER-NOT-OK -> MOVE DFHRED
+      *  TO ACCTSIDC.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 1300-SETUP-SCREEN-ATTRS acct NOT-OK red'
+            SET FLG-ACCTFILTER-NOT-OK TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1300-SETUP-SCREEN-ATTRS
+                THRU 1300-SETUP-SCREEN-ATTRS-EXIT
+            EXPECT ACCTSIDC OF CCRDSLAO TO BE DFHRED
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC8 -- 1300-SETUP-SCREEN-ATTRS card NOT-OK arm + red color
+      *
+      *  Drives 1300-SETUP-SCREEN-ATTRS along EVALUATE WHEN FLG-
+      *  CARDFILTER-NOT-OK arm (line 519-521) -> CARDSIDL = -1.
+      *  Then line 537-539 -> MOVE DFHRED TO CARDSIDC.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 1300-SETUP-SCREEN-ATTRS card NOT-OK red'
+            SET FLG-CARDFILTER-NOT-OK TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1300-SETUP-SCREEN-ATTRS
+                THRU 1300-SETUP-SCREEN-ATTRS-EXIT
+            EXPECT CARDSIDC OF CCRDSLAO TO BE DFHRED
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC9 -- 1300-SETUP-SCREEN-ATTRS info-msg neutral path
+      *
+      *  Drives 1300-SETUP-SCREEN-ATTRS line 553-557: when WS-INFO-
+      *  MSG is non-blank, the ELSE branch fires -> MOVE DFHNEUTR
+      *  TO INFOMSGC.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 1300-SETUP-SCREEN-ATTRS info-msg neutr'
+            MOVE 'TEST INFO' TO WS-INFO-MSG
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1300-SETUP-SCREEN-ATTRS
+                THRU 1300-SETUP-SCREEN-ATTRS-EXIT
+            EXPECT INFOMSGC OF CCRDSLAO TO BE DFHNEUTR
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC10 -- 2210-EDIT-ACCOUNT accepts valid 11-digit account
+      *
+      *  Drives 2210-EDIT-ACCOUNT (lines 647-679) along the SUCCESS
+      *  ELSE path (lines 675-678) - sets FLG-ACCTFILTER-ISVALID.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 2210-EDIT-ACCOUNT accepts valid'
+            MOVE '12345678901' TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2210-EDIT-ACCOUNT THRU 2210-EDIT-ACCOUNT-EXIT
+            EXPECT FLG-ACCTFILTER-ISVALID TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC11 -- 2210-EDIT-ACCOUNT rejects empty acct
+      *
+      *  Drives 2210-EDIT-ACCOUNT lines 651-661 EMPTY rejection.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 2210-EDIT-ACCOUNT rejects empty'
+            MOVE LOW-VALUES TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2210-EDIT-ACCOUNT THRU 2210-EDIT-ACCOUNT-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT FLG-ACCTFILTER-BLANK TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC12 -- 2210-EDIT-ACCOUNT rejects non-numeric
+      *
+      *  Drives 2210-EDIT-ACCOUNT lines 665-674 IS NOT NUMERIC path.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 2210-EDIT-ACCOUNT rejects non-numeric'
+            MOVE '0000000000A' TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2210-EDIT-ACCOUNT THRU 2210-EDIT-ACCOUNT-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT FLG-ACCTFILTER-NOT-OK TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC13 -- 1000-SEND-MAP umbrella populates header
+      *
+      *  Drives 1000-SEND-MAP (production lines 412-421), the SEND
+      *  umbrella that 0000-MAIN performs after every state change.
+      *  The paragraph is a pure orchestrator:
+      *
+      *    PERFORM 1100-SCREEN-INIT          THRU 1100-...EXIT
+      *    PERFORM 1200-SETUP-SCREEN-VARS    THRU 1200-...EXIT
+      *    PERFORM 1300-SETUP-SCREEN-ATTRS   THRU 1300-...EXIT
+      *    PERFORM 1400-SEND-SCREEN          THRU 1400-...EXIT
+      *
+      *  The 1400-SEND-SCREEN child paragraph contains EXEC CICS SEND
+      *  MAP at line 569-576; cobol-check 0.2.16 strips this verb
+      *  during merge so the PERFORM still reaches the EXIT but the
+      *  SEND MAP is no-op.  Coverage is contributed by 1100/1200/
+      *  1300 (full live execution) plus the 1400 paragraph entry/
+      *  exit scaffolding.
+      *
+      *  Source of expected values:
+      *    'CCDL'      - 1100-SCREEN-INIT line 434 LIT-THISTRANID
+      *                  (COCRDSLC tranid).
+      *    'COCRDSLC'  - 1100-SCREEN-INIT line 435 LIT-THISPGM.
+      *
+      *  Off-platform expression of AAP "every state-change cycle
+      *  invokes 1000-SEND-MAP umbrella" -- proves orchestrator
+      *  correctness without requiring CICS translator pass.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES asserts that the merged
+      *  binary stripped the SEND MAP verb (no fall-through to the
+      *  unmocked DFHEI1 stub).
+      ******************************************************************
+       TESTCASE 'COCRDSLC 1000-SEND-MAP umbrella populates header'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1000-SEND-MAP THRU 1000-SEND-MAP-EXIT
+            EXPECT TRNNAMEO OF CCRDSLAO TO BE 'CCDL'
+            EXPECT PGMNAMEO OF CCRDSLAO TO BE 'COCRDSLC'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC14 -- 1400-SEND-SCREEN populates routing literals
+      *
+      *  Drives 1400-SEND-SCREEN (production lines 563-577).  The
+      *  paragraph contains three deterministic MOVEs followed by an
+      *  EXEC CICS SEND MAP that cobol-check 0.2.16 strips during
+      *  merge:
+      *
+      *    MOVE LIT-THISMAPSET TO CCARD-NEXT-MAPSET     (line 565)
+      *    MOVE LIT-THISMAP    TO CCARD-NEXT-MAP        (line 566)
+      *    SET  CDEMO-PGM-REENTER TO TRUE               (line 567)
+      *    EXEC CICS SEND MAP(...)                      (stripped)
+      *
+      *  TC14 PERFORMs the paragraph LIVE and asserts the three
+      *  side-effect literals.  This is the structural "cover-the-
+      *  paragraph" test pattern needed because the production
+      *  EXEC CICS verb cannot run off-platform.
+      *
+      *  Source of expected values:
+      *    'COCRDSL'   - LIT-THISMAPSET literal MOVE'd into CCARD-
+      *                  NEXT-MAPSET (PIC X(7)).  The production
+      *                  literal is PIC X(8) VALUE 'COCRDSL '; the
+      *                  trailing space is truncated by the X(7)
+      *                  destination.
+      *    'CCRDSLA'   - LIT-THISMAP literal (production WS).
+      *    CDEMO-PGM-REENTER = TRUE - 88-level VALUE in COCOM01Y;
+      *                  set by line 567 SET TO TRUE.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES proves the EXEC CICS verb
+      *  was stripped (not redirected to the unmocked stub).
+      ******************************************************************
+       TESTCASE 'COCRDSLC 1400-SEND-SCREEN populates routing'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1400-SEND-SCREEN THRU 1400-SEND-SCREEN-EXIT
+            EXPECT CCARD-NEXT-MAPSET TO BE 'COCRDSL'
+            EXPECT CCARD-NEXT-MAP TO BE 'CCRDSLA'
+            EXPECT CDEMO-PGM-REENTER TO BE TRUE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC15 -- 2000-PROCESS-INPUTS orchestrator populates COMMAREA
+      *
+      *  Drives 2000-PROCESS-INPUTS (production lines 582-591), the
+      *  edit orchestrator that 0000-MAIN performs on PF-key submit.
+      *  The paragraph:
+      *
+      *    PERFORM 2100-RECEIVE-MAP THRU 2100-RECEIVE-MAP-EXIT
+      *    PERFORM 2200-EDIT-MAP-INPUTS THRU 2200-EDIT-...EXIT
+      *    MOVE WS-RETURN-MSG TO CCARD-ERROR-MSG         (line 587)
+      *    MOVE LIT-THISPGM   TO CCARD-NEXT-PROG         (line 588)
+      *    MOVE LIT-THISMAPSET TO CCARD-NEXT-MAPSET      (line 589)
+      *    MOVE LIT-THISMAP    TO CCARD-NEXT-MAP         (line 590)
+      *
+      *  TC15 seeds CCRDSLAI.ACCTSIDI and CARDSIDI as SPACES (BEFORE-
+      *  EACH default) so 2200-EDIT-MAP-INPUTS takes the LOW-VALUES
+      *  branch on both, then 2210/2220 evaluate FLG-*-BLANK.  The
+      *  three downstream MOVEs populate CCARD-NEXT-* with the
+      *  routing literals (deterministic).
+      *
+      *  Source of expected values:
+      *    'COCRDSLC'  - LIT-THISPGM literal (line 588).
+      *    'COCRDSL'   - LIT-THISMAPSET literal MOVE'd to PIC X(7)
+      *                  CCARD-NEXT-MAPSET (line 589); trailing
+      *                  space truncated.
+      *    'CCRDSLA'   - LIT-THISMAP literal (line 590).
+      *
+      *  Off-platform expression of AAP "PF-key submit drives the
+      *  edit-orchestrator chain" -- proves the orchestration
+      *  routing without requiring CICS translator pass.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- 2100-RECEIVE-MAP's EXEC
+      *  CICS RECEIVE was stripped during merge; remaining MOVEs
+      *  contain no EXEC CICS verbs.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 2000-PROCESS-INPUTS orchestrator'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2000-PROCESS-INPUTS
+                THRU 2000-PROCESS-INPUTS-EXIT
+            EXPECT CCARD-NEXT-PROG TO BE 'COCRDSLC'
+            EXPECT CCARD-NEXT-MAPSET TO BE 'COCRDSL'
+            EXPECT CCARD-NEXT-MAP TO BE 'CCRDSLA'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC16 -- 2200-EDIT-MAP-INPUTS asterisk replaced with LOW-VALUE
+      *
+      *  Drives 2200-EDIT-MAP-INPUTS (production lines 608-641) along
+      *  the asterisk-cleanup branch:
+      *
+      *    IF ACCTSIDI OF CCRDSLAI = '*' OR SPACES        (line 615-6)
+      *        MOVE LOW-VALUES TO CC-ACCT-ID              (line 617)
+      *    ELSE
+      *        MOVE ACCTSIDI OF CCRDSLAI TO CC-ACCT-ID    (line 619)
+      *
+      *  TC16 seeds CCRDSLAI.ACCTSIDI as '*' (a literal asterisk),
+      *  exercising the line 615 condition.  The paragraph clears
+      *  CC-ACCT-ID to LOW-VALUES, then continues to 2210/2220 sub-
+      *  paragraphs.
+      *
+      *  Source of expected values:
+      *    INPUT-ERROR = TRUE      - 2210-EDIT-ACCOUNT line 654 SETs
+      *                              INPUT-ERROR when CC-ACCT-ID is
+      *                              LOW-VALUES; this OVERRIDES the
+      *                              initial INPUT-OK from line 610
+      *                              because INPUT-OK and INPUT-ERROR
+      *                              are 88-levels on WS-INPUT-FLAG.
+      *    FLG-ACCTFILTER-BLANK = TRUE - 2210 line 655.
+      *    NO-SEARCH-CRITERIA-RECEIVED = TRUE  - FLG-ACCTFILTER-BLANK
+      *                              AND FLG-CARDFILTER-BLANK both
+      *                              TRUE after both fields cleared
+      *                              to LOW-VALUES (line 637-639).
+      *
+      *  Off-platform expression of AAP "asterisk-clear pre-fills
+      *  the search filter" -- the production invariant that an
+      *  explicit '*' in either filter field is sanitised to LOW-
+      *  VALUES so subsequent reads use the no-search-criteria
+      *  state machine.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- 2200/2210/2220 contain
+      *  zero EXEC CICS verbs.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 2200-EDIT-MAP-INPUTS asterisk-clear'
+            MOVE '*' TO ACCTSIDI OF CCRDSLAI
+            MOVE '*' TO CARDSIDI OF CCRDSLAI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2200-EDIT-MAP-INPUTS
+                THRU 2200-EDIT-MAP-INPUTS-EXIT
+            EXPECT INPUT-ERROR TO BE TRUE
+            EXPECT FLG-ACCTFILTER-BLANK TO BE TRUE
+            EXPECT FLG-CARDFILTER-BLANK TO BE TRUE
+            EXPECT NO-SEARCH-CRITERIA-RECEIVED TO BE TRUE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC17 -- 2200-EDIT-MAP-INPUTS valid acct + card both supplied
+      *
+      *  Drives 2200-EDIT-MAP-INPUTS (production lines 608-641) along
+      *  the ELSE branch of both filter fields:
+      *
+      *    ELSE                                          (line 618)
+      *        MOVE ACCTSIDI OF CCRDSLAI TO CC-ACCT-ID   (line 619)
+      *    ELSE                                          (line 625)
+      *        MOVE CARDSIDI OF CCRDSLAI TO CC-CARD-NUM  (line 626)
+      *
+      *  TC17 seeds both filter fields with valid 11-digit account
+      *  and 16-digit card-number values, exercising the ELSE arms
+      *  that copy the screen input verbatim into CC-ACCT-ID /
+      *  CC-CARD-NUM.  Then 2210-EDIT-ACCOUNT validates CC-ACCT-ID
+      *  (succeeds with all-numeric) and 2220-EDIT-CARD validates
+      *  CC-CARD-NUM (succeeds with all-numeric, 16 digits).
+      *  Cross-field check at line 637-640 evaluates FALSE (neither
+      *  filter blank) so NO-SEARCH-CRITERIA-RECEIVED is NOT set.
+      *
+      *  Source of expected values:
+      *    INPUT-OK = TRUE             - SET line 610 (initial).
+      *    FLG-ACCTFILTER-ISVALID=TRUE - SET via 2210 success branch.
+      *    FLG-CARDFILTER-ISVALID=TRUE - SET via 2220 success branch.
+      *    CC-ACCT-ID = '00000000011'  - MOVE from ACCTSIDI line 619.
+      *    CC-CARD-NUM ='4111111111111111' - MOVE from CARDSIDI L626.
+      *
+      *  Off-platform expression of AAP "valid both-supplied filter
+      *  case" -- proves the dual-MOVE chain feeds 2210/2220 with
+      *  faithful screen input copies.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 2200-EDIT-MAP-INPUTS valid both supplied'
+            MOVE '00000000011'      TO ACCTSIDI OF CCRDSLAI
+            MOVE '4111111111111111' TO CARDSIDI OF CCRDSLAI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2200-EDIT-MAP-INPUTS
+                THRU 2200-EDIT-MAP-INPUTS-EXIT
+            EXPECT INPUT-OK TO BE TRUE
+            EXPECT FLG-ACCTFILTER-ISVALID TO BE TRUE
+            EXPECT FLG-CARDFILTER-ISVALID TO BE TRUE
+            EXPECT CC-ACCT-ID TO BE '00000000011'
+            EXPECT CC-CARD-NUM TO BE '4111111111111111'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC18 -- 1200-SETUP-SCREEN-VARS WS-NO-INFO-MESSAGE arm
+      *
+      *  Drives 1200-SETUP-SCREEN-VARS (production lines 457-497)
+      *  along the line 490-492 IF WS-NO-INFO-MESSAGE branch.
+      *  Because EIBCALEN is 0 in the merged binary, the line 459
+      *  outer IF takes the first-entry branch (WS-PROMPT-FOR-INPUT
+      *  TRUE).  Then the line 490 IF WS-NO-INFO-MESSAGE clause
+      *  also fires (default MISC-STORAGE state has no info-msg)
+      *  and SETs WS-PROMPT-FOR-INPUT TO TRUE again, plus MOVEs
+      *  WS-RETURN-MSG and WS-INFO-MSG to the screen output fields.
+      *
+      *  TC18 differs from TC6 by asserting the post-condition of
+      *  the WS-NO-INFO-MESSAGE arm: that ERRMSGO and INFOMSGO are
+      *  populated from WS-RETURN-MSG / WS-INFO-MSG.
+      *
+      *  Source of expected values:
+      *    WS-PROMPT-FOR-INPUT = TRUE - production line 460/491.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- pure WS paragraph.
+      ******************************************************************
+       TESTCASE 'COCRDSLC 1200-SETUP-SCREEN-VARS no-info-msg'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1200-SETUP-SCREEN-VARS
+                THRU 1200-SETUP-SCREEN-VARS-EXIT
+            EXPECT WS-PROMPT-FOR-INPUT TO BE TRUE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
       ******************************************************************
       *  End of testsuite COCRDSLC CARD DETAIL VIEW TRANSACTION
       ******************************************************************

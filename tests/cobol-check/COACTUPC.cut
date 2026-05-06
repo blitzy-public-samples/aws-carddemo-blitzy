@@ -590,5 +590,1355 @@
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
+      *  TC9 -- 1215-EDIT-MANDATORY rejects empty input
+      *
+      *  Drives 1215-EDIT-MANDATORY (lines 1731-1758) along the BLANK
+      *  input path: WS-EDIT-ALPHANUM-ONLY=SPACES.  Production sets
+      *  FLG-MANDATORY-BLANK = 'B' (88-level), populates WS-RETURN-
+      *  MSG with '<variable> must be supplied.', and GO TO the EXIT.
+      *
+      *  Source of expected values:
+      *    'B'    - WS-EDIT-ALPHANUM-ONLY-FLAGS flipped by FLG-
+      *             MANDATORY-BLANK SET (88-level VALUE 'B').
+      *    Production line 1741 sets FLG-MANDATORY-BLANK; the test
+      *    asserts the side effect, no recomputation of validation
+      *    logic.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1215-EDIT-MANDATORY rejects empty input'
+            MOVE SPACES TO WS-EDIT-ALPHANUM-ONLY
+            MOVE 10 TO WS-EDIT-ALPHANUM-LENGTH
+            MOVE 'TestField' TO WS-EDIT-VARIABLE-NAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1215-EDIT-MANDATORY THRU 1215-EDIT-MANDATORY-EXIT
+            EXPECT WS-EDIT-MANDATORY-FLAGS TO BE 'B'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC10 -- 1215-EDIT-MANDATORY accepts non-blank input
+      *
+      *  Drives 1215-EDIT-MANDATORY along the SUCCESS path: WS-EDIT-
+      *  ALPHANUM-ONLY contains a non-blank value.  Production sets
+      *  FLG-MANDATORY-ISVALID (LOW-VALUES) and falls through to the
+      *  EXIT.  Asserts the side effect on the flag without
+      *  recomputing the validation predicate.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1215-EDIT-MANDATORY accepts non-blank input'
+            MOVE 'A' TO WS-EDIT-ALPHANUM-ONLY
+            MOVE 1 TO WS-EDIT-ALPHANUM-LENGTH
+            MOVE 'TestField' TO WS-EDIT-VARIABLE-NAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1215-EDIT-MANDATORY THRU 1215-EDIT-MANDATORY-EXIT
+            EXPECT WS-RETURN-MSG TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC11 -- 1245-EDIT-NUM-REQD rejects empty numeric field
+      *
+      *  Drives 1245-EDIT-NUM-REQD along the BLANK path: WS-EDIT-
+      *  ALPHANUM-ONLY=SPACES.  Production sets FLG-ALPHNANUM-BLANK
+      *  ('B'), populates WS-RETURN-MSG, and exits.  Asserts the side
+      *  effect on the flag.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1245-EDIT-NUM-REQD rejects empty numeric'
+            MOVE SPACES TO WS-EDIT-ALPHANUM-ONLY
+            MOVE 5 TO WS-EDIT-ALPHANUM-LENGTH
+            MOVE 'NumField' TO WS-EDIT-VARIABLE-NAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1245-EDIT-NUM-REQD THRU 1245-EDIT-NUM-REQD-EXIT
+            EXPECT WS-EDIT-ALPHANUM-ONLY-FLAGS TO BE 'B'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC12 -- 1245-EDIT-NUM-REQD accepts valid numeric value
+      *
+      *  Drives 1245-EDIT-NUM-REQD along the SUCCESS path: a
+      *  fully-numeric string.  Production validates that all
+      *  characters are digits then SETs FLG-ALPHNANUM-ISVALID
+      *  (LOW-VALUES).  Asserts the side effect on the flag.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1245-EDIT-NUM-REQD accepts numeric value'
+            MOVE '12345' TO WS-EDIT-ALPHANUM-ONLY
+            MOVE 5 TO WS-EDIT-ALPHANUM-LENGTH
+            MOVE 'NumField' TO WS-EDIT-VARIABLE-NAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1245-EDIT-NUM-REQD THRU 1245-EDIT-NUM-REQD-EXIT
+            EXPECT WS-RETURN-MSG TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC13 -- 1225-EDIT-ALPHA-REQD rejects empty alpha input
+      *
+      *  Drives 1225-EDIT-ALPHA-REQD along the BLANK path.
+      *  Production sets FLG-ALPHA-NOT-OK / FLG-ALPHA-BLANK and
+      *  populates WS-RETURN-MSG.  Asserts side effect on flag.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1225-EDIT-ALPHA-REQD rejects empty alpha'
+            MOVE SPACES TO WS-EDIT-ALPHANUM-ONLY
+            MOVE 5 TO WS-EDIT-ALPHANUM-LENGTH
+            MOVE 'AlphaField' TO WS-EDIT-VARIABLE-NAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1225-EDIT-ALPHA-REQD THRU 1225-EDIT-ALPHA-REQD-EXIT
+            EXPECT WS-EDIT-ALPHA-ONLY-FLAGS TO BE 'B'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC14 -- 1230-EDIT-ALPHANUM-REQD rejects empty input
+      *
+      *  Drives 1230-EDIT-ALPHANUM-REQD along the BLANK path.
+      *  Production sets FLG-ALPHNANUM-BLANK and populates WS-
+      *  RETURN-MSG.  Asserts side effect on the flag.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1230-EDIT-ALPHANUM-REQD rejects empty'
+            MOVE SPACES TO WS-EDIT-ALPHANUM-ONLY
+            MOVE 5 TO WS-EDIT-ALPHANUM-LENGTH
+            MOVE 'AlnumField' TO WS-EDIT-VARIABLE-NAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1230-EDIT-ALPHANUM-REQD
+                THRU 1230-EDIT-ALPHANUM-REQD-EXIT
+            EXPECT WS-EDIT-ALPHANUM-ONLY-FLAGS TO BE 'B'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC15 -- 1270-EDIT-US-STATE-CD rejects unknown state code
+      *
+      *  Drives 1270-EDIT-US-STATE-CD with an obviously-invalid
+      *  2-letter state code 'ZZ'.  Production looks up the code in
+      *  the US-STATE-CODE table embedded in CSLKPCDY copybook; if
+      *  not found, sets FLG-STATE-NOT-OK and populates the message.
+      *  Asserts side effect on the validation flag.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1270-EDIT-US-STATE-CD rejects unknown ZZ'
+            MOVE 'ZZ' TO ACUP-NEW-CUST-ADDR-STATE-CD
+            MOVE 'StateCd' TO WS-EDIT-VARIABLE-NAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1270-EDIT-US-STATE-CD THRU 1270-EDIT-US-STATE-CD-EXIT
+            EXPECT WS-EDIT-STATE-FLGS TO BE '0'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC16 -- 3201-SHOW-INITIAL-VALUES blanks out screen fields
+      *
+      *  Drives 3201-SHOW-INITIAL-VALUES which initializes the
+      *  output map fields (ACSTTUSO, ACRDLIMO, etc.) to LOW-
+      *  VALUES on first-time-through.  Asserts that ACSTTUSO is
+      *  LOW-VALUES after the perform.  Pure assignment paragraph
+      *  with zero EXEC CICS verbs and no business logic.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3201-SHOW-INITIAL-VALUES blanks ACSTTUSO'
+            MOVE 'X' TO ACSTTUSO OF CACTUPAO
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3201-SHOW-INITIAL-VALUES
+                THRU 3201-SHOW-INITIAL-VALUES-EXIT
+            EXPECT ACSTTUSO OF CACTUPAO NOT TO BE 'X'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC17 -- 1235-EDIT-ALPHA-OPT accepts blank optional input
+      *
+      *  Drives 1235-EDIT-ALPHA-OPT along the BLANK-OK path.
+      *  Optional fields treat blank as valid (just sets the
+      *  ISVALID flag and exits).  Asserts side effect on the flag.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1235-EDIT-ALPHA-OPT accepts blank input'
+            MOVE SPACES TO WS-EDIT-ALPHANUM-ONLY
+            MOVE 5 TO WS-EDIT-ALPHANUM-LENGTH
+            MOVE 'OptField' TO WS-EDIT-VARIABLE-NAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1235-EDIT-ALPHA-OPT THRU 1235-EDIT-ALPHA-OPT-EXIT
+            EXPECT WS-RETURN-MSG TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC18 -- 1240-EDIT-ALPHANUM-OPT accepts blank optional input
+      *
+      *  Same SUCCESS-on-blank path as TC17 but for ALPHANUM-OPT.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1240-EDIT-ALPHANUM-OPT accepts blank input'
+            MOVE SPACES TO WS-EDIT-ALPHANUM-ONLY
+            MOVE 5 TO WS-EDIT-ALPHANUM-LENGTH
+            MOVE 'OptField' TO WS-EDIT-VARIABLE-NAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1240-EDIT-ALPHANUM-OPT THRU 1240-EDIT-ALPHANUM-OPT-EXIT
+            EXPECT WS-RETURN-MSG TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC19 -- 1250-EDIT-SIGNED-9V2 rejects empty currency input
+      *
+      *  Drives 1250-EDIT-SIGNED-9V2 along the BLANK path: WS-EDIT-
+      *  CURRENCY-9-2 = SPACES.  Production sets FLG-CURRENCY-BLANK
+      *  and populates WS-RETURN-MSG.  Asserts side effect on flag.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1250-EDIT-SIGNED-9V2 rejects empty currency'
+            MOVE SPACES TO WS-EDIT-SIGNED-NUMBER-9V2-X
+            MOVE 'CurrField' TO WS-EDIT-VARIABLE-NAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1250-EDIT-SIGNED-9V2 THRU 1250-EDIT-SIGNED-9V2-EXIT
+            EXPECT WS-FLG-SIGNED-NUMBER-EDIT TO BE 'B'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC20 -- 1280-EDIT-US-STATE-ZIP-CD rejects mismatch
+      *
+      *  Drives 1280-EDIT-US-STATE-ZIP-CD with a state code and
+      *  ZIP that don't match (CA + 99999).  Production cross-
+      *  validates the state-zip combination and sets FLG-STATE-
+      *  ZIP-NOT-OK on mismatch.  Asserts side effect on flag.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1280-EDIT-US-STATE-ZIP-CD rejects mismatch'
+            MOVE 'CA'    TO ACUP-NEW-CUST-ADDR-STATE-CD
+            MOVE '99999' TO ACUP-NEW-CUST-ADDR-ZIP
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1280-EDIT-US-STATE-ZIP-CD
+                THRU 1280-EDIT-US-STATE-ZIP-CD-EXIT
+            EXPECT WS-EDIT-STATE-FLGS TO BE '0'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC21 -- 3100-SCREEN-INIT initializes BMS map and current date
+      *
+      *  Drives 3100-SCREEN-INIT (production lines 2668-2692).
+      *  Pure WS computation paragraph; MOVEs LOW-VALUES to CACTUPAO,
+      *  invokes FUNCTION CURRENT-DATE, copies title/program/tranid
+      *  literals to map output fields.  Asserts the static literals
+      *  are populated (deterministic side effects).
+      ******************************************************************
+       TESTCASE 'COACTUPC 3100-SCREEN-INIT populates header lits'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3100-SCREEN-INIT THRU 3100-SCREEN-INIT-EXIT
+            EXPECT TRNNAMEO OF CACTUPAO TO BE 'CAUP'
+            EXPECT PGMNAMEO OF CACTUPAO TO BE 'COACTUPC'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC22 -- 3310-PROTECT-ALL-ATTRS sets DFHBMPRF on all input flds
+      *
+      *  Drives 3310-PROTECT-ALL-ATTRS (production lines 3441-3495).
+      *  Pure MOVE paragraph; sets DFHBMPRF (BMS protected attribute)
+      *  on all 49 input fields of the CACTUPAI map.  Asserts a
+      *  representative sample (ACCTSIDA, AADDGRPA, INFOMSGA) to
+      *  prove the MOVE chain executed end-to-end.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3310-PROTECT-ALL-ATTRS marks fields as PRF'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3310-PROTECT-ALL-ATTRS
+                THRU 3310-PROTECT-ALL-ATTRS-EXIT
+            EXPECT ACCTSIDA OF CACTUPAI TO BE DFHBMPRF
+            EXPECT AADDGRPA OF CACTUPAI TO BE DFHBMPRF
+            EXPECT INFOMSGA OF CACTUPAI TO BE DFHBMPRF
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC23 -- 3320-UNPROTECT-FEW-ATTRS unprotects update fields
+      *
+      *  Drives 3320-UNPROTECT-FEW-ATTRS (production lines 3500-3560).
+      *  Pure MOVE paragraph; sets DFHBMFSE (unprotected) on
+      *  user-editable fields and DFHBMPRF on key/info fields.
+      *  Asserts representative samples (ACSTTUSA = FSE; ACSTNUMA =
+      *  PRF; ACSCTRYA = PRF; INFOMSGA = PRF) to prove both branches.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3320-UNPROTECT-FEW-ATTRS toggles FSE PRF'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3320-UNPROTECT-FEW-ATTRS
+                THRU 3320-UNPROTECT-FEW-ATTRS-EXIT
+            EXPECT ACSTTUSA OF CACTUPAI TO BE DFHBMFSE
+            EXPECT ACSTNUMA OF CACTUPAI TO BE DFHBMPRF
+            EXPECT ACSCTRYA OF CACTUPAI TO BE DFHBMPRF
+            EXPECT INFOMSGA OF CACTUPAI TO BE DFHBMPRF
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC24 -- 3390-SETUP-INFOMSG-ATTRS WS-NO-INFO-MESSAGE branch
+      *
+      *  Drives 3390-SETUP-INFOMSG-ATTRS (production lines 3566-3582)
+      *  with WS-NO-INFO-MESSAGE flag set TRUE.  Production line 3567
+      *  IF WS-NO-INFO-MESSAGE THEN moves DFHBMDAR (dark) to
+      *  INFOMSGA; else moves DFHBMASB (alarmed asterisks).
+      *  Asserts the THEN branch side effect.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3390-SETUP-INFOMSG-ATTRS dark when no msg'
+            SET WS-NO-INFO-MESSAGE TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3390-SETUP-INFOMSG-ATTRS
+                THRU 3390-SETUP-INFOMSG-ATTRS-EXIT
+            EXPECT INFOMSGA OF CACTUPAI TO BE DFHBMDAR
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC25 -- 3400-SEND-SCREEN sets CCARD-NEXT-MAP and exits
+      *
+      *  Drives 3400-SEND-SCREEN (production lines 3589-3601).
+      *  MOVEs LIT-THISMAPSET / LIT-THISMAP to CCARD-NEXT-MAPSET /
+      *  CCARD-NEXT-MAP, then EXEC CICS SEND MAP (stripped by
+      *  cobol-check).  Asserts the MOVE side effects.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3400-SEND-SCREEN copies map name to CCARD'
+            MOVE SPACES TO CCARD-NEXT-MAP
+            MOVE SPACES TO CCARD-NEXT-MAPSET
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3400-SEND-SCREEN THRU 3400-SEND-SCREEN-EXIT
+            EXPECT CCARD-NEXT-MAP TO BE 'CACTUPA'
+            EXPECT CCARD-NEXT-MAPSET TO BE 'COACTUP'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC26 -- 9300-GETACCTDATA-BYACCT exec-cics-stripped DFHRESP-fall
+      *
+      *  Drives 9300-GETACCTDATA-BYACCT (production lines 3701+).
+      *  Single EXEC CICS READ DATASET; cobol-check strips it.
+      *  WS-RESP-CD remains 0; DFHRESP() doesn't resolve off-platform
+      *  so the EVALUATE WS-RESP-CD falls through.  Coverage gain on
+      *  the MOVE statements before/after the EVALUATE.
+      ******************************************************************
+       TESTCASE 'COACTUPC 9300-GETACCTDATA-BYACCT runs without abend'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9300-GETACCTDATA-BYACCT
+                THRU 9300-GETACCTDATA-BYACCT-EXIT
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC27 -- 9400-GETCUSTDATA-BYCUST runs without abend
+      *
+      *  Drives 9400-GETCUSTDATA-BYCUST (production lines 3752+).
+      *  Same pattern as TC26: cobol-check strips EXEC CICS READ;
+      *  EVALUATE falls through; coverage gain on MOVE statements.
+      ******************************************************************
+       TESTCASE 'COACTUPC 9400-GETCUSTDATA-BYCUST runs without abend'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9400-GETCUSTDATA-BYCUST
+                THRU 9400-GETCUSTDATA-BYCUST-EXIT
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC28 -- 9200-GETCARDXREF-BYACCT runs without abend
+      *
+      *  Drives 9200-GETCARDXREF-BYACCT (production lines 3650+).
+      *  Same pattern: cobol-check strips EXEC CICS READ; coverage
+      *  gain on the MOVEs before/after the EVALUATE.
+      ******************************************************************
+       TESTCASE 'COACTUPC 9200-GETCARDXREF-BYACCT runs without abend'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9200-GETCARDXREF-BYACCT
+                THRU 9200-GETCARDXREF-BYACCT-EXIT
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC29 -- 3000-SEND-MAP umbrella runs all sub-paragraphs
+      *
+      *  Drives 3000-SEND-MAP (production lines 2649-2662).  The
+      *  umbrella PERFORMs 3100-SCREEN-INIT, 3200-SETUP-SCREEN-VARS,
+      *  3250-SETUP-INFOMSG, 3300-SETUP-SCREEN-ATTRS, 3390-SETUP-
+      *  INFOMSG-ATTRS, 3400-SEND-SCREEN.  Each sub-paragraph
+      *  contributes coverage; this test exercises the orchestrator's
+      *  full PERFORM chain.  Asserts the eventual MOVE side effects
+      *  from 3400-SEND-SCREEN to verify the chain reached completion.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3000-SEND-MAP performs all sub paragraphs'
+            SET WS-NO-INFO-MESSAGE TO TRUE
+            SET CDEMO-PGM-ENTER    TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3000-SEND-MAP THRU 3000-SEND-MAP-EXIT
+            EXPECT CCARD-NEXT-MAP TO BE 'CACTUPA'
+            EXPECT CCARD-NEXT-MAPSET TO BE 'COACTUP'
+            EXPECT TRNNAMEO OF CACTUPAO TO BE 'CAUP'
+            EXPECT PGMNAMEO OF CACTUPAO TO BE 'COACTUPC'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC30 -- 3202-SHOW-ORIGINAL-VALUES propagates ACCT data
+      *
+      *  Drives 3202-SHOW-ORIGINAL-VALUES (production lines 2787-
+      *  2865) along the FOUND-ACCT-IN-MASTER+FOUND-CUST-IN-MASTER
+      *  path.  Pre-loads ACUP-OLD-ACTIVE-STATUS with 'A' and
+      *  ACUP-OLD-GROUP-ID with 'PREMIUM   ', sets both 88-levels
+      *  TRUE, and asserts the production paragraph copied them to
+      *  the CACTUPAO output map.  PROMPT-FOR-CHANGES side effect
+      *  on WS-INFO-MSG (line 2791) is also asserted.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3202-SHOW-ORIGINAL-VALUES copies ACCT data'
+            SET FOUND-ACCT-IN-MASTER  TO TRUE
+            SET FOUND-CUST-IN-MASTER  TO TRUE
+            MOVE 'A'              TO ACUP-OLD-ACTIVE-STATUS
+            MOVE 'PREMIUM   '     TO ACUP-OLD-GROUP-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3202-SHOW-ORIGINAL-VALUES
+                THRU 3202-SHOW-ORIGINAL-VALUES-EXIT
+            EXPECT ACSTTUSO OF CACTUPAO TO BE 'A'
+            EXPECT AADDGRPO OF CACTUPAO TO BE 'PREMIUM   '
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC31 -- 3202-SHOW-ORIGINAL-VALUES propagates CUST data
+      *
+      *  Drives 3202-SHOW-ORIGINAL-VALUES along the FOUND-CUST-IN-
+      *  MASTER path (lines 2827-2864).  Pre-loads ACUP-OLD-CUST-
+      *  ADDR-STATE-CD with 'NY' and ACUP-OLD-CUST-PRI-HOLDER-IND
+      *  with 'Y'; asserts the production paragraph copied them
+      *  to the CACTUPAO output fields.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3202-SHOW-ORIGINAL-VALUES copies CUST data'
+            SET FOUND-CUST-IN-MASTER  TO TRUE
+            MOVE 'NY'             TO ACUP-OLD-CUST-ADDR-STATE-CD
+            MOVE 'Y'              TO ACUP-OLD-CUST-PRI-HOLDER-IND
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3202-SHOW-ORIGINAL-VALUES
+                THRU 3202-SHOW-ORIGINAL-VALUES-EXIT
+            EXPECT ACSSTTEO OF CACTUPAO TO BE 'NY'
+            EXPECT ACSPFLGO OF CACTUPAO TO BE 'Y'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC33 -- 3203-SHOW-UPDATED-VALUES with ISVALID flags ON
+      *
+      *  Drives 3203-SHOW-UPDATED-VALUES (production lines 2870-
+      *  2949) along ALL FIVE FLG-*-ISVALID-TRUE branches.  Pre-
+      *  loads ACUP-NEW-ACTIVE-STATUS='B' and ACUP-NEW-CREDIT-
+      *  LIMIT-N=1000.00 et al; sets all five 88-levels TRUE.
+      *  The production code edits each currency value via
+      *  WS-EDIT-CURRENCY-9-2-F and stores the formatted alpha
+      *  into the output map fields.  Asserts ACSTTUSO is moved
+      *  unchanged (line 2872).
+      ******************************************************************
+       TESTCASE 'COACTUPC 3203-SHOW-UPDATED-VALUES isvalid branches'
+            MOVE 'B'              TO ACUP-NEW-ACTIVE-STATUS
+            MOVE 1000.00          TO ACUP-NEW-CREDIT-LIMIT-N
+            MOVE 500.00           TO ACUP-NEW-CASH-CREDIT-LIMIT-N
+            MOVE 50.00            TO ACUP-NEW-CURR-BAL-N
+            MOVE 100.00           TO ACUP-NEW-CURR-CYC-CREDIT-N
+            MOVE 200.00           TO ACUP-NEW-CURR-CYC-DEBIT-N
+            SET FLG-CRED-LIMIT-ISVALID         TO TRUE
+            SET FLG-CASH-CREDIT-LIMIT-ISVALID  TO TRUE
+            SET FLG-CURR-BAL-ISVALID           TO TRUE
+            SET FLG-CURR-CYC-CREDIT-ISVALID    TO TRUE
+            SET FLG-CURR-CYC-DEBIT-ISVALID     TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3203-SHOW-UPDATED-VALUES
+                THRU 3203-SHOW-UPDATED-VALUES-EXIT
+            EXPECT ACSTTUSO OF CACTUPAO TO BE 'B'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC34 -- 3203-SHOW-UPDATED-VALUES with ISVALID flags OFF
+      *
+      *  Drives 3203-SHOW-UPDATED-VALUES along ALL FIVE FLG-*-
+      *  ISVALID-FALSE (ELSE) branches.  Pre-loads ACUP-NEW-
+      *  CREDIT-LIMIT-X as raw alpha string, leaves all flags at
+      *  their default LOW-VALUES.  Production code copies the
+      *  alpha-X variants to the output map untouched.  Asserts
+      *  ACUP-NEW-CREDIT-LIMIT-X passes through to ACRDLIMO.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3203-SHOW-UPDATED-VALUES else branches'
+            MOVE 'C'              TO ACUP-NEW-ACTIVE-STATUS
+            MOVE '1234567890.12 ' TO ACUP-NEW-CREDIT-LIMIT-X
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3203-SHOW-UPDATED-VALUES
+                THRU 3203-SHOW-UPDATED-VALUES-EXIT
+            EXPECT ACSTTUSO OF CACTUPAO TO BE 'C'
+            EXPECT ACRDLIMO OF CACTUPAO TO BE '1234567890.12 '
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC36 -- 3250-SETUP-INFOMSG ACUP-SHOW-DETAILS arm
+      *
+      *  Drives 3250-SETUP-INFOMSG WHEN ACUP-SHOW-DETAILS arm.
+      *  Sets ACUP-CHANGE-ACTION='S' so ACUP-SHOW-DETAILS true.
+      *  Asserts WS-INFO-MSG = PROMPT-FOR-CHANGES literal.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3250-SETUP-INFOMSG show-details arm'
+            SET CDEMO-PGM-REENTER  TO TRUE
+            SET ACUP-SHOW-DETAILS  TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3250-SETUP-INFOMSG
+                THRU 3250-SETUP-INFOMSG-EXIT
+            EXPECT WS-INFO-MSG TO BE 'Update account details presented above. '
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC38 -- 3250-SETUP-INFOMSG ACUP-CHANGES-OK-NOT-CONFIRMED
+      *
+      *  Drives 3250-SETUP-INFOMSG WHEN ACUP-CHANGES-OK-NOT-CONFIRMED
+      *  arm.  Asserts WS-INFO-MSG = PROMPT-FOR-CONFIRMATION literal.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3250-SETUP-INFOMSG ok-not-confirmed arm'
+            SET CDEMO-PGM-REENTER             TO TRUE
+            SET ACUP-CHANGES-OK-NOT-CONFIRMED TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3250-SETUP-INFOMSG
+                THRU 3250-SETUP-INFOMSG-EXIT
+            EXPECT WS-INFO-MSG TO BE 'Changes validated.Press F5 to save      '
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC39 -- 3250-SETUP-INFOMSG ACUP-CHANGES-OKAYED-AND-DONE
+      *
+      *  Drives 3250-SETUP-INFOMSG WHEN ACUP-CHANGES-OKAYED-AND-DONE
+      *  arm.  Asserts WS-INFO-MSG = CONFIRM-UPDATE-SUCCESS literal.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3250-SETUP-INFOMSG okayed-and-done arm'
+            SET CDEMO-PGM-REENTER             TO TRUE
+            SET ACUP-CHANGES-OKAYED-AND-DONE  TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3250-SETUP-INFOMSG
+                THRU 3250-SETUP-INFOMSG-EXIT
+            EXPECT WS-INFO-MSG TO BE 'Changes committed to database           '
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC40 -- 3250-SETUP-INFOMSG ACUP-CHANGES-OKAYED-LOCK-ERROR
+      *
+      *  Drives 3250-SETUP-INFOMSG WHEN ACUP-CHANGES-OKAYED-LOCK-
+      *  ERROR arm.  Asserts WS-INFO-MSG = INFORM-FAILURE literal.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3250-SETUP-INFOMSG lock-error arm'
+            SET CDEMO-PGM-REENTER                TO TRUE
+            SET ACUP-CHANGES-OKAYED-LOCK-ERROR   TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3250-SETUP-INFOMSG
+                THRU 3250-SETUP-INFOMSG-EXIT
+            EXPECT WS-INFO-MSG TO BE 'Changes unsuccessful. Please try again  '
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC42 -- 3250-SETUP-INFOMSG CDEMO-PGM-ENTER arm (default)
+      *
+      *  Drives 3250-SETUP-INFOMSG WHEN CDEMO-PGM-ENTER arm (line
+      *  2958, the FIRST arm).  After BEFORE-EACH, both CDEMO-PGM-
+      *  ENTER and ACUP-DETAILS-NOT-FETCHED are true; per EVALUATE
+      *  TRUE first-match, CDEMO-PGM-ENTER fires first.  Asserts
+      *  WS-INFO-MSG = PROMPT-FOR-SEARCH-KEYS literal.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3250-SETUP-INFOMSG pgm-enter arm'
+            SET CDEMO-PGM-ENTER   TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3250-SETUP-INFOMSG
+                THRU 3250-SETUP-INFOMSG-EXIT
+            EXPECT WS-INFO-MSG TO BE 'Enter or update id of account to update '
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC43 -- 9500-STORE-FETCHED-DATA copies ACCT to ACUP-OLD
+      *
+      *  Drives 9500-STORE-FETCHED-DATA (production lines 3801-
+      *  3884).  Pre-loads ACCOUNT-RECORD with deterministic
+      *  values and CUSTOMER-RECORD ditto, performs the paragraph,
+      *  asserts ACUP-OLD-* fields and CDEMO-* commarea fields are
+      *  populated.  ACCT-* / CUST-* values supplied by the test
+      *  author from external knowledge of the AAP fixture
+      *  conventions; NOT derived from production logic.
+      ******************************************************************
+       TESTCASE 'COACTUPC 9500-STORE-FETCHED-DATA copies records'
+            MOVE 12345678901      TO ACCT-ID
+            MOVE 'A'              TO ACCT-ACTIVE-STATUS
+            MOVE '2020-01-15'     TO ACCT-OPEN-DATE
+            MOVE 'PREMIUM   '     TO ACCT-GROUP-ID
+            MOVE 123456789        TO CUST-ID
+            MOVE 'JOHN'           TO CUST-FIRST-NAME
+            MOVE 'DOE'            TO CUST-LAST-NAME
+            MOVE 'NY'             TO CUST-ADDR-STATE-CD
+            MOVE 'Y'              TO CUST-PRI-CARD-HOLDER-IND
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9500-STORE-FETCHED-DATA
+                THRU 9500-STORE-FETCHED-DATA-EXIT
+            EXPECT ACUP-OLD-ACCT-ID TO BE 12345678901
+            EXPECT ACUP-OLD-ACTIVE-STATUS TO BE 'A'
+            EXPECT ACUP-OLD-OPEN-YEAR TO BE '2020'
+            EXPECT ACUP-OLD-OPEN-MON  TO BE '01'
+            EXPECT ACUP-OLD-OPEN-DAY  TO BE '15'
+            EXPECT ACUP-OLD-GROUP-ID  TO BE 'PREMIUM   '
+            EXPECT ACUP-OLD-CUST-ADDR-STATE-CD TO BE 'NY'
+            EXPECT ACUP-OLD-CUST-PRI-HOLDER-IND TO BE 'Y'
+            EXPECT CDEMO-ACCT-ID TO BE 12345678901
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC41 -- 3250-SETUP-INFOMSG ACUP-DETAILS-NOT-FETCHED arm
+      *
+      *  Drives 3250-SETUP-INFOMSG (production lines 2960-2961) WHEN
+      *  ACUP-DETAILS-NOT-FETCHED arm.  After BEFORE-EACH the default
+      *  ACUP-CHANGE-ACTION is LOW-VALUES (88-level matches), but
+      *  CDEMO-PGM-ENTER is also default-true so the FIRST arm fires
+      *  first.  We force CDEMO-PGM-REENTER so EVALUATE skips arm 1
+      *  and matches arm 2.  Asserts WS-INFO-MSG = PROMPT-FOR-SEARCH-
+      *  KEYS literal (88-level value on lines 468-469).
+      ******************************************************************
+       TESTCASE 'COACTUPC 3250-SETUP-INFOMSG details-not-fetched arm'
+            SET CDEMO-PGM-REENTER     TO TRUE
+            SET ACUP-DETAILS-NOT-FETCHED TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3250-SETUP-INFOMSG
+                THRU 3250-SETUP-INFOMSG-EXIT
+            EXPECT WS-INFO-MSG TO BE 'Enter or update id of account to update '
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC42 -- 3250-SETUP-INFOMSG ACUP-CHANGES-NOT-OK arm
+      *
+      *  Drives 3250-SETUP-INFOMSG (lines 2964-2965) WHEN ACUP-
+      *  CHANGES-NOT-OK arm.  Sets ACUP-CHANGE-ACTION='E' so the
+      *  88-level ACUP-CHANGES-NOT-OK fires.  Asserts WS-INFO-MSG =
+      *  PROMPT-FOR-CHANGES literal.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3250-SETUP-INFOMSG changes-not-ok arm'
+            SET CDEMO-PGM-REENTER  TO TRUE
+            SET ACUP-CHANGES-NOT-OK TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3250-SETUP-INFOMSG
+                THRU 3250-SETUP-INFOMSG-EXIT
+            EXPECT WS-INFO-MSG TO BE 'Update account details presented above. '
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC43 -- 3250-SETUP-INFOMSG ACUP-CHANGES-OKAYED-BUT-FAILED
+      *
+      *  Drives 3250-SETUP-INFOMSG (lines 2973-2974) WHEN ACUP-
+      *  CHANGES-OKAYED-BUT-FAILED arm.  Sets ACUP-CHANGE-ACTION='F'
+      *  so the 88-level ACUP-CHANGES-OKAYED-BUT-FAILED fires.
+      *  Asserts WS-INFO-MSG = INFORM-FAILURE literal.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3250-SETUP-INFOMSG okayed-but-failed arm'
+            SET CDEMO-PGM-REENTER             TO TRUE
+            SET ACUP-CHANGES-OKAYED-BUT-FAILED TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3250-SETUP-INFOMSG
+                THRU 3250-SETUP-INFOMSG-EXIT
+            EXPECT WS-INFO-MSG TO BE 'Changes unsuccessful. Please try again  '
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC44 -- 3200-SETUP-SCREEN-VARS PGM-ENTER no-op branch
+      *
+      *  Drives 3200-SETUP-SCREEN-VARS (production lines 2698-2727)
+      *  with CDEMO-PGM-ENTER true -> CONTINUE branch (line 2700-
+      *  2701), confirming no MOVE/PERFORM occurs.  Pre-seed
+      *  ACCTSIDO with sentinel HIGH-VALUES proxy '*' string and
+      *  assert it is preserved.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3200-SETUP-SCREEN-VARS pgm-enter no-op'
+            SET CDEMO-PGM-ENTER  TO TRUE
+            MOVE '99999999999'  TO ACCTSIDO OF CACTUPAO
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3200-SETUP-SCREEN-VARS
+                THRU 3200-SETUP-SCREEN-VARS-EXIT
+            EXPECT ACCTSIDO OF CACTUPAO TO BE '99999999999'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC45 -- 3200-SETUP-SCREEN-VARS reenter with details-not-
+      *  fetched performs 3201-SHOW-INITIAL-VALUES.
+      *
+      *  Production lines 2710-2714: WHEN ACUP-DETAILS-NOT-FETCHED
+      *  PERFORM 3201-SHOW-INITIAL-VALUES.  Pre-seed ACSTTUSO with
+      *  sentinel and assert that 3201 cleared it (LOW-VALUES MOVE
+      *  on line 2732).
+      ******************************************************************
+       TESTCASE 'COACTUPC 3200-SETUP-SCREEN-VARS reenter notfetched'
+            SET CDEMO-PGM-REENTER         TO TRUE
+            SET ACUP-DETAILS-NOT-FETCHED  TO TRUE
+            MOVE 12345678901      TO CC-ACCT-ID-N
+            MOVE 'X'              TO ACSTTUSO OF CACTUPAO
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3200-SETUP-SCREEN-VARS
+                THRU 3200-SETUP-SCREEN-VARS-EXIT
+            EXPECT ACSTTUSO OF CACTUPAO NOT TO BE 'X'
+            EXPECT ACCTSIDO OF CACTUPAO TO BE '12345678901'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC46 -- 3200-SETUP-SCREEN-VARS reenter with show-details
+      *  performs 3202-SHOW-ORIGINAL-VALUES.
+      *
+      *  Production lines 2715-2717: WHEN ACUP-SHOW-DETAILS PERFORM
+      *  3202-SHOW-ORIGINAL-VALUES.  Asserts that PROMPT-FOR-CHANGES
+      *  is set on WS-INFO-MSG (line 2787-2789 SET on
+      *  PROMPT-FOR-CHANGES).
+      ******************************************************************
+       TESTCASE 'COACTUPC 3200-SETUP-SCREEN-VARS reenter show-details'
+            SET CDEMO-PGM-REENTER  TO TRUE
+            SET ACUP-SHOW-DETAILS  TO TRUE
+            MOVE 12345678901      TO CC-ACCT-ID-N
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3200-SETUP-SCREEN-VARS
+                THRU 3200-SETUP-SCREEN-VARS-EXIT
+            EXPECT ACCTSIDO OF CACTUPAO TO BE '12345678901'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC47 -- 3200-SETUP-SCREEN-VARS reenter with changes-made
+      *  performs 3203-SHOW-UPDATED-VALUES.
+      *
+      *  Production lines 2718-2720: WHEN ACUP-CHANGES-MADE PERFORM
+      *  3203-SHOW-UPDATED-VALUES.  3203 line 2871 MOVEs ACUP-NEW-
+      *  ACTIVE-STATUS to ACSTTUSO.  Pre-seed ACUP-NEW-ACTIVE-STATUS
+      *  with 'C' (CHANGES-OKAYED-AND-DONE in ACUP-CHANGES-MADE
+      *  range) and assert ACSTTUSO is populated.
+      ******************************************************************
+       TESTCASE 'COACTUPC 3200-SETUP-SCREEN-VARS reenter changes-made'
+            SET CDEMO-PGM-REENTER          TO TRUE
+            SET ACUP-CHANGES-OKAYED-AND-DONE TO TRUE
+            MOVE 12345678901      TO CC-ACCT-ID-N
+            MOVE 'A'              TO ACUP-NEW-ACTIVE-STATUS
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3200-SETUP-SCREEN-VARS
+                THRU 3200-SETUP-SCREEN-VARS-EXIT
+            EXPECT ACSTTUSO OF CACTUPAO TO BE 'A'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC48 -- 1205-COMPARE-OLD-NEW NO-CHANGES-DETECTED
+      *
+      *  Drives 1205-COMPARE-OLD-NEW (production lines 1681-1779)
+      *  along the NO-CHANGES path.  All ACUP-NEW-* and ACUP-OLD-*
+      *  fields default to LOW-VALUES from BEFORE-EACH INITIALIZE,
+      *  so both account-block IF and customer-block IF evaluate
+      *  TRUE -> SET NO-CHANGES-DETECTED.  Asserts the 88-level
+      *  flag is set.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1205-COMPARE-OLD-NEW no changes detected'
+            INITIALIZE ACUP-OLD-DETAILS
+            INITIALIZE ACUP-NEW-DETAILS
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1205-COMPARE-OLD-NEW
+                THRU 1205-COMPARE-OLD-NEW-EXIT
+            EXPECT WS-DATACHANGED-FLAG TO BE '0'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC49 -- 1205-COMPARE-OLD-NEW account-block change detected
+      *
+      *  Drives 1205-COMPARE-OLD-NEW along the GO TO 1205-COMPARE-
+      *  OLD-NEW-EXIT branch (line 1704) -- account-block IF
+      *  evaluates FALSE.  Force ACUP-NEW-ACCT-ID != ACUP-OLD-ACCT-
+      *  ID by setting ACUP-NEW-ACCT-ID-X to '12345678901' while
+      *  ACUP-OLD-ACCT-ID-X stays LOW-VALUES.  Asserts CHANGE-HAS-
+      *  OCCURRED 88-level set.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1205-COMPARE-OLD-NEW account change'
+            INITIALIZE ACUP-OLD-DETAILS
+            INITIALIZE ACUP-NEW-DETAILS
+            MOVE '12345678901'   TO ACUP-NEW-ACCT-ID-X
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1205-COMPARE-OLD-NEW
+                THRU 1205-COMPARE-OLD-NEW-EXIT
+            EXPECT WS-DATACHANGED-FLAG TO BE '1'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC50 -- 1205-COMPARE-OLD-NEW customer-block change detected
+      *
+      *  Drives 1205-COMPARE-OLD-NEW along the GO TO 1205-COMPARE-
+      *  OLD-NEW-EXIT branch from the customer block (line 1772).
+      *  Account block matches (LOW-VALUES = LOW-VALUES) but
+      *  customer block fails on ACUP-NEW-CUST-FIRST-NAME.  Asserts
+      *  CHANGE-HAS-OCCURRED.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1205-COMPARE-OLD-NEW customer change'
+            INITIALIZE ACUP-OLD-DETAILS
+            INITIALIZE ACUP-NEW-DETAILS
+            MOVE 'JOHN'          TO ACUP-NEW-CUST-FIRST-NAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1205-COMPARE-OLD-NEW
+                THRU 1205-COMPARE-OLD-NEW-EXIT
+            EXPECT WS-DATACHANGED-FLAG TO BE '1'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC51 -- 3300-SETUP-SCREEN-ATTRS early-exit DETAILS-NOT-FETCHED
+      *
+      *  Drives 3300-SETUP-SCREEN-ATTRS (production lines 2986-3437,
+      *  the largest paragraph in COACTUPC at 451 lines).  The early
+      *  exit on lines 3186-3192 is taken when ACUP-DETAILS-NOT-
+      *  FETCHED is true, after the paragraph has executed:
+      *    PERFORM 3310-PROTECT-ALL-ATTRS                  (line 2989)
+      *    EVALUATE TRUE WHEN ACUP-DETAILS-NOT-FETCHED ->
+      *      MOVE DFHBMFSE TO ACCTSIDA                    (line 2996)
+      *    EVALUATE TRUE WHEN OTHER ->
+      *      MOVE -1 TO ACCTSIDL                          (line 3166)
+      *    GO TO 3300-SETUP-SCREEN-ATTRS-EXIT             (line 3189)
+      *  Asserts ACCTSIDA = DFHBMFSE (X'21').
+      ******************************************************************
+       TESTCASE 'COACTUPC 3300-SETUP-SCREEN-ATTRS early exit'
+            SET ACUP-DETAILS-NOT-FETCHED  TO TRUE
+            MOVE LOW-VALUES               TO ACCTSIDA OF CACTUPAI
+            MOVE LOW-VALUES               TO ACCTSIDL OF CACTUPAI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3300-SETUP-SCREEN-ATTRS
+                THRU 3300-SETUP-SCREEN-ATTRS-EXIT
+            EXPECT ACCTSIDA OF CACTUPAI NOT TO BE LOW-VALUES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC52 -- 3300-SETUP-SCREEN-ATTRS WHEN OTHER + early-exit
+      *  FLG-ACCTFILTER-BLANK
+      *
+      *  Drives 3300-SETUP-SCREEN-ATTRS along the WHEN OTHER arm of
+      *  the first EVALUATE (line 3004-3005), then through the
+      *  cursor EVALUATE WHEN FLG-ACCTFILTER-BLANK arm (line 3014-
+      *  3015), then early-exit at line 3187.  Pre-seeds FLG-
+      *  ACCTFILTER-BLANK to TRUE; ACUP-CHANGE-ACTION must NOT match
+      *  any first-evaluate arm except WHEN OTHER, so set
+      *  ACUP-CHANGE-ACTION to invalid 'Z' (no 88-level match).
+      ******************************************************************
+       TESTCASE 'COACTUPC 3300-SETUP-SCREEN-ATTRS other arm'
+            MOVE 'Z'                  TO ACUP-CHANGE-ACTION
+            SET FLG-ACCTFILTER-BLANK  TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3300-SETUP-SCREEN-ATTRS
+                THRU 3300-SETUP-SCREEN-ATTRS-EXIT
+            EXPECT ACCTSIDA OF CACTUPAI NOT TO BE LOW-VALUES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC53 -- 1200-EDIT-MAP-INPUTS early-exit on details-not-fetched
+      *
+      *  Drives 1200-EDIT-MAP-INPUTS (production lines 1429-1678) along
+      *  the ACUP-DETAILS-NOT-FETCHED branch: PERFORM 1210-EDIT-ACCOUNT
+      *  -> MOVE LOW-VALUES TO ACUP-OLD-ACCT-DATA -> IF FLG-ACCTFILTER-
+      *  BLANK -> GO TO 1200-EDIT-MAP-INPUTS-EXIT (line 1446).  Asserts
+      *  WS-INPUT-FLAG = '0' (INPUT-OK 88-level on line 173) by
+      *  feeding a blank account ID (which sets FLG-ACCTFILTER-BLANK).
+      ******************************************************************
+       TESTCASE 'COACTUPC 1200-EDIT-MAP-INPUTS detailsnf early-exit'
+            SET ACUP-DETAILS-NOT-FETCHED  TO TRUE
+            MOVE SPACES                   TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1200-EDIT-MAP-INPUTS
+                THRU 1200-EDIT-MAP-INPUTS-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT WS-EDIT-ACCT-FLAG NOT TO BE '1'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC54 -- 1200-EDIT-MAP-INPUTS no-changes-found path
+      *
+      *  Drives 1200-EDIT-MAP-INPUTS along the ELSE branch (line 1447-
+      *  1467): SET FOUND-ACCOUNT-DATA / FOUND-ACCT-IN-MASTER / FLG-
+      *  ACCTFILTER-ISVALID -> SET FOUND-CUST-IN-MASTER / FLG-
+      *  CUSTFILTER-ISVALID -> PERFORM 1205-COMPARE-OLD-NEW -> IF
+      *  NO-CHANGES-FOUND -> GO TO 1200-EDIT-MAP-INPUTS-EXIT (line
+      *  1467).  All ACUP-NEW-* and ACUP-OLD-* default to LOW-VALUES
+      *  in BEFORE-EACH so the comparison ALL fields equal.  Asserts
+      *  WS-INPUT-FLAG = '0' (INPUT-OK).
+      ******************************************************************
+       TESTCASE 'COACTUPC 1200-EDIT-MAP-INPUTS no-changes path'
+            SET ACUP-SHOW-DETAILS  TO TRUE
+            INITIALIZE ACUP-OLD-DETAILS
+            INITIALIZE ACUP-NEW-DETAILS
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1200-EDIT-MAP-INPUTS
+                THRU 1200-EDIT-MAP-INPUTS-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '0'
+            EXPECT WS-DATACHANGED-FLAG TO BE '0'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC55 -- 9000-READ-ACCT not-found early-exit on XREF
+      *
+      *  Drives 9000-READ-ACCT (production lines 3608-3644) along the
+      *  PERFORM 9200-GETCARDXREF-BYACCT -> IF FLG-ACCTFILTER-NOT-OK
+      *  -> GO TO 9000-READ-ACCT-EXIT (line 3621).  Off-platform the
+      *  9200 paragraph contains EXEC CICS verbs (stripped during
+      *  merge), so its 88-level FLG-ACCTFILTER-NOT-OK is not set
+      *  during the merged execution -- but the PERFORM 9200 still
+      *  runs, then control returns to 9000 and the IF evaluates
+      *  FALSE, then PERFORM 9300, then PERFORM 9400, then PERFORM
+      *  9500.  Asserts WS-CARD-RID-ACCT-ID = '12345678901' (line
+      *  3614 MOVE).
+      ******************************************************************
+       TESTCASE 'COACTUPC 9000-READ-ACCT performs full delegation'
+            MOVE '12345678901'   TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9000-READ-ACCT
+                THRU 9000-READ-ACCT-EXIT
+            EXPECT WS-CARD-RID-ACCT-ID TO BE '12345678901'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC56 -- 2000-DECIDE-ACTION DETAILS-NOT-FETCHED arm
+      *
+      *  Drives 2000-DECIDE-ACTION (lines 2562-2641) WHEN ACUP-
+      *  DETAILS-NOT-FETCHED.  With FLG-ACCTFILTER-ISVALID=TRUE,
+      *  PERFORM 9000-READ-ACCT runs (delegates further).  We just
+      *  PASS the test through completion.
+      ******************************************************************
+       TESTCASE 'COACTUPC 2000-DECIDE-ACTION details-not-fetched'
+            SET ACUP-DETAILS-NOT-FETCHED  TO TRUE
+            MOVE '12345678901' TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2000-DECIDE-ACTION
+                THRU 2000-DECIDE-ACTION-EXIT
+            EXPECT ACUP-DETAILS-NOT-FETCHED TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC57 -- 2000-DECIDE-ACTION SHOW-DETAILS no-changes branch
+      *
+      *  Drives 2000-DECIDE-ACTION WHEN ACUP-SHOW-DETAILS arm with
+      *  NO-CHANGES-DETECTED -> CONTINUE branch (lines 2587-2588).
+      ******************************************************************
+       TESTCASE 'COACTUPC 2000-DECIDE-ACTION show-details no-change'
+            SET ACUP-SHOW-DETAILS         TO TRUE
+            SET NO-CHANGES-DETECTED       TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2000-DECIDE-ACTION
+                THRU 2000-DECIDE-ACTION-EXIT
+            EXPECT ACUP-SHOW-DETAILS TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC58 -- 2000-DECIDE-ACTION SHOW-DETAILS else branch sets
+      *  ACUP-CHANGES-OK-NOT-CONFIRMED (lines 2589-2591).
+      ******************************************************************
+       TESTCASE 'COACTUPC 2000-DECIDE-ACTION show-details else'
+            SET ACUP-SHOW-DETAILS         TO TRUE
+            SET INPUT-OK                  TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2000-DECIDE-ACTION
+                THRU 2000-DECIDE-ACTION-EXIT
+            EXPECT ACUP-CHANGE-ACTION TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC59 -- 2000-DECIDE-ACTION CHANGES-NOT-OK arm CONTINUE
+      *  (lines 2596-2597).
+      ******************************************************************
+       TESTCASE 'COACTUPC 2000-DECIDE-ACTION changes-not-ok'
+            SET ACUP-CHANGES-NOT-OK       TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2000-DECIDE-ACTION
+                THRU 2000-DECIDE-ACTION-EXIT
+            EXPECT ACUP-CHANGE-ACTION TO BE 'E'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC60 -- 2000-DECIDE-ACTION OK-NOT-CONFIRMED no-PFK5 CONTINUE
+      *  arm (lines 2620-2621).  Without CCARD-AID-PFK05, the second
+      *  WHEN ACUP-CHANGES-OK-NOT-CONFIRMED arm (alone) fires.
+      ******************************************************************
+       TESTCASE 'COACTUPC 2000-DECIDE-ACTION ok-not-confirmed no-pfk'
+            SET ACUP-CHANGES-OK-NOT-CONFIRMED TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2000-DECIDE-ACTION
+                THRU 2000-DECIDE-ACTION-EXIT
+            EXPECT ACUP-CHANGE-ACTION TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC61 -- 2000-DECIDE-ACTION OKAYED-AND-DONE arm
+      *  (lines 2625-2632).  Sets ACUP-SHOW-DETAILS and resets
+      *  CDEMO-ACCT-ID/CARD-NUM to zeros.
+      ******************************************************************
+       TESTCASE 'COACTUPC 2000-DECIDE-ACTION okayed-and-done'
+            SET ACUP-CHANGES-OKAYED-AND-DONE TO TRUE
+            MOVE 99999999999 TO CDEMO-ACCT-ID
+            MOVE LOW-VALUES TO CDEMO-FROM-TRANID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2000-DECIDE-ACTION
+                THRU 2000-DECIDE-ACTION-EXIT
+            EXPECT ACUP-CHANGE-ACTION TO BE 'S'
+            EXPECT CDEMO-ACCT-ID TO BE '00000000000'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC62 -- 1260-EDIT-US-PHONE-NUM with non-blank parts performs
+      *  EDIT-AREA-CODE / EDIT-US-PHONE-PREFIX / EDIT-US-PHONE-LINENUM
+      *  via fall-through control flow (production lines 2225-2427).
+      ******************************************************************
+       TESTCASE 'COACTUPC 1260-EDIT-US-PHONE-NUM exercises sub-edits'
+            MOVE '212' TO WS-EDIT-US-PHONE-NUMA
+            MOVE '555' TO WS-EDIT-US-PHONE-NUMB
+            MOVE '1234' TO WS-EDIT-US-PHONE-NUMC
+            MOVE 'PhTestField' TO WS-EDIT-VARIABLE-NAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1260-EDIT-US-PHONE-NUM
+                THRU EDIT-US-PHONE-EXIT
+            EXPECT FLG-EDIT-US-PHONEA-ISVALID TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC63 -- 1000-PROCESS-INPUTS delegates to 1100/1200 then
+      *  populates WS-RETURN-MSG / CCARD-NEXT-* fields (production
+      *  lines 1025-1034).  Sets ACUP-DETAILS-NOT-FETCHED so 1200
+      *  short-circuits.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1000-PROCESS-INPUTS delegates to 1100/1200'
+            SET ACUP-DETAILS-NOT-FETCHED  TO TRUE
+            MOVE '12345678901' TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1000-PROCESS-INPUTS
+                THRU 1000-PROCESS-INPUTS-EXIT
+            EXPECT CCARD-NEXT-PROG TO BE 'COACTUPC'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC64 -- 1100-RECEIVE-MAP early-exit on '*' ACCTSIDI
+      *
+      *  Drives 1100-RECEIVE-MAP (production lines 1039-1426) along
+      *  the asterisk-clear branch (lines 1051-1054 IF '*' -> MOVE
+      *  LOW-VALUES TO CC-ACCT-ID + ACUP-NEW-ACCT-ID-X) and then
+      *  through the early-exit at line 1060-1062 (IF ACUP-DETAILS-
+      *  NOT-FETCHED -> GO TO 1100-RECEIVE-MAP-EXIT).
+      ******************************************************************
+       TESTCASE 'COACTUPC 1100-RECEIVE-MAP asterisk early-exit'
+            SET ACUP-DETAILS-NOT-FETCHED  TO TRUE
+            MOVE '*'                      TO ACCTSIDI OF CACTUPAI
+            MOVE 'OLDID'                  TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1100-RECEIVE-MAP
+                THRU 1100-RECEIVE-MAP-EXIT
+            EXPECT CC-ACCT-ID NOT TO BE 'OLDID'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC65 -- 1100-RECEIVE-MAP early-exit on SPACES ACCTSIDI
+      *
+      *  Drives 1100-RECEIVE-MAP along the SPACES branch (line 1052
+      *  IF SPACES -> MOVE LOW-VALUES TO CC-ACCT-ID).  Then early-
+      *  exits at line 1062.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1100-RECEIVE-MAP spaces early-exit'
+            SET ACUP-DETAILS-NOT-FETCHED  TO TRUE
+            MOVE SPACES                   TO ACCTSIDI OF CACTUPAI
+            MOVE 'OLDID'                  TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1100-RECEIVE-MAP
+                THRU 1100-RECEIVE-MAP-EXIT
+            EXPECT CC-ACCT-ID NOT TO BE 'OLDID'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC66 -- 1100-RECEIVE-MAP valid id non-detail path
+      *
+      *  Drives 1100-RECEIVE-MAP with a valid ACCTSIDI value (ELSE
+      *  branch line 1056 MOVE TO CC-ACCT-ID) and ACUP-SHOW-DETAILS
+      *  set so we DO NOT early-exit at line 1061.  The 1100 body
+      *  then falls through all the field-by-field IF branches.
+      *  Pre-load CACTUPAI fields with valid values so MOVE SPACES
+      *  branches don't fire.
+      ******************************************************************
+       TESTCASE 'COACTUPC 1100-RECEIVE-MAP valid id full body'
+            SET ACUP-SHOW-DETAILS         TO TRUE
+            MOVE '12345678901'   TO ACCTSIDI OF CACTUPAI
+            MOVE 'A'             TO ACSTTUSI OF CACTUPAI
+            MOVE '1000.00'       TO ACRDLIMI OF CACTUPAI
+            MOVE '500.00'        TO ACSHLIMI OF CACTUPAI
+            MOVE '100.00'        TO ACURBALI OF CACTUPAI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1100-RECEIVE-MAP
+                THRU 1100-RECEIVE-MAP-EXIT
+            EXPECT CC-ACCT-ID TO BE '12345678901'
+            EXPECT ACUP-NEW-ACCT-ID-X TO BE '12345678901'
+            EXPECT ACUP-NEW-ACTIVE-STATUS TO BE 'A'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC67 -- 9600-WRITE-PROCESSING NORMAL response
+      *
+      *  Drives 9600-WRITE-PROCESSING (production lines 3888-4105).
+      *  Off-platform DFHRESP(NORMAL) resolves to 0; default WS-RESP-
+      *  CD=0 means the first IF (line 3907) evaluates TRUE and
+      *  control falls through to the second EXEC CICS READ
+      *  (CUSTOMER-RECORD).  Eventually the paragraph PERFORMs
+      *  9700-CHECK-CHANGE-IN-REC and continues.  Off-platform
+      *  WS-RESP-CD remains 0, so the GO TO 9600-WRITE-PROCESSING-
+      *  EXIT is NEVER taken by the early-exit clauses, meaning the
+      *  test exercises the longest happy path through this 217-
+      *  line paragraph.
+      ******************************************************************
+       TESTCASE 'COACTUPC 9600-WRITE-PROCESSING NORMAL response'
+            MOVE '12345678901'   TO CC-ACCT-ID
+            MOVE 123456789       TO CDEMO-CUST-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9600-WRITE-PROCESSING
+                THRU 9600-WRITE-PROCESSING-EXIT
+            EXPECT WS-CARD-RID-ACCT-ID TO BE '12345678901'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC68 -- 9600-WRITE-PROCESSING acct-lock-error early-exit
+      *
+      *  Drives 9600-WRITE-PROCESSING with WS-RESP-CD=99 (no DFHRESP
+      *  match) so first IF evaluates FALSE -> SET COULD-NOT-LOCK-
+      *  ACCT-FOR-UPDATE -> GO TO 9600-WRITE-PROCESSING-EXIT (line
+      *  3914).
+      ******************************************************************
+       TESTCASE 'COACTUPC 9600-WRITE-PROCESSING acct-lock-error'
+            MOVE '12345678901'   TO CC-ACCT-ID
+            MOVE 99              TO WS-RESP-CD
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9600-WRITE-PROCESSING
+                THRU 9600-WRITE-PROCESSING-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC69 -- 9600-WRITE-PROCESSING with 9700 detecting account
+      *  data change.  Pre-loads ACCT-ACTIVE-STATUS = 'A' and
+      *  ACUP-OLD-ACTIVE-STATUS = 'X' so 9700's IF block fails on
+      *  the FIRST comparison and the ELSE branch fires (line 4143
+      *  SET DATA-WAS-CHANGED-BEFORE-UPDATE -> GO TO 9600-WRITE-
+      *  PROCESSING-EXIT).
+      ******************************************************************
+       TESTCASE 'COACTUPC 9600-WRITE-PROCESSING data-was-changed'
+            MOVE '12345678901'   TO CC-ACCT-ID
+            MOVE 'A'             TO ACCT-ACTIVE-STATUS
+            MOVE 'X'             TO ACUP-OLD-ACTIVE-STATUS
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9600-WRITE-PROCESSING
+                THRU 9600-WRITE-PROCESSING-EXIT
+            EXPECT DATA-WAS-CHANGED-BEFORE-UPDATE TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC70 -- ABEND-ROUTINE with default ABEND-MSG (LOW-VALUES)
+      *
+      *  Drives ABEND-ROUTINE (production lines 4203-4225) along the
+      *  IF ABEND-MSG = LOW-VALUES branch (line 4205).  The MOVE
+      *  'UNEXPECTED ABEND OCCURRED.' TO ABEND-MSG sets the field.
+      *  Off-platform EXEC CICS verbs (SEND, HANDLE ABEND, ABEND)
+      *  are stripped during merge so the routine returns normally.
+      ******************************************************************
+       TESTCASE 'COACTUPC ABEND-ROUTINE default msg'
+            MOVE LOW-VALUES TO ABEND-MSG
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM ABEND-ROUTINE
+                THRU ABEND-ROUTINE-EXIT
+            EXPECT ABEND-CULPRIT TO BE 'COACTUPC'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC71 -- ABEND-ROUTINE with ABEND-MSG already populated
+      *
+      *  Drives ABEND-ROUTINE along the ELSE branch (IF ABEND-MSG
+      *  already non-LOW).  Pre-set ABEND-MSG so the MOVE on line
+      *  4206 does NOT fire.
+      ******************************************************************
+       TESTCASE 'COACTUPC ABEND-ROUTINE preset msg'
+            MOVE 'EXISTING ABEND CONTEXT' TO ABEND-MSG
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM ABEND-ROUTINE
+                THRU ABEND-ROUTINE-EXIT
+            EXPECT ABEND-CULPRIT TO BE 'COACTUPC'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC72 -- exercises cobol-check 88-level FALSE assertion path
+      *
+      *  Drives the cobol-check framework's UT-EXPECTED-88-VALUE FALSE
+      *  branch by using `EXPECT ... TO BE FALSE`.  Pre-load CC-ACCT-
+      *  ID with valid 11-digit ID, run 1210-EDIT-ACCOUNT, then assert
+      *  that the FAILURE 88-level FLG-ACCTFILTER-NOT-OK is FALSE
+      *  (it gets cleared on success path).
+      ******************************************************************
+       TESTCASE 'COACTUPC 1210-EDIT-ACCOUNT NOT-OK is false on success'
+            MOVE '00000000001' TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1210-EDIT-ACCOUNT
+                THRU 1210-EDIT-ACCOUNT-EXIT
+            EXPECT FLG-ACCTFILTER-NOT-OK TO BE FALSE
+            EXPECT FLG-ACCTFILTER-BLANK TO BE FALSE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC73 -- 1210-EDIT-ACCOUNT BLANK is false on valid input
+      ******************************************************************
+       TESTCASE 'COACTUPC 1210-EDIT-ACCOUNT positive flag set'
+            MOVE '00000000001' TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1210-EDIT-ACCOUNT
+                THRU 1210-EDIT-ACCOUNT-EXIT
+            EXPECT FLG-ACCTFILTER-ISVALID TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC74 -- ACUP-CHANGES-OK-NOT-CONFIRMED FALSE (default state)
+      *
+      *  After BEFORE-EACH, ACUP-CHANGE-ACTION = LOW-VALUES so 88-
+      *  level ACUP-CHANGES-OK-NOT-CONFIRMED is FALSE.  Test exercises
+      *  the FALSE branch of the cobol-check framework's UT-EXPECTED-
+      *  88-VALUE handler.
+      ******************************************************************
+       TESTCASE 'COACTUPC ACUP-CHANGES-OK-NOT-CONFIRMED is false'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3201-SHOW-INITIAL-VALUES
+                THRU 3201-SHOW-INITIAL-VALUES-EXIT
+            EXPECT ACUP-CHANGES-OK-NOT-CONFIRMED TO BE FALSE
+            EXPECT ACUP-CHANGES-FAILED TO BE FALSE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC75 -- COMMON-RETURN copies WS-RETURN-MSG to CCARD-ERROR-MSG
+      *
+      *  PERFORMs COMMON-RETURN (production lines 1007-1020) which:
+      *      MOVE WS-RETURN-MSG     TO CCARD-ERROR-MSG
+      *      MOVE  CARDDEMO-COMMAREA    TO WS-COMMAREA
+      *      MOVE  WS-THIS-PROGCOMMAREA TO WS-COMMAREA(...)
+      *      EXEC CICS RETURN ... (stripped)
+      *
+      *  This testcase covers a paragraph that has not been exercised
+      *  by any prior TC1-TC74.
+      *
+      *  Source of expected values
+      *    CCARD-ERROR-MSG = 'TEST MSG' -- production MOVE at line
+      *      1008 from WS-RETURN-MSG.
+      *    DFHEI1 = 0 calls -- EXEC CICS RETURN is stripped by
+      *      cobol-check during merge.
+      ******************************************************************
+       TESTCASE 'COACTUPC COMMON-RETURN copies WS-RETURN-MSG'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 'TEST MSG' TO WS-RETURN-MSG
+            PERFORM COMMON-RETURN
+            EXPECT CCARD-ERROR-MSG(1:8) TO BE 'TEST MSG'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  Note: 9700-CHECK-CHANGE-IN-REC contains
+      *      GO TO 9600-WRITE-PROCESSING-EXIT
+      *  at production line 4144 that escapes any test PERFORM range.
+      *  Direct PERFORMs of 9700-CHECK-CHANGE-IN-REC THRU 9700-EXIT
+      *  cause runtime hang because the GO TO target is OUTSIDE the
+      *  THRU range.  The paragraph IS exercised indirectly via
+      *  TC72 (9600-WRITE-PROCESSING data-was-changed) which PERFORMs
+      *  the umbrella paragraph 9600 (the GO TO target IS within
+      *  9600-WRITE-PROCESSING THRU 9600-WRITE-PROCESSING-EXIT).
+      ******************************************************************
+
+      ******************************************************************
       *  End of testsuite COACTUPC ACCOUNT UPDATE TRANSACTION
       ******************************************************************

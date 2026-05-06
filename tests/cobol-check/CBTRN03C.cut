@@ -495,6 +495,469 @@
             VERIFY CALL 'CEE3ABD' HAPPENED ONCE
 
       ******************************************************************
+      *  TC12 -- 9910-DISPLAY-IO-STATUS numeric branch (status 23)
+      *
+      *  Drives 9910-DISPLAY-IO-STATUS along ELSE branch with numeric
+      *  IO-STATUS '23' (record not found).  Production sets
+      *  IO-STATUS-04 = '0023'.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9910-DISPLAY-IO-STATUS numeric 23'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '23' TO IO-STATUS
+            PERFORM 9910-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04 TO BE '0023'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC13 -- 0000-TRANFILE-OPEN success
+      *
+      *  Pre-set TRANFILE-STATUS = '00' drives the success branch
+      *  setting APPL-RESULT = 0; no abend.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0000-TRANFILE-OPEN success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0000-TRANFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC14 -- 0100-REPTFILE-OPEN success
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0100-REPTFILE-OPEN success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANREPT-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0100-REPTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC15 -- 0200-CARDXREF-OPEN success
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0200-CARDXREF-OPEN success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO CARDXREF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0200-CARDXREF-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC16 -- 0300-TRANTYPE-OPEN success
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0300-TRANTYPE-OPEN success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANTYPE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0300-TRANTYPE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC17 -- 0400-TRANCATG-OPEN success
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0400-TRANCATG-OPEN success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANCATG-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0400-TRANCATG-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC18 -- 0500-DATEPARM-OPEN success
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0500-DATEPARM-OPEN success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO DATEPARM-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0500-DATEPARM-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC19 -- 9000-TRANFILE-CLOSE success
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9000-TRANFILE-CLOSE success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9000-TRANFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC20 -- 9100-REPTFILE-CLOSE success
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9100-REPTFILE-CLOSE success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANREPT-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9100-REPTFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC21 -- 9200-CARDXREF-CLOSE success
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9200-CARDXREF-CLOSE success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO CARDXREF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9200-CARDXREF-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC22 -- 9300-TRANTYPE-CLOSE success
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9300-TRANTYPE-CLOSE success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANTYPE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9300-TRANTYPE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC23 -- 9400-TRANCATG-CLOSE success
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9400-TRANCATG-CLOSE success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANCATG-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9400-TRANCATG-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC24 -- 9500-DATEPARM-CLOSE success
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9500-DATEPARM-CLOSE success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO DATEPARM-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9500-DATEPARM-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC25 -- 0000-TRANFILE-OPEN error branch (status 35)
+      *
+      *  Status '35' makes line-379 IF false.  Line-381 ELSE moves
+      *  12 to APPL-RESULT.  Line-384 IF APPL-AOK false ->
+      *  L387 error display, L388 IO-STATUS MOVE, L389 9910-DISPLAY-
+      *  IO-STATUS, L390 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0000-TRANFILE-OPEN error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0000-TRANFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC26 -- 0100-REPTFILE-OPEN error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0100-REPTFILE-OPEN error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANREPT-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0100-REPTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC27 -- 0200-CARDXREF-OPEN error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0200-CARDXREF-OPEN error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO CARDXREF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0200-CARDXREF-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC28 -- 0300-TRANTYPE-OPEN error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0300-TRANTYPE-OPEN error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANTYPE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0300-TRANTYPE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC29 -- 0400-TRANCATG-OPEN error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0400-TRANCATG-OPEN error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANCATG-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0400-TRANCATG-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC30 -- 0500-DATEPARM-OPEN error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0500-DATEPARM-OPEN error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO DATEPARM-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0500-DATEPARM-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC31 -- 9000-TRANFILE-CLOSE error branch (status 35)
+      *
+      *  Production 9000-TRANFILE-CLOSE uses ADD/SUBTRACT GIVING
+      *  rather than MOVE for APPL-RESULT manipulation (lines 515,
+      *  518, 520).  The test only asserts the post-state through
+      *  the abend gate (lines 522-528) and the final IO-STATUS.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9000-TRANFILE-CLOSE error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9000-TRANFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC32 -- 9100-REPTFILE-CLOSE error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9100-REPTFILE-CLOSE error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANREPT-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9100-REPTFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC33 -- 9200-CARDXREF-CLOSE error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9200-CARDXREF-CLOSE error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO CARDXREF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9200-CARDXREF-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC34 -- 9300-TRANTYPE-CLOSE error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9300-TRANTYPE-CLOSE error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANTYPE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9300-TRANTYPE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC35 -- 9400-TRANCATG-CLOSE error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9400-TRANCATG-CLOSE error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANCATG-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9400-TRANCATG-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC36 -- 9500-DATEPARM-CLOSE error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN03C 9500-DATEPARM-CLOSE error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO DATEPARM-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9500-DATEPARM-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC37 -- 1110-WRITE-PAGE-TOTALS emits page-totals via 1111
+      *
+      *  Drives 1110-WRITE-PAGE-TOTALS (lines 293-304).  With
+      *  TRANREPT-STATUS '00' the inner 1111-WRITE-REPORT-REC
+      *  successively succeeds.  Asserts WS-LINE-COUNTER incremented
+      *  by 2 (lines 299, 302) and WS-PAGE-TOTAL cleared to 0 (line
+      *  298) by reaching the production logic.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 1110-WRITE-PAGE-TOTALS clears WS-PAGE-TOTAL'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANREPT-STATUS
+            MOVE 0 TO WS-LINE-COUNTER
+            PERFORM 1110-WRITE-PAGE-TOTALS
+            EXPECT WS-PAGE-TOTAL TO BE ZERO
+            EXPECT WS-LINE-COUNTER TO BE 2
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC38 -- 1120-WRITE-ACCOUNT-TOTALS emits account-totals
+      *
+      *  Drives 1120-WRITE-ACCOUNT-TOTALS (lines 306-316).  Mirror
+      *  of TC37.  Asserts WS-ACCOUNT-TOTAL cleared and WS-LINE-
+      *  COUNTER incremented by 2.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 1120-WRITE-ACCOUNT-TOTALS clears total'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANREPT-STATUS
+            MOVE 0 TO WS-LINE-COUNTER
+            PERFORM 1120-WRITE-ACCOUNT-TOTALS
+            EXPECT WS-ACCOUNT-TOTAL TO BE ZERO
+            EXPECT WS-LINE-COUNTER TO BE 2
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC39 -- 1110-WRITE-GRAND-TOTALS emits grand totals
+      *
+      *  Drives 1110-WRITE-GRAND-TOTALS (lines 318-322).  Note: the
+      *  production has duplicate paragraph names 1110-WRITE-PAGE-
+      *  TOTALS and 1110-WRITE-GRAND-TOTALS.  GnuCOBOL accepts both.
+      *  Asserts that 1111-WRITE-REPORT-REC succeeds and the grand
+      *  total is moved to REPT-GRAND-TOTAL.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 1110-WRITE-GRAND-TOTALS moves WS-GRAND-TOTAL'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANREPT-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1110-WRITE-GRAND-TOTALS
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC40 -- 1111-WRITE-REPORT-REC error branch (status 35)
+      *
+      *  Drives 1111-WRITE-REPORT-REC error path.  Pre-set status
+      *  '35' makes L346 false; L349 MOVE 12; L351 IF APPL-AOK
+      *  false -> L354-357 error block + abend.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 1111-WRITE-REPORT-REC error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANREPT-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1111-WRITE-REPORT-REC
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC41 -- 0550-DATEPARM-READ error branch (status 35)
+      *
+      *  Drives 0550-DATEPARM-READ error path.  EVALUATE WHEN OTHER
+      *  (line 227) sets APPL-RESULT=12.  IF APPL-AOK false (line
+      *  231); IF APPL-EOF false (line 235) -> error block + abend.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 0550-DATEPARM-READ error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO DATEPARM-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0550-DATEPARM-READ
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC42 -- 1000-TRANFILE-GET-NEXT error (status 23)
+      *
+      *  Drives 1000-TRANFILE-GET-NEXT error path.  EVALUATE WHEN
+      *  OTHER sets APPL-RESULT=12; APPL-EOF false; abend.
+      ******************************************************************
+       TESTCASE 'CBTRN03C 1000-TRANFILE-GET-NEXT error status 23'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '23' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-TRANFILE-GET-NEXT
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '23'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
       *  End of testsuite CBTRN03C TRANSACTION REPORT
       *
       *  Coverage achieved

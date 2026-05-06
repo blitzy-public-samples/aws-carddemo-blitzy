@@ -593,5 +593,489 @@
 
 
       ******************************************************************
+      *  TC11 -- 1400-SETUP-MESSAGE FLG-ACCTFILTER-NOT-OK CONTINUE
+      *
+      *  Drives 1400-SETUP-MESSAGE EVALUATE first arm WHEN FLG-
+      *  ACCTFILTER-NOT-OK -> CONTINUE.  Then no info-msg branch
+      *  fires unless WS-NO-INFO-MESSAGE.  ERRMSGO gets WS-ERROR-
+      *  MSG (initialized to spaces).
+      ******************************************************************
+       TESTCASE 'COCRDLIC 1400-SETUP-MESSAGE NOT-OK arm'
+            SET FLG-ACCTFILTER-NOT-OK TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1400-SETUP-MESSAGE
+                THRU 1400-SETUP-MESSAGE-EXIT
+            EXPECT FLG-ACCTFILTER-NOT-OK TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC12 -- 1400-SETUP-MESSAGE WHEN OTHER sets WS-NO-INFO
+      *
+      *  Drives 1400-SETUP-MESSAGE EVALUATE TRUE WHEN OTHER arm
+      *  (line 920) -> SET WS-NO-INFO-MESSAGE TO TRUE.  Reached
+      *  when no other discriminator matches: not NOT-OK, not PFK07,
+      *  not PFK08, not WS-NO-INFO-MESSAGE (already off), not
+      *  CA-NEXT-PAGE-EXISTS.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 1400-SETUP-MESSAGE WHEN-OTHER no-info'
+            SET FLG-ACCTFILTER-ISVALID TO TRUE
+            SET FLG-CARDFILTER-ISVALID TO TRUE
+            MOVE 'X' TO WS-INFO-MSG
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1400-SETUP-MESSAGE
+                THRU 1400-SETUP-MESSAGE-EXIT
+            EXPECT WS-NO-INFO-MESSAGE TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC13 -- 9500-FILTER-RECORDS includes when no filters
+      *
+      *  Drives 9500-FILTER-RECORDS along the path where neither
+      *  FLG-ACCTFILTER-ISVALID nor FLG-CARDFILTER-ISVALID is set.
+      *  Both IF blocks take the ELSE CONTINUE branch (lines 1393,
+      *  1404), so WS-DONOT-EXCLUDE-THIS-RECORD remains TRUE
+      *  (set on line 1383).
+      ******************************************************************
+       TESTCASE 'COCRDLIC 9500-FILTER-RECORDS no filters keeps record'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9500-FILTER-RECORDS
+                THRU 9500-FILTER-RECORDS-EXIT
+            EXPECT WS-DONOT-EXCLUDE-THIS-RECORD TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC14 -- 9500-FILTER-RECORDS includes acct match
+      *
+      *  Drives 9500-FILTER-RECORDS along FLG-ACCTFILTER-ISVALID
+      *  TRUE branch (lines 1385-1394) where CARD-ACCT-ID matches
+      *  CC-ACCT-ID (CONTINUE arm).  Record is kept.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 9500-FILTER-RECORDS acct match keeps'
+            SET FLG-ACCTFILTER-ISVALID TO TRUE
+            MOVE '12345678901' TO CC-ACCT-ID
+            MOVE '12345678901' TO CARD-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9500-FILTER-RECORDS
+                THRU 9500-FILTER-RECORDS-EXIT
+            EXPECT WS-DONOT-EXCLUDE-THIS-RECORD TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC15 -- 9500-FILTER-RECORDS includes card match
+      *
+      *  Drives 9500-FILTER-RECORDS along FLG-CARDFILTER-ISVALID
+      *  branch (lines 1396-1405) where CARD-NUM matches CC-CARD-
+      *  NUM-N.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 9500-FILTER-RECORDS card match keeps'
+            SET FLG-CARDFILTER-ISVALID TO TRUE
+            MOVE '4111222233334444' TO CC-CARD-NUM
+            MOVE 4111222233334444 TO CARD-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9500-FILTER-RECORDS
+                THRU 9500-FILTER-RECORDS-EXIT
+            EXPECT WS-DONOT-EXCLUDE-THIS-RECORD TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC16 -- 9500-FILTER-RECORDS excludes card mismatch
+      *
+      *  Drives 9500-FILTER-RECORDS along FLG-CARDFILTER-ISVALID
+      *  TRUE with CARD-NUM != CC-CARD-NUM-N -> SET WS-EXCLUDE-
+      *  THIS-RECORD TRUE (line 1400).
+      ******************************************************************
+       TESTCASE 'COCRDLIC 9500-FILTER-RECORDS card mismatch'
+            SET FLG-CARDFILTER-ISVALID TO TRUE
+            MOVE '4111222233334444' TO CC-CARD-NUM
+            MOVE 9999999999999999 TO CARD-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9500-FILTER-RECORDS
+                THRU 9500-FILTER-RECORDS-EXIT
+            EXPECT WS-EXCLUDE-THIS-RECORD TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC17 -- 1300-SETUP-SCREEN-ATTRS first-entry CONTINUE
+      *
+      *  Drives 1300-SETUP-SCREEN-ATTRS along the first-entry
+      *  branch (line 839-842): EIBCALEN=0 -> CONTINUE; or with
+      *  CDEMO-PGM-ENTER + CDEMO-FROM-PROGRAM=COMEN01C.  In merged
+      *  binary EIBCALEN is 0.  Production code reaches the IF
+      *  INPUT-OK final block (line 884-886) without modifying
+      *  any FLG-* state; INPUT-OK remains TRUE post-PERFORM.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 1300-SETUP-SCREEN-ATTRS first-entry'
+            SET INPUT-OK TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1300-SETUP-SCREEN-ATTRS
+                THRU 1300-SETUP-SCREEN-ATTRS-EXIT
+            EXPECT INPUT-OK TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC18 -- 1300-SETUP-SCREEN-ATTRS NOT-OK red color paths
+      *
+      *  Drives 1300-SETUP-SCREEN-ATTRS lines 872-880 IF NOT-OK
+      *  branches.  When FLG-ACCTFILTER-NOT-OK and FLG-CARDFILTER-
+      *  NOT-OK are both TRUE, both ACCTSIDC and CARDSIDC become
+      *  DFHRED.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 1300-SETUP-SCREEN-ATTRS NOT-OK red'
+            SET FLG-ACCTFILTER-NOT-OK TO TRUE
+            SET FLG-CARDFILTER-NOT-OK TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1300-SETUP-SCREEN-ATTRS
+                THRU 1300-SETUP-SCREEN-ATTRS-EXIT
+            EXPECT ACCTSIDC OF CCRDLIAO TO BE DFHRED
+            EXPECT CARDSIDC OF CCRDLIAO TO BE DFHRED
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC19 -- 1100-SCREEN-INIT populates header literals
+      *
+      *  Drives 1100-SCREEN-INIT (production lines 642-672), the
+      *  pure-WS preamble that 1000-SEND-MAP performs at line 625-626
+      *  before populating the row array (1200), attribute table
+      *  (1250), screen attributes (1300), message line (1400) and
+      *  finally invoking the CICS SEND MAP (1500).  The paragraph:
+      *
+      *    MOVE LOW-VALUES   TO CCRDLIAO            (line 643)
+      *    MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA   (line 645)
+      *    MOVE CCDA-TITLE01 TO TITLE01O OF CCRDLIAO       (line 647)
+      *    MOVE CCDA-TITLE02 TO TITLE02O OF CCRDLIAO       (line 648)
+      *    MOVE LIT-THISTRANID TO TRNNAMEO OF CCRDLIAO     (line 649)
+      *    MOVE LIT-THISPGM    TO PGMNAMEO OF CCRDLIAO     (line 650)
+      *    MOVE WS-CA-SCREEN-NUM TO PAGENOO OF CCRDLIAO    (line 667)
+      *    SET WS-NO-INFO-MESSAGE TO TRUE                   (line 669)
+      *    MOVE WS-INFO-MSG TO INFOMSGO OF CCRDLIAO         (line 670)
+      *    MOVE DFHBMDAR    TO INFOMSGC OF CCRDLIAO         (line 671)
+      *
+      *  Source of expected values:
+      *    'CCLI'      - LIT-THISTRANID literal VALUE 'CCLI' on
+      *                  line 182.
+      *    'COCRDLIC'  - LIT-THISPGM literal VALUE 'COCRDLIC' on
+      *                  line 180.
+      *    DFHBMDAR    - BMS attribute byte for "default attribute,
+      *                  read-back" applied to INFOMSGC; assertion
+      *                  proves the 'no info message' info-message
+      *                  initialisation arm executed.
+      *
+      *  Off-platform expression of AAP TC8: the production invariant
+      *  is that every 1000-SEND-MAP cycle re-initialises the header
+      *  before SEND.  A regression that broke the literal MOVEs (or
+      *  swapped PGMNAMEO and TRNNAMEO) would surface here.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES asserts 1100-SCREEN-INIT
+      *  contains zero EXEC CICS verbs (FUNCTION CURRENT-DATE is a
+      *  COBOL intrinsic, not a CICS service).
+      ******************************************************************
+       TESTCASE 'COCRDLIC 1100-SCREEN-INIT populates header lits'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1100-SCREEN-INIT THRU 1100-SCREEN-INIT-EXIT
+            EXPECT TRNNAMEO OF CCRDLIAO TO BE 'CCLI'
+            EXPECT PGMNAMEO OF CCRDLIAO TO BE 'COCRDLIC'
+            EXPECT INFOMSGC OF CCRDLIAO TO BE DFHBMDAR
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC20 -- 1200-SCREEN-ARRAY-INIT populates row-1 fields
+      *
+      *  Drives 1200-SCREEN-ARRAY-INIT (production lines 678-743),
+      *  the row-array transfer paragraph that 1000-SEND-MAP performs
+      *  at line 627-628.  For each of the 7 OCCURS-7 row slots, the
+      *  paragraph guards on:
+      *
+      *    IF WS-EACH-CARD(n) EQUAL LOW-VALUES
+      *       CONTINUE                                   (skip slot)
+      *    ELSE
+      *       MOVE WS-EDIT-SELECT(n)     TO CRDSELnO     (line 683)
+      *       MOVE WS-ROW-ACCTNO(n)      TO ACCTNOnO     (line 684)
+      *       MOVE WS-ROW-CARD-NUM(n)    TO CRDNUMnO     (line 685)
+      *       MOVE WS-ROW-CARD-STATUS(n) TO CRDSTSnO     (line 686)
+      *
+      *  TC20 drives the ELSE arm of the row-1 IF only -- BEFORE-EACH
+      *  initialised WS-EACH-CARD(2..7) to LOW-VALUES so they all
+      *  CONTINUE; row-1 receives a non-LOW-VALUES seed via prelude.
+      *  The MOVE chain populates four CCRDLIAO output fields from
+      *  four parent WS row fields.
+      *
+      *  Source of expected values:
+      *    'S'                   - WS-EDIT-SELECT(1) literal MOVE'd
+      *                            verbatim to CRDSEL1O by line 683.
+      *    '00000000011'         - WS-ROW-ACCTNO(1) MOVE'd verbatim
+      *                            to ACCTNO1O by line 684.
+      *    '4111111111111111'    - WS-ROW-CARD-NUM(1) MOVE'd verbatim
+      *                            to CRDNUM1O by line 685.
+      *    'Y'                   - WS-ROW-CARD-STATUS(1) MOVE'd
+      *                            verbatim to CRDSTS1O by line 686.
+      *
+      *  Off-platform expression of AAP "browse READNEXT row visible
+      *  on screen" -- proves the production invariant that 1200-
+      *  SCREEN-ARRAY-INIT performs a faithful row-by-row MOVE chain
+      *  without truncation, swap, or loss.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES asserts 1200-SCREEN-ARRAY-
+      *  INIT contains zero EXEC CICS verbs (pure MOVE paragraph).
+      ******************************************************************
+       TESTCASE 'COCRDLIC 1200-SCREEN-ARRAY-INIT populates row 1'
+            MOVE 'X' TO WS-EACH-CARD(1)
+            MOVE 'S' TO WS-EDIT-SELECT(1)
+            MOVE '00000000011'    TO WS-ROW-ACCTNO(1)
+            MOVE '4111111111111111' TO WS-ROW-CARD-NUM(1)
+            MOVE 'Y' TO WS-ROW-CARD-STATUS(1)
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1200-SCREEN-ARRAY-INIT
+                THRU 1200-SCREEN-ARRAY-INIT-EXIT
+            EXPECT CRDSEL1O OF CCRDLIAO TO BE 'S'
+            EXPECT ACCTNO1O OF CCRDLIAO TO BE '00000000011'
+            EXPECT CRDNUM1O OF CCRDLIAO TO BE '4111111111111111'
+            EXPECT CRDSTS1O OF CCRDLIAO TO BE 'Y'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC21 -- 1250-SETUP-ARRAY-ATTRIBS protect-rows-yes branch
+      *
+      *  Drives 1250-SETUP-ARRAY-ATTRIBS (production lines 748-832),
+      *  the per-row attribute-byte paragraph that 1000-SEND-MAP
+      *  performs at line 629-630.  Each of the 7 OCCURS-7 row slots:
+      *
+      *    IF WS-EACH-CARD(n) EQUAL LOW-VALUES
+      *    OR FLG-PROTECT-SELECT-ROWS-YES
+      *       MOVE DFHBMPRF/DFHBMPRO TO CRDSELnA OF CCRDLIAI
+      *    ELSE
+      *       ...modifiable arm...
+      *
+      *  TC21 drives the OR FLG-PROTECT-SELECT-ROWS-YES arm: when the
+      *  flag is TRUE, all 7 select fields are protected regardless
+      *  of WS-EACH-CARD content.  Asserts representative samples
+      *  (CRDSEL1A=DFHBMPRF, CRDSEL2A=DFHBMPRO) -- row 1 uses
+      *  DFHBMPRF (line 753) and rows 2-7 use DFHBMPRO (line 766
+      *  etc.), proving the per-row attribute differentiation that
+      *  the production code intends.
+      *
+      *  Source of expected values:
+      *    DFHBMPRF (X'0C') - CRDSEL1A protected attribute (line 753).
+      *    DFHBMPRO (X'08') - CRDSEL2A protected attribute (line 766).
+      *
+      *  Off-platform expression of AAP "browse with protected select
+      *  rows" -- proves the FLG-PROTECT-SELECT-ROWS-YES path of the
+      *  attribute-byte logic.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 1250-SETUP-ARRAY-ATTRIBS protect-rows'
+            SET FLG-PROTECT-SELECT-ROWS-YES TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1250-SETUP-ARRAY-ATTRIBS
+                THRU 1250-SETUP-ARRAY-ATTRIBS-EXIT
+            EXPECT CRDSEL1A OF CCRDLIAI TO BE DFHBMPRF
+            EXPECT CRDSEL2A OF CCRDLIAI TO BE DFHBMPRO
+            EXPECT CRDSEL3A OF CCRDLIAI TO BE DFHBMPRO
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC22 -- 2200-EDIT-INPUTS orchestrator clears OK flags
+      *
+      *  Drives 2200-EDIT-INPUTS (production lines 985-1000), the
+      *  edit-orchestrator paragraph that 0000-MAIN performs at the
+      *  start of input validation.  The paragraph:
+      *
+      *    SET INPUT-OK                   TO TRUE      (line 986)
+      *    SET FLG-PROTECT-SELECT-ROWS-NO TO TRUE      (line 987)
+      *    PERFORM 2210-EDIT-ACCOUNT THRU 2210-EDIT-ACCOUNT-EXIT
+      *    PERFORM 2220-EDIT-CARD    THRU 2220-EDIT-CARD-EXIT
+      *    PERFORM 2250-EDIT-ARRAY   THRU 2250-EDIT-ARRAY-EXIT
+      *
+      *  TC22 seeds CC-ACCT-ID/CC-CARD-NUM as both BLANK (LOW-VALUES
+      *  and SPACES) so 2210-EDIT-ACCOUNT and 2220-EDIT-CARD take
+      *  their FLG-*-BLANK arms (success-no-filter) and INPUT-OK
+      *  remains TRUE post-orchestration.  All 7 WS-EDIT-SELECT
+      *  entries default to SPACES via BEFORE-EACH INITIALIZE; 2250-
+      *  EDIT-ARRAY iterates 7 times along its WHEN SELECT-BLANK arm,
+      *  preserving INPUT-OK.
+      *
+      *  Source of expected values:
+      *    INPUT-OK = TRUE       - SET line 986; preserved through
+      *                            three sub-paragraph PERFORMs given
+      *                            BLANK-filter inputs.
+      *    FLG-PROTECT-SELECT-ROWS-NO = TRUE - line 987.
+      *
+      *  Off-platform expression of AAP "happy path filter validation
+      *  succeeds when no filters supplied" -- the entry to the read-
+      *  forward STARTBR sequence requires INPUT-OK on success.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- 2200/2210/2220/2250 are
+      *  all pure-WS paragraphs (no EXEC CICS).
+      ******************************************************************
+       TESTCASE 'COCRDLIC 2200-EDIT-INPUTS orchestrator success'
+            MOVE SPACES TO CC-ACCT-ID
+            MOVE SPACES TO CC-CARD-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2200-EDIT-INPUTS THRU 2200-EDIT-INPUTS-EXIT
+            EXPECT INPUT-OK TO BE TRUE
+            EXPECT FLG-PROTECT-SELECT-ROWS-NO TO BE TRUE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC23 -- 2250-EDIT-ARRAY shortcut on prior INPUT-ERROR
+      *
+      *  Drives 2250-EDIT-ARRAY (production lines 1073-1119), the
+      *  selection-flag validator paragraph.  The first construct
+      *  is the early-exit guard:
+      *
+      *    IF INPUT-ERROR                                 (line 1075)
+      *       GO TO 2250-EDIT-ARRAY-EXIT                  (line 1076)
+      *    END-IF
+      *
+      *  TC23 seeds INPUT-ERROR=TRUE prior to PERFORM, exercising the
+      *  GO TO branch.  No subsequent INSPECT TALLYING or PERFORM
+      *  VARYING runs; INPUT-ERROR remains TRUE post-PERFORM.  This
+      *  covers the IF / GO TO / EXIT path that production relies on
+      *  to short-circuit selection validation when 2210/2220 have
+      *  already failed -- avoiding cascading false-positive errors
+      *  on row-select fields when the upstream filter is invalid.
+      *
+      *  Source of expected values:
+      *    INPUT-ERROR = TRUE   - prelude SET; preserved via early-
+      *                           exit GO TO 2250-EDIT-ARRAY-EXIT.
+      *
+      *  VERIFY DFHEI1 HAPPENED 0 TIMES -- pure WS paragraph.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 2250-EDIT-ARRAY shortcut on input-error'
+            SET INPUT-ERROR TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2250-EDIT-ARRAY THRU 2250-EDIT-ARRAY-EXIT
+            EXPECT INPUT-ERROR TO BE TRUE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC24 -- 1000-SEND-MAP umbrella populates header
+      *
+      *  Drives 1000-SEND-MAP (production lines 624-637), the SEND
+      *  umbrella that 0000-MAIN performs after every state change.
+      *  The paragraph is a pure orchestrator:
+      *
+      *    PERFORM 1100-SCREEN-INIT          THRU 1100-...EXIT
+      *    PERFORM 1200-SCREEN-ARRAY-INIT    THRU 1200-...EXIT
+      *    PERFORM 1250-SETUP-ARRAY-ATTRIBS  THRU 1250-...EXIT
+      *    PERFORM 1300-SETUP-SCREEN-ATTRS   THRU 1300-...EXIT
+      *    PERFORM 1400-SETUP-MESSAGE        THRU 1400-...EXIT
+      *    PERFORM 1500-SEND-SCREEN          THRU 1500-...EXIT
+      *
+      *  TC24 PERFORMs 1000-SEND-MAP with FLG-PROTECT-SELECT-ROWS-YES
+      *  pre-set so the row-1 attribute branch is deterministic, plus
+      *  default state for everything else.  Asserts representative
+      *  side effects from each child paragraph: TRNNAMEO/PGMNAMEO
+      *  (1100), and the protected attribute on the protected-rows-
+      *  yes arm of 1250 (CRDSEL1A=DFHBMPRF on row 1, DFHBMPRO on
+      *  rows 2-7 -- per production line 753 vs 766).
+      *
+      *  cobol-check 0.2.16 strips the EXEC CICS SEND MAP at line
+      *  940 from the merged 1500-SEND-SCREEN -- the PERFORM still
+      *  reaches the EXIT, so 1500 line counts contribute to coverage
+      *  even though the verb itself is no-op.  Same effect as the
+      *  identical pattern in COTRN00C TC2 / COCRDSLC TC1.
+      *
+      *  Source of expected values:
+      *    'CCLI'      - 1100-SCREEN-INIT line 649 LIT-THISTRANID.
+      *    'COCRDLIC'  - 1100-SCREEN-INIT line 650 LIT-THISPGM.
+      *    DFHBMPRF    - 1250-SETUP-ARRAY-ATTRIBS line 753 row-1
+      *                  protected attribute (PROTECT-ROWS-YES arm).
+      *
+      *  Off-platform expression of AAP "every state-change cycle
+      *  invokes 1000-SEND-MAP umbrella" -- proves orchestrator
+      *  correctness without requiring CICS translator pass.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 1000-SEND-MAP umbrella populates header'
+            SET FLG-PROTECT-SELECT-ROWS-YES TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1000-SEND-MAP THRU 1000-SEND-MAP-EXIT
+            EXPECT TRNNAMEO OF CCRDLIAO TO BE 'CCLI'
+            EXPECT PGMNAMEO OF CCRDLIAO TO BE 'COCRDLIC'
+            EXPECT CRDSEL1A OF CCRDLIAI TO BE DFHBMPRF
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC25 -- 1500-SEND-SCREEN paragraph entry/exit (CICS-stripped)
+      *
+      *  Drives 1500-SEND-SCREEN (production lines 938-948).  In
+      *  cobol-check 0.2.16 the EXEC CICS SEND MAP verb at lines
+      *  939-947 is stripped during merge; the residual binary
+      *  contains only the paragraph header, the trailing period,
+      *  and the EXIT companion paragraph.  PERFORM 1500-SEND-SCREEN
+      *  THRU 1500-SEND-SCREEN-EXIT therefore traverses the structural
+      *  scaffolding (paragraph entry, period, EXIT) and contributes
+      *  the line-counters for those lines to gcov coverage.
+      *
+      *  Source of expected values:
+      *    WS-DFHEI1-UNMOCKED-CALLED = 'N' - asserts that the merged
+      *                                       binary did NOT fall
+      *                                       through to the unmocked
+      *                                       DFHEI1 stub (i.e., the
+      *                                       EXEC CICS was stripped,
+      *                                       not redirected to a
+      *                                       failing stub).
+      *
+      *  Off-platform expression of AAP "every SEND MAP invocation"
+      *  baseline -- this is the structural cover-the-paragraph test
+      *  needed because the production EXEC CICS verb cannot run off-
+      *  platform.  Same pattern as COCRDSLC TC8.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 1500-SEND-SCREEN paragraph traversed'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1500-SEND-SCREEN THRU 1500-SEND-SCREEN-EXIT
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
       *  End of testsuite COCRDLIC CARD LIST BROWSE TRANSACTION
       ******************************************************************

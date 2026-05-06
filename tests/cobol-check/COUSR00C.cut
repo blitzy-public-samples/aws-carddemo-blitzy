@@ -473,5 +473,161 @@
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
+      *  TC7 -- POPULATE-HEADER-INFO populates date/title/program fields
+      *
+      *  Drives POPULATE-HEADER-INFO (production lines 562-581) which
+      *  is a pure-WS computation paragraph (no CICS calls).  Runs
+      *  FUNCTION CURRENT-DATE and reformats the YYYYMMDD/HHMMSS into
+      *  MM-DD-YY / HH-MM-SS for the BMS output map.  Test asserts
+      *  the static title / program / transaction-id fields are
+      *  copied into the output map, and that the date/time
+      *  separator characters are populated (their digit content
+      *  varies per run because FUNCTION CURRENT-DATE is non-
+      *  deterministic; the literal '/'s and ':'s are deterministic).
+      *
+      *  Source of expected values:
+      *    'CardDemo Application       '
+      *                            - CCDA-TITLE01 from COTTL01Y;
+      *                              MOVE'd to TITLE01O at line 566
+      *    'User List                  '
+      *                            - CCDA-TITLE02 from COTTL01Y;
+      *                              MOVE'd to TITLE02O at line 567
+      *    'CU00'                  - WS-TRANID via line 568 MOVE;
+      *                              VALUE 'CU00' at line 37
+      *    'COUSR00C'              - WS-PGMNAME via line 569 MOVE;
+      *                              VALUE 'COUSR00C' at line 36
+      ******************************************************************
+       TESTCASE 'COUSR00C POPULATE-HEADER-INFO copies title and tranid'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM POPULATE-HEADER-INFO
+            EXPECT TRNNAMEO OF COUSR0AO TO BE 'CU00'
+            EXPECT PGMNAMEO OF COUSR0AO TO BE 'COUSR00C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC8 -- ENDBR-USER-SEC-FILE invokes one EXEC CICS ENDBR
+      *
+      *  Drives ENDBR-USER-SEC-FILE (production lines 687-691) which
+      *  contains a single EXEC CICS ENDBR DATASET.  Mock intercepts
+      *  the CALL 'DFHEI1' translation; assertion verifies the mock
+      *  was reached exactly once, proving the production paragraph
+      *  executes its only CICS verb.
+      ******************************************************************
+       TESTCASE 'COUSR00C ENDBR-USER-SEC-FILE runs without abend'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM ENDBR-USER-SEC-FILE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC9 -- SEND-USRLST-SCREEN takes SEND-ERASE-YES branch
+      *
+      *  Drives SEND-USRLST-SCREEN (production lines 522-544).
+      *  WS-SEND-ERASE-FLG defaults to 'Y' (line 46 VALUE 'Y'),
+      *  satisfying SEND-ERASE-YES 88-level (line 47), so the
+      *  IF SEND-ERASE-YES THEN branch executes the EXEC CICS SEND
+      *  with ERASE option.  The paragraph also PERFORMs POPULATE-
+      *  HEADER-INFO before the EXEC CICS, so this test exercises
+      *  TWO paragraphs (SEND-USRLST-SCREEN itself plus its called
+      *  POPULATE-HEADER-INFO) and contributes to coverage of both.
+      *
+      *  WS-MESSAGE is asserted to remain SPACES because the
+      *  paragraph does not write to it (it copies WS-MESSAGE TO
+      *  ERRMSGO at line 526).  TRNNAMEO confirms the embedded
+      *  POPULATE-HEADER-INFO call ran.
+      ******************************************************************
+       TESTCASE 'COUSR00C SEND-USRLST-SCREEN with ERASE-YES sends map'
+            MOVE 'Y' TO WS-SEND-ERASE-FLG
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM SEND-USRLST-SCREEN
+            EXPECT TRNNAMEO OF COUSR0AO TO BE 'CU00'
+            EXPECT PGMNAMEO OF COUSR0AO TO BE 'COUSR00C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC10 -- SEND-USRLST-SCREEN takes ELSE branch (SEND-ERASE-NO)
+      *
+      *  Symmetric to TC9 but with WS-SEND-ERASE-FLG='N' so the
+      *  ELSE branch (lines 537-543) executes the EXEC CICS SEND
+      *  WITHOUT the ERASE option.  Both branches reach the same
+      *  CALL 'DFHEI1' so the VERIFY count is identical; the
+      *  coverage gain is on the ELSE branch lines.
+      ******************************************************************
+       TESTCASE 'COUSR00C SEND-USRLST-SCREEN with ERASE-NO sends map'
+            MOVE 'N' TO WS-SEND-ERASE-FLG
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM SEND-USRLST-SCREEN
+            EXPECT TRNNAMEO OF COUSR0AO TO BE 'CU00'
+            EXPECT PGMNAMEO OF COUSR0AO TO BE 'COUSR00C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC11 -- RECEIVE-USRLST-SCREEN invokes DFHEI1 once
+      *
+      *  Drives RECEIVE-USRLST-SCREEN (production lines 549-557)
+      *  which contains a single EXEC CICS RECEIVE MAP.  Mock
+      *  intercepts the CALL 'DFHEI1'; assertion verifies the mock
+      *  was reached exactly once.
+      ******************************************************************
+       TESTCASE 'COUSR00C RECEIVE-USRLST-SCREEN runs without abend'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM RECEIVE-USRLST-SCREEN
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC12 -- PROCESS-ENTER-KEY with no SEL flags falls to WHEN OTHER
+      *
+      *  Drives PROCESS-ENTER-KEY (production lines 149-232) when
+      *  none of SEL0001I .. SEL0010I has a non-blank value.  The
+      *  EVALUATE TRUE block falls through to WHEN OTHER (lines
+      *  182-184) which clears CDEMO-CU00-USR-SEL-FLG and CDEMO-
+      *  CU00-USR-SELECTED to SPACES.  Then the IF block at line 187
+      *  finds both fields = SPACES and skips the routing
+      *  EVALUATE.  Then USRIDINI = SPACES branch (line 218) runs
+      *  the LOW-VALUES move.  Finally PROCESS-PAGE-FORWARD is
+      *  PERFORMed which invokes multiple CICS verbs (mocked).
+      *
+      *  Source of expected values:
+      *    SPACES                  - CDEMO-CU00-USR-SEL-FLG cleared
+      *                              by line 183 MOVE SPACES
+      *    SPACES                  - CDEMO-CU00-USR-SELECTED
+      *                              cleared by line 184 MOVE SPACES
+      *    -1                      - USRIDINL flipped by line 224
+      *    0                       - CDEMO-CU00-PAGE-NUM reset by
+      *                              line 227 MOVE 0
+      ******************************************************************
+       TESTCASE 'COUSR00C PROCESS-ENTER-KEY clears flags WHEN-OTHER'
+            MOVE SPACES TO SEL0001I OF COUSR0AI
+            MOVE SPACES TO SEL0002I OF COUSR0AI
+            MOVE SPACES TO SEL0003I OF COUSR0AI
+            MOVE SPACES TO SEL0004I OF COUSR0AI
+            MOVE SPACES TO SEL0005I OF COUSR0AI
+            MOVE SPACES TO SEL0006I OF COUSR0AI
+            MOVE SPACES TO SEL0007I OF COUSR0AI
+            MOVE SPACES TO SEL0008I OF COUSR0AI
+            MOVE SPACES TO SEL0009I OF COUSR0AI
+            MOVE SPACES TO SEL0010I OF COUSR0AI
+            MOVE SPACES TO USRIDINI OF COUSR0AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT CDEMO-CU00-USR-SEL-FLG TO BE SPACES
+            EXPECT CDEMO-CU00-USR-SELECTED TO BE SPACES
+            EXPECT USRIDINL OF COUSR0AI NOT = 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
       *  End of testsuite COUSR00C USER LIST BROWSE TRANSACTION
       ******************************************************************

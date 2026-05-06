@@ -537,6 +537,125 @@
             EXPECT WS-MESSAGE TO BE SPACES
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
+
+      ******************************************************************
+      *  TC7 -- POPULATE-HEADER-INFO copies WS-PGMNAME to map
+      *
+      *  PERFORMs POPULATE-HEADER-INFO (production lines 214-236)
+      *  which copies CCDA-TITLE01/02, WS-TRANID, WS-PGMNAME, plus
+      *  the formatted current date and time, into the BMS map's
+      *  header output fields TITLE01O/TITLE02O/TRNNAMEO/PGMNAMEO/
+      *  CURDATEO/CURTIMEO of COUSR1AO.
+      *
+      *  Source of expected values
+      *    PGMNAMEO OF COUSR1AO = 'COUSR01C' -- production MOVE
+      *      at line 222 from WS-PGMNAME (initialized to 'COUSR01C').
+      *    DFHEI1 = 0 calls -- POPULATE-HEADER-INFO contains no
+      *      EXEC CICS verbs (only internal MOVEs and FUNCTION
+      *      CURRENT-DATE).
+      ******************************************************************
+       TESTCASE 'COUSR01C POPULATE-HEADER-INFO copies WS-PGMNAME'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM POPULATE-HEADER-INFO
+            EXPECT PGMNAMEO OF COUSR1AO TO BE 'COUSR01C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC8 -- WRITE-USER-SEC-FILE NORMAL arm builds success message
+      *
+      *  PERFORMs WRITE-USER-SEC-FILE (production lines 238-275)
+      *  with WS-RESP-CD pre-set to 0 (DFHRESP(NORMAL)) so the
+      *  WHEN NORMAL arm at lines 251-260 fires:
+      *      PERFORM INITIALIZE-ALL-FIELDS
+      *      MOVE SPACES   TO WS-MESSAGE
+      *      MOVE DFHGREEN TO ERRMSGC OF COUSR1AO
+      *      STRING 'User ' SEC-USR-ID ' has been added ...'
+      *           INTO WS-MESSAGE
+      *      PERFORM SEND-USRADD-SCREEN
+      *
+      *  cobol-check 0.2.16 strips the EXEC CICS WRITE at lines
+      *  240-249, so WS-RESP-CD retains the prelude value of 0.
+      *
+      *  Source of expected values
+      *    WS-MESSAGE(1:5) = 'User ' -- production STRING literal
+      *      at line 256-258.
+      ******************************************************************
+       TESTCASE 'COUSR01C WRITE-USER-SEC-FILE NORMAL builds msg'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 0 TO WS-RESP-CD
+            MOVE 0 TO WS-REAS-CD
+            MOVE 'NEWUSR01' TO SEC-USR-ID
+            MOVE SPACES TO WS-MESSAGE
+            PERFORM WRITE-USER-SEC-FILE
+            EXPECT WS-MESSAGE(1:5) TO BE 'User '
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC9 -- WRITE-USER-SEC-FILE DUPREC arm sets duplicate error
+      *
+      *  PERFORMs WRITE-USER-SEC-FILE with WS-RESP-CD = 14
+      *  (DFHRESP(DUPREC)).  Production lines 261-267 set:
+      *      MOVE 'Y'     TO WS-ERR-FLG
+      *      MOVE 'User ID already exist...' TO WS-MESSAGE
+      *      MOVE -1       TO USERIDL OF COUSR1AI
+      *      PERFORM SEND-USRADD-SCREEN
+      *
+      *  Source of expected values
+      *    WS-ERR-FLG = 'Y' -- production literal at line 263.
+      *    WS-MESSAGE(1:7) = 'User ID' -- first chars of literal at
+      *      line 264-265.
+      ******************************************************************
+       TESTCASE 'COUSR01C WRITE-USER-SEC-FILE DUPREC sets error'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 14 TO WS-RESP-CD
+            MOVE 0 TO WS-REAS-CD
+            MOVE 'NEWUSR02' TO SEC-USR-ID
+            MOVE 'N' TO WS-ERR-FLG
+            MOVE SPACES TO WS-MESSAGE
+            PERFORM WRITE-USER-SEC-FILE
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT WS-MESSAGE(1:7) TO BE 'User ID'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC10 -- WRITE-USER-SEC-FILE WHEN OTHER arm sets unable msg
+      *
+      *  PERFORMs WRITE-USER-SEC-FILE with WS-RESP-CD = 99 (an
+      *  arbitrary non-NORMAL non-DUPKEY non-DUPREC value).
+      *  Production lines 268-274 set:
+      *      MOVE 'Y' TO WS-ERR-FLG
+      *      MOVE 'Unable to Add User...' TO WS-MESSAGE
+      *      MOVE -1   TO FNAMEL OF COUSR1AI
+      *      PERFORM SEND-USRADD-SCREEN
+      *
+      *  Source of expected values
+      *    WS-ERR-FLG = 'Y' -- production literal at line 270.
+      *    WS-MESSAGE(1:6) = 'Unable' -- first chars of literal at
+      *      line 271-272.
+      ******************************************************************
+       TESTCASE 'COUSR01C WRITE-USER-SEC-FILE OTHER sets unable'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 99 TO WS-RESP-CD
+            MOVE 0 TO WS-REAS-CD
+            MOVE 'NEWUSR03' TO SEC-USR-ID
+            MOVE 'N' TO WS-ERR-FLG
+            MOVE SPACES TO WS-MESSAGE
+            PERFORM WRITE-USER-SEC-FILE
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT WS-MESSAGE(1:6) TO BE 'Unable'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
       ******************************************************************
       *  End of testsuite COUSR01C ADD-USER ADMIN TRANSACTION
       ******************************************************************

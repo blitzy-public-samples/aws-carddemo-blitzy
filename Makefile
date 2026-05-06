@@ -319,12 +319,25 @@ SHADOW_SUITE_DIR    := $(REPO_ROOT)/$(BUILD_DIR)/suites
 #----------------------------------------------------------------------
 PROGRAMS            := $(sort $(notdir $(basename $(wildcard $(SUITE_DIR)/*.cut))))
 
+#----------------------------------------------------------------------
+# Per-program test targets enable real per-program parallelism via
+# `make -j N test` (AAP Section 0.10.2).
+#
+# Each per-program target uses its own per-program config.properties
+# (synthesised by _stage-shadow-suites) whose `test.results.file` key
+# points at $(BUILD_DIR)/<PROG>Results -- a unique path per program
+# so concurrent cobol-check invocations cannot race on the shared
+# results file.  Make's dependency graph runs all _test-<PROG>
+# targets in parallel after _stage-shadow-suites completes.
+#----------------------------------------------------------------------
+PER_PROG_TEST_TARGETS := $(addprefix _test-, $(PROGRAMS))
+
 #######################################################################
 # Phony targets and default goal.
 #######################################################################
 .PHONY: all help init fixtures lint test test-one test-debug \
         coverage clean distclean ensure-build-dir _print-config \
-        _stage-shadow-suites
+        _stage-shadow-suites _test-summary $(PER_PROG_TEST_TARGETS)
 
 # AAP Section 0.4 / detailed instructions Phase 3: a bare `make`
 # invocation runs the full pre-commit sequence (lint -> test ->
@@ -404,6 +417,52 @@ _stage-shadow-suites: ensure-build-dir
 	@sed -e 's|^test\.suite\.directory.*|test.suite.directory = $(BUILD_DIR)/suites|' \
 	     -e 's|^cobolcheck\.test\.suite\.directory.*|cobolcheck.test.suite.directory = $(BUILD_DIR)/suites|' \
 	     $(CC_CONFIG) > $(CC_RUN_CONFIG)
+	@# Synthesise one per-program config.properties whose test.results.
+	@# file key writes to a unique per-program path ($(BUILD_DIR)/
+	@# <PROG>Results.txt).  This isolation is the key enabler of real
+	@# per-program parallelism via `make -j N test`: concurrent cobol-
+	@# check invocations cannot race on the shared default results
+	@# file because each invocation writes to its own path.  The
+	@# parser error log is also per-program.  The output binary
+	@# location stays at the default (target/cobol-check/) -- cobol-
+	@# check writes per-program filenames there based on the -p arg
+	@# so collisions are not possible across programs.
+	@# Per-program program.path subdirectories: each cobol-check JAR
+	@# writes its scratch CC##99.CBL into its OWN subdirectory.
+	@# Without this, parallel JAR invocations race on the shared
+	@# default scratch path (target/cobol-check/CC##99.CBL).  The
+	@# runner script falls back to repo_root = $(REPO_ROOT) (passed
+	@# as an env var by the per-program target recipe) when invoked
+	@# under this isolated layout, so its copybook search paths
+	@# stay correct.
+	@for prog in $(PROGRAMS); do \
+	    mkdir -p $(BUILD_DIR)/$$prog; \
+	    sed -e "s|^test\.results\.file.*|test.results.file = $(BUILD_DIR)/$${prog}Results|" \
+	        -e "s|^testsuite\.parser\.error\.log\.name.*|testsuite.parser.error.log.name = $${prog}-ParserErrorLog.txt|" \
+	        -e "s|^cobolcheck\.test\.program\.path.*|cobolcheck.test.program.path = $(BUILD_DIR)/$${prog}/|" \
+	        -e "s|^concatenated\.test\.suites.*|concatenated.test.suites = $(BUILD_DIR)/$${prog}/ALLTESTS|" \
+	        $(CC_RUN_CONFIG) > $(BUILD_DIR)/config-$$prog.properties; \
+	done
+	@# Pre-compile the LE/CICS stubs ONCE here (sequentially) before
+	@# any per-program test target fires.  The runner script
+	@# (linux_gnucobol_run_tests) has an `if [ ! -f ... ]` guard for
+	@# stub builds which is racy under `make -j N` -- multiple jobs
+	@# could simultaneously check, both find the .so missing, and
+	@# both try to compile, causing intermittent failures.
+	@# Pre-building here under the sequential _stage-shadow-suites
+	@# eliminates the race window entirely.
+	@for stub in CEEDAYS CEE3ABD DFHEI1; do \
+	    if [ -f "$(REPO_ROOT)/tests/stubs/$$stub.cbl" ] \
+	       && [ ! -f "$(BUILD_DIR)/$$stub.so" ]; then \
+	        cobc -m -fixed -O0 \
+	            -I $(REPO_ROOT)/app/cpy \
+	            -I $(REPO_ROOT)/app/cpy-bms \
+	            -I $(REPO_ROOT)/tests/fixtures/cobol-snippets \
+	            -I $(REPO_ROOT)/tests/stubs \
+	            -o $(BUILD_DIR)/$$stub.so \
+	            $(REPO_ROOT)/tests/stubs/$$stub.cbl 2>&1 || true; \
+	    fi; \
+	done
 
 #######################################################################
 # init -- bootstrap and verify the cobol-check JAR.
@@ -517,38 +576,73 @@ lint:
 # test -- canonical entry point for the whole suite.
 #
 # Order: init (download JAR if needed) -> fixtures (regen snippets) ->
-# stage shadow suites -> per-program loop.  When PROGRAMS is empty the
-# loop is a no-op and the target exits 0.  Each invocation of cobol-
-# check is wrapped in `timeout $(TEST_TIMEOUT)` so a runaway test
-# cannot hang the run.  The shadow staging is performed only when
-# PROGRAMS is non-empty so a green-on-empty repository does not pay
-# the cost (and so `make clean && make test` on a brand-new clone
-# remains a no-op).
+# stage shadow suites + per-program configs -> per-program test
+# targets (parallelisable) -> summary.
+#
+# Per AAP Section 0.10.2, `make -j N test` drives PER-PROGRAM
+# parallelism: each of the N programs becomes its own _test-<PROG>
+# Make target with its own config.properties (per-program test.
+# results.file path), and Make's dependency scheduler runs them in
+# parallel up to the user's -j N concurrency limit.  The cobol-check
+# JAR itself remains single-threaded per invocation (each merged
+# binary compiles and runs as one process), so parallelism is
+# achieved by Make running multiple JVM+cobc invocations side by
+# side -- not by parallelising within one cobol-check instance.
+#
+# Each per-program invocation of cobol-check is wrapped in `timeout
+# $(SINGLE_TIMEOUT)` so a runaway test cannot hang the run.  The
+# shadow staging is performed only when PROGRAMS is non-empty so a
+# green-on-empty repository does not pay the cost (and so `make
+# clean && make test` on a brand-new clone remains a no-op).
 #######################################################################
 test: init fixtures ensure-build-dir
-	@set -e; \
-	if [ -z "$(strip $(PROGRAMS))" ]; then \
+	@if [ -z "$(strip $(PROGRAMS))" ]; then \
 	    echo "[test] No .cut files in $(TEST_DIR) -- nothing to run."; \
 	    exit 0; \
-	fi; \
-	$(MAKE) --no-print-directory _stage-shadow-suites; \
-	echo "[test] Running cobol-check for: $(PROGRAMS)"; \
-	cd $(REPO_ROOT) && \
-	for prog in $(PROGRAMS); do \
-	    echo "[test] === $$prog ==="; \
-	    COBC_OPTS='$(COBC_OPTS_BASE) $(COBC_OPTS)' \
-	    timeout $(TEST_TIMEOUT) \
-	        $(JAVA) $(JAVA_OPTS) -jar $(CC_JAR_PATH) \
-	            --config-file    $(CC_RUN_CONFIG) \
-	            --source-context $(REPO_ROOT) \
-	            --run-directory  $(REPO_ROOT) \
-	            --programs       $$prog \
-	            || { echo "[test] FAIL: $$prog (cobol-check exit non-zero)"; exit 1; }; \
-	    bash $(REPO_ROOT)/$(LINT_DIR)/check_test_results.sh \
-	        "$$prog" "$(REPO_ROOT)/$(BUILD_DIR)/testResults.txt" \
-	        || { echo "[test] FAIL: $$prog (silent failure or assertion failures)"; exit 1; }; \
-	done; \
-	echo "[test] All testsuites passed."
+	fi
+	@$(MAKE) --no-print-directory _stage-shadow-suites
+	@echo "[test] Running cobol-check for: $(PROGRAMS)"
+	@$(MAKE) --no-print-directory _test-summary
+
+# _test-summary -- internal dispatcher target used by `make test`.
+# Depends on every per-program test target.  When invoked under
+# `make -j N`, Make runs the dependencies in parallel up to N at a
+# time.  Without `-j` they run sequentially in PROGRAMS order.
+_test-summary: $(PER_PROG_TEST_TARGETS)
+	@echo "[test] All testsuites passed."
+
+# _test-<PROG> -- per-program test target (static pattern rule).
+#
+# Uses a STATIC pattern rule (not an implicit pattern rule) because
+# Make's implicit pattern rules apply only when there are NO explicit
+# prerequisites.  The static-pattern form `targets...: target-pattern:
+# prereq-patterns` makes Make treat each target name as a real,
+# always-buildable target with the same recipe template.
+#
+# Each expansion uses its OWN per-program config-<PROG>.properties
+# (which was generated by _stage-shadow-suites) so concurrent
+# invocations under `make -j` cannot race on the shared default
+# test.results.file path.
+#
+# The `$*` automatic variable holds the program-id (the part of the
+# target name after `_test-`).  We use double-dollars ($$PROG) inside
+# the recipe because Make expands $* once at parse time; we want it
+# expanded at recipe-execution time within the shell.
+$(PER_PROG_TEST_TARGETS): _test-%:
+	@PROG="$*"; \
+	echo "[test] === $$PROG ==="; \
+	REPO_ROOT='$(REPO_ROOT)' \
+	COBC_OPTS='$(COBC_OPTS_BASE) $(COBC_OPTS)' \
+	timeout $(SINGLE_TIMEOUT) \
+	    $(JAVA) $(JAVA_OPTS) -jar $(CC_JAR_PATH) \
+	        --config-file    $(BUILD_DIR)/config-$$PROG.properties \
+	        --source-context $(REPO_ROOT) \
+	        --run-directory  $(REPO_ROOT) \
+	        --programs       $$PROG \
+	    || { echo "[test] FAIL: $$PROG (cobol-check exit non-zero)"; exit 1; }; \
+	bash $(REPO_ROOT)/$(LINT_DIR)/check_test_results.sh \
+	    "$$PROG" "$(REPO_ROOT)/$(BUILD_DIR)/$${PROG}Results.txt" \
+	    || { echo "[test] FAIL: $$PROG (silent failure or assertion failures)"; exit 1; }
 
 #######################################################################
 # test-one -- run a single program's testsuite.

@@ -586,6 +586,500 @@
             EXPECT PGMNAMEO OF CACTVWAO TO BE 'COACTVWC'
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
+
+      ******************************************************************
+      *  TC6 -- 1200-SETUP-SCREEN-VARS first-entry path
+      *
+      *  Drives 1200-SETUP-SCREEN-VARS lines 462-463 first-entry
+      *  branch:  IF EIBCALEN = 0 -> SET WS-PROMPT-FOR-INPUT TO TRUE.
+      *  In a cobol-check merged binary, EIBCALEN is unset (zero).
+      ******************************************************************
+       TESTCASE 'COACTVWC 1200-SETUP-SCREEN-VARS first-entry'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1200-SETUP-SCREEN-VARS
+                THRU 1200-SETUP-SCREEN-VARS-EXIT
+            EXPECT WS-PROMPT-FOR-INPUT TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC7 -- 1300-SETUP-SCREEN-ATTRS FLG-ACCTFILTER-NOT-OK red color
+      *
+      *  Drives 1300-SETUP-SCREEN-ATTRS along WHEN FLG-ACCTFILTER-
+      *  NOT-OK arm (lines 547-549) and then the IF FLG-ACCTFILTER-
+      *  NOT-OK MOVE DFHRED block (lines 557-559).
+      ******************************************************************
+       TESTCASE 'COACTVWC 1300-SETUP-SCREEN-ATTRS NOT-OK red'
+            SET FLG-ACCTFILTER-NOT-OK TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1300-SETUP-SCREEN-ATTRS
+                THRU 1300-SETUP-SCREEN-ATTRS-EXIT
+            EXPECT ACCTSIDC OF CACTVWAO TO BE DFHRED
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC8 -- 1300-SETUP-SCREEN-ATTRS WS-NO-INFO-MESSAGE branches
+      *
+      *  Drives 1300-SETUP-SCREEN-ATTRS lines 567-571: when WS-NO-
+      *  INFO-MESSAGE -> MOVE DFHBMDAR TO INFOMSGC, ELSE MOVE
+      *  DFHNEUTR TO INFOMSGC.  This testcase trips the ELSE branch
+      *  by supplying a non-blank WS-INFO-MSG.
+      ******************************************************************
+       TESTCASE 'COACTVWC 1300-SETUP-SCREEN-ATTRS info-msg neutr'
+            MOVE 'TEST INFO' TO WS-INFO-MSG
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1300-SETUP-SCREEN-ATTRS
+                THRU 1300-SETUP-SCREEN-ATTRS-EXIT
+            EXPECT INFOMSGC OF CACTVWAO TO BE DFHNEUTR
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC9 -- 2200-EDIT-MAP-INPUTS valid 12345678901 propagates
+      *
+      *  Drives 2200-EDIT-MAP-INPUTS along the MOVE ACCTSIDI ELSE
+      *  branch (line 632) for a valid 11-digit input, which then
+      *  PERFORMs 2210-EDIT-ACCOUNT (success path) and exits.
+      ******************************************************************
+       TESTCASE 'COACTVWC 2200-EDIT-MAP-INPUTS valid 12345678901'
+            MOVE 12345678901 TO ACCTSIDI OF CACTVWAI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2200-EDIT-MAP-INPUTS
+                THRU 2200-EDIT-MAP-INPUTS-EXIT
+            EXPECT FLG-ACCTFILTER-ISVALID TO BE TRUE
+            EXPECT CDEMO-ACCT-ID TO BE 12345678901
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC10 -- 2200-EDIT-MAP-INPUTS zero input rejected via NOT-OK
+      *
+      *  Drives 2200-EDIT-MAP-INPUTS with ACCTSIDI=00000000000
+      *  (zero) which propagates to CC-ACCT-ID then 2210-EDIT-
+      *  ACCOUNT trips the EQUAL-ZEROES branch (lines 666-676).
+      *  FLG-ACCTFILTER-NOT-OK ends as TRUE and INPUT-ERROR is set.
+      ******************************************************************
+       TESTCASE 'COACTVWC 2200-EDIT-MAP-INPUTS zero rejected'
+            MOVE 0 TO ACCTSIDI OF CACTVWAI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2200-EDIT-MAP-INPUTS
+                THRU 2200-EDIT-MAP-INPUTS-EXIT
+            EXPECT FLG-ACCTFILTER-NOT-OK TO BE TRUE
+            EXPECT INPUT-ERROR TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC11 -- 1000-SEND-MAP umbrella populates header
+      *
+      *  Drives 1000-SEND-MAP (production lines 416-425), the SEND
+      *  umbrella that 0000-MAIN performs after every state change.
+      *  PERFORMs 1100-SCREEN-INIT (header lits), 1200-SETUP-SCREEN-
+      *  VARS (first-entry path with EIBCALEN=0), 1300-SETUP-SCREEN-
+      *  ATTRS (default arm), and 1400-SEND-SCREEN (CICS-stripped).
+      *
+      *  Source of expected values:
+      *    'CAVW'      - 1100-SCREEN-INIT line 438 LIT-THISTRANID.
+      *    'COACTVWC'  - 1100-SCREEN-INIT line 439 LIT-THISPGM.
+      *    WS-PROMPT-FOR-INPUT = TRUE - 1200-SETUP-SCREEN-VARS first-
+      *                  entry arm (EIBCALEN=0 -> line 463).
+      *
+      *  Off-platform expression of AAP "every state-change cycle
+      *  invokes 1000-SEND-MAP umbrella".
+      ******************************************************************
+       TESTCASE 'COACTVWC 1000-SEND-MAP umbrella populates header'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1000-SEND-MAP THRU 1000-SEND-MAP-EXIT
+            EXPECT TRNNAMEO OF CACTVWAO TO BE 'CAVW'
+            EXPECT PGMNAMEO OF CACTVWAO TO BE 'COACTVWC'
+            EXPECT WS-PROMPT-FOR-INPUT TO BE TRUE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC12 -- 1400-SEND-SCREEN populates routing literals
+      *
+      *  Drives 1400-SEND-SCREEN (production lines 577-590).  Three
+      *  deterministic statements precede the EXEC CICS SEND MAP
+      *  that cobol-check 0.2.16 strips during merge:
+      *
+      *    MOVE LIT-THISMAPSET TO CCARD-NEXT-MAPSET     (line 579)
+      *    MOVE LIT-THISMAP    TO CCARD-NEXT-MAP        (line 580)
+      *    SET  CDEMO-PGM-REENTER TO TRUE               (line 581)
+      *
+      *  Source of expected values:
+      *    'COACTVW'   - LIT-THISMAPSET PIC X(8) 'COACTVW ' truncated
+      *                  to PIC X(7) CCARD-NEXT-MAPSET.
+      *    'CACTVWA'   - LIT-THISMAP literal.
+      *    CDEMO-PGM-REENTER = TRUE - 88-level VALUE in COCOM01Y.
+      ******************************************************************
+       TESTCASE 'COACTVWC 1400-SEND-SCREEN populates routing'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1400-SEND-SCREEN THRU 1400-SEND-SCREEN-EXIT
+            EXPECT CCARD-NEXT-MAPSET TO BE 'COACTVW'
+            EXPECT CCARD-NEXT-MAP TO BE 'CACTVWA'
+            EXPECT CDEMO-PGM-REENTER TO BE TRUE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC13 -- 2000-PROCESS-INPUTS orchestrator populates COMMAREA
+      *
+      *  Drives 2000-PROCESS-INPUTS (production lines 596-605), the
+      *  edit orchestrator that 0000-MAIN performs on PF-key submit:
+      *
+      *    PERFORM 2100-RECEIVE-MAP                      (CICS-stripped)
+      *    PERFORM 2200-EDIT-MAP-INPUTS                  (LIVE)
+      *    MOVE WS-RETURN-MSG TO CCARD-ERROR-MSG         (line 601)
+      *    MOVE LIT-THISPGM   TO CCARD-NEXT-PROG         (line 602)
+      *    MOVE LIT-THISMAPSET TO CCARD-NEXT-MAPSET      (line 603)
+      *    MOVE LIT-THISMAP    TO CCARD-NEXT-MAP         (line 604)
+      *
+      *  Source of expected values:
+      *    'COACTVWC'  - LIT-THISPGM literal (line 602).
+      *    'COACTVW'   - LIT-THISMAPSET (line 603, X(8) -> X(7)).
+      *    'CACTVWA'   - LIT-THISMAP literal (line 604).
+      ******************************************************************
+       TESTCASE 'COACTVWC 2000-PROCESS-INPUTS orchestrator'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2000-PROCESS-INPUTS
+                THRU 2000-PROCESS-INPUTS-EXIT
+            EXPECT CCARD-NEXT-PROG TO BE 'COACTVWC'
+            EXPECT CCARD-NEXT-MAPSET TO BE 'COACTVW'
+            EXPECT CCARD-NEXT-MAP TO BE 'CACTVWA'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC14 -- 2210-EDIT-ACCOUNT LOW-VALUES branch
+      *
+      *  Drives 2210-EDIT-ACCOUNT (production lines 649-680) along
+      *  the LOW-VALUES rejection branch (line 653-661):
+      *
+      *    IF CC-ACCT-ID EQUAL LOW-VALUES OR SPACES OR ZEROS  (653-4)
+      *       SET INPUT-ERROR           TO TRUE              (655)
+      *       SET FLG-ACCTFILTER-BLANK  TO TRUE              (656)
+      *
+      *  TC14 differs from existing TC2 (rejects empty account id)
+      *  by explicitly exercising the LOW-VALUES path of the IF
+      *  guard.  TC2 used SPACES; TC14 uses LOW-VALUES.  Both reach
+      *  the same SET INPUT-ERROR result but via distinct sub-
+      *  branches of the OR clause.
+      *
+      *  The CC-ACCT-ID prelude MOVE uses MOVE LOW-VALUES (a COBOL
+      *  figurative constant) which avoids the cobol-check 0.2.16
+      *  '*' literal merge bug.
+      ******************************************************************
+       TESTCASE 'COACTVWC 2210-EDIT-ACCOUNT LOW-VALUES branch'
+            MOVE LOW-VALUES TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2210-EDIT-ACCOUNT THRU 2210-EDIT-ACCOUNT-EXIT
+            EXPECT INPUT-ERROR TO BE TRUE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC15 -- 1200-SETUP-SCREEN-VARS first-entry IF EIBCALEN=0
+      *
+      *  Drives 1200-SETUP-SCREEN-VARS (production lines 460-535)
+      *  along the first-entry path (line 462: IF EIBCALEN = 0).
+      *  In a cobol-check merged binary, EIBCALEN is unset (zero) so
+      *  the first-entry branch fires unconditionally, sets WS-
+      *  PROMPT-FOR-INPUT TO TRUE (line 463), then falls through to
+      *  the WS-NO-INFO-MESSAGE check (line 528) which also sets
+      *  WS-PROMPT-FOR-INPUT TO TRUE.
+      *
+      *  TC15 differs from existing testcases by exercising the
+      *  1200-SETUP-SCREEN-VARS paragraph in isolation (rather than
+      *  via 1000-SEND-MAP umbrella).
+      ******************************************************************
+       TESTCASE 'COACTVWC 1200-SETUP-SCREEN-VARS isolated PERFORM'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1200-SETUP-SCREEN-VARS
+                THRU 1200-SETUP-SCREEN-VARS-EXIT
+            EXPECT WS-PROMPT-FOR-INPUT TO BE TRUE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC16 -- 9200-GETCARDXREF-BYACCT NORMAL arm copies XREF data
+      *
+      *  PERFORMs 9200-GETCARDXREF-BYACCT (production lines 723-771)
+      *  with WS-RESP-CD pre-set to 0 (DFHRESP(NORMAL)) so the WHEN
+      *  NORMAL arm at line 738-740 fires:
+      *      MOVE XREF-CUST-ID  TO CDEMO-CUST-ID
+      *      MOVE XREF-CARD-NUM TO CDEMO-CARD-NUM
+      *
+      *  cobol-check 0.2.16 strips the EXEC CICS READ at lines 727-
+      *  737, so WS-RESP-CD retains the prelude value of 0.  The
+      *  EVALUATE then runs through the WHEN NORMAL arm's MOVEs.
+      *
+      *  We pre-populate XREF-CUST-ID and XREF-CARD-NUM in CARD-XREF-
+      *  RECORD with deterministic 9-digit and 16-digit values so we
+      *  can assert the production MOVEs propagated them through.
+      *
+      *  Source of expected values
+      *    CDEMO-CUST-ID  = 123456789 -- the prelude MOVE.
+      *    CDEMO-CARD-NUM = 4111111111111111 -- the prelude MOVE.
+      *  These are the real production lines 739-740 MOVEs.
+      ******************************************************************
+       TESTCASE 'COACTVWC 9200-GETCARDXREF-BYACCT NORMAL arm copies'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 0 TO WS-RESP-CD
+            MOVE 0 TO WS-REAS-CD
+            MOVE 123456789 TO XREF-CUST-ID
+            MOVE '4111111111111111' TO XREF-CARD-NUM
+            MOVE ZEROS TO CDEMO-CUST-ID
+            MOVE ZEROS TO CDEMO-CARD-NUM
+            PERFORM 9200-GETCARDXREF-BYACCT
+                THRU 9200-GETCARDXREF-BYACCT-EXIT
+            EXPECT CDEMO-CUST-ID = 123456789
+            EXPECT CDEMO-CARD-NUM = 4111111111111111
+            EXPECT INPUT-ERROR TO BE FALSE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC17 -- 9200-GETCARDXREF-BYACCT NOTFND arm sets error
+      *
+      *  Mirror of TC16 with WS-RESP-CD pre-set to 13 (DFHRESP(NOTFND))
+      *  driving the WHEN NOTFND arm at lines 741-758:
+      *      SET INPUT-ERROR           TO TRUE
+      *      SET FLG-ACCTFILTER-NOT-OK TO TRUE
+      *      IF WS-RETURN-MSG-OFF
+      *         ... STRING ... INTO WS-RETURN-MSG END-STRING
+      *      END-IF
+      *
+      *  We additionally MOVE SPACES TO WS-RETURN-MSG so the IF
+      *  WS-RETURN-MSG-OFF (88-level VALUE SPACES) condition fires,
+      *  exercising the inner STRING path that builds the error
+      *  message.
+      *
+      *  Source of expected values
+      *    INPUT-ERROR = TRUE -- 88-level VALUE '1' (line 52).
+      *    FLG-ACCTFILTER-NOT-OK = TRUE -- 88-level VALUE '0' (59).
+      *    WS-RETURN-MSG starts with 'Account:' -- production
+      *      STRING literal at line 749.
+      ******************************************************************
+       TESTCASE 'COACTVWC 9200-GETCARDXREF-BYACCT NOTFND arm sets'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 13 TO WS-RESP-CD
+            MOVE 0 TO WS-REAS-CD
+            MOVE SPACES TO WS-RETURN-MSG
+            PERFORM 9200-GETCARDXREF-BYACCT
+                THRU 9200-GETCARDXREF-BYACCT-EXIT
+            EXPECT INPUT-ERROR TO BE TRUE
+            EXPECT FLG-ACCTFILTER-NOT-OK TO BE TRUE
+            EXPECT WS-RETURN-MSG(1:8) TO BE 'Account:'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC18 -- 9200-GETCARDXREF-BYACCT WHEN OTHER arm sets file err
+      *
+      *  Mirror of TC16/TC17 with WS-RESP-CD = 99 to drive the WHEN
+      *  OTHER arm (production lines 759-768):
+      *      SET INPUT-ERROR           TO TRUE
+      *      SET FLG-ACCTFILTER-NOT-OK TO TRUE
+      *      MOVE 'READ'                TO ERROR-OPNAME
+      *      MOVE LIT-CARDXREFNAME-ACCT-PATH TO ERROR-FILE
+      *      MOVE WS-RESP-CD            TO ERROR-RESP
+      *      MOVE WS-REAS-CD            TO ERROR-RESP2
+      *      MOVE WS-FILE-ERROR-MESSAGE TO WS-RETURN-MSG
+      *
+      *  Differential vs TC17:
+      *    TC17 (NOTFND): WS-RETURN-MSG starts with 'Account:'
+      *    TC18 (OTHER):  ERROR-OPNAME = 'READ' and WS-RETURN-MSG
+      *                   contains the WS-FILE-ERROR-MESSAGE
+      *                   stitched-together file/resp/reas string.
+      *
+      *  Source of expected values
+      *    ERROR-OPNAME = 'READ' -- production literal at line 762.
+      ******************************************************************
+       TESTCASE 'COACTVWC 9200-GETCARDXREF-BYACCT OTHER arm sets'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 99 TO WS-RESP-CD
+            MOVE 0 TO WS-REAS-CD
+            MOVE SPACES TO ERROR-OPNAME
+            PERFORM 9200-GETCARDXREF-BYACCT
+                THRU 9200-GETCARDXREF-BYACCT-EXIT
+            EXPECT INPUT-ERROR TO BE TRUE
+            EXPECT FLG-ACCTFILTER-NOT-OK TO BE TRUE
+            EXPECT ERROR-OPNAME TO BE 'READ'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC19 -- 9300-GETACCTDATA-BYACCT NORMAL arm sets found-acct
+      *
+      *  PERFORMs 9300-GETACCTDATA-BYACCT (production lines 774-822)
+      *  with WS-RESP-CD = 0 to drive the WHEN NORMAL arm at line
+      *  788:  SET FOUND-ACCT-IN-MASTER TO TRUE
+      *
+      *  cobol-check strips the EXEC CICS READ at lines 776-786.
+      *
+      *  Source of expected values
+      *    FOUND-ACCT-IN-MASTER = TRUE -- 88-level VALUE '1' (line 83).
+      ******************************************************************
+       TESTCASE 'COACTVWC 9300-GETACCTDATA-BYACCT NORMAL sets found'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 0 TO WS-RESP-CD
+            MOVE 0 TO WS-REAS-CD
+            PERFORM 9300-GETACCTDATA-BYACCT
+                THRU 9300-GETACCTDATA-BYACCT-EXIT
+            EXPECT FOUND-ACCT-IN-MASTER TO BE TRUE
+            EXPECT INPUT-ERROR TO BE FALSE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC20 -- 9300-GETACCTDATA-BYACCT NOTFND arm sets error
+      *
+      *  PERFORMs 9300 with WS-RESP-CD = 13 driving WHEN NOTFND.
+      *  Production lines 789-806 set INPUT-ERROR TRUE,
+      *  FLG-ACCTFILTER-NOT-OK TRUE, and (when WS-RETURN-MSG-OFF)
+      *  STRINGs the 'Account:...not found in Acct Master file...'
+      *  message.
+      ******************************************************************
+       TESTCASE 'COACTVWC 9300-GETACCTDATA-BYACCT NOTFND sets error'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 13 TO WS-RESP-CD
+            MOVE 0 TO WS-REAS-CD
+            MOVE SPACES TO WS-RETURN-MSG
+            PERFORM 9300-GETACCTDATA-BYACCT
+                THRU 9300-GETACCTDATA-BYACCT-EXIT
+            EXPECT INPUT-ERROR TO BE TRUE
+            EXPECT FLG-ACCTFILTER-NOT-OK TO BE TRUE
+            EXPECT WS-RETURN-MSG(1:8) TO BE 'Account:'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC21 -- 9300-GETACCTDATA-BYACCT WHEN OTHER arm sets err
+      *
+      *  PERFORMs 9300 with WS-RESP-CD = 99.  Production lines 809-
+      *  819 set INPUT-ERROR TRUE, FLG-ACCTFILTER-NOT-OK TRUE,
+      *  ERROR-OPNAME = 'READ', and MOVE WS-FILE-ERROR-MESSAGE
+      *  TO WS-RETURN-MSG.
+      ******************************************************************
+       TESTCASE 'COACTVWC 9300-GETACCTDATA-BYACCT OTHER sets file'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 99 TO WS-RESP-CD
+            MOVE 0 TO WS-REAS-CD
+            MOVE SPACES TO ERROR-OPNAME
+            PERFORM 9300-GETACCTDATA-BYACCT
+                THRU 9300-GETACCTDATA-BYACCT-EXIT
+            EXPECT INPUT-ERROR TO BE TRUE
+            EXPECT FLG-ACCTFILTER-NOT-OK TO BE TRUE
+            EXPECT ERROR-OPNAME TO BE 'READ'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC22 -- 9400-GETCUSTDATA-BYCUST NORMAL arm sets found-cust
+      *
+      *  PERFORMs 9400-GETCUSTDATA-BYCUST (production lines 825-870)
+      *  with WS-RESP-CD = 0 to drive the WHEN NORMAL arm at line
+      *  838:  SET FOUND-CUST-IN-MASTER TO TRUE
+      ******************************************************************
+       TESTCASE 'COACTVWC 9400-GETCUSTDATA-BYCUST NORMAL sets found'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 0 TO WS-RESP-CD
+            MOVE 0 TO WS-REAS-CD
+            PERFORM 9400-GETCUSTDATA-BYCUST
+                THRU 9400-GETCUSTDATA-BYCUST-EXIT
+            EXPECT FOUND-CUST-IN-MASTER TO BE TRUE
+            EXPECT INPUT-ERROR TO BE FALSE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC23 -- 9400-GETCUSTDATA-BYCUST NOTFND arm sets error
+      *
+      *  PERFORMs 9400 with WS-RESP-CD = 13 driving WHEN NOTFND.
+      *  Production lines 839-857 set INPUT-ERROR TRUE,
+      *  FLG-CUSTFILTER-NOT-OK TRUE, and (when WS-RETURN-MSG-OFF)
+      *  STRINGs the 'CustId:...not found in customer master...'
+      *  message.
+      ******************************************************************
+       TESTCASE 'COACTVWC 9400-GETCUSTDATA-BYCUST NOTFND sets error'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 13 TO WS-RESP-CD
+            MOVE 0 TO WS-REAS-CD
+            MOVE SPACES TO WS-RETURN-MSG
+            PERFORM 9400-GETCUSTDATA-BYCUST
+                THRU 9400-GETCUSTDATA-BYCUST-EXIT
+            EXPECT INPUT-ERROR TO BE TRUE
+            EXPECT FLG-CUSTFILTER-NOT-OK TO BE TRUE
+            EXPECT WS-RETURN-MSG(1:7) TO BE 'CustId:'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC24 -- 9400-GETCUSTDATA-BYCUST WHEN OTHER arm sets err
+      *
+      *  PERFORMs 9400 with WS-RESP-CD = 99.  Production lines 858-
+      *  868 set INPUT-ERROR TRUE, FLG-CUSTFILTER-NOT-OK TRUE,
+      *  ERROR-OPNAME = 'READ', and MOVE WS-FILE-ERROR-MESSAGE
+      *  TO WS-RETURN-MSG.
+      ******************************************************************
+       TESTCASE 'COACTVWC 9400-GETCUSTDATA-BYCUST OTHER sets file'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 99 TO WS-RESP-CD
+            MOVE 0 TO WS-REAS-CD
+            MOVE SPACES TO ERROR-OPNAME
+            PERFORM 9400-GETCUSTDATA-BYCUST
+                THRU 9400-GETCUSTDATA-BYCUST-EXIT
+            EXPECT INPUT-ERROR TO BE TRUE
+            EXPECT FLG-CUSTFILTER-NOT-OK TO BE TRUE
+            EXPECT ERROR-OPNAME TO BE 'READ'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
       ******************************************************************
       *  End of testsuite COACTVWC ACCOUNT VIEW TRANSACTION
       ******************************************************************

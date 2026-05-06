@@ -591,6 +591,188 @@
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
+      *  TC6 -- READ-TRANSACT-FILE NOTFND arm sets error message
+      *
+      *  PERFORMs READ-TRANSACT-FILE (production lines 267-296) with
+      *  WS-RESP-CD pre-set to DFHRESP(NOTFND) value 13 to drive
+      *  the WHEN NOTFND arm at lines 283-288:
+      *      WHEN DFHRESP(NOTFND)
+      *          MOVE 'Y'     TO WS-ERR-FLG
+      *          MOVE 'Transaction ID NOT found...' TO WS-MESSAGE
+      *          MOVE -1       TO TRNIDINL OF COTRN1AI
+      *          PERFORM SEND-TRNVIEW-SCREEN
+      *
+      *  cobol-check 0.2.16 strips the EXEC CICS READ at lines 269-
+      *  278 and replaces it with a CONTINUE.  WS-RESP-CD retains
+      *  whatever the test prelude MOVEd (13 = DFHRESP(NOTFND) on
+      *  GnuCOBOL).  This drives the production EVALUATE to the
+      *  NOTFND arm without exercising any actual CICS file API.
+      *
+      *  Source of expected values
+      *    WS-ERR-FLG       = 'Y' -- production literal at line 284.
+      *    WS-MESSAGE(1:7) = 'Transac' -- first chars of literal at
+      *                       line 285-286 (the test only asserts
+      *                       the prefix to keep the assertion
+      *                       robust against trailing-space padding
+      *                       differences between cobol-check
+      *                       version variants).
+      *
+      *  Note on TRNIDINL: production line 287 MOVEs -1 to TRNIDINL
+      *  to position the cursor in the BMS input field on the next
+      *  SEND MAP.  We deliberately do NOT assert on TRNIDINL = -1
+      *  because cobol-check 0.2.16 strips the leading minus from
+      *  numeric literals in EXPECT clauses (verified empirically:
+      *  "EXPECTED <1>, WAS <0001>" comparison against the signed
+      *  -1 binary value).  The two passing assertions above are
+      *  sufficient to prove the WHEN NOTFND arm executed.
+      *
+      *  CICS verification
+      *    DFHEI1 is called 0 times because the EXEC CICS READ verb
+      *    is stripped by cobol-check during merge.  The production
+      *    PERFORM SEND-TRNVIEW-SCREEN at line 288 contains an EXEC
+      *    CICS SEND MAP that is also stripped, so the total count
+      *    is 0.
+      ******************************************************************
+       TESTCASE 'COTRN01C READ-TRANSACT-FILE NOTFND sets error msg'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 13 TO WS-RESP-CD
+            MOVE 'N' TO WS-ERR-FLG
+            MOVE SPACES TO WS-MESSAGE
+            PERFORM READ-TRANSACT-FILE
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT WS-MESSAGE(1:7) TO BE 'Transac'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC7 -- READ-TRANSACT-FILE WHEN OTHER arm sets error message
+      *
+      *  Mirror of TC6 with WS-RESP-CD = 99 (an arbitrary non-NORMAL
+      *  non-NOTFND value) to drive the WHEN OTHER arm at lines
+      *  289-295 of READ-TRANSACT-FILE:
+      *      WHEN OTHER
+      *          DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD
+      *          MOVE 'Y'     TO WS-ERR-FLG
+      *          MOVE 'Unable to lookup Transaction...' TO WS-MESSAGE
+      *          MOVE -1       TO TRNIDINL OF COTRN1AI
+      *          PERFORM SEND-TRNVIEW-SCREEN
+      *
+      *  Differential vs TC6:
+      *    TC6  RESP=13 (NOTFND): WS-MESSAGE = 'Transaction ID NOT...'
+      *    TC7  RESP=99 (OTHER):  WS-MESSAGE = 'Unable to lookup...'
+      *  Together TC6 and TC7 prove BOTH error arms of the EVALUATE.
+      *
+      *  Source of expected values
+      *    WS-ERR-FLG       = 'Y' -- production literal at line 291.
+      *    WS-MESSAGE(1:6) = 'Unable' -- first chars of literal at
+      *                       line 292-293.
+      *
+      *  TRNIDINL = -1 is also set by line 294 but is not asserted
+      *  for the cobol-check parser limitation reasons described in
+      *  TC6 above.
+      ******************************************************************
+       TESTCASE 'COTRN01C READ-TRANSACT-FILE OTHER sets unable msg'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 99 TO WS-RESP-CD
+            MOVE 'N' TO WS-ERR-FLG
+            MOVE SPACES TO WS-MESSAGE
+            PERFORM READ-TRANSACT-FILE
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT WS-MESSAGE(1:6) TO BE 'Unable'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC8 -- READ-TRANSACT-FILE NORMAL arm leaves WS-ERR-FLG clear
+      *
+      *  PERFORMs READ-TRANSACT-FILE with WS-RESP-CD = 0
+      *  (DFHRESP(NORMAL)) to drive the WHEN NORMAL arm:
+      *      WHEN DFHRESP(NORMAL) CONTINUE
+      *  The EVALUATE falls through CONTINUE, no MOVE statements
+      *  fire, and WS-ERR-FLG remains at its prelude value.
+      *
+      *  Differential vs TC6/TC7 (error arms):
+      *    TC6/TC7: WS-ERR-FLG flipped to 'Y' (error arms)
+      *    TC8:     WS-ERR-FLG stays 'N' (normal arm)
+      *
+      *  Source of expected values
+      *    WS-ERR-FLG = 'N' -- prelude literal preserved through
+      *              the WHEN NORMAL CONTINUE arm; the production
+      *              code does NOT modify it on the success path.
+      ******************************************************************
+       TESTCASE 'COTRN01C READ-TRANSACT-FILE NORMAL preserves flag N'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 0 TO WS-RESP-CD
+            MOVE 'N' TO WS-ERR-FLG
+            PERFORM READ-TRANSACT-FILE
+            EXPECT WS-ERR-FLG TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC9 -- PROCESS-ENTER-KEY happy path with non-empty Tran ID
+      *
+      *  PERFORMs PROCESS-ENTER-KEY (production lines 144-192) with
+      *  TRNIDINI pre-populated to drive the WHEN OTHER arm of the
+      *  EVALUATE TRUE at lines 146-156:
+      *      WHEN TRNIDINI = SPACES OR LOW-VALUES (TC4 covers this)
+      *      WHEN OTHER
+      *          MOVE -1 TO TRNIDINL ... CONTINUE
+      *
+      *  Then proceeds to the IF NOT ERR-FLG-ON block at lines 158-
+      *  174 (clears 13 input fields + MOVE TRNIDINI TO TRAN-ID +
+      *  PERFORM READ-TRANSACT-FILE).  We pre-set WS-RESP-CD = 0
+      *  so READ-TRANSACT-FILE's WHEN NORMAL arm fires (no error).
+      *
+      *  Then the IF NOT ERR-FLG-ON block at lines 176-192 runs the
+      *  13-field MOVE chain from TRAN-RECORD into the BMS map and
+      *  PERFORMs SEND-TRNVIEW-SCREEN.
+      *
+      *  This testcase exercises a much larger fraction of PROCESS-
+      *  ENTER-KEY's body than TC4 (which only covered the WHEN
+      *  TRNIDINI = SPACES early-exit arm).
+      *
+      *  Source of expected values
+      *    WS-ERR-FLG = 'N' -- prelude value; no error arm fires.
+      *    TRAN-ID copied from TRNIDINI by line 172.
+      ******************************************************************
+       TESTCASE 'COTRN01C PROCESS-ENTER-KEY happy non-empty Tran'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 'TXNID0000000123 ' TO TRNIDINI OF COTRN1AI
+            MOVE 'N' TO WS-ERR-FLG
+            MOVE 0 TO WS-RESP-CD
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT WS-ERR-FLG TO BE 'N'
+            EXPECT TRAN-ID TO BE 'TXNID0000000123 '
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC10 -- POPULATE-HEADER-INFO populates header fields
+      *
+      *  PERFORMs POPULATE-HEADER-INFO (production lines 243-265)
+      *  which copies the program name, transaction id, current date
+      *  and time into the BMS map's header output fields.  The
+      *  production paragraph is mostly MOVEs and is a leaf
+      *  paragraph called by SEND-TRNVIEW-SCREEN.
+      *
+      *  Source of expected values
+      *    DFHEI1 = 0 calls -- POPULATE-HEADER-INFO contains no
+      *              EXEC CICS verbs (it only does internal MOVEs).
+      ******************************************************************
+       TESTCASE 'COTRN01C POPULATE-HEADER-INFO copies WS-PGMNAME'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM POPULATE-HEADER-INFO
+            EXPECT WS-PGMNAME TO BE 'COTRN01C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
       *  End of testsuite COTRN01C TRANSACTION DETAIL VIEW
       ******************************************************************
 

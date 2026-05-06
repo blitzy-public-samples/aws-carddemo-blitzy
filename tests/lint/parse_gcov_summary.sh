@@ -29,37 +29,64 @@
 #    files are produced by the `make coverage` target and contain the
 #    captured stdout of `gcov -b -c <gcda>`, which on gcov 9+
 #    (verified against gcov 13.3.0 in the build environment) emits
-#    the per-source "File '<src>' / Lines executed:NN.NN% of M" pair
-#    on STDOUT rather than into the per-source <src>.gcov file.
+#    one or more "File '<src>' / Lines executed:NN.NN% of M" pairs
+#    per .gcda followed (when the .gcda spans multiple translation
+#    units, as every GnuCOBOL-compiled program does) by a final
+#    bottom-line aggregate of the form
+#         Lines executed:NN.NN% of <weighted-line-total>
+#    that gcov computes as the line-weighted average across all TUs.
 #    Capturing stdout into a sibling .summary.txt is the canonical
-#    workaround for that gcov behaviour change.
-# 2. Parse each summary file as a sequence of (File, Lines executed)
-#    blocks.  One .gcda may produce multiple .gcov files (e.g. for a
-#    single COBOL program GnuCOBOL emits .c, .c.h, and .c.l.h
-#    translation units), so each .summary.txt typically contains
-#    several blocks.
-# 3. Derive the COBOL program-id from each block's source filename.
-#    Five filename forms are recognised:
-#      * AAP-spec / hand-crafted test fixtures:  CSUTLDTC.cbl
-#      * Real GnuCOBOL output (cobc -> C -> gcc -> gcov):
-#          CSUTLDTC.c                 (procedure code)
-#          CSUTLDTC.c.h               (field/group declarations)
-#          CSUTLDTC.c.l.h             (literal table initialiser)
-#    All forms collapse to the program-id `CSUTLDTC`, normalised to
-#    upper case for table lookup.
-# 4. Compare each program's percentage against its per-program target
-#    in the AAP Section 0.7.1 table (hard-coded below).  Programs not
-#    present in the table are logged as "no target -- skipped" so
-#    future testsuites can be added without forcing simultaneous edits
-#    to this script.
-# 5. Compute an arithmetic-mean overall percentage across every block
-#    that mapped to a known program-id, compare against the
-#    --overall threshold (default 70%, per AAP Section 0.7.1), and
-#    emit a final BLITZY-prefixed verdict line.
-# 6. Exit 0 when every per-program threshold AND the overall threshold
-#    are met; exit 1 when any threshold is missed (or when no summary
-#    files exist or the coverage directory is missing); exit 2 on
-#    CLI error (unknown option).
+#    workaround for the gcov 9+ behaviour change that no longer
+#    embeds the percentage header inside the per-source <src>.gcov
+#    file.
+#
+# 2. For each .summary.txt, derive the COBOL program-id from the
+#    .gcda filename (the .gcda name carries the program name with
+#    `cobol-check`-specific embedded suffixes); aggregate ALL TUs
+#    that map to the same program-id into a single, line-weighted
+#    per-program coverage percentage; and compare THAT aggregated
+#    figure against the per-program AAP threshold.  This collapses
+#    the historical 3-rows-per-program output (one each for the
+#    GnuCOBOL .c procedure-code TU, the .c.h field-declarations TU,
+#    and the .c.l.h literal-table TU) into a single, semantically
+#    meaningful row per program -- addressing QA finding CP10 #13
+#    ("per-TU enforcement model produces noisy 49 failures count").
+#
+# 3. Compute three category aggregates -- Business Logic (default
+#    target 80%), Data Validation (default 90%), and File I/O
+#    (default 70%) -- using a program-to-category mapping derived
+#    from the AAP Section 0.7.1 categorisation:
+#      * Data Validation: programs whose primary purpose is input
+#        validation -- CSUTLDTC (the date-conversion subroutine
+#        that wraps CEEDAYS and is the canonical pure-validation
+#        program in CardDemo) plus the CICS programs that contain
+#        the largest validation surfaces (COACTUPC, COCRDUPC,
+#        COSGN00C, COUSR01C, COUSR02C).  AAP Section 0.7.1
+#        explicitly names CSUTLDPY and CSUTLDTC as the validation
+#        copybook/subroutine pair, plus the "1xxx-VALIDATE-*
+#        paragraphs of CBTRN02C, COACTUPC, COACTVWC, COCRDUPC,
+#        COCRDLIC".  Programs in this list contribute their
+#        line-weighted percentage to the validation aggregate.
+#      * File I/O: every program with file SELECT clauses that
+#        materially exercise READ/WRITE/REWRITE/STARTBR/READNEXT/
+#        READPREV/ENDBR/DELETE -- i.e. every batch program (CB*)
+#        and every CICS program that touches a VSAM dataset.
+#      * Business Logic: every other program (all the numbered
+#        1xxx-8xxx production paragraphs in the program set).
+#    A program may belong to multiple categories (e.g., CBTRN02C
+#    is both Business Logic and File I/O).  The category aggregate
+#    is the arithmetic mean of the constituent programs'
+#    line-weighted coverage percentages.
+#
+# 4. Compute an overall aggregate as the arithmetic mean of every
+#    in-scope program's line-weighted percentage; compare against
+#    the --overall threshold (default 70%, AAP Section 0.7.1).
+#
+# 5. Exit 0 when every per-program threshold AND the overall
+#    threshold AND every per-category threshold is met; exit 1 when
+#    any threshold is missed (or when no summary files exist or the
+#    coverage directory is missing); exit 2 on CLI error (unknown
+#    option).
 #
 # All log lines begin with the structured prefix
 # `[lint:parse_gcov_summary]` so CI consumers can filter and grep
@@ -82,7 +109,7 @@
 #     suffice.  This is the primary reason for the
 #     #!/usr/bin/env bash shebang -- the script also relies on bash
 #     associative arrays (declare -A) for the per-program threshold
-#     table.
+#     and category-mapping tables.
 # =====================================================================
 
 set -euo pipefail
@@ -146,6 +173,96 @@ declare -A PROGRAM_TARGETS=(
 )
 
 # ---------------------------------------------------------------------
+# Per-category program assignments (AAP Section 0.7.1).
+#
+# Each program contributes to one or more category aggregates.  AAP
+# Section 0.7.1 documents three category aggregates:
+#
+#   * Business Logic   (default target 80%) -- 1xxx-8xxx paragraphs
+#                       across the program set.  Every program with
+#                       a real procedure division contributes.
+#   * Data Validation  (default target 90%) -- CSUTLDPY,
+#                       CSUTLDTC, validation paragraphs in CBTRN02C,
+#                       COACTUPC, COACTVWC, COCRDUPC, COCRDLIC.
+#                       (CSUTLDPY is a copybook, not a standalone
+#                       program-under-test, so its coverage is
+#                       included indirectly via every program that
+#                       COPY-s it.)
+#   * File I/O         (default target 70%) -- every program with
+#                       SELECT clauses that exercise READ / WRITE /
+#                       REWRITE / STARTBR / READNEXT / READPREV /
+#                       ENDBR / DELETE / OPEN / CLOSE.
+#
+# A program in multiple categories contributes its line-weighted
+# coverage to each category's arithmetic mean.  Programs marked
+# `no target` above contribute nothing to category aggregates either.
+# ---------------------------------------------------------------------
+declare -A PROGRAM_CATEGORIES=(
+    # Pure date-validation subroutine (the canonical Data Validation
+    # program; AAP Section 0.7.1 specifically calls out CSUTLDTC).
+    [CSUTLDTC]="VALIDATION"
+
+    # I/O dispatcher subroutine (no validation, no business logic --
+    # purely a file-system wrapper).
+    [CBSTM03B]="IO"
+
+    # VSAM dumpers (read-print-close batch programs).
+    [CBACT01C]="BUSINESS IO"
+    [CBACT02C]="BUSINESS IO"
+    [CBACT03C]="BUSINESS IO"
+    [CBCUS01C]="BUSINESS IO"
+
+    # Interest poster (heavy business logic + file I/O).
+    [CBACT04C]="BUSINESS IO"
+
+    # Statement engine (aggregation + I/O).
+    [CBSTM03A]="BUSINESS IO"
+
+    # Transaction processors (validation + business logic + I/O).
+    # CBTRN02C contains the 1500-VALIDATE-TRAN paragraph family and
+    # is explicitly listed in AAP 0.7.1 as a validation-paragraph
+    # contributor.
+    [CBTRN01C]="BUSINESS IO"
+    [CBTRN02C]="BUSINESS VALIDATION IO"
+    [CBTRN03C]="BUSINESS IO"
+
+    # CICS sign-on / menu / admin-menu (light validation, no I/O of
+    # business records beyond USRSEC reads).
+    [COSGN00C]="BUSINESS VALIDATION IO"
+    [COMEN01C]="BUSINESS"
+    [COADM01C]="BUSINESS"
+
+    # Account view / update.  COACTUPC and COACTVWC both contain
+    # 1xxx-VALIDATE-* paragraphs per AAP 0.7.1.
+    [COACTVWC]="BUSINESS VALIDATION IO"
+    [COACTUPC]="BUSINESS VALIDATION IO"
+
+    # Card list / detail / update.  COCRDUPC and COCRDLIC contain
+    # validation paragraphs per AAP 0.7.1.
+    [COCRDLIC]="BUSINESS VALIDATION IO"
+    [COCRDSLC]="BUSINESS IO"
+    [COCRDUPC]="BUSINESS VALIDATION IO"
+
+    # Transaction views / add.  COTRN02C performs add-transaction
+    # validation.
+    [COTRN00C]="BUSINESS IO"
+    [COTRN01C]="BUSINESS IO"
+    [COTRN02C]="BUSINESS VALIDATION IO"
+
+    # Bill-pay (validation + I/O).
+    [COBIL00C]="BUSINESS VALIDATION IO"
+
+    # Report submit (TDQ; counts as I/O for the JCL stream emission).
+    [CORPT00C]="BUSINESS IO"
+
+    # User CRUD (validation on add/update).
+    [COUSR00C]="BUSINESS IO"
+    [COUSR01C]="BUSINESS VALIDATION IO"
+    [COUSR02C]="BUSINESS VALIDATION IO"
+    [COUSR03C]="BUSINESS IO"
+)
+
+# ---------------------------------------------------------------------
 # usage -- emit the help banner on stdout and return.  Callers exit
 # with the appropriate status code after invoking usage.
 # ---------------------------------------------------------------------
@@ -154,7 +271,8 @@ usage() {
 Usage: ${SCRIPT_NAME}.sh [OPTIONS] [COVERAGE_DIR]
 
 Aggregate gcov per-program line-coverage percentages and enforce the
-per-program thresholds defined in AAP Section 0.7.1.
+per-program, per-category, and overall thresholds defined in AAP
+Section 0.7.1.
 
 Arguments:
   COVERAGE_DIR              Directory containing *.gcda.summary.txt
@@ -169,16 +287,19 @@ Options:
   -h, --help                Print this message and exit
 
 Exit status:
-  0  All per-program and overall thresholds met.
+  0  All per-program, per-category, and overall thresholds met.
   1  At least one threshold not met (or no summary files found, or
      COVERAGE_DIR not found).
   2  CLI error (unknown option).
 
 Output:
   stdout: structured [lint:parse_gcov_summary] log lines including
-          per-program PASS/FAIL verdicts and the [OVERALL] aggregate;
-          AAP-mandated 'BLITZY COVERAGE GATE PASSED: ...' on success.
-  stderr: AAP-mandated 'BLITZY VALIDATION GATE FAILED: ...' on failure.
+          one PASS/FAIL verdict per program (line-weighted across
+          all GnuCOBOL TUs), the [BUSINESS], [VALIDATION], [IO] and
+          [OVERALL] aggregates, and the AAP-mandated 'BLITZY
+          COVERAGE GATE PASSED: ...' on success.
+  stderr: AAP-mandated 'BLITZY VALIDATION GATE FAILED: ...' on
+          failure.
 EOF
 }
 
@@ -241,10 +362,10 @@ if [ "$#" -gt 0 ]; then
 fi
 
 # Echo the resolved configuration so CI logs document the gate being
-# enforced.  This also keeps THRESHOLD_BUSINESS / THRESHOLD_VALIDATION
-# / THRESHOLD_IO referenced even though only THRESHOLD_OVERALL drives
-# numeric comparisons today (the per-program thresholds are the
-# binding gate per AAP Section 0.7.1).
+# enforced.  All four thresholds participate in the gate now: per-
+# program (from PROGRAM_TARGETS), per-category (from
+# THRESHOLD_BUSINESS / THRESHOLD_VALIDATION / THRESHOLD_IO), and
+# overall (THRESHOLD_OVERALL).
 printf '%s Coverage thresholds: overall=%d%% business=%d%% validation=%d%% io=%d%%\n' \
     "$LOG_PREFIX" "$THRESHOLD_OVERALL" "$THRESHOLD_BUSINESS" \
     "$THRESHOLD_VALIDATION" "$THRESHOLD_IO"
@@ -291,36 +412,61 @@ printf '%s Aggregating coverage from %s/...\n' "$LOG_PREFIX" "$COVERAGE_DIR"
 # ---------------------------------------------------------------------
 # Per-summary parse loop.
 #
-# For each .gcda.summary.txt file we extract the (source-file,
-# percentage) pairs emitted by gcov on its STDOUT.  The format gcov
-# uses is, per source file:
+# For each .gcda.summary.txt file we extract:
+#   * The set of (source-file, percentage, total-lines) triples
+#     emitted by gcov for each translation unit (.c, .c.h, .c.l.h
+#     for GnuCOBOL output) -- one block per TU.  gcov's per-block
+#     format is:
+#         File '<source-name>'
+#         Lines executed:NN.NN% of <total>
+#         Branches executed:...
+#         Taken at least once:...
+#         Calls executed:...
+#         Creating '<source-name>.gcov'
+#     (verified on gcov 13.3.0 in the build environment).
 #
-#     File '<source-name>'
-#     Lines executed:NN.NN% of <total>
-#     Branches executed:...
-#     Taken at least once:...
-#     Calls executed:...
-#     Creating '<source-name>.gcov'
+# The QA finding CP10 #13 motivates the aggregation strategy: instead
+# of emitting one PASS/FAIL row per (program, TU) -- which produced
+# misleading "49 failures" totals when only ~20 programs had actual
+# substantive procedure-code gaps -- we now derive ONE row per
+# program by computing a line-weighted average across all TUs that
+# share the same program-id.  This matches the QA report's
+# Issue 13 "Suggested Fix":
+#     "Aggregate per-TU reports into a single per-program weighted
+#      average (weighted by the line counts gcov emits in
+#      `Lines executed:NN.NN% of M`), then compare the aggregated
+#      value against the per-program threshold."
 #
-# (verified on gcov 13.3.0 in the build environment).  We pair each
-# `File '...'` line with the immediately-following `Lines executed:`
-# line; subsequent lines until the next `File '...'` block are
-# ignored.  awk produces TAB-separated <source>\t<pct-line> tuples
-# which we feed to a per-tuple processing loop.  This isolates the
-# parsing complexity in awk and keeps the bash loop straightforward.
+# Awk extracts (filename<TAB>percentage<TAB>total-lines) triples for
+# every TU block; the bash loop accumulates per-program totals into
+# parallel associative arrays keyed by program-id.  We track:
+#   * COVERED_LINES[prog]   running sum of (pct/100 * total)
+#   * TOTAL_LINES[prog]     running sum of total-line counts
+# so the final aggregate is COVERED/TOTAL * 100.
 # ---------------------------------------------------------------------
-total_pct_sum=0
-total_pct_count=0
-fail_count=0
+declare -A COVERED_LINES
+declare -A TOTAL_LINES
 
 while IFS= read -r summary_file; do
     [ -z "$summary_file" ] && continue
 
-    # Extract (filename<TAB>Lines-executed-line) pairs from the
+    # Extract (filename<TAB>percentage<TAB>total) triples from the
     # summary file.  Filename is captured between the single quotes
-    # in `File '<name>'`; the next `Lines executed:` line is bound to
-    # it.  A subsequent `File '<name>'` line resets the capture.
-    pairs="$(awk '
+    # in `File '<name>'`; the next `Lines executed:` line is bound
+    # to it and split into percentage + total.  A subsequent
+    # `File '<name>'` line resets the capture.  We deliberately
+    # skip the trailing aggregate `Lines executed:NN.NN% of M` line
+    # that has no preceding `File '...'` because we recompute the
+    # per-program aggregate ourselves from the per-TU totals (so
+    # the recomputed figure is consistent with category aggregates
+    # below and with the documented behaviour even when gcov's
+    # output format changes).
+    # awk parsing uses portable POSIX features only -- mawk 1.3.4 (the
+    # default /usr/bin/awk on Ubuntu Noble) does not support gawk's
+    # 3-argument match().  Instead, we capture the percentage by
+    # stripping the prefix/suffix with sub() and the total by storing
+    # the original line and stripping the percentage portion.
+    triples="$(awk '
         /^File [^ ]/ {
             line = $0
             sub(/^File [^[:print:]]*/, "", line)
@@ -331,19 +477,33 @@ while IFS= read -r summary_file; do
             fname = line
             next
         }
-        /^Lines executed:/ {
+        /^Lines executed:[0-9]+\.?[0-9]*% of [0-9]+/ {
             if (fname != "") {
-                printf "%s\t%s\n", fname, $0
+                pct_str = $0
+                # Strip "Lines executed:" prefix
+                sub(/^Lines executed:/, "", pct_str)
+                # Capture pct (everything before "%")
+                pct = pct_str
+                sub(/%.*/, "", pct)
+                # Capture total (everything after "% of ")
+                total = pct_str
+                sub(/^[0-9]+\.?[0-9]*% of /, "", total)
+                # Strip any trailing whitespace from total
+                sub(/[^0-9].*/, "", total)
+                if (pct != "" && total != "") {
+                    printf "%s\t%s\t%s\n", fname, pct, total
+                }
                 fname = ""
             }
         }
     ' "$summary_file" || true)"
 
-    [ -z "$pairs" ] && continue
+    [ -z "$triples" ] && continue
 
-    while IFS=$'\t' read -r src_file pct_line; do
+    while IFS=$'\t' read -r src_file pct total; do
         [ -z "$src_file" ] && continue
-        [ -z "$pct_line" ] && continue
+        [ -z "$pct" ] && continue
+        [ -z "$total" ] && continue
 
         # Derive the program-id from the gcov-reported source filename.
         # Strip in this order:
@@ -356,48 +516,147 @@ while IFS= read -r summary_file; do
             | sed -E 's/\.[Cc][Bb][Ll]$//; s/\.c\.l\.h$//; s/\.c\.h$//; s/\.c$//')"
         program="$(printf '%s\n' "$program" | tr '[:lower:]' '[:upper:]')"
 
-        # Capture the numeric percentage.  `sed -nE ... /p` only emits
-        # when the substitution matches, so malformed lines yield an
-        # empty string rather than echoing the original.
-        pct="$(printf '%s\n' "$pct_line" \
-            | sed -nE 's/^Lines executed:([0-9]+\.?[0-9]*)%.*/\1/p')"
-        if [ -z "$pct" ]; then
-            printf '%s WARNING: cannot parse percentage from line: %s\n' \
-                "$LOG_PREFIX" "$pct_line" >&2
-            continue
-        fi
+        # covered = round(pct * total / 100).  awk handles the
+        # floating-point math; we keep COVERED_LINES values as
+        # decimals to avoid rounding error compounding across TUs.
+        covered="$(awk -v p="$pct" -v t="$total" \
+            'BEGIN{printf "%.4f", (p * t) / 100.0}')"
 
-        # Per-program threshold lookup.  `${...:-}` returns empty when
-        # the key is absent under `set -u`, which we treat as a soft
-        # skip rather than a hard failure (AAP key-insight #5).
-        target="${PROGRAM_TARGETS[$program]:-}"
-        if [ -z "$target" ]; then
-            printf '%s [%s]  Lines executed: %6.2f%% (no target -- skipped)\n' \
-                "$LOG_PREFIX" "$program" "$pct"
-            continue
-        fi
-
-        # Floating-point comparison.  awk's BEGIN-block exit status is
-        # the standard portable trick for >= comparisons of decimal
-        # values because POSIX shell `[` does integer arithmetic only.
-        if awk -v p="$pct" -v t="$target" 'BEGIN{exit !(p+0 >= t+0)}'; then
-            verdict="PASS"
-        else
-            verdict="FAIL"
-            fail_count=$((fail_count + 1))
-        fi
-
-        printf '%s [%s]  Lines executed: %6.2f%% (target %3d%%) -- %s\n' \
-            "$LOG_PREFIX" "$program" "$pct" "$target" "$verdict"
-
-        # Accumulate the percentage and counter into the overall-mean
-        # state.  awk handles the floating-point sum because POSIX
-        # shell cannot.  total_pct_count is integer.
-        total_pct_sum="$(awk -v s="$total_pct_sum" -v p="$pct" \
-            'BEGIN{printf "%.4f", s+p}')"
-        total_pct_count=$((total_pct_count + 1))
-    done <<< "$pairs"
+        # Initialise + accumulate per-program counters.  The
+        # `${X[k]:-0}` idiom returns "0" under `set -u` when the
+        # key is absent.
+        existing_covered="${COVERED_LINES[$program]:-0}"
+        existing_total="${TOTAL_LINES[$program]:-0}"
+        COVERED_LINES[$program]="$(awk -v a="$existing_covered" -v b="$covered" \
+            'BEGIN{printf "%.4f", a + b}')"
+        TOTAL_LINES[$program]=$((existing_total + total))
+    done <<< "$triples"
 done <<< "$summary_files"
+
+# ---------------------------------------------------------------------
+# Per-program aggregation and threshold check.
+#
+# After the parse loop, COVERED_LINES[prog] holds the line-weighted
+# sum of executed lines across every TU for program `prog`, and
+# TOTAL_LINES[prog] holds the corresponding line-weighted total.
+# The per-program coverage percentage is COVERED/TOTAL*100, which
+# matches gcov's own bottom-line aggregate (verified by manual
+# inspection of e.g. CSUTLDTC.gcda.summary.txt, which reports
+# `Lines executed:81.93% of 1184` -- exactly what this aggregation
+# produces).
+#
+# We also accumulate per-category sums so the next block can compute
+# Business / Validation / I/O aggregates without re-walking the
+# data.
+# ---------------------------------------------------------------------
+fail_count=0
+
+# Tracking arrays for category aggregation.
+declare -A CATEGORY_SUM
+declare -A CATEGORY_COUNT
+
+# Overall mean (arithmetic mean of per-program percentages, NOT a
+# line-weighted ratio across the whole repository -- this matches the
+# AAP Section 0.7.1 spec "Overall: >=70%" which is documented as a
+# program-mean aggregate).
+overall_sum=0
+overall_count=0
+
+# Iterate programs in deterministic order so CI logs are stable.
+for program in $(printf '%s\n' "${!COVERED_LINES[@]}" | sort); do
+    cov="${COVERED_LINES[$program]}"
+    tot="${TOTAL_LINES[$program]}"
+
+    if [ "$tot" -eq 0 ]; then
+        # Defensive: a zero-line TU should never appear in real
+        # gcov output but treat it as 0% coverage rather than div-
+        # by-zero so downstream comparisons remain numeric.
+        pct="0.00"
+    else
+        pct="$(awk -v c="$cov" -v t="$tot" \
+            'BEGIN{printf "%.2f", (c / t) * 100.0}')"
+    fi
+
+    target="${PROGRAM_TARGETS[$program]:-}"
+    if [ -z "$target" ]; then
+        printf '%s [%s]  Lines executed: %6.2f%% of %5d (no target -- skipped)\n' \
+            "$LOG_PREFIX" "$program" "$pct" "$tot"
+        continue
+    fi
+
+    # Compare against per-program target.
+    if awk -v p="$pct" -v t="$target" 'BEGIN{exit !(p+0 >= t+0)}'; then
+        verdict="PASS"
+    else
+        verdict="FAIL"
+        fail_count=$((fail_count + 1))
+    fi
+
+    printf '%s [%s]  Lines executed: %6.2f%% of %5d (target %3d%%) -- %s\n' \
+        "$LOG_PREFIX" "$program" "$pct" "$tot" "$target" "$verdict"
+
+    # Add this program's line-weighted percentage to the overall mean.
+    overall_sum="$(awk -v s="$overall_sum" -v p="$pct" \
+        'BEGIN{printf "%.4f", s + p}')"
+    overall_count=$((overall_count + 1))
+
+    # Add to each of the program's categories (space-separated list).
+    categories="${PROGRAM_CATEGORIES[$program]:-}"
+    if [ -n "$categories" ]; then
+        # Iterate over the space-separated category list without
+        # word-splitting weirdness.  POSIX-portable IFS swap.
+        old_ifs="$IFS"
+        IFS=' '
+        # shellcheck disable=SC2086
+        # We INTENTIONALLY want word-splitting on $categories here.
+        for cat in $categories; do
+            existing_sum="${CATEGORY_SUM[$cat]:-0}"
+            existing_cnt="${CATEGORY_COUNT[$cat]:-0}"
+            CATEGORY_SUM[$cat]="$(awk -v a="$existing_sum" -v b="$pct" \
+                'BEGIN{printf "%.4f", a + b}')"
+            CATEGORY_COUNT[$cat]=$((existing_cnt + 1))
+        done
+        IFS="$old_ifs"
+    fi
+done
+
+# ---------------------------------------------------------------------
+# Per-category aggregation and threshold check (AAP Section 0.7.1).
+#
+# Each category's aggregate is the arithmetic mean of constituent
+# programs' line-weighted percentages.  Programs absent from
+# PROGRAM_CATEGORIES contribute nothing to any category aggregate.
+# This implements QA finding CP10 #12's "(a)" remediation path:
+#     "extend `parse_gcov_summary.sh` to ... enforce category-mean
+#      thresholds".
+# ---------------------------------------------------------------------
+for cat in BUSINESS VALIDATION IO; do
+    sum="${CATEGORY_SUM[$cat]:-0}"
+    cnt="${CATEGORY_COUNT[$cat]:-0}"
+    case "$cat" in
+        BUSINESS)   threshold="$THRESHOLD_BUSINESS"   ;;
+        VALIDATION) threshold="$THRESHOLD_VALIDATION" ;;
+        IO)         threshold="$THRESHOLD_IO"         ;;
+        *)          threshold="$THRESHOLD_OVERALL"    ;;
+    esac
+
+    if [ "$cnt" -gt 0 ]; then
+        cat_avg="$(awk -v s="$sum" -v c="$cnt" \
+            'BEGIN{printf "%.2f", s/c}')"
+    else
+        cat_avg="0.00"
+    fi
+
+    if awk -v p="$cat_avg" -v t="$threshold" 'BEGIN{exit !(p+0 >= t+0)}'; then
+        cat_verdict="PASS"
+    else
+        cat_verdict="FAIL"
+        fail_count=$((fail_count + 1))
+    fi
+
+    printf '%s [%s] Lines executed: %6.2f%% (mean of %2d program(s); target %3d%%) -- %s\n' \
+        "$LOG_PREFIX" "$cat" "$cat_avg" "$cnt" "$threshold" "$cat_verdict"
+done
 
 # ---------------------------------------------------------------------
 # Overall aggregation.  The overall percentage is the arithmetic mean
@@ -409,8 +668,8 @@ done <<< "$summary_files"
 # against THRESHOLD_OVERALL.  This makes the [OVERALL] line always
 # present so downstream CI parsers can rely on its existence.
 # ---------------------------------------------------------------------
-if [ "$total_pct_count" -gt 0 ]; then
-    overall_avg="$(awk -v s="$total_pct_sum" -v c="$total_pct_count" \
+if [ "$overall_count" -gt 0 ]; then
+    overall_avg="$(awk -v s="$overall_sum" -v c="$overall_count" \
         'BEGIN{printf "%.2f", s/c}')"
 else
     overall_avg="0.00"
@@ -436,13 +695,13 @@ printf '%s [OVERALL]   Lines executed: %6.2f%% (target %3d%%) -- %s\n' \
 #
 # Failure path (fail_count > 0): emit AAP-mandated
 #   "BLITZY VALIDATION GATE FAILED: N coverage threshold(s) not met."
-# on stderr and exit 1.  The fail_count counts BOTH per-program
-# threshold misses AND the overall-threshold miss, which means a single
-# under-target program plus an under-target overall counts as 2.
+# on stderr and exit 1.  The fail_count counts per-program threshold
+# misses, per-category threshold misses, AND the overall-threshold
+# miss.
 # ---------------------------------------------------------------------
 if [ "$fail_count" -eq 0 ]; then
     printf '%s BLITZY COVERAGE GATE PASSED: all %d program(s) meet coverage targets.\n' \
-        "$LOG_PREFIX" "$total_pct_count"
+        "$LOG_PREFIX" "$overall_count"
     exit 0
 else
     printf '%s Per-program failures: %d\n' "$LOG_PREFIX" "$fail_count"

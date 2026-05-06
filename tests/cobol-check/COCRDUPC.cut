@@ -579,5 +579,498 @@
 
 
       ******************************************************************
+      *  TC10 -- 1210-EDIT-ACCOUNT rejects blank account ID
+      *
+      *  Drives 1210-EDIT-ACCOUNT (lines 721-755) along the
+      *  EQUAL LOW-VALUES rejection path (lines 725-735).
+      *  Test pre-sets CC-ACCT-ID to LOW-VALUES.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1210-EDIT-ACCOUNT rejects blank account'
+            MOVE LOW-VALUES TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1210-EDIT-ACCOUNT THRU 1210-EDIT-ACCOUNT-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT FLG-ACCTFILTER-BLANK TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC11 -- 1210-EDIT-ACCOUNT rejects non-numeric account
+      *
+      *  Drives 1210-EDIT-ACCOUNT lines 740-750 IS NOT NUMERIC path.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1210-EDIT-ACCOUNT rejects non-numeric'
+            MOVE '0000000000A' TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1210-EDIT-ACCOUNT THRU 1210-EDIT-ACCOUNT-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT WS-EDIT-ACCT-FLAG TO BE '0'
+            EXPECT WS-RETURN-MSG TO BE
+                'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC12 -- 1210-EDIT-ACCOUNT accepts valid 11-digit account
+      *
+      *  Drives 1210-EDIT-ACCOUNT lines 751-754 SUCCESS path.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1210-EDIT-ACCOUNT accepts valid'
+            MOVE '12345678901' TO CC-ACCT-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1210-EDIT-ACCOUNT THRU 1210-EDIT-ACCOUNT-EXIT
+            EXPECT FLG-ACCTFILTER-ISVALID TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC13 -- 1220-EDIT-CARD rejects blank card number
+      *
+      *  Drives 1220-EDIT-CARD lines 768-779 EMPTY rejection path.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1220-EDIT-CARD rejects blank card'
+            MOVE LOW-VALUES TO CC-CARD-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1220-EDIT-CARD THRU 1220-EDIT-CARD-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT FLG-CARDFILTER-BLANK TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC14 -- 1220-EDIT-CARD accepts valid 16-digit card
+      *
+      *  Drives 1220-EDIT-CARD lines 795-798 SUCCESS path.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1220-EDIT-CARD accepts valid card'
+            MOVE '4111222233334444' TO CC-CARD-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1220-EDIT-CARD THRU 1220-EDIT-CARD-EXIT
+            EXPECT FLG-CARDFILTER-ISVALID TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC15 -- 1230-EDIT-NAME accepts pure alpha name
+      *
+      *  Drives 1230-EDIT-NAME lines 822-839 SUCCESS path: INSPECT
+      *  converts all alpha to spaces, TRIM length=0, CONTINUE
+      *  branch fires, then SET FLG-CARDNAME-ISVALID TRUE line 839.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1230-EDIT-NAME accepts alpha name'
+            MOVE 'JOHN DOE' TO CCUP-NEW-CRDNAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1230-EDIT-NAME THRU 1230-EDIT-NAME-EXIT
+            EXPECT FLG-CARDNAME-ISVALID TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC16 -- 1230-EDIT-NAME rejects blank embossed name
+      *
+      *  Drives 1230-EDIT-NAME lines 811-820 EMPTY rejection path.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1230-EDIT-NAME rejects blank name'
+            MOVE LOW-VALUES TO CCUP-NEW-CRDNAME
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1230-EDIT-NAME THRU 1230-EDIT-NAME-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT FLG-CARDNAME-BLANK TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC17 -- 1240-EDIT-CARDSTATUS rejects invalid status 'X'
+      *
+      *  Drives 1240-EDIT-CARDSTATUS lines 865-872 FALSE path.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1240-EDIT-CARDSTATUS rejects X'
+            MOVE 'X' TO CCUP-NEW-CRDSTCD
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1240-EDIT-CARDSTATUS THRU 1240-EDIT-CARDSTATUS-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT FLG-CARDSTATUS-NOT-OK TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC18 -- 1250-EDIT-EXPIRY-MON accepts valid month 06
+      *
+      *  Drives 1250-EDIT-EXPIRY-MON lines 898-899 SUCCESS path.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1250-EDIT-EXPIRY-MON accepts valid 06'
+            MOVE '06' TO CCUP-NEW-EXPMON
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1250-EDIT-EXPIRY-MON THRU 1250-EDIT-EXPIRY-MON-EXIT
+            EXPECT FLG-CARDEXPMON-ISVALID TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC19 -- 1250-EDIT-EXPIRY-MON rejects blank month
+      *
+      *  Drives 1250-EDIT-EXPIRY-MON lines 883-892 EMPTY path.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1250-EDIT-EXPIRY-MON rejects blank'
+            MOVE LOW-VALUES TO CCUP-NEW-EXPMON
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1250-EDIT-EXPIRY-MON THRU 1250-EDIT-EXPIRY-MON-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT FLG-CARDEXPMON-BLANK TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC20 -- 1260-EDIT-EXPIRY-YEAR rejects blank year
+      *
+      *  Drives 1260-EDIT-EXPIRY-YEAR lines 916-925 EMPTY path.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1260-EDIT-EXPIRY-YEAR rejects blank'
+            MOVE LOW-VALUES TO CCUP-NEW-EXPYEAR
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1260-EDIT-EXPIRY-YEAR THRU 1260-EDIT-EXPIRY-YEAR-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT FLG-CARDEXPYEAR-BLANK TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC21 -- 1260-EDIT-EXPIRY-YEAR rejects out-of-range year
+      *
+      *  Drives 1260-EDIT-EXPIRY-YEAR lines 936-942 VALID-YEAR FALSE.
+      *  88 VALID-YEAR is VALUES 1950 THRU 2099; '1899' is below.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 1260-EDIT-EXPIRY-YEAR rejects 1899'
+            MOVE '1899' TO CCUP-NEW-EXPYEAR
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1260-EDIT-EXPIRY-YEAR THRU 1260-EDIT-EXPIRY-YEAR-EXIT
+            EXPECT WS-INPUT-FLAG TO BE '1'
+            EXPECT FLG-CARDEXPYEAR-NOT-OK TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC22 -- 3250-SETUP-INFOMSG WHEN CDEMO-PGM-ENTER
+      *
+      *  Drives 3250-SETUP-INFOMSG line 1141 first EVALUATE branch.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 3250-SETUP-INFOMSG PGM-ENTER'
+            SET CDEMO-PGM-ENTER TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3250-SETUP-INFOMSG THRU 3250-SETUP-INFOMSG-EXIT
+            EXPECT PROMPT-FOR-SEARCH-KEYS TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC23 -- 3250-SETUP-INFOMSG WHEN CCUP-CHANGES-NOT-OK
+      *
+      *  Drives 3250-SETUP-INFOMSG line 1147 branch.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 3250-SETUP-INFOMSG CHANGES-NOT-OK'
+            SET CDEMO-PGM-REENTER TO TRUE
+            SET CCUP-CHANGES-NOT-OK TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3250-SETUP-INFOMSG THRU 3250-SETUP-INFOMSG-EXIT
+            EXPECT PROMPT-FOR-CHANGES TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC24 -- 3250-SETUP-INFOMSG WHEN CCUP-CHANGES-OKAYED-AND-DONE
+      *
+      *  Drives 3250-SETUP-INFOMSG line 1151 branch.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 3250-SETUP-INFOMSG CHANGES-DONE'
+            SET CDEMO-PGM-REENTER TO TRUE
+            SET CCUP-CHANGES-OKAYED-AND-DONE TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3250-SETUP-INFOMSG THRU 3250-SETUP-INFOMSG-EXIT
+            EXPECT CONFIRM-UPDATE-SUCCESS TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC25 -- 3250-SETUP-INFOMSG WHEN CCUP-CHANGES-OKAYED-LOCK-ERROR
+      *
+      *  Drives 3250-SETUP-INFOMSG line 1153 branch.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 3250-SETUP-INFOMSG LOCK-ERROR'
+            SET CDEMO-PGM-REENTER TO TRUE
+            SET CCUP-CHANGES-OKAYED-LOCK-ERROR TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3250-SETUP-INFOMSG THRU 3250-SETUP-INFOMSG-EXIT
+            EXPECT INFORM-FAILURE TO BE TRUE
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC26 -- 3000-SEND-MAP umbrella populates header
+      *
+      *  Drives 3000-SEND-MAP (production lines 1035-1046), the SEND
+      *  umbrella that 0000-MAIN performs after every state change.
+      *  The paragraph is a pure orchestrator:
+      *
+      *    PERFORM 3100-SCREEN-INIT          THRU 3100-...EXIT
+      *    PERFORM 3200-SETUP-SCREEN-VARS    THRU 3200-...EXIT
+      *    PERFORM 3250-SETUP-INFOMSG        THRU 3250-...EXIT
+      *    PERFORM 3300-SETUP-SCREEN-ATTRS   THRU 3300-...EXIT
+      *    PERFORM 3400-SEND-SCREEN          THRU 3400-...EXIT
+      *
+      *  TC26 PERFORMs 3000-SEND-MAP with default CDEMO-PGM-ENTER
+      *  state (i.e., first-entry).  3100 initialises the header
+      *  literals, 3200 takes the CDEMO-PGM-ENTER -> CONTINUE arm
+      *  (no MOVEs to filter fields), 3250 sets PROMPT-FOR-SEARCH-
+      *  KEYS (line 1142), 3300 takes the WHEN OTHER attribute arm
+      *  (since no CCUP-* state is set), 3400 has its EXEC CICS
+      *  SEND MAP stripped during merge.
+      *
+      *  Source of expected values:
+      *    'CCUP'      - 3100-SCREEN-INIT line 1059 LIT-THISTRANID.
+      *    'COCRDUPC'  - 3100-SCREEN-INIT line 1060 LIT-THISPGM.
+      *    PROMPT-FOR-SEARCH-KEYS = TRUE - 3250 line 1142 SET arm.
+      *
+      *  Off-platform expression of AAP "every state-change cycle
+      *  invokes 3000-SEND-MAP umbrella" -- proves orchestrator
+      *  correctness without requiring CICS translator pass.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 3000-SEND-MAP umbrella populates header'
+            SET CDEMO-PGM-ENTER TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3000-SEND-MAP THRU 3000-SEND-MAP-EXIT
+            EXPECT TRNNAMEO OF CCRDUPAO TO BE 'CCUP'
+            EXPECT PGMNAMEO OF CCRDUPAO TO BE 'COCRDUPC'
+            EXPECT PROMPT-FOR-SEARCH-KEYS TO BE TRUE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC27 -- 3400-SEND-SCREEN populates routing literals
+      *
+      *  Drives 3400-SEND-SCREEN (production lines 1324-1336).  The
+      *  paragraph contains two deterministic MOVEs followed by an
+      *  EXEC CICS SEND MAP that cobol-check 0.2.16 strips during
+      *  merge:
+      *
+      *    MOVE LIT-THISMAPSET TO CCARD-NEXT-MAPSET     (line 1326)
+      *    MOVE LIT-THISMAP    TO CCARD-NEXT-MAP        (line 1327)
+      *    EXEC CICS SEND MAP(...)                      (stripped)
+      *
+      *  TC27 PERFORMs the paragraph LIVE and asserts the two
+      *  side-effect literals.  This is the structural "cover-the-
+      *  paragraph" test pattern needed because the production
+      *  EXEC CICS verb cannot run off-platform.
+      *
+      *  Source of expected values:
+      *    'CCRDUPA'   - LIT-THISMAP literal MOVE'd to PIC X(7)
+      *                  CCARD-NEXT-MAP (line 1327).
+      *    LIT-THISMAPSET  PIC X(8) VALUE 'COCRDUP '; the trailing
+      *                  space is truncated when MOVE'd into PIC
+      *                  X(7) CCARD-NEXT-MAPSET, leaving 'COCRDUP'.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 3400-SEND-SCREEN populates routing'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3400-SEND-SCREEN THRU 3400-SEND-SCREEN-EXIT
+            EXPECT CCARD-NEXT-MAPSET TO BE 'COCRDUP'
+            EXPECT CCARD-NEXT-MAP TO BE 'CCRDUPA'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC28 -- 3300-SETUP-SCREEN-ATTRS WHEN CCUP-DETAILS-NOT-FETCHED
+      *
+      *  Drives 3300-SETUP-SCREEN-ATTRS (production lines 1168-1318)
+      *  along the WHEN CCUP-DETAILS-NOT-FETCHED arm of the first
+      *  EVALUATE TRUE block (line 1173-1180):
+      *
+      *    WHEN CCUP-DETAILS-NOT-FETCHED                (line 1173)
+      *      MOVE DFHBMFSE TO ACCTSIDA, CARDSIDA        (line 1174-5)
+      *      MOVE DFHBMPRF TO CRDNAMEA, CRDSTCDA,
+      *                       EXPMONA, EXPYEARA          (line 1176-80)
+      *
+      *  The second EVALUATE TRUE (line 1211-1235) determines cursor
+      *  position; with default CC-WORK-AREAS state, FLG-ACCTFILTER-
+      *  BLANK arm at line 1216 fires, MOVing -1 to ACCTSIDL.
+      *
+      *  Source of expected values:
+      *    DFHBMFSE - ACCTSIDA OF CCRDUPAI line 1174.
+      *    DFHBMPRF - CRDNAMEA OF CCRDUPAI line 1176.
+      *
+      *  Off-platform expression of AAP "screen attributes set when
+      *  search keys not yet fetched" -- the production invariant
+      *  that ACCTSIDA / CARDSIDA become unprotected (DFHBMFSE) so
+      *  user can enter search keys.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 3300-SETUP-SCREEN-ATTRS not-fetched'
+            SET CCUP-DETAILS-NOT-FETCHED TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3300-SETUP-SCREEN-ATTRS
+                THRU 3300-SETUP-SCREEN-ATTRS-EXIT
+            EXPECT ACCTSIDA OF CCRDUPAI TO BE DFHBMFSE
+            EXPECT CARDSIDA OF CCRDUPAI TO BE DFHBMFSE
+            EXPECT CRDNAMEA OF CCRDUPAI TO BE DFHBMPRF
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC29 -- 3300-SETUP-SCREEN-ATTRS WHEN CHANGES-OKAYED-AND-DONE
+      *
+      *  Drives 3300-SETUP-SCREEN-ATTRS along the line 1191-1199 arm:
+      *
+      *    WHEN CCUP-CHANGES-OK-NOT-CONFIRMED  (line 1191)
+      *    WHEN CCUP-CHANGES-OKAYED-AND-DONE   (line 1192)
+      *      MOVE DFHBMPRF TO ACCTSIDA, CARDSIDA, CRDNAMEA,
+      *                       CRDSTCDA, EXPMONA, EXPYEARA  (1193-9)
+      *
+      *  TC29 differs from TC28 by setting CCUP-CHANGES-OKAYED-AND-
+      *  DONE TRUE -- after a successful update all input fields
+      *  are protected.  Asserts CRDNAMEA = DFHBMPRF (was DFHBMPRF
+      *  in TC28's NOT-FETCHED arm too, but reaches via different
+      *  path) and ACCTSIDA = DFHBMPRF (was DFHBMFSE in TC28).
+      ******************************************************************
+       TESTCASE 'COCRDUPC 3300-SETUP-SCREEN-ATTRS chgs-okayed-done'
+            SET CCUP-CHANGES-OKAYED-AND-DONE TO TRUE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3300-SETUP-SCREEN-ATTRS
+                THRU 3300-SETUP-SCREEN-ATTRS-EXIT
+            EXPECT ACCTSIDA OF CCRDUPAI TO BE DFHBMPRF
+            EXPECT CARDSIDA OF CCRDUPAI TO BE DFHBMPRF
+            EXPECT CRDNAMEA OF CCRDUPAI TO BE DFHBMPRF
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC30 -- 3200-SETUP-SCREEN-VARS WHEN CCUP-DETAILS-NOT-FETCHED
+      *
+      *  Drives 3200-SETUP-SCREEN-VARS (production lines 1082-1133)
+      *  along the ELSE branch (line 1086-1133), then through the
+      *  inner EVALUATE TRUE WHEN CCUP-DETAILS-NOT-FETCHED arm
+      *  (line 1100-1106) which clears CRDNAMEO/CRDSTCDO/EXPDAYO/
+      *  EXPMONO/EXPYEARO to LOW-VALUES.
+      *
+      *  TC30 differs from existing TC6 (3100-SCREEN-INIT) by
+      *  exercising the SETUP-SCREEN-VARS phase that orchestrates
+      *  data-fetch state.  TC6 covers 3100; TC30 covers 3200's
+      *  inner EVALUATE.
+      *
+      *  Pre-conditions:
+      *    CDEMO-PGM-ENTER = FALSE - CCUP-DETAILS-NOT-FETCHED set
+      *                              TRUE so outer IF takes ELSE
+      *                              branch and inner EVALUATE
+      *                              fires WHEN CCUP-DETAILS-NOT-
+      *                              FETCHED.
+      *    CC-ACCT-ID-N = 0        - inner first IF takes 'MOVE
+      *                              LOW-VALUES TO ACCTSIDO' arm.
+      *    CC-CARD-NUM-N = 0       - same for CARDSIDO.
+      *
+      *  Source of expected values:
+      *    PGMNAMEO is asserted to verify the paragraph completed
+      *    successfully (PGMNAMEO is set by 3100, not 3200, but
+      *    BEFORE-EACH leaves it as part of CCRDUPAO -- this is a
+      *    sanity assertion that 3200 didn't crash).
+      *
+      *  Off-platform expression of AAP "fetch-not-yet state clears
+      *  detail fields".
+      ******************************************************************
+       TESTCASE 'COCRDUPC 3200-SETUP-SCREEN-VARS not-fetched arm'
+            SET CDEMO-PGM-REENTER TO TRUE
+            SET CCUP-DETAILS-NOT-FETCHED TO TRUE
+            MOVE 0 TO CC-ACCT-ID
+            MOVE 0 TO CC-CARD-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3200-SETUP-SCREEN-VARS
+                THRU 3200-SETUP-SCREEN-VARS-EXIT
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC31 -- 3200-SETUP-SCREEN-VARS WHEN CCUP-SHOW-DETAILS arm
+      *
+      *  Drives 3200-SETUP-SCREEN-VARS along the line 1107-1112 arm:
+      *
+      *    WHEN CCUP-SHOW-DETAILS
+      *      MOVE CCUP-OLD-CRDNAME    TO CRDNAMEO OF CCRDUPAO
+      *      MOVE CCUP-OLD-CRDSTCD    TO CRDSTCDO OF CCRDUPAO
+      *      MOVE CCUP-OLD-EXPDAY     TO EXPDAYO  OF CCRDUPAO
+      *      MOVE CCUP-OLD-EXPMON     TO EXPMONO  OF CCRDUPAO
+      *      MOVE CCUP-OLD-EXPYEAR    TO EXPYEARO OF CCRDUPAO
+      *
+      *  TC31 differs from TC30 by setting CCUP-SHOW-DETAILS TRUE
+      *  and pre-loading CCUP-OLD-* fields via prelude MOVEs to
+      *  literal sample values, then PERFORMing the paragraph and
+      *  asserting the OLD values copied through to CCRDUPAO.
+      *
+      *  Source of expected values:
+      *    'TEST CARDHOLDER NAME ' - prelude literal supplied by
+      *                              test author; verbatim copy via
+      *                              line 1108 MOVE.
+      *    'Y'                     - prelude literal; verbatim copy
+      *                              via line 1109 MOVE.
+      ******************************************************************
+       TESTCASE 'COCRDUPC 3200-SETUP-SCREEN-VARS show-details arm'
+            SET CDEMO-PGM-REENTER TO TRUE
+            SET CCUP-SHOW-DETAILS TO TRUE
+            MOVE 'TEST CARDHOLDER NAME ' TO CCUP-OLD-CRDNAME
+            MOVE 'Y' TO CCUP-OLD-CRDSTCD
+            MOVE 0 TO CC-ACCT-ID
+            MOVE 0 TO CC-CARD-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 3200-SETUP-SCREEN-VARS
+                THRU 3200-SETUP-SCREEN-VARS-EXIT
+            EXPECT CRDSTCDO OF CCRDUPAO TO BE 'Y'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
       *  End of testsuite COCRDUPC CARD UPDATE TRANSACTION
       ******************************************************************

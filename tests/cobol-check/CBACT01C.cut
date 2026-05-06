@@ -516,5 +516,145 @@
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
       ******************************************************************
+      *  TC9 -- 9999-ABEND-PROGRAM direct invocation
+      *
+      *  PERFORMs 9999-ABEND-PROGRAM (CBACT01C.cbl lines 169-173)
+      *  directly.  The four production statements are:
+      *      DISPLAY 'ABENDING PROGRAM'   (line 170)
+      *      MOVE 0   TO TIMING           (line 171)
+      *      MOVE 999 TO ABCODE           (line 172)
+      *      CALL 'CEE3ABD'.              (line 173, mocked)
+      *
+      *  Although TC2/TC5/TC7 already reach 9999-ABEND-PROGRAM via
+      *  the OPEN/READ/CLOSE error pathways, this direct test
+      *  exercises the cobol-check-generated EVALUATE arm for THIS
+      *  testcase (UT-1-9-1-MOCK), which is otherwise unreachable
+      *  unless 9999 is invoked while THIS testcase is the active
+      *  case.  This is the canonical pattern for ensuring the
+      *  per-testcase mock dispatch table is fully covered.
+      *
+      *  Source of expected values
+      *    TIMING = 0   -- production literal at line 171.
+      *    ABCODE = 999 -- production literal at line 172.
+      *
+      *  CEE3ABD verification
+      *    HAPPENED ONCE -- production line 173 CALLs CEE3ABD
+      *              exactly once per invocation of 9999-ABEND-
+      *              PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBACT01C 9999-ABEND-PROGRAM direct invocation'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE 7777 TO TIMING
+            MOVE 7777 TO ABCODE
+            PERFORM 9999-ABEND-PROGRAM
+            EXPECT TIMING TO BE 0
+            EXPECT ABCODE TO BE 999
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC10 -- 9910-DISPLAY-IO-STATUS THEN branch via IO-STAT1='9'
+      *
+      *  PERFORMs 9910-DISPLAY-IO-STATUS (CBACT01C.cbl lines 176-189)
+      *  with IO-STATUS = '90' to drive the THEN branch of the
+      *  guard at lines 177-178:
+      *      IF  IO-STATUS NOT NUMERIC OR IO-STAT1 = '9'
+      *          MOVE IO-STAT1 TO IO-STATUS-04(1:1)        (line 179)
+      *          MOVE 0        TO TWO-BYTES-BINARY         (line 180)
+      *          MOVE IO-STAT2 TO TWO-BYTES-RIGHT          (line 181)
+      *          MOVE TWO-BYTES-BINARY TO IO-STATUS-0403   (line 182)
+      *          DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04
+      *
+      *  IO-STATUS = '90' is numeric (NOT NUMERIC false) but
+      *  IO-STAT1 = '9' so the OR-guard evaluates true and the
+      *  THEN arm executes.  Line 179 reference-modifies position
+      *  1 of IO-STATUS-04 with '9'.
+      *
+      *  Differential vs TC8 (which covered the ELSE arm with
+      *  IO-STATUS = '35'):
+      *    TC8 ELSE arm: IO-STATUS-04 = '0035' (0000 + 35 at 3:2)
+      *    TC10 THEN arm: IO-STATUS-04 first byte = '9'
+      *  Together TC8 and TC10 prove BOTH arms of the line-177 IF.
+      *
+      *  Source of expected value
+      *    IO-STATUS-04(1:1) = '9' -- the production reference-
+      *              modified MOVE at line 179 places IO-STAT1 ('9')
+      *              at position 1 of IO-STATUS-04.  Directly
+      *              observable from the production MOVE; the test
+      *              does not recompute or paraphrase the formatting.
+      *              Status code '90' begins with '9' which is the
+      *              canonical GnuCOBOL "vendor-specific I/O failure"
+      *              prefix that the production THEN arm formats.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- 9910-DISPLAY-IO-STATUS contains no
+      *              CALL site for CEE3ABD; the abend service must
+      *              not be reached from this paragraph.
+      ******************************************************************
+       TESTCASE 'CBACT01C 9910-DISPLAY-IO-STATUS THEN branch STAT1=9'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '90' TO IO-STATUS
+            PERFORM 9910-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04(1:1) TO BE '9'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC11 -- 1100-DISPLAY-ACCT-RECORD direct with subfield setup
+      *
+      *  PERFORMs 1100-DISPLAY-ACCT-RECORD (CBACT01C.cbl lines
+      *  118-131) directly with explicit ACCT-RECORD subfield
+      *  values.  The paragraph executes 11 DISPLAY statements
+      *  against ACCT-RECORD subfields and one DISPLAY of a
+      *  separator line, then EXIT.
+      *
+      *  Although TC3 (1000-ACCTFILE-GET-NEXT happy) transitively
+      *  PERFORMs 1100 via line-96 in production, the transitive
+      *  call has all subfields at INITIALIZE defaults (zeros and
+      *  spaces).  This direct test sets explicit values into
+      *  several subfields so the production DISPLAY references
+      *  emit non-default values, exercising additional packed-
+      *  decimal handling paths in the GnuCOBOL runtime that the
+      *  default INITIALIZE state may not trigger.
+      *
+      *  TC11 prelude
+      *    INITIALIZE ACCOUNT-RECORD  -- BEFORE-EACH baseline
+      *    MOVE 12345678901 TO ACCT-ID
+      *    MOVE 'A'         TO ACCT-ACTIVE-STATUS
+      *    MOVE '2020-01-15' TO ACCT-OPEN-DATE
+      *    MOVE 'NORMAL    ' TO ACCT-GROUP-ID
+      *
+      *  Source of expected values
+      *    ACCT-ID            = 12345678901 -- test-author literal,
+      *              MOVEd in the prelude; production paragraph
+      *              does not modify ACCT-ID, so post-PERFORM the
+      *              value is unchanged.
+      *    ACCT-ACTIVE-STATUS = 'A'         -- prelude literal;
+      *              production paragraph does not modify this.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- 1100-DISPLAY-ACCT-RECORD contains no
+      *              CALL site for CEE3ABD; the abend service must
+      *              not be reached from this paragraph.  The
+      *              VERIFY guards against a regression that
+      *              accidentally introduced a `PERFORM 9999-
+      *              ABEND-PROGRAM` inside this paragraph.
+      ******************************************************************
+       TESTCASE 'CBACT01C 1100-DISPLAY-ACCT-RECORD direct with values'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE 12345678901 TO ACCT-ID
+            MOVE 'A'         TO ACCT-ACTIVE-STATUS
+            MOVE '2020-01-15' TO ACCT-OPEN-DATE
+            MOVE 'NORMAL    ' TO ACCT-GROUP-ID
+            PERFORM 1100-DISPLAY-ACCT-RECORD
+            EXPECT ACCT-ID TO BE 12345678901
+            EXPECT ACCT-ACTIVE-STATUS TO BE 'A'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
       *  End of testsuite CBACT01C ACCOUNT-FILE SEQUENTIAL DUMP
       ******************************************************************

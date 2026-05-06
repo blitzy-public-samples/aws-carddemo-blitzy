@@ -463,6 +463,84 @@
             EXPECT TRAN-ID TO BE 'TRN0000000000050'
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
+
+      ******************************************************************
+      *  TC7 -- POPULATE-HEADER-INFO sets PGMNAMEO and TRNNAMEO
+      *
+      *  Drives POPULATE-HEADER-INFO (lines 567-589) along the
+      *  deterministic header-fill path: copies CCDA-TITLE01,
+      *  CCDA-TITLE02, WS-TRANID, WS-PGMNAME literals to output map
+      *  fields, plus FUNCTION CURRENT-DATE values.
+      ******************************************************************
+       TESTCASE 'COTRN00C POPULATE-HEADER-INFO sets PGMNAMEO TRNNAMEO'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM POPULATE-HEADER-INFO
+            EXPECT TRNNAMEO OF COTRN0AO TO BE 'CT00'
+            EXPECT PGMNAMEO OF COTRN0AO TO BE 'COTRN00C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC8 -- PROCESS-ENTER-KEY no row selection enters scroll mode
+      *
+      *  Drives PROCESS-ENTER-KEY (production lines 146-229) along
+      *  WHEN OTHER of the EVALUATE TRUE block (lines 179-181) where
+      *  no SEL0001I-SEL0010I value is set, so production lines
+      *  180-181 MOVE SPACES to CDEMO-CT00-TRN-SEL-FLG and CDEMO-CT00-
+      *  TRN-SELECTED.  After the EVALUATE the IF guard at line 183-
+      *  204 is false (both fields are SPACES).  Then the IF TRNIDINI
+      *  = SPACES branch fires (lines 206-207) and MOVEs LOW-VALUES to
+      *  TRAN-ID.  Production then MOVEs -1 to TRNIDINL, MOVE 0 to
+      *  CDEMO-CT00-PAGE-NUM, and PERFORMs PROCESS-PAGE-FORWARD.
+      *
+      *  PROCESS-PAGE-FORWARD invokes STARTBR-/READNEXT-/ENDBR-/SEND-
+      *  TRNLST-SCREEN, all of which have EXEC CICS calls.  The MOCK
+      *  CALL 'DFHEI1' intercepts every EXEC CICS verb and returns
+      *  CONTINUE; WS-RESP-CD remains 0 (==DFHRESP(NORMAL) at link
+      *  time) so the EVALUATE arms WHEN NORMAL fire and the
+      *  paragraph completes without hitting WS-ERR-FLG = 'Y'.
+      *
+      *  Source of expected values:
+      *    SPACES - production lines 180-181 (test asserts the side
+      *             effect of the WHEN OTHER MOVE; does NOT reimpl-
+      *             ement it).
+      ******************************************************************
+       TESTCASE 'COTRN00C PROCESS-ENTER-KEY clears with WHEN-OTHER'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT CDEMO-CT00-TRN-SEL-FLG TO BE SPACES
+            EXPECT CDEMO-CT00-TRN-SELECTED TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC9 -- PROCESS-ENTER-KEY non-numeric TRNIDINI rejected
+      *
+      *  Drives PROCESS-ENTER-KEY through the lines 211-218 ELSE
+      *  branch where TRNIDINI is non-blank but not numeric.
+      *  Production sets WS-ERR-FLG='Y' and WS-MESSAGE='Tran ID
+      *  must be Numeric ...'.  Then PERFORM PROCESS-PAGE-FORWARD
+      *  is short-circuited because PROCESS-PAGE-FORWARD's IF NOT
+      *  ERR-FLG-ON guard at line 283 is now FALSE, so the SEND-
+      *  TRNLST-SCREEN does not fire and no XCTL is issued.
+      *
+      *  Source of expected values:
+      *    'Y' - WS-ERR-FLG, MOVEd by production line 212.
+      ******************************************************************
+       TESTCASE 'COTRN00C PROCESS-ENTER-KEY non-numeric tran ID'
+            MOVE 'ABCDEFGHIJKLMNOP' TO TRNIDINI OF COTRN0AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
       ******************************************************************
       *  End of testsuite COTRN00C TRANSACTION LIST BROWSE
       ******************************************************************

@@ -519,5 +519,165 @@
             VERIFY CALL 'CEE3ABD' HAPPENED ONCE
 
       ******************************************************************
+      *  TC10 -- 1000-CUSTFILE-GET-NEXT EOF branch
+      *
+      *  Drives 1000-CUSTFILE-GET-NEXT (lines 92-116) along the
+      *  CUSTFILE-STATUS = '10' branch (EOF).  Production sets
+      *  APPL-RESULT = 16, then APPL-EOF triggers MOVE 'Y' TO
+      *  END-OF-FILE.  The READ statement is comment-stripped by
+      *  the runner, but pre-setting CUSTFILE-STATUS controls the
+      *  branch the production code takes.
+      ******************************************************************
+       TESTCASE 'CBCUS01C 1000-CUSTFILE-GET-NEXT EOF flips END-OF-FILE'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '10' TO CUSTFILE-STATUS
+            MOVE 'N' TO END-OF-FILE
+            PERFORM 1000-CUSTFILE-GET-NEXT
+            EXPECT END-OF-FILE TO BE 'Y'
+            EXPECT APPL-RESULT TO BE 16
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC11 -- 1000-CUSTFILE-GET-NEXT happy path (status 00)
+      *
+      *  Drives 1000-CUSTFILE-GET-NEXT along the success branch:
+      *  CUSTFILE-STATUS = '00', APPL-RESULT = 0, no EOF flip.
+      ******************************************************************
+       TESTCASE 'CBCUS01C 1000-CUSTFILE-GET-NEXT happy path'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO CUSTFILE-STATUS
+            MOVE 'N' TO END-OF-FILE
+            PERFORM 1000-CUSTFILE-GET-NEXT
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT END-OF-FILE TO BE 'N'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC12 -- 9000-CUSTFILE-CLOSE happy path
+      *
+      *  Drives 9000-CUSTFILE-CLOSE along success branch (status '00').
+      *  APPL-RESULT becomes 0 after SUBTRACT.  Production line 144
+      *  IF APPL-AOK CONTINUE branch executes.  No abend.
+      ******************************************************************
+       TESTCASE 'CBCUS01C 9000-CUSTFILE-CLOSE happy path'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO CUSTFILE-STATUS
+            PERFORM 9000-CUSTFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC13 -- 9000-CUSTFILE-CLOSE failure branch
+      *
+      *  Drives 9000-CUSTFILE-CLOSE along error branch (status '99').
+      *  APPL-RESULT becomes 12; PERFORM Z-ABEND-PROGRAM executes.
+      ******************************************************************
+       TESTCASE 'CBCUS01C 9000-CUSTFILE-CLOSE failure abends'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '99' TO CUSTFILE-STATUS
+            PERFORM 9000-CUSTFILE-CLOSE
+            EXPECT IO-STATUS TO BE '99'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+
+      ******************************************************************
+      *  TC14 -- 1000-CUSTFILE-GET-NEXT IO error '99' abends
+      *
+      *  PERFORMs 1000-CUSTFILE-GET-NEXT (production lines 92-117)
+      *  with CUSTFILE-STATUS = '99' (a non-'00' non-'10' value)
+      *  to drive the ELSE branch at line 100 setting APPL-RESULT
+      *  to 12, then the ELSE branch at line 110 (APPL-AOK = NO):
+      *      DISPLAY 'ERROR READING CUSTOMER FILE'
+      *      MOVE CUSTFILE-STATUS TO IO-STATUS
+      *      PERFORM Z-DISPLAY-IO-STATUS
+      *      PERFORM Z-ABEND-PROGRAM
+      *
+      *  Differential vs TC10/TC11:
+      *    TC10 (status '00'): WHEN APPL-AOK happy CONTINUE arm
+      *    TC11 (status '10'): APPL-EOF arm sets END-OF-FILE
+      *    TC14 (status '99'): ELSE arm aborts via Z-ABEND-PROGRAM
+      *
+      *  Source of expected values
+      *    IO-STATUS = '99' -- production MOVE at line 113.
+      *    CEE3ABD HAPPENED ONCE -- production CALL via Z-ABEND.
+      ******************************************************************
+       TESTCASE 'CBCUS01C 1000-CUSTFILE-GET-NEXT err 99 abends'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '99' TO CUSTFILE-STATUS
+            PERFORM 1000-CUSTFILE-GET-NEXT
+            EXPECT IO-STATUS TO BE '99'
+            EXPECT APPL-RESULT TO BE 12
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+
+      ******************************************************************
+      *  TC15 -- 0000-CUSTFILE-OPEN happy path APPL-AOK CONTINUE
+      *
+      *  PERFORMs 0000-CUSTFILE-OPEN (production lines 118-135)
+      *  with CUSTFILE-STATUS = '00'.  IF condition at line 121
+      *  fires the THEN arm (MOVE 0 TO APPL-RESULT), then IF
+      *  APPL-AOK at line 126 evaluates TRUE, CONTINUE fires.
+      *  No abend.
+      *
+      *  Note: the OPEN INPUT statement itself reaches the runtime
+      *  but our existing TC tests of 0000-CUSTFILE-OPEN happy
+      *  branch already exist (TC4).  TC15 here adds an explicit
+      *  assertion on APPL-RESULT = 0 after the success path,
+      *  which TC4 does not assert (TC4 asserts on a different
+      *  field).
+      ******************************************************************
+       TESTCASE 'CBCUS01C 0000-CUSTFILE-OPEN APPL-RESULT 0 ok'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO CUSTFILE-STATUS
+            PERFORM 0000-CUSTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+
+      ******************************************************************
+      *  TC16 -- Z-DISPLAY-IO-STATUS ELSE branch numeric byte 1 = '0'
+      *
+      *  Drives the ELSE branch of Z-DISPLAY-IO-STATUS (production
+      *  lines 167-170):
+      *      MOVE '0000' TO IO-STATUS-04
+      *      MOVE IO-STATUS TO IO-STATUS-04(3:2)
+      *      DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04
+      *  This branch fires when IO-STATUS IS NUMERIC AND IO-STAT1
+      *  is NOT '9' (e.g., IO-STATUS = '23' or '00').
+      *
+      *  TC16 differs from existing TC1/TC2/TC3 by exercising the
+      *  ELSE arm for numeric IO-STATUS where byte 1 = '0' (which
+      *  exercises the '0000' MOVE then the IO-STATUS-04(3:2)
+      *  selective overwrite to '0023' in this case).
+      *
+      *  Source of expected values
+      *    IO-STATUS-04(3:2) = '23' -- production MOVE at line 169.
+      *    IO-STATUS-04(1:2) = '00' -- preserved from the literal
+      *      '0000' MOVE at line 168.
+      ******************************************************************
+       TESTCASE 'CBCUS01C Z-DISPLAY-IO-STATUS ELSE byte 1 numeric'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '23' TO IO-STATUS
+            PERFORM Z-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04(3:2) TO BE '23'
+            EXPECT IO-STATUS-04(1:2) TO BE '00'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+
+      ******************************************************************
       *  End of testsuite CBCUS01C CUSTOMER-FILE SEQUENTIAL DUMP
       ******************************************************************

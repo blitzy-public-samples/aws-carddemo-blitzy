@@ -560,5 +560,158 @@
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
+      *  TC6 -- POPULATE-HEADER-INFO copies title and tranid to map
+      *
+      *  Drives POPULATE-HEADER-INFO (production lines 296-315).
+      *  Pure WS computation paragraph: invokes FUNCTION CURRENT-DATE
+      *  and reformats into MM-DD-YY / HH-MM-SS for the BMS map.
+      *  Asserts the static title/tranid/program fields are copied
+      *  into the output map (deterministic side effects).
+      ******************************************************************
+       TESTCASE 'COUSR02C POPULATE-HEADER-INFO copies title and tranid'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM POPULATE-HEADER-INFO
+            EXPECT TRNNAMEO OF COUSR2AO TO BE 'CU02'
+            EXPECT PGMNAMEO OF COUSR2AO TO BE 'COUSR02C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC7 -- SEND-USRUPD-SCREEN runs without abend
+      *
+      *  Drives SEND-USRUPD-SCREEN (production lines 266-278).
+      *  PERFORMs POPULATE-HEADER-INFO then EXEC CICS SEND MAP.
+      *  The EXEC CICS gets stripped by cobol-check's parser, so
+      *  the CALL 'DFHEI1' counter remains 0; the assertion is on
+      *  the side effect of the embedded POPULATE-HEADER-INFO.
+      ******************************************************************
+       TESTCASE 'COUSR02C SEND-USRUPD-SCREEN runs without abend'
+            MOVE 'OK' TO WS-MESSAGE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM SEND-USRUPD-SCREEN
+            EXPECT TRNNAMEO OF COUSR2AO TO BE 'CU02'
+            EXPECT PGMNAMEO OF COUSR2AO TO BE 'COUSR02C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC8 -- RECEIVE-USRUPD-SCREEN runs without abend
+      *
+      *  Drives RECEIVE-USRUPD-SCREEN (production lines 283-291).
+      *  Single EXEC CICS RECEIVE MAP; cobol-check strips it so the
+      *  CALL 'DFHEI1' counter remains 0.  Assertion on the safety-
+      *  net flag confirms the production paragraph executed
+      *  without falling through to the unmocked DFHEI1 stub.
+      ******************************************************************
+       TESTCASE 'COUSR02C RECEIVE-USRUPD-SCREEN runs without abend'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM RECEIVE-USRUPD-SCREEN
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC9 -- READ-USER-SEC-FILE runs without abend
+      *
+      *  Drives READ-USER-SEC-FILE (production lines 320-353).
+      *  Single EXEC CICS READ DATASET UPDATE; cobol-check strips it.
+      *  WS-RESP-CD remains 0 so the EVALUATE WS-RESP-CD does not
+      *  match any DFHRESP() WHEN clause off-platform; the EVALUATE
+      *  falls through and the paragraph returns.  Coverage gain is
+      *  on the lines outside the EVALUATE branches.
+      ******************************************************************
+       TESTCASE 'COUSR02C READ-USER-SEC-FILE runs without abend'
+            MOVE 'TESTUSER' TO SEC-USR-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM READ-USER-SEC-FILE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC10 -- UPDATE-USER-SEC-FILE runs without abend
+      *
+      *  Drives UPDATE-USER-SEC-FILE (production lines 358-390).
+      *  Single EXEC CICS REWRITE DATASET; same branch behavior as
+      *  TC9 (DFHRESP not resolved off-platform).
+      ******************************************************************
+       TESTCASE 'COUSR02C UPDATE-USER-SEC-FILE runs without abend'
+            MOVE 'TESTUSER' TO SEC-USR-ID
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM UPDATE-USER-SEC-FILE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC11 -- UPDATE-USER-INFO rejects empty FIRST NAME
+      *
+      *  Drives UPDATE-USER-INFO (production lines 177-245) along the
+      *  WHEN FNAMEI = SPACES branch (lines 186-191).  Pre-set
+      *  USRIDINI to a non-empty value to bypass the WHEN USRIDINI
+      *  branch.  Asserts the WS-ERR-FLG and FNAMEL side effects.
+      ******************************************************************
+       TESTCASE 'COUSR02C UPDATE-USER-INFO rejects empty FNAME'
+            MOVE 'ADMIN001' TO USRIDINI OF COUSR2AI
+            MOVE SPACES TO FNAMEI OF COUSR2AI
+            MOVE 'Last  ' TO LNAMEI OF COUSR2AI
+            MOVE 'pass  ' TO PASSWDI OF COUSR2AI
+            MOVE 'A'      TO USRTYPEI OF COUSR2AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM UPDATE-USER-INFO
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT FNAMEL OF COUSR2AI NOT = 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC12 -- UPDATE-USER-INFO rejects empty LAST NAME
+      *
+      *  Drives UPDATE-USER-INFO along the WHEN LNAMEI = SPACES
+      *  branch (lines 192-197).  Same pattern as TC11 but pre-set
+      *  FNAMEI non-empty so the validation chain advances to LNAME.
+      ******************************************************************
+       TESTCASE 'COUSR02C UPDATE-USER-INFO rejects empty LNAME'
+            MOVE 'ADMIN001' TO USRIDINI OF COUSR2AI
+            MOVE 'First ' TO FNAMEI OF COUSR2AI
+            MOVE SPACES   TO LNAMEI OF COUSR2AI
+            MOVE 'pass  ' TO PASSWDI OF COUSR2AI
+            MOVE 'A'      TO USRTYPEI OF COUSR2AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM UPDATE-USER-INFO
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT LNAMEL OF COUSR2AI NOT = 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC13 -- UPDATE-USER-INFO rejects empty USER TYPE
+      *
+      *  Drives UPDATE-USER-INFO along the WHEN USRTYPEI = SPACES
+      *  branch (lines 204-209).  All preceding WHENs satisfied so
+      *  validation advances to USRTYPE.
+      ******************************************************************
+       TESTCASE 'COUSR02C UPDATE-USER-INFO rejects empty USRTYPE'
+            MOVE 'ADMIN001' TO USRIDINI OF COUSR2AI
+            MOVE 'First ' TO FNAMEI OF COUSR2AI
+            MOVE 'Last  ' TO LNAMEI OF COUSR2AI
+            MOVE 'pass  ' TO PASSWDI OF COUSR2AI
+            MOVE SPACES   TO USRTYPEI OF COUSR2AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM UPDATE-USER-INFO
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT USRTYPEL OF COUSR2AI NOT = 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
       *  End of testsuite COUSR02C UPDATE USER ADMIN TRANSACTION
       ******************************************************************

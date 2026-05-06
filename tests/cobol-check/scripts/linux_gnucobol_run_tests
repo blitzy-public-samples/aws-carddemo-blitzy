@@ -42,7 +42,20 @@ merged_src="$1"
 shift || true
 
 merged_dir="$(dirname "$merged_src")"
-repo_root="$(cd "${merged_dir}/../.." 2>/dev/null && pwd)"
+
+# repo_root resolution.  Supports both:
+#   - Default flat layout (merged_dir = target/cobol-check/):
+#     fall back to two-up traversal.
+#   - Parallel-isolated layout (merged_dir = target/cobol-check/<PROG>/):
+#     two-up traversal lands at target/, NOT the repo root.  When
+#     the Makefile invokes us under the parallel layout it exports
+#     REPO_ROOT so we use it directly.  This keeps the runner
+#     compatible with both layouts without filesystem heuristics.
+if [ -n "${REPO_ROOT:-}" ] && [ -d "${REPO_ROOT}/app/cbl" ]; then
+    repo_root="${REPO_ROOT}"
+else
+    repo_root="$(cd "${merged_dir}/../.." 2>/dev/null && pwd)"
+fi
 
 cd "${merged_dir}"
 
@@ -482,6 +495,40 @@ for stub in CEEDAYS CEE3ABD DFHEI1; do
 done
 
 # ---------------------------------------------------------------------
+# Decide between executable mode (cobc -xj) and module mode (cobc -m
+# + cobcrun).  Module mode is significantly faster on cobc 3.1.2 for
+# large merged sources because the executable mode triggers a super-
+# linear codegen pass that exceeds reasonable wall-clock limits when
+# the merged source exceeds ~6500 lines (observed empirically with
+# COACTUPC after expansion to 41+ testcases).
+#
+# The threshold (6000 lines) is conservative -- batch and small CICS
+# programs stay well under it, so the existing `cobc -xj` path is
+# preserved for them.  For large programs (e.g., COACTUPC), we skip
+# the executable path and go directly to module mode.  This is the
+# same compile path that the USING-clause fallback uses, just chosen
+# proactively instead of reactively.
+# ---------------------------------------------------------------------
+merged_lines=$(wc -l < "${sanitised_src}" 2>/dev/null || echo 0)
+LARGE_MERGE_THRESHOLD=${LARGE_MERGE_THRESHOLD:-6000}
+
+if [ "${merged_lines}" -gt "${LARGE_MERGE_THRESHOLD}" ]; then
+    echo "[runner] Merged source ${merged_lines} lines > ${LARGE_MERGE_THRESHOLD}; using module mode (cobc -m + cobcrun)."
+
+    cobc -m -fixed ${COBC_OPTS:-} ${save_temps_opt} \
+        -I "${repo_root}/app/cpy" \
+        -I "${repo_root}/app/cpy-bms" \
+        -I "${repo_root}/tests/fixtures/cobol-snippets" \
+        -I "${repo_root}/tests/stubs" \
+        -o "${merged_dir}/${program_id}.so" \
+        "${sanitised_src}" || exit $?
+
+    COB_LIBRARY_PATH="${merged_dir}:${repo_root}/tests/stubs:${COB_LIBRARY_PATH:-}" \
+        cobcrun "${program_id}"
+    exit $?
+fi
+
+# ---------------------------------------------------------------------
 # Step 2 - try the standard compile-and-run path used for batch
 # programs.  Capture stderr so we can fall back to the subprogram
 # path if cobc rejects the merged program because of a USING clause.
@@ -494,17 +541,17 @@ COB_LIBRARY_PATH="${merged_dir}:${repo_root}/tests/stubs:${COB_LIBRARY_PATH:-}" 
         -I "${repo_root}/app/cpy-bms" \
         -I "${repo_root}/tests/fixtures/cobol-snippets" \
         -I "${repo_root}/tests/stubs" \
-        "${sanitised_src}" "$@" 2>"${merged_dir}/cobc.stderr"
+        "${sanitised_src}" "$@" 2>"${merged_dir}/${program_id}.cobc.stderr"
 rc=$?
 
 if [ "$rc" -eq 0 ]; then
-    cat "${merged_dir}/cobc.stderr"
-    rm -f "${merged_dir}/cobc.stderr"
+    cat "${merged_dir}/${program_id}.cobc.stderr"
+    rm -f "${merged_dir}/${program_id}.cobc.stderr"
     exit 0
 fi
 
 # Always echo whatever cobc printed so reviewers can debug.
-cat "${merged_dir}/cobc.stderr"
+cat "${merged_dir}/${program_id}.cobc.stderr"
 
 # ---------------------------------------------------------------------
 # Step 3 - fallback for subprograms with PROCEDURE DIVISION USING.
@@ -516,8 +563,8 @@ cat "${merged_dir}/cobc.stderr"
 # fields inside BEFORE-EACH.
 # ---------------------------------------------------------------------
 if grep -q "executable program requested but PROCEDURE/ENTRY has USING clause" \
-        "${merged_dir}/cobc.stderr" 2>/dev/null; then
-    rm -f "${merged_dir}/cobc.stderr"
+        "${merged_dir}/${program_id}.cobc.stderr" 2>/dev/null; then
+    rm -f "${merged_dir}/${program_id}.cobc.stderr"
     echo "[runner] PROCEDURE DIVISION USING detected; switching to module mode."
 
     cobc -m -fixed ${COBC_OPTS:-} ${save_temps_opt} \
@@ -533,5 +580,5 @@ if grep -q "executable program requested but PROCEDURE/ENTRY has USING clause" \
     exit $?
 fi
 
-rm -f "${merged_dir}/cobc.stderr"
+rm -f "${merged_dir}/${program_id}.cobc.stderr"
 exit "$rc"

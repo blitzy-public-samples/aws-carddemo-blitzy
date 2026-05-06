@@ -522,19 +522,416 @@
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
       ******************************************************************
+      *  TC12 -- Z-DISPLAY-IO-STATUS 9-prefix branch
+      *
+      *  Drives Z-DISPLAY-IO-STATUS along the IO-STAT1='9' THEN branch
+      *  (line 478).  Production line 481-487: MOVE IO-STAT1 to (1:1)
+      *  followed by binary representation of IO-STAT2.  Asserts byte
+      *  1 of IO-STATUS-04 is '9'.
+      ******************************************************************
+       TESTCASE 'CBTRN01C Z-DISPLAY-IO-STATUS 9-prefix branch'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '95' TO IO-STATUS
+            PERFORM Z-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04(1:1) TO BE '9'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC13 -- 0100-CUSTFILE-OPEN success branch
+      *
+      *  Mirror of TC1 for CUSTFILE OPEN paragraph.  Pre-set status
+      *  '00' drives the success branch (APPL-RESULT = 0); no abend.
+      ******************************************************************
+       TESTCASE 'CBTRN01C 0100-CUSTFILE-OPEN success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO CUSTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0100-CUSTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC14 -- 0200-XREFFILE-OPEN success branch
+      *
+      *  Mirror for XREFFILE OPEN paragraph.
+      ******************************************************************
+       TESTCASE 'CBTRN01C 0200-XREFFILE-OPEN success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0200-XREFFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC15 -- 0300-CARDFILE-OPEN success branch
+      *
+      *  Mirror for CARDFILE OPEN paragraph.
+      ******************************************************************
+       TESTCASE 'CBTRN01C 0300-CARDFILE-OPEN success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO CARDFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0300-CARDFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC16 -- 0400-ACCTFILE-OPEN success branch
+      *
+      *  Mirror for ACCTFILE OPEN paragraph.
+      ******************************************************************
+       TESTCASE 'CBTRN01C 0400-ACCTFILE-OPEN success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO ACCTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0400-ACCTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC17 -- 9100-CUSTFILE-CLOSE success branch
+      *
+      *  Mirror for CUSTFILE CLOSE paragraph.
+      ******************************************************************
+       TESTCASE 'CBTRN01C 9100-CUSTFILE-CLOSE success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO CUSTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9100-CUSTFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC18 -- 9200-XREFFILE-CLOSE success branch
+      ******************************************************************
+       TESTCASE 'CBTRN01C 9200-XREFFILE-CLOSE success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9200-XREFFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC19 -- 9300-CARDFILE-CLOSE success branch
+      ******************************************************************
+       TESTCASE 'CBTRN01C 9300-CARDFILE-CLOSE success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO CARDFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9300-CARDFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC20 -- 9400-ACCTFILE-CLOSE success branch
+      ******************************************************************
+       TESTCASE 'CBTRN01C 9400-ACCTFILE-CLOSE success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO ACCTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9400-ACCTFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC21 -- 9500-TRANFILE-CLOSE success branch
+      ******************************************************************
+       TESTCASE 'CBTRN01C 9500-TRANFILE-CLOSE success'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9500-TRANFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC22 -- 0000-DALYTRAN-OPEN error branch (status not 00)
+      *
+      *  Drives 0000-DALYTRAN-OPEN (production lines 252-268) along
+      *  the error branch.  Pre-set DALYTRAN-STATUS = '35' (file-
+      *  not-found per VSAM convention).  Production:
+      *    L255 IF DALYTRAN-STATUS = '00' false ->
+      *    L258 MOVE 12 TO APPL-RESULT
+      *    L260 IF APPL-AOK false ->
+      *    L263 DISPLAY 'ERROR OPENING DAILY TRANSACTION FILE'
+      *    L264 MOVE DALYTRAN-STATUS TO IO-STATUS
+      *    L265 PERFORM Z-DISPLAY-IO-STATUS
+      *    L266 PERFORM Z-ABEND-PROGRAM (CALL CEE3ABD ONCE)
+      *
+      *  Coverage gain: error-path lines 257-267, plus dispatch
+      *  through Z-DISPLAY-IO-STATUS and Z-ABEND-PROGRAM (the
+      *  latter mocked).  IO-STATUS = '35' after MOVE.
+      ******************************************************************
+       TESTCASE 'CBTRN01C 0000-DALYTRAN-OPEN error branch status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO DALYTRAN-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0000-DALYTRAN-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC23 -- 0100-CUSTFILE-OPEN error branch (status not 00)
+      *
+      *  Mirror for CUSTOMER-FILE OPEN paragraph (lines 271-287).
+      *  Status '35' drives the line-274 IF false; the ELSE arm
+      *  MOVEs 12 to APPL-RESULT and dispatches Z-DISPLAY-IO-
+      *  STATUS / Z-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN01C 0100-CUSTFILE-OPEN error branch status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO CUSTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0100-CUSTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC24 -- 0200-XREFFILE-OPEN error branch (status not 00)
+      *
+      *  Mirror for XREF-FILE OPEN paragraph (lines 289-305).
+      ******************************************************************
+       TESTCASE 'CBTRN01C 0200-XREFFILE-OPEN error branch status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0200-XREFFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC25 -- 0300-CARDFILE-OPEN error branch (status not 00)
+      *
+      *  Mirror for CARD-FILE OPEN paragraph (lines 307-323).
+      ******************************************************************
+       TESTCASE 'CBTRN01C 0300-CARDFILE-OPEN error branch status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO CARDFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0300-CARDFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC26 -- 0400-ACCTFILE-OPEN error branch (status not 00)
+      *
+      *  Mirror for ACCOUNT-FILE OPEN paragraph (lines 325-341).
+      ******************************************************************
+       TESTCASE 'CBTRN01C 0400-ACCTFILE-OPEN error branch status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO ACCTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0400-ACCTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC27 -- 0500-TRANFILE-OPEN error branch (status not 00)
+      *
+      *  Mirror for TRANSACT-FILE OPEN paragraph (lines 343-359).
+      ******************************************************************
+       TESTCASE 'CBTRN01C 0500-TRANFILE-OPEN error branch status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0500-TRANFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC28 -- 9000-DALYTRAN-CLOSE error branch (status not 00)
+      *
+      *  Drives 9000-DALYTRAN-CLOSE (production lines 361-377)
+      *  along the error branch.  Note the production paragraph at
+      *  line 373 mistakenly references CUSTFILE-STATUS instead of
+      *  DALYTRAN-STATUS in the diagnostic MOVE; the test asserts
+      *  IO-STATUS receives the CUSTFILE-STATUS value (not
+      *  DALYTRAN-STATUS) per the production code.  This is a
+      *  production source bug that we test as-is per the AAP "ONLY
+      *  modify test files" rule.
+      *
+      *  Pre-set: DALYTRAN-STATUS='35' to enter the error branch,
+      *  CUSTFILE-STATUS='44' to make the IO-STATUS assertion
+      *  unambiguous against the bug.
+      ******************************************************************
+       TESTCASE 'CBTRN01C 9000-DALYTRAN-CLOSE error branch status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO DALYTRAN-STATUS
+            MOVE '44' TO CUSTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9000-DALYTRAN-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '44'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC29 -- 9100-CUSTFILE-CLOSE error branch (status not 00)
+      *
+      *  Mirror for CUSTOMER-FILE CLOSE paragraph (lines 379-395).
+      ******************************************************************
+       TESTCASE 'CBTRN01C 9100-CUSTFILE-CLOSE error branch status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO CUSTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9100-CUSTFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC30 -- 9200-XREFFILE-CLOSE error branch (status not 00)
+      *
+      *  Mirror for XREF-FILE CLOSE paragraph (lines 397-413).
+      ******************************************************************
+       TESTCASE 'CBTRN01C 9200-XREFFILE-CLOSE error branch status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9200-XREFFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC31 -- 9300-CARDFILE-CLOSE error branch (status not 00)
+      *
+      *  Mirror for CARD-FILE CLOSE paragraph (lines 415-431).
+      ******************************************************************
+       TESTCASE 'CBTRN01C 9300-CARDFILE-CLOSE error branch status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO CARDFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9300-CARDFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC32 -- 9400-ACCTFILE-CLOSE error branch (status not 00)
+      *
+      *  Mirror for ACCOUNT-FILE CLOSE paragraph (lines 433-449).
+      ******************************************************************
+       TESTCASE 'CBTRN01C 9400-ACCTFILE-CLOSE error branch status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO ACCTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9400-ACCTFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC33 -- 9500-TRANFILE-CLOSE error branch (status not 00)
+      *
+      *  Mirror for TRANSACT-FILE CLOSE paragraph (lines 451-467).
+      ******************************************************************
+       TESTCASE 'CBTRN01C 9500-TRANFILE-CLOSE error branch status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9500-TRANFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC34 -- 1000-DALYTRAN-GET-NEXT non-EOF error (status 23)
+      *
+      *  Drives 1000-DALYTRAN-GET-NEXT (production lines 202-225)
+      *  along the non-EOF error branch.  Pre-set DALYTRAN-STATUS =
+      *  '23' (record-not-found per VSAM convention).  Production:
+      *    L204 IF DALYTRAN-STATUS = '00' false ->
+      *    L207 IF DALYTRAN-STATUS = '10' false ->
+      *    L210 MOVE 12 TO APPL-RESULT
+      *    L213 IF APPL-AOK false ->
+      *    L216 IF APPL-EOF false ->
+      *    L219 DISPLAY 'ERROR READING DAILY TRANSACTION FILE'
+      *    L220 MOVE DALYTRAN-STATUS TO IO-STATUS
+      *    L221 PERFORM Z-DISPLAY-IO-STATUS
+      *    L222 PERFORM Z-ABEND-PROGRAM
+      ******************************************************************
+       TESTCASE 'CBTRN01C 1000-DALYTRAN-GET-NEXT error status 23 abends'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '23' TO DALYTRAN-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-DALYTRAN-GET-NEXT
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '23'
+            EXPECT END-OF-DAILY-TRANS-FILE TO BE 'N'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC35 -- Z-DISPLAY-IO-STATUS NOT-NUMERIC branch (alpha status)
+      *
+      *  Drives Z-DISPLAY-IO-STATUS along the IF branch with IO-STAT1
+      *  not '9' but IO-STATUS not numeric overall.  Pre-set IO-STATUS
+      *  = '0A' (IO-STAT1='0' digit, IO-STAT2='A' non-digit).
+      *  IO-STATUS NOT NUMERIC is TRUE so the IF arm executes (lines
+      *  479-483 binary representation).
+      ******************************************************************
+       TESTCASE 'CBTRN01C Z-DISPLAY-IO-STATUS NOT NUMERIC alpha branch'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '0A' TO IO-STATUS
+            PERFORM Z-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04(1:1) TO BE '0'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
       *  End of testsuite CBTRN01C DAILY TRANSACTION PROCESSOR
-      *
-      *  Coverage achieved (per AAP Section 0.7.1)
-      *    0000-DALYTRAN-OPEN     -- TC1 success branch
-      *    0500-TRANFILE-OPEN     -- TC2 success branch
-      *    1000-DALYTRAN-GET-NEXT -- TC3 success / TC4 EOF
-      *    2000-LOOKUP-XREF       -- TC5 fixture / TC6 INVALID KEY
-      *    3000-READ-ACCOUNT      -- TC7 fixture / TC8 INVALID KEY
-      *    9000-DALYTRAN-CLOSE    -- TC9 success branch
-      *    Z-ABEND-PROGRAM        -- TC10 direct PERFORM
-      *    Z-DISPLAY-IO-STATUS    -- TC11 ELSE-arm path
-      *
-      *  Validation gates satisfied: check_no_business_logic.sh,
-      *  check_no_production_redeclaration.sh,
-      *  check_assertion_density.sh, check_isolation.sh.
       ******************************************************************

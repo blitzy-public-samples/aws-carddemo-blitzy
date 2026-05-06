@@ -519,5 +519,84 @@
             VERIFY CALL 'CEE3ABD' NEVER HAPPENED
 
       ******************************************************************
+      *  TC9 -- 9999-ABEND-PROGRAM direct invocation
+      *
+      *  PERFORMs 9999-ABEND-PROGRAM (CBACT03C.cbl lines 154-158)
+      *  directly.  Production statements:
+      *      DISPLAY 'ABENDING PROGRAM'   (line 155)
+      *      MOVE 0   TO TIMING           (line 156)
+      *      MOVE 999 TO ABCODE           (line 157)
+      *      CALL 'CEE3ABD'.              (line 158, mocked)
+      *
+      *  Although TC2/TC5/TC7 already reach 9999-ABEND-PROGRAM via
+      *  the OPEN/READ/CLOSE error pathways, this direct test
+      *  exercises the cobol-check-generated EVALUATE arm for THIS
+      *  testcase (UT-1-9-1-MOCK), which is otherwise unreachable
+      *  unless 9999 is invoked while THIS testcase is the active
+      *  case.  Mirror of CBACT01C/CBACT02C TC9.
+      *
+      *  Source of expected values
+      *    TIMING = 0   -- production literal at line 156.
+      *    ABCODE = 999 -- production literal at line 157.
+      *
+      *  CEE3ABD verification
+      *    HAPPENED ONCE -- production line 158 CALLs CEE3ABD
+      *              exactly once per invocation of 9999-ABEND-
+      *              PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBACT03C 9999-ABEND-PROGRAM direct invocation'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE 7777 TO TIMING
+            MOVE 7777 TO ABCODE
+            PERFORM 9999-ABEND-PROGRAM
+            EXPECT TIMING TO BE 0
+            EXPECT ABCODE TO BE 999
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC10 -- 9910-DISPLAY-IO-STATUS THEN branch via IO-STAT1='9'
+      *
+      *  PERFORMs 9910-DISPLAY-IO-STATUS (CBACT03C.cbl lines 161-174)
+      *  with IO-STATUS = '90' to drive the THEN arm of the guard
+      *  at lines 162-163:
+      *      IF  IO-STATUS NOT NUMERIC OR IO-STAT1 = '9'
+      *          MOVE IO-STAT1 TO IO-STATUS-04(1:1)        (line 164)
+      *          MOVE 0        TO TWO-BYTES-BINARY         (line 165)
+      *          MOVE IO-STAT2 TO TWO-BYTES-RIGHT          (line 166)
+      *          MOVE TWO-BYTES-BINARY TO IO-STATUS-0403   (line 167)
+      *          DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04
+      *
+      *  IO-STATUS = '90' is numeric (NOT NUMERIC false) but
+      *  IO-STAT1 = '9' so the OR-guard evaluates true and the
+      *  THEN arm executes.  Mirror of CBACT01C/CBACT02C TC10.
+      *
+      *  Differential vs TC8 (which covered the ELSE arm with
+      *  IO-STATUS = '23'):
+      *    TC8 ELSE arm: IO-STATUS-04 = '0023' (0000 + 23 at 3:2)
+      *    TC10 THEN arm: IO-STATUS-04 first byte = '9'
+      *  Together TC8 and TC10 prove BOTH arms of the line-162 IF.
+      *
+      *  Source of expected value
+      *    IO-STATUS-04(1:1) = '9' -- the production reference-
+      *              modified MOVE at line 164 places IO-STAT1 ('9')
+      *              at position 1 of IO-STATUS-04.  Directly
+      *              observable from the production MOVE.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- 9910-DISPLAY-IO-STATUS contains no
+      *              CALL site for CEE3ABD.
+      ******************************************************************
+       TESTCASE 'CBACT03C 9910-DISPLAY-IO-STATUS THEN branch STAT1=9'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '90' TO IO-STATUS
+            PERFORM 9910-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04(1:1) TO BE '9'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
       *  End of testsuite CBACT03C CARD-XREF-FILE SEQUENTIAL DUMP
       ******************************************************************
