@@ -289,7 +289,7 @@ sanitised_src="${merged_dir}/${program_id}.cbl"
 # merged_src is preserved for debug.
 # ---------------------------------------------------------------------
 awk '
-    BEGIN { stub_abend_injected = 0 }
+    BEGIN { stub_abend_injected = 0; in_data_division = 0 }
     {
         line = substr($0, 1, 72)
         # Step 5 -- inject COPY STUB-ABEND-FLAG into WORKING-STORAGE.
@@ -302,6 +302,22 @@ awk '
         if (toupper(line) ~ /^[[:space:]]+WORKING-STORAGE[[:space:]]+SECTION\.[[:space:]]*$/ \
             && stub_abend_injected == 0) {
             ws_section_line = 1
+        }
+        # Step 6 -- track DATA DIVISION / PROCEDURE DIVISION state.
+        # Used by the orphan-single-char detector below to scope the
+        # comment-out fix to data sections only (Working-Storage,
+        # File, Linkage, Local-Storage), where orphan single chars
+        # break parsing.  In Procedure Division, orphan single chars
+        # (e.g. COCRDLIC.cbl line 790 has a stray "I" that GnuCOBOL
+        # tolerates as an unused identifier inside an IF/ELSE branch)
+        # must NOT be touched -- otherwise we break already-passing
+        # tests.  Use uppercased copy for case-insensitive matching.
+        upper_div = toupper(line)
+        if (upper_div ~ /^[[:space:]]+(WORKING-STORAGE|FILE|LINKAGE|LOCAL-STORAGE)[[:space:]]+SECTION\./) {
+            in_data_division = 1
+        }
+        else if (upper_div ~ /^[[:space:]]+PROCEDURE[[:space:]]+DIVISION/) {
+            in_data_division = 0
         }
         # Step 3 -- escape unescaped embedded quotes in MOCK CALL
         # VALUE literals (cobol-check 0.2.16 bug).
@@ -387,6 +403,36 @@ awk '
                   || upper ~ /^[[:space:]]+END-REWRITE([[:space:]]|$)/ \
                   || upper ~ /^[[:space:]]+END-DELETE([[:space:]]|$)/ \
                   || upper ~ /^[[:space:]]+END-START([[:space:]]|$)/) {
+                if (length(line) > 6) {
+                    line = substr(line, 1, 6) "*" substr(line, 8)
+                } else {
+                    line = substr(line, 1, 6) "*"
+                }
+            }
+            # Case 4: orphan single-character lines from the
+            # cobol-check 0.2.16 column 73-80 wrapping bug.  When
+            # production source has annotation chars in cols 73-80
+            # (e.g., the DB2-FORMAT-TS REDEFINES block in CBTRN02C
+            # and CBACT04C has trailing "E", "-", "M", "D", "U" hint
+            # characters indicating the EEEE-MM-DD-UU.MM.SS format),
+            # cobol-check wraps each char to a new line at col 16.
+            # Inside DATA DIVISION (WORKING-STORAGE / FILE / LINKAGE
+            # / LOCAL-STORAGE), the wrapped char is parsed as a data
+            # declaration and triggers cascading "PROCEDURE DIVISION
+            # header missing" / "unknown statement" errors.  In
+            # PROCEDURE DIVISION, GnuCOBOL tolerates the orphan
+            # (e.g. COCRDLIC.cbl has a legitimate stray "I" inside an
+            # IF/ELSE branch that already-passing tests rely on), so
+            # only comment the line when in_data_division == 1.
+            #
+            # Detection: line begins with whitespace, contains
+            # exactly one alphanumeric or hyphen character, then
+            # ends with whitespace.  This pattern never matches
+            # legitimate COBOL data syntax (level numbers are 2-digit
+            # 01-49, 66, 77, 88; all data-name identifiers are
+            # multi-char).
+            else if (in_data_division == 1 \
+                  && line ~ /^[[:space:]]+[A-Za-z0-9-][[:space:]]*$/) {
                 if (length(line) > 6) {
                     line = substr(line, 1, 6) "*" substr(line, 8)
                 } else {
