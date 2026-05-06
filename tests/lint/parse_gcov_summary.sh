@@ -25,31 +25,39 @@
 #
 # Behaviour
 # ---------
-# 1. Find every *.gcov file under <COVERAGE_DIR> recursively.
-# 2. Derive the COBOL program-id from each .gcov file's filename.
-#    Two filename forms are recognised:
-#      * AAP-spec / hand-crafted test fixtures:  CSUTLDTC.cbl.gcov
+# 1. Find every *.gcda.summary.txt file under <COVERAGE_DIR>.  These
+#    files are produced by the `make coverage` target and contain the
+#    captured stdout of `gcov -b -c <gcda>`, which on gcov 9+
+#    (verified against gcov 13.3.0 in the build environment) emits
+#    the per-source "File '<src>' / Lines executed:NN.NN% of M" pair
+#    on STDOUT rather than into the per-source <src>.gcov file.
+#    Capturing stdout into a sibling .summary.txt is the canonical
+#    workaround for that gcov behaviour change.
+# 2. Parse each summary file as a sequence of (File, Lines executed)
+#    blocks.  One .gcda may produce multiple .gcov files (e.g. for a
+#    single COBOL program GnuCOBOL emits .c, .c.h, and .c.l.h
+#    translation units), so each .summary.txt typically contains
+#    several blocks.
+# 3. Derive the COBOL program-id from each block's source filename.
+#    Five filename forms are recognised:
+#      * AAP-spec / hand-crafted test fixtures:  CSUTLDTC.cbl
 #      * Real GnuCOBOL output (cobc -> C -> gcc -> gcov):
-#          CSUTLDTC.c.gcov           (procedure code)
-#          CSUTLDTC.c.h.gcov         (field/group declarations)
-#          CSUTLDTC.c.l.h.gcov       (literal table initialiser)
-#    Both forms collapse to the program-id `CSUTLDTC`, normalised to
+#          CSUTLDTC.c                 (procedure code)
+#          CSUTLDTC.c.h               (field/group declarations)
+#          CSUTLDTC.c.l.h             (literal table initialiser)
+#    All forms collapse to the program-id `CSUTLDTC`, normalised to
 #    upper case for table lookup.
-# 3. Parse the gcov-emitted "Lines executed:NNN.NN% of MMM" header
-#    from the first such line of each .gcov file.  This format has been
-#    stable across gcc 3.x..14.x and is documented in the gcov(1) man
-#    page.
 # 4. Compare each program's percentage against its per-program target
 #    in the AAP Section 0.7.1 table (hard-coded below).  Programs not
 #    present in the table are logged as "no target -- skipped" so
 #    future testsuites can be added without forcing simultaneous edits
 #    to this script.
-# 5. Compute an arithmetic-mean overall percentage across every .gcov
-#    file that mapped to a known program-id, compare against the
+# 5. Compute an arithmetic-mean overall percentage across every block
+#    that mapped to a known program-id, compare against the
 #    --overall threshold (default 70%, per AAP Section 0.7.1), and
 #    emit a final BLITZY-prefixed verdict line.
 # 6. Exit 0 when every per-program threshold AND the overall threshold
-#    are met; exit 1 when any threshold is missed (or when no .gcov
+#    are met; exit 1 when any threshold is missed (or when no summary
 #    files exist or the coverage directory is missing); exit 2 on
 #    CLI error (unknown option).
 #
@@ -88,8 +96,8 @@ LOG_PREFIX="[lint:${SCRIPT_NAME}]"
 
 # ---------------------------------------------------------------------
 # Defaults (overridable via CLI).  COVERAGE_DIR is the directory under
-# which `find -type f -name '*.gcov'` is executed.  Threshold values
-# are integer percentages in the closed range 0..100.
+# which `find -type f -name '*.summary.txt'` is executed.  Threshold
+# values are integer percentages in the closed range 0..100.
 # ---------------------------------------------------------------------
 COVERAGE_DIR="target/coverage"
 THRESHOLD_OVERALL=70
@@ -149,7 +157,8 @@ Aggregate gcov per-program line-coverage percentages and enforce the
 per-program thresholds defined in AAP Section 0.7.1.
 
 Arguments:
-  COVERAGE_DIR              Directory containing *.gcov files
+  COVERAGE_DIR              Directory containing *.gcda.summary.txt
+                            files produced by 'make coverage'
                             (default: target/coverage)
 
 Options:
@@ -161,7 +170,7 @@ Options:
 
 Exit status:
   0  All per-program and overall thresholds met.
-  1  At least one threshold not met (or no .gcov files found, or
+  1  At least one threshold not met (or no summary files found, or
      COVERAGE_DIR not found).
   2  CLI error (unknown option).
 
@@ -257,110 +266,146 @@ if [ ! -d "$COVERAGE_DIR" ]; then
 fi
 
 # ---------------------------------------------------------------------
-# Discover gcov files.  `sort` produces deterministic output ordering
-# regardless of filesystem traversal order.  An empty list is treated
-# as a coverage-data-unavailable error so CI catches misconfigured
-# pipelines (e.g., gcov never ran).
+# Discover summary files produced by the Makefile coverage target.
+# `sort` produces deterministic output ordering regardless of
+# filesystem traversal order.  An empty list is treated as a
+# coverage-data-unavailable error so CI catches misconfigured pipelines
+# (e.g., gcov never ran or its stdout was redirected away from the
+# expected .gcda.summary.txt sibling files).
 # ---------------------------------------------------------------------
-gcov_files="$(find "$COVERAGE_DIR" -type f -name '*.gcov' | sort)"
-if [ -z "$gcov_files" ]; then
-    printf '%s ERROR: no *.gcov files found under %s\n' \
+summary_files="$(find "$COVERAGE_DIR" -type f -name '*.gcda.summary.txt' | sort)"
+if [ -z "$summary_files" ]; then
+    printf '%s ERROR: no *.gcda.summary.txt files found under %s\n' \
         "$LOG_PREFIX" "$COVERAGE_DIR" >&2
+    # shellcheck disable=SC2016
+    printf '%s Run `make coverage` first; the Makefile coverage target\n' \
+        "$LOG_PREFIX" >&2
+    printf '%s captures gcov stdout into <gcda>.summary.txt files for\n' \
+        "$LOG_PREFIX" >&2
+    printf '%s this script to consume.\n' "$LOG_PREFIX" >&2
     exit 1
 fi
 
 printf '%s Aggregating coverage from %s/...\n' "$LOG_PREFIX" "$COVERAGE_DIR"
 
 # ---------------------------------------------------------------------
-# Per-file parse loop.
+# Per-summary parse loop.
 #
-# For each .gcov file:
-#   1. Derive the program-id from the filename (multi-suffix strip
-#      handles both AAP test-fixture naming and real GnuCOBOL output).
-#   2. Extract the "Lines executed:NNN.NN%" percentage.
-#   3. Look up the per-program threshold (or skip if not in the table).
-#   4. Compare with awk (POSIX `[` only does integer comparison).
-#   5. Emit one [PROGRAM] verdict line and accumulate the percentage
-#      into the overall arithmetic-mean state.
+# For each .gcda.summary.txt file we extract the (source-file,
+# percentage) pairs emitted by gcov on its STDOUT.  The format gcov
+# uses is, per source file:
+#
+#     File '<source-name>'
+#     Lines executed:NN.NN% of <total>
+#     Branches executed:...
+#     Taken at least once:...
+#     Calls executed:...
+#     Creating '<source-name>.gcov'
+#
+# (verified on gcov 13.3.0 in the build environment).  We pair each
+# `File '...'` line with the immediately-following `Lines executed:`
+# line; subsequent lines until the next `File '...'` block are
+# ignored.  awk produces TAB-separated <source>\t<pct-line> tuples
+# which we feed to a per-tuple processing loop.  This isolates the
+# parsing complexity in awk and keeps the bash loop straightforward.
 # ---------------------------------------------------------------------
 total_pct_sum=0
 total_pct_count=0
 fail_count=0
 
-while IFS= read -r gcov_file; do
-    [ -z "$gcov_file" ] && continue
+while IFS= read -r summary_file; do
+    [ -z "$summary_file" ] && continue
 
-    # Derive the program-id from the filename.  Strip in this order:
-    #   1. .gcov                          (always present)
-    #   2. .cbl / .CBL                    (AAP test fixtures, manual)
-    #   3. .c.l.h                         (GnuCOBOL literal-table TU)
-    #   4. .c.h                           (GnuCOBOL header TU)
-    #   5. .c                             (GnuCOBOL procedure TU)
-    # Then upper-case the result for associative-array lookup.
-    base="$(basename "$gcov_file")"
-    program="$(printf '%s\n' "$base" \
-        | sed -E 's/\.gcov$//; s/\.[Cc][Bb][Ll]$//; s/\.c\.l\.h$//; s/\.c\.h$//; s/\.c$//')"
-    program="$(printf '%s\n' "$program" | tr '[:lower:]' '[:upper:]')"
+    # Extract (filename<TAB>Lines-executed-line) pairs from the
+    # summary file.  Filename is captured between the single quotes
+    # in `File '<name>'`; the next `Lines executed:` line is bound to
+    # it.  A subsequent `File '<name>'` line resets the capture.
+    pairs="$(awk '
+        /^File [^ ]/ {
+            line = $0
+            sub(/^File [^[:print:]]*/, "", line)
+            sub(/^[[:space:]]*/, "", line)
+            # Strip surrounding quotes (single or back) if present.
+            gsub(/^['\''`]/, "", line)
+            gsub(/['\''`]$/, "", line)
+            fname = line
+            next
+        }
+        /^Lines executed:/ {
+            if (fname != "") {
+                printf "%s\t%s\n", fname, $0
+                fname = ""
+            }
+        }
+    ' "$summary_file" || true)"
 
-    # Extract the gcov-emitted "Lines executed:NNN.NN% of MMM" header.
-    # `grep -m 1` selects the first match; gcov emits one such header
-    # per .gcov file but defending against multi-block files is cheap.
-    pct_line="$(grep -m 1 -E '^Lines executed:' "$gcov_file" || true)"
-    if [ -z "$pct_line" ]; then
-        printf '%s WARNING: no "Lines executed:" header in %s\n' \
-            "$LOG_PREFIX" "$gcov_file" >&2
-        continue
-    fi
+    [ -z "$pairs" ] && continue
 
-    # Capture the numeric percentage.  `sed -nE ... /p` only emits when
-    # the substitution matches, so malformed lines yield an empty
-    # string rather than echoing the original.
-    pct="$(printf '%s\n' "$pct_line" \
-        | sed -nE 's/^Lines executed:([0-9]+\.?[0-9]*)%.*/\1/p')"
-    if [ -z "$pct" ]; then
-        printf '%s WARNING: cannot parse percentage from line: %s\n' \
-            "$LOG_PREFIX" "$pct_line" >&2
-        continue
-    fi
+    while IFS=$'\t' read -r src_file pct_line; do
+        [ -z "$src_file" ] && continue
+        [ -z "$pct_line" ] && continue
 
-    # Per-program threshold lookup.  `${...:-}` returns empty when the
-    # key is absent under `set -u`, which we treat as a soft skip
-    # rather than a hard failure (AAP key-insight #5).
-    target="${PROGRAM_TARGETS[$program]:-}"
-    if [ -z "$target" ]; then
-        printf '%s [%s]  Lines executed: %6.2f%% (no target -- skipped)\n' \
-            "$LOG_PREFIX" "$program" "$pct"
-        continue
-    fi
+        # Derive the program-id from the gcov-reported source filename.
+        # Strip in this order:
+        #   1. .cbl / .CBL                    (AAP test fixtures, manual)
+        #   2. .c.l.h                         (GnuCOBOL literal-table TU)
+        #   3. .c.h                           (GnuCOBOL header TU)
+        #   4. .c                             (GnuCOBOL procedure TU)
+        # Then upper-case the result for associative-array lookup.
+        program="$(printf '%s\n' "$src_file" \
+            | sed -E 's/\.[Cc][Bb][Ll]$//; s/\.c\.l\.h$//; s/\.c\.h$//; s/\.c$//')"
+        program="$(printf '%s\n' "$program" | tr '[:lower:]' '[:upper:]')"
 
-    # Floating-point comparison.  awk's BEGIN-block exit status is the
-    # standard portable trick for >= comparisons of decimal values
-    # because POSIX shell `[` does integer arithmetic only.
-    if awk -v p="$pct" -v t="$target" 'BEGIN{exit !(p+0 >= t+0)}'; then
-        verdict="PASS"
-    else
-        verdict="FAIL"
-        fail_count=$((fail_count + 1))
-    fi
+        # Capture the numeric percentage.  `sed -nE ... /p` only emits
+        # when the substitution matches, so malformed lines yield an
+        # empty string rather than echoing the original.
+        pct="$(printf '%s\n' "$pct_line" \
+            | sed -nE 's/^Lines executed:([0-9]+\.?[0-9]*)%.*/\1/p')"
+        if [ -z "$pct" ]; then
+            printf '%s WARNING: cannot parse percentage from line: %s\n' \
+                "$LOG_PREFIX" "$pct_line" >&2
+            continue
+        fi
 
-    printf '%s [%s]  Lines executed: %6.2f%% (target %3d%%) -- %s\n' \
-        "$LOG_PREFIX" "$program" "$pct" "$target" "$verdict"
+        # Per-program threshold lookup.  `${...:-}` returns empty when
+        # the key is absent under `set -u`, which we treat as a soft
+        # skip rather than a hard failure (AAP key-insight #5).
+        target="${PROGRAM_TARGETS[$program]:-}"
+        if [ -z "$target" ]; then
+            printf '%s [%s]  Lines executed: %6.2f%% (no target -- skipped)\n' \
+                "$LOG_PREFIX" "$program" "$pct"
+            continue
+        fi
 
-    # Accumulate the percentage and counter into the overall-mean
-    # state.  awk handles the floating-point sum because POSIX shell
-    # cannot.  total_pct_count is integer and increments via $((...)).
-    total_pct_sum="$(awk -v s="$total_pct_sum" -v p="$pct" \
-        'BEGIN{printf "%.4f", s+p}')"
-    total_pct_count=$((total_pct_count + 1))
-done <<< "$gcov_files"
+        # Floating-point comparison.  awk's BEGIN-block exit status is
+        # the standard portable trick for >= comparisons of decimal
+        # values because POSIX shell `[` does integer arithmetic only.
+        if awk -v p="$pct" -v t="$target" 'BEGIN{exit !(p+0 >= t+0)}'; then
+            verdict="PASS"
+        else
+            verdict="FAIL"
+            fail_count=$((fail_count + 1))
+        fi
+
+        printf '%s [%s]  Lines executed: %6.2f%% (target %3d%%) -- %s\n' \
+            "$LOG_PREFIX" "$program" "$pct" "$target" "$verdict"
+
+        # Accumulate the percentage and counter into the overall-mean
+        # state.  awk handles the floating-point sum because POSIX
+        # shell cannot.  total_pct_count is integer.
+        total_pct_sum="$(awk -v s="$total_pct_sum" -v p="$pct" \
+            'BEGIN{printf "%.4f", s+p}')"
+        total_pct_count=$((total_pct_count + 1))
+    done <<< "$pairs"
+done <<< "$summary_files"
 
 # ---------------------------------------------------------------------
 # Overall aggregation.  The overall percentage is the arithmetic mean
 # of per-program percentages, NOT a line-weighted ratio.  This matches
 # the AAP Section 0.7.1 spec ("Overall: >=70%").
 #
-# When zero programs were aggregated (e.g., every .gcov mapped to an
-# unknown program-id), the mean is reported as 0.00 and tested
+# When zero programs were aggregated (e.g., every summary block mapped
+# to an unknown program-id), the mean is reported as 0.00 and tested
 # against THRESHOLD_OVERALL.  This makes the [OVERALL] line always
 # present so downstream CI parsers can rely on its existence.
 # ---------------------------------------------------------------------

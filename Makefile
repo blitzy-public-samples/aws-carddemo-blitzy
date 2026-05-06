@@ -524,6 +524,14 @@ test-debug: init fixtures ensure-build-dir
 # thresholds.  parse_gcov_summary.sh owns the per-program threshold
 # table and exits non-zero on any miss; this recipe propagates that
 # exit code so CI fails on coverage regressions.
+#
+# gcov 9+ writes the "File '<src>' / Lines executed:NN.NN%" header to
+# STDOUT rather than into the per-source <src>.gcov file (verified on
+# gcov 13.3.0 in the build environment).  We capture that stdout into
+# a sibling <gcda>.summary.txt next to each .gcda so that
+# parse_gcov_summary.sh can derive line-coverage percentages without
+# depending on a behaviour that varies across gcov versions.  The
+# .summary.txt file is gitignored (target/* is gitignored already).
 #######################################################################
 coverage: ensure-build-dir
 	@echo "[coverage] Recompiling with profile-arcs + test-coverage ..."
@@ -532,7 +540,7 @@ coverage: ensure-build-dir
 	@if find $(REPO_ROOT)/$(BUILD_DIR) -name '*.gcda' -print -quit 2>/dev/null | grep -q '.'; then \
 	    cd $(REPO_ROOT)/$(BUILD_DIR) && \
 	    for f in $$(find . -name '*.gcda'); do \
-	        gcov -b -c $$f >/dev/null 2>&1 || true; \
+	        gcov -b -c $$f > $$f.summary.txt 2>&1 || true; \
 	    done; \
 	    echo "[coverage] Parsing gcov summary against thresholds ..."; \
 	    bash $(REPO_ROOT)/$(LINT_DIR)/parse_gcov_summary.sh \
@@ -557,6 +565,7 @@ clean:
 	@find $(REPO_ROOT) -name '*.gcno' -delete 2>/dev/null || true
 	@find $(REPO_ROOT) -name '*.gcda' -delete 2>/dev/null || true
 	@find $(REPO_ROOT) -name '*.gcov' -delete 2>/dev/null || true
+	@find $(REPO_ROOT) -name '*.gcda.summary.txt' -delete 2>/dev/null || true
 	@echo "[clean] Done."
 
 #######################################################################
