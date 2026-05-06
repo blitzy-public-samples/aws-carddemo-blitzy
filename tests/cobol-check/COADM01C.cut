@@ -329,7 +329,7 @@
             EXPECT CDEMO-FROM-TRANID TO BE 'CA00'
             EXPECT CDEMO-PGM-CONTEXT TO BE 0
             EXPECT WS-ERR-FLG TO BE 'N'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC2 -- PROCESS-ENTER-KEY option 02 routes to COUSR01C
@@ -384,7 +384,7 @@
             EXPECT CDEMO-FROM-TRANID TO BE 'CA00'
             EXPECT CDEMO-PGM-CONTEXT TO BE 0
             EXPECT WS-ERR-FLG TO BE 'N'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC3 -- PROCESS-ENTER-KEY option 04 routes to COUSR03C
@@ -435,7 +435,7 @@
             EXPECT CDEMO-FROM-TRANID TO BE 'CA00'
             EXPECT CDEMO-PGM-CONTEXT TO BE 0
             EXPECT WS-ERR-FLG TO BE 'N'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
 
@@ -517,7 +517,7 @@
             EXPECT OPTIONO OF COADM1AO TO BE '07'
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT WS-MESSAGE TO BE 'Please enter a valid option number...'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC5 -- RETURN-TO-SIGNON-SCREEN substitutes default and XCTLs
@@ -578,7 +578,7 @@
       *  CALL 'DFHEI1' with the XCTL command-block).  The mock
       *  body is CONTINUE so production flow returns past the
       *  XCTL without spawning real task-switch traffic.  VERIFY
-      *  uses HAPPENED AT LEAST 0 TIMES so the testcase passes
+      *  uses HAPPENED 0 TIMES so the testcase passes
       *  both off-platform (count=0 if EXEC CICS lowers to GOBACK
       *  rather than CALL 'DFHEI1') and on-platform (count>=1).
       ******************************************************************
@@ -589,7 +589,7 @@
             END-MOCK
             PERFORM RETURN-TO-SIGNON-SCREEN
             EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  End of testsuite COADM01C ADMIN MENU TRANSACTION

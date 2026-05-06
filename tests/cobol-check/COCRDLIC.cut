@@ -22,164 +22,88 @@
       *
       *  Purpose
       *  -------
-      *  Exercise COCRDLIC's card-list browse CICS transaction by
-      *  mocking ONLY the program's external boundary into the CICS
-      *  API: the CALL 'DFHEI1' invocation that the CICS translator
-      *  emits in place of every EXEC CICS verb (RECEIVE MAP, SEND
-      *  MAP, STARTBR DATASET (CARDDAT), READNEXT DATASET, READPREV
-      *  DATASET, ENDBR DATASET, XCTL, RETURN, SEND TEXT).  Internal
-      *  COCRDLIC paragraphs are NEVER mocked; every TESTCASE
-      *  exercises a production paragraph LIVE via PERFORM so the
-      *  testsuite asserts against side effects of actual production
-      *  -code execution (per AAP Section 0.10.1 -- "Mock or stub
-      *  ONLY external dependencies").
-      *
       *  COCRDLIC is the credit-card list browse CICS transaction.
-      *  It RECEIVEs an optional account-id and card-number filter
-      *  from the BMS map (CCRDLIAI), validates both fields (2210-
-      *  EDIT-ACCOUNT and 2220-EDIT-CARD), then enters the canonical
-      *  CICS browse pattern: STARTBR DATASET(CARDDAT) GTEQ on
-      *  WS-CARD-RID-CARDNUM, looped READNEXT INTO CARD-RECORD up
-      *  to WS-MAX-SCREEN-LINES (= 7 rows per page), ENDBR FILE.
-      *  PF8 advances forward via 9000-READ-FORWARD; PF7 reverses
-      *  via 9100-READ-BACKWARDS (STARTBR + READPREV loop + ENDBR);
-      *  9500-FILTER-RECORDS gates whether each read record is
-      *  admitted to the 7-row OCCURS table based on the FLG-
-      *  ACCTFILTER-ISVALID / FLG-CARDFILTER-ISVALID filter state.
-      *  PF3 issues XCTL PROGRAM(LIT-MENUPGM) to return to the main
-      *  menu; ENTER on a selected row XCTLs to COCRDSLC (view) or
-      *  COCRDUPC (update).
+      *  It RECEIVEs optional account-id and card-number filters from
+      *  the BMS map (CCRDLIAI), validates via 2210-EDIT-ACCOUNT and
+      *  2220-EDIT-CARD, then enters the canonical CICS browse pattern:
+      *  STARTBR DATASET(CARDDAT) GTEQ on WS-CARD-RID-CARDNUM, looped
+      *  READNEXT INTO CARD-RECORD up to WS-MAX-SCREEN-LINES (7 rows
+      *  per page), ENDBR FILE.  PF8 advances via 9000-READ-FORWARD,
+      *  PF7 reverses via 9100-READ-BACKWARDS, 9500-FILTER-RECORDS
+      *  gates row admission to the 7-row OCCURS table.  PF3 XCTLs
+      *  to COMEN01C; ENTER XCTLs to COCRDSLC/COCRDUPC.
       *
-      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS, mock placement,
-      *  schema dependencies (STUB-ABEND-FLAG.cpy, DFHEI1.cbl), and
-      *  the cobol-check 0.2.16 TestSuiteParser limitation that
-      *  forbids file-scope COPY directives: see the canonical
-      *  exemplar header in tests/cobol-check/COSGN00C.cut for the
-      *  authoritative explanation.  This testsuite follows the same
-      *  conventions verbatim, including the local-scope MOCK CALL
-      *  'DFHEI1' inside each TESTCASE block per the COCRDSLC /
-      *  COTRN00C / COACTVWC / COBIL00C exemplar pattern.  The
-      *  testsuite does NOT contain a file-scope COPY STUB-ABEND-
-      *  FLAG or COPY CARD-FIXTURE-001; the runtime stubs continue
-      *  to provide their intended safety regardless.
+      *  This testsuite mocks ONLY the CICS-API boundary (CALL
+      *  'DFHEI1') and exercises every other paragraph LIVE via
+      *  PERFORM per AAP Section 0.10.1.  Conventions are inherited
+      *  verbatim from the canonical exemplar tests/cobol-check/
+      *  COSGN00C.cut (mock placement, schema dependencies, the
+      *  cobol-check 0.2.16 TestSuiteParser COPY-at-file-scope
+      *  limitation, and link-time stub usage).
       *
-      *  Schema dependencies (link/runtime, not COPY-included)
-      *  -----------------------------------------------------
-      *    STUB-ABEND-FLAG.cpy -- EXTERNAL state group written by
-      *        DFHEI1 / CEE3ABD stubs at runtime.
-      *    CARD-FIXTURE-001.cpy -- 150-byte CARD-RECORD from
-      *        carddata.txt rec 1 (CARD-NUM=0500024453765740,
-      *        embossed name 'Aniya Von', expiration 2023-03-09,
-      *        active-status Y).  Reserved for the on-platform
-      *        extension where MOCK CICS READNEXT FILE(CARDDAT)
-      *        will supply this fixture once the translator pass
-      *        exists.
-      *    DFHEI1.cbl -- standalone PROGRAM-ID compiled to a .so
-      *        so any unmocked EXEC CICS verb resolves at load
-      *        time with EIBRESP=27 (NOTAUTH).
-      *    config.properties -- cobol-check runtime configuration.
+      *  Schema dependencies (link/runtime, not COPY-included):
+      *    STUB-ABEND-FLAG.cpy  EXTERNAL state group (CEE3ABD/DFHEI1).
+      *    CARD-FIXTURE-001.cpy 150-byte CARD-RECORD; reserved for
+      *                         the post-translator MOCK CICS READNEXT
+      *                         extension.
+      *    DFHEI1.cbl           Link-time CICS backstop returning
+      *                         EIBRESP=27 for unmocked verbs.
       *
       *  Test categories
       *  ---------------
       *    TC1 - 2220-EDIT-CARD accepts a valid 16-digit card
-      *          number (production lines 1036-1067 ELSE branch);
-      *          off-platform expression of AAP TC1 "Initial entry
-      *          STARTBRs and READNEXTs first page" prelude --
-      *          2220-EDIT-CARD is the validation gate that runs
-      *          via 2200-EDIT-INPUTS before 9000-READ-FORWARD's
-      *          STARTBR is issued.
+      *          number (L1036-1067 ELSE branch).  Off-platform
+      *          expression of AAP TC1 (validation gate before
+      *          9000-READ-FORWARD's STARTBR).
       *    TC2 - YYYY-STORE-PFKEY maps DFHPF8 to CCARD-AID-PFK08
-      *          (CSSTRPFY copybook lines 44-45); off-platform
-      *          expression of AAP TC2 "PF8 forward page READNEXT
-      *          continues" -- the PF8 dispatch is the gate that
-      *          drives 0000-MAIN's WHEN CCARD-AID-PFK08 branch
-      *          (production lines 486-497) into 9000-READ-FORWARD.
+      *          (CSSTRPFY L44-45); gate for PF8-forward dispatch
+      *          (0000-MAIN L486-497).
       *    TC3 - YYYY-STORE-PFKEY maps DFHPF7 to CCARD-AID-PFK07
-      *          (CSSTRPFY lines 42-43); off-platform expression
-      *          of AAP TC3 "PF7 backward page READPREV navigates
-      *          back" -- drives 0000-MAIN's WHEN CCARD-AID-PFK07
-      *          branch (lines 501-513) into 9100-READ-BACKWARDS.
-      *    TC4 - 1400-SETUP-MESSAGE PF8-at-end advisory branch
-      *          (lines 905-909) sets WS-ERROR-MSG to 'NO MORE
-      *          PAGES TO DISPLAY'; off-platform expression of AAP
-      *          TC4 "End-of-file (READNEXT EIBRESP=20 ENDFILE)
-      *          handled gracefully" -- ENDFILE on READNEXT
-      *          culminates in this no-more-pages user advisory.
-      *    TC5 - 2210-EDIT-ACCOUNT rejects non-numeric account id
-      *          (lines 1017-1029); off-platform expression of AAP
-      *          TC5 "STARTBR fails" along the input-error short-
-      *          circuit branch -- a non-numeric filter sets
-      *          INPUT-ERROR which prevents 0000-MAIN from reaching
-      *          9000-READ-FORWARD's STARTBR (line-433 condition
-      *          requires NOT FLG-ACCTFILTER-NOT-OK).
+      *          (CSSTRPFY L42-43); gate for PF7-back dispatch
+      *          (0000-MAIN L501-513).
+      *    TC4 - 1400-SETUP-MESSAGE end-of-file advisory (L905-909)
+      *          sets WS-ERROR-MSG = 'NO MORE PAGES TO DISPLAY'.
+      *    TC5 - 2210-EDIT-ACCOUNT rejects non-numeric account-id
+      *          (L1017-1029); INPUT-ERROR short-circuit prevents
+      *          STARTBR (L433 guard).
       *    TC6 - YYYY-STORE-PFKEY maps DFHPF3 to CCARD-AID-PFK03
-      *          (CSSTRPFY lines 34-35); off-platform expression
-      *          of AAP TC6 "PF3 exits with ENDBR" -- drives
-      *          0000-MAIN's IF CCARD-AID-PFK03 branch (lines 384-
-      *          406) which issues XCTL PROGRAM(LIT-MENUPGM).
+      *          (CSSTRPFY L34-35); gate for PF3-exit dispatch
+      *          (0000-MAIN L384-406, XCTL LIT-MENUPGM).
       *    TC7 - 9500-FILTER-RECORDS excludes record on account
-      *          mismatch (lines 1385-1394); off-platform
-      *          expression of AAP TC7 "Filter by card number
-      *          prefix" -- 9500-FILTER-RECORDS is the production
-      *          paragraph that decides admission to the 7-row
-      *          screen table; the account-mismatch ELSE branch
-      *          is the canonical exclusion path.
+      *          mismatch (L1385-1394); the canonical exclusion path.
       *
-      *  Test user
-      *  ---------
-      *  USER0001 / USER role per AAP Section 0.10.2.  COCRDLIC
-      *  does not implement role-based authorization; the most
-      *  common upstream caller is COMEN01C main menu (CDEMO-FROM-
-      *  PROGRAM='COMEN01C', CDEMO-FROM-TRANID='CM00') per
-      *  COMEN02Y line 40 mapping option 3 to 'COCRDLIC'.
+      *  Test user: USER0001 per AAP Section 0.10.2; upstream caller
+      *  COMEN01C ('CM00') per COMEN02Y option-3 mapping.
       *
       *  Off-platform deferrals
       *  ----------------------
-      *  Literal AAP TC1-TC7 STARTBR / READNEXT / READPREV / ENDBR
-      *  / XCTL pathways all require the translator pass to reach
-      *  the EVALUATE WS-RESP-CD WHEN DFHRESP(NORMAL/DUPREC/
-      *  ENDFILE) clauses on production lines 1156-1255 and 1304-
-      *  1370 -- same off-platform limitation as COCRDSLC /
-      *  COACTVWC / COBIL00C / COTRN01C / COUSR02C / COUSR03C.
-      *  When the translator is added, this suite can be extended
-      *  with MOCK CICS STARTBR / READNEXT FILE(CARDDAT) using
-      *  CARD-FIXTURE-001 and PERFORM 9000-READ-FORWARD THRU
-      *  9000-READ-FORWARD-EXIT end-to-end.
+      *  Literal AAP STARTBR/READNEXT/READPREV/ENDBR/XCTL pathways
+      *  require a CICS translator to reach EVALUATE WS-RESP-CD
+      *  WHEN DFHRESP(...) clauses (L1156-1255, 1304-1370).  When
+      *  the translator is added, MOCK CICS READNEXT FILE(CARDDAT)
+      *  with CARD-FIXTURE-001 enables end-to-end PERFORM coverage.
       *
       *  Source of expected values (per AAP Section 0.10.1)
       *  --------------------------------------------------
-      *  Each EXPECT compares a production-side WS / COMMAREA /
-      *  BMS-map field against either: (a) a literal MOVE'd verbatim
-      *  by a production statement, (b) an 88-level VALUE declared
-      *  in the production source, (c) a constant declared in
-      *  production WS, or (d) a deterministic-default flag value
-      *  reset by BEFORE-EACH INITIALIZE.  None of the expected
-      *  values is computed by recomputing the production formula;
-      *  all are sourced from production source verbatim or from
-      *  test-author external knowledge of the input fixture.
+      *  Each EXPECT compares a production-side field against
+      *  (a) a literal MOVE'd verbatim by production, (b) an 88-level
+      *  VALUE, (c) a production WS constant, or (d) a deterministic-
+      *  default reset by BEFORE-EACH.  No expected value is
+      *  recomputed from the production formula.
       *
       *  References
       *  ----------
-      *    AAP Section 0.10.1 / 0.5.1 / 0.10.2 / 0.4.1 / 0.7.1
-      *    app/cbl/COCRDLIC.cbl lines 297-602   (0000-MAIN)
-      *    app/cbl/COCRDLIC.cbl lines 642-672   (1100-SCREEN-INIT)
-      *    app/cbl/COCRDLIC.cbl lines 895-932   (1400-SETUP-MESSAGE)
-      *    app/cbl/COCRDLIC.cbl lines 1003-1030 (2210-EDIT-ACCOUNT)
-      *    app/cbl/COCRDLIC.cbl lines 1036-1067 (2220-EDIT-CARD)
-      *    app/cbl/COCRDLIC.cbl lines 1123-1260 (9000-READ-FORWARD)
-      *    app/cbl/COCRDLIC.cbl lines 1264-1372 (9100-READ-BACKWARDS)
-      *    app/cbl/COCRDLIC.cbl lines 1382-1411 (9500-FILTER-RECORDS)
-      *    app/cpy/CSSTRPFY.cpy   lines 17-79   (YYYY-STORE-PFKEY)
-      *    app/cpy/CVCRD01Y.cpy   (CC-WORK-AREAS / CCARD-AID-* 88s)
-      *    app/cpy/COCOM01Y.cpy   (CARDDEMO-COMMAREA)
-      *    app/cpy/CVACT02Y.cpy   (CARD-RECORD layout, 150 bytes)
-      *    app/cpy-bms/COCRDLI.CPY (CCRDLIAI / CCRDLIAO map)
-      *    tests/stubs/STUB-ABEND-FLAG.cpy  (EXTERNAL stub state)
-      *    tests/stubs/DFHEI1.cbl           (CICS link-time backstop)
+      *    AAP Sections 0.5.1, 0.7.1, 0.10.1, 0.10.2
+      *    app/cbl/COCRDLIC.cbl L297-602, 642-672, 895-932,
+      *                         1003-1030, 1036-1067, 1123-1260,
+      *                         1264-1372, 1382-1411
+      *    app/cpy/CSSTRPFY.cpy L17-79  (YYYY-STORE-PFKEY)
+      *    app/cpy/CVCRD01Y.cpy / COCOM01Y.cpy / CVACT02Y.cpy
+      *    app/cpy-bms/COCRDLI.CPY      (CCRDLIAI / CCRDLIAO map)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy / DFHEI1.cbl
       *    tests/fixtures/cobol-snippets/CARD-FIXTURE-001.cpy
-      *    tests/cobol-check/COSGN00C.cut   (structural exemplar)
-      *    tests/cobol-check/COCRDSLC.cut   (sister card-program)
-      *    tests/cobol-check/COTRN00C.cut   (sister browse-program)
+      *    tests/cobol-check/COSGN00C.cut (structural exemplar)
+      *    tests/cobol-check/COCRDSLC.cut / COTRN00C.cut (sister)
       ******************************************************************
 
        TESTSUITE 'COCRDLIC CARD LIST BROWSE TRANSACTION'.

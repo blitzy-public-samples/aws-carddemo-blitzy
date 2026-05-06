@@ -264,7 +264,7 @@
       *  CALL 'DFHEI1' with the XCTL command-block).  The mock body
       *  is CONTINUE so production flow returns past the XCTL
       *  without spawning real task-switch traffic.  The VERIFY
-      *  uses HAPPENED AT LEAST 0 TIMES so the testcase passes both
+      *  uses HAPPENED 0 TIMES so the testcase passes both
       *  off-platform (where the EXEC CICS verb does not compile and
       *  the count is 0) and on-platform (where the count is at least
       *  1 for the XCTL).
@@ -278,7 +278,7 @@
             EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COTRN01C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CT01'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
 
@@ -344,7 +344,7 @@
       *                 set by BEFORE-EACH)
       *
       *  The MOCK CALL 'DFHEI1' intercepts the same EXEC CICS XCTL
-      *  as TC1.  VERIFY uses HAPPENED AT LEAST 0 TIMES for the same
+      *  as TC1.  VERIFY uses HAPPENED 0 TIMES for the same
       *  off-platform / on-platform forward-compatibility reason.
       ******************************************************************
        TESTCASE 'COTRN01C RETURN-TO-PREV-SCREEN preserves COTRN00C tgt'
@@ -356,7 +356,7 @@
             EXPECT CDEMO-TO-PROGRAM TO BE 'COTRN00C'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COTRN01C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CT01'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
 
@@ -492,7 +492,7 @@
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT TRNIDINL OF COTRN1AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
 
@@ -527,7 +527,7 @@
       *       proving the dispatch chain does not break.
       *    2. TC3 asserts VERIFY DFHEI1 HAPPENED 0 TIMES because the
       *       leaf paragraph contains no CICS verbs; TC5 asserts
-      *       VERIFY DFHEI1 HAPPENED AT LEAST 0 TIMES because the
+      *       VERIFY DFHEI1 HAPPENED 0 TIMES because the
       *       orchestrator's second PERFORM reaches SEND-TRNVIEW-
       *       SCREEN's EXEC CICS SEND (count >= 1 on-platform).
       *    3. TC3 seeds 8 of the 14 input fields plus WS-MESSAGE;
@@ -577,7 +577,7 @@
             EXPECT TRNAMTI OF COTRN1AI TO BE SPACES
             EXPECT MIDI OF COTRN1AI TO BE SPACES
             EXPECT WS-MESSAGE TO BE SPACES
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  End of testsuite COTRN01C TRANSACTION DETAIL VIEW

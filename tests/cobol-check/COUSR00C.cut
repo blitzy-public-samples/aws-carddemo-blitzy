@@ -289,7 +289,7 @@
             EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COUSR00C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CU00'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC2 -- INITIALIZE-USER-DATA clears row 1 BMS fields
@@ -517,7 +517,7 @@
             EXPECT WS-SEND-ERASE-FLG TO BE 'N'
             EXPECT USRIDINL OF COUSR0AI NOT = 0
             EXPECT CDEMO-CU00-NEXT-PAGE-FLG TO BE 'Y'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC6 -- PROCESS-PF8-KEY at bottom sets bottom-of-page advisory
@@ -589,7 +589,7 @@
             EXPECT WS-SEND-ERASE-FLG TO BE 'N'
             EXPECT USRIDINL OF COUSR0AI NOT = 0
             EXPECT SEC-USR-ID TO BE 'USER0050'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  End of testsuite COUSR00C USER LIST BROWSE TRANSACTION

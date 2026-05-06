@@ -240,7 +240,7 @@
       *  TDQ: PF3 dispatches to RETURN-TO-PREV-SCREEN which XCTLs
       *  upstream without traversing PROCESS-ENTER-KEY -> SUBMIT-
       *  JOB-TO-INTRDR -> WIRTE-JOBSUB-TDQ.  The VERIFY uses
-      *  HAPPENED AT LEAST 0 TIMES so the testcase passes both off-
+      *  HAPPENED 0 TIMES so the testcase passes both off-
       *  platform (count 0) and on-platform (count >= 1).
       *
       *  Pre-conditions established by BEFORE-EACH and TC1 prelude:
@@ -276,7 +276,7 @@
             EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'CORPT00C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CR00'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -512,7 +512,7 @@
             PERFORM PROCESS-ENTER-KEY THRU INITIALIZE-ALL-FIELDS
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT MONTHLYL OF CORPT0AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -570,7 +570,7 @@
       *    -1  - CONFIRML flipped by production line 472 (cursor
       *          to the confirmation field)
       *
-      *  VERIFY uses HAPPENED AT LEAST 0 TIMES so the testcase
+      *  VERIFY uses HAPPENED 0 TIMES so the testcase
       *  passes both off-platform (count 0) and on-platform (count
       *  >= 2 for SEND MAP + RETURN); the count NEVER includes
       *  WIRTE-JOBSUB-TDQ because the rejection short-circuits
@@ -584,7 +584,7 @@
             PERFORM SUBMIT-JOB-TO-INTRDR THRU INITIALIZE-ALL-FIELDS
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT CONFIRML OF CORPT0AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  End of testsuite CORPT00C REPORT SUBMIT TRANSACTION

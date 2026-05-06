@@ -222,7 +222,7 @@
       *  TRANSACT-FILE: PF3 dispatches to RETURN-TO-PREV-SCREEN
       *  which XCTLs upstream without traversing PROCESS-ENTER-KEY
       *  -> ADD-TRANSACTION -> WRITE-TRANSACT-FILE.  The VERIFY
-      *  uses HAPPENED AT LEAST 0 TIMES so the testcase passes
+      *  uses HAPPENED 0 TIMES so the testcase passes
       *  both off-platform (count 0) and on-platform (count >= 1).
       *
       *  Pre-conditions: CDEMO-TO-PROGRAM = SPACES (set by
@@ -247,7 +247,7 @@
             EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COTRN02C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CT02'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -367,7 +367,7 @@
       *  Because the testcase reaches PERFORM SEND-TRNADD-SCREEN
       *  (line 229) -- which production transcribes to CALL 'DFHEI1'
       *  with the SEND MAP and RETURN command blocks at link time --
-      *  the VERIFY clause uses HAPPENED AT LEAST 0 TIMES so the
+      *  the VERIFY clause uses HAPPENED 0 TIMES so the
       *  testcase passes both off-platform (where the EXEC CICS
       *  verbs do not compile and the count is 0) and on-platform
       *  (where the count is at least 1 for SEND MAP plus 1 for
@@ -380,7 +380,7 @@
             PERFORM VALIDATE-INPUT-KEY-FIELDS
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT ACTIDINL OF COTRN2AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -456,7 +456,7 @@
             PERFORM VALIDATE-INPUT-DATA-FIELDS
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT TTYPCDL OF COTRN2AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -520,7 +520,7 @@
             PERFORM VALIDATE-INPUT-DATA-FIELDS
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT TRNAMTL OF COTRN2AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -590,7 +590,7 @@
             EXPECT TRNAMTI OF COTRN2AI TO BE SPACES
             EXPECT CONFIRMI OF COTRN2AI TO BE SPACES
             EXPECT WS-MESSAGE TO BE SPACES
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  End of testsuite COTRN02C ADD-TRANSACTION

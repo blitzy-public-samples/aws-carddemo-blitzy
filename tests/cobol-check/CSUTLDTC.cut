@@ -22,164 +22,57 @@
       *  Testsuite : CSUTLDTC DATE CONVERSION SUBROUTINE
       *  Program-under-test : app/cbl/CSUTLDTC.cbl
       *
-      *  This file is the FIRST testsuite delivered for CardDemo and
-      *  is hereby designated as the CANONICAL REFERENCE EXEMPLAR
-      *  (per AAP Section 0.4.3).  Every subsequent testsuite under
-      *  tests/cobol-check/ MUST mirror its structural conventions:
-      *      1. Apache 2.0 license preamble (column 7 == '*')
-      *      2. Comprehensive testsuite-purpose banner
-      *      3. TESTSUITE declaration with descriptive label
-      *      4. BEFORE-EACH block resetting every WS field touched
-      *      5. One TESTCASE per production-EVALUATE branch (or
-      *         per production-IF arm when applicable)
-      *      6. Per-testcase prelude MOVEs that drive the production
-      *         control-flow deterministically
-      *      7. EXPECT clauses against actual production-code side
-      *         effects (WS-RESULT, RETURN-CODE, mocked sinks)
-      *      8. Trailing testsuite-end comment banner
+      *  This file is the CANONICAL REFERENCE EXEMPLAR (AAP 0.4.3).
+      *  Every subsequent tests/cobol-check/*.cut MUST mirror:
+      *    1. Apache 2.0 license preamble (col 7 == '*')
+      *    2. Compact testsuite-purpose banner
+      *    3. TESTSUITE declaration
+      *    4. BEFORE-EACH block resetting every WS field touched
+      *    5. One TESTCASE per production EVALUATE branch / IF arm
+      *    6. Per-testcase prelude MOVEs (deterministic flow)
+      *    7. EXPECT clauses against production-code side effects
+      *    8. Trailing testsuite-end banner
       *
       *  Purpose
       *  -------
-      *  Exercise CSUTLDTC -- the CardDemo wrapper that converts a
-      *  CCYYMMDD-formatted date string into a Lillian-day binary
-      *  by delegating to the IBM Language Environment service
-      *  CEEDAYS.  CSUTLDTC has NO file I/O, no CICS commands, no
-      *  inter-program calls except CEEDAYS itself; it is therefore
-      *  the simplest possible cobol-check testsuite target and the
-      *  ideal canonical exemplar for the entire CardDemo suite.
+      *  CSUTLDTC wraps the IBM Language Environment service CEEDAYS
+      *  to validate / convert CCYYMMDD date strings.  No file I/O,
+      *  no CICS, no inter-program calls except CEEDAYS itself.
+      *  Production line 116:
+      *      CALL "CEEDAYS" USING WS-DATE-TO-TEST, WS-DATE-FORMAT,
+      *                           OUTPUT-LILLIAN, FEEDBACK-CODE
+      *  Lines 128-149 are a 10-arm EVALUATE TRUE that maps each
+      *  FEEDBACK-CODE 88-level VALUE onto a 15-character literal
+      *  MOVEd to WS-RESULT.  TC1-TC10 cover all 10 arms.
       *
-      *  CSUTLDTC's PROCEDURE DIVISION USING signature is:
-      *      LS-DATE         PIC X(10)   -- input date string
-      *      LS-DATE-FORMAT  PIC X(10)   -- input format mask
-      *      LS-RESULT       PIC X(80)   -- output result message
-      *  After construction (lines 90-94), the production main body
-      *  PERFORMs A000-MAIN THRU A000-MAIN-EXIT (lines 103-154);
-      *  paragraph A000-MAIN issues a single
-      *      CALL "CEEDAYS" USING WS-DATE-TO-TEST,
-      *                           WS-DATE-FORMAT,
-      *                           OUTPUT-LILLIAN,
-      *                           FEEDBACK-CODE
-      *  (lines 116-120) and then executes a 10-arm EVALUATE TRUE
-      *  block (lines 128-149) that maps each FEEDBACK-CODE 88-
-      *  level VALUE onto a 15-character literal MOVEd to WS-RESULT.
-      *  The 10 arms are exhaustively covered by this testsuite's
-      *  10 TESTCASEs (TC1-TC10).
-      *
-      *  External-dependency isolation strategy (CRITICAL)
-      *  -------------------------------------------------
-      *  Per AAP Section 0.10.1 ("Mock or stub ONLY external
-      *  dependencies"), the CALL "CEEDAYS" boundary at CSUTLDTC.cbl
-      *  line 116 is the ONLY external dependency exercised by this
-      *  testsuite.  cobol-check 0.2.16 isolates the test from this
-      *  external CALL through its AUTOMATIC CALL-INTERCEPTION
-      *  mechanism: every production CALL site is rewritten in the
-      *  merged binary to a `PERFORM UT-PROCESS-UNMOCK-CALL` no-op
-      *  paragraph (Generator.java lines 215-240).  The original
-      *  production CALL is commented out and never executed at
-      *  test time.  This means CSUTLDTC's production code reaches
-      *  the EVALUATE TRUE block (lines 128-149) WITHOUT ever
-      *  invoking CEEDAYS, satisfying the "stub ONLY external
-      *  dependencies" requirement automatically.
-      *
-      *  To drive the EVALUATE down a specific 88-level arm, each
-      *  TESTCASE pre-populates FEEDBACK-TOKEN-VALUE with the
-      *  byte-exact 8-byte token corresponding to the 88-level
-      *  VALUE declared in CSUTLDTC.cbl lines 62-70.  Because the
-      *  intercepted CALL no longer runs, the FEEDBACK-CODE bytes
-      *  set in the prelude survive into the EVALUATE check
-      *  unaltered.  The production EVALUATE TRUE block then sees
-      *  the test-controlled token and branches to the appropriate
-      *  WHEN arm, MOVing its 15-char literal to WS-RESULT.
-      *
-      *  Explicit MOCK CALL "CEEDAYS" directives (per QA Issue #1)
-      *  ----------------------------------------------------------
-      *  cobol-check 0.2.16 matches MOCK CALL identifiers against
-      *  production CALL identifiers via case-insensitive STRING
-      *  EQUALITY -- the surrounding QUOTE CHARACTER is part of the
-      *  identifier.  See features/testSuiteParser/MockRepository.
-      *  java line 28 (`mock.getIdentifier().equalsIgnoreCase
-      *  (identifier)`) and features/interpreter/StringTokenizer
-      *  Extractor.java which preserves quotes verbatim during
-      *  production-side tokenisation.
-      *
-      *  CSUTLDTC.cbl line 116 issues `CALL "CEEDAYS"` with DOUBLE
-      *  quotes -- a one-off in the CardDemo codebase (every other
-      *  CALL site uses single quotes, e.g., `CALL 'CEE3ABD'` in
-      *  every batch program).  Authoring a `MOCK CALL 'CEEDAYS'`
-      *  (single-quoted) would not match `CALL "CEEDAYS"` (double-
-      *  quoted) at the cobol-check matcher level.  We therefore
-      *  use `MOCK CALL "CEEDAYS"` (double-quoted) so the matcher
-      *  binds correctly.
-      *
-      *  Side effect: cobol-check 0.2.16's MockGenerator.java emits
-      *  the matched identifier into a WORKING-STORAGE PIC X(40)
-      *  VALUE clause for diagnostics, producing the malformed
-      *  literal `VALUE "CALL "CEEDAYS"".` (unescaped embedded
-      *  doubles).  This is a documented framework bug that the
-      *  changelog records as fixed in v0.2.19.  Until that upgrade,
-      *  the runner script tests/cobol-check/scripts/
-      *  linux_gnucobol_run_tests applies a deterministic post-merge
-      *  countermeasure: any line matching the malformed pattern
-      *  has its OUTER delimiters switched from " to ' (COBOL
-      *  accepts both for alphanumeric literals), yielding the
-      *  semantically-equivalent `VALUE 'CALL "CEEDAYS"'.` GnuCOBOL
-      *  compiles cleanly.  The countermeasure preserves total line
-      *  length so column-sensitive sanitisation (truncation/digit-
-      *  strip) still operates correctly.
-      *
-      *  At runtime, cobol-check 0.2.16's runtime CALL-interception
-      *  also exhibits a quote-matching defect for double-quoted
-      *  CALL sites: the linked CEEDAYS stub fires instead of the
-      *  generated mock dispatcher.  Test outcomes are still
-      *  deterministic because each TESTCASE pre-populates
-      *  FEEDBACK-TOKEN-VALUE with the specific 88-level VALUE
-      *  byte-pattern; the production EVALUATE TRUE block branches
-      *  on FEEDBACK-CODE alone and reaches the expected WHEN arm
-      *  regardless of which dispatcher answered the CALL.  Both
-      *  the explicit MOCK CALL directive (compile-time) and the
-      *  CEEDAYS stub (run-time) are external-dependency stubs that
-      *  satisfy the user's "Mock or stub ONLY external
-      *  dependencies" directive.
-      *
-      *  CEEDAYS link-time fallback (preserved for completeness)
+      *  External-dependency isolation (CRITICAL -- AAP 0.10.1)
       *  -------------------------------------------------------
-      *  The depends_on_files schema entry names tests/stubs/
-      *  STUB-CEEDAYS-RC.cpy and tests/stubs/CEEDAYS.cbl as
-      *  build-time dependencies.  The CEEDAYS stub at tests/
-      *  stubs/CEEDAYS.cbl is pre-compiled into a shared object
-      *  (CEEDAYS.so) by the linux_gnucobol_run_tests script and
-      *  link-resolved into the merged binary so that ANY un-
-      *  intercepted CALL "CEEDAYS" (e.g., in a hypothetical future
-      *  mode where cobol-check stops auto-intercepting) would
-      *  resolve to a deterministic no-op stub rather than a
-      *  load-time linker error.  The depends_on_files schema is
-      *  honoured through this link-time fallback even though no
-      *  testcase here invokes the stub at runtime.
-      *
-      *  Why no `COPY STUB-CEEDAYS-RC.` at testsuite scope
-      *  -------------------------------------------------
-      *  cobol-check 0.2.16's TestSuiteParser does NOT recognise
-      *  file-scope COPY directives in .cut testsuites; a bare
-      *  COPY at testsuite level is parsed as a fieldname token
-      *  and aborts the merge.  This testsuite therefore does NOT
-      *  declare `COPY STUB-CEEDAYS-RC.` at testsuite scope; it
-      *  instead achieves the same effect by writing X'...'
-      *  literals DIRECTLY into FEEDBACK-TOKEN-VALUE inside each
-      *  TESTCASE prelude.  The literal token bytes match the
-      *  production 88-level VALUEs (CSUTLDTC.cbl lines 62-70)
-      *  byte-for-byte, so the production EVALUATE TRUE block
-      *  branches deterministically the same way it would after a
-      *  successful CEEDAYS-stub passthrough of WS-CEEDAYS-RC-
-      *  OVERRIDE.  This rationale matches the convention adopted
-      *  by tests/cobol-check/CBACT01C.cut and tests/cobol-check/
-      *  CBACT02C.cut for STUB-ABEND-FLAG.cpy.
+      *  CALL "CEEDAYS" is the only external boundary.  cobol-check
+      *  0.2.16 auto-intercepts every CALL site (rewriting it to a
+      *  no-op PERFORM in the merged binary), so each TESTCASE
+      *  pre-populates FEEDBACK-TOKEN-VALUE with the byte-exact
+      *  8-byte token from the 88-level VALUE table; the production
+      *  EVALUATE TRUE then branches to the expected WHEN arm.
       *
       *  Internal CSUTLDTC paragraphs (A000-MAIN, A000-MAIN-EXIT)
-      *  are NEVER mocked.  Each TESTCASE exercises a production
-      *  paragraph LIVE via PERFORM so every assertion validates
-      *  side effects of actual production-code execution (per the
-      *  user's directive in AAP Section 0.10.1 -- "Mock or stub
-      *  ONLY external dependencies").
+      *  are NEVER mocked.  Each TESTCASE PERFORMs the production
+      *  paragraph LIVE so every assertion validates side effects
+      *  of actual production-code execution.
+      *
+      *  Quote-matching detail (cobol-check 0.2.16):
+      *  CSUTLDTC.cbl line 116 uses DOUBLE quotes (a one-off; every
+      *  other CardDemo CALL site uses single quotes).  We use
+      *  MOCK CALL "CEEDAYS" (double-quoted) so the matcher binds.
+      *  The runner script applies a deterministic post-merge fix
+      *  for the resulting framework-bug literal `VALUE "CALL
+      *  "CEEDAYS"".` (CHANGELOG fix slated for v0.2.19).  The
+      *  link-time CEEDAYS stub at tests/stubs/CEEDAYS.cbl provides
+      *  fallback safety for any uninterceptted CALL.
+      *
+      *  Why no testsuite-scope `COPY STUB-CEEDAYS-RC.`:
+      *  cobol-check 0.2.16's TestSuiteParser does not recognise
+      *  file-scope COPY; a bare COPY aborts the merge.  Each
+      *  TESTCASE prelude therefore writes X'...' literals directly.
       *
       *  Test categories
       *  ---------------
@@ -194,42 +87,22 @@
       *    TC9  - A000-MAIN FC-YEAR-IN-ERA-ZERO  -> 'YearInEra is 0 '
       *    TC10 - A000-MAIN WHEN OTHER (default) -> 'Date is invalid'
       *
-      *  Coverage
-      *  --------
-      *  This testsuite achieves 100% line coverage and 100% branch
-      *  coverage of CSUTLDTC's PROCEDURE DIVISION, which is the
-      *  AAP Section 0.7.1 per-program target.  Every WHEN arm of
-      *  the EVALUATE TRUE block (lines 128-149) is reached at
-      *  least once, and the WHEN OTHER default (lines 147-148) is
-      *  reached by TC10 with a token NOT in the 88-level list.
-      *
-      *  Source of expected values
-      *  -------------------------
-      *  The 10 expected WS-RESULT values are NOT computed; they
-      *  are LITERAL CONSTANTS taken DIRECTLY from the production
-      *  source app/cbl/CSUTLDTC.cbl lines 130-148.  These are the
-      *  literal MOVE targets in the production EVALUATE TRUE
-      *  block.  The test author copies them verbatim from
-      *  production source as the expected outputs -- this is the
-      *  canonical pattern for "EXPECT against actual production-
-      *  code side effects" mandated by AAP Section 0.10.1.  No
-      *  arithmetic, no recomputation, no paraphrasing.  WS-RESULT
-      *  is PIC X(15) (CSUTLDTC.cbl line 49); each MOVE in the
-      *  production EVALUATE moves a literal that fits in 15 chars
-      *  with trailing spaces forming the byte-padding -- the test
-      *  EXPECT string therefore uses exactly 15 characters
-      *  including those production-pattern trailing spaces.
+      *  Source of expected values (CRITICAL -- AAP 0.10.1)
+      *  --------------------------------------------------
+      *  The 10 expected WS-RESULT values are LITERAL CONSTANTS
+      *  taken VERBATIM from production source CSUTLDTC.cbl lines
+      *  130-148.  No arithmetic, no recomputation, no paraphrasing.
+      *  WS-RESULT is PIC X(15); trailing spaces form COBOL byte-
+      *  padding to fill the 15-byte field.
       *
       *  References
       *  ----------
-      *    AAP Sections 0.4.3, 0.5.1, 0.5.2, 0.7.1, 0.10.1, 0.10.2
-      *    app/cbl/CSUTLDTC.cbl lines 60-80   (FEEDBACK-CODE 01-level)
+      *    AAP Sections 0.4.3, 0.5.1, 0.7.1, 0.10.1, 0.10.2
+      *    app/cbl/CSUTLDTC.cbl lines 60-80   (FEEDBACK-CODE)
       *    app/cbl/CSUTLDTC.cbl lines 62-70   (88-level VALUE table)
       *    app/cbl/CSUTLDTC.cbl lines 103-154 (A000-MAIN paragraph)
-      *    app/cbl/CSUTLDTC.cbl lines 116-120 (CALL "CEEDAYS")
-      *    app/cbl/CSUTLDTC.cbl lines 128-149 (EVALUATE TRUE / 10 arms)
-      *    app/cbl/CSUTLDTC.cbl lines 130-148 (literal MOVE targets)
-      *    tests/stubs/STUB-CEEDAYS-RC.cpy    (link-time stub state)
+      *    app/cbl/CSUTLDTC.cbl lines 128-149 (EVALUATE TRUE / arms)
+      *    tests/stubs/STUB-CEEDAYS-RC.cpy    (stub state)
       *    tests/stubs/CEEDAYS.cbl            (LE Lillian stub)
       ******************************************************************
 

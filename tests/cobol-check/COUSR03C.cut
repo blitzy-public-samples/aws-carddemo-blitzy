@@ -206,7 +206,7 @@
             EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COUSR03C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CU03'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC2 -- INITIALIZE-ALL-FIELDS clears the map and message
@@ -307,7 +307,7 @@
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT USRIDINL OF COUSR3AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC4 -- DELETE-USER-INFO short-circuits on empty user ID
@@ -350,7 +350,7 @@
             END-MOCK
             PERFORM DELETE-USER-INFO
             EXPECT WS-ERR-FLG TO BE 'Y'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC5 -- CLEAR-CURRENT-SCREEN orchestrates INITIALIZE + SEND
@@ -393,7 +393,7 @@
             PERFORM CLEAR-CURRENT-SCREEN
             EXPECT USRIDINI OF COUSR3AI TO BE SPACES
             EXPECT WS-MESSAGE TO BE SPACES
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  End of testsuite COUSR03C DELETE USER ADMIN TRANSACTION

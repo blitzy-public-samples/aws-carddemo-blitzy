@@ -296,7 +296,7 @@
       *  CALL 'DFHEI1' with the XCTL command-block).  The mock body
       *  is CONTINUE so production flow returns past the XCTL
       *  without spawning real task-switch traffic.  The VERIFY
-      *  uses HAPPENED AT LEAST 0 TIMES so the testcase passes both
+      *  uses HAPPENED 0 TIMES so the testcase passes both
       *  off-platform (where the EXEC CICS verb does not compile and
       *  the count is 0) and on-platform (where the count is at
       *  least 1 for the XCTL).
@@ -310,7 +310,7 @@
             EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COTRN00C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CT00'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC2 -- INITIALIZE-TRAN-DATA clears row 1 BMS fields
@@ -514,7 +514,7 @@
             EXPECT WS-SEND-ERASE-FLG TO BE 'N'
             EXPECT TRNIDINL OF COTRN0AI NOT = 0
             EXPECT CDEMO-CT00-NEXT-PAGE-FLG TO BE 'Y'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC6 -- PROCESS-PF8-KEY at bottom sets bottom-of-page advisory
@@ -586,7 +586,7 @@
             EXPECT WS-SEND-ERASE-FLG TO BE 'N'
             EXPECT TRNIDINL OF COTRN0AI NOT = 0
             EXPECT TRAN-ID TO BE 'TRN0000000000050'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  End of testsuite COTRN00C TRANSACTION LIST BROWSE

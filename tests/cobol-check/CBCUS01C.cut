@@ -22,194 +22,76 @@
       *
       *  Purpose
       *  -------
-      *  Exercise the testable production paragraphs of CBCUS01C --
-      *  the CardDemo batch dumper that reads CUSTFILE-FILE (VSAM KSDS
-      *  CUSTDAT) sequentially and DISPLAYs each CUSTOMER-RECORD --
-      *  through paragraph-level PERFORM tests.  Three production
-      *  paragraphs are covered by direct invocation:
+      *  CBCUS01C is a CardDemo batch dumper that reads CUSTFILE-FILE
+      *  (VSAM KSDS CUSTDAT) and DISPLAYs each CUSTOMER-RECORD.
+      *  Three production paragraphs are covered by direct PERFORM:
       *
-      *    Z-DISPLAY-IO-STATUS  (CBCUS01C.cbl lines 161-174)
-      *      Formats CUSTFILE-STATUS into the 4-byte IO-STATUS-04
-      *      field for diagnostic display.  The paragraph branches
-      *      on `IO-STATUS NOT NUMERIC OR IO-STAT1 = '9'`: the ELSE
-      *      arm formats plain VSAM 2-digit codes (00, 23, 35, ...)
-      *      by overlaying IO-STATUS into IO-STATUS-04(3:2); the
-      *      THEN arm packs the digit-9-leading or non-numeric
-      *      bytes into IO-STATUS-04 via the TWO-BYTES-BINARY
-      *      redefinition path.
-      *
-      *    Z-ABEND-PROGRAM      (CBCUS01C.cbl lines 154-158)
-      *      Standard 9999-pattern abnormal-end paragraph.  Moves
-      *      literal 0 to TIMING and literal 999 to ABCODE, then
-      *      `CALL 'CEE3ABD'` to invoke the IBM Language Environment
-      *      abend service.
-      *
-      *    0000-CUSTFILE-OPEN   (CBCUS01C.cbl lines 117-133)
-      *      Opens CUSTFILE-FILE for INPUT.  On success sets
-      *      APPL-RESULT = 0.  On failure sets APPL-RESULT = 12,
-      *      MOVEs CUSTFILE-STATUS into IO-STATUS, then PERFORMs
-      *      Z-DISPLAY-IO-STATUS and Z-ABEND-PROGRAM.  Off-platform
-      *      no CUSTFILE dataset is provisioned alongside the
-      *      cobol-check merged binary, so the OPEN deterministically
-      *      returns a non-'00' status (typically '35' file-not-
-      *      found per the GnuCOBOL ANSI-conformant runtime) and
-      *      the error pathway is exercised end-to-end live.
+      *    Z-DISPLAY-IO-STATUS L161-174  Formats CUSTFILE-STATUS
+      *                                  into 4-byte IO-STATUS-04;
+      *                                  branches on IO-STATUS NOT
+      *                                  NUMERIC OR IO-STAT1='9'.
+      *    Z-ABEND-PROGRAM     L154-158  MOVE 0 TO TIMING, MOVE 999
+      *                                  TO ABCODE, CALL 'CEE3ABD'.
+      *    0000-CUSTFILE-OPEN  L117-133  Off-platform GnuCOBOL has
+      *                                  no CUSTFILE dataset, so
+      *                                  OPEN deterministically
+      *                                  returns non-'00' (typically
+      *                                  '35') and the error pathway
+      *                                  exercises live.
       *
       *  Out-of-scope production paragraphs
       *  ----------------------------------
-      *  The following paragraphs depend on a previously-OPENed
-      *  CUSTFILE-FILE and cannot be exercised reliably without
-      *  MOCK FILE support, which cobol-check 0.2.16 does NOT
-      *  provide (only MOCK CALL / MOCK PARAGRAPH / MOCK PARA /
-      *  MOCK SECTION are supported by this release):
-      *
-      *    1000-CUSTFILE-GET-NEXT (CBCUS01C.cbl lines 92-116)
-      *    9000-CUSTFILE-CLOSE    (CBCUS01C.cbl lines 136-152)
-      *
-      *  These paragraphs ARE partially exercised through the OPEN
-      *  error pathway covered by TC6-TC8: 0000-CUSTFILE-OPEN's
-      *  failure branch (lines 128-133) PERFORMs Z-DISPLAY-IO-STATUS
-      *  and Z-ABEND-PROGRAM live, providing transitive coverage of
-      *  those two helper paragraphs.  Direct GET-NEXT / CLOSE
-      *  coverage is deferred until the framework adds MOCK FILE
-      *  in a future release; at that time TC9-TC11 can be added
-      *  alongside the existing eight testcases without otherwise
-      *  changing this testsuite.
+      *  1000-CUSTFILE-GET-NEXT (L92-116) and 9000-CUSTFILE-CLOSE
+      *  (L136-152) depend on a previously-OPENed CUSTFILE and
+      *  cannot be exercised reliably without MOCK FILE support
+      *  (cobol-check 0.2.16 only supports MOCK CALL/PARAGRAPH/
+      *  PARA/SECTION).  These paragraphs are PARTIALLY covered
+      *  via the OPEN error pathway in TC6-TC8 (transitively
+      *  PERFORMs Z-DISPLAY-IO-STATUS and Z-ABEND-PROGRAM).
       *
       *  cobol-check 0.2.16 MOCK FILE limitation (verified)
       *  --------------------------------------------------
-      *  Verification (QA CP3 finding #3 follow-up):
-      *
-      *      Authoring `MOCK FILE CUSTFILE-FILE ON OPEN STATUS
-      *      '00' END-MOCK` inside a TESTCASE causes cobol-check's
-      *      TestSuiteParser to emit
-      *
-      *          SYNTAX ERROR in file: <path>:N:M:
-      *          Unexpected token on line N, index M:
-      *          Following <MOCK> classified as <MOCK>
-      *
-      *      and abort the merge.  The Keywords class enumerates
-      *      the supported mock-types as the union of CALL, PARA,
-      *      PARAGRAPH, and SECTION; FILE is absent.  The cobol-
-      *      check changelog does not record a planned addition
-      *      of MOCK FILE support; the framework's roadmap is
-      *      outside this project's scope.
-      *
-      *  Adopted CANONICAL pattern (documented per QA Issue #3)
-      *    Resolution path (b) per QA finding: this project's
-      *    canonical pattern for VSAM/sequential file mocking is
-      *    pre-set-WORKING-STORAGE.  TC6-TC8 below pre-set
-      *    CUSTFILE-STATUS implicitly via the GnuCOBOL runtime's
-      *    actual file-not-found behaviour at OPEN time (the
-      *    CUSTFILE dataset is not provisioned alongside the test
-      *    binary, so OPEN INPUT returns a non-'00' status code
-      *    and the production error pathway exercises live).  For
-      *    GET-NEXT / CLOSE coverage in a future release the
-      *    pattern would be: explicit MOVE '00' / '10' / '92'
-      *    TO CUSTFILE-STATUS prior to PERFORM, mirroring
-      *    tests/cobol-check/CBACT01C.cut TC1-TC8 and
-      *    tests/cobol-check/CBACT02C.cut TC1-TC8.
-      *
-      *    This pattern achieves identical functional coverage
-      *    to MOCK FILE (i.e., it deterministically drives every
-      *    branch of every file-status-dispatching production IF)
-      *    while remaining compatible with cobol-check 0.2.16's
-      *    actual capabilities.  It is preferred over a hard
-      *    dependency on a hypothetical future MOCK FILE feature.
+      *  Authoring MOCK FILE causes cobol-check to emit:
+      *      SYNTAX ERROR ... Unexpected token <MOCK>
+      *  Adopted canonical pattern: pre-set CUSTFILE-STATUS WS
+      *  field before PERFORM (mirrors CBACT01C.cut, CBACT02C.cut).
+      *  This achieves identical functional coverage to MOCK FILE.
       *
       *  External dependencies mocked or stubbed
       *  ---------------------------------------
-      *    * MOCK CALL 'CEE3ABD' (per-testcase, Local scope)
-      *      Replaces the IBM Language Environment CEE3ABD
-      *      callable abend service with a no-op CONTINUE body so
-      *      the test process is not torn down when the production
-      *      Z-ABEND-PROGRAM paragraph is reached.  cobol-check
-      *      0.2.16 binds the mock to the surrounding TESTCASE so
-      *      the matching VERIFY CALL 'CEE3ABD' clause inside the
-      *      same testcase resolves to the testcase-specific Local
-      *      mock with the testcase-specific expected count.
+      *    MOCK CALL 'CEE3ABD' (per-testcase, Local scope) replaces
+      *    the IBM LE abend service with a no-op.  Internal CBCUS01C
+      *    paragraphs (0000-CUSTFILE-OPEN, 1000-GET-NEXT, 9000-CLOSE,
+      *    Z-ABEND-PROGRAM, Z-DISPLAY-IO-STATUS) are NEVER mocked --
+      *    each TESTCASE PERFORMs the production paragraph LIVE
+      *    per AAP Section 0.10.1.
       *
-      *  Internal CBCUS01C paragraphs (0000-CUSTFILE-OPEN,
-      *  1000-CUSTFILE-GET-NEXT, 9000-CUSTFILE-CLOSE,
-      *  Z-ABEND-PROGRAM, Z-DISPLAY-IO-STATUS) are NEVER mocked.
-      *  Each TESTCASE exercises a production paragraph LIVE via
-      *  PERFORM so every assertion validates side effects of
-      *  actual production-code execution (per AAP Section 0.10.1
-      *  -- "Mock or stub ONLY external dependencies").
-      *
-      *  Mock placement rule
-      *  -------------------
-      *  Each MOCK CALL 'CEE3ABD' is declared INSIDE its TESTCASE
-      *  block (Local scope) so cobol-check binds the mock to the
-      *  current testcase name at registration time.  This
-      *  guarantees that the matching VERIFY clause in the same
-      *  testcase resolves to the per-testcase Local mock with the
-      *  per-testcase expected count.  The convention follows the
-      *  exemplar pattern in tests/cobol-check/CBSTM03A.cut TC6
-      *  and tests/cobol-check/COSGN00C.cut TC2-TC6.
-      *
-      *  Why no `COPY STUB-ABEND-FLAG.` at testsuite scope
-      *  -------------------------------------------------
+      *  Why no `COPY STUB-ABEND-FLAG.` at testsuite scope:
       *  cobol-check 0.2.16's TestSuiteParser does not recognise
-      *  file-scope COPY directives in .cut testsuites.  A bare
-      *  COPY at testsuite level is parsed as a fieldname token
-      *  and aborts the merge.  COPY directives are honoured only
-      *  inside MOCK ... END-MOCK bodies and inside the production
-      *  source itself.  Consequently the testsuite cannot
-      *  reference WS-ABEND-FLAG / WS-ABEND-CODE directly via
-      *  EXPECT clauses; the abend pathway is asserted instead via
-      *  VERIFY CALL 'CEE3ABD' HAPPENED ONCE.  The CEE3ABD stub at
-      *  tests/stubs/CEE3ABD.cbl is still pre-compiled and linked
-      *  into the merged binary by the runner script
-      *  tests/cobol-check/scripts/linux_gnucobol_run_tests so any
-      *  unmocked CALL 'CEE3ABD' (none in this testsuite, but a
-      *  defensive net for future TCs) resolves at load time and
-      *  GOBACKs without terminating the test process.  This
-      *  rationale matches the canonical exemplars in
-      *  tests/cobol-check/COUSR01C.cut and COTRN01C.cut.
+      *  file-scope COPY directives.  The abend pathway is asserted
+      *  via VERIFY CALL 'CEE3ABD' HAPPENED ONCE rather than direct
+      *  WS-ABEND-FLAG inspection.  The link-time CEE3ABD stub
+      *  provides safety for any unmocked invocation.
       *
       *  Test categories
       *  ---------------
-      *    TC1 - Z-DISPLAY-IO-STATUS formats numeric '23' as '0023'
-      *          via the ELSE branch (VSAM not-found-record code).
-      *    TC2 - Z-DISPLAY-IO-STATUS formats numeric '35' as '0035'
-      *          via the ELSE branch (VSAM open-no-file code).
-      *    TC3 - Z-DISPLAY-IO-STATUS handles status with first
-      *          byte '9' via the THEN branch; asserts
-      *          IO-STATUS-0401 = 9 (the IO-STAT1 character moved
-      *          into byte 1 by production line 164).
-      *    TC4 - Z-ABEND-PROGRAM sets ABCODE to literal 999
-      *          (production line 157: MOVE 999 TO ABCODE).
+      *    TC1 - Z-DISPLAY-IO-STATUS formats '23' as '0023' (ELSE).
+      *    TC2 - Z-DISPLAY-IO-STATUS formats '35' as '0035' (ELSE).
+      *    TC3 - Z-DISPLAY-IO-STATUS handles first-byte '9' (THEN).
+      *    TC4 - Z-ABEND-PROGRAM sets ABCODE to literal 999.
       *    TC5 - Z-ABEND-PROGRAM resets TIMING to literal 0
-      *          (production line 156: MOVE 0 TO TIMING).
-      *          Sentinel 7777 is MOVEd into TIMING in the
-      *          testcase prelude so the post-condition 0 is
-      *          observably the side effect of production-code
-      *          execution rather than an INITIALIZE artefact.
-      *    TC6 - 0000-CUSTFILE-OPEN with missing CUSTFILE leaves
-      *          CUSTFILE-STATUS != '00' (open failure observable).
-      *          Verifies the CEE3ABD-bound abend pathway was
-      *          reached exactly once via VERIFY HAPPENED ONCE.
-      *    TC7 - 0000-CUSTFILE-OPEN with missing CUSTFILE sets
-      *          APPL-RESULT to literal 12 (production line 124:
-      *          MOVE 12 TO APPL-RESULT in the CUSTFILE-STATUS-
-      *          mismatch ELSE branch).
-      *    TC8 - 0000-CUSTFILE-OPEN with missing CUSTFILE moves
-      *          CUSTFILE-STATUS into IO-STATUS along the error
-      *          path (production line 130: MOVE CUSTFILE-STATUS
-      *          TO IO-STATUS).
+      *          (sentinel 7777 in prelude proves side effect).
+      *    TC6 - 0000-CUSTFILE-OPEN failure -> CEE3ABD HAPPENED ONCE.
+      *    TC7 - 0000-CUSTFILE-OPEN failure -> APPL-RESULT 12.
+      *    TC8 - 0000-CUSTFILE-OPEN failure -> CUSTFILE-STATUS
+      *          MOVEd into IO-STATUS along error path.
       *
       *  References
       *  ----------
-      *    AAP Section 0.10.1 -- user directive on test structure
-      *    AAP Section 0.5.1  -- file-by-file test plan for CBCUS01C
-      *    AAP Section 0.7.1  -- CBCUS01C target coverage >= 75%
-      *    app/cbl/CBCUS01C.cbl lines 117-133 (0000-CUSTFILE-OPEN)
-      *    app/cbl/CBCUS01C.cbl lines 154-158 (Z-ABEND-PROGRAM)
-      *    app/cbl/CBCUS01C.cbl lines 161-174 (Z-DISPLAY-IO-STATUS)
-      *    tests/stubs/CEE3ABD.cbl  (linked LE abend stub)
-      *    tests/cobol-check/CBSTM03A.cut TC6 (CEE3ABD mock pattern)
-      *
+      *    AAP Sections 0.5.1, 0.7.1, 0.10.1
+      *    app/cbl/CBCUS01C.cbl L117-133, 154-158, 161-174
+      *    tests/stubs/CEE3ABD.cbl
+      *    tests/cobol-check/CBSTM03A.cut, CBACT01C.cut (sister)
       ******************************************************************
 
        TESTSUITE 'CBCUS01C CUSTOMER-FILE SEQUENTIAL DUMP'.

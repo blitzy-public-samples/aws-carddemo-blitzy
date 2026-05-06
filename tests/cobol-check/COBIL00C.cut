@@ -125,7 +125,7 @@
       *          AAP TC2 generalised to "Confirmation field invalid".
       *    TC6 - CLEAR-CURRENT-SCREEN orchestrates INITIALIZE +
       *          SEND.  Asserts INITIALIZE side effects + DFHEI1
-      *          HAPPENED AT LEAST 0 TIMES.
+      *          HAPPENED 0 TIMES.
       *
       *  Test user: USER0001 / USER role per AAP Section 0.10.2.
       *  COBIL00C does not implement role-based authorization at
@@ -275,7 +275,7 @@
       *    'CB00'     - WS-TRANID constant (production line 38)
       *                 MOVE'd by line 278
       *
-      *  VERIFY uses HAPPENED AT LEAST 0 TIMES so the testcase
+      *  VERIFY uses HAPPENED 0 TIMES so the testcase
       *  passes both off-platform (count 0) and on-platform (count
       *  >= 1 for the XCTL).
       ******************************************************************
@@ -288,7 +288,7 @@
             EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COBIL00C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CB00'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -339,7 +339,7 @@
             EXPECT CDEMO-TO-PROGRAM TO BE 'COMEN01C'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COBIL00C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CB00'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -441,7 +441,7 @@
       *    -1  - ACTIDINL flipped by production line 163 (cursor
       *          positioning on the account-id field)
       *
-      *  VERIFY uses HAPPENED AT LEAST 0 TIMES because PERFORM
+      *  VERIFY uses HAPPENED 0 TIMES because PERFORM
       *  SEND-BILLPAY-SCREEN's EXEC CICS SEND would be intercepted
       *  on-platform.
       ******************************************************************
@@ -452,7 +452,7 @@
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT ACTIDINL OF COBIL0AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -533,7 +533,7 @@
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT CONFIRML OF COBIL0AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -567,7 +567,7 @@
       *       TC6 PERFORMs the ORCHESTRATOR (proving dispatch chain
       *       does not break).
       *    2. TC3 asserts VERIFY DFHEI1 HAPPENED 0 TIMES (leaf has
-      *       no CICS); TC6 asserts HAPPENED AT LEAST 0 TIMES
+      *       no CICS); TC6 asserts HAPPENED 0 TIMES
       *       (orchestrator's second PERFORM reaches SEND).
       *    3. TC3 seeds all 4 input fields; TC6 seeds the same set
       *       (the orchestrator's clear is not data-dependent on
@@ -593,7 +593,7 @@
             EXPECT CURBALI OF COBIL0AI TO BE SPACES
             EXPECT CONFIRMI OF COBIL0AI TO BE SPACES
             EXPECT WS-MESSAGE TO BE SPACES
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  End of testsuite COBIL00C BILL PAY TRANSACTION                 *

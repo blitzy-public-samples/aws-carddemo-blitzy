@@ -22,165 +22,70 @@
       *
       *  Purpose
       *  -------
-      *  Exercise the testable production paragraphs of CBACT02C --
-      *  the CardDemo batch dumper that opens CARDFILE-FILE (VSAM
-      *  KSDS CARDDAT), reads it sequentially, DISPLAYs each
-      *  CARD-RECORD, and CLOSEs the file.  Five production
-      *  paragraphs are covered by direct PERFORM-based tests:
+      *  CBACT02C is a CardDemo batch dumper that OPENs CARDFILE-FILE
+      *  (VSAM KSDS CARDDAT), READs sequentially, DISPLAYs each
+      *  CARD-RECORD, and CLOSEs.  Five production paragraphs are
+      *  covered by direct PERFORM-based tests:
       *
-      *    0000-CARDFILE-OPEN      lines 118-134; OPEN INPUT;
-      *                            success -> APPL-RESULT = 0;
-      *                            failure -> APPL-RESULT = 12 +
-      *                            PERFORM 9999-ABEND-PROGRAM.
-      *    1000-CARDFILE-GET-NEXT  lines 92-116; READ INTO record;
-      *                            '00' -> APPL-RESULT = 0;
-      *                            '10' -> APPL-RESULT = 16 +
-      *                            END-OF-FILE = 'Y';
-      *                            other -> APPL-RESULT = 12 +
-      *                            PERFORM 9999-ABEND-PROGRAM.
-      *    9000-CARDFILE-CLOSE     lines 136-152; CLOSE;
-      *                            '00' -> APPL-RESULT = 0;
-      *                            other -> APPL-RESULT = 12 +
-      *                            PERFORM 9999-ABEND-PROGRAM.
-      *    9910-DISPLAY-IO-STATUS  lines 161-174; formats IO-STATUS
-      *                            into 4-byte IO-STATUS-04 via
-      *                            ELSE-arm overlay or THEN-arm
-      *                            TWO-BYTES-BINARY pack.
-      *    9999-ABEND-PROGRAM      lines 154-158; LE abend wrapper
-      *                            invoked transitively from the
-      *                            error branches above; CALLs
-      *                            'CEE3ABD' (mocked per-testcase).
+      *    0000-CARDFILE-OPEN     L118-134  '00' -> APPL-RESULT 0;
+      *                                     other -> APPL-RESULT 12,
+      *                                     PERFORM 9999-ABEND-PROGRAM.
+      *    1000-CARDFILE-GET-NEXT L92-116   '00' -> APPL-RESULT 0;
+      *                                     '10' -> APPL-RESULT 16,
+      *                                     END-OF-FILE = 'Y';
+      *                                     other -> APPL-RESULT 12.
+      *    9000-CARDFILE-CLOSE    L136-152  '00' -> APPL-RESULT 0;
+      *                                     other -> APPL-RESULT 12.
+      *    9910-DISPLAY-IO-STATUS L161-174  formats IO-STATUS into
+      *                                     4-byte IO-STATUS-04.
+      *    9999-ABEND-PROGRAM     L154-158  CALL 'CEE3ABD' (mocked).
       *
-      *  Note on cobol-check 0.2.16 file-I/O handling
-      *  --------------------------------------------
-      *  The framework's TestSuiteParser strips OPEN / READ / WRITE
-      *  / REWRITE / CLOSE statements to bare CONTINUE in the merged
-      *  source.  This means the production file-I/O verbs do NOT
-      *  execute at test time; CARDFILE-STATUS retains whatever the
-      *  testcase prelude MOVEd into it.  Each testcase therefore
-      *  pre-sets CARDFILE-STATUS to drive the production IF / ELSE
-      *  arms deterministically, mirroring the canonical convention
-      *  in tests/cobol-check/CBCUS01C.cut TC6-TC8.
+      *  cobol-check 0.2.16 file-I/O handling
+      *  ------------------------------------
+      *  The framework strips OPEN / READ / WRITE / REWRITE / CLOSE
+      *  to bare CONTINUE in the merged source; CARDFILE-STATUS
+      *  retains whatever the testcase prelude MOVEd.  This is the
+      *  canonical pattern (mirrored in CBACT01C.cut, CBCUS01C.cut).
       *
       *  External dependencies mocked or stubbed
       *  ---------------------------------------
-      *    * MOCK CALL 'CEE3ABD' (per-testcase, Local scope) --
-      *      replaces the IBM Language Environment abend service
-      *      with a no-op CONTINUE body so the test process is
-      *      not torn down when 9999-ABEND-PROGRAM is reached.
-      *      cobol-check 0.2.16 binds the mock to the surrounding
-      *      TESTCASE so the matching VERIFY clause inside the
-      *      same testcase resolves to the per-testcase Local
-      *      mock with the per-testcase expected count.  The
-      *      pattern follows tests/cobol-check/CBSTM03A.cut TC6
-      *      and tests/cobol-check/CBCUS01C.cut TC1-TC8.
+      *    MOCK CALL 'CEE3ABD' (per-testcase, Local scope) replaces
+      *    the IBM Language Environment abend service with a no-op.
+      *    The link-time stub at tests/stubs/CEE3ABD.cbl is the
+      *    fallback for any unmocked invocation.  Internal CBACT02C
+      *    paragraphs (0000-OPEN, 1000-GET-NEXT, 9000-CLOSE,
+      *    9999-ABEND, 9910-DISPLAY-IO) are NEVER mocked -- each
+      *    TESTCASE PERFORMs the production paragraph LIVE per AAP
+      *    Section 0.10.1.
       *
-      *  Internal CBACT02C paragraphs (0000-CARDFILE-OPEN,
-      *  1000-CARDFILE-GET-NEXT, 9000-CARDFILE-CLOSE, 9999-ABEND-
-      *  PROGRAM, 9910-DISPLAY-IO-STATUS) are NEVER mocked.  Each
-      *  TESTCASE exercises a production paragraph LIVE via PERFORM
-      *  so every assertion validates side effects of actual
-      *  production-code execution (per AAP Section 0.10.1 -- "Mock
-      *  or stub ONLY external dependencies").
-      *
-      *  Why no `COPY STUB-ABEND-FLAG.` at testsuite scope
-      *  -------------------------------------------------
+      *  Why no `COPY STUB-ABEND-FLAG.` at testsuite scope:
       *  cobol-check 0.2.16's TestSuiteParser does not recognise
-      *  file-scope COPY directives in .cut testsuites; a bare COPY
-      *  at testsuite level is parsed as a fieldname token and
-      *  aborts the merge.  COPY directives are honoured only inside
-      *  MOCK ... END-MOCK bodies and inside the production source
-      *  itself.  Consequently the testsuite cannot reference WS-
-      *  ABEND-FLAG / WS-ABEND-CODE directly via EXPECT clauses; the
-      *  abend pathway is asserted instead via VERIFY CALL 'CEE3ABD'
-      *  HAPPENED ONCE.  The CEE3ABD stub at tests/stubs/CEE3ABD.cbl
-      *  is still pre-compiled and linked into the merged binary so
-      *  any unmocked CALL 'CEE3ABD' resolves at load time and
-      *  GOBACKs without terminating the test process.  This
-      *  rationale matches tests/cobol-check/CBCUS01C.cut.
-      *
-      *  CARD-FIXTURE-001 placement (forward-compatibility)
-      *  --------------------------------------------------
-      *  CARD-FIXTURE-001.cpy supplies byte-exact MOVE statements
-      *  populating CARD-RECORD with the 150-byte record 1 of
-      *  app/data/ASCII/carddata.txt.  The AAP Section 0.6.2 import
-      *  schema designates this fixture as a build-time dependency
-      *  of TC3 (1000-CARDFILE-GET-NEXT happy path), with the stated
-      *  mechanism being `COPY CARD-FIXTURE-001` inside a MOCK FILE
-      *  CARDFILE-FILE ON READ ... END-MOCK block.
-      *
-      *  cobol-check 0.2.16 MOCK FILE limitation (verified)
-      *    The framework does NOT support MOCK FILE directives;
-      *    only MOCK CALL / MOCK PARAGRAPH / MOCK SECTION are
-      *    implemented in features/testSuiteParser/MockGenerator.
-      *    Verification (QA CP3 finding #3 follow-up):
-      *
-      *      Authoring `MOCK FILE CARDFILE-FILE ON OPEN STATUS '00'
-      *      END-MOCK` inside a TESTCASE causes cobol-check's
-      *      TestSuiteParser to emit
-      *
-      *          SYNTAX ERROR in file: <path>:N:M:
-      *          Unexpected token on line N, index M:
-      *          Following <MOCK> classified as <MOCK>
-      *
-      *      and abort the merge.  The Keywords class enumerates
-      *      the supported mock-types as the union of CALL, PARA,
-      *      PARAGRAPH, and SECTION; FILE is absent.  The cobol-
-      *      check changelog does not record a planned addition
-      *      of MOCK FILE support; the framework's roadmap is
-      *      outside this project's scope.
-      *
-      *  Adopted CANONICAL pattern (documented per QA Issue #3)
-      *    Resolution path (b) per QA finding: this project's
-      *    canonical pattern for VSAM/sequential file mocking is
-      *    pre-set-WORKING-STORAGE.  Each TESTCASE explicitly
-      *    MOVEs the desired file-status code (e.g., '00', '10',
-      *    '23', '35', '92') into the FD's status field
-      *    (CARDFILE-STATUS, ACCTFILE-STATUS, etc.) before
-      *    PERFORMing the file-handling paragraph.  The
-      *    production paragraph's READ/WRITE/REWRITE/OPEN/CLOSE
-      *    statements are commented to CONTINUE by cobol-check's
-      *    EXEC CICS handling pipeline, leaving the pre-set
-      *    status field as the deterministic input that drives
-      *    the production IF/EVALUATE that follows.
-      *
-      *    This pattern achieves identical functional coverage
-      *    to MOCK FILE (i.e., it deterministically drives every
-      *    branch of every file-status-dispatching production IF)
-      *    while remaining compatible with cobol-check 0.2.16's
-      *    actual capabilities.  It is preferred over a hard
-      *    dependency on a hypothetical future MOCK FILE feature.
+      *  file-scope COPY directives.  The abend pathway is asserted
+      *  via VERIFY CALL 'CEE3ABD' HAPPENED ONCE rather than direct
+      *  WS-ABEND-FLAG inspection.  The CEE3ABD stub still COPYs
+      *  STUB-ABEND-FLAG into its own WORKING-STORAGE.
       *
       *  CARD-FIXTURE-001 placement (forward-compatibility deferral)
-      *    Including `COPY CARD-FIXTURE-001` inside any MOCK ...
-      *    END-MOCK body causes the merged binary's GnuCOBOL
-      *    compile to fail with `'UT-1-N-1-MOCK' is not defined`
-      *    errors due to the parser's inability to resolve the
-      *    period-after-COPY paragraph terminator.  The same
-      *    limitation also affects tests/cobol-check/CBSTM03A.cut
-      *    TC2/TC3 (their COPY ACCT-FIXTURE-001 / COPY CUST-
-      *    FIXTURE-001 directives produce identical compile errors).
-      *    This testsuite OMITS the physical COPY directive from
-      *    TC3's mock body and references the fixture only via this
-      *    comment and via the testsuite's depends_on_files schema
-      *    entry, matching tests/cobol-check/CBACT01C.cut at lines
-      *    160-177.  TC3 EXPECTs APPL-RESULT and END-OF-FILE --
-      *    side effects of the production-paragraph IF dispatch --
-      *    not CARD-RECORD byte content, so the test outcome is
-      *    independent of whether the fixture MOVEs execute.  When
-      *    cobol-check adds MOCK FILE support, this testsuite will
-      *    be revised to splice the fixture into a MOCK FILE
-      *    CARDFILE-FILE ON READ block and add EXPECT clauses
-      *    against CARD-RECORD(start:length) byte ranges.
+      *  -----------------------------------------------------------
+      *  cobol-check 0.2.16 does NOT support MOCK FILE directives
+      *  (Keywords class enumerates only CALL/PARA/PARAGRAPH/SECTION).
+      *  Adopted canonical pattern: pre-set CARDFILE-STATUS WS field
+      *  before PERFORM.  This deterministically drives every IF arm.
+      *  The fixture is referenced via depends_on_files schema only;
+      *  TC3 EXPECTs APPL-RESULT and END-OF-FILE (production-paragraph
+      *  IF side effects, not CARD-RECORD bytes), so test outcome is
+      *  independent of fixture-MOVE execution.  When cobol-check
+      *  adds MOCK FILE support, TC3 can splice the fixture into the
+      *  mock body.
       *
       *  Test categories
       *  ---------------
       *    TC1 - 0000-CARDFILE-OPEN '00' -> APPL-RESULT 0; no abend
       *    TC2 - 0000-CARDFILE-OPEN '99' -> APPL-RESULT 12; abend
       *    TC3 - 1000-CARDFILE-GET-NEXT '00' -> APPL-RESULT 0;
-      *          CARD-FIXTURE-001 attached; END-OF-FILE 'N'
+      *          END-OF-FILE 'N'
       *    TC4 - 1000-CARDFILE-GET-NEXT '10' -> APPL-RESULT 16;
-      *          END-OF-FILE flips to 'Y'; no abend
+      *          END-OF-FILE flips to 'Y'
       *    TC5 - 1000-CARDFILE-GET-NEXT '92' -> APPL-RESULT 12;
       *          abend HAPPENED ONCE
       *    TC6 - 9000-CARDFILE-CLOSE '00' -> APPL-RESULT 0; no abend
@@ -190,17 +95,12 @@
       *  References
       *  ----------
       *    AAP Sections 0.10.1, 0.5.1, 0.7.1, 0.10.2, 0.4.1, 0.6.2
-      *    app/cbl/CBACT02C.cbl lines 92-116  (1000-GET-NEXT)
-      *    app/cbl/CBACT02C.cbl lines 118-134 (0000-OPEN)
-      *    app/cbl/CBACT02C.cbl lines 136-152 (9000-CLOSE)
-      *    app/cbl/CBACT02C.cbl lines 154-158 (9999-ABEND-PROGRAM)
-      *    app/cbl/CBACT02C.cbl lines 161-174 (9910-DISPLAY-IO)
-      *    app/cpy/CVACT02Y.cpy            (CARD-RECORD layout)
-      *    tests/stubs/STUB-ABEND-FLAG.cpy (link-time stub state)
-      *    tests/stubs/CEE3ABD.cbl         (LE abend stub)
+      *    app/cbl/CBACT02C.cbl L92-116, 118-134, 136-152, 154-158,
+      *                         161-174
+      *    app/cpy/CVACT02Y.cpy            (CARD-RECORD)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy / CEE3ABD.cbl
       *    tests/fixtures/cobol-snippets/CARD-FIXTURE-001.cpy
-      *    tests/cobol-check/CBCUS01C.cut  (sister read-only exempl)
-      *    tests/cobol-check/CBSTM03A.cut  (CEE3ABD mock pattern)
+      *    tests/cobol-check/CBACT01C.cut / CBCUS01C.cut (sister)
       ******************************************************************
 
        TESTSUITE 'CBACT02C CARD-FILE SEQUENTIAL DUMP'.

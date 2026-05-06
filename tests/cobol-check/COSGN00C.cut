@@ -245,7 +245,7 @@
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT WS-MESSAGE TO BE 'Please enter User ID ...'
             EXPECT USERIDL OF COSGN0AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -304,7 +304,7 @@
             EXPECT CDEMO-USER-ID TO BE 'ADMIN001'
             EXPECT CDEMO-USER-TYPE TO BE 'A'
             EXPECT CDEMO-PGM-CONTEXT TO BE 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -359,7 +359,7 @@
             EXPECT CDEMO-USER-ID TO BE 'USER0001'
             EXPECT CDEMO-USER-TYPE TO BE 'U'
             EXPECT CDEMO-PGM-CONTEXT TO BE 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -410,7 +410,7 @@
             EXPECT WS-ERR-FLG TO BE 'N'
             EXPECT WS-MESSAGE TO BE 'Wrong Password. Try again ...'
             EXPECT PASSWDL OF COSGN0AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -460,7 +460,7 @@
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT WS-MESSAGE TO BE 'User not found. Try again ...'
             EXPECT USERIDL OF COSGN0AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************
@@ -519,7 +519,7 @@
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT WS-MESSAGE TO BE 'Unable to verify the User ...'
             EXPECT USERIDL OF COSGN0AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
       ******************************************************************

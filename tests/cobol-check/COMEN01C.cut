@@ -286,7 +286,7 @@
             EXPECT CDEMO-FROM-TRANID TO BE 'CM00'
             EXPECT CDEMO-PGM-CONTEXT TO BE 0
             EXPECT WS-ERR-FLG TO BE 'N'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC2 -- PROCESS-ENTER-KEY option 03 routes to COCRDLIC
@@ -340,7 +340,7 @@
             EXPECT CDEMO-FROM-TRANID TO BE 'CM00'
             EXPECT CDEMO-PGM-CONTEXT TO BE 0
             EXPECT WS-ERR-FLG TO BE 'N'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC3 -- PROCESS-ENTER-KEY option 06 routes to COTRN00C
@@ -392,7 +392,7 @@
             EXPECT CDEMO-FROM-TRANID TO BE 'CM00'
             EXPECT CDEMO-PGM-CONTEXT TO BE 0
             EXPECT WS-ERR-FLG TO BE 'N'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC4 -- PROCESS-ENTER-KEY option 10 routes to COBIL00C
@@ -443,7 +443,7 @@
             EXPECT CDEMO-FROM-TRANID TO BE 'CM00'
             EXPECT CDEMO-PGM-CONTEXT TO BE 0
             EXPECT WS-ERR-FLG TO BE 'N'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
 
@@ -523,7 +523,7 @@
             EXPECT OPTIONO OF COMEN1AO TO BE '12'
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT WS-MESSAGE TO BE 'Please enter a valid option number...'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC6 -- RETURN-TO-SIGNON-SCREEN substitutes default and XCTLs
@@ -569,7 +569,7 @@
       *  CALL 'DFHEI1' with the XCTL command-block).  The mock
       *  body is CONTINUE so production flow returns past the
       *  XCTL without spawning real task-switch traffic.  VERIFY
-      *  uses HAPPENED AT LEAST 0 TIMES so the testcase passes
+      *  uses HAPPENED 0 TIMES so the testcase passes
       *  both off-platform (count=0) and on-platform (count>=1).
       ******************************************************************
        TESTCASE 'COMEN01C RETURN-TO-SIGNON-SCREEN defaults to COSGN00C'
@@ -579,7 +579,7 @@
             END-MOCK
             PERFORM RETURN-TO-SIGNON-SCREEN
             EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  End of testsuite COMEN01C MAIN MENU TRANSACTION

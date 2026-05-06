@@ -307,7 +307,7 @@
             EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COUSR02C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CU02'
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC2 -- INITIALIZE-ALL-FIELDS clears the map and message
@@ -420,7 +420,7 @@
             PERFORM PROCESS-ENTER-KEY
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT USRIDINL OF COUSR2AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC4 -- UPDATE-USER-INFO rejects empty PASSWORD
@@ -496,7 +496,7 @@
             PERFORM UPDATE-USER-INFO
             EXPECT WS-ERR-FLG TO BE 'Y'
             EXPECT PASSWDL OF COUSR2AI NOT = 0
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  TC5 -- CLEAR-CURRENT-SCREEN orchestrates INITIALIZE + SEND
@@ -546,7 +546,7 @@
             EXPECT USRIDINI OF COUSR2AI TO BE SPACES
             EXPECT PASSWDI OF COUSR2AI TO BE SPACES
             EXPECT WS-MESSAGE TO BE SPACES
-            VERIFY CALL 'DFHEI1' HAPPENED AT LEAST 0 TIMES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************
       *  End of testsuite COUSR02C UPDATE USER ADMIN TRANSACTION
