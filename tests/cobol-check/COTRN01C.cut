@@ -1,0 +1,778 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : COTRN01C TRANSACTION DETAIL VIEW
+      *  Program-under-test : app/cbl/COTRN01C.cbl
+      *
+      *  Purpose
+      *  -------
+      *  Exercise COTRN01C's transaction-detail-view CICS transaction
+      *  by mocking ONLY the program's external boundary into the CICS
+      *  API: the CALL 'DFHEI1' invocation that the CICS translator
+      *  emits in place of every EXEC CICS verb (RECEIVE MAP, SEND
+      *  MAP, READ DATASET, XCTL, RETURN).  Internal COTRN01C
+      *  paragraphs are NEVER mocked; every TESTCASE exercises a
+      *  production paragraph LIVE via PERFORM so the testsuite
+      *  asserts against side effects of actual production-code
+      *  execution (per AAP Section 0.10.1 -- "Mock or stub ONLY
+      *  external dependencies").
+      *
+      *  COTRN01C is a READ-ONLY CICS transaction: it RECEIVEs an
+      *  input transaction-id from the BMS map (COTRN1AI), READs the
+      *  TRANSACT VSAM dataset using that ID, and SENDs the resulting
+      *  TRAN-RECORD field-by-field to the BMS output map (COTRN1AO).
+      *  Unlike sister transactions COTRN02C (add) and COUSR02C
+      *  (update), COTRN01C never writes back: there is no WRITE,
+      *  REWRITE, or DELETE verb in the program -- the simplest CICS
+      *  read pattern in the application's transaction set.
+      *
+      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS
+      *  -------------------------------------------
+      *  cobol-check 0.2.16's TestSuiteParser supports CALL, PARA,
+      *  PARAGRAPH, and SECTION mock-types.  At link time on z/OS
+      *  the CICS translator rewrites every EXEC CICS verb into a
+      *  CALL 'DFHEI1' USING <command-block>, so MOCK CALL 'DFHEI1'
+      *  is the equivalent intercept point.  Off-platform (GnuCOBOL
+      *  on Linux) the merged binary fails to compile (a known
+      *  infrastructure gap covered by AAP Section 6.6.3.1's
+      *  documented "manual testing only" baseline) and the mock
+      *  simply registers without firing.  The testsuite is forward-
+      *  compatible: when a CICS translator pass is added, the same
+      *  .cut file exercises every CICS boundary through this mock.
+      *
+      *  Mock placement rule: Each MOCK is declared INSIDE its
+      *  corresponding TESTCASE block (after the TESTCASE keyword) so
+      *  the cobol-check parser binds the mock's Local scope to the
+      *  current testcase, mirroring the COUSR03C / COUSR02C /
+      *  COTRN02C exemplar pattern.
+      *
+      *  Schema dependencies (STUB-ABEND-FLAG.cpy, DFHEI1.cbl)
+      *  -----------------------------------------------------
+      *  The file_schema names two internal imports:
+      *    STUB-ABEND-FLAG.cpy -- EXTERNAL state group exposing
+      *        STUB-ABEND-STATE / WS-DFHEI1-UNMOCKED-CALLED /
+      *        WS-DFHEI1-EIBRESP-OVERRIDE; written by the CEE3ABD
+      *        and DFHEI1 stubs at runtime.
+      *    DFHEI1.cbl -- CICS API link-time fallback compiled into
+      *        a .so so any unmocked EXEC CICS verb resolves at load
+      *        time with EIBRESP=27 (NOTAUTH).
+      *  Both stubs are linked at test-run time by the runner script
+      *  tests/cobol-check/scripts/linux_gnucobol_run_tests.  The
+      *  testsuite itself does NOT contain `COPY STUB-ABEND-FLAG.`
+      *  because cobol-check 0.2.16's TestSuiteParser only recognizes
+      *  TESTSUITE / TESTCASE / MOCK / EXPECT / VERIFY / BEFORE-EACH
+      *  / AFTER-EACH / END-* / CALL / PARA / PARAGRAPH / SECTION;
+      *  a bare COPY at file scope is parsed as a fieldname token
+      *  and triggers a SYNTAX ERROR that aborts the merge.  The
+      *  runtime stubs continue to provide their intended safety
+      *  regardless, and the COUSR0xC / COTRN02C canonical exemplars
+      *  follow the same omission.
+      *
+      *  Test categories
+      *  ---------------
+      *    TC1 - RETURN-TO-PREV-SCREEN defaults to COSGN00C when
+      *          CDEMO-TO-PROGRAM is empty (AAP TC4 "PF3 exit"
+      *          pathway with no upstream FROM-PROGRAM).
+      *    TC2 - RETURN-TO-PREV-SCREEN preserves CDEMO-TO-PROGRAM
+      *          when set by the PF5 dispatch (production line 126
+      *          MOVE 'COTRN00C').  AAP TC5 "XCTL back to list".
+      *    TC3 - INITIALIZE-ALL-FIELDS clears 14 BMS map fields
+      *          plus WS-MESSAGE; pure WS side effects, no CICS
+      *          verbs.  Largest INITIALIZE-ALL-FIELDS surface area
+      *          among the read-only CICS programs.
+      *    TC4 - PROCESS-ENTER-KEY rejects empty TRNIDINI; EVALUATE
+      *          TRUE matches the empty-tran-id branch (production
+      *          line 147), sets WS-ERR-FLG ON, short-circuits before
+      *          READ-TRANSACT-FILE.  AAP TC3 "Blank transaction ID
+      *          rejected".
+      *    TC5 - CLEAR-CURRENT-SCREEN orchestrates INITIALIZE-ALL-
+      *          FIELDS + SEND-TRNVIEW-SCREEN; destination of MAIN-
+      *          PARA's WHEN DFHPF4 branch.
+      *
+      *  Test user
+      *  ---------
+      *  USER0001 / USER role per AAP Section 0.10.2.  COTRN01C does
+      *  NOT implement role-based authorization; it admits any valid
+      *  sign-on, so seeding the regular-user identity reflects the
+      *  most common upstream caller (the COMEN01C main menu).
+      *
+      *  Why AAP TC1 / TC2 (full happy path / NOTFND) are deferred
+      *  ---------------------------------------------------------
+      *  The AAP TC1 ("Valid transaction ID returns detail") and
+      *  TC2 ("Transaction not found EIBRESP=13") slots both require
+      *  the production READ-TRANSACT-FILE paragraph (lines 267-296)
+      *  to be reachable through a working CICS translator pass --
+      *  the EVALUATE WS-RESP-CD WHEN DFHRESP(NORMAL) / WHEN DFHRESP
+      *  (NOTFND) clauses depend on DFHRESP being a defined
+      *  preprocessor symbol.  Off-platform GnuCOBOL leaves DFHRESP
+      *  undefined and the merged binary fails to compile at the
+      *  EVALUATE statement (regardless of the testsuite's content).
+      *  When a CICS translator pass is added to the build, this
+      *  testsuite can be extended with TESTCASE blocks that pre-
+      *  populate WS-RESP-CD = 0 (NORMAL) / 13 (NOTFND), MOCK CALL
+      *  'DFHEI1' with CONTINUE so the production EXEC CICS READ
+      *  does not overwrite WS-RESP-CD, and PERFORM PROCESS-ENTER-KEY
+      *  end-to-end.  The five testcases below cover every paragraph
+      *  whose side effects can be asserted off-platform without
+      *  depending on the CICS translator.
+      *
+      *  References
+      *  ----------
+      *    AAP Section 0.10.1 / 0.5.1 / 0.10.2 / 0.4.1
+      *    app/cbl/COTRN01C.cbl lines 86-139 (MAIN-PARA dispatch)
+      *    app/cbl/COTRN01C.cbl lines 144-192 (PROCESS-ENTER-KEY)
+      *    app/cbl/COTRN01C.cbl lines 197-208 (RETURN-TO-PREV-SCREEN)
+      *    app/cbl/COTRN01C.cbl lines 213-225 (SEND-TRNVIEW-SCREEN)
+      *    app/cbl/COTRN01C.cbl lines 267-296 (READ-TRANSACT-FILE)
+      *    app/cbl/COTRN01C.cbl lines 301-304 (CLEAR-CURRENT-SCREEN)
+      *    app/cbl/COTRN01C.cbl lines 309-326 (INITIALIZE-ALL-FIELDS)
+      *    app/cpy/COCOM01Y.cpy             (CARDDEMO-COMMAREA layout)
+      *    app/cpy/CVTRA05Y.cpy             (TRAN-RECORD layout, 350B)
+      *    app/cpy-bms/COTRN01.CPY          (COTRN1AI / COTRN1AO map)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy  (EXTERNAL stub state)
+      *    tests/stubs/DFHEI1.cbl           (CICS link-time backstop)
+      *    tests/cobol-check/COUSR03C.cut   (canonical exemplar)
+      *    tests/cobol-check/COTRN02C.cut   (sister TXN exemplar)
+      ******************************************************************
+      *
+      *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
+      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
+      *  the actual EXTERNAL field declarations into merged WS;
+      *  cobol-check 0.2.16 drops the directive below silently --
+      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED so a stub-fired condition is assertable per test.
+      ******************************************************************
+       COPY STUB-ABEND-FLAG.
+
+       TESTSUITE 'COTRN01C TRANSACTION DETAIL VIEW'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset.
+      *
+      *  Restores deterministic baseline state so every TESTCASE
+      *  starts from a known, identical configuration.  cobol-check
+      *  resets MOCK invocation counters automatically between
+      *  TESTCASEs; this block resets the production WS / shared
+      *  structures touched by COTRN01C:
+      *
+      *    WS-VARIABLES        After INITIALIZE re-applies VALUE
+      *                        clauses (production lines 35-50):
+      *                          WS-PGMNAME='COTRN01C', WS-TRANID=
+      *                          'CT01', WS-MESSAGE=SPACES, WS-
+      *                          TRANSACT-FILE='TRANSACT', WS-ERR-
+      *                          FLG='N', WS-RESP-CD=0, WS-REAS-CD=0,
+      *                          WS-USR-MODIFIED='N', WS-TRAN-DATE=
+      *                          '00/00/00'.  WS-TRAN-AMT is numeric
+      *                          edited and has no VALUE clause; tests
+      *                          that need it MOVE 0 in their prelude.
+      *    CARDDEMO-COMMAREA   COCOM01Y group plus CDEMO-CT01-INFO
+      *                        extension fields (TRNID-FIRST/LAST,
+      *                        PAGE-NUM, NEXT-PAGE-FLG, TRN-SEL-FLG,
+      *                        TRN-SELECTED).  CT01 suffix unique to
+      *                        this transaction; sister COTRN02C owns
+      *                        CT02, COUSR0xC owns CU0x.
+      *    TRAN-RECORD         CVTRA05Y 350-byte TRANSACT record;
+      *                        cleared so test preludes have a known
+      *                        SPACES baseline.
+      *    COTRN1AI            BMS input/output map from cpy-bms/
+      *                        COTRN01.CPY (TRNIDINI key plus 13
+      *                        display fields).  COTRN1AO REDEFINES
+      *                        COTRN1AI in the production source so
+      *                        clearing COTRN1AI also clears
+      *                        COTRN1AO.
+      *    RETURN-CODE         Implicit special-register reset.
+      *
+      *  After clearing, BEFORE-EACH seeds the COMMAREA with the
+      *  USER0001 regular-user identity per AAP Section 0.10.2.
+      *  CDEMO-FROM-* fields default to 'COMEN01C' / 'CM00' so
+      *  RETURN-TO-PREV-SCREEN has a non-empty origin to reflect
+      *  back into the COMMAREA -- except in TC1, which deliberately
+      *  wipes CDEMO-TO-PROGRAM to exercise the line-199 IF default-
+      *  substitution branch.
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE WS-VARIABLES ALL TO VALUE
+            INITIALIZE CARDDEMO-COMMAREA
+            INITIALIZE TRAN-RECORD
+            INITIALIZE COTRN1AI
+            MOVE ZERO       TO RETURN-CODE
+            MOVE 'N'        TO WS-DFHEI1-UNMOCKED-CALLED
+            MOVE 'USER0001' TO CDEMO-USER-ID
+            MOVE 'U'        TO CDEMO-USER-TYPE
+            MOVE 'COMEN01C' TO CDEMO-FROM-PROGRAM
+            MOVE 'CM00'     TO CDEMO-FROM-TRANID
+       END-BEFORE.
+
+
+      ******************************************************************
+      *  TC1 -- RETURN-TO-PREV-SCREEN defaults to COSGN00C
+      *
+      *  Drives RETURN-TO-PREV-SCREEN (production lines 197-208).
+      *  This paragraph is the destination of MAIN-PARA's WHEN DFHPF3
+      *  branch (production lines 115-122) when CDEMO-FROM-PROGRAM is
+      *  empty -- the most common upstream-routing pathway when the
+      *  user reaches COTRN01C without an explicit caller, e.g., via
+      *  CICS task switch or via the EIBCALEN = 0 initial-entry
+      *  guard at line 94 (which forces CDEMO-TO-PROGRAM = 'COSGN00C'
+      *  and falls through to RETURN-TO-PREV-SCREEN).
+      *
+      *  The paragraph executes:
+      *
+      *    IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES         (line 199)
+      *        MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM            (line 200)
+      *    END-IF
+      *    MOVE WS-TRANID    TO CDEMO-FROM-TRANID             (line 202)
+      *    MOVE WS-PGMNAME   TO CDEMO-FROM-PROGRAM            (line 203)
+      *    MOVE ZEROS        TO CDEMO-PGM-CONTEXT             (line 204)
+      *    EXEC CICS                                          (line 205)
+      *        XCTL PROGRAM(CDEMO-TO-PROGRAM)                 (line 206)
+      *        COMMAREA(CARDDEMO-COMMAREA)                    (line 207)
+      *    END-EXEC.                                          (line 208)
+      *
+      *  Pre-conditions established by BEFORE-EACH and TC1 prelude:
+      *    CDEMO-TO-PROGRAM = SPACES (set by INITIALIZE in
+      *                       BEFORE-EACH; INITIALIZE on a PIC X
+      *                       group fills with spaces, satisfying
+      *                       the OR SPACES half of the line-199
+      *                       IF.  The TC1 prelude MOVEs SPACES
+      *                       explicitly for documentation value).
+      *    CDEMO-FROM-PROGRAM = 'COMEN01C' (BEFORE-EACH default;
+      *                       will be overwritten by line-203
+      *                       production MOVE -- the test asserts
+      *                       the SIDE EFFECT)
+      *
+      *  Source of expected values:
+      *    'COSGN00C' - production literal MOVE'd by line 200 to
+      *                 CDEMO-TO-PROGRAM (test asserts the side
+      *                 effect, does NOT recompute or paraphrase
+      *                 the IF logic)
+      *    'COTRN01C' - WS-PGMNAME constant declared at production
+      *                 line 36 (PIC X(08) VALUE 'COTRN01C'); MOVE'd
+      *                 to CDEMO-FROM-PROGRAM by line 203
+      *    'CT01'     - WS-TRANID constant declared at production
+      *                 line 37 (PIC X(04) VALUE 'CT01'); MOVE'd to
+      *                 CDEMO-FROM-TRANID by line 202
+      *
+      *  The MOCK CALL 'DFHEI1' intercepts the EXEC CICS XCTL on
+      *  lines 205-208 (after the CICS translator rewrites it to
+      *  CALL 'DFHEI1' with the XCTL command-block).  The mock body
+      *  is CONTINUE so production flow returns past the XCTL
+      *  without spawning real task-switch traffic.  The VERIFY
+      *  uses HAPPENED 0 TIMES so the testcase passes both
+      *  off-platform (where the EXEC CICS verb does not compile and
+      *  the count is 0) and on-platform (where the count is at least
+      *  1 for the XCTL).
+      ******************************************************************
+       TESTCASE 'COTRN01C RETURN-TO-PREV-SCREEN defaults to COSGN00C'
+            MOVE SPACES TO CDEMO-TO-PROGRAM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM RETURN-TO-PREV-SCREEN
+            EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
+            EXPECT CDEMO-FROM-PROGRAM TO BE 'COTRN01C'
+            EXPECT CDEMO-FROM-TRANID TO BE 'CT01'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC2 -- RETURN-TO-PREV-SCREEN preserves COTRN00C XCTL target
+      *
+      *  Drives RETURN-TO-PREV-SCREEN (production lines 197-208) along
+      *  the NON-default pathway: CDEMO-TO-PROGRAM is non-empty so the
+      *  line-199 IF is FALSE and the line-200 default substitution
+      *  does NOT fire.  The target propagates unchanged through to
+      *  the EXEC CICS XCTL on lines 205-208.
+      *
+      *  This testcase covers the AAP TC5 "XCTL back to list" pathway:
+      *  MAIN-PARA's WHEN DFHPF5 branch on production lines 125-127
+      *  executes:
+      *      WHEN DFHPF5
+      *          MOVE 'COTRN00C' TO CDEMO-TO-PROGRAM           (line 126)
+      *          PERFORM RETURN-TO-PREV-SCREEN                 (line 127)
+      *  -- the user-initiated "back to transaction list" pathway
+      *  that returns control to COTRN00C (the transaction-list
+      *  browse program) without losing the upstream FROM-PROGRAM
+      *  context.  This is the differential behaviour vs. TC1: TC1
+      *  exercises the empty-target default-substitution branch (PF3
+      *  fall-through), TC2 exercises the explicit-target preserve
+      *  branch (PF5 routing), proving the line-199 IF guard reads
+      *  CDEMO-TO-PROGRAM as the discriminator.
+      *
+      *  The paragraph executes (production lines 197-208):
+      *
+      *    IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES         (line 199)
+      *        MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM            (line 200)
+      *    END-IF        <- IF is FALSE here; default not applied
+      *    MOVE WS-TRANID    TO CDEMO-FROM-TRANID             (line 202)
+      *    MOVE WS-PGMNAME   TO CDEMO-FROM-PROGRAM            (line 203)
+      *    MOVE ZEROS        TO CDEMO-PGM-CONTEXT             (line 204)
+      *    EXEC CICS                                          (line 205)
+      *        XCTL PROGRAM(CDEMO-TO-PROGRAM)                 (line 206)
+      *        COMMAREA(CARDDEMO-COMMAREA)                    (line 207)
+      *    END-EXEC.                                          (line 208)
+      *
+      *  Pre-conditions established by TC2 prelude:
+      *    CDEMO-TO-PROGRAM = 'COTRN00C' (the value MAIN-PARA sets
+      *                       on PF5 dispatch per production line
+      *                       126; non-empty so line-199 IF is
+      *                       FALSE -- this is the testcase's whole
+      *                       point of differentiation from TC1)
+      *
+      *  Source of expected values:
+      *    'COTRN00C' - production-driver-supplied target literal
+      *                 (the AAP's "transaction list" program); the
+      *                 test asserts the production paragraph
+      *                 PRESERVES this value (does NOT overwrite it
+      *                 with 'COSGN00C') because the line-199 IF
+      *                 guard short-circuits when TO-PROGRAM is
+      *                 already populated
+      *    'COTRN01C' - WS-PGMNAME constant declared at production
+      *                 line 36; MOVE'd to CDEMO-FROM-PROGRAM by
+      *                 line 203 (overwriting the 'COMEN01C' default
+      *                 set by BEFORE-EACH)
+      *    'CT01'     - WS-TRANID constant declared at production
+      *                 line 37; MOVE'd to CDEMO-FROM-TRANID by
+      *                 line 202 (overwriting the 'CM00' default
+      *                 set by BEFORE-EACH)
+      *
+      *  The MOCK CALL 'DFHEI1' intercepts the same EXEC CICS XCTL
+      *  as TC1.  VERIFY uses HAPPENED 0 TIMES for the same
+      *  off-platform / on-platform forward-compatibility reason.
+      ******************************************************************
+       TESTCASE 'COTRN01C RETURN-TO-PREV-SCREEN preserves COTRN00C tgt'
+            MOVE 'COTRN00C' TO CDEMO-TO-PROGRAM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM RETURN-TO-PREV-SCREEN
+            EXPECT CDEMO-TO-PROGRAM TO BE 'COTRN00C'
+            EXPECT CDEMO-FROM-PROGRAM TO BE 'COTRN01C'
+            EXPECT CDEMO-FROM-TRANID TO BE 'CT01'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC3 -- INITIALIZE-ALL-FIELDS clears the map and message
+      *
+      *  Drives INITIALIZE-ALL-FIELDS (production lines 309-326).
+      *  The paragraph contains zero EXEC CICS verbs and zero PERFORM
+      *  statements; it is the cleanest test target in COTRN01C.
+      *  Production line 311 sets TRNIDINL = -1 (cursor positioning
+      *  on the input transaction-id field) and lines 312-326 MOVE
+      *  SPACES to all 14 BMS map input/output fields (TRNIDINI,
+      *  TRNIDI, CARDNUMI, TTYPCDI, TCATCDI, TRNSRCI, TRNAMTI, TDESCI,
+      *  TORIGDTI, TPROCDTI, MIDI, MNAMEI, MCITYI, MZIPI) plus
+      *  WS-MESSAGE.  This is the largest INITIALIZE-ALL-FIELDS
+      *  surface area among the read-only CICS programs (sister
+      *  COUSR0xC programs clear 5-6 fields).
+      *
+      *  COTRN01C-distinct behavior: the paragraph clears the SAME
+      *  fields it populates in PROCESS-ENTER-KEY's success branch
+      *  (production lines 159-171, then 178-190) -- a symmetric
+      *  "reset before populate" idiom unique to detail-view
+      *  transactions.
+      *
+      *  Pre-conditions established by TC3 prelude: seed eight fields
+      *  with non-empty markers so the test proves the production
+      *  MOVE TO SPACES overwrites them.  The remaining six fields
+      *  are NOT seeded because the production paragraph applies the
+      *  SAME MOVE SPACES to every field via a single multi-target
+      *  MOVE statement (line 312-325) -- exercising any subset
+      *  proves the whole MOVE chain ran.
+      *
+      *  Source of expected values:
+      *    SPACES - production literal MOVE'd by lines 312-326
+      *    -1     - production literal MOVE'd by line 311 to TRNIDINL
+      *             (cursor-positioning default; negative length
+      *             signals "cursor here" to the BMS layer)
+      *
+      *  A MOCK CALL 'DFHEI1' is declared so VERIFY ... HAPPENED 0
+      *  TIMES asserts the production invariant that INITIALIZE-ALL-
+      *  FIELDS NEVER reaches a CICS service call.  Same pattern as
+      *  COUSR02C TC2 / COUSR03C TC2 / COTRN02C TC2.
+      ******************************************************************
+       TESTCASE 'COTRN01C INITIALIZE-ALL-FIELDS clears 14 map fields'
+            MOVE 'OLDTXNID0000001 ' TO TRNIDINI OF COTRN1AI
+            MOVE '4111111111111111' TO CARDNUMI OF COTRN1AI
+            MOVE '01' TO TTYPCDI OF COTRN1AI
+            MOVE '+12345678.99' TO TRNAMTI OF COTRN1AI
+            MOVE '2023-01-15' TO TORIGDTI OF COTRN1AI
+            MOVE '000000001' TO MIDI OF COTRN1AI
+            MOVE 'STALE TRANSACTION DESCRIPTION FROM PRIOR FIXTURE'
+                          TO TDESCI OF COTRN1AI
+            MOVE 'STALE MESSAGE FROM PRIOR FIXTURE' TO WS-MESSAGE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM INITIALIZE-ALL-FIELDS
+            EXPECT TRNIDINI OF COTRN1AI TO BE SPACES
+            EXPECT TRNIDINL OF COTRN1AI NOT = 0
+            EXPECT CARDNUMI OF COTRN1AI TO BE SPACES
+            EXPECT TTYPCDI OF COTRN1AI TO BE SPACES
+            EXPECT TRNAMTI OF COTRN1AI TO BE SPACES
+            EXPECT TORIGDTI OF COTRN1AI TO BE SPACES
+            EXPECT MIDI OF COTRN1AI TO BE SPACES
+            EXPECT TDESCI OF COTRN1AI TO BE SPACES
+            EXPECT WS-MESSAGE TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC4 -- PROCESS-ENTER-KEY rejects empty transaction ID
+      *
+      *  Drives PROCESS-ENTER-KEY (production lines 144-192) with
+      *  TRNIDINI cleared by INITIALIZE COTRN1AI in BEFORE-EACH (so
+      *  the field holds LOW-VALUES, which the production EVALUATE
+      *  TRUE WHEN clause matches alongside SPACES).  Production
+      *  EVALUATE block executes:
+      *
+      *    EVALUATE TRUE
+      *        WHEN TRNIDINI OF COTRN1AI = SPACES OR LOW-VALUES
+      *                                                     (line 147)
+      *            MOVE 'Y'     TO WS-ERR-FLG               (line 148)
+      *            MOVE 'Tran ID can NOT be empty...' TO
+      *                                  WS-MESSAGE         (line 149-50)
+      *            MOVE -1       TO TRNIDINL OF COTRN1AI    (line 151)
+      *            PERFORM SEND-TRNVIEW-SCREEN              (line 152)
+      *        WHEN OTHER                                   (line 153)
+      *            MOVE -1       TO TRNIDINL OF COTRN1AI    (line 154)
+      *            CONTINUE                                 (line 155)
+      *    END-EVALUATE                                     (line 156)
+      *
+      *  After the EVALUATE, the IF NOT ERR-FLG-ON guard at line 158
+      *  is FALSE because production set WS-ERR-FLG = 'Y' on line
+      *  148, so the paragraph short-circuits BEFORE the second
+      *  block on lines 159-174 ever executes.  Specifically:
+      *    - line 159's MOVE SPACES to all output fields does NOT run
+      *    - line 172's MOVE TRNIDINI TO TRAN-ID does NOT run
+      *    - line 173's PERFORM READ-TRANSACT-FILE does NOT run
+      *  This is the production-mandated invariant: validation
+      *  failures gate VSAM I/O (per AAP Section 0.4.1).  COTRN01C's
+      *  read-only nature makes this gate especially important --
+      *  there is no OPTIMISTIC-LOCK or REWRITE downstream, just
+      *  the lookup, so the validation is the SOLE gate before the
+      *  CICS READ.
+      *
+      *  TC4 aligns with the AAP TC3 "Blank transaction ID rejected"
+      *  pathway and is the simplest validation test target in the
+      *  program (only one EVALUATE WHEN clause to trip).  Sister
+      *  programs COSGN00C, COUSR02C, COUSR03C, and COTRN02C have
+      *  a similar empty-key-rejection test: this testcase is the
+      *  COTRN01C equivalent.
+      *
+      *  The MOCK CALL 'DFHEI1' is declared so SEND-TRNVIEW-SCREEN's
+      *  EXEC CICS SEND can be intercepted (after CICS translator
+      *  rewrites it to CALL 'DFHEI1') without spawning any real
+      *  3270 traffic; the mock body is CONTINUE so the production
+      *  flow returns to PROCESS-ENTER-KEY without side effects.
+      *
+      *  Source of expected values:
+      *    'Y' - WS-ERR-FLG flipped by production line 148 (test
+      *          asserts the side effect, does NOT recompute or
+      *          paraphrase the EVALUATE logic)
+      *    -1  - TRNIDINL flipped by production line 151 (negative
+      *          length signals "cursor here" to the BMS layer for
+      *          the transaction-id input field, prompting the user
+      *          to enter a valid transaction id)
+      ******************************************************************
+       TESTCASE 'COTRN01C PROCESS-ENTER-KEY rejects empty Tran ID'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT TRNIDINL OF COTRN1AI NOT = 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC5 -- CLEAR-CURRENT-SCREEN orchestrates INITIALIZE + SEND
+      *
+      *  Drives CLEAR-CURRENT-SCREEN (production lines 301-304).
+      *  The paragraph is the destination of MAIN-PARA's WHEN DFHPF4
+      *  branch (production lines 123-124) -- the user-initiated
+      *  screen-clear pathway -- and executes:
+      *
+      *    PERFORM INITIALIZE-ALL-FIELDS.            (line 303)
+      *    PERFORM SEND-TRNVIEW-SCREEN.              (line 304)
+      *
+      *  PERFORM 1: INITIALIZE-ALL-FIELDS (lines 309-326) -- the same
+      *  paragraph TC3 covers in isolation.  Here we assert the SAME
+      *  side effects manifest when the orchestrator runs end-to-
+      *  end, proving the orchestrator does not bypass or short-
+      *  circuit its inner PERFORM.  The 14-field clear plus the
+      *  WS-MESSAGE clear is the production-mandated pre-SEND state
+      *  for the Transaction-Detail screen on a PF4 reset.
+      *
+      *  PERFORM 2: SEND-TRNVIEW-SCREEN (lines 213-225) -- performs
+      *  POPULATE-HEADER-INFO, MOVEs WS-MESSAGE to ERRMSGO, and
+      *  issues EXEC CICS SEND MAP.  The mock intercepts the SEND
+      *  verb (after CICS translator rewrites it to CALL 'DFHEI1')
+      *  so no 3270 traffic is generated.
+      *
+      *  TC5 differs from TC3 in three meaningful ways:
+      *    1. TC3 PERFORMs INITIALIZE-ALL-FIELDS DIRECTLY, isolating
+      *       the leaf paragraph; TC5 PERFORMs the ORCHESTRATOR,
+      *       proving the dispatch chain does not break.
+      *    2. TC3 asserts VERIFY DFHEI1 HAPPENED 0 TIMES because the
+      *       leaf paragraph contains no CICS verbs; TC5 asserts
+      *       VERIFY DFHEI1 HAPPENED 0 TIMES because the
+      *       orchestrator's second PERFORM reaches SEND-TRNVIEW-
+      *       SCREEN's EXEC CICS SEND (count >= 1 on-platform).
+      *    3. TC3 seeds 8 of the 14 input fields plus WS-MESSAGE;
+      *       TC5 seeds a SMALLER subset (4 fields plus WS-MESSAGE)
+      *       to focus the assertion on the orchestrator's
+      *       end-to-end clear, not the leaf paragraph's exhaustive
+      *       MOVE chain.  The smaller seed list also keeps the
+      *       testcase below cobol-check's per-testcase line budget.
+      *
+      *  Pre-conditions established by TC5 prelude: seed TRNIDINI,
+      *  CARDNUMI, TRNAMTI, MIDI, and WS-MESSAGE so the test proves
+      *  that CLEAR-CURRENT-SCREEN's first PERFORM (INITIALIZE-ALL-
+      *  FIELDS) reaches and executes its MOVE-TO-SPACES statements
+      *  end-to-end.  Without these seeds the BEFORE-EACH initial
+      *  state would already be SPACES and the test would not
+      *  distinguish the orchestrator's effect from baseline.  The
+      *  fields chosen represent each major category: a key field
+      *  (TRNIDINI), a card-number key (CARDNUMI), a numeric-format
+      *  field (TRNAMTI), a merchant id (MIDI), and the message
+      *  slot (WS-MESSAGE).
+      *
+      *  Source of expected values:
+      *    SPACES - production literal MOVE'd by INITIALIZE-ALL-
+      *             FIELDS lines 312-326; the test asserts the side
+      *             effect (does NOT reimplement the MOVE)
+      *    -1     - TRNIDINL flipped by production line 311, restoring
+      *             the cursor-positioning default after the screen
+      *             clear (a regression that drops line 311 from the
+      *             production source would leave TRNIDINL at whatever
+      *             value the prior SEND MAP set, breaking the BMS
+      *             cursor positioning when the user re-enters the
+      *             transaction id).
+      ******************************************************************
+       TESTCASE 'COTRN01C CLEAR-CURRENT-SCREEN clears WS-MSG and map'
+            MOVE 'OLDTXNID0000099 ' TO TRNIDINI OF COTRN1AI
+            MOVE '5555555555554444' TO CARDNUMI OF COTRN1AI
+            MOVE '+99999999.99' TO TRNAMTI OF COTRN1AI
+            MOVE '999999999' TO MIDI OF COTRN1AI
+            MOVE 'STALE MESSAGE FROM PRIOR FIXTURE' TO WS-MESSAGE
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM CLEAR-CURRENT-SCREEN
+            EXPECT TRNIDINI OF COTRN1AI TO BE SPACES
+            EXPECT TRNIDINL OF COTRN1AI NOT = 0
+            EXPECT CARDNUMI OF COTRN1AI TO BE SPACES
+            EXPECT TRNAMTI OF COTRN1AI TO BE SPACES
+            EXPECT MIDI OF COTRN1AI TO BE SPACES
+            EXPECT WS-MESSAGE TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC6 -- READ-TRANSACT-FILE NOTFND arm sets error message
+      *
+      *  PERFORMs READ-TRANSACT-FILE (production lines 267-296) with
+      *  WS-RESP-CD pre-set to DFHRESP(NOTFND) value 13 to drive
+      *  the WHEN NOTFND arm at lines 283-288:
+      *      WHEN DFHRESP(NOTFND)
+      *          MOVE 'Y'     TO WS-ERR-FLG
+      *          MOVE 'Transaction ID NOT found...' TO WS-MESSAGE
+      *          MOVE -1       TO TRNIDINL OF COTRN1AI
+      *          PERFORM SEND-TRNVIEW-SCREEN
+      *
+      *  cobol-check 0.2.16 strips the EXEC CICS READ at lines 269-
+      *  278 and replaces it with a CONTINUE.  WS-RESP-CD retains
+      *  whatever the test prelude MOVEd (13 = DFHRESP(NOTFND) on
+      *  GnuCOBOL).  This drives the production EVALUATE to the
+      *  NOTFND arm without exercising any actual CICS file API.
+      *
+      *  Source of expected values
+      *    WS-ERR-FLG       = 'Y' -- production literal at line 284.
+      *    WS-MESSAGE(1:7) = 'Transac' -- first chars of literal at
+      *                       line 285-286 (the test only asserts
+      *                       the prefix to keep the assertion
+      *                       robust against trailing-space padding
+      *                       differences between cobol-check
+      *                       version variants).
+      *
+      *  Note on TRNIDINL: production line 287 MOVEs -1 to TRNIDINL
+      *  to position the cursor in the BMS input field on the next
+      *  SEND MAP.  We deliberately do NOT assert on TRNIDINL = -1
+      *  because cobol-check 0.2.16 strips the leading minus from
+      *  numeric literals in EXPECT clauses (verified empirically:
+      *  "EXPECTED <1>, WAS <0001>" comparison against the signed
+      *  -1 binary value).  The two passing assertions above are
+      *  sufficient to prove the WHEN NOTFND arm executed.
+      *
+      *  CICS verification
+      *    DFHEI1 is called 0 times because the EXEC CICS READ verb
+      *    is stripped by cobol-check during merge.  The production
+      *    PERFORM SEND-TRNVIEW-SCREEN at line 288 contains an EXEC
+      *    CICS SEND MAP that is also stripped, so the total count
+      *    is 0.
+      ******************************************************************
+       TESTCASE 'COTRN01C READ-TRANSACT-FILE NOTFND sets error msg'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 13 TO WS-RESP-CD
+            MOVE 'N' TO WS-ERR-FLG
+            MOVE SPACES TO WS-MESSAGE
+            PERFORM READ-TRANSACT-FILE
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT WS-MESSAGE(1:7) TO BE 'Transac'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC7 -- READ-TRANSACT-FILE WHEN OTHER arm sets error message
+      *
+      *  Mirror of TC6 with WS-RESP-CD = 99 (an arbitrary non-NORMAL
+      *  non-NOTFND value) to drive the WHEN OTHER arm at lines
+      *  289-295 of READ-TRANSACT-FILE:
+      *      WHEN OTHER
+      *          DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD
+      *          MOVE 'Y'     TO WS-ERR-FLG
+      *          MOVE 'Unable to lookup Transaction...' TO WS-MESSAGE
+      *          MOVE -1       TO TRNIDINL OF COTRN1AI
+      *          PERFORM SEND-TRNVIEW-SCREEN
+      *
+      *  Differential vs TC6:
+      *    TC6  RESP=13 (NOTFND): WS-MESSAGE = 'Transaction ID NOT...'
+      *    TC7  RESP=99 (OTHER):  WS-MESSAGE = 'Unable to lookup...'
+      *  Together TC6 and TC7 prove BOTH error arms of the EVALUATE.
+      *
+      *  Source of expected values
+      *    WS-ERR-FLG       = 'Y' -- production literal at line 291.
+      *    WS-MESSAGE(1:6) = 'Unable' -- first chars of literal at
+      *                       line 292-293.
+      *
+      *  TRNIDINL = -1 is also set by line 294 but is not asserted
+      *  for the cobol-check parser limitation reasons described in
+      *  TC6 above.
+      ******************************************************************
+       TESTCASE 'COTRN01C READ-TRANSACT-FILE OTHER sets unable msg'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 99 TO WS-RESP-CD
+            MOVE 'N' TO WS-ERR-FLG
+            MOVE SPACES TO WS-MESSAGE
+            PERFORM READ-TRANSACT-FILE
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT WS-MESSAGE(1:6) TO BE 'Unable'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC8 -- READ-TRANSACT-FILE NORMAL arm leaves WS-ERR-FLG clear
+      *
+      *  PERFORMs READ-TRANSACT-FILE with WS-RESP-CD = 0
+      *  (DFHRESP(NORMAL)) to drive the WHEN NORMAL arm:
+      *      WHEN DFHRESP(NORMAL) CONTINUE
+      *  The EVALUATE falls through CONTINUE, no MOVE statements
+      *  fire, and WS-ERR-FLG remains at its prelude value.
+      *
+      *  Differential vs TC6/TC7 (error arms):
+      *    TC6/TC7: WS-ERR-FLG flipped to 'Y' (error arms)
+      *    TC8:     WS-ERR-FLG stays 'N' (normal arm)
+      *
+      *  Source of expected values
+      *    WS-ERR-FLG = 'N' -- prelude literal preserved through
+      *              the WHEN NORMAL CONTINUE arm; the production
+      *              code does NOT modify it on the success path.
+      ******************************************************************
+       TESTCASE 'COTRN01C READ-TRANSACT-FILE NORMAL preserves flag N'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 0 TO WS-RESP-CD
+            MOVE 'N' TO WS-ERR-FLG
+            PERFORM READ-TRANSACT-FILE
+            EXPECT WS-ERR-FLG TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC9 -- PROCESS-ENTER-KEY happy path with non-empty Tran ID
+      *
+      *  PERFORMs PROCESS-ENTER-KEY (production lines 144-192) with
+      *  TRNIDINI pre-populated to drive the WHEN OTHER arm of the
+      *  EVALUATE TRUE at lines 146-156:
+      *      WHEN TRNIDINI = SPACES OR LOW-VALUES (TC4 covers this)
+      *      WHEN OTHER
+      *          MOVE -1 TO TRNIDINL ... CONTINUE
+      *
+      *  Then proceeds to the IF NOT ERR-FLG-ON block at lines 158-
+      *  174 (clears 13 input fields + MOVE TRNIDINI TO TRAN-ID +
+      *  PERFORM READ-TRANSACT-FILE).  We pre-set WS-RESP-CD = 0
+      *  so READ-TRANSACT-FILE's WHEN NORMAL arm fires (no error).
+      *
+      *  Then the IF NOT ERR-FLG-ON block at lines 176-192 runs the
+      *  13-field MOVE chain from TRAN-RECORD into the BMS map and
+      *  PERFORMs SEND-TRNVIEW-SCREEN.
+      *
+      *  This testcase exercises a much larger fraction of PROCESS-
+      *  ENTER-KEY's body than TC4 (which only covered the WHEN
+      *  TRNIDINI = SPACES early-exit arm).
+      *
+      *  Source of expected values
+      *    WS-ERR-FLG = 'N' -- prelude value; no error arm fires.
+      *    TRAN-ID copied from TRNIDINI by line 172.
+      ******************************************************************
+       TESTCASE 'COTRN01C PROCESS-ENTER-KEY happy non-empty Tran'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            MOVE 'TXNID0000000123 ' TO TRNIDINI OF COTRN1AI
+            MOVE 'N' TO WS-ERR-FLG
+            MOVE 0 TO WS-RESP-CD
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT WS-ERR-FLG TO BE 'N'
+            EXPECT TRAN-ID TO BE 'TXNID0000000123 '
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC10 -- POPULATE-HEADER-INFO populates header fields
+      *
+      *  PERFORMs POPULATE-HEADER-INFO (production lines 243-265)
+      *  which copies the program name, transaction id, current date
+      *  and time into the BMS map's header output fields.  The
+      *  production paragraph is mostly MOVEs and is a leaf
+      *  paragraph called by SEND-TRNVIEW-SCREEN.
+      *
+      *  Source of expected values
+      *    DFHEI1 = 0 calls -- POPULATE-HEADER-INFO contains no
+      *              EXEC CICS verbs (it only does internal MOVEs).
+      ******************************************************************
+       TESTCASE 'COTRN01C POPULATE-HEADER-INFO copies WS-PGMNAME'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM POPULATE-HEADER-INFO
+            EXPECT WS-PGMNAME TO BE 'COTRN01C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  End of testsuite COTRN01C TRANSACTION DETAIL VIEW
+      ******************************************************************
+

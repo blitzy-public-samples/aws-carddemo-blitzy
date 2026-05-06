@@ -1,0 +1,921 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  CBTRN02C.cut -- COBOL-CHECK TESTSUITE
+      *
+      *  Testsuite : CBTRN02C TRANSACTION POSTING VALIDATION
+      *  Program-under-test : app/cbl/CBTRN02C.cbl
+      *
+      *  Exercises CBTRN02C -- the daily transaction-posting batch
+      *  program -- with all external file-I/O virtualised by
+      *  cobol-check 0.2.16's READ/WRITE-stripping pass.  Each
+      *  TESTCASE PERFORMs a production paragraph LIVE; only the
+      *  external CALL 'CEE3ABD' boundary is mocked.
+      *
+      *  cobol-check 0.2.16 limitations honored
+      *  --------------------------------------
+      *  - File-I/O verbs collapse to CONTINUE; tests pre-MOVE the
+      *    relevant *-STATUS field to drive production IF arms.
+      *  - READ INVALID KEY and REWRITE INVALID KEY orphan bodies
+      *    execute UNCONDITIONALLY because the framework strips
+      *    READ/REWRITE to CONTINUE and the runner-script awk pass
+      *    comments out only the INVALID KEY clause-opener.  This
+      *    has two testable consequences:
+      *      a. PERFORM 1500-A-LOOKUP-XREF unconditionally executes
+      *         the line-385 orphan MOVE 100 TO WS-VALIDATION-FAIL-
+      *         REASON.  TC1 / TC2 assert this directly.
+      *      b. PERFORM 1500-B-LOOKUP-ACCT unconditionally executes
+      *         BOTH the line-397 INVALID KEY orphan MOVE 101 AND
+      *         the lines 403-420 NOT INVALID KEY orphan body
+      *         (COMPUTE WS-TEMP-BAL, IF credit-limit, IF expiration).
+      *         Final reason is 101 by default; 102 if credit-limit
+      *         fails (TC4); 103 if expiration fails (TC5, overrides
+      *         102).  Pre-MOVE DALYTRAN-AMT or DALYTRAN-ORIG-TS
+      *         drives the IF guards.
+      *  - 1500-VALIDATE-TRAN umbrella cascade (line 372 IF reason=0
+      *    PERFORM 1500-B-LOOKUP-ACCT) halts at reason=100 from
+      *    1500-A under stripping, so 1500-B is SKIPPED.  TC1 names
+      *    are aligned with this limitation: TC1 description is
+      *    "1500-VALIDATE-TRAN cascade halts on first XREF failure"
+      *    rather than "happy path", reflecting actual behaviour.
+      *
+      *  External dependency mocked: CALL 'CEE3ABD' (LE abend),
+      *  Local-scope per-TESTCASE.  The runtime stub at tests/stubs/
+      *  CEE3ABD.cbl is linked into the merged binary as a backstop.
+      *
+      *  Reject codes (production literals; not recomputed)
+      *  --------------------------------------------------
+      *    100 -- production line 385 (1500-A-LOOKUP-XREF orphan)
+      *    101 -- production line 397 (1500-B-LOOKUP-ACCT orphan)
+      *    102 -- production line 410 (1500-B-LOOKUP-ACCT IF ELSE
+      *           overlimit)
+      *    103 -- production line 417 (1500-B-LOOKUP-ACCT IF ELSE
+      *           expired)
+      *    109 -- production line 556 (2800-UPDATE-ACCOUNT-REC
+      *           REWRITE INVALID KEY orphan)
+      *
+      *  Test categories (12 testcases)
+      *  ------------------------------
+      *    TC1  - 1500-VALIDATE-TRAN cascade halts on first XREF
+      *           failure (orphan body sets reason=100, gate stops
+      *           cascade so 1500-B is not reached)
+      *    TC2  - 1500-A-LOOKUP-XREF missing XREF reject 100
+      *    TC3  - 1500-B-LOOKUP-ACCT missing ACCT reject 101
+      *    TC4  - 1500-B-LOOKUP-ACCT credit limit reject 102
+      *           (PERFORMs 1500-B-LOOKUP-ACCT directly)
+      *    TC5  - 1500-B-LOOKUP-ACCT expired acct reject 103
+      *           (PERFORMs 1500-B-LOOKUP-ACCT directly)
+      *    TC6  - 2500-WRITE-REJECT-REC writes rejected
+      *    TC7  - 2900-WRITE-TRANSACTION-FILE writes valid
+      *    TC8  - 2800-UPDATE-ACCOUNT-REC reason 109 (REWRITE
+      *           INVALID KEY orphan body under stripping)
+      *    TC9  - 2700-B-UPDATE-TCATBAL-REC existing rec rewrites
+      *    TC10 - 2700-A-CREATE-TCATBAL-REC writes new
+      *    TC11 - reject count gt 0 RC 4 transition (precondition
+      *           preserved by 2500-WRITE-REJECT-REC; main-paragraph
+      *           IF guard at production line 229 is unreachable
+      *           via PERFORM <name> but its precondition is verified)
+      *    TC12 - 9999-ABEND-PROGRAM invokes CEE3ABD stub
+      *
+      *  References
+      *  ----------
+      *    AAP Sections 0.4.3, 0.5.1, 0.5.2, 0.7.1, 0.10.1, 0.10.2
+      *    app/cbl/CBTRN02C.cbl                (program under test)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy / CEE3ABD.cbl
+      *    tests/cobol-check/CSUTLDTC.cut      (canonical exemplar)
+      *    tests/cobol-check/CBTRN01C.cut / CBTRN03C.cut
+      *    tests/fixtures/cobol-snippets/{DALYTRAN,XREF,ACCT,TCATBAL}-FIXTURE-001.cpy
+      ******************************************************************
+
+       TESTSUITE 'CBTRN02C TRANSACTION POSTING VALIDATION'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset.
+      *  Clears 6 file-status fields, IO-STATUS overlays, all 5
+      *  record buffers (DALYTRAN/TRAN/XREF/ACCT/TCATBAL), the
+      *  WS-VALIDATION-TRAILER, EOF + reject-count + abend flags +
+      *  RETURN-CODE.  cobol-check resets MOCK counters automatically.
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE DALYTRAN-STATUS
+            INITIALIZE TRANFILE-STATUS
+            INITIALIZE XREFFILE-STATUS
+            INITIALIZE DALYREJS-STATUS
+            INITIALIZE ACCTFILE-STATUS
+            INITIALIZE TCATBALF-STATUS
+            INITIALIZE IO-STATUS
+            INITIALIZE IO-STATUS-04
+            INITIALIZE APPL-RESULT
+            INITIALIZE ABCODE
+            INITIALIZE TIMING
+            INITIALIZE DALYTRAN-RECORD
+            INITIALIZE TRAN-RECORD
+            INITIALIZE CARD-XREF-RECORD
+            INITIALIZE ACCOUNT-RECORD
+            INITIALIZE TRAN-CAT-BAL-RECORD
+            INITIALIZE WS-VALIDATION-TRAILER
+            MOVE 'N' TO END-OF-FILE
+            MOVE 0   TO WS-REJECT-COUNT
+            MOVE 'N' TO WS-ABEND-FLAG
+            MOVE 0   TO WS-ABEND-CODE
+            MOVE 0   TO RETURN-CODE
+       END-BEFORE.
+
+      ******************************************************************
+      *  TC1 -- 1500-VALIDATE-TRAN cascade halts on first XREF failure.
+      *  PERFORMs umbrella 1500-VALIDATE-TRAN; under stripping the
+      *  1500-A INVALID KEY orphan sets reason=100; the line-372
+      *  cascade gate then evaluates 100!=0 and SKIPS 1500-B.
+      *  Asserts cascade post-state validates first-failure-stops
+      *  behaviour.  Reason 100 is from production line 385.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 1500-VALIDATE-TRAN halts cascade on XREF fail'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1500-VALIDATE-TRAN
+            EXPECT WS-VALIDATION-FAIL-REASON TO BE 100
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC2 -- 1500-A-LOOKUP-XREF missing XREF reject 100.
+      *  Under stripping, the INVALID KEY orphan body executes
+      *  unconditionally (production line 385: MOVE 100).
+      ******************************************************************
+       TESTCASE 'CBTRN02C 1500-A-LOOKUP-XREF missing XREF reject 100'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1500-A-LOOKUP-XREF
+            EXPECT WS-VALIDATION-FAIL-REASON TO BE 100
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC3 -- 1500-B-LOOKUP-ACCT missing ACCT reject 101.
+      *  Under stripping, both INVALID KEY (line 397: MOVE 101) and
+      *  NOT INVALID KEY orphans execute.  With BEFORE-EACH zero/
+      *  spaces baseline, COMPUTE WS-TEMP-BAL=0, credit IF passes
+      *  (no override), expiration IF passes (no override).  Final
+      *  reason = 101.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 1500-B-LOOKUP-ACCT missing ACCT reject 101'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            PERFORM 1500-B-LOOKUP-ACCT
+            EXPECT WS-VALIDATION-FAIL-REASON TO BE 101
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC4 -- 1500-B-LOOKUP-ACCT credit-limit exceeded reject 102.
+      *  Test author selects DALYTRAN-AMT=99999999.99 from EXTERNAL
+      *  knowledge that PIC S9(09)V99 max is +/-999999999.99 and
+      *  that ACCT-CREDIT-LIMIT (BEFORE-EACH zero) will be exceeded
+      *  by any positive DALYTRAN-AMT.  Test does NOT compute
+      *  threshold.  Production COMPUTE at line 403 executes during
+      *  PERFORM, line-410 IF ELSE -> reason=102.  Expiration check
+      *  passes (no override).  Reason 102 from production line 410.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 1500-B-LOOKUP-ACCT credit limit reject 102'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE 99999999.99 TO DALYTRAN-AMT
+            PERFORM 1500-B-LOOKUP-ACCT
+            EXPECT WS-VALIDATION-FAIL-REASON TO BE 102
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC5 -- 1500-B-LOOKUP-ACCT expired account reject 103.
+      *  Test author selects DALYTRAN-ORIG-TS '99991231...' (year
+      *  9999 = COBOL CCYY upper bound, exceeds any realistic
+      *  expiration).  ACCT-EXPIRAION-DATE = '          ' (BEFORE-
+      *  EACH spaces, PIC X(10)).  Alphanumeric compare:
+      *    '          ' < '99991231  ' -> line-414 IF false -> ELSE
+      *  arm sets reason=103 (overrides earlier 101 from INVALID KEY
+      *  orphan; credit-limit check passes with zero balances).
+      ******************************************************************
+       TESTCASE 'CBTRN02C 1500-B-LOOKUP-ACCT expired acct reject 103'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '99991231                  ' TO DALYTRAN-ORIG-TS
+            PERFORM 1500-B-LOOKUP-ACCT
+            EXPECT WS-VALIDATION-FAIL-REASON TO BE 103
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC6 -- 2500-WRITE-REJECT-REC writes rejected (status '00').
+      *  Production line 454 IF '00' MOVE 0 TO APPL-RESULT.  No
+      *  abend (APPL-AOK CONTINUE branch).
+      ******************************************************************
+       TESTCASE 'CBTRN02C 2500-WRITE-REJECT-REC writes rejected'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE 100  TO WS-VALIDATION-FAIL-REASON
+            MOVE '00' TO DALYREJS-STATUS
+            PERFORM 2500-WRITE-REJECT-REC
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC7 -- 2900-WRITE-TRANSACTION-FILE writes valid (status '00').
+      *  Production line 569 IF '00' MOVE 0 TO APPL-RESULT.  No abend.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 2900-WRITE-TRANSACTION-FILE writes valid'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANFILE-STATUS
+            PERFORM 2900-WRITE-TRANSACTION-FILE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC8 -- 2800-UPDATE-ACCOUNT-REC orphan-body reason 109.
+      *  Under cobol-check 0.2.16 stripping, the REWRITE INVALID
+      *  KEY orphan body unconditionally executes line 556 MOVE 109.
+      *  No abend (paragraph has no PERFORM 9999-ABEND-PROGRAM).
+      ******************************************************************
+       TESTCASE 'CBTRN02C 2800-UPDATE-ACCOUNT-REC reason 109'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            PERFORM 2800-UPDATE-ACCOUNT-REC
+            EXPECT WS-VALIDATION-FAIL-REASON TO BE 109
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC9 -- 2700-B-UPDATE-TCATBAL-REC existing rec rewrites.
+      *  PERFORMs 2700-B-UPDATE-TCATBAL-REC directly to bypass the
+      *  umbrella 2700-UPDATE-TCATBAL paragraph (which under
+      *  stripping always routes to 2700-A-CREATE-TCATBAL-REC due
+      *  to the orphan INVALID KEY MOVE 'Y' to WS-CREATE-TRANCAT-
+      *  REC).  Status='00' drives line-530 SUCCESS branch.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 2700-B-UPDATE-TCATBAL-REC rewrites existing'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TCATBALF-STATUS
+            PERFORM 2700-B-UPDATE-TCATBAL-REC
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC10 -- 2700-A-CREATE-TCATBAL-REC writes new (status '00').
+      *  Production line 514 IF '00' MOVE 0 TO APPL-RESULT.  No abend.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 2700-A-CREATE-TCATBAL-REC writes new'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TCATBALF-STATUS
+            PERFORM 2700-A-CREATE-TCATBAL-REC
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC11 -- reject-count > 0 RC=4 precondition preserved.
+      *  The production main-paragraph IF guard at line 229
+      *  (IF WS-REJECT-COUNT > 0 MOVE 4 TO RETURN-CODE) lives in
+      *  the un-named PROCEDURE DIVISION main body, NOT a callable
+      *  paragraph.  cobol-check's UT-INITIALIZE runs only the named
+      *  testcase via PERFORM, so the IF guard cannot be reached
+      *  via PERFORM <paragraph-name>.
+      *
+      *  Test strategy: validate the PRECONDITION (WS-REJECT-COUNT
+      *  remains > 0 after a reject is written) by exercising 2500-
+      *  WRITE-REJECT-REC and asserting WS-REJECT-COUNT = 1.  Under
+      *  stripping the reject-write paragraph is not destructive of
+      *  the counter; the precondition for the main-paragraph
+      *  RC=4 transition is therefore preserved end-to-end.
+      ******************************************************************
+       TESTCASE 'CBTRN02C reject count gt 0 RC 4 precondition'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE 1    TO WS-REJECT-COUNT
+            MOVE '00' TO DALYREJS-STATUS
+            PERFORM 2500-WRITE-REJECT-REC
+            EXPECT WS-REJECT-COUNT TO BE 1
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC12 -- 9999-ABEND-PROGRAM directly invokes CEE3ABD stub.
+      *  Production wrapper (lines 707-711): MOVE 0 TO TIMING,
+      *  MOVE 999 TO ABCODE, CALL 'CEE3ABD'.  Sentinel pre-state
+      *  (TIMING=8888, ABCODE=7777) verifies production MOVEs ran.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9999-ABEND-PROGRAM invokes CEE3ABD stub'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE 7777 TO ABCODE
+            MOVE 8888 TO TIMING
+            PERFORM 9999-ABEND-PROGRAM
+            EXPECT ABCODE TO BE 999
+            EXPECT TIMING TO BE 0
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC13 -- 9910-DISPLAY-IO-STATUS numeric branch
+      *
+      *  Drives 9910 with numeric IO-STATUS '00'.  Production line 715
+      *  IF NOT NUMERIC OR IO-STAT1='9' falls through to ELSE branch.
+      *  ELSE: MOVE '0000' TO IO-STATUS-04, MOVE IO-STATUS to (3:2).
+      *  Asserts IO-STATUS-04 contains '0000' (3:2) shows '00'.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9910-DISPLAY-IO-STATUS numeric 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO IO-STATUS
+            PERFORM 9910-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04 TO BE '0000'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC14 -- 9910-DISPLAY-IO-STATUS numeric 10 (EOF)
+      *
+      *  Drives 9910 with IO-STATUS = '10' (EOF).  Same branch as TC13;
+      *  asserts IO-STATUS-04 = '0010' (zero-padded 3:2 = '10').
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9910-DISPLAY-IO-STATUS numeric 10 EOF'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '10' TO IO-STATUS
+            PERFORM 9910-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04 TO BE '0010'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC15 -- 9910-DISPLAY-IO-STATUS non-numeric / 9x branch
+      *
+      *  Drives 9910 with IO-STATUS first byte = '9' (e.g., '92').
+      *  Production line 715-721 takes the first IF branch:
+      *    MOVE IO-STAT1 TO IO-STATUS-04(1:1)
+      *    MOVE 0 TO TWO-BYTES-BINARY ...
+      *  IO-STATUS-04 first byte = '9'.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9910-DISPLAY-IO-STATUS 9x branch'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '92' TO IO-STATUS
+            PERFORM 9910-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04(1:1) TO BE '9'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC16 -- Z-GET-DB2-FORMAT-TIMESTAMP populates DB2-FORMAT-TS
+      *
+      *  Drives Z-GET-DB2-FORMAT-TIMESTAMP (lines 692-705).  Production
+      *  computes timestamp from FUNCTION CURRENT-DATE.  Asserts
+      *  separators are populated: DB2-STREEP-1 = '-', DB2-DOT-1 = '.'.
+      ******************************************************************
+       TESTCASE 'CBTRN02C Z-GET-DB2-FORMAT-TIMESTAMP populates separators'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            PERFORM Z-GET-DB2-FORMAT-TIMESTAMP
+            EXPECT DB2-STREEP-1 TO BE '-'
+            EXPECT DB2-DOT-1 TO BE '.'
+            EXPECT DB2-REST TO BE '0000'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC17 -- 0000-DALYTRAN-OPEN success branch (status 00)
+      *
+      *  Drives 0000-DALYTRAN-OPEN (production lines 236-252) along
+      *  the success branch.  Status '00' makes line-239 IF true:
+      *  L240 MOVE 0 TO APPL-RESULT; line-244 IF APPL-AOK true ->
+      *  CONTINUE.  No abend.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 0000-DALYTRAN-OPEN success status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO DALYTRAN-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0000-DALYTRAN-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC18 -- 0000-DALYTRAN-OPEN error branch (status 35)
+      *
+      *  Drives 0000-DALYTRAN-OPEN error branch.  Status '35' makes
+      *  line-239 IF false: L242 MOVE 12 TO APPL-RESULT; L244 IF
+      *  APPL-AOK false -> L247 DISPLAY error, L248 MOVE status to
+      *  IO-STATUS, L249 PERFORM 9910-DISPLAY-IO-STATUS, L250 PERFORM
+      *  9999-ABEND-PROGRAM (CALL CEE3ABD ONCE).
+      ******************************************************************
+       TESTCASE 'CBTRN02C 0000-DALYTRAN-OPEN error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO DALYTRAN-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0000-DALYTRAN-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC19 -- 0100-TRANFILE-OPEN success branch (status 00)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 0100-TRANFILE-OPEN success status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0100-TRANFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC20 -- 0100-TRANFILE-OPEN error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 0100-TRANFILE-OPEN error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0100-TRANFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC21 -- 0200-XREFFILE-OPEN success branch (status 00)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 0200-XREFFILE-OPEN success status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0200-XREFFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC22 -- 0200-XREFFILE-OPEN error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 0200-XREFFILE-OPEN error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0200-XREFFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC23 -- 0300-DALYREJS-OPEN success branch (status 00)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 0300-DALYREJS-OPEN success status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO DALYREJS-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0300-DALYREJS-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC24 -- 0300-DALYREJS-OPEN error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 0300-DALYREJS-OPEN error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO DALYREJS-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0300-DALYREJS-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC25 -- 0400-ACCTFILE-OPEN success branch (status 00)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 0400-ACCTFILE-OPEN success status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO ACCTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0400-ACCTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC26 -- 0400-ACCTFILE-OPEN error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 0400-ACCTFILE-OPEN error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO ACCTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0400-ACCTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC27 -- 0500-TCATBALF-OPEN success branch (status 00)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 0500-TCATBALF-OPEN success status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TCATBALF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0500-TCATBALF-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC28 -- 0500-TCATBALF-OPEN error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 0500-TCATBALF-OPEN error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TCATBALF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0500-TCATBALF-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC29 -- 1000-DALYTRAN-GET-NEXT happy read (status 00)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 1000-DALYTRAN-GET-NEXT success status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO DALYTRAN-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-DALYTRAN-GET-NEXT
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT END-OF-FILE TO BE 'N'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC30 -- 1000-DALYTRAN-GET-NEXT EOF (status 10)
+      *
+      *  Status '10' drives line-351 IF true: MOVE 16 TO APPL-RESULT
+      *  (APPL-EOF VALUE).  Line-360 IF APPL-EOF true -> MOVE 'Y' TO
+      *  END-OF-FILE.  No abend.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 1000-DALYTRAN-GET-NEXT EOF status 10'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '10' TO DALYTRAN-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-DALYTRAN-GET-NEXT
+            EXPECT APPL-RESULT TO BE 16
+            EXPECT END-OF-FILE TO BE 'Y'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC31 -- 1000-DALYTRAN-GET-NEXT non-EOF error (status 23)
+      *
+      *  Status '23' drives line-354 ELSE: MOVE 12 TO APPL-RESULT.
+      *  Line-360 IF APPL-EOF false -> error block.  Abend.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 1000-DALYTRAN-GET-NEXT error status 23'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '23' TO DALYTRAN-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-DALYTRAN-GET-NEXT
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '23'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC32 -- 9000-DALYTRAN-CLOSE success branch (status 00)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9000-DALYTRAN-CLOSE success status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO DALYTRAN-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9000-DALYTRAN-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC33 -- 9000-DALYTRAN-CLOSE error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9000-DALYTRAN-CLOSE error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO DALYTRAN-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9000-DALYTRAN-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC34 -- 9100-TRANFILE-CLOSE success branch (status 00)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9100-TRANFILE-CLOSE success status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9100-TRANFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC35 -- 9100-TRANFILE-CLOSE error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9100-TRANFILE-CLOSE error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9100-TRANFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC36 -- 9200-XREFFILE-CLOSE success branch (status 00)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9200-XREFFILE-CLOSE success status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9200-XREFFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC37 -- 9200-XREFFILE-CLOSE error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9200-XREFFILE-CLOSE error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9200-XREFFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC38 -- 9300-DALYREJS-CLOSE success branch (status 00)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9300-DALYREJS-CLOSE success status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO DALYREJS-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9300-DALYREJS-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC39 -- 9300-DALYREJS-CLOSE error branch (status 35)
+      *
+      *  Production line 649 has a bug: MOVE XREFFILE-STATUS instead
+      *  of DALYREJS-STATUS to IO-STATUS.  Test asserts production
+      *  behavior as-is per AAP "ONLY modify test files" rule.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9300-DALYREJS-CLOSE error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO DALYREJS-STATUS
+            MOVE '44' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9300-DALYREJS-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '44'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC40 -- 9400-ACCTFILE-CLOSE success branch (status 00)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9400-ACCTFILE-CLOSE success status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO ACCTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9400-ACCTFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC41 -- 9400-ACCTFILE-CLOSE error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9400-ACCTFILE-CLOSE error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO ACCTFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9400-ACCTFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC42 -- 9500-TCATBALF-CLOSE success branch (status 00)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9500-TCATBALF-CLOSE success status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TCATBALF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9500-TCATBALF-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC43 -- 9500-TCATBALF-CLOSE error branch (status 35)
+      ******************************************************************
+       TESTCASE 'CBTRN02C 9500-TCATBALF-CLOSE error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TCATBALF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9500-TCATBALF-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC44 -- 2700-UPDATE-TCATBAL existing (TCATBALF status 00)
+      *
+      *  Drives 2700-UPDATE-TCATBAL umbrella (lines 467-501).  Status
+      *  '00' (after stripped READ) takes line-481 IF first arm and
+      *  proceeds to line-495 IF WS-CREATE-TRANCAT-REC=Y false (no
+      *  INVALID KEY trigger because READ is stripped) -> line-498
+      *  PERFORM 2700-B-UPDATE-TCATBAL-REC.  Asserts no abend.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 2700-UPDATE-TCATBAL existing path status 00'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '00' TO TCATBALF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 2700-UPDATE-TCATBAL
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC45 -- 2700-UPDATE-TCATBAL error branch (status 35)
+      *
+      *  Status '35' (neither '00' nor '23') makes line-481 IF false:
+      *  L484 MOVE 12 TO APPL-RESULT; L486 IF APPL-AOK false ->
+      *  L488-492 error block + 9999-ABEND-PROGRAM (CEE3ABD #1).
+      *  Because the production paragraph does NOT GO TO EXIT inside
+      *  the error-block IF, control continues to line 495: IF
+      *  WS-CREATE-TRANCAT-REC=Y false -> L498 PERFORM 2700-B-
+      *  UPDATE-TCATBAL-REC, which re-checks status='35' and abends
+      *  again (CEE3ABD #2).  Total CEE3ABD calls: 2.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 2700-UPDATE-TCATBAL error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TCATBALF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 2700-UPDATE-TCATBAL
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED 2 TIMES
+
+      ******************************************************************
+      *  TC46 -- 2500-WRITE-REJECT-REC error branch (status 35)
+      *
+      *  Drives 2500-WRITE-REJECT-REC error path.  Status '35' on
+      *  DALYREJS makes L452 false: L455 MOVE 12; L457 IF APPL-AOK
+      *  false -> L460-463 error block + 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 2500-WRITE-REJECT-REC error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO DALYREJS-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 2500-WRITE-REJECT-REC
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC47 -- 2900-WRITE-TRANSACTION-FILE error branch (status 35)
+      *
+      *  Drives 2900-WRITE-TRANSACTION-FILE error path.  Status '35'
+      *  on TRANFILE makes L566 false: L569 MOVE 12; L571 IF APPL-AOK
+      *  false -> L574-577 error block + 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 2900-WRITE-TRANSACTION-FILE error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TRANFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 2900-WRITE-TRANSACTION-FILE
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC48 -- 2700-A-CREATE-TCATBAL-REC error branch (status 35)
+      *
+      *  Drives 2700-A-CREATE-TCATBAL-REC error path.  Status '35'
+      *  on TCATBALF makes L512 false: L515 MOVE 12; L517 IF APPL-AOK
+      *  false -> L520-523 error block + 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 2700-A-CREATE-TCATBAL-REC error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TCATBALF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 2700-A-CREATE-TCATBAL-REC
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC49 -- 2700-B-UPDATE-TCATBAL-REC error branch (status 35)
+      *
+      *  Drives 2700-B-UPDATE-TCATBAL-REC error path.  Status '35'
+      *  on TCATBALF after stripped REWRITE makes L530 false: L533
+      *  MOVE 12; L535 IF APPL-AOK false -> L538-541 error block +
+      *  9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBTRN02C 2700-B-UPDATE-TCATBAL-REC error status 35'
+            MOCK CALL 'CEE3ABD'
+                 CONTINUE
+            END-MOCK
+            MOVE '35' TO TCATBALF-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 2700-B-UPDATE-TCATBAL-REC
+            EXPECT APPL-RESULT TO BE 12
+            EXPECT IO-STATUS TO BE '35'
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  End of testsuite CBTRN02C TRANSACTION POSTING VALIDATION.
+      *  Coverage: 49 testcases exercise 26 production paragraphs
+      *  (1500-VALIDATE-TRAN, 1500-A-LOOKUP-XREF, 1500-B-LOOKUP-ACCT,
+      *  2500-WRITE-REJECT-REC, 2700-UPDATE-TCATBAL, 2700-A-CREATE-
+      *  TCATBAL-REC, 2700-B-UPDATE-TCATBAL-REC, 2800-UPDATE-
+      *  ACCOUNT-REC, 2900-WRITE-TRANSACTION-FILE, 9910-DISPLAY-IO-
+      *  STATUS, 9999-ABEND-PROGRAM, Z-GET-DB2-FORMAT-TIMESTAMP,
+      *  6 OPEN paragraphs, 6 CLOSE paragraphs, 1000-DALYTRAN-GET-
+      *  NEXT).  All 5 reject codes (100, 101, 102, 103, 109) plus
+      *  every error-abend pathway exercised.  All 4 lint gates pass;
+      *  no business arithmetic in tests.
+      ******************************************************************

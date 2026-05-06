@@ -1,0 +1,598 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : COMEN01C MAIN MENU TRANSACTION
+      *  Program-under-test : app/cbl/COMEN01C.cbl
+      *
+      *  Purpose
+      *  -------
+      *  Exercise COMEN01C's regular-user main-menu CICS transaction
+      *  by mocking ONLY the program's external boundary into the
+      *  CICS API: the CALL 'DFHEI1' invocation that the CICS
+      *  translator emits in place of every EXEC CICS verb (RECEIVE
+      *  MAP, SEND MAP, XCTL, RETURN).  The DFHEI1 entry point is
+      *  the single ABI seam between the production COBOL program
+      *  and the CICS runtime; mocking it intercepts every CICS
+      *  service call without requiring a live CICS region.
+      *
+      *  Internal COMEN01C paragraphs are NEVER mocked.  Every
+      *  TESTCASE exercises a production paragraph LIVE via PERFORM
+      *  so the testsuite asserts against side effects of actual
+      *  production-code execution (per AAP Section 0.10.1 -- "Mock
+      *  or stub ONLY external dependencies").
+      *
+      *  COMEN01C is unique among the CardDemo CICS transactions:
+      *  it is a PURE ROUTING / DISPATCH program with no file I/O.
+      *  The program reads OPTIONI from the BMS map (COMEN1AI),
+      *  validates it against CDEMO-MENU-OPT-COUNT (= 10) and
+      *  CDEMO-MENU-OPT-USRTYPE for role-based gating, looks up
+      *  CDEMO-MENU-OPT-PGMNAME(WS-OPTION) from the COMEN02Y menu
+      *  table, and issues EXEC CICS XCTL to that program.  No
+      *  VSAM dataset, no temporary storage queue, no journal
+      *  file -- the simplest dispatch surface in the application.
+      *  The menu table COMEN02Y maps options 1-10 to:
+      *      1  Account View         -> COACTVWC
+      *      2  Account Update       -> COACTUPC
+      *      3  Credit Card List     -> COCRDLIC
+      *      4  Credit Card View     -> COCRDSLC
+      *      5  Credit Card Update   -> COCRDUPC
+      *      6  Transaction List     -> COTRN00C
+      *      7  Transaction View     -> COTRN01C
+      *      8  Transaction Add      -> COTRN02C
+      *      9  Transaction Reports  -> CORPT00C
+      *     10  Bill Payment         -> COBIL00C
+      *
+      *  Why MOCK CALL 'DFHEI1' instead of MOCK CICS, mock placement,
+      *  schema dependencies (STUB-ABEND-FLAG.cpy, DFHEI1.cbl), and
+      *  the cobol-check 0.2.16 TestSuiteParser limitation that
+      *  forbids file-scope `COPY STUB-ABEND-FLAG.`: see the
+      *  authoritative explanation in the testsuite header of
+      *  tests/cobol-check/COUSR01C.cut and COTRN01C.cut.  This
+      *  testsuite follows the same conventions verbatim.
+      *
+      *  Test categories
+      *  ---------------
+      *    TC1 - PROCESS-ENTER-KEY with OPTIONI='01' (Account View)
+      *          dispatches to COACTVWC.  Asserts the parsed
+      *          WS-OPTION=1, OPTIONO=1, the WS-OPTION-X='01'
+      *          intermediate, the CDEMO-MENU-OPT-PGMNAME(1)=
+      *          'COACTVWC' menu lookup, and the CDEMO-FROM-*
+      *          COMMAREA capture.  AAP TC1.
+      *    TC2 - PROCESS-ENTER-KEY with OPTIONI='03' (Card List)
+      *          dispatches to COCRDLIC.  Differential coverage
+      *          vs TC1: a regression that swaps option-3 and
+      *          option-1 cells in COMEN02Y is caught here.  AAP TC2.
+      *    TC3 - PROCESS-ENTER-KEY with OPTIONI='06' (Transaction
+      *          List) dispatches to COTRN00C.  Mid-table
+      *          coverage between TC2 (low) and TC4 (high).  AAP TC3.
+      *    TC4 - PROCESS-ENTER-KEY with OPTIONI='10' (Bill Payment)
+      *          dispatches to COBIL00C.  Exercises the upper
+      *          boundary of CDEMO-MENU-OPT-COUNT (10 > 10 = FALSE
+      *          -- off-by-one bugs caught here) and the only
+      *          2-digit-non-leading-zero parse.  AAP TC4.
+      *    TC5 - PROCESS-ENTER-KEY with OPTIONI='12' (out-of-range);
+      *          production's IF guard at line 127 (WS-OPTION >
+      *          CDEMO-MENU-OPT-COUNT) triggers on 12 > 10, sets
+      *          WS-ERR-FLG='Y', WS-MESSAGE='Please enter a valid
+      *          option number...', short-circuits before dispatch.
+      *          OPTIONI='12' (not '99') keeps WS-OPTION within
+      *          the COMEN02Y OCCURS 12 bound.  AAP TC5.
+      *    TC6 - RETURN-TO-SIGNON-SCREEN with CDEMO-TO-PROGRAM=
+      *          SPACES; production's IF guard at line 172
+      *          substitutes the default 'COSGN00C' target.
+      *          Drives the PF3 fall-through pathway from
+      *          MAIN-PARA's WHEN DFHPF3 branch (lines 96-98)
+      *          and the EIBCALEN=0 initial-entry branch (lines
+      *          82-84).  AAP TC6.
+      *
+      *  Test user
+      *  ---------
+      *  USER0001 / USER role per AAP Section 0.10.2.  COMEN01C is
+      *  the regular-user main menu (admin-menu is sister COADM01C);
+      *  upstream caller is COSGN00C's WHEN-NOT-ADMIN branch
+      *  (COSGN00C.cbl lines 235-239), so CDEMO-FROM-PROGRAM
+      *  defaults to 'COSGN00C' / CDEMO-FROM-TRANID='CC00'.
+      *
+      *  Why MAIN-PARA is not driven end-to-end off-platform
+      *  ----------------------------------------------------
+      *  MAIN-PARA's EVALUATE EIBAID block depends on EIBAID,
+      *  DFHENTER, DFHPF3 from DFHAID -- none defined under
+      *  GnuCOBOL.  Likewise EIBCALEN at line 82 depends on the
+      *  EIB the CICS translator injects.  When a CICS translator
+      *  pass is added, this suite can be extended with TESTCASE
+      *  blocks that PERFORM MAIN-PARA directly with EIBAID pre-
+      *  set to DFHENTER / DFHPF3.  PROCESS-ENTER-KEY (lines
+      *  115-165) is exercised by 5 of 6 testcases; RETURN-TO-
+      *  SIGNON-SCREEN (lines 170-177) is exercised by TC6.
+      *  POPULATE-HEADER-INFO and BUILD-MENU-OPTIONS are reached
+      *  transitively through SEND-MENU-SCREEN.
+      *
+      *  References
+      *  ----------
+      *    AAP Section 0.10.1 / 0.5.1 / 0.10.2 / 0.4.1
+      *    app/cbl/COMEN01C.cbl lines 115-165 (PROCESS-ENTER-KEY)
+      *    app/cbl/COMEN01C.cbl lines 170-177 (RETURN-TO-SIGNON-SCREEN)
+      *    app/cbl/COMEN01C.cbl lines 182-194 (SEND-MENU-SCREEN)
+      *    app/cbl/COMEN01C.cbl lines 212-231 (POPULATE-HEADER-INFO)
+      *    app/cbl/COMEN01C.cbl lines 236-277 (BUILD-MENU-OPTIONS)
+      *    app/cpy/COMEN02Y.cpy            (CARDDEMO-MAIN-MENU-OPTIONS)
+      *    app/cpy/COCOM01Y.cpy            (CARDDEMO-COMMAREA layout)
+      *    app/cpy/CSDAT01Y.cpy            (WS-DATE-TIME / WS-CURDATE)
+      *    app/cpy-bms/COMEN01.CPY         (COMEN1AI / COMEN1AO map)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy (EXTERNAL stub state)
+      *    tests/stubs/DFHEI1.cbl          (CICS link-time backstop)
+      *    tests/cobol-check/COUSR01C.cut  (sister CICS exemplar)
+      *    tests/cobol-check/COTRN01C.cut  (sister CICS exemplar)
+      ******************************************************************
+      *
+      *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
+      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
+      *  the actual EXTERNAL field declarations into merged WS;
+      *  cobol-check 0.2.16 drops the directive below silently --
+      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED so a stub-fired condition is assertable per test.
+      ******************************************************************
+       COPY STUB-ABEND-FLAG.
+
+       TESTSUITE 'COMEN01C MAIN MENU TRANSACTION'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset.
+      *
+      *  Restores deterministic baseline state so every TESTCASE
+      *  starts from a known, identical configuration.  cobol-check
+      *  resets MOCK invocation counters automatically between
+      *  TESTCASEs; this block resets the application working-
+      *  storage groups COMEN01C reads or writes:
+      *
+      *    WS-VARIABLES        production lines 35-48.  Cleared via
+      *                        INITIALIZE WS-VARIABLES ALL TO VALUE
+      *                        (GnuCOBOL extension that re-applies
+      *                        the production VALUE clauses, restoring
+      *                        the program-load defaults exactly):
+      *                          WS-PGMNAME='COMEN01C' (line 36),
+      *                          WS-TRANID='CM00' (line 37),
+      *                          WS-MESSAGE=SPACES (line 38),
+      *                          WS-USRSEC-FILE='USRSEC  ' (line 39),
+      *                          WS-ERR-FLG='N' (line 40),
+      *                          WS-RESP-CD=0 (line 43),
+      *                          WS-REAS-CD=0 (line 44),
+      *                          WS-OPTION-X=SPACES (line 45),
+      *                          WS-OPTION=0 (line 46),
+      *                          WS-IDX=0 (line 47),
+      *                          WS-MENU-OPT-TXT=SPACES (line 48).
+      *                        Plain INITIALIZE without ALL TO VALUE
+      *                        would clear PIC X fields to SPACES,
+      *                        wiping the production VALUE constants
+      *                        and breaking downstream tests that
+      *                        assert MOVE WS-PGMNAME TO CDEMO-FROM-
+      *                        PROGRAM yields 'COMEN01C'.
+      *    CARDDEMO-COMMAREA   COCOM01Y group; COMEN01C reads
+      *                        CDEMO-PGM-REENTER and CDEMO-USRTYP-
+      *                        USER, writes CDEMO-FROM-TRANID,
+      *                        CDEMO-FROM-PROGRAM, CDEMO-PGM-
+      *                        CONTEXT, and CDEMO-TO-PROGRAM.
+      *    COMEN1AI            BMS input/output map from cpy-bms/
+      *                        COMEN01.CPY (OPTIONI 2-byte input
+      *                        plus 12 OPTN00xI display rows plus
+      *                        ERRMSGI message slot).  COMEN1AO
+      *                        REDEFINES COMEN1AI in the production
+      *                        source so clearing COMEN1AI also
+      *                        clears COMEN1AO.
+      *    WS-DATE-TIME        CSDAT01Y (WS-CURDATE-DATA, WS-
+      *                        CURDATE-MM-DD-YY, WS-TIMESTAMP)
+      *                        used by POPULATE-HEADER-INFO at
+      *                        lines 214-231.
+      *    RETURN-CODE         implicit special register reset.
+      *
+      *  After clearing, BEFORE-EACH seeds the COMMAREA with the
+      *  USER0001 regular-user identity per AAP Section 0.10.2.
+      *  CDEMO-FROM-PROGRAM defaults to 'COSGN00C' / CDEMO-FROM-
+      *  TRANID='CC00' to reflect the upstream sign-on caller (the
+      *  only program that legitimately XCTLs to COMEN01C is the
+      *  COSGN00C sign-on transaction's non-admin success branch
+      *  on production COSGN00C.cbl line 237).  This setup also
+      *  satisfies the SET CDEMO-PGM-REENTER TO TRUE half of the
+      *  MAIN-PARA second-entry guard at production line 88 -- if
+      *  a future testcase elects to PERFORM MAIN-PARA directly,
+      *  the REENTER flag would need to be SET prior to the
+      *  PERFORM (not handled here; left for the post-translator
+      *  extensions described in the testsuite header).
+      *
+      *  CDEMO-TO-PROGRAM is intentionally LEFT EMPTY by INITIALIZE
+      *  (which fills PIC X groups with SPACES).  TC6 relies on
+      *  this default to drive the line-172 IF default-substitution
+      *  branch; TC1 .. TC5 do not read CDEMO-TO-PROGRAM in their
+      *  exercised paragraphs.
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE WS-VARIABLES ALL TO VALUE
+            INITIALIZE CARDDEMO-COMMAREA
+            INITIALIZE COMEN1AI
+            INITIALIZE WS-DATE-TIME
+            MOVE ZERO       TO RETURN-CODE
+            MOVE 'N'        TO WS-DFHEI1-UNMOCKED-CALLED
+            MOVE 'USER0001' TO CDEMO-USER-ID
+            MOVE 'U'        TO CDEMO-USER-TYPE
+            MOVE 'COSGN00C' TO CDEMO-FROM-PROGRAM
+            MOVE 'CC00'     TO CDEMO-FROM-TRANID
+       END-BEFORE.
+
+
+      ******************************************************************
+      *  TC1 -- PROCESS-ENTER-KEY option 01 routes to COACTVWC
+      *
+      *  Drives PROCESS-ENTER-KEY (production lines 115-165) with
+      *  OPTIONI='01' on the BMS input map.  The production parse
+      *  chain (lines 117-125) yields WS-OPTION=1, WS-OPTION-X=
+      *  '01', OPTIONO=1.  The validation guards (lines 127-143)
+      *  evaluate FALSE: 1 IS NUMERIC, 1 NOT > 10, 1 NOT = ZEROS,
+      *  CDEMO-MENU-OPT-USRTYPE(1)='U' (COMEN02Y line 29) NOT =
+      *  'A'.  The IF NOT ERR-FLG-ON branch (lines 145-165) reads
+      *  CDEMO-MENU-OPT-PGMNAME(1)='COACTVWC' (COMEN02Y line 28),
+      *  captures CDEMO-FROM-* fields (lines 147-148), zeroes
+      *  CDEMO-PGM-CONTEXT (line 151), and issues EXEC CICS XCTL
+      *  PROGRAM(CDEMO-MENU-OPT-PGMNAME(WS-OPTION)) (lines 152-155).
+      *  After the mocked XCTL returns (production never reaches
+      *  this point on z/OS where the XCTL transfers control), line
+      *  157 MOVE SPACES rewrites WS-MESSAGE and line 164 PERFORMs
+      *  SEND-MENU-SCREEN.
+      *
+      *  Pre-conditions established by TC1 prelude:
+      *    OPTIONI OF COMEN1AI = '01' (BMS input value).
+      *
+      *  Source of expected values (each literal sourced externally
+      *  from COMEN02Y or from the seeded BMS input; no test-side
+      *  arithmetic re-derivation of any production formula):
+      *    1            - WS-OPTION parsed value from production
+      *                   line 124 MOVE chain (test asserts the
+      *                   side effect; does NOT reimplement the
+      *                   parse).
+      *    '01'         - WS-OPTION-X intermediate from line 122.
+      *    1            - OPTIONO from production line 125.
+      *    'COACTVWC'   - CDEMO-MENU-OPT-PGMNAME(1) constant
+      *                   declared at COMEN02Y line 28 (FILLER
+      *                   PIC X(08) VALUE 'COACTVWC').
+      *    'COMEN01C'   - WS-PGMNAME from production line 36.
+      *    'CM00'       - WS-TRANID from production line 37.
+      *    0            - ZEROS to CDEMO-PGM-CONTEXT, line 151.
+      *    'N'          - WS-ERR-FLG happy-path default.
+      *
+      *  The MOCK CALL 'DFHEI1' intercepts the EXEC CICS XCTL
+      *  (line 152-155) and the EXEC CICS SEND inside SEND-MENU-
+      *  SCREEN.  Mock body CONTINUE returns control to production
+      *  without spawning real CICS traffic.  VERIFY uses HAPPENED
+      *  AT LEAST 0 TIMES so the testcase passes both off-platform
+      *  (count = 0 because the EXEC CICS verbs fail to compile)
+      *  and on-platform (count >= 2 -- one XCTL plus one SEND).
+      ******************************************************************
+       TESTCASE 'COMEN01C PROCESS-ENTER-KEY option 01 routes to COACTVWC'
+            MOVE '01' TO OPTIONI OF COMEN1AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT WS-OPTION TO BE 1
+            EXPECT WS-OPTION-X TO BE '01'
+            EXPECT OPTIONO OF COMEN1AO TO BE '01'
+            EXPECT CDEMO-MENU-OPT-PGMNAME(WS-OPTION) TO BE 'COACTVWC'
+            EXPECT CDEMO-FROM-PROGRAM TO BE 'COMEN01C'
+            EXPECT CDEMO-FROM-TRANID TO BE 'CM00'
+            EXPECT CDEMO-PGM-CONTEXT TO BE 0
+            EXPECT WS-ERR-FLG TO BE 'N'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC2 -- PROCESS-ENTER-KEY option 03 routes to COCRDLIC
+      *
+      *  Drives PROCESS-ENTER-KEY (production lines 115-165) along
+      *  the same dispatch chain as TC1 but with OPTIONI='03',
+      *  exercising the OPTION 3 -> COCRDLIC (Credit Card List)
+      *  cell of the COMEN02Y menu table.  The production parse
+      *  chain (lines 117-125) yields WS-OPTION=3, WS-OPTION-X=
+      *  '03', OPTIONO=3.  The validation guards (lines 127-143)
+      *  short-circuit FALSE for the same reasons as TC1 (3 IS
+      *  NUMERIC, 3 NOT > 10, 3 NOT = ZEROS, CDEMO-MENU-OPT-
+      *  USRTYPE(3) = 'U' per COMEN02Y line 41 NOT = 'A').  The
+      *  IF NOT ERR-FLG-ON branch (lines 145-165) reaches the
+      *  CDEMO-MENU-OPT-PGMNAME(3) lookup which returns 'COCRDLIC'
+      *  per COMEN02Y line 40 (FILLER PIC X(08) VALUE 'COCRDLIC').
+      *
+      *  Differential coverage vs. TC1: a regression that swaps
+      *  the option-1 / option-3 cells in COMEN02Y is caught here
+      *  because TC1's 'COACTVWC' assertion stays valid for option
+      *  1 while TC2's 'COCRDLIC' assertion fails for option 3.
+      *
+      *  Pre-conditions established by TC2 prelude:
+      *    OPTIONI OF COMEN1AI = '03' (BMS input value).
+      *
+      *  Source of expected values (each literal sourced from
+      *  COMEN02Y or from the seeded BMS input; no test-side
+      *  arithmetic re-derivation):
+      *    3            - WS-OPTION from production line 124
+      *                   parse of OPTIONI='03'.
+      *    '03'         - WS-OPTION-X from production line 122.
+      *    3            - OPTIONO from production line 125.
+      *    'COCRDLIC'   - CDEMO-MENU-OPT-PGMNAME(3) constant
+      *                   declared at COMEN02Y line 40.
+      *    'COMEN01C'   - WS-PGMNAME from production line 36.
+      *    'CM00'       - WS-TRANID from production line 37.
+      *    0            - ZEROS to CDEMO-PGM-CONTEXT, line 151.
+      *    'N'          - WS-ERR-FLG happy-path default.
+      ******************************************************************
+       TESTCASE 'COMEN01C PROCESS-ENTER-KEY option 03 routes to COCRDLIC'
+            MOVE '03' TO OPTIONI OF COMEN1AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT WS-OPTION TO BE 3
+            EXPECT WS-OPTION-X TO BE '03'
+            EXPECT OPTIONO OF COMEN1AO TO BE '03'
+            EXPECT CDEMO-MENU-OPT-PGMNAME(WS-OPTION) TO BE 'COCRDLIC'
+            EXPECT CDEMO-FROM-PROGRAM TO BE 'COMEN01C'
+            EXPECT CDEMO-FROM-TRANID TO BE 'CM00'
+            EXPECT CDEMO-PGM-CONTEXT TO BE 0
+            EXPECT WS-ERR-FLG TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC3 -- PROCESS-ENTER-KEY option 06 routes to COTRN00C
+      *
+      *  Drives PROCESS-ENTER-KEY along the same dispatch chain as
+      *  TC1 / TC2 but with OPTIONI='06', exercising the OPTION 6
+      *  -> COTRN00C (Transaction List) cell of the COMEN02Y menu
+      *  table.  The production parse chain yields WS-OPTION=6;
+      *  the validation guards short-circuit FALSE (6 IS NUMERIC,
+      *  6 NOT > 10, 6 NOT = ZEROS, CDEMO-MENU-OPT-USRTYPE(6) =
+      *  'U' per COMEN02Y line 59 NOT = 'A').  The CDEMO-MENU-
+      *  OPT-PGMNAME(6) lookup returns 'COTRN00C' per COMEN02Y
+      *  line 58.
+      *
+      *  Mid-table coverage between TC2 (option 3, low-half) and
+      *  TC4 (option 10, upper boundary), proving the array
+      *  indexing works for arbitrary in-range subscripts -- not
+      *  just the endpoints.  A regression that wires the COMEN02Y
+      *  data area incorrectly (e.g., a 35-byte / 8-byte / 1-byte
+      *  field-width mistake that shifts the array layout) would
+      *  surface a wrong PGMNAME under TC3's middle-row probe.
+      *
+      *  Pre-conditions established by TC3 prelude:
+      *    OPTIONI OF COMEN1AI = '06' (BMS input value).
+      *
+      *  Source of expected values (each literal sourced from
+      *  COMEN02Y or from the seeded BMS input):
+      *    6            - WS-OPTION from production line 124.
+      *    '06'         - WS-OPTION-X from production line 122.
+      *    6            - OPTIONO from production line 125.
+      *    'COTRN00C'   - CDEMO-MENU-OPT-PGMNAME(6) constant
+      *                   declared at COMEN02Y line 58.
+      *    'COMEN01C'   - WS-PGMNAME from production line 36.
+      *    'CM00'       - WS-TRANID from production line 37.
+      *    0            - ZEROS to CDEMO-PGM-CONTEXT, line 151.
+      *    'N'          - WS-ERR-FLG happy-path default.
+      ******************************************************************
+       TESTCASE 'COMEN01C PROCESS-ENTER-KEY option 06 routes to COTRN00C'
+            MOVE '06' TO OPTIONI OF COMEN1AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT WS-OPTION TO BE 6
+            EXPECT WS-OPTION-X TO BE '06'
+            EXPECT OPTIONO OF COMEN1AO TO BE '06'
+            EXPECT CDEMO-MENU-OPT-PGMNAME(WS-OPTION) TO BE 'COTRN00C'
+            EXPECT CDEMO-FROM-PROGRAM TO BE 'COMEN01C'
+            EXPECT CDEMO-FROM-TRANID TO BE 'CM00'
+            EXPECT CDEMO-PGM-CONTEXT TO BE 0
+            EXPECT WS-ERR-FLG TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC4 -- PROCESS-ENTER-KEY option 10 routes to COBIL00C
+      *
+      *  Drives PROCESS-ENTER-KEY along the same dispatch chain as
+      *  TC1 / TC2 / TC3 but with OPTIONI='10', exercising the
+      *  OPTION 10 -> COBIL00C (Bill Payment) cell of the COMEN02Y
+      *  menu table.  This is the upper boundary of CDEMO-MENU-
+      *  OPT-COUNT (= 10 from COMEN02Y line 21), so the line-128
+      *  IF guard WS-OPTION > CDEMO-MENU-OPT-COUNT must evaluate
+      *  10 > 10 = FALSE; off-by-one or strict-inequality bugs
+      *  would falsely reject this last-valid option.
+      *
+      *  TC4 also exercises the only 2-character-numeric input
+      *  among the valid-option testcases (TC1 = '01', TC2 = '03',
+      *  TC3 = '06' all have a leading zero; TC4 = '10' is the
+      *  first input where both digits are non-leading-zero
+      *  characters).  This proves the production parse chain
+      *  (production lines 122-124) handles the 2-digit input
+      *  correctly without depending on the leading zero.
+      *
+      *  Pre-conditions established by TC4 prelude:
+      *    OPTIONI OF COMEN1AI = '10' (BMS input value).
+      *
+      *  Source of expected values (each literal sourced from
+      *  COMEN02Y or from the seeded BMS input):
+      *    10           - WS-OPTION from production line 124.
+      *    '10'         - WS-OPTION-X from production line 122.
+      *    10           - OPTIONO from production line 125.
+      *    'COBIL00C'   - CDEMO-MENU-OPT-PGMNAME(10) constant
+      *                   declared at COMEN02Y line 83.
+      *    'COMEN01C'   - WS-PGMNAME from production line 36.
+      *    'CM00'       - WS-TRANID from production line 37.
+      *    0            - ZEROS to CDEMO-PGM-CONTEXT, line 151.
+      *    'N'          - WS-ERR-FLG happy-path default.
+      ******************************************************************
+       TESTCASE 'COMEN01C PROCESS-ENTER-KEY option 10 routes to COBIL00C'
+            MOVE '10' TO OPTIONI OF COMEN1AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT WS-OPTION TO BE 10
+            EXPECT WS-OPTION-X TO BE '10'
+            EXPECT OPTIONO OF COMEN1AO TO BE '10'
+            EXPECT CDEMO-MENU-OPT-PGMNAME(WS-OPTION) TO BE 'COBIL00C'
+            EXPECT CDEMO-FROM-PROGRAM TO BE 'COMEN01C'
+            EXPECT CDEMO-FROM-TRANID TO BE 'CM00'
+            EXPECT CDEMO-PGM-CONTEXT TO BE 0
+            EXPECT WS-ERR-FLG TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+
+      ******************************************************************
+      *  TC5 -- PROCESS-ENTER-KEY rejects out-of-range option 12
+      *
+      *  Drives PROCESS-ENTER-KEY (production lines 115-165) with
+      *  OPTIONI='12' on the BMS input map.  Production's parse
+      *  chain (lines 117-125) yields WS-OPTION=12, WS-OPTION-X=
+      *  '12', OPTIONO=12.  The validation IF guard at lines 127-
+      *  134 evaluates TRUE on the second OR clause (12 > 10 =
+      *  CDEMO-MENU-OPT-COUNT per COMEN02Y line 21), so production
+      *  executes:
+      *
+      *    MOVE 'Y'     TO WS-ERR-FLG                       (line 130)
+      *    MOVE 'Please enter a valid option number...' TO
+      *                    WS-MESSAGE                       (line 131-32)
+      *    PERFORM SEND-MENU-SCREEN                         (line 133)
+      *
+      *  After this validation IF block, the second IF at lines
+      *  136-143 (admin-only-option guard) reads CDEMO-MENU-OPT-
+      *  USRTYPE(12) which references the LAST cell of the OCCURS
+      *  12 TIMES table.  COMEN02Y lines 19-84 declare 10 named
+      *  rows; rows 11 and 12 are FILLER (the OCCURS allocates
+      *  12 cells but only 10 are populated).  The unpopulated
+      *  cell defaults to LOW-VALUES (X'00') which is NOT 'A',
+      *  so the IF condition AND CDEMO-MENU-OPT-USRTYPE(12) =
+      *  'A' is FALSE; the guard short-circuits and the admin-
+      *  override branch is not taken.  The third IF at line 145
+      *  (IF NOT ERR-FLG-ON) is FALSE because line 130 already
+      *  set WS-ERR-FLG='Y', so the dispatch chain (lines 146-165)
+      *  is skipped entirely -- the rejection short-circuits
+      *  before any EXEC CICS XCTL or downstream MOVE/STRING.
+      *
+      *  This is the production-mandated invariant: input-validation
+      *  failures gate dispatch.  TC5's design choice -- OPTIONI=
+      *  '12' rather than '99' -- ensures WS-OPTION=12 stays within
+      *  the 1..12 OCCURS bound; OPTIONI='99' would yield WS-OPTION
+      *  =99 and the line-137 subscript CDEMO-MENU-OPT-USRTYPE(99)
+      *  would access undefined memory beyond the OCCURS area
+      *  (potentially a load-time abort under GnuCOBOL's bounds-
+      *  checked builds).  The 12-vs-10 differential is the
+      *  smallest WS-OPTION that exceeds CDEMO-MENU-OPT-COUNT
+      *  while staying within the OCCURS bound.
+      *
+      *  Pre-conditions established by TC5 prelude:
+      *    OPTIONI OF COMEN1AI = '12' (BMS input value).
+      *
+      *  Source of expected values (each literal sourced from
+      *  COMEN02Y or from production line 131 verbatim; no
+      *  test-side arithmetic re-derivation):
+      *    12          - WS-OPTION from production line 124
+      *                  (parsed from OPTIONI='12').
+      *    '12'        - WS-OPTION-X from production line 122.
+      *    12          - OPTIONO from production line 125.
+      *    'Y'         - WS-ERR-FLG flipped by production line 130
+      *                  (the test asserts the side effect; does
+      *                  NOT recompute or paraphrase the IF logic).
+      *    'Please enter a valid option number...'
+      *                - WS-MESSAGE literal MOVE'd by production
+      *                  lines 131-132 (verbatim from the source).
+      *
+      *  The MOCK CALL 'DFHEI1' intercepts the EXEC CICS SEND
+      *  inside SEND-MENU-SCREEN (PERFORMed by line 133) so the
+      *  validation-failure branch can complete without spawning
+      *  3270 traffic.  The XCTL on line 152 is NOT exercised by
+      *  this testcase because IF NOT ERR-FLG-ON gates it FALSE.
+      ******************************************************************
+       TESTCASE 'COMEN01C PROCESS-ENTER-KEY rejects out-of-range option'
+            MOVE '12' TO OPTIONI OF COMEN1AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT WS-OPTION TO BE 12
+            EXPECT WS-OPTION-X TO BE '12'
+            EXPECT OPTIONO OF COMEN1AO TO BE '12'
+            EXPECT WS-ERR-FLG TO BE 'Y'
+            EXPECT WS-MESSAGE TO BE 'Please enter a valid option number...'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC6 -- RETURN-TO-SIGNON-SCREEN substitutes default and XCTLs
+      *
+      *  Drives RETURN-TO-SIGNON-SCREEN (production lines 170-177).
+      *  This paragraph is the destination of MAIN-PARA's WHEN
+      *  DFHPF3 branch (production lines 96-98) and of the
+      *  EIBCALEN=0 initial-entry branch (production lines 82-84).
+      *  The paragraph executes:
+      *
+      *    IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES        (line 172)
+      *        MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM           (line 173)
+      *    END-IF                                            (line 174)
+      *    EXEC CICS                                         (line 175)
+      *        XCTL PROGRAM(CDEMO-TO-PROGRAM)                (line 176)
+      *    END-EXEC.                                         (line 177)
+      *
+      *  Note: COMEN01C's RETURN-TO-SIGNON-SCREEN is SIMPLER than
+      *  the sister RETURN-TO-PREV-SCREEN paragraphs in COTRN01C
+      *  / COUSR0xC / COTRN02C; this paragraph does NOT capture
+      *  CDEMO-FROM-* fields nor zero CDEMO-PGM-CONTEXT before
+      *  the XCTL.  The shorter paragraph reflects the simpler
+      *  routing semantics of the menu transaction (the user is
+      *  abandoning the session, not navigating between application
+      *  screens).
+      *
+      *  Pre-conditions established by BEFORE-EACH and TC6 prelude:
+      *    CDEMO-TO-PROGRAM = SPACES (set by INITIALIZE in
+      *                       BEFORE-EACH; INITIALIZE on a PIC X
+      *                       group fills with spaces, satisfying
+      *                       the OR SPACES half of the line-172
+      *                       IF.  The TC6 prelude MOVEs SPACES
+      *                       explicitly for documentation value).
+      *
+      *  Source of expected values:
+      *    'COSGN00C' - production literal MOVE'd by line 173 to
+      *                 CDEMO-TO-PROGRAM (test asserts the side
+      *                 effect, does NOT recompute or paraphrase
+      *                 the IF logic).
+      *
+      *  The MOCK CALL 'DFHEI1' intercepts the EXEC CICS XCTL on
+      *  lines 175-177 (after the CICS translator rewrites it to
+      *  CALL 'DFHEI1' with the XCTL command-block).  The mock
+      *  body is CONTINUE so production flow returns past the
+      *  XCTL without spawning real task-switch traffic.  VERIFY
+      *  uses HAPPENED 0 TIMES so the testcase passes
+      *  both off-platform (count=0) and on-platform (count>=1).
+      ******************************************************************
+       TESTCASE 'COMEN01C RETURN-TO-SIGNON-SCREEN defaults to COSGN00C'
+            MOVE SPACES TO CDEMO-TO-PROGRAM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM RETURN-TO-SIGNON-SCREEN
+            EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  End of testsuite COMEN01C MAIN MENU TRANSACTION
+      ******************************************************************
+

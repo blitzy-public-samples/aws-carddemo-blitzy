@@ -1,0 +1,602 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : CBACT03C CARD-XREF-FILE SEQUENTIAL DUMP
+      *  Program-under-test : app/cbl/CBACT03C.cbl
+      *
+      *  Purpose
+      *  -------
+      *  CBACT03C is a CardDemo batch dumper that OPENs XREFFILE-FILE
+      *  (VSAM KSDS CXACAIX/CARDXREF), READs sequentially, DISPLAYs
+      *  each CARD-XREF-RECORD inline, and CLOSEs.  Five production
+      *  paragraphs are covered by direct PERFORM-based tests:
+      *
+      *    0000-XREFFILE-OPEN     L118-134  '00' -> APPL-RESULT 0;
+      *                                     other -> APPL-RESULT 12,
+      *                                     PERFORM 9999-ABEND-PROGRAM.
+      *    1000-XREFFILE-GET-NEXT L92-116   '00' -> APPL-RESULT 0 +
+      *                                     inline DISPLAY CARD-XREF-
+      *                                     RECORD (L96; no separate
+      *                                     1100-paragraph here);
+      *                                     '10' -> APPL-RESULT 16,
+      *                                     END-OF-FILE = 'Y';
+      *                                     other -> APPL-RESULT 12.
+      *    9000-XREFFILE-CLOSE    L136-152  '00' -> APPL-RESULT 0;
+      *                                     other -> APPL-RESULT 12.
+      *    9910-DISPLAY-IO-STATUS L161-174  formats IO-STATUS into
+      *                                     4-byte IO-STATUS-04.
+      *    9999-ABEND-PROGRAM     L154-158  CALL 'CEE3ABD' (mocked).
+      *
+      *  cobol-check 0.2.16 file-I/O handling
+      *  ------------------------------------
+      *  The framework strips OPEN / READ / WRITE / REWRITE / CLOSE
+      *  to bare CONTINUE in the merged source; XREFFILE-STATUS
+      *  retains whatever the testcase prelude MOVEd.  This is the
+      *  canonical pattern (mirrored in CBACT01C.cut, CBACT02C.cut).
+      *
+      *  External dependencies mocked or stubbed
+      *  ---------------------------------------
+      *    MOCK CALL 'CEE3ABD' (per-testcase, Local scope) replaces
+      *    the IBM Language Environment abend service with a no-op.
+      *    The link-time stub at tests/stubs/CEE3ABD.cbl is the
+      *    fallback for any unmocked invocation.  Internal CBACT03C
+      *    paragraphs (0000-OPEN, 1000-GET-NEXT, 9000-CLOSE,
+      *    9999-ABEND, 9910-DISPLAY-IO) are NEVER mocked -- each
+      *    TESTCASE PERFORMs the production paragraph LIVE per AAP
+      *    Section 0.10.1.  Note: TC3 transitively covers L96 inline
+      *    DISPLAY (no 1100-paragraph in CBACT03C, unlike CBACT01C).
+      *
+      *  Why no `COPY STUB-ABEND-FLAG.` at testsuite scope:
+      *  cobol-check 0.2.16's TestSuiteParser does not recognise
+      *  file-scope COPY directives.  The abend pathway is asserted
+      *  via VERIFY CALL 'CEE3ABD' HAPPENED ONCE rather than direct
+      *  WS-ABEND-FLAG inspection.  The CEE3ABD stub still COPYs
+      *  STUB-ABEND-FLAG into its own WORKING-STORAGE.
+      *
+      *  XREF-FIXTURE-001 placement (forward-compatibility deferral)
+      *  -----------------------------------------------------------
+      *  cobol-check 0.2.16 does NOT support MOCK FILE directives
+      *  (Keywords class enumerates only CALL/PARA/PARAGRAPH/SECTION).
+      *  Adopted canonical pattern: pre-set XREFFILE-STATUS WS field
+      *  before PERFORM.  This deterministically drives every IF arm.
+      *  The fixture is referenced via depends_on_files schema only;
+      *  TC3 EXPECTs APPL-RESULT and END-OF-FILE (production-paragraph
+      *  IF side effects, not CARD-XREF-RECORD bytes), so test
+      *  outcome is independent of fixture-MOVE execution.  When
+      *  cobol-check adds MOCK FILE support, TC3 can splice the
+      *  fixture into the mock body.
+      *
+      *  Test categories
+      *  ---------------
+      *    TC1 - 0000-XREFFILE-OPEN '00' -> APPL-RESULT 0; no abend
+      *    TC2 - 0000-XREFFILE-OPEN '99' -> APPL-RESULT 12; abend
+      *    TC3 - 1000-XREFFILE-GET-NEXT '00' -> APPL-RESULT 0;
+      *          END-OF-FILE 'N'
+      *    TC4 - 1000-XREFFILE-GET-NEXT '10' -> APPL-RESULT 16;
+      *          END-OF-FILE flips to 'Y'
+      *    TC5 - 1000-XREFFILE-GET-NEXT '92' -> APPL-RESULT 12;
+      *          abend HAPPENED ONCE
+      *    TC6 - 9000-XREFFILE-CLOSE '00' -> APPL-RESULT 0; no abend
+      *    TC7 - 9000-XREFFILE-CLOSE '99' -> APPL-RESULT 12; abend
+      *    TC8 - 9910-DISPLAY-IO-STATUS '23' -> IO-STATUS-04 '0023'
+      *
+      *  References
+      *  ----------
+      *    AAP Sections 0.10.1, 0.5.1, 0.7.1, 0.10.2, 0.4.1, 0.6.2
+      *    app/cbl/CBACT03C.cbl L92-116, 118-134, 136-152, 154-158,
+      *                         161-174
+      *    app/cpy/CVACT03Y.cpy            (CARD-XREF-RECORD)
+      *    tests/stubs/STUB-ABEND-FLAG.cpy / CEE3ABD.cbl
+      *    tests/fixtures/cobol-snippets/XREF-FIXTURE-001.cpy
+      *    tests/cobol-check/CBACT01C.cut / CBACT02C.cut /
+      *    CBCUS01C.cut (sister)
+      ******************************************************************
+
+       TESTSUITE 'CBACT03C CARD-XREF-FILE SEQUENTIAL DUMP'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset
+      *
+      *  Restores deterministic baseline state so every TESTCASE
+      *  starts from a known, identical configuration.  cobol-check
+      *  0.2.16 resets MOCK invocation counters automatically;
+      *  this block resets application-level fields:
+      *
+      *    XREFFILE-STATUS  2-byte VSAM file-status group; cleared
+      *                     to SPACES.  Each testcase prelude MOVEs
+      *                     '00' / '10' / '92' / '99' to drive the
+      *                     production IF arms (OPEN/READ/CLOSE
+      *                     are stripped to CONTINUE so the runtime
+      *                     never assigns this field).
+      *    IO-STATUS        2-byte error buffer; TC8 MOVEs '23'
+      *                     before invoking 9910 directly.
+      *    CARD-XREF-RECORD 50-byte CVACT03Y group; cleared.
+      *    IO-STATUS-04     4-byte numeric-edited display field
+      *                     (IO-STATUS-0401 + IO-STATUS-0403);
+      *                     cleared to '0000' for TC8.
+      *    APPL-RESULT      PIC S9(9) COMP; APPL-AOK (VALUE 0) /
+      *                     APPL-EOF (VALUE 16).  Each TC MOVEs
+      *                     sentinel 7777 before PERFORM so the
+      *                     post-condition is provably a production
+      *                     side effect, not an INITIALIZE residue.
+      *    ABCODE / TIMING  PIC S9(9) BINARY; production 9999-
+      *                     ABEND-PROGRAM lines 156-157 set
+      *                     TIMING=0 / ABCODE=999 in TC2/TC5/TC7.
+      *    END-OF-FILE      PIC X main-loop EOF flag; restored to
+      *                     literal 'N' (the original VALUE) after
+      *                     INITIALIZE clears it to a SPACE.  TC4
+      *                     watches it flip to 'Y'.
+      *    RETURN-CODE      implicit special register; reset to
+      *                     ZERO for deterministic post-test
+      *                     inspection.
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE XREFFILE-STATUS
+            INITIALIZE IO-STATUS
+            INITIALIZE CARD-XREF-RECORD
+            INITIALIZE IO-STATUS-04
+            INITIALIZE APPL-RESULT
+            INITIALIZE ABCODE
+            INITIALIZE TIMING
+            MOVE 'N'  TO END-OF-FILE
+            MOVE ZERO TO RETURN-CODE
+       END-BEFORE.
+
+      ******************************************************************
+      *  TC1 -- 0000-XREFFILE-OPEN success: APPL-RESULT = 0
+      *
+      *  PERFORMs 0000-XREFFILE-OPEN (CBACT03C.cbl lines 118-134).
+      *  Pre-setting XREFFILE-STATUS = '00' drives the production
+      *  IF guard at line 121 to its THEN branch:
+      *      MOVE 8 TO APPL-RESULT       (line 119, seed)
+      *      OPEN INPUT XREFFILE-FILE    (line 120; stripped to
+      *                                  CONTINUE by cobol-check)
+      *      IF XREFFILE-STATUS = '00'   (line 121)
+      *          MOVE 0 TO APPL-RESULT   (line 122) <-- success
+      *      ELSE
+      *          MOVE 12 TO APPL-RESULT  (line 124)
+      *      END-IF
+      *      IF APPL-AOK CONTINUE        (line 126-127) <-- exits
+      *      ELSE PERFORM 9999-ABEND-PROGRAM
+      *
+      *  TC1 prelude
+      *    MOVE '00' TO XREFFILE-STATUS  -- forces SUCCESS branch
+      *    MOVE 7777 TO APPL-RESULT      -- sentinel; overwritten
+      *                                     by line 119 (-> 8) then
+      *                                     line 122 (-> 0).
+      *
+      *  Source of expected value
+      *    0  -- the production literal at line 122; not recomputed.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- the SUCCESS branch (CONTINUE at line
+      *              127) does not PERFORM 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBACT03C 0000-XREFFILE-OPEN success APPL-RESULT 0'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0000-XREFFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC2 -- 0000-XREFFILE-OPEN failure: APPL-RESULT = 12, abend
+      *
+      *  Mirror of TC1 with XREFFILE-STATUS = '99' (any non-'00'
+      *  sentinel) to force the line-121 IF ELSE arm.  Line 124
+      *  sets APPL-RESULT to 12; APPL-AOK evaluates false; the
+      *  error path runs through PERFORM 9999-ABEND-PROGRAM at
+      *  line 132 which CALLs CEE3ABD exactly once.  The non-'35'
+      *  sentinel keeps the test independent of GnuCOBOL's
+      *  missing-file convention (which can vary between Linux
+      *  builds and may yield '35' or '9057' depending on the
+      *  underlying libcob runtime version).
+      *
+      *  TC1/TC2 differential
+      *    TC1 SUCCESS '00': APPL-RESULT = 0; CEE3ABD never called.
+      *    TC2 FAILURE '99': APPL-RESULT = 12; CEE3ABD once.
+      *  Together they prove BOTH branches of the line-121 IF.
+      *
+      *  Source of expected value
+      *    12 -- the production literal at line 124; not recomputed.
+      *
+      *  CEE3ABD verification
+      *    HAPPENED ONCE -- failure branch reaches line 132 PERFORM
+      *              9999-ABEND-PROGRAM, which CALLs CEE3ABD once.
+      ******************************************************************
+       TESTCASE 'CBACT03C 0000-XREFFILE-OPEN failure APPL-RESULT 12'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '99' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 0000-XREFFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC3 -- 1000-XREFFILE-GET-NEXT happy: APPL-RESULT = 0
+      *
+      *  PERFORMs 1000-XREFFILE-GET-NEXT (CBACT03C.cbl lines 92-116)
+      *  with XREFFILE-STATUS = '00' to drive the SUCCESS branch:
+      *      READ XREFFILE-FILE INTO CARD-XREF-RECORD  (line 93;
+      *                                              stripped to
+      *                                              CONTINUE)
+      *      IF XREFFILE-STATUS = '00'                 (line 94)
+      *          MOVE 0 TO APPL-RESULT                 (line 95) <--
+      *          DISPLAY CARD-XREF-RECORD              (line 96)
+      *      ELSE [IF '10' MOVE 16 ELSE MOVE 12]
+      *      IF APPL-AOK CONTINUE (line 105) <-- exits
+      *      ELSE [IF APPL-EOF MOVE 'Y' ELSE error path]
+      *
+      *  XREF-FIXTURE-001 reference (comment-only)
+      *    See the testsuite header for the rationale.  The fixture
+      *    is referenced as a build-time dependency via the
+      *    depends_on_files schema entry but is NOT physically
+      *    spliced into TC3's mock body, because cobol-check 0.2.16
+      *    fails to compile a merged binary that contains COPY
+      *    inside a MOCK ... END-MOCK block (the period-after-COPY
+      *    paragraph terminator is dropped by the parser, breaking
+      *    forward references to the next mock paragraph).  TC3's
+      *    EXPECT assertions check APPL-RESULT and END-OF-FILE --
+      *    side effects of the production IF dispatch -- not
+      *    CARD-XREF-RECORD byte content; the test outcome is
+      *    therefore independent of whether the fixture MOVEs
+      *    execute.
+      *
+      *  Note on inline DISPLAY transitive coverage
+      *    The SUCCESS branch at line 96 DISPLAYs CARD-XREF-RECORD
+      *    inline (no separate paragraph PERFORMed).  Because the
+      *    DISPLAY statement contains no business arithmetic and
+      *    no abend pathway, TC3's PERFORM transitively covers it
+      *    without additional mocks.  The DISPLAY output is benign
+      *    to STDOUT and validates nothing on its own; TC3's
+      *    APPL-RESULT and END-OF-FILE EXPECTs are the assertion
+      *    contract.
+      *
+      *  TC3 prelude
+      *    MOVE '00' TO XREFFILE-STATUS  -- forces SUCCESS branch
+      *    MOVE 7777 TO APPL-RESULT      -- sentinel; overwritten
+      *                                     by line 95 (-> 0).
+      *
+      *  Source of expected values
+      *    APPL-RESULT = 0   -- production literal at line 95.
+      *    END-OF-FILE = 'N' -- BEFORE-EACH baseline; SUCCESS branch
+      *                          does not execute line-108 EOF MOVE.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- SUCCESS branch (CONTINUE at line 105)
+      *              does not PERFORM 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBACT03C 1000-XREFFILE-GET-NEXT happy APPL-RESULT 0'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-XREFFILE-GET-NEXT
+            EXPECT APPL-RESULT TO BE 0
+            EXPECT END-OF-FILE TO BE 'N'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC4 -- 1000-XREFFILE-GET-NEXT EOF: END-OF-FILE flips to 'Y'
+      *
+      *  Mirror of TC3 with XREFFILE-STATUS = '10' to drive the EOF
+      *  branch.  Production line 99 sets APPL-RESULT to 16 (the
+      *  88-level VALUE for APPL-EOF declared at line 63).  APPL-AOK
+      *  evaluates false; APPL-EOF evaluates true; the line-108
+      *  MOVE flips END-OF-FILE to 'Y'.  The error pathway is NOT
+      *  taken on EOF.
+      *
+      *  TC3/TC4/TC5 differential
+      *    TC3 '00' SUCCESS: APPL-RESULT = 0,  END-OF-FILE = 'N'.
+      *    TC4 '10' EOF:     APPL-RESULT = 16, END-OF-FILE = 'Y'.
+      *    TC5 '92' ERROR:   APPL-RESULT = 12, abend HAPPENED ONCE.
+      *  Together they prove all three branches of the XREFFILE-
+      *  STATUS dispatch and the post-status APPL-AOK / APPL-EOF /
+      *  abend dispatch are reachable and correct.
+      *
+      *  TC4 prelude
+      *    MOVE '10' TO XREFFILE-STATUS  -- forces EOF branch
+      *    MOVE 7777 TO APPL-RESULT      -- sentinel; overwritten
+      *                                     by line 99 (-> 16).
+      *
+      *  Source of expected values
+      *    APPL-RESULT = 16  -- production literal at line 99
+      *                          (matches APPL-EOF VALUE).
+      *    END-OF-FILE = 'Y' -- production literal at line 108.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- EOF branch terminates without
+      *              invoking 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBACT03C 1000-XREFFILE-GET-NEXT EOF END-OF-FILE Y'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '10' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-XREFFILE-GET-NEXT
+            EXPECT APPL-RESULT TO BE 16
+            EXPECT END-OF-FILE TO BE 'Y'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC5 -- 1000-XREFFILE-GET-NEXT non-EOF error: abend pathway
+      *
+      *  Mirror of TC3/TC4 with XREFFILE-STATUS = '92' (GnuCOBOL
+      *  "logic error") to drive the fatal-error branch.  Production
+      *  line 101 sets APPL-RESULT to 12 (neither APPL-AOK nor
+      *  APPL-EOF); both 88-levels evaluate false, and the line-113
+      *  PERFORM 9999-ABEND-PROGRAM runs, CALLing CEE3ABD once.
+      *
+      *  TC5 prelude
+      *    MOVE '92' TO XREFFILE-STATUS  -- forces ERROR branch
+      *    MOVE 7777 TO APPL-RESULT      -- sentinel; overwritten
+      *                                     by line 101 (-> 12).
+      *
+      *  Source of expected value
+      *    12 -- the production literal at line 101; not recomputed.
+      *
+      *  CEE3ABD verification
+      *    HAPPENED ONCE -- ERROR branch reaches line 113 PERFORM
+      *              9999-ABEND-PROGRAM, which CALLs CEE3ABD once.
+      ******************************************************************
+       TESTCASE 'CBACT03C 1000-XREFFILE-GET-NEXT error APPL-RESULT 12'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '92' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 1000-XREFFILE-GET-NEXT
+            EXPECT APPL-RESULT TO BE 12
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC6 -- 9000-XREFFILE-CLOSE success: APPL-RESULT = 0
+      *
+      *  PERFORMs 9000-XREFFILE-CLOSE (CBACT03C.cbl lines 136-152)
+      *  with XREFFILE-STATUS = '00' to drive the SUCCESS branch:
+      *      ADD 8 TO ZERO GIVING APPL-RESULT          (line 137)
+      *      CLOSE XREFFILE-FILE                       (line 138;
+      *                                                stripped to
+      *                                                CONTINUE)
+      *      IF XREFFILE-STATUS = '00'                 (line 139)
+      *          SUBTRACT APPL-RESULT FROM APPL-RESULT (line 140)
+      *      ELSE
+      *          ADD 12 TO ZERO GIVING APPL-RESULT     (line 142)
+      *      END-IF
+      *      IF APPL-AOK CONTINUE (line 145) <-- exits
+      *      ELSE PERFORM 9999-ABEND-PROGRAM
+      *
+      *  Lines 137, 140, 142 use ADD / SUBTRACT verbs INSIDE the
+      *  production paragraph being tested -- not test-side
+      *  recomputation -- so they do not violate the AAP "no
+      *  business logic in tests" rule.  The test merely PERFORMs
+      *  the paragraph and EXPECTs the post-state.
+      *
+      *  Branch flow on TC6
+      *    Line 137 seeds APPL-RESULT = 8.  Line 138 CLOSE is
+      *    stripped to CONTINUE so XREFFILE-STATUS retains '00'.
+      *    Line 139 IF takes the THEN branch and line 140
+      *    SUBTRACTs APPL-RESULT from itself (8 - 8 = 0).  APPL-AOK
+      *    evaluates true and line 145 CONTINUE executes.
+      *
+      *  TC6 prelude
+      *    MOVE '00' TO XREFFILE-STATUS  -- forces SUCCESS branch
+      *    MOVE 7777 TO APPL-RESULT      -- sentinel; overwritten
+      *                                     by line 137 (-> 8) then
+      *                                     line 140 (-> 0).
+      *
+      *  Source of expected value
+      *    0 -- the deterministic result of production-side SUBTRACT
+      *         at line 140 (x - x = 0); not recomputed by the test.
+      *         The 0 literal is a mathematical identity that the
+      *         test asserts the production code executed; it is
+      *         NOT a re-derivation of any business formula.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- SUCCESS branch (CONTINUE at line 145)
+      *              does not PERFORM 9999-ABEND-PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBACT03C 9000-XREFFILE-CLOSE success APPL-RESULT 0'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9000-XREFFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC7 -- 9000-XREFFILE-CLOSE failure: APPL-RESULT = 12, abend
+      *
+      *  Mirror of TC6 with XREFFILE-STATUS = '99' to force the
+      *  line-139 IF ELSE branch.  Line 142 sets APPL-RESULT to 12
+      *  (the result of "ADD 12 TO ZERO GIVING").  APPL-AOK
+      *  evaluates false; the line-150 PERFORM 9999-ABEND-PROGRAM
+      *  runs, CALLing CEE3ABD exactly once.
+      *
+      *  TC6/TC7 differential
+      *    TC6 SUCCESS '00': APPL-RESULT = 0;  CEE3ABD never called.
+      *    TC7 FAILURE '99': APPL-RESULT = 12; CEE3ABD once.
+      *  Together they prove BOTH branches of the line-139 IF.
+      *
+      *  TC7 prelude
+      *    MOVE '99' TO XREFFILE-STATUS  -- forces FAILURE branch
+      *    MOVE 7777 TO APPL-RESULT      -- sentinel; overwritten
+      *                                     by line 137 (-> 8) then
+      *                                     line 142 (-> 12).
+      *
+      *  Source of expected value
+      *    12 -- the production literal at line 142 (the immediate
+      *          result of "ADD 12 TO ZERO GIVING APPL-RESULT");
+      *          not recomputed by the test.
+      *
+      *  CEE3ABD verification
+      *    HAPPENED ONCE -- FAILURE branch reaches line 150 PERFORM
+      *              9999-ABEND-PROGRAM, which CALLs CEE3ABD once.
+      ******************************************************************
+       TESTCASE 'CBACT03C 9000-XREFFILE-CLOSE failure APPL-RESULT 12'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '99' TO XREFFILE-STATUS
+            MOVE 7777 TO APPL-RESULT
+            PERFORM 9000-XREFFILE-CLOSE
+            EXPECT APPL-RESULT TO BE 12
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC8 -- 9910-DISPLAY-IO-STATUS formats numeric '23' as '0023'
+      *
+      *  PERFORMs 9910-DISPLAY-IO-STATUS (CBACT03C.cbl lines 161-174)
+      *  with IO-STATUS = '23' (numeric, first byte != '9') to
+      *  drive the ELSE arm:
+      *      IF IO-STATUS NOT NUMERIC OR IO-STAT1 = '9'  (162-163)
+      *          [THEN arm: TWO-BYTES-BINARY pack]
+      *      ELSE
+      *          MOVE '0000'    TO IO-STATUS-04          (line 170)
+      *          MOVE IO-STATUS TO IO-STATUS-04(3:2)     (line 171)
+      *          DISPLAY ...
+      *      END-IF
+      *      EXIT.                                       (line 174)
+      *
+      *  IO-STATUS = '23' is numeric (NOT NUMERIC false) and
+      *  IO-STAT1 = '2' (not '9') so the OR-guard evaluates false
+      *  and the ELSE arm executes.  Line 170 MOVEs literal '0000'
+      *  into IO-STATUS-04; line 171 reference-modifies positions
+      *  3-4 with '23', yielding '0023'.
+      *
+      *  Source of expected value
+      *    '0023' -- the production literal '0000' MOVEd at line
+      *              170, with the test-author IO-STATUS = '23'
+      *              overlaid at positions 3-4 by the production
+      *              reference-modified MOVE at line 171.  Directly
+      *              observable from the production MOVEs; the test
+      *              does not recompute or paraphrase the formatting.
+      *              Status code '23' is the canonical VSAM "record
+      *              not found" status code, complementing CBACT01C's
+      *              TC8 (which uses '35' open-no-file) and
+      *              CBACT02C's TC8 (which uses '23').
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- 9910-DISPLAY-IO-STATUS contains no
+      *              CALL site for CEE3ABD; the abend service must
+      *              not be reached from this paragraph.  A
+      *              regression that accidentally introduced a
+      *              `PERFORM 9999-ABEND-PROGRAM` inside this
+      *              paragraph would be caught by this verify.
+      ******************************************************************
+       TESTCASE 'CBACT03C 9910-DISPLAY-IO-STATUS formats numeric 23'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '23' TO IO-STATUS
+            PERFORM 9910-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04 TO BE '0023'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  TC9 -- 9999-ABEND-PROGRAM direct invocation
+      *
+      *  PERFORMs 9999-ABEND-PROGRAM (CBACT03C.cbl lines 154-158)
+      *  directly.  Production statements:
+      *      DISPLAY 'ABENDING PROGRAM'   (line 155)
+      *      MOVE 0   TO TIMING           (line 156)
+      *      MOVE 999 TO ABCODE           (line 157)
+      *      CALL 'CEE3ABD'.              (line 158, mocked)
+      *
+      *  Although TC2/TC5/TC7 already reach 9999-ABEND-PROGRAM via
+      *  the OPEN/READ/CLOSE error pathways, this direct test
+      *  exercises the cobol-check-generated EVALUATE arm for THIS
+      *  testcase (UT-1-9-1-MOCK), which is otherwise unreachable
+      *  unless 9999 is invoked while THIS testcase is the active
+      *  case.  Mirror of CBACT01C/CBACT02C TC9.
+      *
+      *  Source of expected values
+      *    TIMING = 0   -- production literal at line 156.
+      *    ABCODE = 999 -- production literal at line 157.
+      *
+      *  CEE3ABD verification
+      *    HAPPENED ONCE -- production line 158 CALLs CEE3ABD
+      *              exactly once per invocation of 9999-ABEND-
+      *              PROGRAM.
+      ******************************************************************
+       TESTCASE 'CBACT03C 9999-ABEND-PROGRAM direct invocation'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE 7777 TO TIMING
+            MOVE 7777 TO ABCODE
+            PERFORM 9999-ABEND-PROGRAM
+            EXPECT TIMING TO BE 0
+            EXPECT ABCODE TO BE 999
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+
+      ******************************************************************
+      *  TC10 -- 9910-DISPLAY-IO-STATUS THEN branch via IO-STAT1='9'
+      *
+      *  PERFORMs 9910-DISPLAY-IO-STATUS (CBACT03C.cbl lines 161-174)
+      *  with IO-STATUS = '90' to drive the THEN arm of the guard
+      *  at lines 162-163:
+      *      IF  IO-STATUS NOT NUMERIC OR IO-STAT1 = '9'
+      *          MOVE IO-STAT1 TO IO-STATUS-04(1:1)        (line 164)
+      *          MOVE 0        TO TWO-BYTES-BINARY         (line 165)
+      *          MOVE IO-STAT2 TO TWO-BYTES-RIGHT          (line 166)
+      *          MOVE TWO-BYTES-BINARY TO IO-STATUS-0403   (line 167)
+      *          DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04
+      *
+      *  IO-STATUS = '90' is numeric (NOT NUMERIC false) but
+      *  IO-STAT1 = '9' so the OR-guard evaluates true and the
+      *  THEN arm executes.  Mirror of CBACT01C/CBACT02C TC10.
+      *
+      *  Differential vs TC8 (which covered the ELSE arm with
+      *  IO-STATUS = '23'):
+      *    TC8 ELSE arm: IO-STATUS-04 = '0023' (0000 + 23 at 3:2)
+      *    TC10 THEN arm: IO-STATUS-04 first byte = '9'
+      *  Together TC8 and TC10 prove BOTH arms of the line-162 IF.
+      *
+      *  Source of expected value
+      *    IO-STATUS-04(1:1) = '9' -- the production reference-
+      *              modified MOVE at line 164 places IO-STAT1 ('9')
+      *              at position 1 of IO-STATUS-04.  Directly
+      *              observable from the production MOVE.
+      *
+      *  CEE3ABD verification
+      *    NEVER HAPPENED -- 9910-DISPLAY-IO-STATUS contains no
+      *              CALL site for CEE3ABD.
+      ******************************************************************
+       TESTCASE 'CBACT03C 9910-DISPLAY-IO-STATUS THEN branch STAT1=9'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '90' TO IO-STATUS
+            PERFORM 9910-DISPLAY-IO-STATUS
+            EXPECT IO-STATUS-04(1:1) TO BE '9'
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+      ******************************************************************
+      *  End of testsuite CBACT03C CARD-XREF-FILE SEQUENTIAL DUMP
+      ******************************************************************

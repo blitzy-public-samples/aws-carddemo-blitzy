@@ -1,0 +1,221 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# =====================================================================
+# CardDemo cobol-check CI pipeline (.github/workflows/test.yml)
+# ---------------------------------------------------------------------
+# This workflow is the CI counterpart of the repository-root Makefile.
+# The same canonical command sequence runs both locally and in CI:
+#
+#     make init  ->  make lint  ->  make test  ->  make coverage
+#
+# All actual logic (compile, mock, run, threshold parsing) lives in
+# the Makefile and the four lint scripts under tests/lint/.  This
+# workflow is intentionally THIN -- it only orchestrates `make`
+# invocations and uploads diagnostic artifacts.  Keeping the entry
+# points symmetric between local and CI environments is the project's
+# explicit policy (AAP Section 0.10.2: "follow existing test patterns").
+#
+# Triggered on push or pull_request to ANY branch (AAP Section 0.7.2).
+# Runs on ubuntu-24.04 (Ubuntu Noble) so the apt package versions
+# match the build environment validated in AAP Section 0.6.1:
+#   - gnucobol3              3.1.2-5.1ubuntu1
+#   - libcob4-dev            3.1.2-5.1ubuntu1
+#   - openjdk-21-jdk-headless 21.0.10+7-1~24.04
+#   - make                   4.3-4.1build2
+#   - gcc                    4:13.2.0-7ubuntu1
+#
+# All `uses:` references are pinned to official, GitHub-maintained
+# actions at fixed major versions.  No community actions are
+# introduced (AAP Section 0.10.2 / agent prompt CRITICAL constraint #4).
+# =====================================================================
+
+name: CardDemo Test Suite
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+env:
+  # Pin the cobol-check release per AAP Section 0.6.1.  The Makefile
+  # accepts COBOL_CHECK_VERSION as an override, so this value must
+  # match the Makefile's default.  A future bump invalidates the
+  # cobol-check JAR cache key (see Step 4) automatically.
+  COBOL_CHECK_VERSION: '0.2.16'
+
+jobs:
+  test:
+    name: Lint, test, and coverage
+    runs-on: ubuntu-24.04
+
+    steps:
+      # -------------------------------------------------------------
+      # Step 1: Checkout source
+      # -------------------------------------------------------------
+      # Fetches the triggering ref (push commit or pull-request head).
+      # This is the only step that touches app/ -- checkout reads it;
+      # nothing in the workflow writes to app/ (AAP Section 0.10.2:
+      # production sources are read-only).
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------------
+      # Step 2: Install system dependencies
+      # -------------------------------------------------------------
+      # Package list is taken verbatim from AAP Section 0.6.1:
+      #   gnucobol3, libcob4-dev, openjdk-21-jdk-headless, make, gcc.
+      # `curl` is added because `make init` uses it to download the
+      # cobol-check JAR (per the Makefile spec).
+      # `libcob4t64` is auto-installed as a dependency of gnucobol3
+      # and therefore does not need to be listed explicitly.
+      - name: Install system dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+              gnucobol3 \
+              libcob4-dev \
+              openjdk-21-jdk-headless \
+              make \
+              gcc \
+              curl
+
+      # -------------------------------------------------------------
+      # Step 3: Setup Python
+      # -------------------------------------------------------------
+      # Python 3.12 matches Ubuntu Noble's system Python.  Used by
+      # tests/fixtures/load_fixture.py (the byte-extraction helper
+      # invoked by `make fixtures`, which `make test` depends on).
+      # See AAP Section 0.5.5.
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # -------------------------------------------------------------
+      # Step 4: Cache cobol-check JAR
+      # -------------------------------------------------------------
+      # Avoids re-downloading the ~270 KB JAR on every run.  The cache
+      # key embeds the version so a COBOL_CHECK_VERSION bump invalidates
+      # the cache automatically.  The path is the canonical JAR
+      # location used by the Makefile's COBOL_CHECK_JAR variable.
+      #
+      # `restore-keys` provides a partial-prefix fallback that lets a
+      # version bump (e.g. 0.2.16 -> 0.2.17) reuse a previous cache
+      # entry as a "warm start" when no exact-key match exists.  When
+      # the partial-match candidate is the wrong version the JAR file
+      # restored from cache will not match `make init`'s expected path
+      # (cobol-check-${COBOL_CHECK_VERSION}.jar), and `make init`'s
+      # idempotent existence-check rule will trigger a fresh download
+      # to the new version-stamped path.  The fallback therefore
+      # cannot cause incorrect behaviour; it only narrows the window
+      # in which the cache is fully cold.  AAP Section 0.5.4
+      # ("JAR caching strategy ... restore-keys provide fallback").
+      - name: Cache cobol-check JAR
+        uses: actions/cache@v4
+        with:
+          path: tests/cobol-check/lib/cobol-check-${{ env.COBOL_CHECK_VERSION }}.jar
+          key: cobol-check-jar-${{ env.COBOL_CHECK_VERSION }}
+          restore-keys: |
+            cobol-check-jar-
+
+      # -------------------------------------------------------------
+      # Step 5: Initialize cobol-check
+      # -------------------------------------------------------------
+      # `make init` is idempotent: a no-op when the cached JAR is
+      # already in place; downloads via curl when the cache missed.
+      # Local developers run the same command for the same purpose.
+      - name: Download cobol-check JAR (if not cached)
+        run: make init
+
+      # -------------------------------------------------------------
+      # Step 6: Run lint validation gates (BEFORE tests run)
+      # -------------------------------------------------------------
+      # AAP Section 0.10.1 explicitly requires lint to run BEFORE
+      # tests in CI: "lint failures abort the workflow."  GitHub
+      # Actions' default behavior of failing the job on any non-zero
+      # step exit provides this abort automatically -- subsequent
+      # steps are skipped.
+      #
+      # The five lint gates enforced by `make lint` are:
+      #   1. tests/lint/check_no_business_logic.sh
+      #   2. tests/lint/check_no_production_redeclaration.sh
+      #   3. tests/lint/check_assertion_density.sh
+      #   4. tests/lint/check_isolation.sh
+      #   5. tests/lint/check_dfhei1_safety_net.sh
+      - name: Run lint gates (must pass before tests run)
+        run: make lint
+
+      # -------------------------------------------------------------
+      # Step 7: Run tests
+      # -------------------------------------------------------------
+      # The Makefile's `test` target depends on `fixtures` and
+      # `init`, so byte-exact COBOL fixture snippets are regenerated
+      # automatically before any cobol-check invocation.  cobol-check
+      # exits non-zero on any failing testcase, which propagates
+      # through `make test` to fail the workflow step.
+      - name: Run cobol-check test suite
+        run: make test
+
+      # -------------------------------------------------------------
+      # Step 8: Run coverage and enforce thresholds
+      # -------------------------------------------------------------
+      # The Makefile's `coverage` target re-runs the suite with
+      # GnuCOBOL coverage instrumentation, aggregates `gcov` data,
+      # then invokes tests/lint/parse_gcov_summary.sh to enforce
+      # the AAP Section 0.7.1 thresholds (overall >=70%, business
+      # logic >=80%, data validation >=90%, file I/O >=70%).  The
+      # script exits non-zero if any threshold is missed; that
+      # propagates through `make coverage` to fail this step.
+      - name: Run coverage and enforce thresholds
+        run: make coverage
+
+      # -------------------------------------------------------------
+      # Step 9: Upload coverage artifact
+      # -------------------------------------------------------------
+      # AAP Section 0.5.4 mandates a coverage artifact upload.  The
+      # `if: always()` guard ensures the artifact is uploaded even
+      # when an earlier step failed (e.g., a coverage threshold was
+      # missed) so reviewers can inspect the gcov output to diagnose
+      # the regression.  Without this guard, a coverage failure would
+      # produce an opaque CI run with no diagnostic data attached.
+      #
+      # Paths target the Makefile's actual output directory
+      # (BUILD_DIR == COVERAGE_DIR == target/cobol-check), which
+      # reconciles AAP Section 0.5.4's intent with the Makefile
+      # reality (Phase 8 cross-reference validation).
+      #
+      # `if-no-files-found: warn` keeps the step green when the
+      # coverage run produced no files yet -- expected when the
+      # repository has zero `.cut` testsuites (the green-on-empty
+      # baseline state described in the setup log).
+      #
+      # `retention-days: 14` is a balance between disk usage and a
+      # typical PR-review timeline.
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            target/cobol-check/coverage-summary.txt
+            target/cobol-check/**/*.gcov
+            target/cobol-check/**/*.gcda
+            target/cobol-check/testResults.txt
+          if-no-files-found: warn
+          retention-days: 14

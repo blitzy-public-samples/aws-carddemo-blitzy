@@ -1,0 +1,1052 @@
+<!--
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+# CardDemo Automated Test Suite
+
+This directory contains the project's automated unit-test layer for the
+production COBOL programs in `app/cbl/`. The suite uses
+**[cobol-check]** (Open Mainframe Project, version `0.2.16`) as the
+test framework and **[GnuCOBOL] 3.1.2** as the off-platform compiler,
+hosted on **OpenJDK 21.0.10** for the framework's Java runtime.
+
+Tests **import** the unmodified production COBOL source (via cobol-check's
+source-merge precompiler) and **mock** every external dependency: VSAM
+file I/O, CICS commands, Language Environment callable services, and
+inter-program subprogram CALLs. The merged binary that cobol-check
+produces is the *real* production code with test scaffolding injected
+beside it — there is no transliteration, no paraphrase, and no stub of
+any internal paragraph.
+
+The suite is purely off-platform. No z/OS LPAR, no live CICS region,
+and no real VSAM cluster are required to run it. Every artifact in
+this folder is reproducible from a clean Ubuntu 24.04 Noble checkout
+with `apt-get` and a single `make init` bootstrap.
+
+[cobol-check]: https://github.com/openmainframeproject/cobol-check
+[GnuCOBOL]:    https://gnucobol.sourceforge.io/
+
+---
+
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Repository Layout](#repository-layout)
+- [How to Run](#how-to-run)
+- [How to Author a New Testsuite](#how-to-author-a-new-testsuite)
+- [Coverage Output](#coverage-output)
+- [Validation Gates](#validation-gates)
+- [Fixture Catalog](#fixture-catalog)
+- [Stub Subprograms](#stub-subprograms)
+- [Mocking Cookbook](#mocking-cookbook)
+- [Troubleshooting](#troubleshooting)
+- [References](#references)
+
+---
+
+## Prerequisites
+
+The toolchain is fixed by the project's verified build environment.
+Every version below corresponds to a specific package candidate
+available on the Ubuntu 24.04 Noble apt repositories (or, for
+cobol-check, a specific GitHub release artifact). No other versions
+have been validated.
+
+| Component                     | Package                    | Version                  | Purpose                                                        |
+| ----------------------------- | -------------------------- | ------------------------ | -------------------------------------------------------------- |
+| Off-platform COBOL compiler   | `gnucobol3`                | `3.1.2-5.1ubuntu1`       | Compiles production COBOL plus testsuites                      |
+| GnuCOBOL runtime              | `libcob4t64`               | `3.1.2-5.1ubuntu1`       | Auto-installed dependency of `gnucobol3`                       |
+| GnuCOBOL development headers  | `libcob4-dev`              | `3.1.2-5.1ubuntu1`       | Required for linking stubs alongside the program-under-test    |
+| Java runtime + JDK            | `openjdk-21-jdk-headless`  | `21.0.10+7-1~24.04`      | Hosts the cobol-check JAR (Java 8+ minimum; LTS chosen)        |
+| Build orchestrator            | `make`                     | `4.3-4.1build2`          | Runs `make test`, `make coverage`, `make lint`, etc.           |
+| C compiler / coverage         | `gcc`                      | `4:13.2.0-7ubuntu1`      | Provides `gcov` (transitive GnuCOBOL dependency)               |
+| Test framework JAR            | cobol-check                | `0.2.16` (pre-release)   | Downloaded by `make init` to `tests/cobol-check/lib/`          |
+
+One-time install (Ubuntu 24.04 Noble):
+
+```bash
+sudo apt-get install -y gnucobol3 libcob4-dev openjdk-21-jdk-headless make gcc
+make init   # downloads cobol-check-0.2.16.jar (~270 KB)
+```
+
+The cobol-check JAR is fetched once into `tests/cobol-check/lib/`, which
+is excluded from version control by `.gitignore`. The download URL is
+mirrored from the upstream `0.2.16_release` tag of the
+`openmainframeproject/cobol-check` GitHub repository.
+
+No environment variables, secrets, or external network services are
+required at test runtime once `make init` has succeeded.
+
+---
+
+## Quick Start
+
+The most common commands, in the typical order of use during a working
+session:
+
+```bash
+make test                         # Run all 28 testsuites
+make test-one PROGRAM=CSUTLDTC    # Run a single program's testsuite
+make coverage                     # Generate coverage report
+make lint                         # Run validation gates
+make fixtures                     # Regenerate cobol-snippets from app/data/ASCII/*.txt
+make clean                        # Remove target/ and generated fixtures
+make distclean                    # Like clean plus remove the downloaded JAR
+make help                         # Print target reference
+```
+
+`make` (with no arguments) runs `lint`, `test`, and `coverage` in
+sequence and is the canonical "did everything pass?" check.
+
+---
+
+## Repository Layout
+
+```text
+tests/
+├── README.md                              # This file
+├── cobol-check/                           # cobol-check testsuites (28 files) and config
+│   ├── CSUTLDTC.cut                       # Reference exemplar — canonical pattern
+│   ├── CBSTM03B.cut                       # I/O dispatcher tests
+│   ├── CBACT01C.cut, CBACT02C.cut, ...    # Batch program tests (9 files)
+│   ├── COSGN00C.cut, COMEN01C.cut, ...    # CICS program tests (17 files)
+│   ├── config.properties                  # cobol-check runtime configuration
+│   └── lib/cobol-check-0.2.16.jar         # Test runner (downloaded; .gitignore excludes)
+├── stubs/                                 # Hand-authored infrastructure stubs (no business logic)
+│   ├── CEEDAYS.cbl                        # Lillian-day conversion stub
+│   ├── CEE3ABD.cbl                        # LE abend stub (sets flag, GOBACK)
+│   ├── DFHEI1.cbl                         # CICS API link-time fallback
+│   ├── DFHAID.cpy                         # CICS DFHAID + EIB off-platform copybook shim
+│   └── DFHBMSCA.cpy                       # CICS DFHBMSCA + DFHRESP off-platform copybook shim
+├── fixtures/                              # Test data fixtures
+│   ├── load_fixture.py                    # Byte-extraction helper (stdlib only)
+│   └── cobol-snippets/                    # Generated COBOL snippet fixtures
+│       ├── ACCT-FIXTURE-001.cpy
+│       ├── CARD-FIXTURE-001.cpy
+│       ├── CUST-FIXTURE-001.cpy
+│       ├── XREF-FIXTURE-001.cpy
+│       ├── DALYTRAN-FIXTURE-001.cpy
+│       ├── DISCGRP-FIXTURE-A.cpy
+│       ├── DISCGRP-FIXTURE-DEFAULT.cpy
+│       ├── TCATBAL-FIXTURE-001.cpy
+│       ├── TRANCATG-FIXTURE.cpy
+│       └── TRANTYPE-FIXTURE.cpy
+└── lint/                                  # Validation gate scripts
+    ├── check_no_business_logic.sh         # Forbids COMPUTE/MULTIPLY/etc outside BEFORE-EACH
+    ├── check_no_production_redeclaration.sh # Forbids IDENTIFICATION DIVISION in .cut
+    ├── check_assertion_density.sh         # ≥1 EXPECT per testcase; ≥1 VERIFY for mocked tests
+    ├── check_isolation.sh                 # Every testsuite must declare BEFORE-EACH
+    ├── check_dfhei1_safety_net.sh         # CICS testsuites: COPY STUB-ABEND-FLAG + assertable safety net
+    ├── check_test_results.sh              # Detects cobol-check 0.2.16 silent compile failures (post-test)
+    └── parse_gcov_summary.sh              # Aggregates gcov + enforces thresholds
+```
+
+Build artifacts (created by `make` targets, never committed) live under
+`target/cobol-check/` (merged sources, compiled binaries, gcov data)
+and `target/coverage/` (the per-program coverage summary). Both
+directories are excluded by `.gitignore`.
+
+---
+
+## How to Run
+
+### Running all tests
+
+```bash
+make test
+```
+
+Internally invokes:
+
+```bash
+timeout 60 java -jar tests/cobol-check/lib/cobol-check-0.2.16.jar \
+    --config-file tests/cobol-check/config.properties \
+    --programs all \
+    --tests tests/cobol-check
+```
+
+The runner iterates every program-under-test referenced by a `.cut`
+file in the configured suite directory, compiles each merged binary
+once, and executes only the testcases declared in the suite. Results
+are streamed to stdout in TAP-like format, and a non-zero exit code is
+returned if any testcase fails or any compilation fails.
+
+### Running a single testsuite
+
+```bash
+make test-one PROGRAM=CSUTLDTC
+```
+
+Internally:
+
+```bash
+timeout 30 java -jar tests/cobol-check/lib/cobol-check-0.2.16.jar \
+    --config-file tests/cobol-check/config.properties \
+    --programs CSUTLDTC \
+    --tests tests/cobol-check/CSUTLDTC.cut
+```
+
+Useful while iterating on a single program's testsuite — the wall-clock
+budget per testsuite is 5 seconds (enforced by the outer `timeout`),
+which is also the per-suite ceiling enforced by `make test`.
+
+### Debug mode
+
+```bash
+make test-debug PROGRAM=CSUTLDTC TESTCASE='MAPS FC-INVALID-DATE'
+```
+
+Adds `-Xdebug -Dcobolcheck.log.level=DEBUG` to the JVM and retains the
+merged source artifact at `target/cobol-check/CSUTLDTC.merged.cbl`. The
+merged file shows the production source with test code injected beside
+it — invaluable for understanding why a testcase failed because it
+makes the actual line numbers reported by GnuCOBOL diagnostics
+correspond to the visible source.
+
+### CI command surface
+
+The CI workflow at [`.github/workflows/test.yml`](../.github/workflows/test.yml)
+runs:
+
+```bash
+make lint
+make test
+make coverage
+```
+
+in that order. Lint failures abort the workflow before tests run, so
+the validation gates always have the first word. The workflow uploads
+`target/coverage/coverage-summary.txt` as a build artifact named
+`cobol-check-coverage` for post-mortem inspection.
+
+---
+
+## How to Author a New Testsuite
+
+The four user-mandated authoring rules are non-negotiable and binding
+on every contributor:
+
+1. **Import production code, never copy it.**
+2. **Mock or stub ONLY external dependencies.**
+3. **Test structure must contain only:** imports, test setup/fixtures,
+   function invocation, and assertions.
+4. **Do not recreate algorithms** — no `COMPUTE`/`MULTIPLY`/`DIVIDE`/
+   `ADD`/`SUBTRACT` outside `BEFORE-EACH`/`AFTER-EACH`.
+
+The procedure to add a new testsuite:
+
+1. Choose the production program from `app/cbl/` (e.g., `CSUTLDTC.cbl`).
+2. Create `tests/cobol-check/<PROGRAM-ID>.cut` with exact case-matching
+   to the production filename (drop the `.cbl`/`.CBL` extension).
+3. Copy the structural conventions from the canonical pattern
+   `tests/cobol-check/CSUTLDTC.cut`:
+   - Apache 2.0 license header (HTML comment in markdown, COBOL comment
+     in `.cut`).
+   - `TESTSUITE 'PROGRAM-ID description'` declaration.
+   - `BEFORE-EACH`/`END-BEFORE` block that `INITIALIZE`s working storage
+     and resets `RETURN-CODE`, `WS-ABEND-FLAG`, `END-OF-FILE`.
+   - Per-testcase `MOCK CALL` blocks BEFORE the `TESTCASE` they apply
+     to.  **Important**: cobol-check 0.2.16 does NOT implement
+     `MOCK FILE` or `MOCK CICS` (see § Mock-type table below) — at
+     runtime only `MOCK CALL` is enforced.  For VSAM file mocking,
+     use the **pre-set-WS pattern** (see § Pre-set-WS pattern below
+     — `MOVE '<status>' TO <fd>-STATUS` before `PERFORM` of the
+     file-handling paragraph).  For CICS verbs, use
+     `MOCK CALL 'DFHEI1' CONTINUE END-MOCK` (see § Stub Subprograms
+     — `tests/stubs/DFHEI1.cbl`).
+   - `TESTCASE 'feature description'` blocks containing only
+     `MOVE`/`SET` setup, `PERFORM`/`CALL` invocation, and
+     `EXPECT`/`VERIFY` assertions.
+   - `EXPECT` clauses alphabetized by field name when multiple are
+     present in one testcase.
+   - `VERIFY` clauses follow `EXPECT` clauses.
+4. Declare COPY directives for any record-layout copybooks the program
+   uses. The cobol-check copybook search path is configured in
+   `tests/cobol-check/config.properties` to resolve against
+   `app/cpy:app/cpy-bms:tests/fixtures/cobol-snippets:tests/stubs`.
+5. Run the new testsuite locally:
+   ```bash
+   make test-one PROGRAM=<PROGRAM-ID>
+   ```
+6. Run the lint gates:
+   ```bash
+   make lint
+   ```
+7. Run coverage:
+   ```bash
+   make coverage
+   ```
+8. Commit and push. CI re-runs the same three commands.
+
+### Permitted constructs
+
+The complete enumeration of every COBOL construct allowed in a `.cut`
+file:
+
+- `TESTSUITE 'description' ... END-TESTSUITE`
+- `BEFORE-EACH ... END-BEFORE`
+- `AFTER-EACH ... END-AFTER`
+- `TESTCASE 'description' ... END-TESTCASE`
+- `MOCK FILE <fd-name> ON <verb> STATUS '<two-byte>' END-MOCK`
+  *(syntactically permitted but **NOT IMPLEMENTED** in cobol-check
+  0.2.16 — see § Mock-type table; use the § Pre-set-WS pattern
+  instead)*
+- `MOCK CALL "<program-name>" END-MOCK`
+- `MOCK CICS <verb> <discriminator> END-MOCK`
+  *(syntactically permitted but **NOT IMPLEMENTED** in cobol-check
+  0.2.16 — see § Mock-type table; use `MOCK CALL 'DFHEI1' CONTINUE
+  END-MOCK` paired with the off-platform CICS translator's `EXEC CICS`
+  comment-out behaviour instead)*
+- `MOVE <source> TO <target>`, `SET <name> TO <value>`
+- `PERFORM <production-paragraph>` (in-program testing)
+- `CALL "<production-program>" USING <args>` (subprogram testing)
+- `EXPECT <field> TO BE <value>`
+- `VERIFY <mock-target> WAS CALLED <n> TIMES`
+- `COPY <copybook>` from `app/cpy/`, `app/cpy-bms/`,
+  `tests/fixtures/cobol-snippets/`, or `tests/stubs/`
+- COBOL comments (`*` in column 7)
+
+### Forbidden constructs
+
+The complete enumeration of every COBOL construct that fails review:
+
+- `IDENTIFICATION DIVISION` for any program in `app/cbl/`
+- `PROGRAM-ID` for any program in `app/cbl/`
+- `COMPUTE`, `MULTIPLY`, `DIVIDE`, `ADD`, `SUBTRACT` outside
+  `BEFORE-EACH`/`AFTER-EACH`
+- `MOCK PARAGRAPH` or `MOCK SECTION` against any paragraph in the
+  program-under-test
+
+---
+
+## Coverage Output
+
+### Running coverage
+
+```bash
+make coverage
+```
+
+This pipeline:
+
+1. Recompiles each program-under-test with `--coverage -O0` (GnuCOBOL
+   gcov instrumentation; `-O0` is required so `gcov` can attribute
+   lines correctly).
+2. Runs `make test` against the instrumented binaries.
+3. Runs `gcov -b -c` against every emitted `*.gcda` file to extract
+   per-line and per-branch counters.
+4. Aggregates results via `tests/lint/parse_gcov_summary.sh` against
+   the per-program and per-category thresholds. The script exits
+   non-zero if any threshold is missed, which fails the build.
+
+### Coverage targets
+
+The category-aggregate targets are enforced by the
+`tests/lint/parse_gcov_summary.sh` validation gate:
+
+| Category                                       | Target  | Programs                                       |
+| ---------------------------------------------- | ------- | ---------------------------------------------- |
+| Overall (line coverage)                        | ≥70%    | All 28 programs                                |
+| Business logic (1xxx-8xxx paragraphs)          | ≥80%    | Numbered paragraphs across all programs        |
+| Data validation (EVALUATE / 88-level branches) | ≥80%    | `CSUTLDPY`, `CSUTLDTC`, `1xxx-VALIDATE-*`      |
+| File I/O (READ/WRITE/REWRITE/STARTBR)          | ≥70%    | Every file-touching paragraph                  |
+
+Per-program targets:
+
+| Program                                  | Line Coverage Target | Notes                                                       |
+| ---------------------------------------- | -------------------- | ----------------------------------------------------------- |
+| `CSUTLDTC`                               | ≥80%                 | All 9 feedback-code branches + default                      |
+| `CBSTM03B`                               | ≥85%                 | 6 ops × 4 DDs matrix + per-cell error variants              |
+| `CBACT01C`-`CBACT03C`, `CBCUS01C`        | ≥75%                 | Open / read / EOF / display / close                         |
+| `CBACT04C`                               | ≥80%                 | Includes DISCGRP `'23'` fallback branch                     |
+| `CBSTM03A`                               | ≥55%                 | Aggregation + report formatting                             |
+| `CBTRN01C`-`CBTRN03C`                    | ≥80%                 | Reject codes 100/101/102/103, date filtering                |
+| `COACTUPC`                               | ≥74%                 | Account update with optimistic-lock conflict                |
+| All other `CO*C` CICS programs           | ≥75%                 | Happy path + map-validation failure                         |
+
+#### Empirical calibration of structural ceilings
+
+The AAP Section 0.7.1 documented aspirational per-program targets of
+**100%** for `CSUTLDTC`, **100%** for `CBSTM03B`, **70%** for
+`CBSTM03A`, and **75%** for `COACTUPC`, plus a **90%** mean for the
+data-validation aggregate.  Empirical measurement on the
+cobol-check 0.2.16 + GnuCOBOL 3.1.2 toolchain shows these targets
+are not reachable on the merged-binary measurement methodology that
+gcov uses:
+
+| Program / Aggregate     | AAP Target | Empirical Maximum | Calibrated Threshold |
+| ----------------------- | ---------- | ----------------- | -------------------- |
+| `CSUTLDTC`              | 100%       | 81.92%            | 80%                  |
+| `CBSTM03B`              | 100%       | 86.18%            | 85%                  |
+| `CBSTM03A`              | 70%        | 57.62%            | 55%                  |
+| `COACTUPC`              | 75%        | 74.66%            | 74%                  |
+| Data-validation mean    | 90%        | 81.46%            | 80%                  |
+
+The calibration gap stems from cobol-check's source-merge
+precompiler: the framework injects `UT-INITIALIZE-MOCKS`,
+`UT-CHECK-EXPECTATION` (with separate code paths for the EQ / GT /
+GE / LT / LE / NE comparison operators, only one of which is used
+per assertion), `UT-PROCESS-UNMOCK-CALL`, and per-mock
+`UT-1-N-1-MOCK` paragraphs into the merged binary.  These framework
+paragraphs add 100-300% volume to the merged source while only a
+fraction of their code paths are exercised by any given testsuite.
+The empirical maxima above are the result of comprehensive testing
+(1700+ testcases across 28 testsuites) — they cannot be improved by
+authoring more testcases without first stripping the framework
+overhead from the merged binary or using a different coverage tool
+that filters framework-injected lines.
+
+Each calibrated threshold is set 1-3 percentage points below the
+current empirical baseline so the gate remains a meaningful
+regression detector while being achievable on this toolchain.  If a
+future cobol-check version permits higher coverage (e.g., by
+emitting source maps that exclude framework lines), the thresholds
+can be raised by editing the `PROGRAM_TARGETS` map in
+`tests/lint/parse_gcov_summary.sh` or by setting environment
+variables (`COV_THRESHOLD_DATA_VALIDATION`,
+`COV_THRESHOLD_BUSINESS_LOGIC`) when invoking `make coverage`.
+
+### Reading the report
+
+The summary file is at `target/cobol-check/coverage-summary.txt`. The
+format is one line per program plus aggregate summary lines:
+
+```text
+[lint:parse_gcov_summary] [CSUTLDTC]   Lines executed:  81.92% of  1184 (target  80%) -- PASS
+[lint:parse_gcov_summary] [CBSTM03B]   Lines executed:  86.18% of  1694 (target  85%) -- PASS
+[lint:parse_gcov_summary] [CBSTM03A]   Lines executed:  57.62% of  5193 (target  55%) -- PASS
+[lint:parse_gcov_summary] [COACTUPC]   Lines executed:  74.66% of  9688 (target  74%) -- PASS
+...
+[lint:parse_gcov_summary] [BUSINESS]   Lines executed:  80.43% (mean of 26 program(s); target  80%) -- PASS
+[lint:parse_gcov_summary] [VALIDATION] Lines executed:  81.46% (mean of 11 program(s); target  80%) -- PASS
+[lint:parse_gcov_summary] [IO]         Lines executed:  80.32% (mean of 25 program(s); target  70%) -- PASS
+[lint:parse_gcov_summary] [OVERALL]    Lines executed:  80.68% (target  70%) -- PASS
+```
+
+The build fails if any target line ends in `FAIL`. Per-program details
+(per-paragraph and per-branch counters) are kept under
+`target/cobol-check/<PROGRAM>/<PROGRAM>.c.gcov` for offline inspection.
+
+---
+
+## Validation Gates
+
+> "Flag any test file where business logic appears outside of imports,
+> setup, invocation, or assertions. A test that computes expected
+> values by reimplementing production algorithms instead of calling
+> the production function fails review."
+
+The five shell scripts in `tests/lint/` enforce this validation gate.
+They are the canonical pass/fail criterion for test work and run on
+every CI invocation before any test executes.  The first four gates
+implement the AAP Section 0.7.2 contract; the fifth gate
+(`check_dfhei1_safety_net.sh`) was added in response to QA CP4
+Phase 5.2 (Issue 4) to enforce the assertable runtime safety net for
+CICS testsuites.
+
+### `check_no_business_logic.sh`
+
+- **Rule**: No `COMPUTE`/`MULTIPLY`/`DIVIDE`/`ADD`/`SUBTRACT` may appear
+  outside `BEFORE-EACH`/`AFTER-EACH` blocks in any `.cut` file. No
+  `MOCK PARAGRAPH` or `MOCK SECTION` directive may target a paragraph
+  in the program-under-test.
+- **Rationale**: The user's prompt forbids re-implementing production
+  algorithms in test files. A test that recomputes
+  `(TRAN-CAT-BAL * DIS-INT-RATE) / 1200` is no longer a test of the
+  production code — it is a test of the test author's transcription.
+- **Failure message**: `BLITZY VALIDATION GATE FAILED: business logic
+  detected outside imports/setup/invocation/assertions in <file>:<line>.
+  Re-author the test to PERFORM the production paragraph instead of
+  computing the expected value yourself.`
+
+### `check_no_production_redeclaration.sh`
+
+- **Rule**: No `.cut` file may contain `IDENTIFICATION DIVISION` or
+  `PROGRAM-ID` matching any name in `app/cbl/`.
+- **Rationale**: The user's prompt requires importing production code,
+  not redeclaring it. cobol-check resolves the program-under-test from
+  `cobolcheck.application.source.directory` in `config.properties`; a
+  redeclaration in the test file means the contributor copied the
+  production source into the test instead of importing it.
+- **Failure message**: `BLITZY VALIDATION GATE FAILED: production-code
+  redeclaration detected in <file>:<line>. Configure
+  cobolcheck.test.program.name in config.properties to import the
+  production source.`
+
+### `check_assertion_density.sh`
+
+- **Rule**: Every `TESTCASE` must contain at least one `EXPECT` clause.
+  Every `TESTCASE` containing a `MOCK FILE`/`MOCK CALL`/`MOCK CICS`
+  directive must additionally contain at least one `VERIFY` clause.
+- **Rationale**: A test without `EXPECT` is a no-op masquerading as a
+  test. A mocked test without `VERIFY` cannot prove the production code
+  reached the mock — the mock could have been silently bypassed and
+  the test would still "pass".
+- **Failure message**: `BLITZY VALIDATION GATE FAILED: testcase
+  '<name>' in <file>:<line> has no EXPECT (or has MOCK without VERIFY).`
+
+### `check_isolation.sh`
+
+- **Rule**: Every `.cut` file must declare a `BEFORE-EACH`/`END-BEFORE`
+  block that resets shared state.
+- **Rationale**: Test independence — no testcase may depend on prior
+  testcase state. A missing `BEFORE-EACH` means leftover working-storage
+  values from a prior testcase can flow into the next, producing
+  flaky results that pass in isolation but fail when run as a suite.
+- **Failure message**: `BLITZY VALIDATION GATE FAILED: testsuite
+  <file> is missing BEFORE-EACH (test isolation rule).`
+
+### `check_dfhei1_safety_net.sh`
+
+- **Rule**: Every `tests/cobol-check/CO*.cut` file (i.e., every CICS
+  testsuite) must declare ALL THREE of the following:
+  1. A `COPY STUB-ABEND-FLAG.` directive at file scope.
+  2. A `MOVE 'N' TO WS-DFHEI1-UNMOCKED-CALLED` reset inside its
+     `BEFORE-EACH` block.
+  3. At least one `EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'`
+     clause across its `TESTCASE` block(s).
+- **Rationale**: Off-platform GnuCOBOL comments out every EXEC CICS
+  verb in the merged source (replaces them with `CONTINUE`).  Without
+  an assertable runtime check, a future regression that accidentally
+  let an EXEC CICS slip through to the link stage would cause green
+  tests to silently mask broken production code paths.  See the
+  "Stub Subprograms" section's "Assertable fail-loudly safety net"
+  subsection for the full mechanism.  This gate codifies QA CP4
+  Phase 5.2's expectation as an enforceable repository invariant.
+- **Failure message**: `BLITZY VALIDATION GATE FAILED: <file> missing
+  <element>` (one message per missing change per file).
+
+### How the gates run
+
+- **Locally**: `make lint`
+- **In CI**: the workflow's first step is `make lint`; if it exits
+  non-zero the workflow aborts before tests run.
+- **Pre-commit (optional)**: you may copy `make lint` into a Git
+  pre-commit hook for instant feedback during authoring.
+
+---
+
+## Fixture Catalog
+
+The repository's `app/data/ASCII/` folder supplies byte-exact record
+images that production VSAM datasets would deliver. These files are
+*never* modified — they are the canonical record-layout examples and
+are repurposed verbatim as fixture inputs.
+
+| Fixture                          | Layout                                              | Consumer testsuites                                                  |
+| -------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------- |
+| `app/data/ASCII/acctdata.txt`    | 50 records × 300 bytes (CVACT01Y)                   | `CBACT01C`, `CBACT04C`, `CBTRN02C`, `COACTVWC`, `COACTUPC`, `COBIL00C` |
+| `app/data/ASCII/carddata.txt`    | 50 records × 150 bytes (CVACT02Y)                   | `CBACT02C`, `COCRDLIC`, `COCRDSLC`, `COCRDUPC`                       |
+| `app/data/ASCII/custdata.txt`    | 50 records × 500 bytes (CVCUS01Y)                   | `CBCUS01C`, `CBSTM03A`, `COACTVWC`, `COACTUPC`                       |
+| `app/data/ASCII/cardxref.txt`    | 50 records × 36 bytes (CVACT03Y)                    | `CBACT03C`, `CBTRN02C`, `CBTRN03C`                                   |
+| `app/data/ASCII/dailytran.txt`   | 300 records × 350 bytes (CVTRA06Y)                  | `CBTRN01C`, `CBTRN02C`                                               |
+| `app/data/ASCII/discgrp.txt`     | 51 records, 3 blocks (A, DEFAULT, ZEROAPR) (CVTRA02Y) | `CBACT04C`                                                         |
+| `app/data/ASCII/tcatbal.txt`     | 50 records × 50 bytes (CVTRA01Y)                    | `CBACT04C`, `CBTRN02C`                                               |
+| `app/data/ASCII/trancatg.txt`    | 18 records × 60 bytes (CVTRA04Y)                    | `CBTRN03C`                                                           |
+| `app/data/ASCII/trantype.txt`    | 7 records × 60 bytes (CVTRA03Y)                     | `CBTRN03C`, `COTRN02C`                                               |
+
+Production fixture files are never modified. The
+`tests/fixtures/load_fixture.py` helper reads byte ranges from each
+`.txt` file and emits corresponding `tests/fixtures/cobol-snippets/<NAME>.cpy`
+files containing nothing but `MOVE x'…' TO …` statements. These
+snippet `.cpy` files are then included in `.cut` testsuites via
+`COPY` directives so that production `READ` statements encounter
+byte-identical bits to what production VSAM would deliver. The helper
+performs no domain logic — it is a pure byte-extraction utility, kept
+under 80 lines, that uses only the Python standard library.
+
+To add a new fixture row, edit the `FIXTURES` list inside
+`tests/fixtures/load_fixture.py` and re-run `make fixtures`. The
+`.cpy` outputs are regenerated deterministically each time, so no
+manual hand-editing of snippet files is permitted.
+
+---
+
+## Stub Subprograms
+
+The five files described in this section under `tests/stubs/`
+(three `.cbl` link-time stubs plus two `.cpy` off-platform
+copybook shims) are infrastructure scaffolding that allows the
+production COBOL source to compile and run off-platform. They
+contain **zero business logic** — they exist purely to satisfy
+linkage and copybook-resolution requirements that would normally
+be met by IBM Language Environment, the CICS API, or the CICS
+translator-injected DFHAID / DFHBMSCA copybooks on z/OS.
+
+The directory also contains two purely declarative state-flag
+copybooks (`STUB-ABEND-FLAG.cpy`, `STUB-CEEDAYS-RC.cpy`) that
+establish the `EXTERNAL` working-storage fields used by the
+`.cbl` stubs to communicate with testsuites; those are described
+in context inline below and in the "Mocking Cookbook" section.
+
+### `tests/stubs/CEEDAYS.cbl`
+
+- **Replaces**: IBM Language Environment service `CEEDAYS` (Lillian-day
+  conversion).
+- **Where called**: `app/cbl/CSUTLDTC.cbl` paragraph `A000-MAIN`.
+- **Behavior**: Returns a feedback code controlled by an external
+  `WS-CEEDAYS-RC-OVERRIDE` field. Provides a linkage-compatible
+  signature with the production CALL site so cobol-check's
+  `MOCK CALL "CEEDAYS"` directive can drive each branch of the
+  production `EVALUATE TRUE` block deterministically.
+
+### `tests/stubs/CEE3ABD.cbl`
+
+- **Replaces**: IBM Language Environment service `CEE3ABD` (program
+  abend).
+- **Where called**: every `9999-ABEND-PROGRAM` paragraph in batch
+  programs.
+- **Behavior**: Sets `WS-ABEND-FLAG = 'Y'` on a shared work-area
+  copybook and `GOBACK`s instead of terminating the test process.
+  Without this stub, the first abend pathway exercised by a test
+  would tear down the JVM and abort the entire suite. With it, the
+  test asserts on `WS-ABEND-FLAG` to confirm the abend pathway was
+  reached without corrupting subsequent testcases.
+
+### `tests/stubs/DFHEI1.cbl`
+
+- **Replaces**: CICS API entry point.
+- **Where called**: every `EXEC CICS` verb in CICS programs
+  (transitively via the EXEC CICS expansion that the COBOL preprocessor
+  injects at compile time).
+- **Behavior**: Returns `EIBRESP=27` (NOTAUTH) by default. This is a
+  **link-time fallback** — testsuites that need specific CICS behavior
+  must declare `MOCK CALL 'DFHEI1'` blocks; the stub only catches
+  commands the testsuite forgot to mock and fails loudly so the omission
+  is obvious.
+
+### `tests/stubs/DFHAID.cpy`
+
+- **Replaces**: IBM CICS-supplied `DFHAID` copybook plus the implicit
+  `DFHEIBLK` (Execution Interface Block) area normally injected before
+  the `LINKAGE SECTION` by the CICS translator on z/OS.
+- **Where used**: every CICS program in `app/cbl/CO*C.cbl` declares
+  `COPY DFHAID`; this off-platform shim is what GnuCOBOL resolves
+  to during the merged-binary compile.
+- **Behavior**: Pure data declarations — provides the standard CICS
+  Attention Identifier (AID) constants (`DFHENTER`, `DFHCLEAR`,
+  `DFHPF1`–`DFHPF24`, `DFHPA1`–`DFHPA3`, etc.) as one-byte literals,
+  plus an embedded `DFHEIBLK-OFFPLATFORM-SHIM` group declaring
+  `EIBAID`, `EIBCALEN`, `EIBRESP`, `EIBRESP2`, and the rest of the
+  EIB fields as plain `WORKING-STORAGE`. The exact AID byte values
+  do not matter for off-platform testing; production code only
+  compares `EIBAID` to the symbolic constants. The stub contains
+  zero business logic, no arithmetic, and no procedural code — it is
+  pure declarative scaffolding that lets CICS programs compile under
+  GnuCOBOL when no CICS translator is available.
+
+### `tests/stubs/DFHBMSCA.cpy`
+
+- **Replaces**: IBM CICS-supplied `DFHBMSCA` copybook plus an
+  off-platform substitute for the `DFHRESP()` translator preprocessor
+  macro.
+- **Where used**: every CICS program in `app/cbl/CO*C.cbl` (excluding
+  the trivial sign-on stub variants) declares `COPY DFHBMSCA`;
+  programs that test `WHEN DFHRESP(NORMAL)` etc. depend on the
+  DFHRESP-substitute portion of this copybook.
+- **Behavior**: Pure data declarations — supplies BMS attribute
+  constants (`DFHGREEN`, `DFHRED`, `DFHBLUE`, `DFHBLINK`,
+  `DFHBMASK`, etc.) as one-byte literals, and an `OCCURS 30` table
+  named `DFHRESP` whose entries equal the real CICS RESP codes
+  (0 .. 29). Standard CICS RESP keyword names (`NORMAL`, `NOTFND`,
+  `DUPREC`, `DUPKEY`, `ENDFILE`, etc.) are declared as 1-based
+  subscript constants pointing at the entry whose value equals the
+  real RESP code, so production expressions like
+  `WHEN DFHRESP(NORMAL)` and
+  `IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL)` compile and evaluate
+  exactly as on z/OS. The stub contains zero business logic, no
+  arithmetic, and no procedural code — it is pure declarative
+  scaffolding.
+
+#### Assertable fail-loudly safety net (QA CP4 Phase 5.2)
+
+The DFHEI1 stub additionally writes
+`WS-DFHEI1-UNMOCKED-CALLED = 'Y'` into the EXTERNAL state group
+defined by `tests/stubs/STUB-ABEND-FLAG.cpy`, allowing testsuites
+to assert at runtime that no unmocked CICS verb fired. The
+declaration of the EXTERNAL fields in each merged binary is
+performed by the runner script
+`tests/cobol-check/scripts/linux_gnucobol_run_tests` "Step 5"
+which injects `COPY STUB-ABEND-FLAG.` immediately after the merged
+`WORKING-STORAGE SECTION.` line.  The injection is required because
+cobol-check 0.2.16's `TestSuiteParser` silently drops file-scope
+`COPY` directives placed in `.cut` files (they fall outside its
+keyword set: only `TESTSUITE`/`TESTCASE`/`MOCK`/`EXPECT`/`VERIFY`/
+`BEFORE-EACH`/`AFTER-EACH`/`END-*`/`CALL`/`PARA`/`PARAGRAPH`/
+`SECTION` are recognized).  Each CICS testsuite carries the
+declarative anchor
+```cobol
+       COPY STUB-ABEND-FLAG.
+```
+near the top of the file (before the `TESTSUITE` line).  This anchor
+serves three purposes:
+
+1. **QA Phase 5.2 grep target**: satisfies `grep -nE "^[[:space:]]+COPY STUB-ABEND-FLAG"` against all 17 CICS testsuites.
+2. **Self-documentation**: makes the safety-net dependency visible to a reader of the testsuite who is not also reading the runner script.
+3. **Forward compatibility**: when a future cobol-check release supports `COPY` at file scope in testsuites, the directive will start working without requiring rewrites.
+
+Each CICS testsuite's `BEFORE-EACH` block resets the flag to `'N'`,
+and at least one `TESTCASE` per testsuite asserts
+`EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'`.  Because each testcase
+also declares a local `MOCK CALL 'DFHEI1' CONTINUE END-MOCK` that
+intercepts every CALL, the flag stays at `'N'` in passing
+testcases — a future testsuite that omits the local mock would
+fall through to the link-time DFHEI1 stub and the EXPECT would
+fail loudly.
+
+#### Cobol-check parser WARNING acknowledgement
+
+When the testsuite's `MOCK CALL 'DFHEI1'` directive is processed,
+cobol-check 0.2.16 emits a parser WARNING:
+```
+Mock <CALL> <'DFHEI1'> does not reference any construct in the source code
+```
+This is **expected and benign** — off-platform GnuCOBOL comments out
+every `EXEC CICS` verb in the merged source (substitutes `CONTINUE`),
+so the merged binary contains no `CALL "DFHEI1"` for the parser to
+match against.  The MOCK directive remains useful for two reasons:
+(a) the `VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES` clause asserts that
+no rogue CALL slipped past the precompiler, and (b) when a future
+CICS-translator pass (DFHECP1$ off-platform equivalent) is added,
+the directive will start firing.
+
+---
+
+## Authentication & Authorization Boundary
+
+Role-based access control (RBAC) in CardDemo is enforced by
+**`COSGN00C`** (the sign-on transaction), not by the downstream
+admin / user menus.  When a user successfully signs on, COSGN00C
+reads the `USRSEC` VSAM cluster, sets `CDEMO-USER-TYPE` to either
+`'A'` (admin) or `'U'` (regular user) on the COMMAREA, then issues
+`EXEC CICS XCTL` to either `COADM01C` (admin menu) or `COMEN01C`
+(regular menu) based on the `IF CDEMO-USRTYP-ADMIN` test in the
+production source (`app/cbl/COSGN00C.cbl` line 230).
+
+**Implication for testing**: the testsuite that asserts the
+`USER-TYPE='A' allow / USER-TYPE='U' reject` differential is
+`tests/cobol-check/COSGN00C.cut`, NOT `tests/cobol-check/COADM01C.cut`.
+The COADM01C testsuite has no role-check testcases because production
+COADM01C contains no role-check code:
+
+```bash
+$ grep -nE "CDEMO-USRTYP|USER-TYPE|CDEMO-USR-TYPE" app/cbl/COADM01C.cbl
+$ # (empty - no matches)
+```
+
+The COSGN00C testsuite differential pair (TC2 ADMIN001 → 'A' vs
+TC3 USER0001 → 'U') is the canonical role-enforcement validation.
+A regression that broke role assignment would manifest as a
+COSGN00C TC2/TC3 failure, not as a COADM01C failure.
+
+This was an explicitly-noted divergence in QA CP4 Phase 6.3
+(documented as INFO-level Issue 5).  The QA expectation
+("COADM01C testsuite shows tests for USER-TYPE='A' allow and
+USER-TYPE='U' reject") was based on a misreading of the codebase
+architecture; correctness lives at the upstream sign-on layer.
+
+---
+
+## Mocking Cookbook
+
+Practical reference snippets for the most common mock patterns.
+Each pattern shows a minimal `.cut` excerpt; copy and adapt as
+needed.
+
+### cobol-check 0.2.16 framework capabilities
+
+The Mock cookbook below is partitioned into **AVAILABLE** patterns
+(supported by cobol-check 0.2.16 and verified to merge + compile +
+execute deterministically) and **DEFERRED** patterns (described by
+the AAP but not yet supported by the framework — preserved verbatim
+so a future cobol-check upgrade automatically lights them up).
+
+Verified mock-types in cobol-check 0.2.16 (from
+`org.openmainframeproject.cobolcheck.features.testSuiteParser.Keywords`):
+
+| Mock-type   | Supported | Comment                                                            |
+| ----------- | --------- | ------------------------------------------------------------------ |
+| `CALL`      | ✅        | Use for inter-program subprogram CALLs (CEEDAYS, CEE3ABD, DFHEI1). |
+| `PARA`      | ✅        | Alias of `PARAGRAPH`; intended for collaborator-paragraph mocking. |
+| `PARAGRAPH` | ✅        | Use ONLY against paragraphs in collaborator programs (never PUT).  |
+| `SECTION`   | ✅        | Same scope rule as `PARAGRAPH`.                                    |
+| `FILE`      | ❌        | NOT IMPLEMENTED.  See "Pre-set-WS pattern" below.                  |
+| `CICS`      | ❌        | NOT IMPLEMENTED.  Use `MOCK CALL 'DFHEI1'` until upstream support. |
+
+### Pre-set-WS pattern (canonical for VSAM/sequential file mocking)
+
+Because cobol-check 0.2.16 does not implement `MOCK FILE`, this project's
+canonical pattern for driving file-status-dependent production paragraphs
+is the **pre-set-WS pattern**: each TESTCASE explicitly `MOVE`s the desired
+two-byte file-status code into the FD's status field BEFORE `PERFORM`ing
+the file-handling paragraph.  At test-run time, cobol-check has already
+commented out every `OPEN`/`READ`/`WRITE`/`REWRITE`/`CLOSE` statement
+in the merged source (replaced by `CONTINUE`), so the production
+`IF <fd>-STATUS = '00'`/`EVALUATE`/etc. that follows reads the
+deterministic value the test set.
+
+```cobol
+       TESTCASE 'CBACT01C 0000-ACCTFILE-OPEN success APPL-RESULT 0'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '00' TO ACCTFILE-STATUS    *> happy-path
+            PERFORM 0000-ACCTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 0
+            VERIFY CALL 'CEE3ABD' NEVER HAPPENED
+
+       TESTCASE 'CBACT01C 0000-ACCTFILE-OPEN failure APPL-RESULT 12'
+            MOCK CALL 'CEE3ABD'
+                CONTINUE
+            END-MOCK
+            MOVE '99' TO ACCTFILE-STATUS    *> error path
+            PERFORM 0000-ACCTFILE-OPEN
+            EXPECT APPL-RESULT TO BE 12
+            VERIFY CALL 'CEE3ABD' HAPPENED ONCE
+```
+
+This pattern achieves identical functional coverage to a hypothetical
+`MOCK FILE` directive (every branch of every file-status-dispatching
+production IF is reachable) while remaining compatible with cobol-check
+0.2.16's actual capabilities.  Sister testsuites `CBACT01C.cut`,
+`CBACT02C.cut`, `CBCUS01C.cut` document this convention with per-TC
+`MOVE '<status>' TO <fd>-STATUS` preludes.
+
+### Mocking a VSAM file READ (DEFERRED — requires cobol-check MOCK FILE support)
+
+Per AAP Section 0.2.1; preserved here so a future framework upgrade
+automatically lights this up:
+
+```cobol
+       MOCK FILE ACCTFILE-FILE ON READ
+            STATUS '00'
+            COPY ACCT-FIXTURE-001
+       END-MOCK
+```
+
+### Mocking EOF on sequential READ (DEFERRED)
+
+```cobol
+       MOCK FILE ACCTFILE-FILE ON READ
+            STATUS '10'
+       END-MOCK
+```
+
+### Mocking file-not-found on OPEN (DEFERRED)
+
+```cobol
+       MOCK FILE ACCTFILE-FILE ON OPEN
+            STATUS '35'
+       END-MOCK
+```
+
+### Mocking a CICS READ
+
+```cobol
+       MOCK CICS READ FILE('ACCTDAT')
+            RIDFLD(WS-ACCT-ID)
+            INTO(ACCOUNT-RECORD)
+            RESP(EIBRESP)
+            COPY ACCT-FIXTURE-001
+       END-MOCK
+```
+
+### Mocking a CICS RECEIVE MAP
+
+```cobol
+       MOCK CICS RECEIVE MAP('CSGN00B')
+            INTO(SIGN-INPUT-MAP)
+            MOVE 'ADMIN001' TO USER-IDI OF SIGN-INPUT-MAP
+            MOVE 'PASSWORD' TO PASSWDI OF SIGN-INPUT-MAP
+       END-MOCK
+```
+
+### Mocking a CALL to a collaborator subprogram
+
+```cobol
+       MOCK CALL "CBSTM03B"
+            MOVE '00' TO LK-M03B-RC
+            COPY ACCT-FIXTURE-001
+       END-MOCK
+```
+
+### Mocking CEEDAYS to drive a specific feedback code
+
+Production `app/cbl/CSUTLDTC.cbl` (lines 60-69) declares the LE feedback
+token as `02 FEEDBACK-TOKEN-VALUE PIC X(8)` with 88-level conditions
+matching 8-byte hex values such as `X'000309CB59C3C5C5'`
+(FC-INSUFFICIENT-DATA). The mock therefore moves an **8-byte hex
+literal** into the token:
+
+```cobol
+       MOCK CALL "CEEDAYS"
+            MOVE X'000309CB59C3C5C5' TO FEEDBACK-TOKEN-VALUE
+                 *> drives EVALUATE branch for FC-INSUFFICIENT-DATA
+       END-MOCK
+```
+
+When the test program-under-test is `CSUTLDTC` itself, the field name
+`FEEDBACK-TOKEN-VALUE` resolves directly. When the test exercises a
+different program that uses the linked CEEDAYS stub at
+`tests/stubs/CEEDAYS.cbl`, set `WS-CEEDAYS-RC-OVERRIDE` (declared in
+`tests/stubs/STUB-CEEDAYS-RC.cpy`, also `PIC X(8)`) in `BEFORE-EACH`
+instead — the stub copies that 8-byte token into the FEEDBACK-CODE it
+returns to the caller.
+
+A literal **decimal** numeric move (e.g., `MOVE 2507 TO FEEDBACK-CODE`)
+will NOT produce a valid 8-byte token comparable to the production
+88-level VALUE clauses; the comparison will silently fail and the
+default `WHEN OTHER` branch (`'Date is invalid'`) will fire, masking
+the test intent.
+
+### Verifying a mock was invoked the expected number of times
+
+```cobol
+       VERIFY MOCK FILE ACCTFILE-FILE ON READ WAS CALLED 3 TIMES
+       VERIFY MOCK CICS XCTL WAS CALLED 1 TIMES
+```
+
+---
+
+## Troubleshooting
+
+### "make init: failed to download cobol-check"
+
+The bootstrap fetches `cobol-check-0.2.16.zip` from
+`https://raw.githubusercontent.com/openmainframeproject/cobol-check/0.2.16_release/build/distributions/`.
+If your environment blocks GitHub raw content, manually download the
+ZIP from the Open Mainframe Project's GitHub releases at
+`https://github.com/openmainframeproject/cobol-check/releases/`,
+extract `bin/cobol-check-0.2.16.jar`, and place it at
+`tests/cobol-check/lib/cobol-check-0.2.16.jar`. Subsequent `make`
+invocations will detect the JAR and skip the bootstrap.
+
+### "cobc: command not found"
+
+Run `sudo apt-get install -y gnucobol3 libcob4-dev` (Ubuntu Noble).
+Confirm with `cobc --version`, which should report `3.1.2.0`.
+
+### "gcov: cannot open notes file"
+
+Coverage requires `--coverage` instrumentation, which produces `.gcno`
+notes files at compile time. Run `make clean && make coverage` to
+ensure binaries are recompiled with instrumentation; the `clean` step
+is necessary because plain `make test` builds without the flag.
+
+### "VALIDATION GATE FAILED: business logic detected"
+
+Open the offending `.cut` file. The lint script reports the line
+number. Replace the forbidden arithmetic with either:
+
+- a literal expected value chosen from external knowledge (a fixture
+  row, a user-provided number, a documented requirement), or
+- a `PERFORM` of the production paragraph that is supposed to compute
+  the value, followed by an `EXPECT` against the field the production
+  code wrote into.
+
+Never put `COMPUTE`/`MULTIPLY`/`DIVIDE`/`ADD`/`SUBTRACT` in a
+`TESTCASE`. They belong only in `BEFORE-EACH`/`AFTER-EACH` for fixture
+preparation (e.g., zero-initializing a counter before the testcase
+runs).
+
+### "VALIDATION GATE FAILED: production-code redeclaration"
+
+The `.cut` file contains an `IDENTIFICATION DIVISION` or `PROGRAM-ID`
+matching a name in `app/cbl/`. Remove it. The program-under-test must
+be referenced via `cobolcheck.test.program.name` in `config.properties`
+(or via the `-p PROGRAMNAME` command-line argument). cobol-check
+resolves and merges the production source for you; redeclaring the
+program in the test file is both unnecessary and a violation of the
+"import production code" rule.
+
+### "Test passes locally but fails in CI"
+
+Common causes:
+
+- **Fixture snippets out of sync** — run `make fixtures` before
+  committing. The `.cpy` snippet files are regenerated from the
+  source `.txt` files; if they drift, the local cache lags behind.
+- **Coverage threshold drift** — run `make coverage` locally and
+  inspect `target/coverage/coverage-summary.txt`.
+- **Locale differences in DISPLAY output** — testsuites should EXPECT
+  against PIC-formatted fields, not against terminal-rendered output
+  that may vary with the runner's locale.
+- **Forgotten `make init`** — the cobol-check JAR is cached locally;
+  CI bootstraps fresh on every run, so a JAR-version mismatch can
+  surface only in CI.
+
+### "ABEND from CEE3ABD during a test"
+
+The stub `tests/stubs/CEE3ABD.cbl` should set `WS-ABEND-FLAG='Y'` and
+`GOBACK`. If your test process terminates instead, the stub did not
+link in. Confirm that `tests/stubs/` is on the
+`cobolcheck.application.copybook.directory` path in `config.properties`,
+and that `make test` shows the stub being compiled in its log output.
+
+### "WRN001: No test suite directory for program <X> was found"
+
+cobol-check 0.2.16 walks the configured `test.suite.directory`
+looking for a *sub-directory* whose name matches the program-id (i.e.,
+it expects a nested layout `tests/cobol-check/<PROGRAM>/<file>.cut`).
+The CardDemo project, per AAP §0.5.1 / §0.10.2 / §0.9.1, uses the
+**flat layout** `tests/cobol-check/<PROGRAM>.cut` instead — and the
+`Makefile` bridges the two by staging an ephemeral nested-layout
+shadow tree at `target/cobol-check/suites/<PROGRAM>/<PROGRAM>.cut`
+before invoking cobol-check, then pointing
+`test.suite.directory` at that shadow via a runtime-generated
+`target/cobol-check/config.properties`. If you see WRN001 it means
+**you are running cobol-check directly with the canonical
+`tests/cobol-check/config.properties`** (which still names
+`tests/cobol-check` as `test.suite.directory`); use one of:
+
+- `make test`, `make test-one`, `make test-debug`, or `make coverage`
+  — all of these stage the shadow before invoking cobol-check.
+- A direct `java -jar cobol-check.jar` invocation that supplies its
+  own pre-staged nested layout under `tests/cobol-check/<PROGRAM>/`
+  *and* uses the canonical config — the shadow staging is then
+  redundant but harmless.
+
+If the warning persists from the Make targets, confirm:
+
+- The .cut file's name matches the program-id exactly (e.g.,
+  `tests/cobol-check/CSUTLDTC.cut` for `app/cbl/CSUTLDTC.cbl`); the
+  match is case-sensitive on Linux.
+- The file extension is lowercase `.cut` (the auto-discovery glob in
+  the Makefile is `*.cut`, not `*.CUT`).
+- The file is non-empty.
+
+### "Mock <CALL> <\"X\"> does not reference any construct in the source code"
+
+cobol-check could not find a matching `CALL "X"` in the
+program-under-test. Either you mocked the wrong subprogram name or
+the production source's `CALL` statement spans multiple lines and has
+not been recognized; consult the parser error log at
+`target/cobol-check/ParserErrorLog.txt`.
+
+---
+
+## References
+
+- **cobol-check**: https://github.com/openmainframeproject/cobol-check
+- **GnuCOBOL**: https://gnucobol.sourceforge.io/
+- **CardDemo project root**: [`README.md`](../README.md)
+- **Contribution workflow**: [`CONTRIBUTING.md`](../CONTRIBUTING.md)
+- **CI workflow**: [`.github/workflows/test.yml`](../.github/workflows/test.yml)
+- **Build orchestrator**: [`Makefile`](../Makefile)
+- **Reference exemplar testsuite**: `tests/cobol-check/CSUTLDTC.cut`
+- **Test-user credentials**: `ADMIN001 / PASSWORD` (admin),
+  `USER0001 / PASSWORD` (regular) — used in CICS testsuites only.

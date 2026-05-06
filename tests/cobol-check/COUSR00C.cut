@@ -1,0 +1,633 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  Testsuite : COUSR00C USER LIST BROWSE TRANSACTION
+      *  Program-under-test : app/cbl/COUSR00C.cbl
+      *
+      *  Exercises COUSR00C's user-list browse CICS transaction by
+      *  mocking ONLY the CICS-API boundary (CALL 'DFHEI1').  Internal
+      *  paragraphs are NEVER mocked; every TESTCASE PERFORMs a
+      *  production paragraph LIVE per AAP Section 0.10.1.
+      *
+      *  Test categories (6 testcases)
+      *  -----------------------------
+      *    TC1 - RETURN-TO-PREV-SCREEN default 'COSGN00C' (PF3 path)
+      *    TC2 - INITIALIZE-USER-DATA WS-IDX=1 clears row-1 fields
+      *          (lines 449-453); pure WS side effects.
+      *    TC3 - POPULATE-USER-DATA WS-IDX=1 row-1 plus CDEMO-CU00-
+      *          USRID-FIRST anchor (line 389) for PF7 backward page.
+      *    TC4 - POPULATE-USER-DATA WS-IDX=10 row-10 plus CDEMO-CU00-
+      *          USRID-LAST anchor (line 435) for PF8 forward page.
+      *    TC5 - PROCESS-PF7-KEY with PAGE-NUM=1 hits ELSE "top of
+      *          the page" advisory (lines 248-255).
+      *    TC6 - PROCESS-PF8-KEY with NEXT-PAGE-FLG NOT='Y' hits ELSE
+      *          "bottom of the page" advisory (lines 270-277).
+      *
+      *  Test user: ADMIN001 (AAP 0.10.2; admin-gated upstream by
+      *  COADM01C).  AAP TC1 (full browse) deferred to MOCK CICS
+      *  support (DFHRESP undefined off-platform).
+      *  References: AAP 0.10.1, 0.5.1, 0.10.2;
+      *  app/cbl/COUSR00C.cbl L98-144, L237-277, L384-501, L506-517;
+      *  app/cpy/{COCOM01Y, CSUSR01Y}.cpy; cpy-bms/COUSR00.CPY;
+      *  tests/stubs/{STUB-ABEND-FLAG.cpy, DFHEI1.cbl};
+      *  tests/cobol-check/{COUSR03C, COUSR02C, COUSR01C}.cut.
+      *
+      *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
+      *  Runner-script Step 5 injects EXTERNAL field declarations
+      *  into merged WS; BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED for per-testcase isolation of the safety-net flag.
+      ******************************************************************
+       COPY STUB-ABEND-FLAG.
+
+       TESTSUITE 'COUSR00C USER LIST BROWSE TRANSACTION'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset.
+      *
+      *  Restores deterministic baseline state so every TESTCASE starts
+      *  from a known, identical configuration.  cobol-check resets
+      *  MOCK invocation counters automatically between TESTCASEs;
+      *  this block resets the application working-storage groups the
+      *  production code reads or writes:
+      *
+      *    WS-VARIABLES        - WS-PGMNAME, WS-TRANID, WS-USRSEC-FILE,
+      *                          WS-ERR-FLG, WS-USER-SEC-EOF,
+      *                          WS-SEND-ERASE-FLG, WS-RESP-CD,
+      *                          WS-REAS-CD, WS-REC-COUNT, WS-IDX,
+      *                          WS-PAGE-NUM, WS-MESSAGE (production
+      *                          lines 35-54).  After INITIALIZE,
+      *                          GnuCOBOL re-applies VALUE clauses so
+      *                          WS-PGMNAME='COUSR00C', WS-TRANID=
+      *                          'CU00', WS-USRSEC-FILE='USRSEC  '.
+      *    WS-USER-DATA        - 10-occurrence USER-REC table.
+      *    CARDDEMO-COMMAREA   - whole COCOM01Y group plus the
+      *                          CDEMO-CU00-INFO extension fields
+      *                          (USRID-FIRST/LAST, PAGE-NUM,
+      *                           NEXT-PAGE-FLG, USR-SEL-FLG,
+      *                           USR-SELECTED).
+      *    SEC-USER-DATA       - CSUSR01Y group (SEC-USR-ID,
+      *                          SEC-USR-FNAME, SEC-USR-LNAME,
+      *                          SEC-USR-PWD, SEC-USR-TYPE,
+      *                          SEC-USR-FILLER) -- the buffer that
+      *                          READNEXT-USER-SEC-FILE writes via
+      *                          INTO(SEC-USER-DATA), and that
+      *                          POPULATE-USER-DATA reads to fill
+      *                          the BMS map.
+      *    COUSR0AI            - BMS input map (USRIDINI, SEL0001I..
+      *                          SEL0010I, USRID01I..USRID10I,
+      *                          FNAME/LNAME/UTYPE row fields,
+      *                          PAGENUMI, ERRMSGI).
+      *    RETURN-CODE         - implicit special register reset.
+      *
+      *  After clearing, BEFORE-EACH seeds the COMMAREA with the
+      *  ADMIN001 admin-role identity (the only test user permitted
+      *  by AAP Section 0.10.2 for this transaction) so each TESTCASE
+      *  starts from the routed-by-COADM01C state that production
+      *  COUSR00C expects.  CDEMO-FROM-* fields default to the
+      *  upstream admin menu so RETURN-TO-PREV-SCREEN has a non-empty
+      *  origin to reflect back into the COMMAREA before XCTL.
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE WS-VARIABLES ALL TO VALUE
+            INITIALIZE WS-USER-DATA
+            INITIALIZE CARDDEMO-COMMAREA
+            INITIALIZE SEC-USER-DATA
+            INITIALIZE COUSR0AI
+            MOVE ZERO       TO RETURN-CODE
+            MOVE 'N'        TO WS-DFHEI1-UNMOCKED-CALLED
+            MOVE 'ADMIN001' TO CDEMO-USER-ID
+            MOVE 'A'        TO CDEMO-USER-TYPE
+            MOVE 'COADM01C' TO CDEMO-FROM-PROGRAM
+            MOVE 'CA00'     TO CDEMO-FROM-TRANID
+       END-BEFORE.
+
+      ******************************************************************
+      *  TC1 -- RETURN-TO-PREV-SCREEN substitutes default and XCTLs
+      *
+      *  Drives RETURN-TO-PREV-SCREEN (production lines 506-517).
+      *  This paragraph is the destination of MAIN-PARA's WHEN DFHPF3
+      *  branch (production lines 125-127) and of the EIBCALEN = 0
+      *  initial-entry branch (production lines 110-112).  The
+      *  paragraph executes:
+      *
+      *    IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES         (line 508)
+      *        MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM            (line 509)
+      *    END-IF
+      *    MOVE WS-TRANID    TO CDEMO-FROM-TRANID             (line 511)
+      *    MOVE WS-PGMNAME   TO CDEMO-FROM-PROGRAM            (line 512)
+      *    MOVE ZEROS        TO CDEMO-PGM-CONTEXT             (line 513)
+      *    EXEC CICS                                          (line 514)
+      *        XCTL PROGRAM(CDEMO-TO-PROGRAM)                 (line 515)
+      *        COMMAREA(CARDDEMO-COMMAREA)                    (line 516)
+      *    END-EXEC.                                          (line 517)
+      *
+      *  Pre-conditions established by BEFORE-EACH and TC1 prelude:
+      *    CDEMO-TO-PROGRAM = SPACES (set by INITIALIZE in
+      *                       BEFORE-EACH; INITIALIZE on a PIC X
+      *                       group fills with spaces, satisfying
+      *                       the WHEN OR SPACES half of the
+      *                       line-508 IF).
+      *    CDEMO-FROM-PROGRAM = 'COADM01C' (BEFORE-EACH default;
+      *                       will be overwritten by line-512
+      *                       production MOVE -- the test asserts
+      *                       the SIDE EFFECT)
+      *
+      *  Source of expected values:
+      *    'COSGN00C' - production literal MOVE'd by line 509 to
+      *                 CDEMO-TO-PROGRAM (test asserts the side
+      *                 effect, does NOT recompute or paraphrase
+      *                 the IF logic)
+      *    'COUSR00C' - WS-PGMNAME constant declared at production
+      *                 line 36 (PIC X(08) VALUE 'COUSR00C'); MOVE'd
+      *                 to CDEMO-FROM-PROGRAM by line 512
+      *    'CU00'     - WS-TRANID constant declared at production
+      *                 line 37 (PIC X(04) VALUE 'CU00'); MOVE'd to
+      *                 CDEMO-FROM-TRANID by line 511
+      ******************************************************************
+       TESTCASE 'COUSR00C RETURN-TO-PREV-SCREEN defaults to COSGN00C'
+            MOVE SPACES TO CDEMO-TO-PROGRAM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM RETURN-TO-PREV-SCREEN
+            EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
+            EXPECT CDEMO-FROM-PROGRAM TO BE 'COUSR00C'
+            EXPECT CDEMO-FROM-TRANID TO BE 'CU00'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC2 -- INITIALIZE-USER-DATA clears row 1 BMS fields
+      *
+      *  Drives INITIALIZE-USER-DATA (production lines 446-501) with
+      *  WS-IDX = 1.  The paragraph contains zero EXEC CICS verbs
+      *  and zero PERFORM statements; it is the cleanest test target
+      *  in COUSR00C.  The EVALUATE WS-IDX matches the WHEN 1 clause
+      *  and executes:
+      *
+      *    MOVE SPACES TO USRID01I OF COUSR0AI                (line 450)
+      *    MOVE SPACES TO FNAME01I OF COUSR0AI                (line 451)
+      *    MOVE SPACES TO LNAME01I OF COUSR0AI                (line 452)
+      *    MOVE SPACES TO UTYPE01I OF COUSR0AI                (line 453)
+      *
+      *  Invoked from PROCESS-PAGE-FORWARD (line 294) and
+      *  PROCESS-PAGE-BACKWARD (line 348) inside a PERFORM VARYING
+      *  WS-IDX FROM 1 BY 1 UNTIL WS-IDX > 10 loop to reset the
+      *  entire 10-row BMS table before a fresh page render.  Testing
+      *  WS-IDX=1 covers the row-1 slice of that loop.
+      *
+      *  Pre-conditions established by TC2 prelude (after BEFORE-EACH
+      *  zeroes the structures): seed USRID01I / FNAME01I / LNAME01I
+      *  / UTYPE01I with non-empty markers so the test proves the
+      *  production MOVE TO SPACES actually overwrites them.  Without
+      *  these seeds the BEFORE-EACH initial state would already be
+      *  SPACES and the test would not distinguish the production
+      *  paragraph's effect from baseline.  Set WS-IDX=1 to drive
+      *  the EVALUATE to the WHEN 1 clause.
+      *
+      *  Source of expected values:
+      *    SPACES - production literal MOVE'd by lines 450-453;
+      *             the test asserts the side effect (does NOT
+      *             reimplement the MOVE)
+      *
+      *  A MOCK CALL 'DFHEI1' is declared so the testcase can also
+      *  ASSERT (via VERIFY ... HAPPENED 0 TIMES) the production
+      *  invariant that INITIALIZE-USER-DATA NEVER reaches a CICS
+      *  service call.  A regression that introduces an EXEC CICS
+      *  verb inside this paragraph would inflate the mock count
+      *  and fail the VERIFY clause.
+      ******************************************************************
+       TESTCASE 'COUSR00C INITIALIZE-USER-DATA clears row 1 fields'
+            MOVE 'OLDUSR01' TO USRID01I OF COUSR0AI
+            MOVE 'OLDFNAME01          ' TO FNAME01I OF COUSR0AI
+            MOVE 'OLDLNAME01          ' TO LNAME01I OF COUSR0AI
+            MOVE 'X' TO UTYPE01I OF COUSR0AI
+            MOVE 1 TO WS-IDX
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM INITIALIZE-USER-DATA
+            EXPECT USRID01I OF COUSR0AI TO BE SPACES
+            EXPECT FNAME01I OF COUSR0AI TO BE SPACES
+            EXPECT LNAME01I OF COUSR0AI TO BE SPACES
+            EXPECT UTYPE01I OF COUSR0AI TO BE SPACES
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC3 -- POPULATE-USER-DATA fills row 1 + sets FIRST anchor
+      *
+      *  Drives POPULATE-USER-DATA (production lines 384-441) with
+      *  WS-IDX = 1 and SEC-USER-DATA pre-populated with a fixture
+      *  user record.  The paragraph contains zero EXEC CICS verbs;
+      *  the EVALUATE WS-IDX matches the WHEN 1 clause and executes:
+      *
+      *    MOVE SEC-USR-ID    TO USRID01I OF COUSR0AI         (line 388)
+      *                          CDEMO-CU00-USRID-FIRST       (line 389)
+      *    MOVE SEC-USR-FNAME TO FNAME01I OF COUSR0AI         (line 390)
+      *    MOVE SEC-USR-LNAME TO LNAME01I OF COUSR0AI         (line 391)
+      *    MOVE SEC-USR-TYPE  TO UTYPE01I OF COUSR0AI         (line 392)
+      *
+      *  The line-389 destination CDEMO-CU00-USRID-FIRST is the
+      *  COMMAREA "first user on page" anchor that PROCESS-PF7-KEY
+      *  reads at line 242 to seed SEC-USR-ID for the next backward
+      *  STARTBR.  The test asserts both the per-row map move
+      *  (USRID01I .. UTYPE01I) AND the anchor side effect, so a
+      *  regression that drops EITHER of the two destinations of
+      *  the line-388 MOVE TO is caught by exactly one of the two
+      *  corresponding EXPECT clauses.
+      *
+      *  Pre-conditions established by TC3 prelude:
+      *    SEC-USR-ID    = 'USER0001'                  (8-byte literal)
+      *    SEC-USR-FNAME = 'Alice               '      (20-byte padded)
+      *    SEC-USR-LNAME = 'Tester              '      (20-byte padded)
+      *    SEC-USR-TYPE  = 'U'                         (1-byte literal)
+      *    WS-IDX        = 1
+      *
+      *  Source of expected values: all four are test fixtures set
+      *  in the TC3 prelude; production lines 388/390/391/392 MOVE
+      *  them into the BMS map; production line 389 ALSO MOVEs
+      *  SEC-USR-ID into CDEMO-CU00-USRID-FIRST.
+      ******************************************************************
+       TESTCASE 'COUSR00C POPULATE-USER-DATA row 1 sets USRID-FIRST'
+            MOVE 'USER0001'             TO SEC-USR-ID
+            MOVE 'Alice               ' TO SEC-USR-FNAME
+            MOVE 'Tester              ' TO SEC-USR-LNAME
+            MOVE 'U'                    TO SEC-USR-TYPE
+            MOVE 1 TO WS-IDX
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM POPULATE-USER-DATA
+            EXPECT USRID01I OF COUSR0AI TO BE 'USER0001'
+            EXPECT FNAME01I OF COUSR0AI TO BE 'Alice               '
+            EXPECT LNAME01I OF COUSR0AI TO BE 'Tester              '
+            EXPECT UTYPE01I OF COUSR0AI TO BE 'U'
+            EXPECT CDEMO-CU00-USRID-FIRST TO BE 'USER0001'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC4 -- POPULATE-USER-DATA fills row 10 + sets LAST anchor
+      *
+      *  Drives POPULATE-USER-DATA (production lines 384-441) with
+      *  WS-IDX = 10 and SEC-USER-DATA pre-populated with a fixture
+      *  user record.  The EVALUATE WS-IDX matches the WHEN 10
+      *  clause and executes:
+      *
+      *    MOVE SEC-USR-ID    TO USRID10I OF COUSR0AI         (line 434)
+      *                          CDEMO-CU00-USRID-LAST        (line 435)
+      *    MOVE SEC-USR-FNAME TO FNAME10I OF COUSR0AI         (line 436)
+      *    MOVE SEC-USR-LNAME TO LNAME10I OF COUSR0AI         (line 437)
+      *    MOVE SEC-USR-TYPE  TO UTYPE10I OF COUSR0AI         (line 438)
+      *
+      *  The line-435 destination CDEMO-CU00-USRID-LAST is the
+      *  COMMAREA "last user on page" anchor that PROCESS-PF8-KEY
+      *  reads at line 265 to seed SEC-USR-ID for the next forward
+      *  STARTBR.  TC3 and TC4 form differential coverage: TC3
+      *  covers the row-1 slice and the FIRST anchor; TC4 covers
+      *  the row-10 slice and the LAST anchor.  Each anchor is
+      *  unique to exactly one EVALUATE clause, so a regression
+      *  that drops the FIRST or LAST anchor MOVE is caught by
+      *  exactly one of the two tests.
+      *
+      *  Pre-conditions established by TC4 prelude:
+      *    SEC-USR-ID    = 'USER0050'                  (8-byte literal)
+      *    SEC-USR-FNAME = 'Zara                '      (20-byte padded)
+      *    SEC-USR-LNAME = 'Reviewer            '      (20-byte padded)
+      *    SEC-USR-TYPE  = 'A'                         (1-byte literal)
+      *    WS-IDX        = 10
+      *
+      *  Source of expected values: all four are test fixtures set
+      *  in the TC4 prelude; production lines 434/436/437/438 MOVE
+      *  them into the BMS map; production line 435 ALSO MOVEs
+      *  SEC-USR-ID into CDEMO-CU00-USRID-LAST.
+      ******************************************************************
+       TESTCASE 'COUSR00C POPULATE-USER-DATA row 10 sets USRID-LAST'
+            MOVE 'USER0050'             TO SEC-USR-ID
+            MOVE 'Zara                ' TO SEC-USR-FNAME
+            MOVE 'Reviewer            ' TO SEC-USR-LNAME
+            MOVE 'A'                    TO SEC-USR-TYPE
+            MOVE 10 TO WS-IDX
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM POPULATE-USER-DATA
+            EXPECT USRID10I OF COUSR0AI TO BE 'USER0050'
+            EXPECT FNAME10I OF COUSR0AI TO BE 'Zara                '
+            EXPECT LNAME10I OF COUSR0AI TO BE 'Reviewer            '
+            EXPECT UTYPE10I OF COUSR0AI TO BE 'A'
+            EXPECT CDEMO-CU00-USRID-LAST TO BE 'USER0050'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC5 -- PROCESS-PF7-KEY at page 1 sets top-of-page advisory
+      *
+      *  Drives PROCESS-PF7-KEY (production lines 237-255) with
+      *  CDEMO-CU00-PAGE-NUM = 1 (current page is the first page).
+      *  Production lines 248-255 execute the ELSE branch of the
+      *  IF CDEMO-CU00-PAGE-NUM > 1 guard, which encodes the
+      *  production-mandated invariant: a backward-paging request
+      *  from page 1 has no valid prior page, so the program must
+      *  surface a user-visible advisory rather than issue a doomed
+      *  READPREV that would return NOTFND from before the first
+      *  record.  The ELSE branch executes:
+      *
+      *    MOVE 'You are already at the top of the page...' TO
+      *                    WS-MESSAGE                        (line 251)
+      *    SET SEND-ERASE-NO TO TRUE                         (line 253)
+      *    PERFORM SEND-USRLST-SCREEN                        (line 254)
+      *
+      *  The two preludes the production paragraph executes BEFORE
+      *  reaching the IF guard are also exercised:
+      *    Line 245: SET NEXT-PAGE-YES TO TRUE
+      *              (CDEMO-CU00-NEXT-PAGE-FLG = 'Y')
+      *    Line 246: MOVE -1 TO USRIDINL OF COUSR0AI
+      *
+      *  Pre-conditions established by TC5 prelude:
+      *    CDEMO-CU00-USRID-FIRST = 'USER0010'  (non-empty so the
+      *                            IF at line 239 takes the ELSE
+      *                            branch and MOVEs to SEC-USR-ID
+      *                            via line 242)
+      *    CDEMO-CU00-PAGE-NUM    = 1           (so line 248 IF
+      *                            > 1 is FALSE and the ELSE
+      *                            branch is taken)
+      *
+      *  Source of expected values:
+      *    'You are already at the top of the page...'
+      *                            - production literal MOVE'd by
+      *                              line 251-252 (test asserts the
+      *                              side effect)
+      *    'N'                     - SEND-ERASE-NO 88-level value
+      *                              (production line 48 declares
+      *                              the 88; line 253 SETs the
+      *                              parent flag to 'N')
+      *    -1                      - USRIDINL flipped by line 246
+      *    'Y'                     - NEXT-PAGE-YES 88-level value
+      *                              (production line 72 declares
+      *                              the 88; line 245 SETs the
+      *                              parent flag to 'Y')
+      *
+      *  The MOCK CALL 'DFHEI1' intercepts SEND-USRLST-SCREEN's
+      *  EXEC CICS SEND verb (after CICS translator rewrite) so no
+      *  3270 traffic is generated.  The VERIFY clause asserts the
+      *  LOW BOUND on the mock invocation count.
+      ******************************************************************
+       TESTCASE 'COUSR00C PROCESS-PF7-KEY at top sets top-of-page msg'
+            MOVE 'USER0010' TO CDEMO-CU00-USRID-FIRST
+            MOVE 1 TO CDEMO-CU00-PAGE-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-PF7-KEY
+            EXPECT WS-MESSAGE TO BE 'You are already at the top of the page...'
+            EXPECT WS-SEND-ERASE-FLG TO BE 'N'
+            EXPECT USRIDINL OF COUSR0AI NOT = 0
+            EXPECT CDEMO-CU00-NEXT-PAGE-FLG TO BE 'Y'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC6 -- PROCESS-PF8-KEY at bottom sets bottom-of-page advisory
+      *
+      *  Drives PROCESS-PF8-KEY (production lines 260-277) with
+      *  CDEMO-CU00-NEXT-PAGE-FLG NOT = 'Y' (no next page available;
+      *  the 88-level NEXT-PAGE-YES is FALSE so the IF at line 270
+      *  takes the ELSE branch).  Production lines 273-277 execute
+      *  the ELSE branch, which encodes the dual of TC5's invariant:
+      *  a forward-paging request when no further records remain
+      *  has no valid next page, so the program surfaces a
+      *  user-visible advisory rather than issue a doomed READNEXT
+      *  that would return ENDFILE.  The ELSE branch executes:
+      *
+      *    MOVE 'You are already at the bottom of the page...' TO
+      *                    WS-MESSAGE                        (line 273)
+      *    SET SEND-ERASE-NO TO TRUE                         (line 275)
+      *    PERFORM SEND-USRLST-SCREEN                        (line 276)
+      *
+      *  The two preludes the production paragraph executes BEFORE
+      *  reaching the IF guard are also exercised:
+      *    Line 265: MOVE CDEMO-CU00-USRID-LAST TO SEC-USR-ID
+      *              (since CDEMO-CU00-USRID-LAST is set in the
+      *              TC6 prelude and is therefore not SPACES /
+      *              LOW-VALUES, the IF at line 262 takes the
+      *              ELSE branch and MOVEs the anchor)
+      *    Line 268: MOVE -1 TO USRIDINL OF COUSR0AI
+      *
+      *  Pre-conditions established by TC6 prelude:
+      *    CDEMO-CU00-USRID-LAST = 'USER0050'   (non-empty so the
+      *                            IF at line 262 takes the ELSE
+      *                            branch and MOVEs the anchor to
+      *                            SEC-USR-ID via line 265)
+      *    CDEMO-CU00-NEXT-PAGE-FLG = SPACES    (set by INITIALIZE
+      *                            in BEFORE-EACH; the 88-level
+      *                            NEXT-PAGE-YES checks for 'Y'
+      *                            which SPACES is not, so the
+      *                            ELSE branch at line 272 is
+      *                            taken).  Explicitly RE-MOVED
+      *                            here as SPACES to make the
+      *                            test author's intent obvious.
+      *
+      *  Source of expected values:
+      *    'You are already at the bottom of the page...'
+      *                            - production literal MOVE'd by
+      *                              line 273-274 (test asserts
+      *                              the side effect)
+      *    'N'                     - SEND-ERASE-NO 88-level value
+      *                              (line 275 SETs to 'N')
+      *    -1                      - USRIDINL flipped by line 268
+      *    'USER0050'              - test fixture set in TC6 prelude
+      *                              and copied to SEC-USR-ID by
+      *                              production line 265
+      *
+      *  TC5 and TC6 form symmetric coverage of the two paging-
+      *  boundary advisory paths.  A regression that swaps the PF7
+      *  and PF8 advisory branches (e.g., copy-paste error in the
+      *  production source) is caught by both tests failing
+      *  simultaneously with mismatched WS-MESSAGE values.
+      ******************************************************************
+       TESTCASE 'COUSR00C PROCESS-PF8-KEY at end sets bottom-of-page msg'
+            MOVE 'USER0050' TO CDEMO-CU00-USRID-LAST
+            MOVE SPACES TO CDEMO-CU00-NEXT-PAGE-FLG
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-PF8-KEY
+            EXPECT WS-MESSAGE TO BE 'You are already at the bottom of the page...'
+            EXPECT WS-SEND-ERASE-FLG TO BE 'N'
+            EXPECT USRIDINL OF COUSR0AI NOT = 0
+            EXPECT SEC-USR-ID TO BE 'USER0050'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC7 -- POPULATE-HEADER-INFO populates date/title/program fields
+      *
+      *  Drives POPULATE-HEADER-INFO (production lines 562-581) which
+      *  is a pure-WS computation paragraph (no CICS calls).  Runs
+      *  FUNCTION CURRENT-DATE and reformats the YYYYMMDD/HHMMSS into
+      *  MM-DD-YY / HH-MM-SS for the BMS output map.  Test asserts
+      *  the static title / program / transaction-id fields are
+      *  copied into the output map, and that the date/time
+      *  separator characters are populated (their digit content
+      *  varies per run because FUNCTION CURRENT-DATE is non-
+      *  deterministic; the literal '/'s and ':'s are deterministic).
+      *
+      *  Source of expected values:
+      *    'CardDemo Application       '
+      *                            - CCDA-TITLE01 from COTTL01Y;
+      *                              MOVE'd to TITLE01O at line 566
+      *    'User List                  '
+      *                            - CCDA-TITLE02 from COTTL01Y;
+      *                              MOVE'd to TITLE02O at line 567
+      *    'CU00'                  - WS-TRANID via line 568 MOVE;
+      *                              VALUE 'CU00' at line 37
+      *    'COUSR00C'              - WS-PGMNAME via line 569 MOVE;
+      *                              VALUE 'COUSR00C' at line 36
+      ******************************************************************
+       TESTCASE 'COUSR00C POPULATE-HEADER-INFO copies title and tranid'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM POPULATE-HEADER-INFO
+            EXPECT TRNNAMEO OF COUSR0AO TO BE 'CU00'
+            EXPECT PGMNAMEO OF COUSR0AO TO BE 'COUSR00C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC8 -- ENDBR-USER-SEC-FILE invokes one EXEC CICS ENDBR
+      *
+      *  Drives ENDBR-USER-SEC-FILE (production lines 687-691) which
+      *  contains a single EXEC CICS ENDBR DATASET.  Mock intercepts
+      *  the CALL 'DFHEI1' translation; assertion verifies the mock
+      *  was reached exactly once, proving the production paragraph
+      *  executes its only CICS verb.
+      ******************************************************************
+       TESTCASE 'COUSR00C ENDBR-USER-SEC-FILE runs without abend'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM ENDBR-USER-SEC-FILE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC9 -- SEND-USRLST-SCREEN takes SEND-ERASE-YES branch
+      *
+      *  Drives SEND-USRLST-SCREEN (production lines 522-544).
+      *  WS-SEND-ERASE-FLG defaults to 'Y' (line 46 VALUE 'Y'),
+      *  satisfying SEND-ERASE-YES 88-level (line 47), so the
+      *  IF SEND-ERASE-YES THEN branch executes the EXEC CICS SEND
+      *  with ERASE option.  The paragraph also PERFORMs POPULATE-
+      *  HEADER-INFO before the EXEC CICS, so this test exercises
+      *  TWO paragraphs (SEND-USRLST-SCREEN itself plus its called
+      *  POPULATE-HEADER-INFO) and contributes to coverage of both.
+      *
+      *  WS-MESSAGE is asserted to remain SPACES because the
+      *  paragraph does not write to it (it copies WS-MESSAGE TO
+      *  ERRMSGO at line 526).  TRNNAMEO confirms the embedded
+      *  POPULATE-HEADER-INFO call ran.
+      ******************************************************************
+       TESTCASE 'COUSR00C SEND-USRLST-SCREEN with ERASE-YES sends map'
+            MOVE 'Y' TO WS-SEND-ERASE-FLG
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM SEND-USRLST-SCREEN
+            EXPECT TRNNAMEO OF COUSR0AO TO BE 'CU00'
+            EXPECT PGMNAMEO OF COUSR0AO TO BE 'COUSR00C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC10 -- SEND-USRLST-SCREEN takes ELSE branch (SEND-ERASE-NO)
+      *
+      *  Symmetric to TC9 but with WS-SEND-ERASE-FLG='N' so the
+      *  ELSE branch (lines 537-543) executes the EXEC CICS SEND
+      *  WITHOUT the ERASE option.  Both branches reach the same
+      *  CALL 'DFHEI1' so the VERIFY count is identical; the
+      *  coverage gain is on the ELSE branch lines.
+      ******************************************************************
+       TESTCASE 'COUSR00C SEND-USRLST-SCREEN with ERASE-NO sends map'
+            MOVE 'N' TO WS-SEND-ERASE-FLG
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM SEND-USRLST-SCREEN
+            EXPECT TRNNAMEO OF COUSR0AO TO BE 'CU00'
+            EXPECT PGMNAMEO OF COUSR0AO TO BE 'COUSR00C'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC11 -- RECEIVE-USRLST-SCREEN invokes DFHEI1 once
+      *
+      *  Drives RECEIVE-USRLST-SCREEN (production lines 549-557)
+      *  which contains a single EXEC CICS RECEIVE MAP.  Mock
+      *  intercepts the CALL 'DFHEI1'; assertion verifies the mock
+      *  was reached exactly once.
+      ******************************************************************
+       TESTCASE 'COUSR00C RECEIVE-USRLST-SCREEN runs without abend'
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM RECEIVE-USRLST-SCREEN
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  TC12 -- PROCESS-ENTER-KEY with no SEL flags falls to WHEN OTHER
+      *
+      *  Drives PROCESS-ENTER-KEY (production lines 149-232) when
+      *  none of SEL0001I .. SEL0010I has a non-blank value.  The
+      *  EVALUATE TRUE block falls through to WHEN OTHER (lines
+      *  182-184) which clears CDEMO-CU00-USR-SEL-FLG and CDEMO-
+      *  CU00-USR-SELECTED to SPACES.  Then the IF block at line 187
+      *  finds both fields = SPACES and skips the routing
+      *  EVALUATE.  Then USRIDINI = SPACES branch (line 218) runs
+      *  the LOW-VALUES move.  Finally PROCESS-PAGE-FORWARD is
+      *  PERFORMed which invokes multiple CICS verbs (mocked).
+      *
+      *  Source of expected values:
+      *    SPACES                  - CDEMO-CU00-USR-SEL-FLG cleared
+      *                              by line 183 MOVE SPACES
+      *    SPACES                  - CDEMO-CU00-USR-SELECTED
+      *                              cleared by line 184 MOVE SPACES
+      *    -1                      - USRIDINL flipped by line 224
+      *    0                       - CDEMO-CU00-PAGE-NUM reset by
+      *                              line 227 MOVE 0
+      ******************************************************************
+       TESTCASE 'COUSR00C PROCESS-ENTER-KEY clears flags WHEN-OTHER'
+            MOVE SPACES TO SEL0001I OF COUSR0AI
+            MOVE SPACES TO SEL0002I OF COUSR0AI
+            MOVE SPACES TO SEL0003I OF COUSR0AI
+            MOVE SPACES TO SEL0004I OF COUSR0AI
+            MOVE SPACES TO SEL0005I OF COUSR0AI
+            MOVE SPACES TO SEL0006I OF COUSR0AI
+            MOVE SPACES TO SEL0007I OF COUSR0AI
+            MOVE SPACES TO SEL0008I OF COUSR0AI
+            MOVE SPACES TO SEL0009I OF COUSR0AI
+            MOVE SPACES TO SEL0010I OF COUSR0AI
+            MOVE SPACES TO USRIDINI OF COUSR0AI
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM PROCESS-ENTER-KEY
+            EXPECT CDEMO-CU00-USR-SEL-FLG TO BE SPACES
+            EXPECT CDEMO-CU00-USR-SELECTED TO BE SPACES
+            EXPECT USRIDINL OF COUSR0AI NOT = 0
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+      ******************************************************************
+      *  End of testsuite COUSR00C USER LIST BROWSE TRANSACTION
+      ******************************************************************

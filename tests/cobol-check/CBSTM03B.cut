@@ -1,0 +1,454 @@
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the
+      * License. You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the
+      * License.
+      ******************************************************************
+      *
+      ******************************************************************
+      *  CBSTM03B.cut -- COBOL-CHECK TESTSUITE
+      *
+      *  Testsuite : CBSTM03B I/O DISPATCHER
+      *  Program-under-test : app/cbl/CBSTM03B.CBL
+      *
+      *  CBSTM03B is the centralized file-I/O subroutine.  It accepts
+      *  LK-M03B-AREA carrying LK-M03B-DD (DD selector: TRNXFILE /
+      *  XREFFILE / CUSTFILE / ACCTFILE), LK-M03B-OPER (op-code: 'O'
+      *  open, 'R' sequential read, 'K' keyed read, 'C' close, 'W'
+      *  write, 'Z' rewrite), and LK-M03B-KEY / LK-M03B-KEY-LN
+      *  (record key for keyed reads), routes via 0000-START
+      *  EVALUATE to one of four per-DD paragraphs, and returns a
+      *  2-byte file-status in LK-M03B-RC.
+      *
+      *  Implemented (op, DD) matrix
+      *  ---------------------------
+      *  TRNX/XREF have ACCESS SEQUENTIAL: OPEN, READ, CLOSE only.
+      *  CUST/ACCT have ACCESS RANDOM: OPEN, READ-K, CLOSE only.
+      *  Total cells: 12.  This testsuite covers each cell with one
+      *  happy-path testcase (status '00') plus one error variant
+      *  ('10' EOF, '23' not-found, '35' no-file, or '92' logic err).
+      *
+      *  cobol-check 0.2.16 limitations honored
+      *  --------------------------------------
+      *  - NO MOCK FILE: framework only supports CALL/PARA/PARAGRAPH/
+      *    SECTION mocks.  This testsuite uses ZERO MOCK directives.
+      *    Determinism via pre-set *-STATUS WS fields (canonical
+      *    pattern from CBACT01C/CBACT04C/CBTRN02C testsuites).
+      *  - I/O verb stripping: OPEN/READ/WRITE/REWRITE/CLOSE collapse
+      *    to CONTINUE.  The production paragraph's *900-EXIT MOVE
+      *    *-STATUS TO LK-M03B-RC is NOT stripped, so post-state of
+      *    LK-M03B-RC = pre-set status verbatim.  EXPECT asserts
+      *    the production MOVE side effect; not a recomputation.
+      *  - NO file-scope COPY: ACCT/CUST/XREF FIXTURE-001 snippets
+      *    referenced via depends_on_files schema only; CBSTM03B
+      *    reads INTO LK-M03B-FLDT (generic 1000-byte buffer), so
+      *    fixture content is not asserted.  LK-M03B-FLDT post-state
+      *    after the stripped READ is the BEFORE-EACH-INITIALIZE'd
+      *    SPACES value -- this is asserted by the happy-path TCs.
+      *  - WHEN OTHER -> GO TO 9999-GOBACK terminates merged binary
+      *    before cobol-check writes its summary line; testcase for
+      *    invalid DD value is therefore DEFERRED to a future
+      *    framework version with GOBACK interception.  See "Default
+      *    branch coverage" note in trailing comment for full
+      *    rationale and the manual-inspection coverage strategy.
+      *
+      *  External dependencies
+      *  ---------------------
+      *  CBSTM03B has NO inter-program CALL sites.  Its only external
+      *  boundary is the four FILE-CONTROL SELECT declarations.  This
+      *  testsuite uses ZERO MOCK directives; check_assertion_density
+      *  Sub-Rule B (file with MOCK must VERIFY in every testcase)
+      *  does not engage.
+      *
+      *  Test categories (24 testcases)
+      *  ------------------------------
+      *  Group A -- TRNX-FILE (sequential):
+      *    TC1  - 1000-TRNXFILE-PROC OPEN  ok    -> RC '00'
+      *    TC2  - 1000-TRNXFILE-PROC READ  ok    -> RC '00'
+      *    TC3  - 1000-TRNXFILE-PROC CLOSE ok    -> RC '00'
+      *    TC4  - 1000-TRNXFILE-PROC OPEN  '35'  -> RC '35'
+      *    TC5  - 1000-TRNXFILE-PROC READ  EOF   -> RC '10'
+      *    TC6  - 1000-TRNXFILE-PROC CLOSE '92'  -> RC '92'
+      *  Group B -- XREF-FILE (sequential):
+      *    TC7-TC12 mirror Group A on 2000-XREFFILE-PROC.
+      *  Group C -- CUST-FILE (random / READ-K):
+      *    TC13-TC18 cover 3000-CUSTFILE-PROC OPEN/READ-K/CLOSE
+      *    happy + error.  TC17 uses '23' (not-found).
+      *  Group D -- ACCT-FILE (random / READ-K):
+      *    TC19-TC24 cover 4000-ACCTFILE-PROC OPEN/READ-K/CLOSE
+      *    happy + error.  TC23 uses '23' (not-found).
+      *
+      *  Source of expected file-status values
+      *  -------------------------------------
+      *  All EXPECT LK-M03B-RC values are 2-byte file-status codes
+      *  taken from the COBOL standard / GnuCOBOL libcob conventions:
+      *    '00' -- successful operation                (COBOL std)
+      *    '10' -- end-of-file on sequential READ      (COBOL std)
+      *    '23' -- record not found on keyed READ      (COBOL std)
+      *    '35' -- file not present on OPEN INPUT      (COBOL std)
+      *    '92' -- logic error / implementation defined (COBOL std)
+      *  These literals are author-chosen MOVE inputs to the four
+      *  *-STATUS WS fields; the production code unconditionally
+      *  propagates whatever value sits in *-STATUS to LK-M03B-RC
+      *  through the *900-EXIT MOVE statement.
+      *
+      *  References
+      *  ----------
+      *    AAP Sections 0.4.3, 0.5.1, 0.5.2, 0.7.1, 0.10.1, 0.10.2
+      *    app/cbl/CBSTM03B.CBL                (program under test)
+      *    tests/cobol-check/CSUTLDTC.cut      (canonical exemplar)
+      *    tests/cobol-check/CBACT01C.cut      (file-status pattern)
+      *    tests/cobol-check/CBSTM03A.cut      (sister testsuite)
+      *    tests/fixtures/cobol-snippets/{ACCT,CUST,XREF}-FIXTURE-001.cpy
+      ******************************************************************
+
+       TESTSUITE 'CBSTM03B I/O DISPATCHER'.
+
+      ******************************************************************
+      *  BEFORE-EACH -- per-testcase isolation reset.
+      *  Clears LK-M03B-AREA (LINKAGE: DD/OPER/RC/KEY/KEY-LN/FLDT all
+      *  to SPACES or ZERO), the four *-STATUS WS fields, and
+      *  RETURN-CODE.  cobol-check resets MOCK counters automatically.
+      ******************************************************************
+       BEFORE-EACH
+            INITIALIZE LK-M03B-AREA
+            INITIALIZE TRNXFILE-STATUS
+            INITIALIZE XREFFILE-STATUS
+            INITIALIZE CUSTFILE-STATUS
+            INITIALIZE ACCTFILE-STATUS
+            MOVE ZERO TO RETURN-CODE
+       END-BEFORE.
+
+      ******************************************************************
+      *  Group A -- TRNX-FILE (sequential).  TC1-TC6 exercise
+      *  1000-TRNXFILE-PROC OPEN/READ/CLOSE happy + error paths.
+      ******************************************************************
+
+      ******************************************************************
+      *  TC1 -- 1000-TRNXFILE-PROC OPEN ok.  Production line 152
+      *  MOVEs TRNXFILE-STATUS to LK-M03B-RC.  Happy-path TC also
+      *  asserts LK-M03B-FLDT (1:50) is SPACES post-stripped-OPEN.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 1000-TRNXFILE-PROC OPEN ok RC 00'
+            MOVE 'TRNXFILE' TO LK-M03B-DD
+            MOVE 'O'        TO LK-M03B-OPER
+            MOVE '00'       TO TRNXFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '00'
+            EXPECT LK-M03B-FLDT (1:50) TO BE SPACES
+
+      ******************************************************************
+      *  TC2 -- 1000-TRNXFILE-PROC READ ok.  Stripped READ leaves
+      *  LK-M03B-FLDT at INITIALIZE'd SPACES from BEFORE-EACH.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 1000-TRNXFILE-PROC READ ok RC 00'
+            MOVE 'TRNXFILE' TO LK-M03B-DD
+            MOVE 'R'        TO LK-M03B-OPER
+            MOVE '00'       TO TRNXFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '00'
+            EXPECT LK-M03B-FLDT (1:50) TO BE SPACES
+
+      ******************************************************************
+      *  TC3 -- 1000-TRNXFILE-PROC CLOSE ok.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 1000-TRNXFILE-PROC CLOSE ok RC 00'
+            MOVE 'TRNXFILE' TO LK-M03B-DD
+            MOVE 'C'        TO LK-M03B-OPER
+            MOVE '00'       TO TRNXFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '00'
+
+      ******************************************************************
+      *  TC4 -- 1000-TRNXFILE-PROC OPEN no-file ('35').  COBOL std
+      *  '35' = OPEN INPUT against missing file.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 1000-TRNXFILE-PROC OPEN no file RC 35'
+            MOVE 'TRNXFILE' TO LK-M03B-DD
+            MOVE 'O'        TO LK-M03B-OPER
+            MOVE '35'       TO TRNXFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '35'
+
+      ******************************************************************
+      *  TC5 -- 1000-TRNXFILE-PROC READ EOF ('10').
+      ******************************************************************
+       TESTCASE 'CBSTM03B 1000-TRNXFILE-PROC READ EOF RC 10'
+            MOVE 'TRNXFILE' TO LK-M03B-DD
+            MOVE 'R'        TO LK-M03B-OPER
+            MOVE '10'       TO TRNXFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '10'
+
+      ******************************************************************
+      *  TC6 -- 1000-TRNXFILE-PROC CLOSE error ('92').
+      ******************************************************************
+       TESTCASE 'CBSTM03B 1000-TRNXFILE-PROC CLOSE error RC 92'
+            MOVE 'TRNXFILE' TO LK-M03B-DD
+            MOVE 'C'        TO LK-M03B-OPER
+            MOVE '92'       TO TRNXFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '92'
+
+      ******************************************************************
+      *  Group B -- XREF-FILE (sequential).  TC7-TC12 mirror Group A
+      *  on 2000-XREFFILE-PROC; production line 176 MOVEs XREFFILE-
+      *  STATUS to LK-M03B-RC.
+      ******************************************************************
+
+      ******************************************************************
+      *  TC7 -- 2000-XREFFILE-PROC OPEN ok.  Happy-path TC asserts
+      *  LK-M03B-FLDT post-state.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 2000-XREFFILE-PROC OPEN ok RC 00'
+            MOVE 'XREFFILE' TO LK-M03B-DD
+            MOVE 'O'        TO LK-M03B-OPER
+            MOVE '00'       TO XREFFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '00'
+            EXPECT LK-M03B-FLDT (1:50) TO BE SPACES
+
+      ******************************************************************
+      *  TC8 -- 2000-XREFFILE-PROC READ ok.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 2000-XREFFILE-PROC READ ok RC 00'
+            MOVE 'XREFFILE' TO LK-M03B-DD
+            MOVE 'R'        TO LK-M03B-OPER
+            MOVE '00'       TO XREFFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '00'
+            EXPECT LK-M03B-FLDT (1:50) TO BE SPACES
+
+      ******************************************************************
+      *  TC9 -- 2000-XREFFILE-PROC CLOSE ok.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 2000-XREFFILE-PROC CLOSE ok RC 00'
+            MOVE 'XREFFILE' TO LK-M03B-DD
+            MOVE 'C'        TO LK-M03B-OPER
+            MOVE '00'       TO XREFFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '00'
+
+      ******************************************************************
+      *  TC10 -- 2000-XREFFILE-PROC OPEN no-file ('35').
+      ******************************************************************
+       TESTCASE 'CBSTM03B 2000-XREFFILE-PROC OPEN no file RC 35'
+            MOVE 'XREFFILE' TO LK-M03B-DD
+            MOVE 'O'        TO LK-M03B-OPER
+            MOVE '35'       TO XREFFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '35'
+
+      ******************************************************************
+      *  TC11 -- 2000-XREFFILE-PROC READ EOF ('10').
+      ******************************************************************
+       TESTCASE 'CBSTM03B 2000-XREFFILE-PROC READ EOF RC 10'
+            MOVE 'XREFFILE' TO LK-M03B-DD
+            MOVE 'R'        TO LK-M03B-OPER
+            MOVE '10'       TO XREFFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '10'
+
+      ******************************************************************
+      *  TC12 -- 2000-XREFFILE-PROC CLOSE error ('92').
+      ******************************************************************
+       TESTCASE 'CBSTM03B 2000-XREFFILE-PROC CLOSE error RC 92'
+            MOVE 'XREFFILE' TO LK-M03B-DD
+            MOVE 'C'        TO LK-M03B-OPER
+            MOVE '92'       TO XREFFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '92'
+
+      ******************************************************************
+      *  Group C -- CUST-FILE (random / READ-K).  CUST-FILE has
+      *  ACCESS RANDOM and supports OPEN/READ-K/CLOSE.  M03B-READ-K
+      *  reference-modifies LK-M03B-KEY (1:LK-M03B-KEY-LN) into
+      *  FD-CUST-ID (PIC X(09)); TC14/TC17 set KEY-LN=+9 and KEY a
+      *  9-byte string.  Production line 201 MOVEs CUSTFILE-STATUS
+      *  to LK-M03B-RC.
+      ******************************************************************
+
+      ******************************************************************
+      *  TC13 -- 3000-CUSTFILE-PROC OPEN ok.  Happy-path FLDT asserted.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 3000-CUSTFILE-PROC OPEN ok RC 00'
+            MOVE 'CUSTFILE' TO LK-M03B-DD
+            MOVE 'O'        TO LK-M03B-OPER
+            MOVE '00'       TO CUSTFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '00'
+            EXPECT LK-M03B-FLDT (1:50) TO BE SPACES
+
+      ******************************************************************
+      *  TC14 -- 3000-CUSTFILE-PROC READ-K ok.  Pre-set KEY+KEY-LN
+      *  satisfies reference-modification contract for FD-CUST-ID.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 3000-CUSTFILE-PROC READ-K ok RC 00'
+            MOVE 'CUSTFILE'  TO LK-M03B-DD
+            MOVE 'K'         TO LK-M03B-OPER
+            MOVE '000000001' TO LK-M03B-KEY (1:9)
+            MOVE +9          TO LK-M03B-KEY-LN
+            MOVE '00'        TO CUSTFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '00'
+            EXPECT LK-M03B-FLDT (1:50) TO BE SPACES
+
+      ******************************************************************
+      *  TC15 -- 3000-CUSTFILE-PROC CLOSE ok.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 3000-CUSTFILE-PROC CLOSE ok RC 00'
+            MOVE 'CUSTFILE' TO LK-M03B-DD
+            MOVE 'C'        TO LK-M03B-OPER
+            MOVE '00'       TO CUSTFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '00'
+
+      ******************************************************************
+      *  TC16 -- 3000-CUSTFILE-PROC OPEN no-file ('35').
+      ******************************************************************
+       TESTCASE 'CBSTM03B 3000-CUSTFILE-PROC OPEN no file RC 35'
+            MOVE 'CUSTFILE' TO LK-M03B-DD
+            MOVE 'O'        TO LK-M03B-OPER
+            MOVE '35'       TO CUSTFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '35'
+
+      ******************************************************************
+      *  TC17 -- 3000-CUSTFILE-PROC READ-K not-found ('23').  Std
+      *  COBOL '23' = "record not found" on keyed READ.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 3000-CUSTFILE-PROC READ-K not found RC 23'
+            MOVE 'CUSTFILE'  TO LK-M03B-DD
+            MOVE 'K'         TO LK-M03B-OPER
+            MOVE '999999999' TO LK-M03B-KEY (1:9)
+            MOVE +9          TO LK-M03B-KEY-LN
+            MOVE '23'        TO CUSTFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '23'
+
+      ******************************************************************
+      *  TC18 -- 3000-CUSTFILE-PROC CLOSE error ('92').
+      ******************************************************************
+       TESTCASE 'CBSTM03B 3000-CUSTFILE-PROC CLOSE error RC 92'
+            MOVE 'CUSTFILE' TO LK-M03B-DD
+            MOVE 'C'        TO LK-M03B-OPER
+            MOVE '92'       TO CUSTFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '92'
+
+      ******************************************************************
+      *  Group D -- ACCT-FILE (random / READ-K).  RECORD KEY is
+      *  FD-ACCT-ID (PIC 9(11)) so KEY/KEY-LN must satisfy 11-numeric
+      *  contract.  Production line 226 MOVEs ACCTFILE-STATUS to RC.
+      ******************************************************************
+
+      ******************************************************************
+      *  TC19 -- 4000-ACCTFILE-PROC OPEN ok.  Happy-path FLDT asserted.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 4000-ACCTFILE-PROC OPEN ok RC 00'
+            MOVE 'ACCTFILE' TO LK-M03B-DD
+            MOVE 'O'        TO LK-M03B-OPER
+            MOVE '00'       TO ACCTFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '00'
+            EXPECT LK-M03B-FLDT (1:50) TO BE SPACES
+
+      ******************************************************************
+      *  TC20 -- 4000-ACCTFILE-PROC READ-K ok.  KEY=11-digit numeric.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 4000-ACCTFILE-PROC READ-K ok RC 00'
+            MOVE 'ACCTFILE'    TO LK-M03B-DD
+            MOVE 'K'           TO LK-M03B-OPER
+            MOVE '00000000001' TO LK-M03B-KEY (1:11)
+            MOVE +11           TO LK-M03B-KEY-LN
+            MOVE '00'          TO ACCTFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '00'
+            EXPECT LK-M03B-FLDT (1:50) TO BE SPACES
+
+      ******************************************************************
+      *  TC21 -- 4000-ACCTFILE-PROC CLOSE ok.
+      ******************************************************************
+       TESTCASE 'CBSTM03B 4000-ACCTFILE-PROC CLOSE ok RC 00'
+            MOVE 'ACCTFILE' TO LK-M03B-DD
+            MOVE 'C'        TO LK-M03B-OPER
+            MOVE '00'       TO ACCTFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '00'
+
+      ******************************************************************
+      *  TC22 -- 4000-ACCTFILE-PROC OPEN no-file ('35').
+      ******************************************************************
+       TESTCASE 'CBSTM03B 4000-ACCTFILE-PROC OPEN no file RC 35'
+            MOVE 'ACCTFILE' TO LK-M03B-DD
+            MOVE 'O'        TO LK-M03B-OPER
+            MOVE '35'       TO ACCTFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '35'
+
+      ******************************************************************
+      *  TC23 -- 4000-ACCTFILE-PROC READ-K not-found ('23').
+      ******************************************************************
+       TESTCASE 'CBSTM03B 4000-ACCTFILE-PROC READ-K not found RC 23'
+            MOVE 'ACCTFILE'    TO LK-M03B-DD
+            MOVE 'K'           TO LK-M03B-OPER
+            MOVE '99999999999' TO LK-M03B-KEY (1:11)
+            MOVE +11           TO LK-M03B-KEY-LN
+            MOVE '23'          TO ACCTFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '23'
+
+      ******************************************************************
+      *  TC24 -- 4000-ACCTFILE-PROC CLOSE error ('92').
+      ******************************************************************
+       TESTCASE 'CBSTM03B 4000-ACCTFILE-PROC CLOSE error RC 92'
+            MOVE 'ACCTFILE' TO LK-M03B-DD
+            MOVE 'C'        TO LK-M03B-OPER
+            MOVE '92'       TO ACCTFILE-STATUS
+            PERFORM 0000-START
+            EXPECT LK-M03B-RC TO BE '92'
+
+      ******************************************************************
+      *  End of testsuite CBSTM03B I/O DISPATCHER.
+      *
+      *  Default branch (WHEN OTHER) coverage -- DEFERRED
+      *  ------------------------------------------------
+      *  The 0000-START EVALUATE WHEN OTHER arm executes
+      *      WHEN OTHER GO TO 9999-GOBACK
+      *  followed by paragraph 9999-GOBACK which contains GOBACK.
+      *  Reaching GOBACK under cobol-check 0.2.16 -x compile mode
+      *  terminates the merged executable IMMEDIATELY; the framework
+      *  cannot write its post-suite "N TEST CASES WERE EXECUTED"
+      *  summary line which check_test_results.sh requires.  This
+      *  is an unrecoverable framework-level limitation.  A WHEN
+      *  OTHER testcase therefore cannot run alongside the 24
+      *  cell-matrix testcases without losing the summary line.
+      *
+      *  Coverage strategy adopted instead:
+      *    - Four valid WHEN arms (TRNXFILE/XREFFILE/CUSTFILE/
+      *      ACCTFILE) each exercised by 6 testcases.
+      *    - WHEN OTHER documented as known-uncoverable under
+      *      cobol-check 0.2.16; future work when framework adds
+      *      GOBACK interception will add a TC25 PERFORMing
+      *      0000-START with LK-M03B-DD='BADFILE!' EXPECTing
+      *      LK-M03B-RC TO BE SPACES.
+      *
+      *  Coverage achieved: TC1-TC24 cover the 12-cell implemented
+      *  operation x DD matrix (Groups A/B sequential, C/D random),
+      *  every defined WHEN arm, every IF arm of the four per-DD
+      *  paragraphs, every *900-EXIT MOVE *-STATUS TO LK-M03B-RC
+      *  with at least three distinct file-status inputs.  Happy-
+      *  path TCs (1, 2, 7, 8, 13, 14, 19, 20) additionally assert
+      *  LK-M03B-FLDT (1:50) post-state.  All 4 lint gates pass.
+      ******************************************************************
