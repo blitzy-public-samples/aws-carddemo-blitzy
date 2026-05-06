@@ -104,7 +104,15 @@
       *    tests/fixtures/cobol-snippets/CARD-FIXTURE-001.cpy
       *    tests/cobol-check/COSGN00C.cut (structural exemplar)
       *    tests/cobol-check/COCRDSLC.cut / COTRN00C.cut (sister)
+      *
+      *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
+      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
+      *  the actual EXTERNAL field declarations into merged WS;
+      *  cobol-check 0.2.16 drops the directive below silently --
+      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED so a stub-fired condition is assertable per test.
       ******************************************************************
+       COPY STUB-ABEND-FLAG.
 
        TESTSUITE 'COCRDLIC CARD LIST BROWSE TRANSACTION'.
 
@@ -172,6 +180,7 @@
             INITIALIZE WS-DATE-TIME
             MOVE SPACES     TO WS-COMMAREA
             MOVE ZERO       TO RETURN-CODE
+            MOVE 'N'        TO WS-DFHEI1-UNMOCKED-CALLED
             MOVE 'USER0001' TO CDEMO-USER-ID
             MOVE 'U'        TO CDEMO-USER-TYPE
             MOVE 'COMEN01C' TO CDEMO-FROM-PROGRAM
@@ -241,6 +250,7 @@
             EXPECT WS-EDIT-CARD-FLAG TO BE '1'
             EXPECT CDEMO-CARD-NUM TO BE 0500024453765740
             EXPECT WS-ERROR-MSG TO BE SPACES
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
@@ -554,6 +564,126 @@
             END-MOCK
             PERFORM 9500-FILTER-RECORDS THRU 9500-FILTER-RECORDS-EXIT
             EXPECT WS-FILTER-RECORD-FLAG TO BE '0'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC8 -- 9000-READ-FORWARD ENDFILE on first page (QA Issue 2)
+      *
+      *  Drives 9000-READ-FORWARD (production lines 1124-1262) along
+      *  the WHEN DFHRESP(ENDFILE) branch (lines 1233-1245).  Off-
+      *  platform GnuCOBOL comments out EXEC CICS STARTBR/READNEXT
+      *  /ENDBR (precompiler substitutes CONTINUE), but the EVALUATE
+      *  WS-RESP-CD remains live.  Pre-setting WS-RESP-CD = ENDFILE
+      *  (DFHBMSCA value 20) drives the branch directly.  Setting
+      *  WS-CA-SCREEN-NUM=1 plus the paragraph's own MOVE ZEROES TO
+      *  WS-SCRN-COUNTER on line 1141 satisfies the line-1241/1242
+      *  IF, setting WS-NO-RECORDS-FOUND TRUE -- the canonical
+      *  empty-result-set diagnostic state.  Off-platform expression
+      *  of QA Phase 3.2 ENDFILE EIBRESP=20 expectation.
+      *
+      *  Source of expected values:
+      *    READ-LOOP-EXIT     - SET TRUE on production line 1234.
+      *    CA-NEXT-PAGE-NOT-EXISTS - SET TRUE on line 1235.
+      *    WS-NO-RECORDS-FOUND - SET TRUE on line 1244 because both
+      *                         WS-CA-SCREEN-NUM=1 (test prelude)
+      *                         AND WS-SCRN-COUNTER=0 (paragraph's
+      *                         own MOVE ZEROES line 1141).  The SET
+      *                         on an 88-level overwrites the prior
+      *                         MOVE 'NO MORE RECORDS TO SHOW' (line
+      *                         1239) with WS-NO-RECORDS-FOUND's
+      *                         VALUE clause: 'NO RECORDS FOUND FOR
+      *                         THIS SEARCH CONDITION.' (line 122).
+      *                         WS-ERROR-MSG ends up holding that
+      *                         value -- the canonical empty-result
+      *                         diagnostic text.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 9000-READ-FORWARD ENDFILE first page'
+            MOVE 20 TO WS-RESP-CD
+            MOVE 1  TO WS-CA-SCREEN-NUM
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9000-READ-FORWARD THRU 9000-READ-FORWARD-EXIT
+            EXPECT READ-LOOP-EXIT TO BE TRUE
+            EXPECT CA-NEXT-PAGE-NOT-EXISTS TO BE TRUE
+            EXPECT WS-NO-RECORDS-FOUND TO BE TRUE
+            EXPECT WS-ERROR-MSG TO BE
+                'NO RECORDS FOUND FOR THIS SEARCH CONDITION.'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC9 -- 9000-READ-FORWARD WHEN OTHER error path (QA Issue 2)
+      *
+      *  Drives 9000-READ-FORWARD along the WHEN OTHER branch (lines
+      *  1246-1255) -- the CICS-error pathway covering NOTOPEN
+      *  (DFHBMSCA=19), NOTFND (=13), and any other non-NORMAL/non-
+      *  DUPREC/non-ENDFILE response.  Pre-setting WS-RESP-CD = 19
+      *  (NOTOPEN; the value QA Phase 3.2 explicitly expected) drives
+      *  the production error-flag flow:
+      *
+      *    SET READ-LOOP-EXIT             TO TRUE      (line 1249)
+      *    MOVE 'READ'                    TO ERROR-OPNAME (1250)
+      *    MOVE LIT-CARD-FILE='CARDDAT '  TO ERROR-FILE (1251)
+      *    MOVE WS-FILE-ERROR-MESSAGE     TO WS-ERROR-MSG (1254)
+      *
+      *  Off-platform expression of QA Phase 3.2 STARTBR error
+      *  EIBRESP=12 NOTOPEN expectation (QA used 12; production
+      *  treats any non-{0,14,20} as WHEN OTHER -- 19 / NOTOPEN
+      *  is functionally identical for branch-coverage purposes).
+      *
+      *  Source of expected values:
+      *    READ-LOOP-EXIT - SET TRUE line 1249 (88 VALUE '0').
+      *    'READ'         - line 1250 literal MOVE to ERROR-OPNAME
+      *                     (PIC X(8)); space-padded to 'READ    '.
+      *    'CARDDAT '     - LIT-CARD-FILE PIC X(8) lines 213-214
+      *                     MOVE'd to ERROR-FILE (PIC X(9)) line
+      *                     1251 with one space pad: 'CARDDAT  '.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 9000-READ-FORWARD WHEN OTHER error path'
+            MOVE 19 TO WS-RESP-CD
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9000-READ-FORWARD THRU 9000-READ-FORWARD-EXIT
+            EXPECT READ-LOOP-EXIT TO BE TRUE
+            EXPECT ERROR-OPNAME TO BE 'READ    '
+            EXPECT ERROR-FILE TO BE 'CARDDAT  '
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC10 -- 9100-READ-BACKWARDS WHEN OTHER (initial) (QA Issue 2)
+      *
+      *  Drives 9100-READ-BACKWARDS (production lines 1265-1372) along
+      *  the initial READPREV's WHEN OTHER branch (lines 1308-1318).
+      *  This is the FIRST-FAULT exit path: the initial READPREV
+      *  fails before entering the loop, so SET READ-LOOP-EXIT and
+      *  GO TO 9100-READ-BACKWARDS-EXIT short-circuits to the ENDBR
+      *  cleanup at line 1377.  Pre-setting WS-RESP-CD = 19 drives
+      *  the GO TO 9100-READ-BACKWARDS-EXIT on line 1317.
+      *
+      *  Off-platform expression of QA Phase 3.2 backward-browse
+      *  error-handling expectation; companion to TC9.
+      *
+      *  Source of expected values:
+      *    READ-LOOP-EXIT - SET TRUE line 1311.
+      *    'READ'         - line 1312 literal MOVE to ERROR-OPNAME.
+      *    'CARDDAT '     - LIT-CARD-FILE MOVE'd to ERROR-FILE 1313.
+      ******************************************************************
+       TESTCASE 'COCRDLIC 9100-READ-BACKWARDS WHEN OTHER initial'
+            MOVE 19 TO WS-RESP-CD
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9100-READ-BACKWARDS THRU 9100-READ-BACKWARDS-EXIT
+            EXPECT READ-LOOP-EXIT TO BE TRUE
+            EXPECT ERROR-OPNAME TO BE 'READ    '
+            EXPECT ERROR-FILE TO BE 'CARDDAT  '
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 

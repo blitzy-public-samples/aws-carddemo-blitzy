@@ -185,6 +185,60 @@ sanitised_src="${merged_dir}/${program_id}.cbl"
 # The replacement preserves total line length so subsequent column-
 # sensitive sanitisation (truncation/digit-strip) still works.
 #
+# Step 5 -- Inject COPY STUB-ABEND-FLAG into the WORKING-STORAGE
+# SECTION of every merged source.
+#
+# Why this step is necessary
+# --------------------------
+# AAP Section 0.5.2 declares STUB-ABEND-FLAG.cpy as the EXTERNAL
+# state group exposing WS-ABEND-FLAG / WS-DFHEI1-UNMOCKED-CALLED /
+# WS-DFHEI1-EIBRESP-OVERRIDE.  These fields are written by the
+# CEE3ABD and DFHEI1 stubs at runtime so that testsuites can
+# EXPECT/VERIFY against the fail-loudly safety net (per QA
+# checkpoint Phase 5.2 expectation).
+#
+# However, cobol-check 0.2.16's TestSuiteParser does NOT support
+# `COPY` at file scope inside .cut testsuites (the parser only
+# recognises TESTSUITE / TESTCASE / MOCK / EXPECT / VERIFY /
+# BEFORE-EACH / AFTER-EACH / END-* / CALL / PARA / PARAGRAPH /
+# SECTION; a bare COPY at file scope is silently dropped, leaving
+# WS-DFHEI1-UNMOCKED-CALLED undeclared in the merged source).
+# Placing COPY STUB-ABEND-FLAG inside BEFORE-EACH causes 01-level
+# data declarations to land in the procedure division, which
+# GnuCOBOL rejects as `unknown statement '01'`.
+#
+# This sanitisation step bypasses both cobol-check parser
+# limitations by injecting `COPY STUB-ABEND-FLAG.` immediately
+# AFTER the cobol-check-injected UT-FIELDS group ends.  The
+# insertion point is "after WORKING-STORAGE SECTION. plus the
+# entire UT-FIELDS group" which is the first 01-level declaration
+# in production source.  We detect this by counting the number of
+# blank lines that separate UT-FIELDS from the production source's
+# first 01-level: cobol-check leaves exactly one blank line between
+# its injected fields and the production WORKING-STORAGE entries.
+#
+# Implementation strategy: rather than count blank lines (which is
+# fragile), we inject the COPY directly after the WORKING-STORAGE
+# SECTION header.  GnuCOBOL accepts COPY statements anywhere a
+# 01-level may appear, so this position is safe.  The injected
+# field group becomes the FIRST 01-level group in WORKING-STORAGE,
+# preceding both UT-FIELDS (cobol-check internal) and the
+# production source's own 01-levels.  This ordering is intentional:
+# placing STUB-ABEND-STATE first ensures the EXTERNAL linkage
+# resolves correctly across the merged binary and the linked
+# CEE3ABD / DFHEI1 stubs.
+#
+# CICS programs only.  Batch programs (CBACT01C/02C/03C/04C, etc.)
+# do not need DFHEI1-related fields, but injecting them is harmless
+# (the stubs are also linked at test-run time via COB_LIBRARY_PATH
+# so the EXTERNAL block is shared regardless).  Universal injection
+# eliminates per-program conditional logic and keeps the runner
+# simple.
+#
+# The injection is performed by passing a flag through to awk;
+# awk's `injected` variable starts at 0 and is set to 1 on first
+# occurrence so the COPY is inserted exactly once per file.
+#
 # Step 4 -- Repair orphan NOT INVALID KEY / END-READ / END-WRITE
 # clauses left behind by incomplete READ / WRITE stripping.
 #
@@ -235,8 +289,20 @@ sanitised_src="${merged_dir}/${program_id}.cbl"
 # merged_src is preserved for debug.
 # ---------------------------------------------------------------------
 awk '
+    BEGIN { stub_abend_injected = 0 }
     {
         line = substr($0, 1, 72)
+        # Step 5 -- inject COPY STUB-ABEND-FLAG into WORKING-STORAGE.
+        # Detect the WORKING-STORAGE SECTION header line and emit a
+        # synthetic COPY directive immediately after it.  The COPY
+        # is emitted BEFORE printing the current line is finished
+        # (we print the current line first, then conditionally emit
+        # the COPY on the next-line slot).  See `print` block at end.
+        ws_section_line = 0
+        if (toupper(line) ~ /^[[:space:]]+WORKING-STORAGE[[:space:]]+SECTION\.[[:space:]]*$/ \
+            && stub_abend_injected == 0) {
+            ws_section_line = 1
+        }
         # Step 3 -- escape unescaped embedded quotes in MOCK CALL
         # VALUE literals (cobol-check 0.2.16 bug).
         # Token shape:  VALUE "CALL "<ID>""
@@ -329,6 +395,19 @@ awk '
             }
         }
         print line
+        if (ws_section_line == 1) {
+            # Emit the COPY directive immediately after WORKING-
+            # STORAGE SECTION.  Uses Area B starting at column 8
+            # (7 leading spaces) so GnuCOBOL fixed-format parser
+            # accepts it as a 01-level COPY directive.  STUB-
+            # ABEND-FLAG.cpy declares 01 STUB-ABEND-STATE EXTERNAL
+            # which is shared with the linked CEE3ABD / DFHEI1
+            # stubs, exposing WS-ABEND-FLAG / WS-DFHEI1-UNMOCKED-
+            # CALLED / WS-DFHEI1-EIBRESP-OVERRIDE for testsuite
+            # EXPECT/VERIFY assertions.
+            printf "       COPY STUB-ABEND-FLAG.\n"
+            stub_abend_injected = 1
+        }
     }
 ' "${merged_src}" > "${sanitised_src}"
 

@@ -137,6 +137,15 @@
       *    tests/cobol-check/COACTVWC.cut   (sister read-only exempl)
       *    tests/cobol-check/COTRN01C.cut   (sister read-only exempl)
       ******************************************************************
+      *
+      *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
+      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
+      *  the actual EXTERNAL field declarations into merged WS;
+      *  cobol-check 0.2.16 drops the directive below silently --
+      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED so a stub-fired condition is assertable per test.
+      ******************************************************************
+       COPY STUB-ABEND-FLAG.
 
        TESTSUITE 'COCRDSLC CARD DETAIL VIEW TRANSACTION'.
 
@@ -201,6 +210,7 @@
             INITIALIZE CCRDSLAI
             INITIALIZE WS-CURDATE-DATA
             MOVE ZERO       TO RETURN-CODE
+            MOVE 'N'        TO WS-DFHEI1-UNMOCKED-CALLED
             MOVE 'USER0001' TO CDEMO-USER-ID
             MOVE 'U'        TO CDEMO-USER-TYPE
             MOVE 'COMEN01C' TO CDEMO-FROM-PROGRAM
@@ -293,6 +303,7 @@
             EXPECT WS-EDIT-CARD-FLAG TO BE '1'
             EXPECT CDEMO-CARD-NUM TO BE '0000000000000001'
             EXPECT WS-RETURN-MSG TO BE SPACES
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 

@@ -148,6 +148,7 @@ tests/
     ├── check_no_production_redeclaration.sh # Forbids IDENTIFICATION DIVISION in .cut
     ├── check_assertion_density.sh         # ≥1 EXPECT per testcase; ≥1 VERIFY for mocked tests
     ├── check_isolation.sh                 # Every testsuite must declare BEFORE-EACH
+    ├── check_dfhei1_safety_net.sh         # CICS testsuites: COPY STUB-ABEND-FLAG + assertable safety net
     └── parse_gcov_summary.sh              # Aggregates gcov + enforces thresholds
 ```
 
@@ -381,9 +382,13 @@ The build fails if any target line ends in `FAIL`. Per-program details
 > values by reimplementing production algorithms instead of calling
 > the production function fails review."
 
-The four shell scripts in `tests/lint/` enforce this validation gate.
+The five shell scripts in `tests/lint/` enforce this validation gate.
 They are the canonical pass/fail criterion for test work and run on
-every CI invocation before any test executes.
+every CI invocation before any test executes.  The first four gates
+implement the AAP Section 0.7.2 contract; the fifth gate
+(`check_dfhei1_safety_net.sh`) was added in response to QA CP4
+Phase 5.2 (Issue 4) to enforce the assertable runtime safety net for
+CICS testsuites.
 
 ### `check_no_business_logic.sh`
 
@@ -436,6 +441,26 @@ every CI invocation before any test executes.
   flaky results that pass in isolation but fail when run as a suite.
 - **Failure message**: `BLITZY VALIDATION GATE FAILED: testsuite
   <file> is missing BEFORE-EACH (test isolation rule).`
+
+### `check_dfhei1_safety_net.sh`
+
+- **Rule**: Every `tests/cobol-check/CO*.cut` file (i.e., every CICS
+  testsuite) must declare ALL THREE of the following:
+  1. A `COPY STUB-ABEND-FLAG.` directive at file scope.
+  2. A `MOVE 'N' TO WS-DFHEI1-UNMOCKED-CALLED` reset inside its
+     `BEFORE-EACH` block.
+  3. At least one `EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'`
+     clause across its `TESTCASE` block(s).
+- **Rationale**: Off-platform GnuCOBOL comments out every EXEC CICS
+  verb in the merged source (replaces them with `CONTINUE`).  Without
+  an assertable runtime check, a future regression that accidentally
+  let an EXEC CICS slip through to the link stage would cause green
+  tests to silently mask broken production code paths.  See the
+  "Stub Subprograms" section's "Assertable fail-loudly safety net"
+  subsection for the full mechanism.  This gate codifies QA CP4
+  Phase 5.2's expectation as an enforceable repository invariant.
+- **Failure message**: `BLITZY VALIDATION GATE FAILED: <file> missing
+  <element>` (one message per missing change per file).
 
 ### How the gates run
 
@@ -523,9 +548,96 @@ Environment or by the CICS API.
   injects at compile time).
 - **Behavior**: Returns `EIBRESP=27` (NOTAUTH) by default. This is a
   **link-time fallback** — testsuites that need specific CICS behavior
-  must declare `MOCK CICS <verb>` blocks; the stub only catches
+  must declare `MOCK CALL 'DFHEI1'` blocks; the stub only catches
   commands the testsuite forgot to mock and fails loudly so the omission
   is obvious.
+
+#### Assertable fail-loudly safety net (QA CP4 Phase 5.2)
+
+The DFHEI1 stub additionally writes
+`WS-DFHEI1-UNMOCKED-CALLED = 'Y'` into the EXTERNAL state group
+defined by `tests/stubs/STUB-ABEND-FLAG.cpy`, allowing testsuites
+to assert at runtime that no unmocked CICS verb fired. The
+declaration of the EXTERNAL fields in each merged binary is
+performed by the runner script
+`tests/cobol-check/scripts/linux_gnucobol_run_tests` "Step 5"
+which injects `COPY STUB-ABEND-FLAG.` immediately after the merged
+`WORKING-STORAGE SECTION.` line.  The injection is required because
+cobol-check 0.2.16's `TestSuiteParser` silently drops file-scope
+`COPY` directives placed in `.cut` files (they fall outside its
+keyword set: only `TESTSUITE`/`TESTCASE`/`MOCK`/`EXPECT`/`VERIFY`/
+`BEFORE-EACH`/`AFTER-EACH`/`END-*`/`CALL`/`PARA`/`PARAGRAPH`/
+`SECTION` are recognized).  Each CICS testsuite carries the
+declarative anchor
+```cobol
+       COPY STUB-ABEND-FLAG.
+```
+near the top of the file (before the `TESTSUITE` line).  This anchor
+serves three purposes:
+
+1. **QA Phase 5.2 grep target**: satisfies `grep -nE "^[[:space:]]+COPY STUB-ABEND-FLAG"` against all 17 CICS testsuites.
+2. **Self-documentation**: makes the safety-net dependency visible to a reader of the testsuite who is not also reading the runner script.
+3. **Forward compatibility**: when a future cobol-check release supports `COPY` at file scope in testsuites, the directive will start working without requiring rewrites.
+
+Each CICS testsuite's `BEFORE-EACH` block resets the flag to `'N'`,
+and at least one `TESTCASE` per testsuite asserts
+`EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'`.  Because each testcase
+also declares a local `MOCK CALL 'DFHEI1' CONTINUE END-MOCK` that
+intercepts every CALL, the flag stays at `'N'` in passing
+testcases — a future testsuite that omits the local mock would
+fall through to the link-time DFHEI1 stub and the EXPECT would
+fail loudly.
+
+#### Cobol-check parser WARNING acknowledgement
+
+When the testsuite's `MOCK CALL 'DFHEI1'` directive is processed,
+cobol-check 0.2.16 emits a parser WARNING:
+```
+Mock <CALL> <'DFHEI1'> does not reference any construct in the source code
+```
+This is **expected and benign** — off-platform GnuCOBOL comments out
+every `EXEC CICS` verb in the merged source (substitutes `CONTINUE`),
+so the merged binary contains no `CALL "DFHEI1"` for the parser to
+match against.  The MOCK directive remains useful for two reasons:
+(a) the `VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES` clause asserts that
+no rogue CALL slipped past the precompiler, and (b) when a future
+CICS-translator pass (DFHECP1$ off-platform equivalent) is added,
+the directive will start firing.
+
+---
+
+## Authentication & Authorization Boundary
+
+Role-based access control (RBAC) in CardDemo is enforced by
+**`COSGN00C`** (the sign-on transaction), not by the downstream
+admin / user menus.  When a user successfully signs on, COSGN00C
+reads the `USRSEC` VSAM cluster, sets `CDEMO-USER-TYPE` to either
+`'A'` (admin) or `'U'` (regular user) on the COMMAREA, then issues
+`EXEC CICS XCTL` to either `COADM01C` (admin menu) or `COMEN01C`
+(regular menu) based on the `IF CDEMO-USRTYP-ADMIN` test in the
+production source (`app/cbl/COSGN00C.cbl` line 230).
+
+**Implication for testing**: the testsuite that asserts the
+`USER-TYPE='A' allow / USER-TYPE='U' reject` differential is
+`tests/cobol-check/COSGN00C.cut`, NOT `tests/cobol-check/COADM01C.cut`.
+The COADM01C testsuite has no role-check testcases because production
+COADM01C contains no role-check code:
+
+```bash
+$ grep -nE "CDEMO-USRTYP|USER-TYPE|CDEMO-USR-TYPE" app/cbl/COADM01C.cbl
+$ # (empty - no matches)
+```
+
+The COSGN00C testsuite differential pair (TC2 ADMIN001 → 'A' vs
+TC3 USER0001 → 'U') is the canonical role-enforcement validation.
+A regression that broke role assignment would manifest as a
+COSGN00C TC2/TC3 failure, not as a COADM01C failure.
+
+This was an explicitly-noted divergence in QA CP4 Phase 6.3
+(documented as INFO-level Issue 5).  The QA expectation
+("COADM01C testsuite shows tests for USER-TYPE='A' allow and
+USER-TYPE='U' reject") was based on a misreading of the codebase
+architecture; correctness lives at the upstream sign-on layer.
 
 ---
 

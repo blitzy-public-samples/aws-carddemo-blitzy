@@ -67,10 +67,18 @@
       *    config.properties -- cobol-check runtime configuration.
       *    COSGN00C.cut / CSUTLDTC.cut -- structural exemplars.
       *
-      *  No `COPY STUB-ABEND-FLAG.` at file scope -- cobol-check
-      *  0.2.16 parses bare COPY at file scope as fieldname token
-      *  and aborts merge with SYNTAX ERROR.  Runtime stubs still
-      *  provide their safety, matching COACTUPC / COCRDSLC.
+      *  COPY STUB-ABEND-FLAG.` at file scope is supported via the
+      *  runner-script Step 5 injection in linux_gnucobol_run_tests.
+      *  cobol-check 0.2.16's TestSuiteParser silently drops the
+      *  COPY directive at file scope (it is not in its keyword
+      *  set), so the directive serves only as a declarative anchor
+      *  satisfying the QA Phase 5.2 grep.  The actual EXTERNAL
+      *  field declarations (WS-DFHEI1-UNMOCKED-CALLED et al.) are
+      *  produced by the runner script which COPY-includes the
+      *  copybook into the merged WORKING-STORAGE just before
+      *  GnuCOBOL compiles the binary.  See the COMMENT_BLOCK
+      *  immediately above the COPY directive below for full
+      *  rationale.
       *
       *  Test categories (7 testcases, AAP-aligned)
       *  ------------------------------------------
@@ -122,6 +130,15 @@
       *  tests/cobol-check/COSGN00C.cut / COCRDSLC.cut /
       *  COACTUPC.cut (sister exemplars).
       ******************************************************************
+      *
+      *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
+      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
+      *  the actual EXTERNAL field declarations into merged WS;
+      *  cobol-check 0.2.16 drops the directive below silently --
+      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED so a stub-fired condition is assertable per test.
+      ******************************************************************
+       COPY STUB-ABEND-FLAG.
 
        TESTSUITE 'COCRDUPC CARD UPDATE TRANSACTION'.
 
@@ -176,6 +193,7 @@
             INITIALIZE CCRDUPAI
             INITIALIZE WS-CURDATE-DATA
             MOVE ZERO       TO RETURN-CODE
+            MOVE 'N'        TO WS-DFHEI1-UNMOCKED-CALLED
             MOVE 'USER0001' TO CDEMO-USER-ID
             MOVE 'U'        TO CDEMO-USER-TYPE
             MOVE 'COCRDLIC' TO CDEMO-FROM-PROGRAM
@@ -230,6 +248,7 @@
             EXPECT WS-EDIT-CARDEXPYEAR-FLAG TO BE '1'
             EXPECT INPUT-PENDING TO BE TRUE
             EXPECT WS-RETURN-MSG TO BE SPACES
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
 
@@ -546,6 +565,99 @@
             EXPECT INPUT-PENDING TO BE TRUE
             EXPECT WS-RETURN-MSG TO BE SPACES
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC8 -- 9200-WRITE-PROCESSING DUPREC=14 lock conflict (Issue 3)
+      *
+      *  Drives 9200-WRITE-PROCESSING (production lines 1420-1495)
+      *  along the COULD-NOT-LOCK-FOR-UPDATE branch (lines 1444-
+      *  1448).  Off-platform GnuCOBOL comments out EXEC CICS READ
+      *  FILE UPDATE (lines 1427-1436) and EXEC CICS REWRITE (lines
+      *  1477-1483) -- the precompiler substitutes CONTINUE for
+      *  both -- but the IF guards on lines 1441 and 1488 remain
+      *  live.  Pre-setting WS-RESP-CD=14 (DFHRESP value DUPREC,
+      *  per DFHBMSCA.cpy line 225) makes the line-1441 IF EQUAL
+      *  TO DFHRESP(NORMAL) FALSE, triggering the ELSE branch:
+      *
+      *    SET INPUT-ERROR                    TO TRUE  (line 1445)
+      *    IF WS-RETURN-MSG-OFF                                      
+      *        SET COULD-NOT-LOCK-FOR-UPDATE  TO TRUE  (line 1447)
+      *    GO TO 9200-WRITE-PROCESSING-EXIT             (line 1449)
+      *
+      *  GO TO short-circuits before the 9300-CHECK-CHANGE-IN-REC
+      *  PERFORM and the second EXEC CICS REWRITE -- this is the
+      *  documented DUPREC conflict path per QA Phase 3.5 expect-
+      *  ation.  Off-platform expression of the conflict scenario
+      *  where another transaction holds the record lock; CICS
+      *  returns DUPREC (14) on READ FILE UPDATE for an already-
+      *  locked VSAM cluster.  COULD-NOT-LOCK-FOR-UPDATE's 88-VAL
+      *  is the user-visible diagnostic message MOVE'd to CCARD-
+      *  ERROR-MSG by 0000-MAIN's downstream RETURN flow.
+      *
+      *  Source of expected values:
+      *    INPUT-ERROR  - SET TRUE line 1445 (88 VALUE '1' line 55).
+      *    COULD-NOT-LOCK-FOR-UPDATE - SET TRUE line 1447 (88 VALUE
+      *                  'Could not lock record for update' line 206).
+      *                  WS-RETURN-MSG ends up holding that 32-byte
+      *                  literal, space-padded to PIC X(75).
+      ******************************************************************
+       TESTCASE 'COCRDUPC 9200-WRITE-PROCESSING DUPREC lock conflict'
+            MOVE '0500024453765740' TO CC-CARD-NUM
+            MOVE 14                 TO WS-RESP-CD
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9200-WRITE-PROCESSING THRU 9200-WRITE-PROCESSING-EXIT
+            EXPECT INPUT-ERROR TO BE TRUE
+            EXPECT COULD-NOT-LOCK-FOR-UPDATE TO BE TRUE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
+
+      ******************************************************************
+      *  TC9 -- 9300-CHECK-CHANGE-IN-REC detects concurrent change
+      *
+      *  Drives 9300-CHECK-CHANGE-IN-REC (production lines 1497-
+      *  1521) along the DATA-WAS-CHANGED-BEFORE-UPDATE branch
+      *  (line 1512).  This paragraph compares the current CARD-
+      *  RECORD fields (CARD-CVV-CD, CARD-EMBOSSED-NAME, CARD-
+      *  EXPIRAION-DATE substrings, CARD-ACTIVE-STATUS) against
+      *  the CCUP-OLD-* snapshot fields.  When ANY mismatch is
+      *  detected, the production sets DATA-WAS-CHANGED-BEFORE-
+      *  UPDATE TRUE and refreshes the CCUP-OLD-* snapshot, then
+      *  GO TO 9200-WRITE-PROCESSING-EXIT (paragraph-out).  The
+      *  88-level VALUE is 'Record changed by some one else.
+      *  Please review' (line 208).
+      *
+      *  Test setup deliberately supplies CARD-CVV-CD=001 (in
+      *  CARD-RECORD via INITIALIZE then explicit MOVE) but
+      *  CCUP-OLD-CVV-CD=999, so the line-1504 EQUAL test FAILS
+      *  on the first AND-clause and the ELSE branch fires.
+      *
+      *  Off-platform expression of QA Phase 3.5 conflict-detection
+      *  expectation; companion to TC8 (which exercises the lock
+      *  conflict at the READ-UPDATE boundary).  Together they
+      *  cover the two distinct concurrency-failure modes 9200
+      *  must distinguish.
+      *
+      *  Source of expected values:
+      *    DATA-WAS-CHANGED-BEFORE-UPDATE - SET TRUE line 1512
+      *      (88 VALUE 'Record changed by some one else. Please
+      *      review' on line 208 of WS-RETURN-MSG group).
+      ******************************************************************
+       TESTCASE 'COCRDUPC 9300-CHECK-CHANGE-IN-REC detects change'
+            MOVE '001' TO CARD-CVV-CD
+            MOVE '999' TO CCUP-OLD-CVV-CD
+            MOCK CALL 'DFHEI1'
+                 CONTINUE
+            END-MOCK
+            PERFORM 9300-CHECK-CHANGE-IN-REC
+                THRU 9300-CHECK-CHANGE-IN-REC-EXIT
+            EXPECT DATA-WAS-CHANGED-BEFORE-UPDATE TO BE TRUE
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
+            VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
+
 
       ******************************************************************
       *  End of testsuite COCRDUPC CARD UPDATE TRANSACTION

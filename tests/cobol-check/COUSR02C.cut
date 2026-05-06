@@ -187,6 +187,15 @@
       *    tests/stubs/DFHEI1.cbl          (CICS link-time backstop)
       *    tests/cobol-check/COUSR03C.cut  (canonical exemplar)
       ******************************************************************
+      *
+      *  DFHEI1 fail-loudly safety net (QA CP4 Phase 5.2 anchor).
+      *  Runner-script Step 5 (linux_gnucobol_run_tests) injects
+      *  the actual EXTERNAL field declarations into merged WS;
+      *  cobol-check 0.2.16 drops the directive below silently --
+      *  intended -- and BEFORE-EACH resets WS-DFHEI1-UNMOCKED-
+      *  CALLED so a stub-fired condition is assertable per test.
+      ******************************************************************
+       COPY STUB-ABEND-FLAG.
 
        TESTSUITE 'COUSR02C UPDATE USER ADMIN TRANSACTION'.
 
@@ -247,6 +256,7 @@
             INITIALIZE SEC-USER-DATA
             INITIALIZE COUSR2AI
             MOVE ZERO       TO RETURN-CODE
+            MOVE 'N'        TO WS-DFHEI1-UNMOCKED-CALLED
             MOVE 'ADMIN001' TO CDEMO-USER-ID
             MOVE 'A'        TO CDEMO-USER-TYPE
             MOVE 'COADM01C' TO CDEMO-FROM-PROGRAM
@@ -307,6 +317,7 @@
             EXPECT CDEMO-TO-PROGRAM TO BE 'COSGN00C'
             EXPECT CDEMO-FROM-PROGRAM TO BE 'COUSR02C'
             EXPECT CDEMO-FROM-TRANID TO BE 'CU02'
+            EXPECT WS-DFHEI1-UNMOCKED-CALLED TO BE 'N'
             VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES
 
       ******************************************************************

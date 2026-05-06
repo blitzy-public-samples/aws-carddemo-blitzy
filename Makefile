@@ -29,7 +29,7 @@
 #   init        Download the cobol-check JAR (one-time bootstrap).
 #   fixtures    Regenerate tests/fixtures/cobol-snippets/*.cpy from
 #               the byte-exact ASCII inputs under app/data/ASCII/.
-#   lint        Run all four AAP-mandated validation gate scripts.
+#   lint        Run all five AAP-mandated validation gate scripts.
 #   test        Run every cobol-check testsuite under tests/cobol-check.
 #   test-one    Run a single program's testsuite.   PROGRAM=<name>.
 #   test-debug  Run a single testsuite with DEBUG logging and merged
@@ -397,10 +397,12 @@ fixtures:
 	echo "[fixtures] Generated $$count snippet(s) under $(FIXTURE_DIR)/cobol-snippets/"
 
 #######################################################################
-# lint -- run the four AAP-mandated validation gates documented in
-# Section 0.7.2.  Each script exits non-zero on any policy violation
-# and the recipe exits at the first failure (set -e is implicit per
-# `make`'s one-command-per-line execution model).
+# lint -- run the five validation gates documented in AAP Section
+# 0.7.2 (four original gates) plus the QA CP4 Phase 5.2 fail-loudly
+# safety-net gate added in response to QA Issue 4 (MAJOR).  Each
+# script exits non-zero on any policy violation and the recipe exits
+# at the first failure (set -e is implicit per `make`'s one-command-
+# per-line execution model).
 #######################################################################
 lint:
 	@echo "[lint] Running validation gates ..."
@@ -408,6 +410,7 @@ lint:
 	@bash $(REPO_ROOT)/$(LINT_DIR)/check_no_production_redeclaration.sh
 	@bash $(REPO_ROOT)/$(LINT_DIR)/check_assertion_density.sh
 	@bash $(REPO_ROOT)/$(LINT_DIR)/check_isolation.sh
+	@bash $(REPO_ROOT)/$(LINT_DIR)/check_dfhei1_safety_net.sh
 	@echo "[lint] All gates passed."
 
 #######################################################################
