@@ -72,6 +72,52 @@ COBOL_CHECK_JAR     ?= tests/cobol-check/lib/cobol-check-$(COBOL_CHECK_VERSION).
 COBOL_CHECK_URL     ?= https://raw.githubusercontent.com/openmainframeproject/cobol-check/0.2.16_release/build/distributions/cobol-check-$(COBOL_CHECK_VERSION).zip
 
 #----------------------------------------------------------------------
+# Supply-chain integrity: pinned SHA-256 hashes for cobol-check 0.2.16.
+#
+# The QA security checkpoint (CP9) documented that an HTTPS-only fetch
+# of the cobol-check release ZIP relies solely on transport-layer
+# integrity.  If the upstream GitHub CDN cache were poisoned, the
+# raw.githubusercontent.com endpoint were BGP-hijacked, or the local
+# CI cache entry were tampered with, a malicious JAR could enter the
+# build pipeline undetected.  Adding pinned SHA-256 hashes provides
+# defence-in-depth so every code path that exposes the JAR to the
+# test runner is gated by a byte-exact integrity check:
+#
+#   COBOL_CHECK_ZIP_SHA256
+#       Hash of the upstream release ZIP delivered over the network.
+#       Verified IMMEDIATELY after download and BEFORE extraction so a
+#       tampered archive (including ZIP-bomb / path-traversal style
+#       payloads) is never unpacked.
+#
+#   COBOL_CHECK_JAR_SHA256
+#       Hash of the JAR after extraction.  Verified UNCONDITIONALLY on
+#       every `make init` invocation, including cache-hit paths in CI,
+#       so a tampered cache restore also fails the build.  Verification
+#       is fast (~50 ms for the ~270 KB JAR) and the integrity benefit
+#       is substantial.
+#
+# Updating COBOL_CHECK_VERSION REQUIRES updating BOTH hashes
+# atomically.  Procedure for a version bump (e.g. 0.2.16 -> 0.2.17):
+#   1. Set COBOL_CHECK_VERSION (above) to the new value.
+#   2. Run `make distclean` then
+#      `make init COBOL_CHECK_ZIP_SHA256='*' COBOL_CHECK_JAR_SHA256='*'`
+#      once; the recipe will print the observed hashes and skip
+#      verification (it emits a loud WARNING when "*" is in effect).
+#   3. Paste the printed hashes into the values below.
+#   4. Re-run `make init` (without overrides) to confirm verification
+#      now succeeds against the pinned values.
+#
+# When either pinned hash is the literal string "*", the verification
+# step for that artefact is skipped and a WARNING is emitted.  The "*"
+# escape hatch is intentionally awkward (must be set explicitly on the
+# command line; default is the pinned hash) so it cannot be triggered
+# accidentally and so a CI run with "*" override is immediately visible
+# in build logs.
+#----------------------------------------------------------------------
+COBOL_CHECK_ZIP_SHA256 ?= b81816e7b6e568829e281979c74da10d1aebd245c7bd91462f8f3a6b01fff0c1
+COBOL_CHECK_JAR_SHA256 ?= 21cee4b252b561b19dde08028e990b2f66f1b6536cdaad46628646adec690f74
+
+#----------------------------------------------------------------------
 # Compiler & runtime invocations.  These are exported into the cobol-
 # check sub-process so the bundled compile-and-run script picks them up.
 # COBC_OPTS is intentionally empty by default; the `coverage` target
@@ -310,6 +356,9 @@ help:
 	@echo ""
 	@echo "Variables (override on command line):"
 	@echo "  COBOL_CHECK_VERSION=$(COBOL_CHECK_VERSION)"
+	@echo "  COBOL_CHECK_ZIP_SHA256=$(COBOL_CHECK_ZIP_SHA256)"
+	@echo "  COBOL_CHECK_JAR_SHA256=$(COBOL_CHECK_JAR_SHA256)"
+	@echo "    (set either to '*' to skip integrity check; use only when bumping version)"
 	@echo "  TEST_TIMEOUT=$(TEST_TIMEOUT)   (per-program wall-clock timeout, seconds)"
 	@echo "  SINGLE_TIMEOUT=$(SINGLE_TIMEOUT) (test-one wall-clock timeout, seconds)"
 	@echo "  PROGRAM='$(PROGRAM)'"
@@ -357,15 +406,44 @@ _stage-shadow-suites: ensure-build-dir
 	     $(CC_CONFIG) > $(CC_RUN_CONFIG)
 
 #######################################################################
-# init -- bootstrap the cobol-check JAR.
+# init -- bootstrap and verify the cobol-check JAR.
 #
 # The framework's 0.2.16 release publishes a ZIP that bundles the JAR
 # under bin/.  We accept either curl or wget (whichever is on PATH) so
 # the target works on minimal CI runners that ship only one of them.
-# The JAR is intentionally NOT committed (see .gitignore) -- this
-# target re-fetches it whenever the file is missing.
+# The JAR is intentionally NOT committed (see .gitignore) -- the file
+# target $(CC_JAR_PATH) re-fetches it whenever the file is missing.
+#
+# The phony `init` target depends on the file target $(CC_JAR_PATH) so
+# the JAR is downloaded if missing, then runs an UNCONDITIONAL SHA-256
+# verification of the JAR against the COBOL_CHECK_JAR_SHA256 pinned
+# value defined above.  Running the verification on every `make init`
+# invocation (not just on download) catches a tampered cache entry --
+# e.g., a CI cache restore (.github/workflows/test.yml Step 4) that
+# brings in a poisoned JAR file even when the file already existed.
+# The verification is fast (~50ms for ~270 KB) so the cost is
+# negligible compared to the supply-chain integrity benefit.
 #######################################################################
 init: $(CC_JAR_PATH)
+	@if [ "$(COBOL_CHECK_JAR_SHA256)" = "*" ]; then \
+	    echo "[init] WARNING: COBOL_CHECK_JAR_SHA256='*' -- JAR verification SKIPPED."; \
+	    echo "[init] Observed JAR SHA-256 (paste into Makefile to re-pin):"; \
+	    sha256sum $(CC_JAR_PATH); \
+	else \
+	    echo "[init] Verifying JAR SHA-256 against pinned value ..."; \
+	    echo "$(COBOL_CHECK_JAR_SHA256)  $(CC_JAR_PATH)" \
+	        | sha256sum -c --status - \
+	        || { \
+	            echo "[init] ERROR: cobol-check JAR SHA-256 verification FAILED." >&2; \
+	            echo "[init]   File:     $(CC_JAR_PATH)" >&2; \
+	            echo "[init]   Expected: $(COBOL_CHECK_JAR_SHA256)" >&2; \
+	            echo "[init]   Observed: $$(sha256sum $(CC_JAR_PATH) | awk '{print $$1}')" >&2; \
+	            echo "[init]   Refusing to use an unverified JAR." >&2; \
+	            echo "[init]   Hint: 'make distclean && make init' will re-fetch and re-verify." >&2; \
+	            exit 1; \
+	        }; \
+	    echo "[init] JAR SHA-256 verified (matches pinned value)."; \
+	fi
 
 $(CC_JAR_PATH):
 	@echo "[init] Bootstrapping cobol-check $(COBOL_CHECK_VERSION) ..."
@@ -376,6 +454,28 @@ $(CC_JAR_PATH):
 	    wget -q -O $(INIT_WORK_DIR)/$(CC_JAR_NAME).zip $(COBOL_CHECK_URL); \
 	else \
 	    echo "[init] ERROR: need curl or wget on PATH" >&2; exit 1; \
+	fi
+	@# Verify ZIP SHA-256 BEFORE extraction so a tampered archive is
+	@# never unpacked (defence-in-depth against ZIP-bomb / path-
+	@# traversal style payloads delivered through a poisoned CDN).
+	@if [ "$(COBOL_CHECK_ZIP_SHA256)" = "*" ]; then \
+	    echo "[init] WARNING: COBOL_CHECK_ZIP_SHA256='*' -- ZIP verification SKIPPED."; \
+	    echo "[init] Observed ZIP SHA-256 (paste into Makefile to re-pin):"; \
+	    sha256sum $(INIT_WORK_DIR)/$(CC_JAR_NAME).zip; \
+	else \
+	    echo "[init] Verifying downloaded ZIP SHA-256 against pinned value ..."; \
+	    echo "$(COBOL_CHECK_ZIP_SHA256)  $(INIT_WORK_DIR)/$(CC_JAR_NAME).zip" \
+	        | sha256sum -c --status - \
+	        || { \
+	            echo "[init] ERROR: cobol-check ZIP SHA-256 verification FAILED." >&2; \
+	            echo "[init]   URL:      $(COBOL_CHECK_URL)" >&2; \
+	            echo "[init]   Expected: $(COBOL_CHECK_ZIP_SHA256)" >&2; \
+	            echo "[init]   Observed: $$(sha256sum $(INIT_WORK_DIR)/$(CC_JAR_NAME).zip | awk '{print $$1}')" >&2; \
+	            echo "[init]   Refusing to extract a tampered or unexpected archive." >&2; \
+	            rm -f $(INIT_WORK_DIR)/$(CC_JAR_NAME).zip; \
+	            exit 1; \
+	        }; \
+	    echo "[init] ZIP SHA-256 verified."; \
 	fi
 	@cd $(INIT_WORK_DIR) && unzip -o -q $(CC_JAR_NAME).zip
 	@cp $(INIT_WORK_DIR)/bin/$(CC_JAR_NAME) $(CC_JAR_PATH)
@@ -621,6 +721,8 @@ _print-config:
 	@echo "COBOL_CHECK_VERSION            = $(COBOL_CHECK_VERSION)"
 	@echo "COBOL_CHECK_JAR                = $(COBOL_CHECK_JAR)"
 	@echo "COBOL_CHECK_URL                = $(COBOL_CHECK_URL)"
+	@echo "COBOL_CHECK_ZIP_SHA256         = $(COBOL_CHECK_ZIP_SHA256)"
+	@echo "COBOL_CHECK_JAR_SHA256         = $(COBOL_CHECK_JAR_SHA256)"
 	@echo "COBC                           = $(COBC)"
 	@echo "COBC_OPTS                      = $(COBC_OPTS)"
 	@echo "JAVA                           = $(JAVA)"
