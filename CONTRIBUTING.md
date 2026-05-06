@@ -96,10 +96,10 @@ The validation gate (`make lint`) enforces these rules and fails with the follow
 1. Choose the production program to test from `app/cbl/` (for example, `CSUTLDTC.cbl`).
 2. Create `tests/cobol-check/<PROGRAM-ID>.cut` (use the same casing as the production filename, drop the `.cbl` / `.CBL` extension).
 3. Open `tests/cobol-check/CSUTLDTC.cut` (the canonical reference exemplar) and copy its structural conventions: Apache 2.0 license preamble, `TESTSUITE` banner, `BEFORE-EACH` initializer, `MOCK` blocks before each `TESTCASE`, `EXPECT` clauses alphabetized by field name when multiple are present, and `VERIFY` clauses appended after `EXPECT` for testcases that declare mocks.
-4. For every external boundary the program-under-test touches, declare the appropriate mock:
-   - VSAM file operations → `MOCK FILE <fd-name> ON OPEN/READ/WRITE/REWRITE/CLOSE STATUS '<two-byte>' END-MOCK`
-   - CICS commands → `MOCK CICS <verb> <discriminator> END-MOCK`
-   - LE / subprogram calls → `MOCK CALL "<program-name>" END-MOCK`
+4. For every external boundary the program-under-test touches, declare the appropriate mock. **Important**: cobol-check 0.2.16 does NOT implement `MOCK FILE` or `MOCK CICS` directly (see `tests/README.md` § Mock-type table); the canonical patterns used throughout this repository are:
+   - VSAM file operations → use the **pre-set-WS pattern** (see `tests/README.md` § Pre-set-WS pattern). In each `TESTCASE`, `MOVE '<status>' TO <fd-name>-STATUS` *before* `PERFORM` of the file-handling paragraph. cobol-check has already commented out every `OPEN`/`READ`/`WRITE`/`REWRITE`/`CLOSE` in the merged source (substitutes `CONTINUE`), so the production `IF <fd>-STATUS = '00'` / `EVALUATE` that follows reads the deterministic value the test set. Reference: `tests/cobol-check/CBACT01C.cut`.
+   - CICS commands → use `MOCK CALL 'DFHEI1' CONTINUE END-MOCK`. Off-platform GnuCOBOL comments out every `EXEC CICS` verb in the merged source, and `tests/stubs/DFHEI1.cbl` plus the link-time `DFHAID` / `DFHBMSCA` copybook stubs in `tests/stubs/` provide the compile-time scaffolding. The `MOCK CALL 'DFHEI1'` directive paired with `VERIFY CALL 'DFHEI1' HAPPENED 0 TIMES` (the `check_dfhei1_safety_net.sh` lint gate) guarantees no rogue CICS verb slips past the precompiler. Reference: `tests/cobol-check/COSGN00C.cut`.
+   - LE / subprogram calls → `MOCK CALL "<program-name>" END-MOCK` is fully supported (e.g., `MOCK CALL "CEEDAYS"`, `MOCK CALL "CEE3ABD"`, `MOCK CALL "CBSTM03B"`).
 5. For every paragraph or feature being tested, write a `TESTCASE 'description' ... END-TESTCASE` block whose body contains only `MOVE` setup, `PERFORM` / `CALL` invocation, and `EXPECT` / `VERIFY` assertions.
 6. Run the new suite locally:
    ```bash

@@ -122,14 +122,16 @@ tests/
 ├── cobol-check/                           # cobol-check testsuites (28 files) and config
 │   ├── CSUTLDTC.cut                       # Reference exemplar — canonical pattern
 │   ├── CBSTM03B.cut                       # I/O dispatcher tests
-│   ├── CBACT01C.cut, CBACT02C.cut, ...    # Batch program tests (7 files)
+│   ├── CBACT01C.cut, CBACT02C.cut, ...    # Batch program tests (9 files)
 │   ├── COSGN00C.cut, COMEN01C.cut, ...    # CICS program tests (17 files)
 │   ├── config.properties                  # cobol-check runtime configuration
 │   └── lib/cobol-check-0.2.16.jar         # Test runner (downloaded; .gitignore excludes)
 ├── stubs/                                 # Hand-authored infrastructure stubs (no business logic)
 │   ├── CEEDAYS.cbl                        # Lillian-day conversion stub
 │   ├── CEE3ABD.cbl                        # LE abend stub (sets flag, GOBACK)
-│   └── DFHEI1.cbl                         # CICS API link-time fallback
+│   ├── DFHEI1.cbl                         # CICS API link-time fallback
+│   ├── DFHAID.cpy                         # CICS DFHAID + EIB off-platform copybook shim
+│   └── DFHBMSCA.cpy                       # CICS DFHBMSCA + DFHRESP off-platform copybook shim
 ├── fixtures/                              # Test data fixtures
 │   ├── load_fixture.py                    # Byte-extraction helper (stdlib only)
 │   └── cobol-snippets/                    # Generated COBOL snippet fixtures
@@ -149,6 +151,7 @@ tests/
     ├── check_assertion_density.sh         # ≥1 EXPECT per testcase; ≥1 VERIFY for mocked tests
     ├── check_isolation.sh                 # Every testsuite must declare BEFORE-EACH
     ├── check_dfhei1_safety_net.sh         # CICS testsuites: COPY STUB-ABEND-FLAG + assertable safety net
+    ├── check_test_results.sh              # Detects cobol-check 0.2.16 silent compile failures (post-test)
     └── parse_gcov_summary.sh              # Aggregates gcov + enforces thresholds
 ```
 
@@ -256,8 +259,15 @@ The procedure to add a new testsuite:
    - `TESTSUITE 'PROGRAM-ID description'` declaration.
    - `BEFORE-EACH`/`END-BEFORE` block that `INITIALIZE`s working storage
      and resets `RETURN-CODE`, `WS-ABEND-FLAG`, `END-OF-FILE`.
-   - Per-testcase `MOCK FILE`/`MOCK CALL`/`MOCK CICS` blocks BEFORE the
-     `TESTCASE` they apply to.
+   - Per-testcase `MOCK CALL` blocks BEFORE the `TESTCASE` they apply
+     to.  **Important**: cobol-check 0.2.16 does NOT implement
+     `MOCK FILE` or `MOCK CICS` (see § Mock-type table below) — at
+     runtime only `MOCK CALL` is enforced.  For VSAM file mocking,
+     use the **pre-set-WS pattern** (see § Pre-set-WS pattern below
+     — `MOVE '<status>' TO <fd>-STATUS` before `PERFORM` of the
+     file-handling paragraph).  For CICS verbs, use
+     `MOCK CALL 'DFHEI1' CONTINUE END-MOCK` (see § Stub Subprograms
+     — `tests/stubs/DFHEI1.cbl`).
    - `TESTCASE 'feature description'` blocks containing only
      `MOVE`/`SET` setup, `PERFORM`/`CALL` invocation, and
      `EXPECT`/`VERIFY` assertions.
@@ -292,8 +302,15 @@ file:
 - `AFTER-EACH ... END-AFTER`
 - `TESTCASE 'description' ... END-TESTCASE`
 - `MOCK FILE <fd-name> ON <verb> STATUS '<two-byte>' END-MOCK`
+  *(syntactically permitted but **NOT IMPLEMENTED** in cobol-check
+  0.2.16 — see § Mock-type table; use the § Pre-set-WS pattern
+  instead)*
 - `MOCK CALL "<program-name>" END-MOCK`
 - `MOCK CICS <verb> <discriminator> END-MOCK`
+  *(syntactically permitted but **NOT IMPLEMENTED** in cobol-check
+  0.2.16 — see § Mock-type table; use `MOCK CALL 'DFHEI1' CONTINUE
+  END-MOCK` paired with the off-platform CICS translator's `EXEC CICS`
+  comment-out behaviour instead)*
 - `MOVE <source> TO <target>`, `SET <name> TO <value>`
 - `PERFORM <production-paragraph>` (in-program testing)
 - `CALL "<production-program>" USING <args>` (subprogram testing)
@@ -510,11 +527,20 @@ manual hand-editing of snippet files is permitted.
 
 ## Stub Subprograms
 
-The three files under `tests/stubs/` are link-time shims that allow
-the production COBOL source to compile and run off-platform. They
+The five files described in this section under `tests/stubs/`
+(three `.cbl` link-time stubs plus two `.cpy` off-platform
+copybook shims) are infrastructure scaffolding that allows the
+production COBOL source to compile and run off-platform. They
 contain **zero business logic** — they exist purely to satisfy
-linkage requirements that would normally be met by IBM Language
-Environment or by the CICS API.
+linkage and copybook-resolution requirements that would normally
+be met by IBM Language Environment, the CICS API, or the CICS
+translator-injected DFHAID / DFHBMSCA copybooks on z/OS.
+
+The directory also contains two purely declarative state-flag
+copybooks (`STUB-ABEND-FLAG.cpy`, `STUB-CEEDAYS-RC.cpy`) that
+establish the `EXTERNAL` working-storage fields used by the
+`.cbl` stubs to communicate with testsuites; those are described
+in context inline below and in the "Mocking Cookbook" section.
 
 ### `tests/stubs/CEEDAYS.cbl`
 
@@ -551,6 +577,49 @@ Environment or by the CICS API.
   must declare `MOCK CALL 'DFHEI1'` blocks; the stub only catches
   commands the testsuite forgot to mock and fails loudly so the omission
   is obvious.
+
+### `tests/stubs/DFHAID.cpy`
+
+- **Replaces**: IBM CICS-supplied `DFHAID` copybook plus the implicit
+  `DFHEIBLK` (Execution Interface Block) area normally injected before
+  the `LINKAGE SECTION` by the CICS translator on z/OS.
+- **Where used**: every CICS program in `app/cbl/CO*C.cbl` declares
+  `COPY DFHAID`; this off-platform shim is what GnuCOBOL resolves
+  to during the merged-binary compile.
+- **Behavior**: Pure data declarations — provides the standard CICS
+  Attention Identifier (AID) constants (`DFHENTER`, `DFHCLEAR`,
+  `DFHPF1`–`DFHPF24`, `DFHPA1`–`DFHPA3`, etc.) as one-byte literals,
+  plus an embedded `DFHEIBLK-OFFPLATFORM-SHIM` group declaring
+  `EIBAID`, `EIBCALEN`, `EIBRESP`, `EIBRESP2`, and the rest of the
+  EIB fields as plain `WORKING-STORAGE`. The exact AID byte values
+  do not matter for off-platform testing; production code only
+  compares `EIBAID` to the symbolic constants. The stub contains
+  zero business logic, no arithmetic, and no procedural code — it is
+  pure declarative scaffolding that lets CICS programs compile under
+  GnuCOBOL when no CICS translator is available.
+
+### `tests/stubs/DFHBMSCA.cpy`
+
+- **Replaces**: IBM CICS-supplied `DFHBMSCA` copybook plus an
+  off-platform substitute for the `DFHRESP()` translator preprocessor
+  macro.
+- **Where used**: every CICS program in `app/cbl/CO*C.cbl` (excluding
+  the trivial sign-on stub variants) declares `COPY DFHBMSCA`;
+  programs that test `WHEN DFHRESP(NORMAL)` etc. depend on the
+  DFHRESP-substitute portion of this copybook.
+- **Behavior**: Pure data declarations — supplies BMS attribute
+  constants (`DFHGREEN`, `DFHRED`, `DFHBLUE`, `DFHBLINK`,
+  `DFHBMASK`, etc.) as one-byte literals, and an `OCCURS 30` table
+  named `DFHRESP` whose entries equal the real CICS RESP codes
+  (0 .. 29). Standard CICS RESP keyword names (`NORMAL`, `NOTFND`,
+  `DUPREC`, `DUPKEY`, `ENDFILE`, etc.) are declared as 1-based
+  subscript constants pointing at the entry whose value equals the
+  real RESP code, so production expressions like
+  `WHEN DFHRESP(NORMAL)` and
+  `IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL)` compile and evaluate
+  exactly as on z/OS. The stub contains zero business logic, no
+  arithmetic, and no procedural code — it is pure declarative
+  scaffolding.
 
 #### Assertable fail-loudly safety net (QA CP4 Phase 5.2)
 
