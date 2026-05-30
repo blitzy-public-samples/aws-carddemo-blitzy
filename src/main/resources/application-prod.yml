@@ -1,0 +1,231 @@
+# ============================================================================
+# CardDemo Spring Boot 3.2 — PRODUCTION Profile Configuration
+# ----------------------------------------------------------------------------
+# This file is loaded automatically by Spring Boot when the 'prod' profile is
+# active. It OVERRIDES matching properties from src/main/resources/application.yml.
+#
+# Activation:
+#   --spring.profiles.active=prod
+#   OR
+#   SPRING_PROFILES_ACTIVE=prod
+#
+# All connection details are sourced from environment variables — no production
+# secrets are committed to version control.
+#
+# Required environment variables:
+#   SPRING_DATASOURCE_URL       — jdbc:postgresql://<host>:5432/carddemo
+#   SPRING_DATASOURCE_USERNAME  — database username
+#   SPRING_DATASOURCE_PASSWORD  — database password
+#
+# Optional environment variables (with sensible defaults):
+#   SERVER_PORT                 — HTTP port (default 8080)
+#   HIKARI_MAX_POOL_SIZE        — Connection pool maximum size (default 20)
+#   LOG_LEVEL_ROOT              — Root log level (default INFO)
+#   LOG_LEVEL_APP               — com.carddemo log level (default INFO)
+#   LOG_FILE                    — Log file path (default logs/carddemo.log)
+#
+# References:
+#   - AAP §0.4.1.8 (Production profile specification)
+#   - AAP §0.5.1 (Spring Boot 3.2.12 BOM dependencies)
+#   - AAP §0.7.1 PR-26 (No external runtime services beyond PostgreSQL)
+# ============================================================================
+
+spring:
+  # --------------------------------------------------------------------------
+  # DATASOURCE — All credentials via environment variables (no secrets in VCS)
+  # --------------------------------------------------------------------------
+  # spring.datasource.url has NO default: Spring Boot startup FAILS FAST if the
+  # operator forgot to provision the connection string — a desirable production
+  # behavior. The base application.yml declares NO datasource, so this profile
+  # MUST supply one. Optional values use the ${VAR:default} form.
+  # --------------------------------------------------------------------------
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # Production pool sized for the demonstration-grade workload. AAP §0.7.2:
+      # "the default Hibernate connection pool ... is acceptable for the
+      # demonstration-grade workload (50 accounts, 311 transactions, 100 TCATBAL
+      # records)." Tune maximum-pool-size via HIKARI_MAX_POOL_SIZE if needed.
+      maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:20}
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      pool-name: CarddemoHikariCP
+      # auto-commit: false — JPA/Hibernate manages transaction boundaries
+      # explicitly, matching the CICS SYNCPOINT semantics (PR-24). Leaving the
+      # JDBC connection in manual-commit mode prevents premature commits.
+      auto-commit: false
+
+  # --------------------------------------------------------------------------
+  # JPA / HIBERNATE
+  # --------------------------------------------------------------------------
+  # ddl-auto: validate — Hibernate verifies the schema matches the entity
+  #   mappings but NEVER modifies the database. Flyway is the sole schema owner.
+  # show-sql: false — production must not log every SQL statement.
+  # open-in-view: false — enforces clean transaction boundaries (PR-24); no
+  #   lazy loading after the service layer returns.
+  # --------------------------------------------------------------------------
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: false
+        jdbc:
+          # Normalize all timestamp persistence to UTC regardless of the JVM's
+          # default timezone (prevents silent corruption of TIMESTAMP columns).
+          time_zone: UTC
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+
+  # --------------------------------------------------------------------------
+  # FLYWAY — schema migration safety in production
+  # --------------------------------------------------------------------------
+  # clean-disabled: true PREVENTS `mvn flyway:clean` from ever wiping the
+  #   production database (CRITICAL safety measure; dev sets this to false).
+  # validate-on-migrate: true fails startup on any applied-migration checksum
+  #   mismatch (tamper detection).
+  # out-of-order: false enforces strict version ordering.
+  # --------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+    clean-disabled: true
+    out-of-order: false
+
+  # --------------------------------------------------------------------------
+  # SPRING BATCH — jobs invoked on demand, never auto-run on startup
+  # --------------------------------------------------------------------------
+  # job.enabled: false — without this, Spring Boot would execute EVERY Job bean
+  #   on every restart, corrupting data. Jobs are launched via the
+  #   BatchAdminController (POST /api/admin/jobs/{jobName}/launch).
+  # jdbc.initialize-schema: always — auto-create the BATCH_* metadata tables
+  #   (idempotent; skipped when they already exist).
+  # --------------------------------------------------------------------------
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      initialize-schema: always
+
+  # --------------------------------------------------------------------------
+  # JACKSON — BigDecimal precision preservation (PR-16)
+  # --------------------------------------------------------------------------
+  # write-bigdecimal-as-plain: true serializes BigDecimal as plain decimals
+  # (e.g., 1234.50) rather than scientific notation (1.2345E3), preserving the
+  # original COBOL PIC S9(10)V99 COMP-3 scale exactly across the JSON boundary.
+  # Common Jackson keys not restated here are inherited from application.yml.
+  # --------------------------------------------------------------------------
+  jackson:
+    generator:
+      write-bigdecimal-as-plain: true
+    serialization:
+      write-dates-as-timestamps: false
+      indent-output: false
+    date-format: "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"
+    time-zone: UTC
+
+# ============================================================================
+# SERVER — production HTTP port, graceful shutdown, error-leak prevention
+# ============================================================================
+server:
+  port: ${SERVER_PORT:8080}
+  # Drain in-flight requests on SIGTERM before terminating (container shutdown).
+  shutdown: graceful
+  servlet:
+    context-path: /
+  # Compress JSON responses to reduce bandwidth.
+  compression:
+    enabled: true
+    mime-types: application/json, application/xml, text/html, text/plain
+    min-response-size: 1024
+  # Do NOT leak stack traces, messages, or binding details to clients in prod.
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+    include-exception: false
+
+# ============================================================================
+# LOGGING — INFO level by default; JSON-structured pattern for aggregation
+# ============================================================================
+# The JSON pattern (with trace_id / span_id placeholders) prepares logs for
+# ingestion by CloudWatch / ELK / Splunk / Datadog and future OpenTelemetry
+# integration without code changes.
+# ============================================================================
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+    com.carddemo: ${LOG_LEVEL_APP:INFO}
+    org.springframework: INFO
+    org.springframework.security: INFO
+    org.springframework.batch: INFO
+    org.hibernate: WARN
+    org.hibernate.SQL: WARN
+    # Suppress HikariCP info noise in steady state.
+    com.zaxxer.hikari: WARN
+  pattern:
+    console: '{"timestamp":"%d{yyyy-MM-dd''T''HH:mm:ss.SSSZ}","level":"%level","thread":"%thread","logger":"%logger{36}","message":"%msg","trace_id":"%X{traceId:-}","span_id":"%X{spanId:-}"}%n'
+    file: '{"timestamp":"%d{yyyy-MM-dd''T''HH:mm:ss.SSSZ}","level":"%level","thread":"%thread","logger":"%logger{36}","message":"%msg","trace_id":"%X{traceId:-}","span_id":"%X{spanId:-}"}%n'
+  file:
+    name: ${LOG_FILE:logs/carddemo.log}
+
+# ============================================================================
+# ACTUATOR — RESTRICTED endpoint exposure in production
+# ============================================================================
+# Only health, info, and metrics are exposed. Sensitive endpoints (env,
+# loggers, beans, heapdump, threaddump) are explicitly excluded to avoid
+# leaking configuration to attackers. Operators who need them can activate a
+# prod,ops composite profile.
+# ============================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
+        exclude: env, loggers, beans, heapdump, threaddump
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+    info:
+      enabled: true
+    metrics:
+      enabled: true
+  health:
+    db:
+      enabled: true
+    diskspace:
+      enabled: true
+  info:
+    env:
+      enabled: false
+    java:
+      enabled: true
+    os:
+      enabled: true
+
+# ============================================================================
+# SPRINGDOC OPENAPI — DISABLED by default in production
+# ============================================================================
+# Exposing the OpenAPI schema publicly helps attackers map the API surface.
+# Documentation should be served from a separate portal in production. Re-enable
+# with a prod,docs composite profile if explicitly desired.
+# ============================================================================
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
