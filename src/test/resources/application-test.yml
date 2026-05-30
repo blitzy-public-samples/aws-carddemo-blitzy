@@ -1,0 +1,139 @@
+# ============================================================================
+# Spring Boot Test Profile Configuration
+# ----------------------------------------------------------------------------
+# Loaded automatically by Spring Boot when @ActiveProfiles("test") is set on a
+# test class OR when -Dspring.profiles.active=test is passed to the JVM.
+#
+# This file OVERRIDES matching properties from src/main/resources/application.yml
+# (and the dev/prod profile overrides therein). The Spring Boot profile loader
+# evaluates classpath:application-test.yml after the base application.yml.
+#
+# Key behaviors enabled by this configuration:
+#   1. Testcontainers JDBC URL — auto-launches a PostgreSQL 15 container on demand
+#   2. Flyway runs all V*.sql migrations against the ephemeral container
+#   3. Hibernate validates (does NOT create) the schema after Flyway is done
+#   4. Spring Batch auto-execution is DISABLED so jobs only run when test code
+#      explicitly invokes them via JobLauncherTestUtils
+#   5. springdoc-openapi is disabled (no OpenAPI generation needed in tests)
+#   6. Debug-level logging for com.carddemo and spring-batch helps diagnose
+#      parity test failures
+#
+# References:
+#   - AAP §0.4.1.9 (Test resources)
+#   - AAP §0.5.1 (Testcontainers dependencies in pom.xml)
+#   - Testcontainers JDBC URL docs: https://www.testcontainers.org/modules/databases/jdbc/
+# ============================================================================
+
+spring:
+  # ----------------------------------------------------------------------
+  # DATASOURCE — Testcontainers JDBC URL
+  # ----------------------------------------------------------------------
+  # The 'jdbc:tc:postgresql:15:///carddemo_test' URL pattern is the
+  # Testcontainers JDBC magic prefix. When this URL is opened, Testcontainers
+  # transparently starts a docker container running postgres:15, returns a
+  # working JDBC connection, and shuts the container down at JVM exit.
+  # Requires org.testcontainers:postgresql + org.testcontainers:junit-jupiter
+  # on the test classpath (declared in pom.xml).
+  # ----------------------------------------------------------------------
+  datasource:
+    url: jdbc:tc:postgresql:15:///carddemo_test
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+    username: test
+    password: test
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+      connection-timeout: 30000
+
+  # ----------------------------------------------------------------------
+  # JPA / HIBERNATE
+  # ----------------------------------------------------------------------
+  # ddl-auto: validate ensures Hibernate ONLY validates the schema produced
+  # by Flyway. If a JPA entity mapping diverges from the SQL DDL, the test
+  # context will fail to start (early detection).
+  # show-sql: true emits generated SQL to the test logs — invaluable for
+  # diagnosing parity test failures.
+  # PostgreSQLDialect is required for proper SQL emission targeting PG 15.
+  # ----------------------------------------------------------------------
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        jdbc:
+          time_zone: UTC
+
+  # ----------------------------------------------------------------------
+  # FLYWAY — schema migration on every test context start
+  # ----------------------------------------------------------------------
+  # The Flyway migrations under src/main/resources/db/migration/V*.sql are
+  # automatically applied against the Testcontainers PostgreSQL instance
+  # before Hibernate validates the schema.
+  # baseline-on-migrate: true treats the empty DB as if version 0 were
+  # already applied, allowing all V*.sql scripts to run cleanly.
+  # ----------------------------------------------------------------------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+
+  # ----------------------------------------------------------------------
+  # SPRING BATCH — disable auto-execution of jobs at context start
+  # ----------------------------------------------------------------------
+  # CRITICAL: Without this property, Spring Batch would invoke EVERY @Bean
+  # of type Job on application startup. In tests we must invoke jobs
+  # explicitly via JobLauncherTestUtils.launchJob() — never automatically.
+  # ----------------------------------------------------------------------
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      # Spring Batch's metadata tables (BATCH_JOB_*, BATCH_STEP_*) are
+      # created by spring-boot-starter-batch on a fresh schema. Setting
+      # initialize-schema: never means the production Flyway scripts (or
+      # Spring Batch's built-in initializer) handle this — tests rely on
+      # those scripts being present.
+      initialize-schema: never
+
+# ============================================================================
+# LOGGING — verbose during tests to aid debugging
+# ============================================================================
+logging:
+  level:
+    root: INFO
+    org.springframework.batch: DEBUG
+    org.springframework.security: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.bind: TRACE
+    com.carddemo: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"
+
+# ============================================================================
+# SPRINGDOC — disable OpenAPI generation during tests
+# ============================================================================
+# Tests should not spin up the Swagger UI machinery; saves ~200ms of context
+# startup time and avoids spurious endpoint registration during MockMvc tests.
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+# ============================================================================
+# ACTUATOR — minimal exposure during tests
+# ============================================================================
+# Health endpoint is useful for Testcontainers health-check assertions; the
+# others are not needed during tests.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info
+  endpoint:
+    health:
+      show-details: always
