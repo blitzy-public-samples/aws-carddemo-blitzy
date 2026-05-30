@@ -1,6 +1,20 @@
 ## CardDemo -- Mainframe CardDemo Application
 
-- [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-card-demo-application)
+- [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-carddemo-application)
+- [Java Spring Boot 3.2 Modernization](#java-spring-boot-32-modernization)
+  - [Java Technology Stack](#java-technology-stack)
+  - [Prerequisites](#prerequisites)
+  - [PostgreSQL Setup](#postgresql-setup)
+  - [Database Schema via Flyway](#database-schema-via-flyway)
+  - [Build the Application](#build-the-application)
+  - [Run the Application](#run-the-application)
+  - [Test the Application](#test-the-application)
+  - [REST API -- Sample curl Invocations](#rest-api--sample-curl-invocations)
+  - [API Documentation](#api-documentation)
+  - [Default Users](#default-users)
+  - [Spring Boot Actuator Endpoints](#spring-boot-actuator-endpoints)
+  - [Project Structure (Java)](#project-structure-java)
+  - [What's Preserved vs. What's Modernized](#whats-preserved-vs-whats-modernized)
 - [Description](#description)
 - [Technologies used](#technologies-used)
 - [Installation on the mainframe](#installation-on-the-mainframe)
@@ -19,6 +33,331 @@
 - [Contributing](#contributing)
 - [License](#license)
 - [Project status](#project-status)
+
+<br/>
+
+# Java Spring Boot 3.2 Modernization
+
+This repository contains **TWO co-located implementations** of the CardDemo application:
+
+1. **Original Mainframe Implementation** (in `app/`) — COBOL/CICS/VSAM/JCL/RACF — preserved unchanged as REFERENCE for downstream regression verification. See the documentation below this section for mainframe setup and operation.
+2. **Modern Java Spring Boot 3.2 Implementation** (in `src/`, `pom.xml`) — a Spring Boot 3.2 monolith using Java 17, Spring MVC, Spring Data JPA, Spring Batch 5, Spring Security 6, Hibernate 6, PostgreSQL 15, and Flyway. This is the active runtime deliverable.
+
+The Java implementation **preserves 100% of the original CardDemo business logic** including the critical batch programs `CBACT04C` (interest calculation), `CBTRN02C` (transaction posting), and `CBSTM03A` (statement generation). Functional parity is verified by dedicated parity tests under `src/test/java/com/carddemo/businesslogic/`.
+
+## Java Technology Stack
+
+| Layer | Technology |
+| :---- | :--------- |
+| Language | Java 17 (Eclipse Temurin LTS) |
+| Build | Apache Maven 3.9+ |
+| Framework | Spring Boot 3.2.12 |
+| Web | Spring MVC / Spring Web (embedded Tomcat 10.1.x) |
+| Persistence | Spring Data JPA, Hibernate ORM 6.4.x |
+| Batch | Spring Batch 5.1.x |
+| Security | Spring Security 6.2.x, BCrypt password hashing |
+| Migration | Flyway 9.22.x |
+| Database | PostgreSQL 15 |
+| API Docs | springdoc-openapi 2.3.0 (Swagger UI) |
+| Observability | Spring Boot Actuator |
+| Testing | JUnit 5, Mockito, AssertJ, Spring Batch Test, Testcontainers (PostgreSQL) |
+
+## Prerequisites
+
+Before building or running the Java application you need:
+
+- **Java 17** (Eclipse Temurin recommended). Verify with `java -version`.
+- **Apache Maven 3.9+**. Verify with `mvn -version`.
+- **PostgreSQL 15** running locally or accessible over the network.
+- **Docker** (optional, for running PostgreSQL via container and for integration tests via Testcontainers).
+
+## PostgreSQL Setup
+
+The application requires a PostgreSQL 15 database. Create a database and user, then configure the connection in `src/main/resources/application-dev.yml` (or via environment variables for `application-prod.yml`).
+
+### Option 1: Local PostgreSQL via psql
+
+```bash
+# Connect as the postgres superuser
+sudo -u postgres psql
+
+-- Create the database and user
+CREATE DATABASE carddemo;
+CREATE USER carddemo WITH ENCRYPTED PASSWORD 'carddemo';
+GRANT ALL PRIVILEGES ON DATABASE carddemo TO carddemo;
+
+-- Exit psql
+\q
+```
+
+### Option 2: PostgreSQL via Docker
+
+```bash
+docker run --name carddemo-postgres \
+  -e POSTGRES_DB=carddemo \
+  -e POSTGRES_USER=carddemo \
+  -e POSTGRES_PASSWORD=carddemo \
+  -p 5432:5432 \
+  -d postgres:15
+```
+
+## Database Schema via Flyway
+
+Schema creation and seed-data loading are handled automatically by **Flyway** on application startup. The migration scripts under `src/main/resources/db/migration/` are applied in order:
+
+| Migration | Purpose |
+| :-------- | :------ |
+| `V1__schema.sql` | Creates all 14 base tables matching the original VSAM record layouts (accounts, cards, card_xref, customers, transactions, daily_transactions, rejected_transactions, tran_cat_balances, disclosure_groups, transaction_types, transaction_categories, users, plus Spring Batch metadata tables auto-created by Spring Boot) |
+| `V2__indexes.sql` | Secondary B-tree indexes replacing the original VSAM AIX alternate indexes: `idx_card_account_id` (replaces `CARDDATA.AIX`), `idx_xref_account_id` (replaces `CARDXREF.AIX`), `idx_transaction_orig_ts` (replaces `TRANSACT.AIX`) |
+| `V3__seed_reference_data.sql` | Seeds 7 transaction types, 18 transaction categories, 51 disclosure groups |
+| `V4__seed_users.sql` | Inserts 10 default users (`ADMIN001`-`ADMIN005`, `USER0001`-`USER0005`) with BCrypt-hashed password `"PASSWORD"`. Each user receives a distinct hash due to BCrypt's random salt |
+| `V5__seed_master_data.sql` | Seeds 50 customers, 50 accounts, 50 cards, 50 card cross-references, 100 transaction-category balances from the ASCII fixture data in `app/data/ASCII/` |
+
+Flyway tracks applied migrations in the `flyway_schema_history` table; subsequent application restarts skip already-applied scripts. To inspect status: `mvn flyway:info`.
+
+## Build the Application
+
+From the repository root:
+
+```bash
+mvn clean package
+```
+
+This compiles all Java sources under `src/main/java/`, runs unit tests (`*Test.java`) via the Surefire plugin, and produces an executable Spring Boot JAR at `target/carddemo-1.0.0-SNAPSHOT.jar`.
+
+To skip tests during the build (not recommended for CI):
+
+```bash
+mvn clean package -DskipTests
+```
+
+## Run the Application
+
+### Development profile (local PostgreSQL)
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.profiles=dev
+```
+
+…or run the packaged JAR directly:
+
+```bash
+java -jar target/carddemo-1.0.0-SNAPSHOT.jar --spring.profiles.active=dev
+```
+
+### Production profile
+
+```bash
+SPRING_DATASOURCE_URL=jdbc:postgresql://db.example.com:5432/carddemo \
+SPRING_DATASOURCE_USERNAME=carddemo \
+SPRING_DATASOURCE_PASSWORD=*** \
+java -jar target/carddemo-1.0.0-SNAPSHOT.jar --spring.profiles.active=prod
+```
+
+On startup, Flyway applies any pending migrations, Hibernate validates the schema (`ddl-auto: validate`), and the application listens on port `8080` by default.
+
+## Test the Application
+
+The Java implementation includes **unit tests**, **integration tests**, and **parity tests** that verify functional equivalence with the original COBOL programs.
+
+```bash
+# Unit tests (Surefire — *Test.java)
+mvn test
+
+# Integration tests (Failsafe — *IT.java, uses Testcontainers PostgreSQL)
+mvn verify
+
+# Run a specific parity test
+mvn test -Dtest=InterestCalculationParityTest
+```
+
+Critical parity tests:
+
+| Test | Verifies |
+| :--- | :------- |
+| `InterestCalculationParityTest` | `CBACT04C` `(TRAN-CAT-BAL × DIS-INT-RATE) / 1200` formula yields identical results in Java for canonical inputs |
+| `TransactionPostingParityTest` | `CBTRN02C` validation codes 100, 101, 102, 103 produce exact original message strings; `TCATBAL` upsert semantics; sign-based balance bucket |
+| `StatementGenerationParityTest` | `CBSTM03A` `5100-WRITE-HTML-HEADER` HTML output matches the COBOL reference byte-for-byte |
+
+## REST API — Sample curl Invocations
+
+The application exposes a JSON REST API. Every endpoint requires JWT-bearer authentication except `POST /api/auth/login` (signon).
+
+### Sign on (replaces the CC00 transaction / `COSGN00C` program)
+
+```bash
+curl -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"ADMIN001","password":"PASSWORD"}'
+```
+
+Returns a JWT bearer token and the user type (`A` for admin, `U` for regular user). Use the token in the `Authorization: Bearer <token>` header for all subsequent requests.
+
+### Retrieve the menu (replaces `COMEN01C` / `COADM01C`)
+
+```bash
+curl -X GET http://localhost:8080/api/menu \
+  -H "Authorization: Bearer <token>"
+```
+
+Returns role-filtered menu options (admin sees user-administration entries; regular users do not).
+
+### View an account (replaces `COACTVWC`)
+
+```bash
+curl -X GET http://localhost:8080/api/accounts/00000000001 \
+  -H "Authorization: Bearer <token>"
+```
+
+### List cards for an account (replaces `COCRDLIC`)
+
+```bash
+curl -X GET "http://localhost:8080/api/accounts/00000000001/cards?page=0&size=10" \
+  -H "Authorization: Bearer <token>"
+```
+
+Pagination via `page` and `size` parameters replaces the original `STARTBR DATASET('CARDAIX')` browse cursor with PF7/PF8 navigation.
+
+### Create a transaction (replaces `COTRN02C`)
+
+```bash
+curl -X POST http://localhost:8080/api/transactions \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cardNumber":"4111111111111111",
+    "tranTypeCd":"01",
+    "tranCatCd":"01",
+    "amount":42.50,
+    "description":"Test transaction"
+  }'
+```
+
+### Submit a bill payment (replaces `COBIL00C`)
+
+```bash
+curl -X POST http://localhost:8080/api/accounts/00000000001/payments \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"amount":100.00}'
+```
+
+### Launch a batch job (replaces the JCL submitter; admin only)
+
+```bash
+curl -X POST "http://localhost:8080/api/admin/jobs/interestCalculationJob/launch?tranDate=2022071800" \
+  -H "Authorization: Bearer <token-with-ROLE_ADMIN>"
+```
+
+Supported job names mirror the JCL inventory: `transactionPostingJob` (replaces `POSTTRAN.jcl`), `interestCalculationJob` (replaces `INTCALC.jcl`), `transactionConsolidationJob` (replaces `COMBTRAN.jcl`), `statementGenerationJob` (replaces `CREASTMT.JCL`), `dataInitializationJob`, `userSeedingJob`, `transactionBackupJob`, `transactionReportJob`, `categoryBalanceReportJob`, plus diagnostic file-read jobs.
+
+### Critical batch sequence
+
+The original critical sequence `POSTTRAN → INTCALC → COMBTRAN → CREASTMT` is preserved. Either invoke each job individually via the BatchAdminController, or launch the composite chained job (when configured).
+
+## API Documentation
+
+Once running, the OpenAPI 3 documentation is available via springdoc-openapi:
+
+- Swagger UI: `http://localhost:8080/swagger-ui.html`
+- OpenAPI JSON: `http://localhost:8080/v3/api-docs`
+
+## Default Users
+
+Five admin users and five regular users are seeded by `V4__seed_users.sql`, all with the literal password `"PASSWORD"` (BCrypt-hashed):
+
+| User ID | Role | Password |
+| :------ | :--- | :------- |
+| `ADMIN001` – `ADMIN005` | ADMIN | `PASSWORD` |
+| `USER0001` – `USER0005` | USER | `PASSWORD` |
+
+**Security note**: BCrypt with a random salt is used for password storage, replacing the original plaintext `USRSEC` VSAM compare. The default password is appropriate for demonstration only; rotate it immediately in any non-demonstration deployment. All user-administration endpoints (`/api/admin/users/*`) enforce `@PreAuthorize("hasRole('ADMIN')")`, closing the documented programmatic-authorization gap from the original `COUSR00C`-`COUSR03C` programs.
+
+## Spring Boot Actuator Endpoints
+
+Operational health and metrics are exposed via Spring Boot Actuator under `/actuator`:
+
+| Endpoint | Purpose |
+| :------- | :------ |
+| `GET /actuator/health` | Application health (database connectivity, disk space, custom indicators) |
+| `GET /actuator/info` | Build info (version, git commit) — only enabled when `info.*` properties are set |
+| `GET /actuator/metrics` | List available metrics |
+| `GET /actuator/metrics/{name}` | Metric details (e.g., `jvm.memory.used`, `hikaricp.connections.active`) |
+| `GET /actuator/env` | Environment properties (sensitive values masked) |
+| `GET /actuator/loggers` | View and adjust log levels at runtime |
+
+Production deployments should restrict Actuator endpoints to a management network and protect them behind authentication.
+
+## Project Structure (Java)
+
+```
+carddemo/
+├── pom.xml                                         (Maven build, Spring Boot 3.2.12 parent)
+├── src/
+│   ├── main/
+│   │   ├── java/com/carddemo/
+│   │   │   ├── CardDemoApplication.java            (Spring Boot entry point)
+│   │   │   ├── controller/                         (9 REST controllers + GlobalExceptionHandler)
+│   │   │   ├── service/                            (10 service classes)
+│   │   │   ├── repository/                         (12 Spring Data JPA repositories)
+│   │   │   ├── entity/                             (15 JPA entities mirroring VSAM record layouts)
+│   │   │   ├── batch/                              (Spring Batch Job/Step beans replacing JCL jobs)
+│   │   │   ├── security/                           (SecurityConfig, UserDetailsServiceImpl, etc.)
+│   │   │   ├── config/                             (DataSourceConfig, WebConfig, OpenApiConfig)
+│   │   │   ├── dto/                                (Request/response DTOs nested by domain)
+│   │   │   ├── mapper/                             (Entity-to-DTO mappers)
+│   │   │   ├── exception/                          (Custom exceptions + ErrorResponse)
+│   │   │   ├── util/                               (DateConversionUtil, BigDecimalUtil, TransactionIdGenerator)
+│   │   │   └── validation/                         (TransactionValidator chain)
+│   │   └── resources/
+│   │       ├── application.yml                     (Base configuration)
+│   │       ├── application-dev.yml                 (Development profile)
+│   │       ├── application-prod.yml                (Production profile)
+│   │       ├── db/migration/V*.sql                 (Flyway schema + seed scripts)
+│   │       └── templates/statement-template.html   (CBSTM03A HTML preserved)
+│   └── test/
+│       ├── java/com/carddemo/
+│       │   ├── controller/                         (MockMvc tests per controller)
+│       │   ├── service/                            (Mockito-based unit tests)
+│       │   ├── batch/                              (JobLauncherTestUtils tests)
+│       │   ├── integration/                        (Testcontainers PostgreSQL end-to-end)
+│       │   └── businesslogic/                      (Parity tests vs COBOL outputs)
+│       └── resources/
+│           ├── application-test.yml
+│           └── fixtures/
+├── docs/
+│   └── migration-mapping.md                        (COBOL→Java mapping reference)
+└── app/                                            (Original mainframe sources — PRESERVED)
+    ├── bms/                                        (3270 BMS map sources)
+    ├── catlg/LISTCAT.txt                           (VSAM catalog snapshot)
+    ├── cbl/                                        (28 COBOL programs)
+    ├── cpy/                                        (27 record-defining copybooks)
+    ├── cpy-bms/                                    (17 BMS symbolic copybooks)
+    ├── csd/CARDDEMO.CSD                            (CICS resource definitions)
+    ├── ctl/REPROCT.ctl                             (IDCAMS control card)
+    ├── data/ASCII/                                 (9 fixed-width seed fixture files)
+    ├── jcl/                                        (28 JCL jobs)
+    └── proc/                                       (JCL procs)
+```
+
+For a comprehensive per-file mapping from the original COBOL/JCL/copybook to the Java target, see [`docs/migration-mapping.md`](docs/migration-mapping.md).
+
+## What's Preserved vs. What's Modernized
+
+| Aspect | Original (Mainframe) | Modernized (Spring Boot) |
+| :----- | :------------------- | :----------------------- |
+| Business logic | COBOL programs (`app/cbl/`) | Java services + Spring Batch jobs — **byte/value parity tested** |
+| Online UI | 3270 BMS maps (`app/bms/`) | REST API + JSON (no UI replacement; BMS preserved as REFERENCE) |
+| Persistence | VSAM KSDS + AIX alternate indexes | PostgreSQL 15 + JPA `@Index` |
+| Batch | JCL jobstreams (`app/jcl/`) | Spring Batch `Job` beans |
+| Security | RACF + plaintext USRSEC compare | Spring Security 6 + BCrypt + `@PreAuthorize` |
+| Currency math | COBOL `PIC S9(10)V99 COMP-3` | `java.math.BigDecimal` scale 2, `HALF_UP` |
+| Concurrency | VSAM `READ UPDATE` exclusive lock | JPA `@Version` optimistic locking |
+| Timestamp format | DB2 external `YYYY-MM-DD-HH.MM.SS.MIL0000` | `LocalDateTime` internally; DB2 format preserved at I/O boundaries |
+
+---
+
+> **Reference**: The original mainframe documentation below this section is preserved unchanged from the legacy CardDemo project. It remains accurate for the COBOL/CICS/VSAM implementation under `app/` and is retained for downstream regression verification.
 
 <br/>
 
