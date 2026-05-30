@@ -205,9 +205,11 @@ CREATE TABLE daily_transactions (
     card_num                 VARCHAR(16),
     orig_timestamp           TIMESTAMP,
     proc_timestamp           TIMESTAMP,
-    processed                BOOLEAN        NOT NULL DEFAULT FALSE
+    processed                BOOLEAN        NOT NULL DEFAULT FALSE,
+    created_at               TIMESTAMP
 );
 COMMENT ON TABLE daily_transactions IS 'Staging table for CBTRN02C/POSTTRAN batch — maps app/cpy/CVTRA06Y.cpy 350-byte DALYTRAN-RECORD. Synthetic BIGSERIAL PK enables chunk-restart per Spring Batch. processed flag enables incremental post-processing.';
+COMMENT ON COLUMN daily_transactions.created_at IS 'AAP §0.6.12 staging-time audit timestamp — populated by Spring Data @CreatedDate (AuditingEntityListener) when a feed row is first staged. Nullable so inserts succeed when @EnableJpaAuditing is inactive. Java-only addition (not in the CVTRA06Y DALYTRAN-RECORD layout).';
 
 
 -- =============================================================================
