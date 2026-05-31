@@ -36,16 +36,19 @@ import org.springframework.stereotype.Repository;
  * account's group id; if the read returns file status {@code '23'} (record not found), it
  * retries with the literal group id {@code "DEFAULT"} before failing. The standard inherited
  * {@code findById(DisclosureGroupId)} supports <em>both</em> the exact lookup and the
- * {@code "DEFAULT"} fallback by simply constructing the appropriate key (AAP &sect;0.6.11):</p>
- * <pre>
- *   Optional&lt;DisclosureGroup&gt; result =
- *       disclosureGroupRepository.findById(new DisclosureGroupId(groupId, typeCd, catCd));
- *   if (result.isEmpty()) {
- *       result = disclosureGroupRepository.findById(
- *           new DisclosureGroupId("DEFAULT", typeCd, catCd));
- *   }
- *   // result.isEmpty() after the fallback -&gt; DiscloseGroupNotFoundException
- * </pre>
+ * {@code "DEFAULT"} fallback by simply constructing the appropriate key. The preferred
+ * idiom chains the two reads with {@link java.util.Optional#or(java.util.function.Supplier)}
+ * and surfaces a total miss via {@code orElseThrow} (AAP &sect;0.6.11):</p>
+ * <pre>{@code
+ *   DisclosureGroupId key = new DisclosureGroupId(groupId, typeCd, catCd);
+ *   Optional<DisclosureGroup> dg = disclosureGroupRepository.findById(key)
+ *       .or(() -> disclosureGroupRepository.findById(
+ *           new DisclosureGroupId("DEFAULT", typeCd, catCd)));
+ *   BigDecimal rate = dg
+ *       .map(DisclosureGroup::getDisIntRate)
+ *       .orElseThrow(() -> new DiscloseGroupNotFoundException(
+ *           "No DEFAULT entry for type=" + typeCd + " cat=" + catCd));
+ * }</pre>
  * <p>The {@code DFHRESP(NOTFND)} / status {@code '23'} branch maps to {@code Optional.empty()};
  * a miss on both the exact key and the {@code "DEFAULT"} key surfaces as a
  * {@link com.carddemo.exception.DiscloseGroupNotFoundException} in the service/tasklet layer.
