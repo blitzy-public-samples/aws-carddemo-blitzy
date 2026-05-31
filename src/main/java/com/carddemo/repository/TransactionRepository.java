@@ -1,0 +1,177 @@
+package com.carddemo.repository;
+
+import com.carddemo.entity.Transaction;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+/**
+ * Spring Data JPA repository for {@link Transaction} posted-transaction records.
+ *
+ * <p>Replaces the VSAM {@code TRANSACT} KSDS keyed file plus its
+ * {@code TRANSACT.AIX} alternate-index path. The underlying table is the
+ * system-of-record transaction history mapping the 350-byte {@code TRAN-RECORD}
+ * layout from {@code app/cpy/CVTRA05Y.cpy} (CardDemo_v1.0-15-g27d6c6f-68); it is
+ * populated by:</p>
+ * <ul>
+ *   <li>Online transaction creation ({@code app/cbl/COTRN02C.cbl} &mdash;
+ *       "Add a new Transaction to TRANSACT file", originally an
+ *       {@code EXEC CICS WRITE} after a {@code STARTBR}/{@code READPREV} to derive
+ *       the next {@code TRAN-ID}) &rarr; {@code TransactionService} via the
+ *       inherited {@code save(...)}.</li>
+ *   <li>Batch transaction posting ({@code app/cbl/CBTRN02C.cbl}, the POSTTRAN job)
+ *       &rarr; {@code TransactionPostingJobConfig} (chunk pipeline, PR-03 validation
+ *       codes 100/101/102/103).</li>
+ *   <li>Batch interest calculation ({@code app/cbl/CBACT04C.cbl}) &rarr;
+ *       {@code InterestCalculationJobConfig} &mdash; emits interest transactions whose
+ *       16-character IDs are produced by {@code TransactionIdGenerator} per PR-10.</li>
+ *   <li>Batch consolidation ({@code app/cbl/CBTRN03C.cbl} / {@code app/jcl/COMBTRAN.jcl})
+ *       &rarr; {@code TransactionConsolidationJobConfig} (merge into the master
+ *       transactions table).</li>
+ * </ul>
+ *
+ * <p>It is read by the transaction list/view online flows
+ * ({@code app/cbl/COTRN00C.cbl} keyed browse via {@code STARTBR}/{@code READNEXT}/
+ * {@code READPREV}; {@code app/cbl/COTRN01C.cbl} keyed {@code READ} by {@code TRAN-ID})
+ * and by statement generation ({@code app/cbl/CBSTM03A.CBL}, which enumerates the
+ * transactions belonging to each card).</p>
+ *
+ * <p><strong>Primary key (PR-13).</strong> The {@link Transaction} entity's {@code @Id}
+ * is {@code String tranId} mapping {@code TRAN-ID PIC X(16)} &rarr;
+ * {@code tran_id VARCHAR(16) NOT NULL PRIMARY KEY}; this interface therefore extends
+ * {@code JpaRepository<Transaction, String>}. The 16-character format follows PR-10:
+ * {@code parmDate(10) + suffix(6)} (generation lives in {@code TransactionIdGenerator},
+ * not here). The inherited {@code findById(String)} reproduces the single-record keyed
+ * {@code READ} of {@code COTRN01C}; {@code save(...)} reproduces the {@code WRITE} of
+ * {@code COTRN02C} and the batch posting/interest/consolidation writes; {@code findAll}
+ * plus the {@code Pageable} overloads back the {@code COTRN00C} list browse (forward/
+ * backward paging is computed statelessly at the <em>service</em> layer via
+ * {@code PageRequest}, replacing the server-side {@code STARTBR}/{@code READNEXT}/
+ * {@code READPREV} cursor).</p>
+ *
+ * <p><strong>Consumers.</strong> {@code TransactionService} (backs
+ * {@code GET /api/transactions}, {@code GET /api/transactions/{tranId}},
+ * {@code POST /api/transactions}); {@code BillPaymentService} (persists a payment
+ * transaction atomically with the account-balance update inside a
+ * {@code @Transactional} scope); {@code StatementService} /
+ * {@code StatementGenerationJobConfig} (per-card enumeration for {@code CBSTM03A});
+ * {@code TransactionPostingJobConfig} (bulk insert of accepted transactions per
+ * {@code CBTRN02C} per-record processing); {@code TransactionConsolidationJobConfig}
+ * (merge into the master transactions table per {@code CBTRN03C}/{@code COMBTRAN}).</p>
+ *
+ * <p><strong>AAP &sect;0.6.13 alternate-index replacement.</strong> The original VSAM
+ * {@code TRANSACT.AIX} alternate index on {@code TRAN-ORIG-TS} (position 304, length 26)
+ * is replaced by the PostgreSQL B-tree index {@code idx_transaction_orig_ts} on the
+ * {@code orig_timestamp} column. The index is declared both via {@code @Index} on the
+ * {@link Transaction} entity (keeping the entity self-describing) and physically by
+ * Flyway {@code src/main/resources/db/migration/V2__indexes.sql}; PostgreSQL maintains
+ * it automatically on every INSERT/UPDATE/DELETE, so the IDCAMS
+ * {@code DELETE}&rarr;{@code DEFINE}&rarr;{@code BLDINDEX}&rarr;{@code DEFINE PATH}
+ * rebuild sequence of {@code app/jcl/TRANIDX.jcl} has no Java/SQL counterpart. That
+ * index backs {@link #findByOrigTimestampBetween(LocalDateTime, LocalDateTime)}.</p>
+ *
+ * <p><strong>PR-22 optimistic locking.</strong> The {@link Transaction} entity carries a
+ * {@code @Version} field; concurrent updates raise {@code OptimisticLockException}, which
+ * {@code GlobalExceptionHandler} maps to HTTP 409 Conflict (replacing the VSAM
+ * {@code READ UPDATE} exclusive lock with non-blocking optimistic concurrency).</p>
+ *
+ * <p><strong>Pattern &amp; scope.</strong> Per the Repository Pattern (AAP &sect;0.3.3 #1)
+ * this extends {@code JpaRepository} (not {@code CrudRepository}) to inherit the full
+ * CRUD, sort, and paging API. The explicit {@code @Repository} stereotype marks the
+ * interface for component scanning and activates Spring's
+ * {@code PersistenceExceptionTranslationPostProcessor}, translating provider-specific
+ * exceptions (including the {@code OptimisticLockException} above) into the
+ * {@code org.springframework.dao.DataAccessException} hierarchy. This is a pure
+ * data-access component and carries no business logic &mdash; transaction validation
+ * (PR-03 codes 100/101/102/103), TCATBAL upsert (PR-06), and balance updates (PR-07)
+ * live in the batch processor/writer beans and the service layer.</p>
+ *
+ * <p><strong>Note on the AAP / agent-prompt parameter-type discrepancy (resolved in
+ * favour of the entity).</strong> AAP &sect;0.4.1.5 specifies
+ * {@code findByOrigTimestampBetween(LocalDateTime start, LocalDateTime end)}, which is
+ * correct for the committed entity. A later agent-prompt revision attempted to
+ * "override" this to {@code String} parameters on the assumption that the entity
+ * declared {@code origTimestamp} as a {@code String} (length 26) holding the raw DB2
+ * external timestamp; however the entity that was actually generated and committed
+ * declares {@code private LocalDateTime origTimestamp} mapped to the
+ * {@code orig_timestamp TIMESTAMP} column (verified against the entity source, the
+ * Flyway DDL {@code V1__schema.sql}, and the sibling
+ * {@code DailyTransaction}/{@code RejectedTransaction} entities, all of which normalize
+ * the 26-char DB2 form to {@link LocalDateTime} per AAP &sect;0.6.5). Spring Data
+ * derives the {@code BETWEEN} query from the {@code origTimestamp} property type, so the
+ * finder parameters MUST be {@link LocalDateTime}; declaring {@code String} parameters
+ * would bind text arguments against a {@code TIMESTAMP} property and fail at query
+ * execution. This interface therefore uses {@link LocalDateTime} parameters to remain
+ * consistent with the entity, the schema, and the AAP &mdash; an entity-aligned
+ * resolution mirroring the sibling {@code DailyTransactionRepository}. The 26-character
+ * DB2 textual form ({@code YYYY-MM-DD-HH.MM.SS.MIL0000}, PR-11) is reproduced only at
+ * I/O boundaries by {@code DateConversionUtil} / {@code DateConversionService}, and the
+ * service layer performs any {@code String} &harr; {@link LocalDateTime} conversion
+ * before invoking this finder.</p>
+ *
+ * @see com.carddemo.entity.Transaction
+ * @see com.carddemo.repository.DailyTransactionRepository
+ * @see com.carddemo.repository.RejectedTransactionRepository
+ * @see org.springframework.data.jpa.repository.JpaRepository
+ */
+@Repository
+public interface TransactionRepository extends JpaRepository<Transaction, String> {
+
+    /**
+     * Finds all transactions whose {@code origTimestamp} falls within the given
+     * inclusive range {@code [startTimestamp, endTimestamp]}.
+     *
+     * <p>Replaces the VSAM {@code TRANSACT.AIX} alternate-index range scan used by
+     * transaction reporting, list views, and the consolidation/statement batch jobs.
+     * Spring Data parses the method name and auto-generates JPQL equivalent to
+     * {@code WHERE t.origTimestamp BETWEEN :startTimestamp AND :endTimestamp} (the
+     * predicate references the {@code origTimestamp} entity field; the physical SQL
+     * column is {@code orig_timestamp}). Execution is backed by the PostgreSQL B-tree
+     * index {@code idx_transaction_orig_ts} (AAP &sect;0.6.13).</p>
+     *
+     * <p><strong>{@link LocalDateTime} parameters (not {@code String}) &mdash;
+     * entity-aligned.</strong> The {@link Transaction} entity declares
+     * {@code origTimestamp} as {@link LocalDateTime} over the {@code orig_timestamp
+     * TIMESTAMP} column (AAP &sect;0.6.5); Spring Data method-name auto-derivation
+     * requires the parameter types to match the property type, so both bounds are
+     * {@link LocalDateTime}. The raw 26-character DB2 external timestamp
+     * ({@code YYYY-MM-DD-HH.MM.SS.MIL0000}, PR-11) lives only at I/O boundaries; the
+     * service layer converts {@code String} &harr; {@link LocalDateTime} (via
+     * {@code DateConversionUtil}/{@code DateConversionService}) before calling this
+     * method.</p>
+     *
+     * @param startTimestamp inclusive lower bound of the original-timestamp range;
+     *                       must not be {@code null}
+     * @param endTimestamp   inclusive upper bound of the original-timestamp range;
+     *                       must not be {@code null}
+     * @return the matching transactions (an empty list when none match); never
+     *         {@code null}
+     */
+    List<Transaction> findByOrigTimestampBetween(LocalDateTime startTimestamp, LocalDateTime endTimestamp);
+
+    /**
+     * Finds all transactions recorded against the given card number.
+     *
+     * <p>Primary consumer: statement generation ({@code app/cbl/CBSTM03A.CBL} &rarr;
+     * {@code StatementGenerationJobConfig}/{@code StatementService}), which enumerates
+     * every transaction that occurred on a card during the statement period. Spring
+     * Data derives JPQL equivalent to {@code WHERE t.cardNum = :cardNum} (entity field
+     * {@code cardNum}; physical column {@code card_num}).</p>
+     *
+     * <p><strong>Method name uses {@code CardNum} (not {@code CardNumber}) &mdash;
+     * entity-aligned.</strong> The {@link Transaction} entity field is {@code cardNum},
+     * mapping COBOL {@code TRAN-CARD-NUM PIC X(16)}. Spring Data method-name
+     * auto-derivation requires the property segment of the method name to match the
+     * entity field name exactly; {@code findByCardNumber} would raise a
+     * {@code PropertyReferenceException} at bootstrap because no {@code cardNumber}
+     * property exists. Hence {@code findByCardNum}.</p>
+     *
+     * @param cardNum the 16-character card number (matches {@code TRAN-CARD-NUM
+     *                PIC X(16)}); must not be {@code null}
+     * @return the transactions for this card (an empty list when none exist); never
+     *         {@code null}
+     */
+    List<Transaction> findByCardNum(String cardNum);
+}
