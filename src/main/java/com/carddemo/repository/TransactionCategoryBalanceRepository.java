@@ -40,7 +40,7 @@ import org.springframework.stereotype.Repository;
  *       new TransactionCategoryBalanceId(acctId, typeCd, catCd);
  *   if (repo.existsById(key)) {            // READ ... NOT INVALID KEY
  *       TransactionCategoryBalance bal = repo.findById(key).orElseThrow();
- *       bal.setBalance(bal.getBalance().add(amount)); // ADD DALYTRAN-AMT TO TRAN-CAT-BAL
+ *       bal.setTranCatBal(bal.getTranCatBal().add(amount)); // ADD DALYTRAN-AMT TO TRAN-CAT-BAL
  *       repo.save(bal);                    // REWRITE
  *   } else {                               // INVALID KEY -&gt; create
  *       repo.save(new TransactionCategoryBalance(key, amount)); // WRITE
@@ -68,14 +68,30 @@ import org.springframework.stereotype.Repository;
  *
  * <p><strong>Consumers.</strong> {@code TransactionPostingProcessor} /
  * {@code TransactionCategoryBalanceUpsertWriter} (POSTTRAN/CBTRN02C),
- * {@code InterestCalculationTasklet} (INTCALC/CBACT04C), and
- * {@code CategoryBalanceReportJobConfig} (PRTCATBL). Access is by composite primary key or full
- * scan; there is no alternate-index (AIX) equivalent for this table.</p>
+ * {@code InterestCalculationTasklet} (INTCALC/CBACT04C),
+ * {@code CategoryBalanceReportJobConfig} (PRTCATBL), and
+ * {@code DataInitializationJobConfig} (initial seed load of the standard
+ * transaction-category balances from {@code app/data/ASCII/tcatbal.txt}). Access is by
+ * composite primary key or full scan; there is no alternate-index (AIX) equivalent for this
+ * table.</p>
+ *
+ * <p><strong>Money (PR-16).</strong> The single monetary field
+ * {@code TransactionCategoryBalance.tranCatBal} (COBOL {@code TRAN-CAT-BAL PIC S9(09)V99},
+ * physical column {@code balance NUMERIC(15,2)}) is modelled as {@link java.math.BigDecimal}
+ * with scale 2 and {@code RoundingMode.HALF_UP}, mirroring the COBOL packed-decimal semantics;
+ * {@code float}/{@code double} are forbidden for any monetary value, and balance comparisons
+ * use {@link java.math.BigDecimal#compareTo(java.math.BigDecimal)} (never {@code equals}). This
+ * is enforced entirely by the entity mapping &mdash; the repository is type-agnostic and
+ * performs no arithmetic; the {@code += DALYTRAN-AMT} roll-up (PR-06) and the
+ * {@code (TRAN-CAT-BAL * DIS-INT-RATE) / 1200} interest formula (PR-01) live in the consumer
+ * writer/tasklet layer.</p>
  *
  * <p><strong>No optimistic locking.</strong> Per AAP &sect;0.3.3 the {@code @Version} optimistic
  * lock is restricted to {@code Account}, {@code Card}, {@code Customer}, and {@code Transaction};
  * the balance roll-ups here are performed inside the single-threaded batch chunk transaction, so
- * this entity carries no {@code @Version} column.</p>
+ * this entity carries no {@code @Version} column. Lost-update safety for the concurrent
+ * CBTRN02C / CBACT04C balance upserts is provided by the surrounding {@code @Transactional}
+ * boundary (PR-24) under the default {@code READ_COMMITTED} isolation.</p>
  *
  * <p><strong>Pattern &amp; scope.</strong> Per the Repository Pattern (AAP &sect;0.3.3 #1)
  * this extends {@code JpaRepository} (not {@code CrudRepository}) to inherit the full CRUD,
