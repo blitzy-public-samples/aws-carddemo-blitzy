@@ -67,7 +67,7 @@ import lombok.Setter;
  * entities and required by {@code TransactionRepository.findByOrigTimestampBetween(LocalDateTime, LocalDateTime)}.
  * The 26-character textual DB2 form is reproduced only at I/O boundaries (file emission,
  * JSON serialization) via {@code DateConversionUtil} / {@code DateConversionService}, using
- * {@code DateTimeFormatter.ofPattern("yyyy-MM-dd-HH.mm.ss.SSS'0000'")}.</p>
+ * {@code DateTimeFormatter.ofPattern("yyyy-MM-dd-HH.mm.ss.SS'0000'")}.</p>
  *
  * <p><strong>Money (PR-16).</strong> {@code amount} maps {@code TRAN-AMT PIC S9(09)V99} to a
  * {@link BigDecimal} with scale 2 ({@code NUMERIC(15,2)}); {@code float}/{@code double} are
@@ -216,7 +216,7 @@ public class Transaction {
      * managed by Hibernate. Modeled as {@link Integer} to match the {@code INTEGER} column.
      */
     @Version
-    @Column(name = "version")
+    @Column(name = "version", nullable = false)
     private Integer version;
 
     /**
@@ -227,7 +227,7 @@ public class Transaction {
      * (AAP &sect;0.6.12).
      */
     @CreatedDate
-    @Column(name = "created_date", updatable = false)
+    @Column(name = "created_date", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
     /**
@@ -237,7 +237,7 @@ public class Transaction {
      * (AAP &sect;0.6.12).
      */
     @LastModifiedDate
-    @Column(name = "last_modified_date")
+    @Column(name = "last_modified_date", nullable = false)
     private LocalDateTime updatedAt;
 
     /**

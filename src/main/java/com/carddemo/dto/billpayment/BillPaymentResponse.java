@@ -75,7 +75,7 @@ import java.math.BigDecimal;
  *
  * <p><b>CRITICAL — PR-11 (DB2 timestamp format preserved):</b> The
  * {@code processedAt} field is a {@code String} of exactly 26 characters in
- * format {@code yyyy-MM-dd-HH.mm.ss.SSS'0000'}, NOT a {@code LocalDateTime}.
+ * format {@code yyyy-MM-dd-HH.mm.ss.SS'0000'}, NOT a {@code LocalDateTime}.
  * This preserves byte-for-byte compatibility with the original COBOL timestamp
  * representation used by {@code CBACT04C} and {@code CBTRN02C}. The conversion
  * from internal {@code LocalDateTime} to this string format happens in
@@ -161,10 +161,10 @@ public record BillPaymentResponse(
     @NotBlank
     @Size(min = 26, max = 26, message = "processedAt must be exactly 26 characters (DB2 timestamp format)")
     @Schema(description = "Timestamp of payment processing in DB2 external format " +
-            "yyyy-MM-dd-HH.mm.ss.SSS'0000' (26 chars total). Preserves byte-for-byte compatibility " +
+            "yyyy-MM-dd-HH.mm.ss.SS'0000' (26 chars total). Preserves byte-for-byte compatibility " +
             "with COBOL CBACT04C/CBTRN02C timestamp emission per PR-11. " +
             "Generated via DateConversionUtil at the I/O boundary.",
-            example = "2024-01-15-09.30.45.1230000", minLength = 26, maxLength = 26,
+            example = "2024-01-15-09.30.45.120000", minLength = 26, maxLength = 26,
             requiredMode = Schema.RequiredMode.REQUIRED)
     String processedAt,
 

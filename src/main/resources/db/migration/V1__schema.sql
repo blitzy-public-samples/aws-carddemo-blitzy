@@ -150,7 +150,7 @@ COMMENT ON TABLE card_xref IS 'Maps app/cpy/CVACT03Y.cpy 50-byte CARD-XREF-RECOR
 -- =============================================================================
 -- 350-byte TRAN-RECORD. FK card_num → cards.card_num (TRAN-CARD-NUM).
 -- amount from TRAN-AMT PIC S9(09)V99 → NUMERIC(15,2) (PR-16). orig_timestamp /
--- proc_timestamp hold DB2-format timestamps (yyyy-MM-dd-HH.mm.ss.SSS'0000')
+-- proc_timestamp hold DB2-format timestamps (yyyy-MM-dd-HH.mm.ss.SS'0000')
 -- formatted at the JPA/DTO boundary (PR-11). A secondary index on orig_timestamp
 -- (replacing VSAM TRANSACT.AIX) is added in V2__indexes.sql.
 -- =============================================================================
@@ -175,7 +175,7 @@ CREATE TABLE transactions (
     last_modified_by         VARCHAR(50),
     CONSTRAINT fk_transactions_card FOREIGN KEY (card_num) REFERENCES cards (card_num)
 );
-COMMENT ON TABLE transactions IS 'Maps app/cpy/CVTRA05Y.cpy 350-byte TRAN-RECORD (CardDemo_v1.0-15-g27d6c6f-68). orig_timestamp and proc_timestamp store DB2-format timestamps (yyyy-MM-dd-HH.mm.ss.SSS''0000'') per PR-11 — parsing/formatting handled at the JPA/DTO boundary.';
+COMMENT ON TABLE transactions IS 'Maps app/cpy/CVTRA05Y.cpy 350-byte TRAN-RECORD (CardDemo_v1.0-15-g27d6c6f-68). orig_timestamp and proc_timestamp store DB2-format timestamps (yyyy-MM-dd-HH.mm.ss.SS''0000'') per PR-11 — parsing/formatting handled at the JPA/DTO boundary.';
 COMMENT ON COLUMN transactions.version IS 'PR-22: Optimistic locking version for @Version JPA annotation';
 
 

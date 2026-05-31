@@ -28,7 +28,7 @@ import java.util.Optional;
  *       COBOL {@code CSUTLDTC} callers (e.g., {@code app/cbl/COTRN02C.cbl}:
  *       {@code WS-DATE-FORMAT VALUE 'YYYY-MM-DD'}) and the layout of the ASCII
  *       fixture files.</li>
- *   <li><b>DB2 timestamp</b> — {@code yyyy-MM-dd-HH.mm.ss.SSS'0000'}, the DB2
+ *   <li><b>DB2 timestamp</b> — {@code yyyy-MM-dd-HH.mm.ss.SS'0000'}, the DB2
  *       external timestamp form derived from {@code DB2-FORMAT-TS} in
  *       {@code app/cbl/CBACT04C.cbl} and emitted to {@code TRAN-ORIG-TS} and
  *       {@code TRAN-PROC-TS}.</li>
@@ -43,14 +43,16 @@ import java.util.Optional;
  * {@link #isValidDate}, which wrap {@link DateTimeParseException} in
  * {@link Optional}/{@code boolean} rather than propagating it.
  *
- * <h2>DB2 timestamp precision (PR-11)</h2>
+ * <h2>DB2 timestamp format (PR-11)</h2>
  * <p>The COBOL {@code DB2-FORMAT-TS} field is 26 characters with a 2-digit
  * centisecond component ({@code DB2-MIL PIC 9(02)}) followed by the literal
  * {@code '0000'} [app/cbl/CBACT04C.cbl L150-L165, L613-L626]. Per PR-11, the
- * Java migration uses the pattern {@code yyyy-MM-dd-HH.mm.ss.SSS'0000'}, where
- * {@code SSS} is a 3-digit millisecond component followed by the same literal
- * {@code 0000}. This is an intentional precision upgrade (27 characters total);
- * downstream parity tests assert against the Java pattern.
+ * Java migration preserves this layout exactly using the pattern
+ * {@code yyyy-MM-dd-HH.mm.ss.SS'0000'}, where {@code SS} is the 2-digit
+ * centisecond component (the sub-second fraction truncated to two digits)
+ * followed by the same literal {@code 0000}. The result is 26 characters total,
+ * byte-for-byte faithful to the COBOL field; downstream parity tests assert
+ * against this canonical pattern.
  *
  * <h2>Null handling</h2>
  * <p>All conversion methods accept {@code null} (and, where a string is
@@ -79,7 +81,7 @@ public final class DateConversionUtil {
     }
 
     /**
-     * DB2 external timestamp format: {@code yyyy-MM-dd-HH.mm.ss.SSS'0000'}.
+     * DB2 external timestamp format: {@code yyyy-MM-dd-HH.mm.ss.SS'0000'}.
      *
      * <p>Preserves the COBOL CBACT04C {@code DB2-FORMAT-TS} layout
      * [app/cbl/CBACT04C.cbl L150-L165, L613-L626]:
@@ -97,7 +99,7 @@ public final class DateConversionUtil {
      *      06 DB2-DOT-2     PIC X.        -- "."
      *      06 DB2-SS        PIC X(002).   -- "ss"
      *      06 DB2-DOT-3     PIC X.        -- "."
-     *      06 DB2-MIL       PIC 9(002).   -- "SS" centiseconds (Java SSS=ms approximates)
+     *      06 DB2-MIL       PIC 9(002).   -- "SS" 2-digit centiseconds (Java pattern: SS)
      *      06 DB2-REST      PIC X(04).    -- literal "0000"
      * </pre>
      *
@@ -113,7 +115,7 @@ public final class DateConversionUtil {
      * <p>Required by PR-11.
      */
     public static final DateTimeFormatter DB2_TIMESTAMP_FORMATTER =
-        DateTimeFormatter.ofPattern("yyyy-MM-dd-HH.mm.ss.SSS'0000'");
+        DateTimeFormatter.ofPattern("yyyy-MM-dd-HH.mm.ss.SS'0000'");
 
     /**
      * Compact CCYYMMDD format: {@code yyyyMMdd} (8 digits, no separators).
@@ -148,13 +150,15 @@ public final class DateConversionUtil {
         DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
     /**
-     * Formats a {@link LocalDateTime} as a 27-character DB2 external timestamp
+     * Formats a {@link LocalDateTime} as a 26-character DB2 external timestamp
      * matching the COBOL CBACT04C {@code DB2-FORMAT-TS} pattern
-     * {@code yyyy-MM-dd-HH.mm.ss.SSS0000}.
+     * {@code yyyy-MM-dd-HH.mm.ss.SS0000}.
      *
      * <p>Example:
      * {@code toDb2Timestamp(LocalDateTime.of(2022, 7, 18, 19, 27, 53, 123_000_000))}
-     * returns {@code "2022-07-18-19.27.53.1230000"}.
+     * returns {@code "2022-07-18-19.27.53.120000"} (the 123&nbsp;ms fraction is
+     * truncated to the 2-digit centisecond component {@code "12"}, then the literal
+     * {@code "0000"} is appended).
      *
      * <p>Returns {@code null} for {@code null} input (graceful).
      *
@@ -173,7 +177,7 @@ public final class DateConversionUtil {
      * guarantee well-formed input should validate first or wrap in try/catch).
      *
      * @param s the DB2 timestamp string
-     *          (e.g., {@code "2022-07-18-19.27.53.1230000"})
+     *          (e.g., {@code "2022-07-18-19.27.53.120000"})
      * @return the parsed {@code LocalDateTime}, or {@code null} if input is
      *         null/blank
      * @throws DateTimeParseException if the input does not match the DB2 pattern

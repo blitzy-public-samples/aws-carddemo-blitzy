@@ -206,13 +206,15 @@ public class CustomerDto {
      *
      * <p><strong>PII</strong> &mdash; must never appear in logs.</p>
      */
-    @Size(min = 9, max = 9)
-    @Pattern(regexp = "\\d{9}")
+    @Size(min = 9, max = 11)
+    @Pattern(regexp = "\\d{9}|\\*{3}-\\*{2}-\\d{4}")
     @Schema(description = "Social Security Number. Maps COBOL CUST-SSN PIC 9(09). " +
             "INBOUND: 9-digit raw string accepted for admin creation. " +
             "OUTBOUND: MASKED as ***-**-#### by CustomerMapper per PR-20 (last 4 digits visible). " +
-            "PII — never logged.",
-            example = "123456789")
+            "The accepted pattern admits BOTH the inbound raw 9-digit form AND the outbound " +
+            "masked 11-char form, so the same DTO can faithfully represent either direction "
+            + "without ever carrying a raw SSN on an outbound response. PII — never logged.",
+            example = "***-**-6789")
     private String ssn;
 
     /**

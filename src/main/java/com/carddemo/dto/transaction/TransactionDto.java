@@ -55,7 +55,8 @@ import lombok.NoArgsConstructor;
  *   <li><b>origTimestamp / procTimestamp</b> — 26-char DB2-format {@code String}
  *       here ⇄ {@code LocalDateTime} on the entity (conversion via
  *       {@code DateConversionUtil} at the I/O boundary per PR-11)</li>
- *   <li><b>categoryCd</b> — {@code Integer} here ⇄ {@code String} on the entity</li>
+ *   <li><b>categoryCd</b> — fixed 4-digit {@code String} here, matching the
+ *       {@code CHAR(4)} entity column with leading zeros preserved (PR-13)</li>
  * </ul>
  *
  * <p><b>Field provenance — RECORD widths, NOT BMS widths (PR-13):</b> Field lengths
@@ -74,7 +75,7 @@ import lombok.NoArgsConstructor;
  *
  * <p><b>CRITICAL — PR-11 (DB2 timestamp format preserved):</b> {@code origTimestamp}
  * and {@code procTimestamp} are {@code String}s in DB2 external format
- * {@code yyyy-MM-dd-HH.mm.ss.SSS'0000'} preserved verbatim at the API boundary, NOT
+ * {@code yyyy-MM-dd-HH.mm.ss.SS'0000'} preserved verbatim at the API boundary, NOT
  * {@code LocalDateTime}. The conversion to/from internal {@code LocalDateTime}
  * happens in {@code TransactionMapper}.</p>
  *
@@ -154,19 +155,22 @@ public class TransactionDto {
 
     /**
      * Transaction category code (COBOL TRAN-CAT-CD PIC 9(04)).
-     * 4-digit numeric (0-9999).
+     * Fixed 4-character numeric string preserving leading zeros, matching the
+     * entity {@code CHAR(4)} column (PR-13). Modeled as {@code String} (not
+     * {@code Integer}) so values such as {@code "0001"} retain their leading zeros.
      */
     @NotNull(message = "Category code is required")
-    @Min(value = 0, message = "Category code must be 0 or greater")
-    @Max(value = 9999, message = "Category code must not exceed 4 digits")
+    @Size(min = 4, max = 4, message = "Category code must be exactly 4 characters")
+    @Pattern(regexp = "\\d{4}", message = "Category code must be exactly 4 numeric digits")
     @Schema(
-        description = "4-digit numeric transaction category code",
+        description = "4-digit numeric transaction category code (fixed-width, leading zeros preserved)",
         example = "5411",
-        minimum = "0",
-        maximum = "9999",
+        minLength = 4,
+        maxLength = 4,
+        pattern = "\\d{4}",
         requiredMode = Schema.RequiredMode.REQUIRED
     )
-    private Integer categoryCd;
+    private String categoryCd;
 
     /**
      * Transaction source (COBOL TRAN-SOURCE PIC X(10)).
@@ -272,19 +276,19 @@ public class TransactionDto {
 
     /**
      * Origin timestamp in DB2 format (COBOL TRAN-ORIG-TS PIC X(26)).
-     * Format: yyyy-MM-dd-HH.mm.ss.SSS'0000' (exactly 26 chars) per PR-11.
+     * Format: yyyy-MM-dd-HH.mm.ss.SS'0000' (exactly 26 chars) per PR-11.
      * Preserved verbatim at API boundary; conversion to LocalDateTime is done in TransactionMapper.
      */
     @NotNull(message = "Origin timestamp is required")
     @Size(min = 26, max = 26, message = "Origin timestamp must be exactly 26 characters in DB2 format")
     @Pattern(
-        regexp = "\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{3}0000",
-        message = "Origin timestamp must match DB2 format yyyy-MM-dd-HH.mm.ss.SSS'0000'"
+        regexp = "\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{2}0000",
+        message = "Origin timestamp must match DB2 format yyyy-MM-dd-HH.mm.ss.SS'0000'"
     )
     @Schema(
-        description = "Origin timestamp in DB2 format yyyy-MM-dd-HH.mm.ss.SSS'0000' (26 chars per PR-11). "
+        description = "Origin timestamp in DB2 format yyyy-MM-dd-HH.mm.ss.SS'0000' (26 chars per PR-11). "
             + "Indexed via @Index(idx_transaction_orig_ts) on the entity for range queries.",
-        example = "2024-01-15-14.30.45.1230000",
+        example = "2024-01-15-14.30.45.120000",
         minLength = 26,
         maxLength = 26,
         requiredMode = Schema.RequiredMode.REQUIRED
@@ -293,19 +297,19 @@ public class TransactionDto {
 
     /**
      * Processing timestamp in DB2 format (COBOL TRAN-PROC-TS PIC X(26)).
-     * Format: yyyy-MM-dd-HH.mm.ss.SSS'0000' (exactly 26 chars) per PR-11.
+     * Format: yyyy-MM-dd-HH.mm.ss.SS'0000' (exactly 26 chars) per PR-11.
      * Set by server at processing time (batch posting or online creation).
      */
     @NotNull(message = "Processing timestamp is required")
     @Size(min = 26, max = 26, message = "Processing timestamp must be exactly 26 characters in DB2 format")
     @Pattern(
-        regexp = "\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{3}0000",
-        message = "Processing timestamp must match DB2 format yyyy-MM-dd-HH.mm.ss.SSS'0000'"
+        regexp = "\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{2}0000",
+        message = "Processing timestamp must match DB2 format yyyy-MM-dd-HH.mm.ss.SS'0000'"
     )
     @Schema(
-        description = "Processing timestamp in DB2 format yyyy-MM-dd-HH.mm.ss.SSS'0000' (26 chars per PR-11). "
+        description = "Processing timestamp in DB2 format yyyy-MM-dd-HH.mm.ss.SS'0000' (26 chars per PR-11). "
             + "Server-stamped at the time of batch posting or online transaction creation.",
-        example = "2024-01-15-14.30.46.0010000",
+        example = "2024-01-15-14.30.46.000000",
         minLength = 26,
         maxLength = 26,
         requiredMode = Schema.RequiredMode.REQUIRED

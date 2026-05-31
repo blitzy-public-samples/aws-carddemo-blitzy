@@ -199,7 +199,7 @@ public class RejectedTransaction {
      * database default also satisfies the NOT NULL constraint when auditing is inactive.
      */
     @CreatedDate
-    @Column(name = "rejected_date", updatable = false)
+    @Column(name = "rejected_date", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
     // -------------------- equals / hashCode (synthetic-key identity) --------------------

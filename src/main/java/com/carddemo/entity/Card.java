@@ -176,7 +176,7 @@ public class Card {
      * managed by Hibernate. Modeled as {@link Integer} to match the {@code INTEGER} column.
      */
     @Version
-    @Column(name = "version")
+    @Column(name = "version", nullable = false)
     private Integer version;
 
     /**
@@ -186,7 +186,7 @@ public class Card {
      * Maps to {@code created_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP} (AAP &sect;0.6.12).
      */
     @CreatedDate
-    @Column(name = "created_date", updatable = false)
+    @Column(name = "created_date", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
     /**
@@ -195,7 +195,7 @@ public class Card {
      * {@code last_modified_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP} (AAP &sect;0.6.12).
      */
     @LastModifiedDate
-    @Column(name = "last_modified_date")
+    @Column(name = "last_modified_date", nullable = false)
     private LocalDateTime updatedAt;
 
     /**

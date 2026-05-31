@@ -25,7 +25,7 @@ import lombok.Builder;
  *   "path": "/api/transactions",
  *   "timestamp": "2024-06-15T14:32:11.123",
  *   "fieldErrors": [
- *     {"field": "amount", "rejectedValue": -50, "message": "must be positive"}
+ *     {"field": "amount", "message": "must be positive"}
  *   ]
  * }
  * </pre>
@@ -109,21 +109,24 @@ public record ErrorResponse(
      * per-field feedback for {@code @Valid} request-body and parameter violations.</p>
      *
      * <p>Like its enclosing type, this is an immutable Java&nbsp;17 {@code record}: its
-     * three components are {@code final} and exposed through the compiler-generated
-     * accessors {@link #field()}, {@link #rejectedValue()}, and {@link #message()}.
-     * {@code rejectedValue} is typed as {@link Object} so it can faithfully carry any
-     * rejected input value &mdash; a {@code String}, a number, a {@code boolean}, or
-     * {@code null} when the offending value was absent &mdash; and Jackson serializes
-     * it according to its runtime type.</p>
+     * two components are {@code final} and exposed through the compiler-generated
+     * accessors {@link #field()} and {@link #message()}.</p>
      *
-     * @param field         the offending field name; dot-notation is used for nested
-     *                      properties (e.g. {@code "address.zipCode"})
-     * @param rejectedValue the value that was rejected by validation; may be {@code null}
-     * @param message       the validation failure message (e.g. {@code "must be positive"})
+     * <p><strong>Security &mdash; the rejected value is deliberately not exposed.</strong>
+     * This record intentionally carries only the offending field <em>name</em> and the
+     * validation <em>message</em>; it does <em>not</em> echo the rejected input value back
+     * to the client. Reflecting rejected values in a public error payload would leak
+     * sensitive submitted data &mdash; for example a rejected {@code LoginRequest.password},
+     * {@code UserCreateRequest.password}, or {@code CustomerDto.ssn} &mdash; into REST
+     * responses, logs, and proxies. Omitting it entirely is the safe default and removes
+     * any per-field redaction burden from {@code GlobalExceptionHandler}.</p>
+     *
+     * @param field   the offending field name; dot-notation is used for nested
+     *                properties (e.g. {@code "address.zipCode"})
+     * @param message the validation failure message (e.g. {@code "must be positive"})
      */
     public record FieldError(
             String field,
-            Object rejectedValue,
             String message
     ) {
     }

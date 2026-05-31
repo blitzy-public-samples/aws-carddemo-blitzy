@@ -81,7 +81,7 @@ import lombok.NoArgsConstructor;
  *
  * <p><b>CRITICAL — PR-11 (DB2 timestamp format preserved):</b> {@code origTimestamp}
  * is an OPTIONAL {@code String} in DB2 external format
- * {@code yyyy-MM-dd-HH.mm.ss.SSS'0000'} (exactly 26 chars). If omitted, the server
+ * {@code yyyy-MM-dd-HH.mm.ss.SS'0000'} (exactly 26 chars). If omitted, the server
  * stamps the current time. (The BMS screen field {@code TORIGDTI} is only the
  * 10-char {@code YYYY-MM-DD} date; this DTO accepts the full 26-char DB2 form so a
  * caller may supply a precise origin timestamp.)</p>
@@ -172,19 +172,23 @@ public class TransactionRequest {
 
     /**
      * Transaction category code (COBOL TCATCDI PIC X(4) BMS / TRAN-CAT-CD PIC 9(04) record).
-     * 4-digit numeric category code (0-9999).
+     * Fixed 4-character numeric string preserving leading zeros, matching the entity
+     * {@code CHAR(4)} column (PR-13). Modeled as {@code String} (not {@code Integer}) so
+     * values such as {@code "0001"} retain their leading zeros.
      */
     @NotNull(message = "Category code is required")
-    @Min(value = 0, message = "Category code must be 0 or greater")
-    @Max(value = 9999, message = "Category code must not exceed 4 digits")
+    @Size(min = 4, max = 4, message = "Category code must be exactly 4 characters")
+    @Pattern(regexp = "\\d{4}", message = "Category code must be exactly 4 numeric digits")
     @Schema(
-        description = "4-digit numeric transaction category code (FK to transaction_categories)",
+        description = "4-digit numeric transaction category code (fixed-width, leading zeros preserved; "
+            + "FK to transaction_categories)",
         example = "5411",
-        minimum = "0",
-        maximum = "9999",
+        minLength = 4,
+        maxLength = 4,
+        pattern = "\\d{4}",
         requiredMode = Schema.RequiredMode.REQUIRED
     )
-    private Integer categoryCd;
+    private String categoryCd;
 
     /**
      * Transaction source (COBOL TRNSRCI PIC X(10) — TRAN-SOURCE PIC X(10)).
@@ -293,30 +297,28 @@ public class TransactionRequest {
      * OPTIONAL — server stamps via {@code DateConversionUtil.DB2_TIMESTAMP_FORMATTER}
      * if omitted (PR-11).
      *
-     * <p>Format: {@code yyyy-MM-dd-HH.mm.ss.SSS'0000'} — exactly 27 chars. The COBOL
-     * {@code DB2-FORMAT-TS} was 26 chars with a 2-digit centisecond component
-     * ({@code DB2-MIL PIC 9(02)}) followed by the literal {@code 0000}; the Java
-     * migration intentionally upgrades the fractional component to 3-digit
-     * milliseconds ({@code SSS}) followed by the same literal {@code 0000}, yielding
-     * 27 chars total. This length and pattern align with the canonical output of
+     * <p>Format: {@code yyyy-MM-dd-HH.mm.ss.SS'0000'} — exactly 26 chars, byte-for-byte
+     * faithful to the COBOL {@code DB2-FORMAT-TS} field, which is 26 chars with a
+     * 2-digit centisecond component ({@code DB2-MIL PIC 9(02)}) followed by the literal
+     * {@code 0000}. This length and pattern align with the canonical output of
      * {@code com.carddemo.util.DateConversionUtil} (which documents and emits a
-     * 27-character DB2 timestamp, e.g. {@code 2022-07-18-19.27.53.1230000}) so a
+     * 26-character DB2 timestamp, e.g. {@code 2022-07-18-19.27.53.120000}) so a
      * client-supplied value is accepted by the same contract the server produces.</p>
      *
      * <p>Note: the BMS {@code TORIGDTI} field is only the 10-char {@code YYYY-MM-DD}
-     * date on the 3270 screen; this DTO accepts the full 27-char DB2 timestamp.</p>
+     * date on the 3270 screen; this DTO accepts the full 26-char DB2 timestamp.</p>
      */
-    @Size(min = 27, max = 27, message = "Origin timestamp must be exactly 27 characters in DB2 format")
+    @Size(min = 26, max = 26, message = "Origin timestamp must be exactly 26 characters in DB2 format")
     @Pattern(
-        regexp = "\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{3}0000",
-        message = "Origin timestamp must match DB2 format yyyy-MM-dd-HH.mm.ss.SSS'0000'"
+        regexp = "\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{2}0000",
+        message = "Origin timestamp must match DB2 format yyyy-MM-dd-HH.mm.ss.SS'0000'"
     )
     @Schema(
-        description = "Origin timestamp in DB2 format yyyy-MM-dd-HH.mm.ss.SSS'0000' (27 chars; "
+        description = "Origin timestamp in DB2 format yyyy-MM-dd-HH.mm.ss.SS'0000' (26 chars; "
             + "matches DateConversionUtil output). Optional — server stamps current time if omitted.",
-        example = "2024-01-15-14.30.45.1230000",
-        minLength = 27,
-        maxLength = 27,
+        example = "2024-01-15-14.30.45.120000",
+        minLength = 26,
+        maxLength = 26,
         requiredMode = Schema.RequiredMode.NOT_REQUIRED,
         nullable = true
     )

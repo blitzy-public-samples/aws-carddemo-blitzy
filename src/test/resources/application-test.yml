@@ -92,12 +92,14 @@ spring:
     job:
       enabled: false
     jdbc:
-      # Spring Batch's metadata tables (BATCH_JOB_*, BATCH_STEP_*) are
-      # created by spring-boot-starter-batch on a fresh schema. Setting
-      # initialize-schema: never means the production Flyway scripts (or
-      # Spring Batch's built-in initializer) handle this — tests rely on
-      # those scripts being present.
-      initialize-schema: never
+      # Spring Batch's metadata tables (BATCH_JOB_*, BATCH_STEP_*) are NOT
+      # created by the Flyway migrations (V1__schema.sql owns only the
+      # business schema). They must therefore be created by Spring Batch's
+      # built-in initializer. Setting initialize-schema: always lets Spring
+      # Batch create its metadata tables on the ephemeral Testcontainers
+      # schema so JobLauncherTestUtils-driven batch tests can run. This
+      # matches the base application.yml setting (also "always").
+      initialize-schema: always
 
 # ============================================================================
 # LOGGING — verbose during tests to aid debugging

@@ -6,11 +6,13 @@ import jakarta.persistence.EntityListeners;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+import java.sql.Types;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 
+import org.hibernate.annotations.JdbcTypeCode;
 import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.LastModifiedBy;
@@ -94,15 +96,15 @@ public class User implements UserDetails {
      * Security username via {@link #getUsername()}.
      */
     @Id
-    @Column(name = "user_id", length = 8, nullable = false)
+    @Column(name = "sec_usr_id", length = 8, nullable = false)
     private String userId;
 
-    /** Maps COBOL {@code SEC-USR-FNAME PIC X(20)}. */
-    @Column(name = "first_name", length = 20)
+    /** Maps COBOL {@code SEC-USR-FNAME PIC X(20)} &rarr; V1 {@code sec_usr_fname VARCHAR(20) NOT NULL}. */
+    @Column(name = "sec_usr_fname", length = 20, nullable = false)
     private String firstName;
 
-    /** Maps COBOL {@code SEC-USR-LNAME PIC X(20)}. */
-    @Column(name = "last_name", length = 20)
+    /** Maps COBOL {@code SEC-USR-LNAME PIC X(20)} &rarr; V1 {@code sec_usr_lname VARCHAR(20) NOT NULL}. */
+    @Column(name = "sec_usr_lname", length = 20, nullable = false)
     private String lastName;
 
     /**
@@ -119,41 +121,52 @@ public class User implements UserDetails {
      * Maps COBOL {@code SEC-USR-TYPE PIC X(01)}. {@code 'A'} = ADMIN
      * ({@code ROLE_ADMIN}), {@code 'U'} = USER ({@code ROLE_USER}) per PR-19. Drives
      * the authority returned by {@link #getAuthorities()}.
+     *
+     * <p>The V1 schema authority declares {@code sec_usr_type} as {@code CHAR(1)} (a
+     * fixed-width {@code bpchar} in PostgreSQL). {@code @JdbcTypeCode(Types.CHAR)} forces
+     * the fixed-width {@code CHAR} JDBC binding so Hibernate {@code ddl-auto=validate}
+     * matches the column exactly — without it Hibernate would expect {@code VARCHAR(1)}
+     * and startup validation would fail. This mirrors the binding used for the
+     * {@code active_status} columns on {@code Account}/{@code Card} (PR-13).</p>
      */
-    @Column(name = "user_type", length = 1, nullable = false)
+    @Column(name = "sec_usr_type", length = 1, nullable = false)
+    @JdbcTypeCode(Types.CHAR)
     private String userType;
 
     /**
      * Audit field (AAP §0.6.12) — set once on initial persist by
      * {@code AuditingEntityListener}. Immutable thereafter ({@code updatable = false}).
+     * Maps to V1 {@code created_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP}; the
+     * database default satisfies the NOT NULL constraint even when auditing is inactive.
      */
     @CreatedDate
-    @Column(name = "created_at", updatable = false)
+    @Column(name = "created_date", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
     /**
      * Audit field (AAP §0.6.12) — refreshed on every update by
-     * {@code AuditingEntityListener}.
+     * {@code AuditingEntityListener}. Maps to V1
+     * {@code last_modified_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP}.
      */
     @LastModifiedDate
-    @Column(name = "updated_at")
+    @Column(name = "last_modified_date", nullable = false)
     private LocalDateTime updatedAt;
 
     /**
      * Audit field (AAP §0.6.12) — principal that created the row, supplied by the
      * configured {@code AuditorAware} bean. Immutable thereafter
-     * ({@code updatable = false}).
+     * ({@code updatable = false}). Maps to V1 {@code created_by VARCHAR(50)}.
      */
     @CreatedBy
-    @Column(name = "created_by", length = 64, updatable = false)
+    @Column(name = "created_by", length = 50, updatable = false)
     private String createdBy;
 
     /**
      * Audit field (AAP §0.6.12) — principal that last modified the row, supplied by
-     * the configured {@code AuditorAware} bean.
+     * the configured {@code AuditorAware} bean. Maps to V1 {@code last_modified_by VARCHAR(50)}.
      */
     @LastModifiedBy
-    @Column(name = "updated_by", length = 64)
+    @Column(name = "last_modified_by", length = 50)
     private String updatedBy;
 
     // -------------------- UserDetails implementation (PR-17 + PR-19) --------------------
