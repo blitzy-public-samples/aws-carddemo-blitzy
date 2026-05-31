@@ -14,68 +14,88 @@ import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Iterator;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Centralized statement I/O helper &mdash; the Java port of the COBOL batch subroutine
+ * Statement-generation I/O helper &mdash; the Java port of the COBOL batch subroutine
  * {@code app/cbl/CBSTM03B.CBL} (CardDemo_v1.0-15-g27d6c6f-68).
  *
  * <p><strong>Origin &mdash; what this replaces.</strong> In the legacy mainframe system,
  * {@code CBSTM03B} is the file-handling subroutine called by the statement-creation program
  * {@code CBSTM03A}. It receives a single linkage area {@code LK-M03B-AREA} and dispatches a file
  * operation by <em>DD name</em> ({@code LK-M03B-DD}) and <em>operation code</em>
- * ({@code LK-M03B-OPER}) via an {@code EVALUATE LK-M03B-DD} that fans out to one paragraph per
+ * ({@code LK-M03B-OPER}) through an {@code EVALUATE LK-M03B-DD} that fans out to one paragraph per
  * dataset:</p>
  * <ul>
  *   <li>{@code 1000-TRNXFILE-PROC} &mdash; the transaction file {@code TRNXFILE} (indexed,
- *       sequential access), read into the statement build.</li>
+ *       {@code ACCESS MODE SEQUENTIAL}, {@code RECORD KEY FD-TRNXS-ID}).</li>
  *   <li>{@code 2000-XREFFILE-PROC} &mdash; the card cross-reference file {@code XREFFILE}
- *       (indexed, sequential access).</li>
- *   <li>{@code 3000-CUSTFILE-PROC} &mdash; the customer file {@code CUSTFILE} (indexed, random
- *       access by key).</li>
- *   <li>{@code 4000-ACCTFILE-PROC} &mdash; the account file {@code ACCTFILE} (indexed, random
- *       access by key).</li>
+ *       (indexed, {@code ACCESS MODE SEQUENTIAL}, {@code RECORD KEY FD-XREF-CARD-NUM}).</li>
+ *   <li>{@code 3000-CUSTFILE-PROC} &mdash; the customer file {@code CUSTFILE} (indexed,
+ *       {@code ACCESS MODE RANDOM}, {@code RECORD KEY FD-CUST-ID PIC 9(09)}, keyed read
+ *       {@code M03B-READ-K}).</li>
+ *   <li>{@code 4000-ACCTFILE-PROC} &mdash; the account file {@code ACCTFILE} (indexed,
+ *       {@code ACCESS MODE RANDOM}, {@code RECORD KEY FD-ACCT-ID PIC 9(11)}, keyed read
+ *       {@code M03B-READ-K}).</li>
  * </ul>
  *
- * <p>The COBOL operation codes (88-levels on {@code LK-M03B-OPER}) and the two-character file
- * status returned in {@code LK-M03B-RC} are preserved here as the {@link Operation} enum and the
- * {@code STATUS_*} constants respectively, so callers observe the same control semantics. Each
- * VSAM dataset is mapped to its Spring Data JPA repository per AAP &sect;0.6.2 (VSAM&rarr;JPA),
- * replacing {@code OPEN}/{@code READ}/{@code CLOSE} of an indexed file with repository access:</p>
+ * <p><strong>Why a thin typed wrapper (no generic dispatch).</strong> The COBOL subroutine drives
+ * every dataset through one generic linkage block and a single-character operation code
+ * ({@code 'O'}=open, {@code 'C'}=close, {@code 'R'}=read sequential, {@code 'K'}=read keyed,
+ * {@code 'W'}=write, {@code 'Z'}=rewrite). That untyped dispatch table exists only because COBOL
+ * has no generics; in Java the four datasets are already strongly typed by their Spring Data JPA
+ * repositories, so this class deliberately collapses the generic
+ * {@code dispatch(operation, ddName, key, fldt)} surface into a small set of explicit, typed
+ * accessor methods that {@code StatementGenerationTasklet} calls directly (AAP &sect;0.6.2
+ * VSAM&rarr;JPA). The in-memory 51&times;10 transaction matrix that {@code CBSTM03A}'s
+ * {@code 8500-READTRNX-READ} paragraph builds is composed by {@code StatementGenerationTasklet},
+ * not here &mdash; this class remains a thin I/O wrapper.</p>
+ *
+ * <p><strong>Dataset&rarr;repository mapping.</strong> Each VSAM dataset maps to its repository,
+ * replacing {@code OPEN}/{@code READ}/{@code CLOSE} of the indexed file with repository access:</p>
  * <ul>
- *   <li>{@code TRNXFILE} &rarr; {@link TransactionRepository} (sequential, key-sequenced by
- *       {@code tran_id}).</li>
- *   <li>{@code XREFFILE} &rarr; {@link CardXrefRepository} (sequential, key-sequenced by
- *       {@code xref_card_num}).</li>
- *   <li>{@code CUSTFILE} &rarr; {@link CustomerRepository} (keyed {@code findById}).</li>
- *   <li>{@code ACCTFILE} &rarr; {@link AccountRepository} (keyed {@code findById}).</li>
+ *   <li>{@code CUSTFILE} (keyed) &rarr; {@link CustomerRepository#findById(Object)}.</li>
+ *   <li>{@code ACCTFILE} (keyed) &rarr; {@link AccountRepository#findById(Object)}.</li>
+ *   <li>{@code XREFFILE} (sequential) &rarr; {@link CardXrefRepository#findAll(Sort)} ordered by
+ *       {@code xrefCardNum} (the VSAM key-sequenced order of {@code FD-XREF-CARD-NUM}).</li>
+ *   <li>{@code TRNXFILE} (sequential / by-card) &rarr; {@link TransactionRepository#findAll(Sort)}
+ *       ordered by {@code cardNum} then {@code tranId}, and
+ *       {@link TransactionRepository#findByCardNum(String)} for the per-card slice.</li>
  * </ul>
+ *
+ * <p><strong>INVALID KEY semantics (file status {@code '23'}).</strong> {@code CBSTM03B}'s keyed
+ * reads ({@code 3000-CUSTFILE-PROC} / {@code 4000-ACCTFILE-PROC}) return a two-character file
+ * status in {@code LK-M03B-RC}; a missing record yields {@code '23'} ({@code INVALID KEY}). The
+ * Java keyed accessors preserve that contract by returning {@link Optional#empty()} when the row is
+ * absent, so the caller branches on {@link Optional#isPresent()} exactly as the COBOL caller
+ * branched on the moved file status. The sequential accessors return an empty {@link List} when the
+ * dataset holds no rows (the COBOL {@code AT END} immediately-true case).</p>
  *
  * <p><strong>Read-only.</strong> Mirroring {@code CBSTM03B}, which opens every dataset
- * {@code OPEN INPUT}, this helper exposes read access only: sequential cursors for the two
- * sequentially-scanned files and keyed lookups for the two randomly-accessed files. The
- * {@link Operation#WRITE} / {@link Operation#REWRITE} codes from the COBOL linkage 88-levels are
- * preserved in the {@link Operation} enum for contract fidelity, but &mdash; exactly as in the
- * COBOL subroutine &mdash; no write path is implemented here; statement <em>output</em> is
- * produced by {@link StatementHtmlBuilder} and the statement writers, not by this reader.</p>
+ * {@code OPEN INPUT} and implements only the {@code O}/{@code C}/{@code R}/{@code K} branches (the
+ * {@code W}/{@code Z} write/rewrite codes are declared on the linkage 88-levels but never executed
+ * by the procedure paragraphs), this helper exposes read access only. Statement <em>output</em> is
+ * produced by {@link StatementHtmlBuilder} and the statement writer beans, never by this reader.
+ * Every read accessor is annotated {@code @Transactional(readOnly = true)} (PR-24) to enable
+ * Hibernate read-only optimizations and a consistent snapshot for the duration of each call; the
+ * Spring {@code org.springframework.transaction.annotation.Transactional} annotation is used in
+ * preference to {@code jakarta.transaction.Transactional} for its richer attribute support
+ * ({@code readOnly}) (PR-28).</p>
  *
- * <p><strong>Status semantics (preserved from {@code LK-M03B-RC}).</strong>
- * {@link #STATUS_OK} (&quot;00&quot;) a record was returned; {@link #STATUS_EOF} (&quot;10&quot;)
- * the sequential cursor is exhausted (COBOL {@code AT END}); {@link #STATUS_NOT_FOUND}
- * (&quot;23&quot;) a keyed read found no record (COBOL {@code INVALID KEY}). Callers branch on
- * {@link IoRecord#isOk()} / {@link IoRecord#isEof()} / {@link IoRecord#isNotFound()} just as the
- * COBOL caller branched on the moved file status.</p>
+ * <p><strong>Lock ordering (PR-23).</strong> When {@code StatementGenerationTasklet} composes a
+ * statement for a card it invokes these accessors in the canonical order
+ * {@code findCustomer &rarr; findAccount &rarr; findAllXrefsOrdered &rarr;
+ * findTransactionsByCardNumber} (CUSTOMER &rarr; ACCOUNT &rarr; CARD &rarr; TRANSACTION), matching
+ * the documented VSAM lock-acquisition convention to prevent deadlocks.</p>
  *
- * <p><strong>Threading.</strong> This {@code @Component} is a stateless singleton; all mutable
- * cursor state lives in the {@link SequentialCursor} instance returned by an {@code open*}
- * method, so concurrent statement builds do not interfere. Dependencies are injected via the
- * Lombok-generated constructor over {@code final} fields (PR-29; no field injection). All
- * persistence access is delegated to the repositories, so this helper itself carries no
- * {@code jakarta.persistence} dependency (PR-28).</p>
+ * <p><strong>Threading &amp; injection.</strong> This {@code @Component} is a stateless singleton:
+ * it holds no mutable instance state, so concurrent statement builds never interfere. Its four
+ * repository collaborators are supplied through the Lombok-generated constructor over {@code final}
+ * fields (PR-29; no {@code @Autowired} field injection). All persistence access is delegated to the
+ * repositories, so this helper itself carries no {@code jakarta.persistence} dependency.</p>
  *
  * @see StatementHtmlBuilder
  * @see com.carddemo.repository.TransactionRepository
@@ -88,265 +108,160 @@ import java.util.Optional;
 @Slf4j
 public class StatementIoSubroutine {
 
-    /** File status &quot;00&quot;: operation succeeded / record returned (COBOL {@code LK-M03B-RC}). */
-    public static final String STATUS_OK = "00";
-
-    /** File status &quot;10&quot;: end-of-file on a sequential read (COBOL {@code AT END}). */
-    public static final String STATUS_EOF = "10";
-
-    /** File status &quot;23&quot;: no record for the supplied key (COBOL {@code INVALID KEY}). */
-    public static final String STATUS_NOT_FOUND = "23";
-
     /**
-     * Logical datasets handled by {@code CBSTM03B}, mirroring the {@code EVALUATE LK-M03B-DD}
-     * dispatch. The enum constant name doubles as the original 8-character COBOL DD name.
+     * Backs the {@code TRNXFILE} dataset ({@code 1000-TRNXFILE-PROC}). Provides the inherited
+     * {@code findAll(Sort)} for the full key-sequenced scan and the derived
+     * {@code findByCardNum(String)} for the per-card slice.
      */
-    public enum DataSource {
-        /** Transaction file (sequential scan) &rarr; {@link TransactionRepository}. */
-        TRNXFILE,
-        /** Card cross-reference file (sequential scan) &rarr; {@link CardXrefRepository}. */
-        XREFFILE,
-        /** Customer file (keyed read) &rarr; {@link CustomerRepository}. */
-        CUSTFILE,
-        /** Account file (keyed read) &rarr; {@link AccountRepository}. */
-        ACCTFILE
-    }
-
-    /**
-     * File operations supported by {@code CBSTM03B}, preserving the single-character codes of the
-     * {@code LK-M03B-OPER} 88-levels ({@code M03B-OPEN}='O', {@code M03B-CLOSE}='C',
-     * {@code M03B-READ}='R', {@code M03B-READ-K}='K', {@code M03B-WRITE}='W',
-     * {@code M03B-REWRITE}='Z').
-     */
-    public enum Operation {
-        /** {@code 'O'} &mdash; {@code OPEN INPUT}. */
-        OPEN('O'),
-        /** {@code 'C'} &mdash; {@code CLOSE}. */
-        CLOSE('C'),
-        /** {@code 'R'} &mdash; sequential {@code READ ... AT END}. */
-        READ('R'),
-        /** {@code 'K'} &mdash; keyed {@code READ ... INVALID KEY}. */
-        READ_BY_KEY('K'),
-        /** {@code 'W'} &mdash; {@code WRITE} (declared for contract fidelity; not used by the read-only subroutine). */
-        WRITE('W'),
-        /** {@code 'Z'} &mdash; {@code REWRITE} (declared for contract fidelity; not used by the read-only subroutine). */
-        REWRITE('Z');
-
-        private final char code;
-
-        Operation(char code) {
-            this.code = code;
-        }
-
-        /**
-         * Returns the single-character COBOL operation code (the {@code LK-M03B-OPER} value).
-         *
-         * @return the COBOL operation code character
-         */
-        public char getCode() {
-            return code;
-        }
-    }
-
     private final TransactionRepository transactionRepository;
+
+    /**
+     * Backs the {@code XREFFILE} dataset ({@code 2000-XREFFILE-PROC}). Provides the inherited
+     * {@code findAll(Sort)} used to reproduce the VSAM key-sequenced read by {@code xrefCardNum}.
+     */
     private final CardXrefRepository cardXrefRepository;
+
+    /**
+     * Backs the {@code CUSTFILE} dataset ({@code 3000-CUSTFILE-PROC}). Provides the inherited
+     * {@code findById(Long)} keyed read on {@code FD-CUST-ID}.
+     */
     private final CustomerRepository customerRepository;
+
+    /**
+     * Backs the {@code ACCTFILE} dataset ({@code 4000-ACCTFILE-PROC}). Provides the inherited
+     * {@code findById(Long)} keyed read on {@code FD-ACCT-ID}.
+     */
     private final AccountRepository accountRepository;
 
     /**
-     * Opens the {@code TRNXFILE} transaction dataset for sequential reading &mdash; the Java
-     * equivalent of {@code CALL 'CBSTM03B' USING LK-M03B-AREA} with
-     * {@code LK-M03B-DD = 'TRNXFILE'} and {@code LK-M03B-OPER = 'O'} (then repeated {@code 'R'}).
+     * Reads a single customer by key &mdash; the Java equivalent of {@code CBSTM03B}
+     * {@code 3000-CUSTFILE-PROC} with {@code LK-M03B-OPER = 'K'} ({@code M03B-READ-K}), which
+     * moves {@code LK-M03B-KEY} into {@code FD-CUST-ID} and issues {@code READ CUST-FILE}.
      *
-     * <p>Records are returned in key-sequenced order by {@code tran_id} ascending, matching the
-     * indexed-sequential access of the original VSAM {@code TRNXFILE}.</p>
+     * <p>Returns {@link Optional#empty()} when no customer matches the supplied id, preserving the
+     * COBOL file status {@code '23'} ({@code INVALID KEY}) semantics so the statement tasklet can
+     * skip or flag the orphaned cross-reference exactly as the legacy program did.</p>
      *
-     * @return a fresh, single-use {@link SequentialCursor} positioned before the first record;
-     *         drive it with {@link SequentialCursor#read()} until {@link IoRecord#isEof()} and
-     *         then {@link SequentialCursor#close()} (or use try-with-resources)
+     * <p>First link in the PR-23 lock order (CUSTOMER &rarr; ACCOUNT &rarr; CARD &rarr;
+     * TRANSACTION).</p>
+     *
+     * @param custId the customer id key (COBOL {@code FD-CUST-ID PIC 9(09)})
+     * @return the customer when found, otherwise {@link Optional#empty()}
      */
-    public SequentialCursor<Transaction> openTransactions() {
-        log.debug("CBSTM03B dispatch dd={} oper={} ({})",
-                DataSource.TRNXFILE, Operation.OPEN.getCode(), Operation.OPEN);
-        List<Transaction> records = transactionRepository.findAll(Sort.by(Sort.Direction.ASC, "tranId"));
-        return new SequentialCursor<>(DataSource.TRNXFILE, records.iterator());
+    @Transactional(readOnly = true)
+    public Optional<Customer> findCustomer(Long custId) {
+        return customerRepository.findById(custId);
     }
 
     /**
-     * Opens the {@code XREFFILE} card cross-reference dataset for sequential reading &mdash; the
-     * Java equivalent of {@code CBSTM03B} with {@code LK-M03B-DD = 'XREFFILE'} and
-     * {@code LK-M03B-OPER = 'O'} (then repeated {@code 'R'}).
+     * Reads a single account by key &mdash; the Java equivalent of {@code CBSTM03B}
+     * {@code 4000-ACCTFILE-PROC} with {@code LK-M03B-OPER = 'K'} ({@code M03B-READ-K}), which
+     * moves {@code LK-M03B-KEY} into {@code FD-ACCT-ID} and issues {@code READ ACCT-FILE}.
      *
-     * <p>Records are returned in key-sequenced order by {@code xref_card_num} ascending, matching
-     * the indexed-sequential access of the original VSAM {@code XREFFILE}.</p>
+     * <p>Returns {@link Optional#empty()} when no account matches the supplied id, preserving the
+     * COBOL file status {@code '23'} ({@code INVALID KEY}) semantics.</p>
      *
-     * @return a fresh, single-use {@link SequentialCursor} over the cross-reference records
+     * <p>Second link in the PR-23 lock order (CUSTOMER &rarr; ACCOUNT &rarr; CARD &rarr;
+     * TRANSACTION).</p>
+     *
+     * @param acctId the account id key (COBOL {@code FD-ACCT-ID PIC 9(11)})
+     * @return the account when found, otherwise {@link Optional#empty()}
      */
-    public SequentialCursor<CardXref> openCardXrefs() {
-        log.debug("CBSTM03B dispatch dd={} oper={} ({})",
-                DataSource.XREFFILE, Operation.OPEN.getCode(), Operation.OPEN);
-        List<CardXref> records = cardXrefRepository.findAll(Sort.by(Sort.Direction.ASC, "xrefCardNum"));
-        return new SequentialCursor<>(DataSource.XREFFILE, records.iterator());
+    @Transactional(readOnly = true)
+    public Optional<Account> findAccount(Long acctId) {
+        return accountRepository.findById(acctId);
     }
 
     /**
-     * Reads a single customer by key &mdash; the Java equivalent of {@code CBSTM03B} with
-     * {@code LK-M03B-DD = 'CUSTFILE'} and {@code LK-M03B-OPER = 'K'} ({@code READ ... INVALID
-     * KEY}). Replaces the random keyed {@code READ CUST-FILE} on {@code FD-CUST-ID}.
+     * Reads every card cross-reference record in key-sequenced order &mdash; the Java equivalent of
+     * {@code CBSTM03B} {@code 2000-XREFFILE-PROC} driven {@code OPEN INPUT} then repeated
+     * {@code M03B-READ} ({@code 'R'}, sequential) until {@code AT END}.
      *
-     * @param custId the customer id key (COBOL {@code FD-CUST-ID}); must not be {@code null}
-     * @return {@link IoRecord} carrying {@link #STATUS_OK} and the customer when found, or
-     *         {@link #STATUS_NOT_FOUND} ({@code INVALID KEY}) with no payload when absent
-     * @throws NullPointerException if {@code custId} is {@code null}
+     * <p>{@code CBSTM03A} uses {@code XREFFILE} as the primary driver of statement generation
+     * (its {@code 1000-XREFFILE-GET-NEXT} paragraph iterates the file front to back); the records
+     * are returned sorted by {@code xrefCardNum} ascending to match the VSAM KSDS sequence of
+     * {@code FD-XREF-CARD-NUM}.</p>
+     *
+     * <p>Third link in the PR-23 lock order (CUSTOMER &rarr; ACCOUNT &rarr; CARD &rarr;
+     * TRANSACTION).</p>
+     *
+     * @return all cross-reference records ordered by {@code xrefCardNum} ascending; an empty list
+     *         when none exist (never {@code null})
      */
-    public IoRecord<Customer> readCustomer(Long custId) {
-        Objects.requireNonNull(custId, "custId");
-        log.debug("CBSTM03B dispatch dd={} oper={} ({}) key={}",
-                DataSource.CUSTFILE, Operation.READ_BY_KEY.getCode(), Operation.READ_BY_KEY, custId);
-        Optional<Customer> found = customerRepository.findById(custId);
-        return found.map(IoRecord::ok).orElseGet(IoRecord::notFound);
+    @Transactional(readOnly = true)
+    public List<CardXref> findAllXrefsOrdered() {
+        return cardXrefRepository.findAll(Sort.by("xrefCardNum"));
     }
 
     /**
-     * Reads a single account by key &mdash; the Java equivalent of {@code CBSTM03B} with
-     * {@code LK-M03B-DD = 'ACCTFILE'} and {@code LK-M03B-OPER = 'K'} ({@code READ ... INVALID
-     * KEY}). Replaces the random keyed {@code READ ACCT-FILE} on {@code FD-ACCT-ID}.
+     * Reads every transaction in card-then-id order &mdash; the bulk pre-load used by
+     * {@code StatementGenerationTasklet} to populate the in-memory transaction matrix that
+     * {@code CBSTM03A}'s {@code 8500-READTRNX-READ} paragraph builds from {@code TRNXFILE}
+     * ({@code CBSTM03B} {@code 1000-TRNXFILE-PROC}, sequential {@code M03B-READ}).
      *
-     * @param acctId the account id key (COBOL {@code FD-ACCT-ID}); must not be {@code null}
-     * @return {@link IoRecord} carrying {@link #STATUS_OK} and the account when found, or
-     *         {@link #STATUS_NOT_FOUND} ({@code INVALID KEY}) with no payload when absent
-     * @throws NullPointerException if {@code acctId} is {@code null}
+     * <p>The ordering &mdash; {@code cardNum} ascending, then {@code tranId} ascending &mdash;
+     * reproduces the {@code CREASTMT.JCL} {@code STEP010} sort
+     * {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)}: the primary key is {@code TRAN-CARD-NUM} at
+     * record offset 263 (length 16) and the secondary key is {@code TRAN-ID} at offset 1
+     * (length 16). Grouping by card lets the tasklet emit one statement section per card while
+     * walking a single ordered stream.</p>
+     *
+     * <p>Fourth link in the PR-23 lock order (CUSTOMER &rarr; ACCOUNT &rarr; CARD &rarr;
+     * TRANSACTION).</p>
+     *
+     * @return all transactions ordered by {@code cardNum} then {@code tranId} ascending; an empty
+     *         list when none exist (never {@code null})
      */
-    public IoRecord<Account> readAccount(Long acctId) {
-        Objects.requireNonNull(acctId, "acctId");
-        log.debug("CBSTM03B dispatch dd={} oper={} ({}) key={}",
-                DataSource.ACCTFILE, Operation.READ_BY_KEY.getCode(), Operation.READ_BY_KEY, acctId);
-        Optional<Account> found = accountRepository.findById(acctId);
-        return found.map(IoRecord::ok).orElseGet(IoRecord::notFound);
+    @Transactional(readOnly = true)
+    public List<Transaction> findAllTransactionsOrderedByCardAndId() {
+        return transactionRepository.findAll(Sort.by("cardNum", "tranId"));
     }
 
     /**
-     * Immutable result of a single {@code CBSTM03B} operation, pairing the two-character file
-     * status (the COBOL {@code LK-M03B-RC}) with the optional record payload (the COBOL
-     * {@code LK-M03B-FLDT}).
+     * Reads the transactions belonging to a single card &mdash; the per-card slice of
+     * {@code CBSTM03B} {@code 1000-TRNXFILE-PROC}. Where the bulk
+     * {@link #findAllTransactionsOrderedByCardAndId()} pre-loads the whole file, this accessor
+     * fetches just the rows for one card, mirroring the way {@code CBSTM03A} consumes the matrix
+     * row for the card currently being statemented.
      *
-     * @param <T>        the record type returned for the operation
-     * @param returnCode the two-character file status ({@link #STATUS_OK}, {@link #STATUS_EOF},
-     *                   or {@link #STATUS_NOT_FOUND})
-     * @param payload    the record when {@code returnCode} is {@link #STATUS_OK}; otherwise
-     *                   {@code null}
+     * <p>Delegates to {@link TransactionRepository#findByCardNum(String)} &mdash; the derived
+     * finder resolves the {@code cardNum} entity field (COBOL {@code TRAN-CARD-NUM PIC X(16)}).
+     * Note the method name is {@code findByCardNum}, not {@code findByCardNumber}: the
+     * {@link Transaction} entity field is {@code cardNum}, so {@code findByCardNumber} would raise a
+     * {@code PropertyReferenceException} at bootstrap.</p>
+     *
+     * <p>Final link in the PR-23 lock order (CUSTOMER &rarr; ACCOUNT &rarr; CARD &rarr;
+     * TRANSACTION).</p>
+     *
+     * @param cardNum the 16-character card number (COBOL {@code TRAN-CARD-NUM PIC X(16)})
+     * @return the transactions for this card; an empty list when none exist (never {@code null})
      */
-    public record IoRecord<T>(String returnCode, T payload) {
-
-        /**
-         * Creates a success ({@link #STATUS_OK}) result carrying the supplied record.
-         *
-         * @param payload the record read (must not be {@code null})
-         * @param <T>     the record type
-         * @return a success {@code IoRecord}
-         * @throws NullPointerException if {@code payload} is {@code null}
-         */
-        public static <T> IoRecord<T> ok(T payload) {
-            return new IoRecord<>(STATUS_OK, Objects.requireNonNull(payload, "payload"));
-        }
-
-        /**
-         * Creates an end-of-file ({@link #STATUS_EOF}) result with no payload.
-         *
-         * @param <T> the record type
-         * @return an EOF {@code IoRecord}
-         */
-        public static <T> IoRecord<T> eof() {
-            return new IoRecord<>(STATUS_EOF, null);
-        }
-
-        /**
-         * Creates a not-found ({@link #STATUS_NOT_FOUND}) result with no payload.
-         *
-         * @param <T> the record type
-         * @return a not-found {@code IoRecord}
-         */
-        public static <T> IoRecord<T> notFound() {
-            return new IoRecord<>(STATUS_NOT_FOUND, null);
-        }
-
-        /**
-         * @return {@code true} when a record was returned ({@link #STATUS_OK})
-         */
-        public boolean isOk() {
-            return STATUS_OK.equals(returnCode);
-        }
-
-        /**
-         * @return {@code true} when the sequential cursor is exhausted ({@link #STATUS_EOF})
-         */
-        public boolean isEof() {
-            return STATUS_EOF.equals(returnCode);
-        }
-
-        /**
-         * @return {@code true} when a keyed read found no record ({@link #STATUS_NOT_FOUND})
-         */
-        public boolean isNotFound() {
-            return STATUS_NOT_FOUND.equals(returnCode);
-        }
+    @Transactional(readOnly = true)
+    public List<Transaction> findTransactionsByCardNumber(String cardNum) {
+        return transactionRepository.findByCardNum(cardNum);
     }
 
     /**
-     * A single-use, forward-only cursor over a sequentially-scanned dataset, reproducing the
-     * COBOL {@code OPEN INPUT} &rarr; repeated {@code READ ... AT END} &rarr; {@code CLOSE}
-     * lifecycle of {@code CBSTM03B}. Each call to an {@code open*} method returns a fresh cursor,
-     * keeping all mutable iteration state out of the shared {@link StatementIoSubroutine}
-     * singleton. Implements {@link AutoCloseable} so it may be driven inside a
-     * try-with-resources block.
+     * Compatibility no-op for {@code CBSTM03B} {@code M03B-OPEN} ({@code 'O'}, {@code OPEN INPUT}).
      *
-     * @param <T> the record type produced by this cursor
+     * <p>The COBOL caller opens each dataset before reading and expects file status {@code '00'}
+     * (success). Under JPA the connection lifecycle is managed by Spring &mdash; there is no file to
+     * open &mdash; so this method does no work beyond emitting a debug trace. It is retained so the
+     * statement tasklet can preserve the legacy open&rarr;read&rarr;close call shape (and to keep
+     * the migration mapping from {@code CBSTM03B} explicit), always "succeeding".</p>
      */
-    public static final class SequentialCursor<T> implements AutoCloseable {
+    public void openFiles() {
+        log.debug("StatementIoSubroutine: openFiles() invoked (no-op in JPA; CBSTM03B M03B-OPEN equivalent, RC '00')");
+    }
 
-        private final DataSource dataSource;
-        private final Iterator<T> iterator;
-        private boolean closed;
-
-        private SequentialCursor(DataSource dataSource, Iterator<T> iterator) {
-            this.dataSource = dataSource;
-            this.iterator = iterator;
-        }
-
-        /**
-         * Returns the next record in sequence, or an {@link IoRecord#eof()} result once the
-         * dataset is exhausted &mdash; the Java equivalent of {@code READ ... AT END} with the
-         * resulting file status moved to {@code LK-M03B-RC}.
-         *
-         * @return an {@link IoRecord} with {@link #STATUS_OK} and the next record, or
-         *         {@link #STATUS_EOF} when no further records remain
-         * @throws IllegalStateException if invoked after {@link #close()}
-         */
-        public IoRecord<T> read() {
-            if (closed) {
-                throw new IllegalStateException(
-                        "read() called after close() on " + dataSource + " cursor");
-            }
-            if (iterator.hasNext()) {
-                return IoRecord.ok(iterator.next());
-            }
-            return IoRecord.eof();
-        }
-
-        /**
-         * Closes the cursor &mdash; the Java equivalent of {@code CLOSE}. Idempotent: a second
-         * call is a no-op. After closing, {@link #read()} raises {@link IllegalStateException}.
-         */
-        @Override
-        public void close() {
-            this.closed = true;
-        }
-
-        /**
-         * @return the dataset this cursor was opened over (the COBOL {@code LK-M03B-DD})
-         */
-        public DataSource getDataSource() {
-            return dataSource;
-        }
+    /**
+     * Compatibility no-op for {@code CBSTM03B} {@code M03B-CLOSE} ({@code 'C'}, {@code CLOSE}).
+     *
+     * <p>The COBOL caller closes each dataset when finished. Under JPA there is no file handle to
+     * release (Spring owns the connection), so this method only emits a debug trace, retained to
+     * preserve the legacy open&rarr;read&rarr;close call shape.</p>
+     */
+    public void closeFiles() {
+        log.debug("StatementIoSubroutine: closeFiles() invoked (no-op in JPA; CBSTM03B M03B-CLOSE equivalent, RC '00')");
     }
 }
