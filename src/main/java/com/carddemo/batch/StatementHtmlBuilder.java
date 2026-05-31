@@ -88,6 +88,27 @@ import java.util.Objects;
  * {@link RoundingMode#HALF_UP} (mirroring the COBOL {@code ROUNDED} behavior).
  * {@code float}/{@code double} are never used.</p>
  *
+ * <h2>Stored-XSS defense for dynamic text</h2>
+ *
+ * <p>Unlike the COBOL program &mdash; which emitted persisted field values into the HTML
+ * file verbatim &mdash; this builder HTML-escapes every <em>dynamic free-text</em> value
+ * before appending it (see {@link #htmlEscape(String)}): the customer name, the three
+ * address lines, the transaction id, and the transaction description. Without escaping, a
+ * persisted name, address, id, or description containing markup (for example
+ * {@code <script>...}) would become executable HTML/JavaScript when the generated statement
+ * is opened in a browser. The five metacharacters {@code & < > " '} are mapped to their
+ * entities.</p>
+ *
+ * <p>Escaping is deliberately scoped: it is applied <strong>only</strong> to the dynamic
+ * free-text fields, never to the fixed HTML literal constants (whose markup is intentional)
+ * nor to the numeric edited fields ({@link #formatAcctId20(Long)},
+ * {@link #formatStCurrBal(BigDecimal)}, {@link #formatFico20(Integer)},
+ * {@link #formatStTranAmt(BigDecimal)}), which can only contain digits, spaces, {@code '.'}
+ * and {@code '-'}. Because {@link #htmlEscape(String)} returns its input unchanged when no
+ * metacharacter is present, the rendered output for the safe CardDemo fixture data is
+ * byte-for-byte identical to the COBOL reference, so PR-09 parity (verified by
+ * {@code StatementGenerationParityTest}) is preserved.</p>
+ *
  * <h2>Line structure</h2>
  *
  * <p>The COBOL {@code FD-HTMLFILE-REC} is {@code PIC X(100)} (RECFM=FB LRECL=100), so on the
@@ -374,6 +395,13 @@ public class StatementHtmlBuilder {
      * field DELIMITED BY '*' '</p>' DELIMITED BY '*'} statements: a fixed 24-character label, the
      * fixed-width edited field, then {@code </p>}.</p>
      *
+     * <p><strong>Stored-XSS defense:</strong> the dynamic name and three address values are
+     * passed through {@link #htmlEscape(String)} before being appended, so persisted markup
+     * cannot become executable HTML. The numeric Account ID, Current Balance and FICO fields are
+     * edited via {@link #formatAcctId20(Long)} / {@link #formatStCurrBal(BigDecimal)} /
+     * {@link #formatFico20(Integer)} and need no escaping. For safe fixture data the escape is a
+     * no-op, preserving PR-09 byte-for-byte parity.</p>
+     *
      * @param customer the customer whose name, address and FICO score are rendered
      *                 (must not be {@code null})
      * @param account  the account whose id and current balance are rendered (must not be
@@ -393,7 +421,7 @@ public class StatementHtmlBuilder {
         String stName = fitField(buildStName(customer), ST_NAME_WIDTH);
         String l23Name = fitField(stName, L23_NAME_WIDTH);
         sb.append(HTML_L23_PREFIX)
-          .append(upToFirstDoubleSpace(l23Name))
+          .append(htmlEscape(upToFirstDoubleSpace(l23Name)))
           .append(TWO_SPACES)
           .append(P_CLOSE)
           .append(NEWLINE);
@@ -401,7 +429,7 @@ public class StatementHtmlBuilder {
         // --- Address line 1 (direct MOVE CUST-ADDR-LINE-1 TO ST-ADD1, PIC X(50)) --------------
         String stAdd1 = fitField(nullSafe(customer.getAddrLine1()), ST_ADDR_WIDTH);
         sb.append(P_OPEN)
-          .append(upToFirstDoubleSpace(stAdd1))
+          .append(htmlEscape(upToFirstDoubleSpace(stAdd1)))
           .append(TWO_SPACES)
           .append(P_CLOSE)
           .append(NEWLINE);
@@ -409,7 +437,7 @@ public class StatementHtmlBuilder {
         // --- Address line 2 (direct MOVE CUST-ADDR-LINE-2 TO ST-ADD2, PIC X(50)) --------------
         String stAdd2 = fitField(nullSafe(customer.getAddrLine2()), ST_ADDR_WIDTH);
         sb.append(P_OPEN)
-          .append(upToFirstDoubleSpace(stAdd2))
+          .append(htmlEscape(upToFirstDoubleSpace(stAdd2)))
           .append(TWO_SPACES)
           .append(P_CLOSE)
           .append(NEWLINE);
@@ -417,7 +445,7 @@ public class StatementHtmlBuilder {
         // --- Address line 3 (built via STRING ... DELIMITED BY ' ' into ST-ADD3, PIC X(80)) ---
         String stAdd3 = fitField(buildStAdd3(customer), ST_ADD3_WIDTH);
         sb.append(P_OPEN)
-          .append(upToFirstDoubleSpace(stAdd3))
+          .append(htmlEscape(upToFirstDoubleSpace(stAdd3)))
           .append(TWO_SPACES)
           .append(P_CLOSE)
           .append(NEWLINE);
@@ -488,6 +516,12 @@ public class StatementHtmlBuilder {
      * ST-TRANDT} fits {@code PIC X(100)} into {@code PIC X(49)} (truncating to 49); {@code MOVE
      * TRNX-AMT TO ST-TRANAMT} formats to {@code PIC Z(9).99-}.</p>
      *
+     * <p><strong>Stored-XSS defense:</strong> the dynamic transaction id and description are
+     * passed through {@link #htmlEscape(String)} before being appended, so persisted markup
+     * cannot become executable HTML. The numeric amount, edited via
+     * {@link #formatStTranAmt(BigDecimal)}, needs no escaping. For safe fixture data the escape
+     * is a no-op, preserving PR-09 byte-for-byte parity.</p>
+     *
      * @param tx the transaction to render (must not be {@code null})
      * @return the transaction-row HTML fragment
      * @throws NullPointerException if {@code tx} is {@code null}
@@ -503,10 +537,10 @@ public class StatementHtmlBuilder {
 
         appendLine(sb, HTML_LTRS);
         appendLine(sb, HTML_L58);
-        sb.append(P_OPEN).append(tranId).append(P_CLOSE).append(NEWLINE);
+        sb.append(P_OPEN).append(htmlEscape(tranId)).append(P_CLOSE).append(NEWLINE);
         appendLine(sb, HTML_LTDE);
         appendLine(sb, HTML_L61);
-        sb.append(P_OPEN).append(tranDesc).append(P_CLOSE).append(NEWLINE);
+        sb.append(P_OPEN).append(htmlEscape(tranDesc)).append(P_CLOSE).append(NEWLINE);
         appendLine(sb, HTML_LTDE);
         appendLine(sb, HTML_L64);
         sb.append(P_OPEN).append(tranAmt).append(P_CLOSE).append(NEWLINE);
@@ -553,6 +587,70 @@ public class StatementHtmlBuilder {
     /** Returns {@code ""} for a {@code null} string, otherwise the string unchanged. */
     private static String nullSafe(String s) {
         return (s == null) ? "" : s;
+    }
+
+    /**
+     * Escapes the five HTML metacharacters in dynamic free-text so that persisted
+     * customer/transaction values cannot inject markup or script into the generated
+     * statement when it is opened in a browser (stored-XSS defense). The standard
+     * XML/HTML entity set is applied, with {@code &} escaped first so that an
+     * already-present entity is not double-escaped:
+     * <ul>
+     *   <li>{@code &} &rarr; {@code &amp;}</li>
+     *   <li>{@code <} &rarr; {@code &lt;}</li>
+     *   <li>{@code >} &rarr; {@code &gt;}</li>
+     *   <li>{@code "} &rarr; {@code &quot;}</li>
+     *   <li>{@code '} &rarr; {@code &#39;}</li>
+     * </ul>
+     *
+     * <p><strong>PR-09 byte-for-byte parity preserved.</strong> The method takes an
+     * identity fast-path: when the input contains none of the five metacharacters it
+     * is returned <em>unchanged</em>, so the rendered statement for the safe CardDemo
+     * fixture data is identical to the COBOL reference output (the
+     * {@code StatementGenerationParityTest} still passes). Only genuinely unsafe
+     * characters &mdash; which do not occur in the legacy fixtures and which the
+     * original COBOL would have emitted raw &mdash; are transformed.</p>
+     *
+     * <p>Applied ONLY to dynamic free-text fields (customer name, address lines,
+     * transaction id, transaction description). It is deliberately NOT applied to the
+     * fixed HTML literal constants (which contain the intentional markup) nor to the
+     * numeric edited fields ({@code formatAcctId20}, {@code formatStCurrBal},
+     * {@code formatFico20}, {@code formatStTranAmt}), which can only ever contain
+     * digits, spaces, {@code '.'}, {@code '-'} and never a metacharacter.</p>
+     *
+     * @param s the raw, already fixed-width/truncated text (may be {@code null})
+     * @return the escaped text; the original unchanged string when it contains no
+     *         metacharacter; or {@code null} if {@code s} is {@code null}
+     */
+    private static String htmlEscape(String s) {
+        if (s == null) {
+            return null;
+        }
+        // Identity fast-path — guarantees byte-for-byte parity for safe fixture data.
+        boolean needsEscape = false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '&' || c == '<' || c == '>' || c == '"' || c == '\'') {
+                needsEscape = true;
+                break;
+            }
+        }
+        if (!needsEscape) {
+            return s;
+        }
+        StringBuilder out = new StringBuilder(s.length() + 16);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '&' -> out.append("&amp;");
+                case '<' -> out.append("&lt;");
+                case '>' -> out.append("&gt;");
+                case '"' -> out.append("&quot;");
+                case '\'' -> out.append("&#39;");
+                default -> out.append(c);
+            }
+        }
+        return out.toString();
     }
 
     /**

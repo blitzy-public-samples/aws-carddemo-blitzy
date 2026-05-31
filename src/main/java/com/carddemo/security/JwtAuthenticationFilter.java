@@ -8,6 +8,7 @@ import io.jsonwebtoken.MalformedJwtException;
 import io.jsonwebtoken.UnsupportedJwtException;
 import io.jsonwebtoken.security.Keys;
 import io.jsonwebtoken.security.SignatureException;
+import jakarta.annotation.PostConstruct;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -169,16 +170,89 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final CustomAuthorityMapper customAuthorityMapper;
 
     /**
-     * Shared secret used to verify the HS256 token signature. Injected from the
-     * {@code jwt.secret} configuration property; the same value must be used by
-     * {@code AuthService} when signing tokens. The default below is a
-     * non-production placeholder long enough (&ge; 256 bits) to satisfy the HS256
-     * key-length requirement during local development; production deployments
-     * supply a real secret via {@code application-prod.yml} or an environment
-     * variable. The default contains no real credential (rule V.S1).
+     * Minimum acceptable length, in bytes, of the UTF-8 encoding of the
+     * configured {@code jwt.secret}. HMAC-SHA256 (HS256) requires a key of at
+     * least 256 bits; {@code 256 / 8 = 32} bytes. A shorter key is rejected at
+     * startup by {@link #initSigningKey()} rather than silently weakening the
+     * signature, and jjwt itself would reject one at signing time via
+     * {@link Keys#hmacShaKeyFor(byte[])}.
      */
-    @Value("${jwt.secret:change-me-in-production-must-be-at-least-256-bits-long-secret-key}")
+    private static final int MIN_SECRET_BYTES = 32;
+
+    /**
+     * Shared secret used to verify the HS256 token signature, injected from the
+     * {@code jwt.secret} configuration property. The <b>same</b> value must be
+     * used by {@code AuthService} when signing tokens.
+     *
+     * <p><b>No source-code default is provided (CWE-798).</b> Earlier revisions
+     * supplied an in-source fallback secret; that allowed a deployment that
+     * forgot to set {@code jwt.secret} to silently run on a publicly known key,
+     * letting anyone with repository access forge valid tokens. The property is
+     * now mandatory: if {@code jwt.secret} is absent, Spring fails to resolve the
+     * {@code ${jwt.secret}} placeholder and the context fails to start. Each
+     * profile supplies it explicitly &mdash; {@code application-dev.yml} and the
+     * test profile carry non-production development secrets, while
+     * {@code application-prod.yml} binds it to the {@code JWT_SECRET} environment
+     * variable with no default so a missing production secret is a hard,
+     * fail-fast startup error.
+     *
+     * <p>Validated for non-blankness and minimum entropy/length by
+     * {@link #initSigningKey()} immediately after injection.
+     */
+    @Value("${jwt.secret}")
     private String jwtSecret;
+
+    /**
+     * The HS256 verification key, derived once from {@link #jwtSecret} at startup
+     * by {@link #initSigningKey()} and reused for every token verification.
+     *
+     * <p>Precomputing the {@link SecretKey} (rather than rebuilding it from the
+     * raw bytes on each {@link #parseToken(String)} call) both removes per-request
+     * key-derivation overhead and guarantees that the key-length validation in
+     * {@link #initSigningKey()} has succeeded before any request is served.
+     */
+    private SecretKey signingKey;
+
+    /**
+     * Validates the injected {@link #jwtSecret} and precomputes the HS256
+     * {@link #signingKey}, failing application startup if the secret is unusable.
+     *
+     * <p>Runs once, immediately after dependency injection (Jakarta
+     * {@link PostConstruct}; PR-28). Two conditions are enforced:
+     * <ol>
+     *   <li>The secret must be present and non-blank &mdash; guards against an
+     *       empty {@code jwt.secret:} entry or a blank environment variable that
+     *       would otherwise resolve the placeholder yet yield no key material.</li>
+     *   <li>Its UTF-8 encoding must be at least {@link #MIN_SECRET_BYTES} bytes
+     *       (256 bits) so the HS256 key meets the algorithm's minimum strength.</li>
+     * </ol>
+     * On either violation an {@link IllegalStateException} is thrown, which
+     * propagates as a {@code BeanInitializationException} and aborts startup
+     * &mdash; the application never serves traffic with a weak or missing signing
+     * key. The exception message never echoes the secret value.
+     *
+     * @throws IllegalStateException if {@code jwt.secret} is blank or its UTF-8
+     *                               encoding is shorter than {@link #MIN_SECRET_BYTES} bytes
+     */
+    @PostConstruct
+    void initSigningKey() {
+        if (!StringUtils.hasText(jwtSecret)) {
+            throw new IllegalStateException(
+                    "Required configuration property 'jwt.secret' is missing or blank. "
+                            + "Set it via application-<profile>.yml or the JWT_SECRET environment "
+                            + "variable; it must be at least " + MIN_SECRET_BYTES
+                            + " bytes (256 bits) for HS256.");
+        }
+        final byte[] keyBytes = jwtSecret.getBytes(StandardCharsets.UTF_8);
+        if (keyBytes.length < MIN_SECRET_BYTES) {
+            throw new IllegalStateException(
+                    "Configured 'jwt.secret' is too short for HS256: " + keyBytes.length
+                            + " bytes; a minimum of " + MIN_SECRET_BYTES
+                            + " bytes (256 bits) is required.");
+        }
+        this.signingKey = Keys.hmacShaKeyFor(keyBytes);
+        log.info("JWT signing key initialized for HS256 ({} key bytes).", keyBytes.length);
+    }
 
     /**
      * Core filter logic: validates the bearer token (if any) and, on success,
@@ -281,12 +355,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     /**
      * Parses and verifies a JWT, returning its claim set.
      *
-     * <p>Builds an HS256-verifying parser keyed on the UTF-8 bytes of
-     * {@link #jwtSecret} and calls {@code parseSignedClaims}, which both checks the
-     * HMAC signature and enforces the {@code exp} expiry. Any verification failure
-     * surfaces as a {@link JwtException} subclass (or {@link IllegalArgumentException}
-     * for a null/blank token), all of which the caller handles by leaving the
-     * security context unpopulated.
+     * <p>Verifies the token with the precomputed HS256 {@link #signingKey}
+     * (derived and validated once at startup by {@link #initSigningKey()}) and
+     * calls {@code parseSignedClaims}, which both checks the HMAC signature and
+     * enforces the {@code exp} expiry. Any verification failure surfaces as a
+     * {@link JwtException} subclass (or {@link IllegalArgumentException} for a
+     * null/blank token), all of which the caller handles by leaving the security
+     * context unpopulated.
      *
      * @param token the bare JWT (no {@value #BEARER_PREFIX} prefix)
      * @return the verified {@link Claims} payload
@@ -297,9 +372,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
      * @throws IllegalArgumentException if the token is {@code null} or blank
      */
     private Claims parseToken(String token) {
-        final SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
         return Jwts.parser()
-                .verifyWith(key)
+                .verifyWith(signingKey)
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();

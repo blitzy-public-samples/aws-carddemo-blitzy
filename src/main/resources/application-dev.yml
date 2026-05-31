@@ -209,3 +209,32 @@ springdoc:
     path: /swagger-ui.html
     operationsSorter: method
     tagsSorter: alpha
+
+
+# ============================================================================
+# APPLICATION SECURITY — CORS allowlist (consumed by config/WebConfig.java)
+# ============================================================================
+# app.cors.allowed-origins is the EXPLICIT, credential-safe allowlist injected
+# into WebConfig#allowedOrigins. The previous credentialed wildcard
+# (allowedOriginPatterns("*") + allowCredentials(true)) was a security defect:
+# it extended credentialed cross-origin trust to every site. Each environment
+# now declares exactly which origins may send credentialed requests. For local
+# development these are the usual front-end dev-server ports.
+# ============================================================================
+app:
+  cors:
+    allowed-origins: http://localhost:3000,http://localhost:8080
+
+# ============================================================================
+# JWT — HS256 signing/verification secret (consumed by
+# security/JwtAuthenticationFilter.java and AuthService)
+# ============================================================================
+# jwt.secret has NO source-code default (CWE-798 fix): JwtAuthenticationFilter
+# fails startup if it is missing or shorter than 32 UTF-8 bytes (256 bits).
+# The value below is a NON-PRODUCTION development placeholder — it is long
+# enough to satisfy the HS256 minimum-length check and is intentionally obvious.
+# Production binds jwt.secret to the JWT_SECRET environment variable (see
+# application-prod.yml) with no default, so a missing prod secret is fatal.
+# ============================================================================
+jwt:
+  secret: dev-only-jwt-secret-change-me-not-for-production-0123456789abcdef

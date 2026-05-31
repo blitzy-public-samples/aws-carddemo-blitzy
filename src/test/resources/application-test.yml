@@ -139,3 +139,25 @@ management:
   endpoint:
     health:
       show-details: always
+
+
+# ============================================================================
+# APPLICATION SECURITY — CORS allowlist (consumed by config/WebConfig.java)
+# ============================================================================
+# Explicit, non-wildcard allowlist so the WebConfig CORS bean can be wired in a
+# full-context (@SpringBootTest) test without falling back to a wildcard. Local
+# dev-server origin is sufficient for tests.
+# ============================================================================
+app:
+  cors:
+    allowed-origins: http://localhost:3000
+
+# ============================================================================
+# JWT — HS256 secret for tests (consumed by security/JwtAuthenticationFilter.java)
+# ============================================================================
+# jwt.secret has NO source-code default; any full-context test that loads
+# JwtAuthenticationFilter must supply one of at least 32 UTF-8 bytes (256 bits).
+# This is a NON-PRODUCTION test-only value, distinct from the dev placeholder.
+# ============================================================================
+jwt:
+  secret: test-only-jwt-secret-not-for-production-0123456789abcdef0123456789

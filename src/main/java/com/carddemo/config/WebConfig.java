@@ -2,6 +2,7 @@ package com.carddemo.config;
 
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -40,20 +41,34 @@ import java.util.TimeZone;
  * </ol>
  *
  * <h2>CORS Strategy</h2>
- * <p>For the demonstration-grade deployment, all origins are allowed and
- * standard HTTP methods are accepted. Production deployments should override
- * {@link #corsConfigurationSource()} or replace it with a property-driven
- * implementation that reads allowed origins from
- * {@code application-prod.yml}. The current bean configures:
+ * <p>Allowed origins are <b>property-driven</b>, never a credentialed wildcard.
+ * The CORS specification forbids pairing {@code allowCredentials=true} with a
+ * literal {@code "*"} origin, and even Spring's {@code allowedOriginPatterns("*")}
+ * workaround &mdash; which reflects back any caller's {@code Origin} &mdash; would
+ * extend credentialed cross-origin trust to <i>every</i> site, a security defect.
+ * Instead the allowlist is bound from the {@code app.cors.allowed-origins}
+ * configuration property (a comma-separated list), so each environment declares
+ * exactly which origins may send credentialed requests:
  * <ul>
- *   <li>{@code allowedOriginPatterns}: {@code ["*"]} (uses patterns to permit
- *       credentials; cannot use literal {@code "*"} with {@code allowCredentials})</li>
+ *   <li>{@code application-dev.yml} / test profile &mdash; local development hosts
+ *       (e.g. {@code http://localhost:3000}).</li>
+ *   <li>{@code application-prod.yml} &mdash; bound to the
+ *       {@code APP_CORS_ALLOWED_ORIGINS} environment variable so production
+ *       trusts only its real front-end origin(s).</li>
+ * </ul>
+ * If the property is absent the bean falls back to a safe, non-wildcard
+ * localhost-only default (see {@link #corsConfigurationSource()}); it never
+ * widens to {@code "*"}. The bean configures:
+ * <ul>
+ *   <li>{@code allowedOrigins}: the configured allowlist (exact origins, no
+ *       wildcard) &mdash; compatible with {@code allowCredentials=true}</li>
  *   <li>{@code allowedMethods}: {@code GET, POST, PUT, DELETE, OPTIONS, PATCH}</li>
  *   <li>{@code allowedHeaders}: {@code ["*"]} (includes {@code Authorization}
  *       and {@code Content-Type})</li>
  *   <li>{@code exposedHeaders}: {@code Authorization}, {@code Content-Disposition}
  *       (for file downloads such as statement PDFs/HTML)</li>
- *   <li>{@code allowCredentials}: {@code true}</li>
+ *   <li>{@code allowCredentials}: {@code true} (safe now that origins are an
+ *       explicit allowlist rather than a wildcard)</li>
  *   <li>{@code maxAge}: 3600 seconds (1 hour preflight cache)</li>
  * </ul>
  *
@@ -89,7 +104,10 @@ import java.util.TimeZone;
  *   <li><b>PR-25</b>: Single monolith &mdash; single web stack</li>
  *   <li><b>PR-26</b>: No cloud-native services (no S3 origins in CORS)</li>
  *   <li><b>PR-28</b>: Jakarta EE namespace (consistent with Spring Boot 3.x)</li>
- *   <li><b>PR-29</b>: Constructor injection (N/A &mdash; no fields)</li>
+ *   <li><b>PR-29</b>: No bean {@code @Autowired} field injection. The only field
+ *       is a {@code @Value} <i>configuration property</i> binding
+ *       ({@code app.cors.allowed-origins}), which is property injection &mdash; not
+ *       the collaborator field-injection the rule prohibits.</li>
  *   <li><b>PR-30</b>: Single-phase delivery</li>
  * </ul>
  *
@@ -106,6 +124,27 @@ import java.util.TimeZone;
 public class WebConfig implements WebMvcConfigurer {
 
     /**
+     * Explicit allowlist of origins permitted to make credentialed cross-origin
+     * requests, bound from the {@code app.cors.allowed-origins} configuration
+     * property (a comma-separated list).
+     *
+     * <p>This replaces the previous credentialed wildcard
+     * ({@code allowedOriginPatterns("*")} + {@code allowCredentials(true)}), which
+     * extended cross-origin trust to every site. Each profile supplies its own
+     * value: {@code application-dev.yml} and the test profile list local
+     * development hosts, and {@code application-prod.yml} binds it to the
+     * {@code APP_CORS_ALLOWED_ORIGINS} environment variable.
+     *
+     * <p>When the property is unset, the default below is a safe, non-wildcard
+     * localhost-only allowlist &mdash; suitable for a developer who has not
+     * configured the property and never a global {@code "*"}. Injected via
+     * {@code @Value} property binding (PR-29: this is configuration injection, not
+     * collaborator field injection).
+     */
+    @Value("${app.cors.allowed-origins:http://localhost:3000,http://localhost:8080}")
+    private List<String> allowedOrigins;
+
+    /**
      * Provides the {@link CorsConfigurationSource} bean consumed automatically by
      * Spring Security's {@code http.cors(Customizer.withDefaults())} (declared in
      * {@code com.carddemo.security.SecurityConfig}).
@@ -115,18 +154,21 @@ public class WebConfig implements WebMvcConfigurer {
      * source, causing all browser-originated requests with cross-origin headers
      * (including preflight {@code OPTIONS}) to fail.
      *
-     * <p>Configuration for demo-grade deployment:
+     * <p>Configuration:
      * <ul>
-     *   <li>All origin patterns allowed ({@code "*"}) &mdash; restrict per environment in
-     *       production via property-driven overrides</li>
+     *   <li><b>Allowed origins</b>: the explicit allowlist bound from
+     *       {@link #allowedOrigins} ({@code app.cors.allowed-origins}). Exact
+     *       origins are registered via {@code setAllowedOrigins} &mdash; never the
+     *       credentialed wildcard the CORS spec forbids and never
+     *       {@code allowedOriginPatterns("*")}, which would reflect every caller's
+     *       {@code Origin} back and defeat the point of {@code allowCredentials}.</li>
      *   <li>Standard REST methods: {@code GET, POST, PUT, DELETE, OPTIONS, PATCH}</li>
      *   <li>All request headers accepted (includes {@code Authorization} for JWT
      *       and {@code Content-Type} for JSON)</li>
      *   <li>Response headers exposed: {@code Authorization} (for refresh tokens),
      *       {@code Content-Disposition} (for statement file downloads)</li>
-     *   <li>Credentials allowed ({@code allowCredentials=true}) &mdash; uses
-     *       {@code allowedOriginPatterns} (not literal {@code "*"} which is
-     *       incompatible with credentials per CORS spec)</li>
+     *   <li>Credentials allowed ({@code allowCredentials=true}) &mdash; safe because
+     *       origins are an explicit allowlist, not a wildcard</li>
      *   <li>Preflight cache: 3600 seconds</li>
      * </ul>
      *
@@ -135,11 +177,12 @@ public class WebConfig implements WebMvcConfigurer {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        // allowedOriginPatterns (NOT allowedOrigins) is mandatory when
-        // allowCredentials=true: the CORS spec forbids a literal "*" origin
-        // alongside credentials, and Spring's pattern API is the supported
-        // workaround that still echoes back the caller's Origin header.
-        config.setAllowedOriginPatterns(List.of("*"));
+        // Bind the explicit, environment-supplied allowlist. setAllowedOrigins
+        // (NOT setAllowedOriginPatterns("*")) is the credential-safe form: every
+        // entry is a concrete origin, so allowCredentials=true cannot leak to an
+        // untrusted site. The list is non-empty (a localhost default applies when
+        // the property is unset), so credentialed CORS is never globally open.
+        config.setAllowedOrigins(allowedOrigins);
         config.setAllowedMethods(List.of(
                 "GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
         config.setAllowedHeaders(List.of("*"));

@@ -23,7 +23,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -35,7 +34,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Operational administrative REST endpoint for launching and discovering Spring Batch
+ * Operational administrative REST endpoint for launching Spring Batch
  * {@link Job}s by name.
  *
  * <p><strong>No direct COBOL source program.</strong> This controller is a new modernization
@@ -52,9 +51,13 @@ import java.util.Map;
  * <ul>
  *   <li>{@code POST /api/admin/jobs/{jobName}/launch} &mdash; launch the named job with optional
  *       {@link JobParameters}; returns {@code 202 Accepted} with execution metadata.</li>
- *   <li>{@code GET  /api/admin/jobs} &mdash; list the names of all jobs registered with the
- *       {@link JobRegistry}; returns {@code 200 OK}.</li>
  * </ul>
+ *
+ * <p>This controller intentionally exposes <em>only</em> the launch operation mandated by the AAP
+ * ({@code POST /api/admin/jobs/{jobName}/launch}). No job-discovery/enumeration endpoint is provided:
+ * the migration scope forbids adding endpoints beyond those required to mirror the legacy behavior
+ * (PR &mdash; no feature additions), and the set of launchable job names is fixed and documented
+ * rather than enumerated at runtime.</p>
  *
  * <h2>Runtime collaborators (constructor-injected by type)</h2>
  * <ul>
@@ -130,7 +133,7 @@ public class BatchAdminController {
 
     /**
      * Spring Boot 3.2 auto-configured {@link JobRegistry} that maps job names to {@link Job} beans.
-     * Used to look up a job for launching and to enumerate the registered job names.
+     * Used to look up a job for launching by name (see {@link #launchJob(String, Map)}).
      */
     private final JobRegistry jobRegistry;
 
@@ -223,31 +226,6 @@ public class BatchAdminController {
         log.info("Job {} launched successfully with executionId={}", jobName, execution.getId());
 
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
-    }
-
-    /**
-     * Lists the names of all {@link Job}s currently registered with the {@link JobRegistry}.
-     *
-     * <p>Useful for discovery so an administrator knows which {@code jobName} values are valid for
-     * {@link #launchJob(String, Map)}.</p>
-     *
-     * @return {@code 200 OK} with a body containing {@code jobs} (the collection of registered job
-     *         names) and {@code count} (their cardinality)
-     */
-    @GetMapping
-    @Operation(
-        summary = "List all registered Spring Batch jobs",
-        description = "Returns the names of all jobs registered with JobRegistry. Useful for discovery.")
-    @ApiResponses({
-        @ApiResponse(responseCode = "200", description = "List of registered job names"),
-        @ApiResponse(responseCode = "403", description = "User lacks ADMIN role")
-    })
-    public ResponseEntity<Map<String, Object>> listJobs() {
-        log.debug("Listing registered batch jobs");
-        Map<String, Object> response = new HashMap<>();
-        response.put("jobs", jobRegistry.getJobNames());
-        response.put("count", jobRegistry.getJobNames().size());
-        return ResponseEntity.ok(response);
     }
 
     /**

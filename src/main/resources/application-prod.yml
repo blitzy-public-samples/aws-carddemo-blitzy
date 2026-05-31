@@ -16,6 +16,13 @@
 #   SPRING_DATASOURCE_URL       — jdbc:postgresql://<host>:5432/carddemo
 #   SPRING_DATASOURCE_USERNAME  — database username
 #   SPRING_DATASOURCE_PASSWORD  — database password
+#   JWT_SECRET                  — HS256 signing/verification secret; MUST be at
+#                                 least 32 bytes (256 bits). No default: a missing
+#                                 value is a fatal startup error (CWE-798 guard).
+#   APP_CORS_ALLOWED_ORIGINS    — comma-separated allowlist of trusted front-end
+#                                 origins for credentialed CORS (e.g.
+#                                 https://app.example.com,https://admin.example.com).
+#                                 No default: never a wildcard in production.
 #
 # Optional environment variables (with sensible defaults):
 #   SERVER_PORT                 — HTTP port (default 8080)
@@ -223,6 +230,32 @@ management:
 # Exposing the OpenAPI schema publicly helps attackers map the API surface.
 # Documentation should be served from a separate portal in production. Re-enable
 # with a prod,docs composite profile if explicitly desired.
+
+# ============================================================================
+# APPLICATION SECURITY — CORS allowlist (consumed by config/WebConfig.java)
+# ============================================================================
+# Bound to APP_CORS_ALLOWED_ORIGINS with NO default. Production must declare its
+# real, trusted front-end origin(s) as a comma-separated list; if the variable
+# is unset the ${APP_CORS_ALLOWED_ORIGINS} placeholder fails to resolve and the
+# context fails to start — fail-fast, exactly like the datasource above. This
+# guarantees production NEVER runs the old credentialed wildcard CORS.
+# ============================================================================
+app:
+  cors:
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS}
+
+# ============================================================================
+# JWT — HS256 signing/verification secret (consumed by
+# security/JwtAuthenticationFilter.java and AuthService)
+# ============================================================================
+# Bound to JWT_SECRET with NO default. JwtAuthenticationFilter additionally
+# validates at startup that the resolved value is non-blank and at least 32
+# UTF-8 bytes (256 bits); otherwise the application aborts startup. No JWT
+# secret is ever committed to version control (CWE-798).
+# ============================================================================
+jwt:
+  secret: ${JWT_SECRET}
+
 # ============================================================================
 springdoc:
   api-docs:

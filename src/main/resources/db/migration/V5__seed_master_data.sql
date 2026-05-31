@@ -17,7 +17,18 @@
 --              PR-27 (preserve source data verbatim).
 -- Idempotent:  Every INSERT uses ON CONFLICT (<pk>) DO NOTHING so the script is
 --              safe to re-run in test/reset scenarios. No DDL, no DELETE/TRUNCATE.
--- Note:        tcatbal.txt actually contains 50 records, not 100 as AAP §0.3.1 prose claims.
+-- Note (TCATBAL row count — RESOLVED, authoritative):
+--              This migration seeds exactly 50 transaction-category-balance rows
+--              (one per account), matching the preserved source fixture
+--              app/data/ASCII/tcatbal.txt, which contains 50 records. The figure of
+--              "100" appearing in AAP §0.3.1/§0.4.1.4 prose is a documentation typo.
+--              Per PR-27 the preserved app/ tree is the single source of truth, and
+--              the DataInitializationJobConfig batch loader reads this same 50-record
+--              fixture; seeding 50 rows here keeps the Flyway seed, the batch loader,
+--              and the authoritative fixture in agreement. Seeding 100 would fabricate
+--              50 rows that exist in no source — violating functional parity and the
+--              no-feature-additions rule — so 50 is intentional and final. There is no
+--              missing data.
 -- =============================================================================
 
 -- =============================================================================

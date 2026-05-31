@@ -151,8 +151,20 @@ java -jar target/carddemo-1.0.0-SNAPSHOT.jar --spring.profiles.active=dev
 SPRING_DATASOURCE_URL=jdbc:postgresql://db.example.com:5432/carddemo \
 SPRING_DATASOURCE_USERNAME=carddemo \
 SPRING_DATASOURCE_PASSWORD=*** \
+JWT_SECRET=$(openssl rand -base64 48) \
+APP_CORS_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com \
 java -jar target/carddemo-1.0.0-SNAPSHOT.jar --spring.profiles.active=prod
 ```
+
+The production profile sources **all** secrets from environment variables — none are committed to version control. The following are **required** and have **no default**, so a missing value aborts startup (fail-fast):
+
+| Environment variable | Purpose |
+| :--- | :--- |
+| `SPRING_DATASOURCE_URL` / `SPRING_DATASOURCE_USERNAME` / `SPRING_DATASOURCE_PASSWORD` | PostgreSQL connection. |
+| `JWT_SECRET` | HS256 signing/verification secret shared by token issuance and validation. **Must be at least 32 bytes (256 bits)**; the application validates the length at startup and refuses to run on a shorter or blank value. There is no source-code fallback (a previously hardcoded default was removed to eliminate the risk of running on a publicly known key). |
+| `APP_CORS_ALLOWED_ORIGINS` | Comma-separated allowlist of trusted front-end origins permitted to make credentialed cross-origin requests. Production never uses a wildcard origin. |
+
+> The `dev` and `test` profiles ship non-production placeholder values for `jwt.secret` and a localhost `app.cors.allowed-origins`, so no environment variables are needed for local development.
 
 On startup, Flyway applies any pending migrations, Hibernate validates the schema (`ddl-auto: validate`), and the application listens on port `8080` by default.
 
