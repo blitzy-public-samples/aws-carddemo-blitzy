@@ -21,24 +21,27 @@ import org.springframework.stereotype.Repository;
  *
  * <p><strong>Composite primary key (PR-15).</strong> Because the COBOL record is keyed on two
  * fields, the {@link TransactionCategory} entity declares an {@code @EmbeddedId} of type
- * {@link TransactionCategoryId} (field order {@code type_cd} then {@code cat_cd}, mirroring the
- * COBOL key concatenation). This interface therefore extends
+ * {@link TransactionCategoryId} (field order {@code typeCd} then {@code categoryCd}, mirroring the
+ * COBOL {@code TRAN-CAT-KEY} concatenation order). This interface therefore extends
  * {@code JpaRepository<TransactionCategory, TransactionCategoryId>}: the inherited
  * {@code findById}, {@code existsById}, and {@code deleteById} signatures all bind to the
  * {@link TransactionCategoryId} composite-key type. A lookup is performed by constructing the
- * embeddable key, e.g. {@code findById(new TransactionCategoryId(typeCd, catCd))}.</p>
+ * embeddable key, e.g. {@code findById(new TransactionCategoryId("01", "0001"))} resolves the
+ * "Regular Sales Draft" category. Both key components are fixed-width {@code String} values
+ * ({@code categoryCd} preserves the four-digit, zero-padded COBOL {@code PIC 9(04)} form such as
+ * {@code "0001"}); they are never modelled as numeric types.</p>
  *
  * <p>This is immutable reference/lookup data, so the inherited {@code JpaRepository} operations
  * satisfy every consumer and no custom finder methods are required (AAP &sect;0.4.1.5). The 18
- * standard transaction categories are seeded by {@code V3__seed_reference_data.sql} from
- * {@code app/data/ASCII/trancatg.txt}. The original CICS/VSAM access verbs this interface
- * supersedes:</p>
+ * standard transaction categories (distributed across the seven transaction types) are seeded by
+ * {@code V3__seed_reference_data.sql} from {@code app/data/ASCII/trancatg.txt}. The original
+ * CICS/VSAM access verbs this interface supersedes:</p>
  * <ul>
  *   <li>{@code findById(TransactionCategoryId)} &mdash; replaces {@code EXEC CICS READ} with
  *       {@code RIDFLD} on the concatenated {@code (TRAN-TYPE-CD, TRAN-CAT-CD)} key. The COBOL
  *       {@code DFHRESP(NOTFND)} branch maps to {@code Optional.empty()}.</li>
  *   <li>{@code findAll()} &mdash; replaces the sequential full-file scan performed during
- *       reference-data enumeration and validation.</li>
+ *       reference-data enumeration and transaction validation.</li>
  *   <li>{@code save(TransactionCategory)} / {@code saveAll(Iterable)} &mdash; replace
  *       {@code EXEC CICS WRITE} during the initial reference-data load.</li>
  *   <li>{@code existsById(TransactionCategoryId)}, {@code count()},
@@ -46,10 +49,11 @@ import org.springframework.stereotype.Repository;
  *       operations.</li>
  * </ul>
  *
- * <p><strong>Consumers.</strong> Transaction validation (resolving the
- * {@code (type, category)} pair carried by {@link com.carddemo.entity.Transaction} and
- * {@link com.carddemo.entity.DailyTransaction}) and reference-data enumeration. All access is by
- * primary key or full scan; there is no alternate-index (AIX) equivalent for this table.</p>
+ * <p><strong>Consumers.</strong> Transaction validation (resolving the {@code (type, category)}
+ * pair carried by {@link com.carddemo.entity.Transaction} and
+ * {@link com.carddemo.entity.DailyTransaction}), category-description rendering for statements,
+ * and reference-data enumeration. All access is by primary key or full scan; there is no
+ * alternate-index (AIX) equivalent for this table.</p>
  *
  * <p><strong>No optimistic locking.</strong> This lookup table carries no {@code @Version}
  * column (AAP &sect;0.3.3 restricts {@code @Version} to {@code Account}, {@code Card},
