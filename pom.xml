@@ -49,6 +49,15 @@
             3.2.12 BOM, so its version is pinned explicitly here.
         -->
         <springdoc-openapi.version>2.3.0</springdoc-openapi.version>
+        <!--
+            jjwt (io.jsonwebtoken) is NOT managed by the Spring Boot 3.2.12 BOM, so
+            its version is pinned explicitly here. 0.12.6 is the latest 0.12.x release
+            and provides the modern parser API (Jwts.parser().verifyWith(...).build()
+            .parseSignedClaims(...)) used by JwtAuthenticationFilter to validate the
+            HS256 bearer tokens that replace the CICS COMMAREA (app/cpy/COCOM01Y.cpy)
+            user-identity propagation. All three jjwt artifacts MUST share one version.
+        -->
+        <jjwt.version>0.12.6</jjwt.version>
     </properties>
 
     <dependencies>
@@ -112,6 +121,48 @@
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
             <version>${springdoc-openapi.version}</version>
+        </dependency>
+
+        <!-- ===================== JSON WEB TOKEN (JWT) ===================== -->
+
+        <!--
+            jjwt — JSON Web Token support for the stateless REST security model.
+            JwtAuthenticationFilter parses and verifies HS256 bearer tokens to
+            reconstruct the user identity (sub = CDEMO-USER-ID) and authorities
+            (userType 'A'/'U' -> ROLE_ADMIN/ROLE_USER) that the legacy mainframe
+            carried in the CICS COMMAREA (app/cpy/COCOM01Y.cpy L19-L44); AuthService
+            issues those tokens after a successful BCrypt signon (replacing the
+            plaintext password compare in app/cbl/COSGN00C.cbl L211-L257).
+
+            The split is the standard jjwt packaging:
+              - jjwt-api      (compile)  — the public types referenced in source
+                                           (Jwts, Claims, Keys, the JwtException
+                                           hierarchy). This is the ONLY jjwt artifact
+                                           on the compile classpath.
+              - jjwt-impl     (runtime)  — the runtime implementation of that API;
+                                           required at execution time but not compiled
+                                           against directly.
+              - jjwt-jackson  (runtime)  — the Jackson-based (de)serializer that jjwt
+                                           uses to read/write the JSON claim set;
+                                           Jackson is already present via
+                                           spring-boot-starter-web.
+        -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>${jjwt.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
         </dependency>
 
         <!-- ===================== PROVIDED (COMPILE-TIME ONLY) ===================== -->
