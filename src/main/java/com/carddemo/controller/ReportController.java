@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 /**
  * Transaction-report submission REST endpoint &mdash; the stateless replacement for the legacy
@@ -81,22 +82,31 @@ import java.util.concurrent.CompletableFuture;
  *       <td>400 ({@code @NotBlank}/{@code @Pattern("[YyNn]")} confirmation)</td></tr>
  * </table>
  *
- * <h2>Asynchronous response handling ({@code CompletableFuture})</h2>
+ * <h2>Asynchronous submission, synchronous response</h2>
  * <p>{@link ReportService#submitReport(ReportRequest)} is annotated {@code @Async} and returns a
- * {@link CompletableFuture}{@code <Long>} completed with the launched {@code jobExecutionId}. This
- * controller therefore returns a {@link CompletableFuture} of its {@link ResponseEntity}: Spring MVC
- * recognizes the reactive return type, releases the servlet container thread while the future is
- * pending, and writes the {@code 202 Accepted} response when the future completes &mdash; preserving
- * the "return to the user immediately" semantics of the original pseudo-conversational program
- * without blocking a request thread.</p>
+ * {@link CompletableFuture}{@code <Long>} completed with the launched {@code jobExecutionId} &mdash;
+ * the work is offloaded to the Spring task executor, the REST analogue of the fire-and-forget CICS
+ * internal-reader hand-off (AAP &sect;0.6.1). The service contract is deliberately unchanged.</p>
  *
- * <p>If the service's future completes <em>exceptionally</em> (e.g. {@link IllegalArgumentException}
+ * <p>This controller, however, returns a <em>synchronous</em> {@link ResponseEntity}: it
+ * {@linkplain CompletableFuture#join() joins} the service future so the HTTP response is produced on
+ * the original request thread, with the authenticated {@code SecurityContext} still in place.
+ * Returning the {@link CompletableFuture} itself (the previous design) handed control back to Spring
+ * MVC, which performed an <em>async re-dispatch</em> of the request. Because
+ * {@code JwtAuthenticationFilter} is a {@code OncePerRequestFilter} whose
+ * {@code shouldNotFilterAsyncDispatch()} is {@code true}, it did <em>not</em> re-run on that
+ * re-dispatch, so {@code SecurityContextHolder} was empty and the downstream
+ * {@code AuthorizationFilter} overrode the computed {@code 202 Accepted} with a spurious
+ * {@code 401 Unauthorized} &mdash; <em>even though the job had already launched server-side</em>.
+ * Honest clients, told "unauthorized", then retried and triggered duplicate report jobs. Blocking on
+ * {@code join()} keeps the request fully synchronous: authorization succeeds normally and the client
+ * receives a single, correct {@code 202 Accepted} carrying the {@code jobExecutionId}.</p>
+ *
+ * <p>If the service future completes <em>exceptionally</em> (e.g. {@link IllegalArgumentException}
  * for a non-affirmative confirmation or absent report type, or {@link IllegalStateException} for a
- * launch failure), the {@link CompletableFuture#thenApply(java.util.function.Function) thenApply}
- * mapping is skipped and the exceptional completion is propagated to Spring's asynchronous
- * exception handling, which unwraps the {@link java.util.concurrent.CompletionException} and routes
- * the original cause through {@code GlobalExceptionHandler} (mapping
- * {@link IllegalArgumentException} &rarr; 400 and {@link IllegalStateException} &rarr; 422).</p>
+ * launch failure), {@code join()} throws a {@link CompletionException}; the method unwraps it and
+ * rethrows the original cause on the request thread, where {@code GlobalExceptionHandler} maps it as
+ * before ({@link IllegalArgumentException} &rarr; 400, {@link IllegalStateException} &rarr; 422).</p>
  *
  * <h2>Runtime collaborator (constructor-injected by type)</h2>
  * <ul>
@@ -194,18 +204,19 @@ public class ReportController {
      *       value with {@link IllegalArgumentException} (mapped to 400 by the global handler).</li>
      * </ul>
      *
-     * <p>The method returns a {@link CompletableFuture} of the {@link ResponseEntity}: the service
-     * launch runs on a task-executor thread and the {@code 202 Accepted} response is written once the
-     * {@code jobExecutionId} is available, without blocking the servlet container thread. Should the
-     * service future complete exceptionally, the {@link CompletableFuture#thenApply(java.util.function.Function)
-     * thenApply} mapping is bypassed and the cause is surfaced to
-     * {@code GlobalExceptionHandler} for translation to the appropriate HTTP status.</p>
+     * <p>The service launch runs on a task-executor thread ({@code @Async}); this method
+     * {@linkplain CompletableFuture#join() joins} the returned future so the {@code 202 Accepted}
+     * response is written synchronously on the request thread, preserving the authenticated
+     * {@code SecurityContext} (see the class-level "Asynchronous submission, synchronous response"
+     * note for why this avoids the async-re-dispatch {@code 401}). Should the service future complete
+     * exceptionally, {@code join()} throws a {@link CompletionException}; the method unwraps it and
+     * rethrows the original cause so {@code GlobalExceptionHandler} translates it to the appropriate
+     * HTTP status.</p>
      *
      * @param request the validated report submission payload (report type, date window, optional
      *                output format, and confirmation flag)
-     * @return a {@link CompletableFuture} that completes with a {@code 202 Accepted}
-     *         {@link ResponseEntity} whose ordered body contains {@code jobExecutionId},
-     *         {@code status}, {@code message}, and {@code reportType}
+     * @return a {@code 202 Accepted} {@link ResponseEntity} whose ordered body contains
+     *         {@code jobExecutionId}, {@code status}, {@code message}, and {@code reportType}
      */
     @PostMapping
     @Operation(
@@ -223,7 +234,7 @@ public class ReportController {
         @ApiResponse(responseCode = "401", description = "User not authenticated"),
         @ApiResponse(responseCode = "500", description = "Job launch failed (e.g., JobRegistry could not resolve job name)")
     })
-    public CompletableFuture<ResponseEntity<Map<String, Object>>> submitReport(
+    public ResponseEntity<Map<String, Object>> submitReport(
             @Valid @RequestBody ReportRequest request) {
 
         log.info("POST /api/reports received: reportType={} startDate={} endDate={} outputFormat={} confirmation={}",
@@ -231,21 +242,48 @@ public class ReportController {
             request.getOutputFormat(), request.getConfirmation());
 
         // Delegate to the @Async service (replaces EXEC CICS WRITEQ TD QUEUE('JOBS')). The service
-        // returns a CompletableFuture<Long> completed with the launched jobExecutionId; map it to the
-        // 202 Accepted response once available. An exceptional completion (IllegalArgumentException /
-        // IllegalStateException) skips this mapping and is routed to GlobalExceptionHandler.
-        return reportService.submitReport(request).thenApply(jobExecutionId -> {
-            // LinkedHashMap preserves JSON key order (jobExecutionId first) per the response contract.
-            Map<String, Object> response = new LinkedHashMap<>();
-            response.put("jobExecutionId", jobExecutionId);
-            response.put("status", STATUS_ACCEPTED);
-            response.put("message", ACCEPTED_MESSAGE);
-            response.put("reportType", request.getReportType());
+        // returns a CompletableFuture<Long> completed with the launched jobExecutionId.
+        //
+        // We BLOCK on the future (join) so the HTTP response is produced ON THE REQUEST THREAD, with
+        // the authenticated SecurityContext still in place. Returning the CompletableFuture itself
+        // would hand control back to Spring MVC, which performs an ASYNC re-dispatch of the request;
+        // JwtAuthenticationFilter is a OncePerRequestFilter whose shouldNotFilterAsyncDispatch() is
+        // true, so it does NOT re-run on that re-dispatch, leaving an empty SecurityContextHolder.
+        // The downstream AuthorizationFilter then rejected the (re-dispatched) request with 401 even
+        // though the job had already launched server-side — telling the client "unauthorized" while
+        // a report was produced, and provoking duplicate launches on retry. Blocking here keeps the
+        // request synchronous: auth stays intact, the client gets a single, correct 202 Accepted,
+        // and the service remains @Async (its signature is unchanged) per AAP §0.6.1.
+        final Long jobExecutionId;
+        try {
+            jobExecutionId = reportService.submitReport(request).join();
+        } catch (CompletionException ex) {
+            // join() wraps any exceptional completion in CompletionException. Unwrap and rethrow the
+            // ORIGINAL cause on the request thread so GlobalExceptionHandler maps it exactly as the
+            // previous (async) implementation did: IllegalArgumentException -> 400 (non-affirmative
+            // confirmation / absent report type), IllegalStateException -> 422 (launch failure).
+            Throwable cause = ex.getCause();
+            if (cause instanceof RuntimeException runtimeCause) {
+                throw runtimeCause;
+            }
+            if (cause instanceof Error errorCause) {
+                throw errorCause;
+            }
+            // A checked cause is not expected from submitReport; wrap it to preserve the message.
+            throw new IllegalStateException(
+                cause != null ? cause.getMessage() : ex.getMessage(), cause);
+        }
 
-            log.info("POST /api/reports accepted: reportType={} jobExecutionId={}",
-                request.getReportType(), jobExecutionId);
+        // LinkedHashMap preserves JSON key order (jobExecutionId first) per the response contract.
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("jobExecutionId", jobExecutionId);
+        response.put("status", STATUS_ACCEPTED);
+        response.put("message", ACCEPTED_MESSAGE);
+        response.put("reportType", request.getReportType());
 
-            return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
-        });
+        log.info("POST /api/reports accepted: reportType={} jobExecutionId={}",
+            request.getReportType(), jobExecutionId);
+
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
 }

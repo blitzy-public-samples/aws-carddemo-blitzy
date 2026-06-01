@@ -27,11 +27,15 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -857,6 +861,155 @@ public class GlobalExceptionHandler {
                 .timestamp(LocalDateTime.now())
                 .build();
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(body);
+    }
+
+    // =========================================================================
+    // Phase 6.5: Spring MVC framework / routing exceptions
+    //
+    // These are raised by the DispatcherServlet BEFORE (or instead of) any
+    // controller method when a request cannot be routed: an unmapped path, an
+    // unsupported HTTP method, or an unsupported request media type. Spring's
+    // built-in DefaultHandlerExceptionResolver would normally map them to
+    // 404/405/415, but because this @RestControllerAdvice declares a catch-all
+    // @ExceptionHandler(Exception.class) (Phase 7 below) — and these framework
+    // exceptions are subtypes of Exception — the catch-all would otherwise win
+    // and wrongly return 500. Declaring these MORE SPECIFIC handlers restores
+    // the correct REST status codes while keeping the uniform ErrorResponse
+    // envelope (no stack-trace leak), so client error-handling and the API
+    // contract behave correctly for routing/method/media-type failures.
+    // =========================================================================
+
+    /**
+     * Handles a request to an unmapped path &mdash; no static resource and no
+     * controller handler match the URI.
+     *
+     * <p>In Spring Boot 3.2, an unresolved request raises
+     * {@link NoResourceFoundException} (from the resource-handling chain). Mapped to
+     * {@code 404 Not Found} with code {@code "NOT_FOUND"}. This is the
+     * <em>routing-level</em> 404 and is intentionally distinct from the
+     * <em>application-level</em> 404 produced by {@link AccountNotFoundException}
+     * (which carries the COBOL reason code {@code "101"}); the two remain
+     * distinguishable by their {@code code} while sharing the one
+     * {@link ErrorResponse} shape. Logged at {@code WARN} (no stack trace &mdash; an
+     * unmapped path is an expected client error, not a server fault).</p>
+     *
+     * @param ex      the no-resource-found exception
+     * @param request the current request, used to populate the error {@code path}
+     * @return a {@code 404} {@link ErrorResponse} with code {@code "NOT_FOUND"}
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNoResourceFound(
+            NoResourceFoundException ex,
+            HttpServletRequest request) {
+        log.warn("No resource found for {} {}: {}",
+                request.getMethod(), request.getRequestURI(), ex.getMessage());
+        ErrorResponse body = ErrorResponse.builder()
+                .status(HttpStatus.NOT_FOUND.value())
+                .code("NOT_FOUND")
+                .message("The requested resource was not found")
+                .path(request.getRequestURI())
+                .timestamp(LocalDateTime.now())
+                .build();
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
+    }
+
+    /**
+     * Handles {@link NoHandlerFoundException} &mdash; raised when no controller
+     * handler matches the request and
+     * {@code spring.mvc.throw-exception-if-no-handler-found} is enabled.
+     *
+     * <p>Mapped to {@code 404 Not Found} with code {@code "NOT_FOUND"}, the same
+     * routing-level 404 contract as {@link #handleNoResourceFound}. This handler is
+     * declared for completeness/robustness: in the default Boot 3.2 configuration
+     * unresolved requests surface as {@link NoResourceFoundException}, but handling
+     * both guarantees a correct 404 regardless of which framework exception the
+     * dispatcher chooses. Logged at {@code WARN} (expected client error).</p>
+     *
+     * @param ex      the no-handler-found exception
+     * @param request the current request, used to populate the error {@code path}
+     * @return a {@code 404} {@link ErrorResponse} with code {@code "NOT_FOUND"}
+     */
+    @ExceptionHandler(NoHandlerFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNoHandlerFound(
+            NoHandlerFoundException ex,
+            HttpServletRequest request) {
+        log.warn("No handler found for {} {}: {}",
+                request.getMethod(), request.getRequestURI(), ex.getMessage());
+        ErrorResponse body = ErrorResponse.builder()
+                .status(HttpStatus.NOT_FOUND.value())
+                .code("NOT_FOUND")
+                .message("The requested resource was not found")
+                .path(request.getRequestURI())
+                .timestamp(LocalDateTime.now())
+                .build();
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
+    }
+
+    /**
+     * Handles {@link HttpRequestMethodNotSupportedException} &mdash; the request
+     * targets a valid path with an HTTP method the handler does not support (e.g.
+     * {@code DELETE}/{@code PATCH} on a view/update-only resource).
+     *
+     * <p>Mapped to {@code 405 Method Not Allowed} with code
+     * {@code "METHOD_NOT_ALLOWED"}. The set of supported methods (when the framework
+     * supplies it) is advertised via the {@code Allow} response header per RFC&nbsp;7231
+     * &sect;6.5.5, and is also included in the human-readable message. Logged at
+     * {@code WARN} (expected client error).</p>
+     *
+     * @param ex      the method-not-supported exception (carries the unsupported
+     *                method and the supported set)
+     * @param request the current request, used to populate the error {@code path}
+     * @return a {@code 405} {@link ErrorResponse} with code {@code "METHOD_NOT_ALLOWED"}
+     *         and, when known, an {@code Allow} header
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ErrorResponse> handleMethodNotSupported(
+            HttpRequestMethodNotSupportedException ex,
+            HttpServletRequest request) {
+        log.warn("Method not supported at {}: {}", request.getRequestURI(), ex.getMessage());
+        ErrorResponse body = ErrorResponse.builder()
+                .status(HttpStatus.METHOD_NOT_ALLOWED.value())
+                .code("METHOD_NOT_ALLOWED")
+                .message(ex.getMessage())
+                .path(request.getRequestURI())
+                .timestamp(LocalDateTime.now())
+                .build();
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED);
+        // Advertise the permitted methods in the Allow header when the framework knows them.
+        if (ex.getSupportedHttpMethods() != null && !ex.getSupportedHttpMethods().isEmpty()) {
+            builder.allow(ex.getSupportedHttpMethods().toArray(new org.springframework.http.HttpMethod[0]));
+        }
+        return builder.body(body);
+    }
+
+    /**
+     * Handles {@link HttpMediaTypeNotSupportedException} &mdash; the request body
+     * carries a {@code Content-Type} the endpoint cannot consume (e.g.
+     * {@code text/plain} posted to a JSON endpoint).
+     *
+     * <p>Mapped to {@code 415 Unsupported Media Type} with code
+     * {@code "UNSUPPORTED_MEDIA_TYPE"}. The framework-supplied message (which names
+     * the offending and the supported media types) is preserved in the response
+     * message. Logged at {@code WARN} (expected client error).</p>
+     *
+     * @param ex      the media-type-not-supported exception
+     * @param request the current request, used to populate the error {@code path}
+     * @return a {@code 415} {@link ErrorResponse} with code
+     *         {@code "UNSUPPORTED_MEDIA_TYPE"}
+     */
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ErrorResponse> handleMediaTypeNotSupported(
+            HttpMediaTypeNotSupportedException ex,
+            HttpServletRequest request) {
+        log.warn("Unsupported media type at {}: {}", request.getRequestURI(), ex.getMessage());
+        ErrorResponse body = ErrorResponse.builder()
+                .status(HttpStatus.UNSUPPORTED_MEDIA_TYPE.value())
+                .code("UNSUPPORTED_MEDIA_TYPE")
+                .message(ex.getMessage())
+                .path(request.getRequestURI())
+                .timestamp(LocalDateTime.now())
+                .build();
+        return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE).body(body);
     }
 
     // =========================================================================

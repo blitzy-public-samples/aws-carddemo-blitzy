@@ -1,0 +1,295 @@
+package com.carddemo.controller;
+
+import com.carddemo.dto.transaction.TransactionDto;
+import com.carddemo.dto.transaction.TransactionListResponse;
+import com.carddemo.dto.transaction.TransactionRequest;
+import com.carddemo.service.TransactionService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
+import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
+
+import java.net.URI;
+
+/**
+ * Transaction list, view, and create REST endpoints &mdash; the stateless replacement for the
+ * three legacy CICS online transaction programs:
+ * <ul>
+ *   <li>{@code app/cbl/COTRN00C.cbl} (transaction list, TRANID {@code CT00}) &mdash; browses the
+ *       {@code TRANSACT} master ten rows at a time with {@code STARTBR}/{@code READNEXT} and
+ *       PF7/PF8 navigation;</li>
+ *   <li>{@code app/cbl/COTRN01C.cbl} (transaction view, TRANID {@code CT01}) &mdash; a
+ *       transaction-id keyed read of {@code TRANSACT}
+ *       ({@code EXEC CICS READ DATASET('TRANSACT') RIDFLD(tran-id)});</li>
+ *   <li>{@code app/cbl/COTRN02C.cbl} (transaction add, TRANID {@code CT02}) &mdash; validates a new
+ *       transaction and {@code WRITE}s it to {@code TRANSACT}, generating the 16-character
+ *       {@code TRAN-ID}.</li>
+ * </ul>
+ *
+ * <p>The COBOL record layout is the 350-byte {@code TRAN-RECORD} from {@code app/cpy/CVTRA05Y.cpy}.
+ * The {@code TRANSACT.AIX} alternate index on {@code TRAN-ORIG-TS} is replaced by the JPA
+ * {@code @Index(name="idx_transaction_orig_ts", columnList="orig_timestamp")} on the
+ * {@code Transaction} entity (AAP &sect;0.6.2).</p>
+ *
+ * <h2>Endpoints</h2>
+ * <ul>
+ *   <li>{@code GET /api/transactions} &mdash; list transactions, paginated; {@code 200 OK} with a
+ *       {@link TransactionListResponse} (replaces the COTRN00C browse; PF7/PF8 paging becomes the
+ *       Spring {@link Pageable} {@code page}/{@code size}/{@code sort} query parameters per AAP
+ *       &sect;0.6.1).</li>
+ *   <li>{@code GET /api/transactions/{tranId}} &mdash; retrieve one transaction by its 16-character
+ *       id; {@code 200 OK} with a {@link TransactionDto} (replaces COTRN01C).</li>
+ *   <li>{@code POST /api/transactions} &mdash; create a transaction; {@code 201 Created} with a
+ *       {@code Location} header pointing at the new resource and the persisted {@link TransactionDto}
+ *       in the body (replaces COTRN02C). The full validation chain (codes 100/101/102/103) and the
+ *       PR-10 id generation run inside {@link TransactionService}.</li>
+ * </ul>
+ *
+ * <h2>Thin HTTP boundary (business logic lives in {@link TransactionService})</h2>
+ * <p>This controller is intentionally a thin, stateless HTTP adapter. All transaction business
+ * semantics live in {@link TransactionService}, including:</p>
+ * <ul>
+ *   <li>the COTRN01C transaction-id input edits and keyed read &mdash;
+ *       {@link TransactionService#getTransaction(String)} rejects a null / non-16-character id with
+ *       {@code IllegalArgumentException} ({@code "Tran ID must be 16 characters"}) and a
+ *       not-found id with {@code IllegalArgumentException} ({@code "Transaction ID NOT found..."}),
+ *       both mapped to {@code 400} (this preserves the COTRN01C behavior of treating a bad/missing
+ *       id as a re-enterable input error rather than a REST {@code 404});</li>
+ *   <li>the COTRN02C add chain &mdash; {@link TransactionService#addTransaction(TransactionRequest)}
+ *       performs the cross-reference / account lookups and the validation codes
+ *       100 ("INVALID CARD NUMBER FOUND"), 101 (account not found), 102 ("OVERLIMIT TRANSACTION"),
+ *       and 103 ("TRANSACTION RECEIVED AFTER ACCT EXPIRATION"), generates the PR-10 id, and persists
+ *       the {@code Transaction} inside a {@code @Transactional} unit of work (PR-24).</li>
+ * </ul>
+ * <p>The exact COBOL messages are surfaced to clients by
+ * {@code com.carddemo.controller.advice.GlobalExceptionHandler}, which maps
+ * {@code IllegalArgumentException} / {@code InvalidCardException} &rarr; {@code 400},
+ * {@code AccountNotFoundException} &rarr; {@code 404},
+ * {@code OverlimitException} / {@code ExpiredAccountException} &rarr; {@code 422}, and bean-validation
+ * failures on the request body &rarr; {@code 400}.</p>
+ *
+ * <h2>Authorization</h2>
+ * <p>Intentionally <strong>no</strong> class-level {@code @PreAuthorize}: any
+ * <em>authenticated</em> caller (USER or ADMIN) may list, view, and create transactions, exactly as
+ * the legacy transaction screens were reachable from the regular user menu ({@code COMEN01C}). The
+ * requirement that the caller be authenticated is enforced by the application
+ * {@code SecurityFilterChain} ({@code com.carddemo.security.SecurityConfig}); anonymous requests are
+ * rejected with {@code 401} before reaching these methods (AAP &sect;0.7.2 &mdash; no feature
+ * additions).</p>
+ *
+ * <h2>Refactoring rules enforced</h2>
+ * <ul>
+ *   <li><b>PR-10</b> &mdash; the 16-character {@code tranId} (parmDate(10) + 6-digit suffix) is
+ *       generated inside {@link TransactionService} via {@code TransactionIdGenerator}; the
+ *       controller only echoes it back and builds the {@code Location} header from it.</li>
+ *   <li><b>PR-11</b> &mdash; {@code origTimestamp}/{@code procTimestamp} are carried verbatim as
+ *       26-character DB2 format strings on {@link TransactionDto}.</li>
+ *   <li><b>PR-16</b> &mdash; the transaction amount is {@link java.math.BigDecimal}; the controller
+ *       forwards {@link TransactionDto}/{@link TransactionRequest} verbatim.</li>
+ *   <li><b>PR-28</b> &mdash; Jakarta EE 10 namespace only ({@code jakarta.validation.*}); no
+ *       {@code javax.*} imports.</li>
+ *   <li><b>PR-29</b> &mdash; constructor injection only, via Lombok {@link RequiredArgsConstructor}
+ *       over the {@code final} {@link TransactionService} field; no {@code @Autowired} field
+ *       injection.</li>
+ * </ul>
+ *
+ * <h2>Design notes</h2>
+ * <ul>
+ *   <li><b>Stateless paging:</b> the COTRN00C PF7/PF8 browse cursor is replaced by a Spring
+ *       {@link Pageable}; the {@link PageableDefault} of {@code size=10, sort="tranId"} matches the
+ *       COTRN00C ten-row screen and its id ordering. Clients override via the {@code page},
+ *       {@code size}, and {@code sort} query parameters.</li>
+ *   <li><b>201 semantics:</b> {@code POST} returns {@code 201 Created} with a {@code Location}
+ *       header of {@code /api/transactions/{tranId}}, the canonical REST convention for resource
+ *       creation, and includes the persisted {@link TransactionDto} in the body so clients need not
+ *       issue a follow-up {@code GET}.</li>
+ * </ul>
+ *
+ * <p>Version reference: CardDemo_v1.0-15-g27d6c6f-68 (CVTRA05Y transaction record layout).
+ *
+ * @see TransactionService the service that performs the COTRN00C/COTRN01C/COTRN02C logic
+ * @see TransactionDto the transaction view payload and list element type
+ * @see TransactionListResponse the paginated transaction-list payload
+ * @see TransactionRequest the create request payload
+ * @see com.carddemo.controller.advice.GlobalExceptionHandler exception-to-HTTP-status mapping
+ * @since 1.0
+ */
+@RestController
+@RequestMapping("/api/transactions")
+@RequiredArgsConstructor
+@Validated
+@Slf4j
+@Tag(name = "Transaction", description = "Transaction list, view, and create endpoints (replaces COTRN00C, COTRN01C, COTRN02C)")
+@SecurityRequirement(name = "bearerAuth")
+public class TransactionController {
+
+    /**
+     * Transaction business service replacing the COTRN00C (list), COTRN01C (view), and COTRN02C
+     * (add) online programs. Injected by type through the Lombok-generated constructor (PR-29).
+     * Each method returns a DTO ({@link TransactionDto} / {@link TransactionListResponse}), so this
+     * controller never accesses the JPA entity directly.
+     */
+    private final TransactionService transactionService;
+
+    /**
+     * Lists transactions, one page at a time, and returns a {@link TransactionListResponse}.
+     *
+     * <p>This is the REST replacement for {@code app/cbl/COTRN00C.cbl} (TRANID {@code CT00}), which
+     * browsed the {@code TRANSACT} master ten rows at a time. The paged read is delegated to
+     * {@link TransactionService#listTransactions(Pageable)}.</p>
+     *
+     * <p>The COTRN00C PF7/PF8 paging is replaced by a stateless Spring {@link Pageable}; the cursor
+     * is recomputed per request (AAP &sect;0.6.1). The {@link PageableDefault} of {@code size=10,
+     * sort="tranId"} matches the COTRN00C ten-row screen and its id ordering. Clients may override
+     * with the {@code page}, {@code size}, and {@code sort} query parameters.</p>
+     *
+     * @param pageable the page coordinates (defaults: {@code page=0}, {@code size=10},
+     *                 {@code sort=tranId})
+     * @return {@code 200 OK} with the page of transactions as a {@link TransactionListResponse}
+     */
+    @GetMapping
+    @Operation(
+            summary = "List transactions",
+            description = "Lists transactions, paginated. Replaces the COTRN00C TRANSACT browse "
+                    + "(TRANID=CT00); PF7/PF8 paging becomes the page/size/sort query parameters. "
+                    + "Default page size 10 matches the COTRN00C screen.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Transactions listed (possibly empty page)"),
+            @ApiResponse(responseCode = "401", description = "User not authenticated"),
+            @ApiResponse(responseCode = "500", description = "Internal server error")
+    })
+    public ResponseEntity<TransactionListResponse> listTransactions(
+            @PageableDefault(size = 10, sort = "tranId") Pageable pageable) {
+
+        log.debug("GET /api/transactions page={} size={} sort={}",
+                pageable.getPageNumber(), pageable.getPageSize(), pageable.getSort());
+
+        // Delegate to the service, which performs the paged TRANSACT browse and returns a
+        // TransactionListResponse. The controller forwards it unchanged.
+        TransactionListResponse response = transactionService.listTransactions(pageable);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Retrieves a single transaction by its 16-character id and returns the {@link TransactionDto}.
+     *
+     * <p>This is the REST replacement for {@code app/cbl/COTRN01C.cbl} (TRANID {@code CT01}). The
+     * id input edits and the keyed {@code TRANSACT} read are delegated to
+     * {@link TransactionService#getTransaction(String)}, which preserves the COTRN01C behavior:</p>
+     * <ul>
+     *   <li>null / not exactly 16 characters &rarr; {@code IllegalArgumentException}
+     *       ({@code "Tran ID must be 16 characters"}), mapped to {@code 400};</li>
+     *   <li>id not found &rarr; {@code IllegalArgumentException} ({@code "Transaction ID NOT
+     *       found..."}), mapped to {@code 400} &mdash; the COTRN01C screen treats a missing id as a
+     *       re-enterable input error, not a hard not-found, so this is intentionally {@code 400}
+     *       rather than {@code 404}.</li>
+     * </ul>
+     *
+     * @param tranId the 16-character transaction id ({@code TRAN-ID PIC X(16)})
+     * @return {@code 200 OK} with the transaction as a {@link TransactionDto}
+     */
+    @GetMapping("/{tranId}")
+    @Operation(
+            summary = "Get a transaction by ID",
+            description = "Retrieves a single transaction by its 16-character ID. "
+                    + "Replaces COTRN01C CICS transaction view (TRANID=CT01). "
+                    + "A missing or malformed ID returns 400 (re-enterable input error), per COTRN01C.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Transaction found"),
+            @ApiResponse(responseCode = "400", description = "Transaction ID missing, not 16 characters, or not found"),
+            @ApiResponse(responseCode = "401", description = "User not authenticated"),
+            @ApiResponse(responseCode = "500", description = "Internal server error")
+    })
+    public ResponseEntity<TransactionDto> getTransaction(
+            @Parameter(description = "16-character transaction ID", example = "2024011500000001")
+            @PathVariable("tranId") String tranId) {
+
+        log.debug("GET /api/transactions/{}", tranId);
+
+        // Delegate to the service, which validates the id format and performs the keyed read,
+        // throwing IllegalArgumentException (-> 400) for a bad/missing id, and returns a
+        // TransactionDto. The controller forwards it unchanged.
+        TransactionDto transaction = transactionService.getTransaction(tranId);
+        return ResponseEntity.ok(transaction);
+    }
+
+    /**
+     * Creates a new transaction and returns {@code 201 Created} with the persisted
+     * {@link TransactionDto} and a {@code Location} header.
+     *
+     * <p>This is the REST replacement for {@code app/cbl/COTRN02C.cbl} (TRANID {@code CT02}). The
+     * full validation chain and the {@code WRITE} are delegated to
+     * {@link TransactionService#addTransaction(TransactionRequest)}, which preserves the COTRN02C /
+     * CBTRN02C semantics exactly:</p>
+     * <ul>
+     *   <li>card number not found in the cross-reference &rarr; {@code InvalidCardException} code
+     *       100 ("INVALID CARD NUMBER FOUND"), mapped to {@code 400};</li>
+     *   <li>account not found &rarr; {@code AccountNotFoundException} code 101, mapped to
+     *       {@code 404};</li>
+     *   <li>over the credit limit &rarr; {@code OverlimitException} code 102 ("OVERLIMIT
+     *       TRANSACTION"), mapped to {@code 422};</li>
+     *   <li>transaction after account expiration &rarr; {@code ExpiredAccountException} code 103
+     *       ("TRANSACTION RECEIVED AFTER ACCT EXPIRATION"), mapped to {@code 422}.</li>
+     * </ul>
+     *
+     * <p>{@code @Valid} triggers Jakarta Bean Validation on the {@link TransactionRequest} body
+     * before the service is invoked; a body-level violation raises
+     * {@code MethodArgumentNotValidException}, mapped to {@code 400} by
+     * {@code GlobalExceptionHandler}. The 16-character {@code tranId} is generated by the service
+     * (PR-10); the {@code Location} header is built from the returned id.</p>
+     *
+     * @param request the new-transaction payload (card number, type, category, amount, merchant,
+     *                 description)
+     * @return {@code 201 Created} with the persisted {@link TransactionDto} in the body and a
+     *         {@code Location} header of {@code /api/transactions/{tranId}}
+     */
+    @PostMapping
+    @Operation(
+            summary = "Create a transaction",
+            description = "Creates a transaction after running the COTRN02C/CBTRN02C validation chain "
+                    + "(codes 100/101/102/103) and generating the 16-character transaction ID (PR-10). "
+                    + "Replaces COTRN02C CICS transaction add (TRANID=CT02).")
+    @ApiResponses({
+            @ApiResponse(responseCode = "201", description = "Transaction created"),
+            @ApiResponse(responseCode = "400", description = "Validation error or invalid card number (code 100)"),
+            @ApiResponse(responseCode = "401", description = "User not authenticated"),
+            @ApiResponse(responseCode = "404", description = "Account not found (code 101)"),
+            @ApiResponse(responseCode = "422", description = "Overlimit (code 102) or expired account (code 103)"),
+            @ApiResponse(responseCode = "500", description = "Internal server error")
+    })
+    public ResponseEntity<TransactionDto> addTransaction(
+            @Valid @RequestBody TransactionRequest request) {
+
+        log.info("POST /api/transactions creating transaction");
+
+        // Delegate to the service, which runs the validation chain (codes 100/101/102/103),
+        // generates the 16-char tranId (PR-10), and persists the Transaction inside a
+        // @Transactional unit of work (PR-24), returning the persisted TransactionDto.
+        TransactionDto created = transactionService.addTransaction(request);
+
+        // Build the canonical Location header /api/transactions/{tranId} from the generated id.
+        URI location = ServletUriComponentsBuilder.fromCurrentRequest()
+                .path("/{tranId}")
+                .buildAndExpand(created.getTranId())
+                .toUri();
+
+        log.info("POST /api/transactions created transaction {}", created.getTranId());
+        return ResponseEntity.created(location).body(created);
+    }
+}

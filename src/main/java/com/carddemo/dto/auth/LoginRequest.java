@@ -53,10 +53,12 @@ import lombok.ToString;
  *       {@code WHEN USERIDI = SPACES OR LOW-VALUES} ({@code COSGN00C.cbl:L118-L122}).</li>
  *   <li>{@code @NotBlank} on {@code password} mirrors
  *       {@code WHEN PASSWDI = SPACES OR LOW-VALUES} ({@code COSGN00C.cbl:L123-L127}).</li>
- *   <li>{@code @Pattern("[A-Z0-9]+")} on {@code userId} encodes the
+ *   <li>{@code @Pattern("[A-Za-z0-9]+")} on {@code userId} accepts BOTH cases so the
  *       {@code MOVE FUNCTION UPPER-CASE(USERIDI)} convention
- *       ({@code COSGN00C.cbl:L132-L134}); lowercase is rejected with HTTP 400 at
- *       the validation boundary before reaching {@code AuthService}.</li>
+ *       ({@code COSGN00C.cbl:L132-L134}) can be honored: {@code AuthService} folds the
+ *       id to uppercase before the {@code UserRepository} lookup (e.g. {@code admin001}
+ *       resolves to {@code ADMIN001}). An uppercase-only pattern would instead reject
+ *       lowercase with HTTP 400 <em>before</em> that fold could run (AAP &sect;0.6.8).</li>
  * </ul>
  *
  * <p><b>Security notes:</b></p>
@@ -96,19 +98,27 @@ import lombok.ToString;
 public class LoginRequest {
 
     /**
-     * User ID &mdash; uppercase alphanumeric, maximum 8 characters.
+     * User ID &mdash; case-insensitive alphanumeric, maximum 8 characters.
      *
      * <p>Mirrors COBOL {@code USERIDI PIC X(8)} ({@code app/cpy-bms/COSGN00.CPY:L72}).
-     * The {@code [A-Z0-9]+} pattern enforces the {@code FUNCTION UPPER-CASE}
-     * convention from {@code COSGN00C.cbl:L132-L134} at the API boundary, providing
-     * a fail-fast HTTP 400 for lowercase input even though {@code AuthService}
-     * defensively normalizes with {@code .toUpperCase()}.</p>
+     * The COBOL signon applied {@code FUNCTION UPPER-CASE} to the entered user id
+     * ({@code COSGN00C.cbl:L132-L134}), so the lookup was effectively
+     * case-insensitive on the id (e.g. {@code admin001} resolved to {@code ADMIN001}).
+     * To preserve that behavior (AAP &sect;0.6.8), the pattern accepts BOTH cases
+     * ({@code [A-Za-z0-9]+}); {@code AuthService} then folds the value to uppercase
+     * with {@code .toUpperCase()} before the {@code UserRepository} lookup. A
+     * uppercase-only pattern here would reject lowercase input with HTTP 400 at
+     * bean-validation time &mdash; <em>before</em> that fold could run &mdash; making
+     * the case-insensitive convention unreachable, which is precisely the defect this
+     * relaxation corrects. The password, by contrast, carries no {@code @Pattern} and
+     * remains strictly case-sensitive (AAP &sect;0.6.8).</p>
      */
     @NotBlank(message = "User ID is required")
     @Size(min = 1, max = 8, message = "User ID must be between 1 and 8 characters")
-    @Pattern(regexp = "[A-Z0-9]+", message = "User ID must contain only uppercase letters and digits")
+    @Pattern(regexp = "[A-Za-z0-9]+", message = "User ID must contain only letters and digits")
     @Schema(
-        description = "User ID — uppercase alphanumeric, max 8 characters. "
+        description = "User ID — case-insensitive alphanumeric, max 8 characters (folded to uppercase "
+            + "server-side per the COBOL FUNCTION UPPER-CASE convention). "
             + "Defaults from COBOL: ADMIN001-ADMIN005, USER0001-USER0005.",
         example = "ADMIN001",
         maxLength = 8,

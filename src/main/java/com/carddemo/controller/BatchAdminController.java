@@ -22,7 +22,7 @@ import org.springframework.batch.core.repository.JobRestartException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -31,6 +31,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -50,15 +52,17 @@ import java.util.Map;
  *
  * <h2>Endpoints</h2>
  * <ul>
+ *   <li>{@code GET  /api/admin/jobs} &mdash; list the names of all jobs registered with the
+ *       {@link JobRegistry} (alphabetically sorted) together with a {@code count}, so callers can
+ *       discover which job names are launchable; returns {@code 200 OK}.</li>
  *   <li>{@code POST /api/admin/jobs/{jobName}/launch} &mdash; launch the named job with optional
  *       {@link JobParameters}; returns {@code 202 Accepted} with execution metadata.</li>
  * </ul>
  *
- * <p>This controller intentionally exposes <em>only</em> the launch operation mandated by the AAP
- * ({@code POST /api/admin/jobs/{jobName}/launch}). No job-discovery/enumeration endpoint is provided:
- * the migration scope forbids adding endpoints beyond those required to mirror the legacy behavior
- * (PR &mdash; no feature additions), and the set of launchable job names is fixed and documented
- * rather than enumerated at runtime.</p>
+ * <p>The {@code GET} list endpoint is an operational discovery aid for the launch endpoint: it
+ * reflects the live {@link JobRegistry} contents (populated by {@code BatchConfig}) and adds no
+ * business behavior of its own. It is required by the downstream batch tier so that the launchable
+ * job names need not be hard-coded by clients rather than discovered at runtime.</p>
  *
  * <h2>Runtime collaborators (constructor-injected by type)</h2>
  * <ul>
@@ -97,10 +101,14 @@ import java.util.Map;
  *       raise {@link JobInstanceAlreadyCompleteException}. To make each manual launch a distinct
  *       instance, a unique identifying {@code launchTimestamp} parameter is added via
  *       {@link JobParametersBuilder#addLong(String, Long, boolean)} with {@code identifying=true}.</li>
- *   <li><strong>Local exception handling:</strong> the Spring Batch launch exceptions are handled by
- *       the {@code @ExceptionHandler} methods on this controller (rather than the global handler)
- *       because they are framework-specific and map cleanly to {@code 404}/{@code 409}/{@code 400}
- *       outcomes for this operational surface.</li>
+ *   <li><strong>Centralized exception handling:</strong> the Spring Batch launch exceptions are
+ *       mapped by the application-wide {@code com.carddemo.controller.advice.GlobalExceptionHandler}
+ *       &mdash; {@link NoSuchJobException} &rarr; {@code 404}, the launch-conflict exceptions
+ *       ({@link JobInstanceAlreadyCompleteException}, {@link JobExecutionAlreadyRunningException},
+ *       {@link JobRestartException}) &rarr; {@code 409}, and {@link JobParametersInvalidException}
+ *       &rarr; {@code 400}. Centralizing them guarantees the same structured {@code ErrorResponse}
+ *       envelope ({@code status, code, message, path, timestamp}) that every other endpoint returns,
+ *       instead of a controller-local ad hoc shape.</li>
  * </ul>
  *
  * @see com.carddemo.batch.BatchConfig supplies/auto-configures the {@link JobLauncher} and
@@ -161,15 +169,15 @@ public class BatchAdminController {
      * @return {@code 202 Accepted} with a body containing {@code jobExecutionId}, {@code jobInstanceId},
      *         {@code jobName}, {@code status}, {@code startTime} and the supplied {@code parameters}
      * @throws NoSuchJobException                     if {@code jobName} is not registered
-     *                                                (handled locally &rarr; {@code 404})
+     *                                                (handled by GlobalExceptionHandler &rarr; {@code 404})
      * @throws JobExecutionAlreadyRunningException     if an execution for the instance is already
-     *                                                running (handled locally &rarr; {@code 409})
+     *                                                running (handled by GlobalExceptionHandler &rarr; {@code 409})
      * @throws JobRestartException                     if the job could not be restarted
-     *                                                (handled locally &rarr; {@code 409})
+     *                                                (handled by GlobalExceptionHandler &rarr; {@code 409})
      * @throws JobInstanceAlreadyCompleteException     if the instance already completed successfully
-     *                                                (handled locally &rarr; {@code 409})
+     *                                                (handled by GlobalExceptionHandler &rarr; {@code 409})
      * @throws JobParametersInvalidException           if the parameters fail the job's validator
-     *                                                (handled locally &rarr; {@code 400})
+     *                                                (handled by GlobalExceptionHandler &rarr; {@code 400})
      */
     @PostMapping("/{jobName}/launch")
     @Operation(
@@ -233,6 +241,52 @@ public class BatchAdminController {
     }
 
     /**
+     * Lists the names of all Spring Batch {@link Job}s currently registered with the
+     * {@link JobRegistry}, sorted alphabetically, together with the total count.
+     *
+     * <p><strong>No direct COBOL source program.</strong> This is an operational discovery endpoint
+     * that complements {@link #launchJob(String, Map)}: it lets an authorized administrator (or a
+     * downstream automation client such as the INC3 batch tier) enumerate exactly which job names are
+     * launchable, rather than relying on out-of-band documentation. In the legacy mainframe deployment
+     * the set of batch jobs was fixed in JCL and known only to operations staff; exposing the live
+     * registry here mirrors that operational knowledge in a discoverable, stateless form. It adds no
+     * business behavior &mdash; it only reflects the jobs that {@code BatchConfig} already registers.</p>
+     *
+     * <p>The response is a stable-ordered JSON object, for example:</p>
+     * <pre>{@code { "jobs": ["DataInitializationJob", "InterestCalculationJob", ...], "count": 17 }}</pre>
+     *
+     * @return {@code 200 OK} with a body containing the alphabetically-sorted {@code jobs} list and
+     *         the {@code count} of registered jobs
+     */
+    @GetMapping
+    @Operation(
+        summary = "List registered Spring Batch job names",
+        description = "Returns the alphabetically-sorted names of every Spring Batch job registered "
+            + "with the JobRegistry, together with the total count. Use a returned name with "
+            + "POST /api/admin/jobs/{jobName}/launch.")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Registered job names and count"),
+        @ApiResponse(responseCode = "401", description = "Missing or invalid bearer token"),
+        @ApiResponse(responseCode = "403", description = "User lacks ADMIN role")
+    })
+    public ResponseEntity<Map<String, Object>> listJobs() {
+        // JobRegistry.getJobNames() returns the live set of registered job names; sort for a stable,
+        // deterministic response that is friendly to clients and to assertion-based tests.
+        List<String> jobNames = jobRegistry.getJobNames().stream()
+                .sorted()
+                .toList();
+
+        log.info("Listing {} registered batch job(s)", jobNames.size());
+
+        // LinkedHashMap preserves insertion order so the JSON renders "jobs" before "count".
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("jobs", jobNames);
+        response.put("count", jobNames.size());
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
      * Returns a log-safe copy of job parameters, redacting values whose keys commonly carry secret
      * material. The original parameter map is still used to launch the job; this helper only hardens
      * observability so ad hoc operational parameters cannot leak credentials into application logs.
@@ -264,60 +318,5 @@ public class BatchAdminController {
                 || normalized.contains("secret")
                 || normalized.contains("credential")
                 || normalized.contains("key");
-    }
-
-    /**
-     * Maps {@link NoSuchJobException} (an unknown {@code jobName}) to {@code 404 Not Found}.
-     *
-     * @param ex the thrown exception
-     * @return a {@code 404} response with a structured error body
-     */
-    @ExceptionHandler(NoSuchJobException.class)
-    public ResponseEntity<Map<String, Object>> handleNoSuchJob(NoSuchJobException ex) {
-        log.warn("Job not found: {}", ex.getMessage());
-        Map<String, Object> body = new HashMap<>();
-        body.put("error", "Job not found");
-        body.put("message", ex.getMessage());
-        body.put("timestamp", LocalDateTime.now().toString());
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
-    }
-
-    /**
-     * Maps the Spring Batch launch-conflict exceptions to {@code 409 Conflict}: the targeted instance
-     * is already running, has already completed, or could not be restarted.
-     *
-     * @param ex the thrown exception (one of {@link JobInstanceAlreadyCompleteException},
-     *           {@link JobExecutionAlreadyRunningException}, {@link JobRestartException})
-     * @return a {@code 409} response with a structured error body
-     */
-    @ExceptionHandler({
-        JobInstanceAlreadyCompleteException.class,
-        JobExecutionAlreadyRunningException.class,
-        JobRestartException.class
-    })
-    public ResponseEntity<Map<String, Object>> handleJobConflict(Exception ex) {
-        log.warn("Job launch conflict: {}", ex.getMessage());
-        Map<String, Object> body = new HashMap<>();
-        body.put("error", "Job conflict");
-        body.put("message", ex.getMessage());
-        body.put("timestamp", LocalDateTime.now().toString());
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
-    }
-
-    /**
-     * Maps {@link JobParametersInvalidException} (parameters rejected by the job's validator) to
-     * {@code 400 Bad Request}.
-     *
-     * @param ex the thrown exception
-     * @return a {@code 400} response with a structured error body
-     */
-    @ExceptionHandler(JobParametersInvalidException.class)
-    public ResponseEntity<Map<String, Object>> handleInvalidParams(JobParametersInvalidException ex) {
-        log.warn("Invalid job parameters: {}", ex.getMessage());
-        Map<String, Object> body = new HashMap<>();
-        body.put("error", "Invalid job parameters");
-        body.put("message", ex.getMessage());
-        body.put("timestamp", LocalDateTime.now().toString());
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }
 }
