@@ -1,0 +1,75 @@
+---
+# ---------------------------------------------------------------------------
+# CBTRN02C Regression — GitHub Actions CI workflow
+#
+# Purpose
+#   Automatically run the CBTRN02C reason-code 104 ("ACCOUNT NOT ACTIVE")
+#   regression test (tests/test_cbtrn02c.sh) so that every change to the
+#   transaction-posting fix in app/cbl/CBTRN02C.cbl is verified before it can
+#   be merged into the main line.
+#
+# Triggers
+#   * push          - on the fix branch, so each commit pushed to the branch is
+#                     validated immediately by CI.
+#   * pull_request  - on any pull request whose base (target) branch is `main`,
+#                     so the senior COBOL architect reviewer sees a green check
+#                     before approving and merging.
+#
+# Gating
+#   The final step invokes tests/test_cbtrn02c.sh directly. GitHub Actions runs
+#   `run:` steps with `bash -e`, so the step (and therefore the job and the PR
+#   status check) fails whenever the command exits non-zero. The test harness
+#   exits 0 only when all 25 assertions pass; any failed assertion or
+#   setup/build/run error makes it exit 1, which blocks the merge.
+#
+# Runner / toolchain
+#   ubuntu-latest with GnuCOBOL installed from the Ubuntu archive via
+#   `apt-get install -y gnucobol`. That package provides the `cobc` compiler
+#   and `cobcrun` runtime the harness uses to build CBTRN02C plus the fixture
+#   loader and to execute the simulated POSTTRAN.STEP15 batch run. All other
+#   tools the script relies on (bash, grep, sed, wc, head, dd, printf) ship in
+#   the base ubuntu-latest image.
+# ---------------------------------------------------------------------------
+name: CBTRN02C Regression
+
+# NOTE: the key below is the GitHub Actions trigger map. It is quoted as
+# "on" so that YAML 1.1 linters (e.g. yamllint's `truthy` rule) do not treat
+# the bare word `on` as the boolean true; GitHub parses "on" and on identically.
+"on":
+  push:
+    branches:
+      - blitzy-1c1270d2-e0c7-4c24-86dc-d97d79d5ab64
+  pull_request:
+    branches:
+      - main
+
+# Cancel an in-progress run if a newer commit is pushed to the same ref, so
+# CI minutes are not wasted on superseded commits.
+concurrency:
+  group: cbtrn02c-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege token: the job only needs to read repository contents.
+permissions:
+  contents: read
+
+jobs:
+  cbtrn02c-regression:
+    name: CBTRN02C reason-code 104 regression
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install GnuCOBOL (cobc / cobcrun)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnucobol
+
+      - name: Show GnuCOBOL version
+        run: cobc --version
+
+      - name: Run CBTRN02C regression test
+        # A non-zero exit from the harness fails this step and the PR check.
+        run: bash tests/test_cbtrn02c.sh

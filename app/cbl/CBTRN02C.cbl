@@ -400,23 +400,36 @@
               NOT INVALID KEY                                                   
       *         DISPLAY 'ACCT-CREDIT-LIMIT:' ACCT-CREDIT-LIMIT                  
       *         DISPLAY 'TRAN-AMT         :' DALYTRAN-AMT                       
-                COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT                      
-                                    - ACCT-CURR-CYC-DEBIT                       
-                                    + DALYTRAN-AMT                              
+      *         Bug fix: reject transactions targeting accounts whose           
+      *         ACCT-ACTIVE-STATUS is not 'Y' (active). This covers             
+      *         'N' (Inactive per CDEMO-ACCT-STATUS convention) and             
+      *         'C' (Closed) as well as blanks, LOW-VALUES, and any             
+      *         corrupt value, preventing posting to non-active                 
+      *         accounts and protecting TRANSACT, ACCTFILE, and                 
+      *         TCATBAL from downstream corruption.                             
+                IF ACCT-ACTIVE-STATUS NOT = 'Y'                                 
+                   MOVE 104 TO WS-VALIDATION-FAIL-REASON                        
+                   MOVE 'ACCOUNT NOT ACTIVE'                                    
+                     TO WS-VALIDATION-FAIL-REASON-DESC                          
+                ELSE                                                            
+                   COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT                   
+                                       - ACCT-CURR-CYC-DEBIT                    
+                                       + DALYTRAN-AMT                           
                                                                                 
-                IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL                             
-                  CONTINUE                                                      
-                ELSE                                                            
-                  MOVE 102 TO WS-VALIDATION-FAIL-REASON                         
-                  MOVE 'OVERLIMIT TRANSACTION'                                  
-                    TO WS-VALIDATION-FAIL-REASON-DESC                           
-                END-IF                                                          
-                IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10)               
-                  CONTINUE                                                      
-                ELSE                                                            
-                  MOVE 103 TO WS-VALIDATION-FAIL-REASON                         
-                  MOVE 'TRANSACTION RECEIVED AFTER ACCT EXPIRATION'             
-                    TO WS-VALIDATION-FAIL-REASON-DESC                           
+                   IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL                          
+                     CONTINUE                                                   
+                   ELSE                                                         
+                     MOVE 102 TO WS-VALIDATION-FAIL-REASON                      
+                     MOVE 'OVERLIMIT TRANSACTION'                               
+                       TO WS-VALIDATION-FAIL-REASON-DESC                        
+                   END-IF                                                       
+                   IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10)            
+                     CONTINUE                                                   
+                   ELSE                                                         
+                     MOVE 103 TO WS-VALIDATION-FAIL-REASON                      
+                     MOVE 'TRANSACTION RECEIVED AFTER ACCT EXPIRATION'          
+                       TO WS-VALIDATION-FAIL-REASON-DESC                        
+                   END-IF                                                       
                 END-IF                                                          
            END-READ                                                             
            EXIT.                                                                
