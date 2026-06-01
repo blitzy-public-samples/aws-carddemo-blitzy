@@ -39,7 +39,7 @@ import org.junit.jupiter.api.Test;
  * @see StatementHtmlBuilder#renderHtmlCustomerAndBasic(Customer, Account)
  * @see StatementHtmlBuilder#renderTransactionRow(Transaction)
  * @see StatementHtmlBuilder#renderHtmlHeader(Account)
- * @see StatementHtmlBuilder#renderFullStatement(Customer, Account, List, BigDecimal)
+ * @see StatementHtmlBuilder#renderFullStatement(Customer, Account, List)
  */
 class StatementHtmlBuilderTest {
 
@@ -245,8 +245,8 @@ class StatementHtmlBuilderTest {
             Account a = safeAccount();
             List<Transaction> txns = List.of(safeTransaction());
 
-            String first = builder.renderFullStatement(c, a, txns, new BigDecimal("25.00"));
-            String second = builder.renderFullStatement(c, a, txns, new BigDecimal("25.00"));
+            String first = builder.renderFullStatement(c, a, txns);
+            String second = builder.renderFullStatement(c, a, txns);
 
             assertThat(first)
                     .as("full statement rendering is deterministic / byte-identical")

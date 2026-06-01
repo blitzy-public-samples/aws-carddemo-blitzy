@@ -6,6 +6,7 @@ import com.carddemo.entity.DailyTransaction;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.util.BigDecimalUtil;
+import com.carddemo.util.CardNumberMasker;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -214,8 +215,9 @@ public class TransactionPostingProcessor
 
         final Optional<CardXref> xrefOpt = cardXrefRepository.findById(cardNum);
         if (xrefOpt.isEmpty()) {
+            // F11: never log the full PAN — emit only a masked, correlation-safe form.
             log.warn("Rejecting daily transaction id={} — card {} not found in cross-reference (code {})",
-                    item.getDalytranId(), cardNum, CODE_INVALID_CARD);
+                    item.getDalytranId(), CardNumberMasker.mask(cardNum), CODE_INVALID_CARD);
             return ProcessingResult.rejected(item, CODE_INVALID_CARD, MSG_INVALID_CARD);
         }
         final Long accountId = xrefOpt.get().getAccountId();

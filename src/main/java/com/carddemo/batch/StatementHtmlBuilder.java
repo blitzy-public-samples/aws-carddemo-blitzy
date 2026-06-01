@@ -292,10 +292,6 @@ public class StatementHtmlBuilder {
      * @param account      the statement's account (must not be {@code null})
      * @param transactions the transactions to list, in the order they should appear (must not be
      *                     {@code null}; may be empty)
-     * @param totalAmount  the running transaction total computed by the caller. It is accepted to
-     *                     mirror the {@code CBSTM03A} call contract; the COBOL HTML statement does
-     *                     not print a separate total line, so this value is not emitted into the
-     *                     HTML and is retained only for caller compatibility and diagnostics.
      * @return the fully assembled HTML document as a single {@link String}
      * @throws NullPointerException if {@code customer}, {@code account}, or {@code transactions}
      *                              is {@code null}
@@ -303,16 +299,14 @@ public class StatementHtmlBuilder {
     public String renderFullStatement(
             Customer customer,
             Account account,
-            List<Transaction> transactions,
-            BigDecimal totalAmount) {
+            List<Transaction> transactions) {
         Objects.requireNonNull(customer, "customer");
         Objects.requireNonNull(account, "account");
         Objects.requireNonNull(transactions, "transactions");
 
         if (log.isDebugEnabled()) {
-            log.debug("Rendering HTML statement for account {} with {} transaction(s); "
-                            + "caller-supplied total={}",
-                    account.getAcctId(), transactions.size(), totalAmount);
+            log.debug("Rendering HTML statement for account {} with {} transaction(s)",
+                    account.getAcctId(), transactions.size());
         }
 
         StringBuilder sb = new StringBuilder(16384);

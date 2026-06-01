@@ -7,6 +7,7 @@ import com.carddemo.exception.ExpiredAccountException;
 import com.carddemo.exception.InvalidCardException;
 import com.carddemo.exception.OverlimitException;
 import com.carddemo.exception.TransactionValidationException;
+import com.carddemo.util.CardNumberMasker;
 
 import jakarta.persistence.OptimisticLockException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -24,6 +25,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -72,6 +74,7 @@ import java.util.stream.Collectors;
  *   <tr><td>{@link JobExecutionAlreadyRunningException}</td><td>409</td><td>"JOB_ALREADY_RUNNING"</td></tr>
  *   <tr><td>{@link JobRestartException}</td><td>409</td><td>"JOB_RESTART_FAILED"</td></tr>
  *   <tr><td>{@link JobParametersInvalidException}</td><td>400</td><td>"INVALID_JOB_PARAMETERS"</td></tr>
+ *   <tr><td>{@link AccessDeniedException}</td><td>403</td><td>"ACCESS_DENIED"</td></tr>
  *   <tr><td>{@link Exception} (catch-all)</td><td>500</td><td>"INTERNAL_ERROR"</td></tr>
  * </table>
  *
@@ -100,15 +103,24 @@ import java.util.stream.Collectors;
  *   <li>Sensitive data (passwords, card numbers, SSNs, BCrypt hashes, JWTs, PII) is never
  *       logged. In particular, rejected field values are never logged or echoed back, and
  *       generic public-facing messages are used for parser- and database-level failures so
- *       internal details are not leaked to clients.</li>
+ *       internal details are not leaked to clients. As a defense-in-depth measure, the
+ *       {@link IllegalStateException} and {@link IllegalArgumentException} handlers run their
+ *       message through {@link CardNumberMasker#maskInMessage(String)} to mask any embedded
+ *       PAN-like value before it reaches either the log or the client payload (F8).</li>
  * </ul>
  *
- * <h2>Authentication / authorization are intentionally NOT handled here</h2>
- * <p>{@code AuthenticationException} (401) and {@code AccessDeniedException} (403) are
- * intercepted by the Spring Security filter chain (the {@code SecurityConfig}
- * {@code AuthenticationEntryPoint} and {@code AccessDeniedHandler}) <em>before</em>
- * {@code @ControllerAdvice} is invoked, so they are deliberately omitted from this class;
- * adding handlers for them here would have no effect.</p>
+ * <h2>Authorization (403) is handled here; authentication (401) is not</h2>
+ * <p>{@link AccessDeniedException} (403) raised by method security &mdash; the
+ * {@code @PreAuthorize("hasRole('ADMIN')")} guards on {@code UserController} and
+ * {@code BatchAdminController} (PR-18) &mdash; is thrown <em>during</em> handler-method
+ * invocation, so it propagates into {@code @ControllerAdvice} and IS mapped here to a
+ * {@code 403 Forbidden} {@link ErrorResponse}. Handling it explicitly also prevents the
+ * catch-all {@link Exception} handler from incorrectly reporting an authorization denial as
+ * {@code 500}.</p>
+ * <p>{@code AuthenticationException} (401), by contrast, is raised inside the Spring Security
+ * filter chain (by the {@code AuthenticationEntryPoint}) <em>before</em> the
+ * {@code DispatcherServlet} and {@code @ControllerAdvice} are reached, so it is deliberately
+ * NOT handled here; a handler for it would have no effect.</p>
  *
  * @see ErrorResponse
  * @see TransactionValidationException
@@ -192,11 +204,14 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleOverlimit(
             OverlimitException ex,
             HttpServletRequest request) {
+        // F6/PR-03: log the full (possibly diagnostic) message server-side at WARN, but
+        // ALWAYS return the EXACT COBOL literal to the client, regardless of whether the
+        // exception was built with the no-arg or the diagnostic constructor.
         log.warn("Overlimit transaction at {}: {}", request.getRequestURI(), ex.getMessage());
         ErrorResponse body = ErrorResponse.builder()
                 .status(HttpStatus.UNPROCESSABLE_ENTITY.value())
                 .code(String.valueOf(ex.getCode()))
-                .message(ex.getMessage())
+                .message(OverlimitException.COBOL_MESSAGE)
                 .path(request.getRequestURI())
                 .timestamp(LocalDateTime.now())
                 .build();
@@ -218,11 +233,14 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleExpiredAccount(
             ExpiredAccountException ex,
             HttpServletRequest request) {
+        // F6/PR-03: log the full (possibly diagnostic) message server-side at WARN, but
+        // ALWAYS return the EXACT COBOL literal to the client, regardless of whether the
+        // exception was built with the no-arg or the diagnostic constructor.
         log.warn("Expired account at {}: {}", request.getRequestURI(), ex.getMessage());
         ErrorResponse body = ErrorResponse.builder()
                 .status(HttpStatus.UNPROCESSABLE_ENTITY.value())
                 .code(String.valueOf(ex.getCode()))
-                .message(ex.getMessage())
+                .message(ExpiredAccountException.COBOL_MESSAGE)
                 .path(request.getRequestURI())
                 .timestamp(LocalDateTime.now())
                 .build();
@@ -571,11 +589,14 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleIllegalArgument(
             IllegalArgumentException ex,
             HttpServletRequest request) {
-        log.warn("Illegal argument at {}: {}", request.getRequestURI(), ex.getMessage());
+        // F8: defensively mask any embedded card/PAN-like value before it reaches the log
+        // or the client-facing payload.
+        String safeMessage = CardNumberMasker.maskInMessage(ex.getMessage());
+        log.warn("Illegal argument at {}: {}", request.getRequestURI(), safeMessage);
         ErrorResponse body = ErrorResponse.builder()
                 .status(HttpStatus.BAD_REQUEST.value())
                 .code("ILLEGAL_ARGUMENT")
-                .message(ex.getMessage())
+                .message(safeMessage)
                 .path(request.getRequestURI())
                 .timestamp(LocalDateTime.now())
                 .build();
@@ -598,11 +619,16 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleIllegalState(
             IllegalStateException ex,
             HttpServletRequest request) {
-        log.warn("Illegal state at {}: {}", request.getRequestURI(), ex.getMessage());
+        // F8: StatementService and other components may embed a card number in the
+        // IllegalStateException message; defensively mask any PAN-like value before it
+        // reaches the log or the client-facing payload. Legitimate business messages with no
+        // PAN (e.g. "You have nothing to pay...") pass through unchanged.
+        String safeMessage = CardNumberMasker.maskInMessage(ex.getMessage());
+        log.warn("Illegal state at {}: {}", request.getRequestURI(), safeMessage);
         ErrorResponse body = ErrorResponse.builder()
                 .status(HttpStatus.UNPROCESSABLE_ENTITY.value())
                 .code("ILLEGAL_STATE")
-                .message(ex.getMessage())
+                .message(safeMessage)
                 .path(request.getRequestURI())
                 .timestamp(LocalDateTime.now())
                 .build();
@@ -744,6 +770,42 @@ public class GlobalExceptionHandler {
                 .timestamp(LocalDateTime.now())
                 .build();
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
+    // =========================================================================
+    // Authorization handler (403) — method-security @PreAuthorize denials
+    // =========================================================================
+
+    /**
+     * Handles {@link AccessDeniedException} raised by method security &mdash; the
+     * {@code @PreAuthorize("hasRole('ADMIN')")} guards on {@code UserController} and
+     * {@code BatchAdminController} (PR-18). The exception is thrown during handler-method
+     * invocation, so it propagates into this {@code @ControllerAdvice}.
+     *
+     * <p>Maps to {@code 403 Forbidden} with code {@code "ACCESS_DENIED"} and a GENERIC
+     * client-facing message (the framework default is simply {@code "Access Denied"}; we do
+     * not echo any request detail). Handling it explicitly is required by the checkpoint
+     * scope and also prevents the catch-all {@link Exception} handler from mis-reporting an
+     * authorization denial as {@code 500}. Logged at {@code WARN} with no stack trace, since
+     * a denied request is an expected client-side condition rather than a server fault.</p>
+     *
+     * @param ex      the access-denied exception
+     * @param request the current request, used to populate the error {@code path}
+     * @return a {@code 403} {@link ErrorResponse}
+     */
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleAccessDenied(
+            AccessDeniedException ex,
+            HttpServletRequest request) {
+        log.warn("Access denied at {}: {}", request.getRequestURI(), ex.getMessage());
+        ErrorResponse body = ErrorResponse.builder()
+                .status(HttpStatus.FORBIDDEN.value())
+                .code("ACCESS_DENIED")
+                .message("Access is denied")
+                .path(request.getRequestURI())
+                .timestamp(LocalDateTime.now())
+                .build();
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
     }
 
     // =========================================================================

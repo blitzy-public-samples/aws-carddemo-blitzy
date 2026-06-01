@@ -10,6 +10,7 @@ import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.util.BigDecimalUtil;
+import com.carddemo.util.CardNumberMasker;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -18,7 +19,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Statement business service replacing the orchestration logic of the COBOL batch program
@@ -166,26 +171,45 @@ public class StatementService {
      */
     @Transactional(readOnly = true)
     public StatementResult buildStatementForXref(CardXref xref) {
+        // F9: never log the full PAN — emit only a masked, correlation-safe form.
         log.debug("Building statement for xref custId={} acctId={} card={}",
-                xref.getCustId(), xref.getAccountId(), xref.getXrefCardNum());
+                xref.getCustId(), xref.getAccountId(),
+                CardNumberMasker.mask(xref.getXrefCardNum()));
 
         // 1. Read Customer — CBSTM03A 2000-CUSTFILE-GET (keyed read by XREF-CUST-ID).
         Customer customer = customerRepository.findById(xref.getCustId())
-                .orElseThrow(() -> new IllegalStateException(
-                        "Customer not found for cross-reference: custId=" + xref.getCustId()
-                                + " card=" + xref.getXrefCardNum()));
+                .orElseThrow(() -> customerNotFound(xref));
 
         // 2. Read Account — CBSTM03A 3000-ACCTFILE-GET (keyed read by XREF-ACCT-ID).
         Account account = accountRepository.findById(xref.getAccountId())
-                .orElseThrow(() -> new IllegalStateException(
-                        "Account not found for cross-reference: acctId=" + xref.getAccountId()
-                                + " card=" + xref.getXrefCardNum()));
+                .orElseThrow(() -> accountNotFound(xref));
 
         // 3. Read Transactions for this card — CBSTM03A 4000-TRNXFILE-GET
         //    (replaces the WS-TRNX-TABLE in-memory cache with a DB-backed lookup).
         List<Transaction> transactions =
                 transactionRepository.findByCardNum(xref.getXrefCardNum());
 
+        // 4-7. Compute the running total and render both representations. Shared with the
+        //      batch path (buildAllStatements) so PR-09/PR-16 rendering is identical.
+        return assembleStatement(xref, customer, account, transactions);
+    }
+
+    /**
+     * Assembles one {@link StatementResult} from already-resolved master and transaction data
+     * &mdash; the shared tail (steps 4&ndash;7 of CBSTM03A {@code 1000-MAINLINE}) used by both
+     * {@link #buildStatementForXref(CardXref)} (which resolves the data by keyed read) and
+     * {@link #buildAllStatements()} (which resolves it from prefetched maps). Centralizing the
+     * render path guarantees byte-for-byte parity (PR-09) regardless of how the inputs were
+     * fetched.
+     *
+     * @param xref         the cross-reference being rendered (used only for the masked log key)
+     * @param customer     the resolved owning customer (never {@code null})
+     * @param account      the resolved owning account (never {@code null})
+     * @param transactions the card's transactions (never {@code null}; possibly empty)
+     * @return the compiled {@link StatementResult}
+     */
+    private StatementResult assembleStatement(CardXref xref, Customer customer, Account account,
+                                              List<Transaction> transactions) {
         // 4. Compute the running total — mirrors the WS-TOTAL-AMT accumulator (PR-16, scale 2).
         BigDecimal total = transactions.stream()
                 .map(Transaction::getAmount)
@@ -200,10 +224,12 @@ public class StatementService {
         String plainText = renderPlainText(customer, account, transactions, total, customerName);
 
         // 7. Render the HTML statement — delegated to preserve PR-09 byte-for-byte fidelity.
-        String html = statementHtmlBuilder.renderFullStatement(customer, account, transactions, total);
+        String html = statementHtmlBuilder.renderFullStatement(customer, account, transactions);
 
-        log.debug("Statement built: acctId={} transactions={} total={}",
-                account.getAcctId(), transactions.size(), total);
+        // F9: masked card key only — never the full PAN.
+        log.debug("Statement built: acctId={} card={} transactions={} total={}",
+                account.getAcctId(), CardNumberMasker.mask(xref.getXrefCardNum()),
+                transactions.size(), total);
 
         return new StatementResult(
                 customerName,
@@ -217,11 +243,38 @@ public class StatementService {
     }
 
     /**
+     * Builds the data-integrity {@link IllegalStateException} for a cross-reference whose
+     * customer is missing. F9: the card number is masked (last four only) so neither the log
+     * nor the client-facing error payload exposes a full PAN.
+     */
+    private static IllegalStateException customerNotFound(CardXref xref) {
+        return new IllegalStateException(
+                "Customer not found for cross-reference: custId=" + xref.getCustId()
+                        + " card=" + CardNumberMasker.mask(xref.getXrefCardNum()));
+    }
+
+    /**
+     * Builds the data-integrity {@link IllegalStateException} for a cross-reference whose
+     * account is missing. F9: the card number is masked (last four only).
+     */
+    private static IllegalStateException accountNotFound(CardXref xref) {
+        return new IllegalStateException(
+                "Account not found for cross-reference: acctId=" + xref.getAccountId()
+                        + " card=" + CardNumberMasker.mask(xref.getXrefCardNum()));
+    }
+
+    /**
      * Builds statements for every card cross-reference &mdash; the Java port of the full CBSTM03A
      * {@code 1000-MAINLINE} loop. Used by the batch statement-generation job.
      *
      * <p>Enumerates all {@link CardXref} rows (the COBOL XREF browse) and compiles one statement
      * per card. Runs read-only (PR-24).</p>
+     *
+     * <p><b>F10</b> &mdash; master and transaction data are prefetched in three bulk queries
+     * ({@code findAll()} for customers, accounts, and transactions) into in-memory lookup maps,
+     * then each cross-reference is resolved against those maps. This replaces the previous
+     * 3&times;N per-row keyed reads (an N+1 pattern) with a constant handful of queries for the
+     * whole run; the rendered output is byte-for-byte unchanged.</p>
      *
      * @return one {@link StatementResult} per cross-reference, in repository iteration order
      * @throws IllegalStateException if any cross-reference points at a missing customer or account
@@ -230,9 +283,34 @@ public class StatementService {
     public List<StatementResult> buildAllStatements() {
         List<CardXref> allXrefs = cardXrefRepository.findAll();
         log.info("Building statements for all accounts: {} cross-reference(s)", allXrefs.size());
-        return allXrefs.stream()
-                .map(this::buildStatementForXref)
-                .toList();
+
+        // F10: prefetch master/transaction data in a few bulk queries instead of issuing
+        //      three keyed reads per cross-reference (the prior 3xN N+1 pattern).
+        Map<Long, Customer> customersById = customerRepository.findAll().stream()
+                .collect(Collectors.toMap(Customer::getCustId, Function.identity()));
+        Map<Long, Account> accountsById = accountRepository.findAll().stream()
+                .collect(Collectors.toMap(Account::getAcctId, Function.identity()));
+        Map<String, List<Transaction>> transactionsByCardNum = transactionRepository.findAll().stream()
+                .filter(t -> t.getCardNum() != null)
+                .collect(Collectors.groupingBy(Transaction::getCardNum));
+
+        // Resolve each cross-reference from the prefetched maps, preserving the COBOL
+        // data-integrity abort (IllegalStateException) when a customer or account is missing.
+        List<StatementResult> results = new ArrayList<>(allXrefs.size());
+        for (CardXref xref : allXrefs) {
+            Customer customer = customersById.get(xref.getCustId());
+            if (customer == null) {
+                throw customerNotFound(xref);
+            }
+            Account account = accountsById.get(xref.getAccountId());
+            if (account == null) {
+                throw accountNotFound(xref);
+            }
+            List<Transaction> transactions =
+                    transactionsByCardNum.getOrDefault(xref.getXrefCardNum(), List.of());
+            results.add(assembleStatement(xref, customer, account, transactions));
+        }
+        return results;
     }
 
     // ----------------------------------------------------------------------------------------
