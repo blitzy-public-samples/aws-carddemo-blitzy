@@ -109,4 +109,60 @@ public class AccountNotFoundException extends TransactionValidationException {
     public AccountNotFoundException(String accountId) {
         super(COBOL_CODE, "Account not found: " + accountId);
     }
+
+    /**
+     * Private verbatim-aware constructor backing the {@link #withMessage(String)}
+     * factory. It exists to pair reason code {@link #COBOL_CODE} ({@code 101}) with
+     * an <em>exact, unmodified</em> message literal &mdash; something none of the
+     * public constructors can do, because {@link #AccountNotFoundException(String)}
+     * (and {@link #AccountNotFoundException(Long)}) intentionally prepend the
+     * {@code "Account not found: "} prefix to the supplied identifier.
+     *
+     * <p>The {@code verbatim} flag disambiguates this two-argument constructor from
+     * the single-argument account-identifier constructor and selects the message
+     * shape: when {@code true} the message is used exactly as supplied; when
+     * {@code false} the legacy {@code "Account not found: "} prefix is applied (so the
+     * behaviour is a strict superset of {@link #AccountNotFoundException(String)} and
+     * no existing semantics are altered).</p>
+     *
+     * @param message  the failure message
+     * @param verbatim {@code true} to use {@code message} exactly as supplied;
+     *                 {@code false} to prepend {@code "Account not found: "}
+     */
+    private AccountNotFoundException(String message, boolean verbatim) {
+        super(COBOL_CODE, verbatim ? message : "Account not found: " + message);
+    }
+
+    /**
+     * Creates an account/record-not-found exception that carries the supplied
+     * message <strong>verbatim</strong> (with no {@code "Account not found: "}
+     * prefix) while retaining reason code {@link #COBOL_CODE} ({@code 101}) and the
+     * HTTP 404 mapping in {@code GlobalExceptionHandler}.
+     *
+     * <p>This factory supports callers that must surface an <em>exact</em> COBOL
+     * message literal on the REST error payload &mdash; {@code GlobalExceptionHandler}
+     * populates {@code ErrorResponse.message} directly from {@link #getMessage()}, so
+     * the message produced here reaches the client unchanged. The canonical use is
+     * {@code CustomerService.getCustomer(Long)} reproducing the
+     * {@code COACTVWC.cbl} customer-master {@code NOTFND} message
+     * {@code "Did not find associated customer in master file"}
+     * ({@code app/cbl/COACTVWC.cbl} line 134, 88-level
+     * {@code DID-NOT-FIND-CUST-IN-CUSTDAT}).</p>
+     *
+     * <p>It is provided as a static factory rather than another constructor because
+     * the single-{@code String} constructor signature is already taken by the
+     * account-identifier constructor (which prepends a prefix); a factory keeps the
+     * verbatim-message intent explicit at every call site and leaves all existing
+     * constructor semantics untouched.</p>
+     *
+     * @param message the exact failure message to expose via {@link #getMessage()}
+     *                (used unchanged); may be {@code null}, in which case
+     *                {@link #getMessage()} returns {@code null}
+     * @return an {@code AccountNotFoundException} whose {@link #getMessage()} returns
+     *         {@code message} unchanged and whose {@link #getCode()} returns
+     *         {@code 101}
+     */
+    public static AccountNotFoundException withMessage(String message) {
+        return new AccountNotFoundException(message, true);
+    }
 }
