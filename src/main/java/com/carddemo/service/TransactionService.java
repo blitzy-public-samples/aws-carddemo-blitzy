@@ -1,0 +1,342 @@
+package com.carddemo.service;
+
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import com.carddemo.dto.transaction.TransactionDto;
+import com.carddemo.dto.transaction.TransactionListResponse;
+import com.carddemo.dto.transaction.TransactionRequest;
+import com.carddemo.entity.Account;
+import com.carddemo.entity.CardXref;
+import com.carddemo.entity.Transaction;
+import com.carddemo.exception.AccountNotFoundException;
+import com.carddemo.exception.ExpiredAccountException;
+import com.carddemo.exception.InvalidCardException;
+import com.carddemo.exception.OverlimitException;
+import com.carddemo.mapper.TransactionMapper;
+import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardXrefRepository;
+import com.carddemo.repository.TransactionCategoryBalanceRepository;
+import com.carddemo.repository.TransactionCategoryRepository;
+import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionTypeRepository;
+import com.carddemo.util.BigDecimalUtil;
+import com.carddemo.util.DateConversionUtil;
+import com.carddemo.util.TransactionIdGenerator;
+
+import java.math.BigDecimal;
+import java.util.List;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+
+/**
+ * Transaction business service replacing {@code app/cbl/COTRN00C.cbl} (TRANID {@code 'CT00'} —
+ * transaction list), {@code app/cbl/COTRN01C.cbl} (TRANID {@code 'CT01'} — transaction view), and
+ * {@code app/cbl/COTRN02C.cbl} (TRANID {@code 'CT02'} — online transaction add).
+ *
+ * <p>The validation chain in {@link #addTransaction(TransactionRequest)} mirrors the batch program
+ * {@code app/cbl/CBTRN02C.cbl} paragraph {@code 1500-VALIDATE-TRAN} (L370-L422), preserving the
+ * COBOL reason codes 100/101/102/103 with their EXACT original message strings (PR-03, PR-04,
+ * PR-05). Reusing the batch validation logic guarantees that online creation and the nightly
+ * POSTTRAN batch reject identical inputs with identical errors:</p>
+ * <ol>
+ *   <li><b>100 — {@code "INVALID CARD NUMBER FOUND"}</b> ({@link InvalidCardException}, HTTP 400) —
+ *       {@code 1500-A-LOOKUP-XREF} (L380-L392): the card cross-reference lookup fails.</li>
+ *   <li><b>101 — {@code "ACCOUNT RECORD NOT FOUND"}</b> ({@link AccountNotFoundException}, HTTP 404) —
+ *       {@code 1500-B-LOOKUP-ACCT} (L394-L416): the account lookup fails.</li>
+ *   <li><b>103 — {@code "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"}</b>
+ *       ({@link ExpiredAccountException}, HTTP 422) — expiration check (L417-L420).</li>
+ *   <li><b>102 — {@code "OVERLIMIT TRANSACTION"}</b> ({@link OverlimitException}, HTTP 422) —
+ *       credit-limit check (L393-L422).</li>
+ * </ol>
+ *
+ * <p><b>Validation order (PR-03).</b> The COBOL paragraph evaluates the credit-limit test (102)
+ * textually before the expiration test (103) within {@code 1500-B-LOOKUP-ACCT}, but because each
+ * failing test overwrites {@code WS-VALIDATION-FAIL-REASON}, the expiration result <em>wins</em>
+ * when both conditions fail. This service reproduces that net behaviour by throwing the expiration
+ * exception (103) <em>before</em> the overlimit exception (102): with short-circuit throwing, an
+ * input that is both expired and overlimit surfaces code 103, exactly as in COBOL.</p>
+ *
+ * <p><b>Cardholder identification (COTRN02C {@code VALIDATE-INPUT-KEY-FIELDS}, L193-L230).</b> The
+ * original screen accepts <em>either</em> an account id or a card number and resolves the missing
+ * one through the cross-reference. This service preserves that behaviour: when the request supplies
+ * a card number it is used directly for the cross-reference lookup; otherwise the card is resolved
+ * from the mandatory account id via {@link CardXrefRepository#findByAccountId(Long)}.</p>
+ *
+ * <p><b>Posting is deferred to batch (Phase 7 / AAP &sect;0.6.6).</b> Faithful to {@code COTRN02C},
+ * online creation ONLY validates and inserts the {@code TRAN-RECORD}; it does <em>not</em> upsert
+ * {@code TCATBAL} (PR-06) nor apply the sign-based account-balance bucket update (PR-07). Those are
+ * performed by the POSTTRAN batch job ({@code CBTRN02C}: {@code 2700-UPDATE-TCATBAL} and
+ * {@code 2800-UPDATE-ACCOUNT-REC}). The {@code transactionTypeRepository},
+ * {@code transactionCategoryRepository}, and {@code tcatBalRepository} dependencies are wired for
+ * that batch-parity surface and reference-data access.</p>
+ *
+ * <p><b>Transaction IDs (PR-10)</b> are 16 characters formed as {@code parmDate(10) + suffix(6)} via
+ * {@link TransactionIdGenerator}; <b>timestamps (PR-11)</b> use the 26-character DB2 external format
+ * {@code yyyy-MM-dd-HH.mm.ss.SS'0000'} produced by {@link DateConversionUtil} at the I/O boundary
+ * and normalized to {@code LocalDateTime} for storage. <b>All monetary arithmetic (PR-16)</b> uses
+ * {@link BigDecimal} with scale 2 and {@link java.math.RoundingMode#HALF_UP} via
+ * {@link BigDecimalUtil}, compared with {@link BigDecimal#compareTo(BigDecimal)} (never
+ * {@code equals}); {@code float}/{@code double} are forbidden.</p>
+ *
+ * <p>Read methods are {@code @Transactional(readOnly = true)}; {@link #addTransaction} runs in a
+ * read-write {@code @Transactional} scope that brackets the implicit CICS {@code SYNCPOINT}
+ * unit-of-work (PR-24). Dependencies are injected via the constructor generated by Lombok
+ * {@code @RequiredArgsConstructor} (PR-29); no field injection is used.</p>
+ *
+ * @see com.carddemo.batch.TransactionPostingJobConfig
+ * @see com.carddemo.controller.TransactionController
+ * @see com.carddemo.mapper.TransactionMapper
+ * @since 1.0
+ */
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class TransactionService {
+
+    /** Length of the natural transaction-id primary key ({@code TRAN-ID PIC X(16)}). */
+    private static final int TRAN_ID_LENGTH = 16;
+
+    /** Number of leading characters of a DB2 timestamp that form the {@code YYYY-MM-DD} date. */
+    private static final int DATE_PREFIX_LENGTH = 10;
+
+    /**
+     * Posted-transaction repository ({@code TRANSACT}). Backs the list browse
+     * ({@code findAll(Pageable)}), single view ({@code findById}), online insert ({@code save}),
+     * and the card-keyed query ({@code findByCardNum}).
+     */
+    private final TransactionRepository transactionRepository;
+
+    /**
+     * Card cross-reference repository ({@code CXREF}). {@code findById(cardNumber)} reproduces the
+     * keyed {@code READ XREF-FILE} of {@code CBTRN02C} {@code 1500-A-LOOKUP-XREF} (code 100), and
+     * {@code findByAccountId} resolves the card number when only an account id is supplied.
+     */
+    private final CardXrefRepository cardXrefRepository;
+
+    /**
+     * Account repository ({@code ACCTDAT}). {@code findById(accountId)} reproduces the keyed
+     * {@code READ ACCOUNT-FILE} of {@code CBTRN02C} {@code 1500-B-LOOKUP-ACCT} (code 101) and
+     * supplies the credit-limit (code 102) and expiration (code 103) inputs.
+     */
+    private final AccountRepository accountRepository;
+
+    /**
+     * Transaction-type reference-data repository. Wired for CBTRN02C-parity / reference-data access;
+     * the online add path does not post, so it is reserved for the batch posting surface.
+     */
+    private final TransactionTypeRepository transactionTypeRepository;
+
+    /**
+     * Transaction-category reference-data repository. Wired for CBTRN02C-parity / reference-data
+     * access; the online add path does not post, so it is reserved for the batch posting surface.
+     */
+    private final TransactionCategoryRepository transactionCategoryRepository;
+
+    /**
+     * Transaction-category-balance repository ({@code TCATBAL}, composite key). Reserved for the
+     * batch posting path ({@code CBTRN02C} {@code 2700-UPDATE-TCATBAL}); the online add path does
+     * not upsert category balances (PR-06).
+     */
+    private final TransactionCategoryBalanceRepository tcatBalRepository;
+
+    /** Generator for the 16-character {@code parmDate(10) + suffix(6)} transaction id (PR-10). */
+    private final TransactionIdGenerator transactionIdGenerator;
+
+    /** Entity&harr;DTO mapper handling DB2 timestamp formatting and {@code cardNum}/{@code cardNumber} translation. */
+    private final TransactionMapper transactionMapper;
+
+    /**
+     * Lists posted transactions with stateless pagination — the REST equivalent of
+     * {@code COTRN00C} ({@code STARTBR}/{@code READNEXT} browse). The original PF7/PF8 cursor is
+     * replaced by a Spring Data {@link Pageable}; each request recomputes its page independently
+     * (AAP &sect;0.6.1).
+     *
+     * @param pageable the page request (page number, size, and sort) supplied by the controller
+     * @return a {@link TransactionListResponse} carrying the page content and pagination metadata
+     */
+    @Transactional(readOnly = true)
+    public TransactionListResponse listTransactions(Pageable pageable) {
+        log.debug("Listing transactions page={} size={}",
+            pageable.getPageNumber(), pageable.getPageSize());
+        Page<Transaction> page = transactionRepository.findAll(pageable);
+        return transactionMapper.toListResponse(page);
+    }
+
+    /**
+     * Retrieves a single transaction by its 16-character id — the REST equivalent of
+     * {@code COTRN01C} (transaction view). Reproduces the COBOL {@code STARTBR}/key-validation flow:
+     * an id of the wrong length is rejected up front, and a missing record surfaces the original
+     * {@code COTRN02C} message {@code "Transaction ID NOT found..."}.
+     *
+     * @param tranId the 16-character transaction id
+     * @return the {@link TransactionDto} for the requested transaction
+     * @throws IllegalArgumentException if {@code tranId} is {@code null}, not exactly 16 characters,
+     *                                  or does not correspond to an existing transaction
+     */
+    @Transactional(readOnly = true)
+    public TransactionDto getTransaction(String tranId) {
+        log.debug("Looking up transaction {}", tranId);
+        if (tranId == null || tranId.length() != TRAN_ID_LENGTH) {
+            throw new IllegalArgumentException("Tran ID must be 16 characters");
+        }
+        Transaction transaction = transactionRepository.findById(tranId)
+            .orElseThrow(() -> new IllegalArgumentException("Transaction ID NOT found..."));
+        return transactionMapper.toDto(transaction);
+    }
+
+    /**
+     * Creates a new transaction online — the REST equivalent of {@code COTRN02C}
+     * ({@code ADD-TRANSACTION}). Runs the {@code CBTRN02C} {@code 1500-VALIDATE-TRAN} validation
+     * chain (card&rarr;account&rarr;expiration&rarr;overlimit), generates the 16-character id
+     * (PR-10), stamps the 26-character DB2 timestamps (PR-11), and inserts the {@code TRAN-RECORD}.
+     * Posting (TCATBAL upsert, account-balance bucket update) is intentionally deferred to the
+     * POSTTRAN batch job (Phase 7 / AAP &sect;0.6.6).
+     *
+     * @param request the inbound transaction request (validated at the controller via {@code @Valid})
+     * @return the persisted transaction as a {@link TransactionDto}
+     * @throws IllegalArgumentException if a required field is missing
+     *                                  (see {@link #validateInputFields(TransactionRequest)})
+     * @throws InvalidCardException     code 100 — the card cross-reference lookup fails
+     * @throws AccountNotFoundException code 101 — the account lookup fails
+     * @throws ExpiredAccountException  code 103 — the account expired before the transaction date
+     * @throws OverlimitException       code 102 — the projected balance exceeds the credit limit
+     */
+    @Transactional
+    public TransactionDto addTransaction(TransactionRequest request) {
+        log.info("Adding transaction for accountId={} cardNumber={}",
+            request.getAccountId(), request.getCardNumber());
+
+        // PHASE A — field-level validation (COTRN02C input validation).
+        validateInputFields(request);
+
+        // PHASE B — validation chain (mirrors CBTRN02C 1500-VALIDATE-TRAN).
+
+        // Step 1: card cross-reference lookup (CBTRN02C 1500-A-LOOKUP-XREF, L380-L392) -> code 100.
+        // COTRN02C VALIDATE-INPUT-KEY-FIELDS resolves the cardholder by card number OR account id;
+        // either route ultimately yields the cross-reference record (and thus the account id).
+        String requestedCardNumber = request.getCardNumber();
+        CardXref xref;
+        if (requestedCardNumber != null && !requestedCardNumber.isBlank()) {
+            xref = cardXrefRepository.findById(requestedCardNumber)
+                .orElseThrow(InvalidCardException::new);
+        } else {
+            xref = cardXrefRepository.findByAccountId(request.getAccountId()).stream()
+                .findFirst()
+                .orElseThrow(InvalidCardException::new);
+        }
+        String resolvedCardNumber = xref.getXrefCardNum();
+
+        // Step 2: account lookup (CBTRN02C 1500-B-LOOKUP-ACCT, L394-L416) -> code 101.
+        Account account = accountRepository.findById(xref.getAccountId())
+            .orElseThrow(AccountNotFoundException::new);
+
+        // Determine the originating timestamp (PR-11): use the supplied 26-char DB2 value, else now.
+        String origTimestamp = (request.getOrigTimestamp() != null
+                && !request.getOrigTimestamp().isBlank())
+            ? request.getOrigTimestamp()
+            : DateConversionUtil.nowAsDb2Timestamp();
+        // The COBOL expiration test compares against DALYTRAN-ORIG-TS(1:10) — the leading YYYY-MM-DD.
+        String tranDatePart = origTimestamp.length() >= DATE_PREFIX_LENGTH
+            ? origTimestamp.substring(0, DATE_PREFIX_LENGTH)
+            : DateConversionUtil.todayAsIso();
+
+        // Step 3: expiration check (CBTRN02C L417-L420) -> code 103.
+        // COBOL: IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS(1:10) CONTINUE ELSE MOVE 103.
+        // The LocalDate renders to ISO yyyy-MM-dd, so lexicographic compareTo preserves the COBOL
+        // string comparison (and is evaluated before overlimit so 103 wins when both fail).
+        if (account.getExpirationDate() != null
+            && account.getExpirationDate().toString().compareTo(tranDatePart) < 0) {
+            throw new ExpiredAccountException();
+        }
+
+        // Step 4: credit-limit check (CBTRN02C L393-L422) -> code 102.
+        // COBOL: WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT;
+        //        IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL CONTINUE ELSE MOVE 102.  (PR-04, PR-16)
+        BigDecimal tranAmount = BigDecimalUtil.ensureScaleTwo(request.getAmount());
+        BigDecimal projectedBalance = BigDecimalUtil
+            .scaledSubtract(account.getCurrCycCredit(), account.getCurrCycDebit())
+            .add(tranAmount);
+        if (BigDecimalUtil.ensureScaleTwo(account.getCreditLimit()).compareTo(projectedBalance) < 0) {
+            throw new OverlimitException();
+        }
+
+        // PHASE C — build and persist the transaction record.
+        // The mapper translates cardNumber->cardNum, scales the amount, and parses the request
+        // timestamp; the service supplies the server-controlled fields (resolved card number,
+        // generated id, and the originating/processing timestamps).
+        Transaction transaction = transactionMapper.toEntity(request);
+        transaction.setCardNum(resolvedCardNumber);
+        transaction.setTranId(transactionIdGenerator.nextBatchId(tranDatePart));   // PR-10
+        transaction.setOrigTimestamp(DateConversionUtil.fromDb2Timestamp(origTimestamp)); // PR-11
+        transaction.setProcTimestamp(
+            DateConversionUtil.fromDb2Timestamp(DateConversionUtil.nowAsDb2Timestamp())); // PR-11
+
+        Transaction saved = transactionRepository.save(transaction);
+        log.info("Transaction added successfully. Your Tran ID is {}", saved.getTranId());
+        return transactionMapper.toDto(saved);
+    }
+
+    /**
+     * Returns every posted transaction for a given card number, ordered as the repository returns
+     * them — a helper supporting card-scoped reporting and UI flows.
+     *
+     * @param cardNumber the 16-character card number ({@code TRAN-CARD-NUM})
+     * @return an immutable list of {@link TransactionDto} (never {@code null}; empty when none match)
+     */
+    @Transactional(readOnly = true)
+    public List<TransactionDto> findByCardNum(String cardNumber) {
+        log.debug("Listing transactions for card {}", cardNumber);
+        return transactionMapper.toDtoList(transactionRepository.findByCardNum(cardNumber));
+    }
+
+    /**
+     * Field-level required-input validation for online transaction creation, mirroring the
+     * {@code COTRN02C} {@code VALIDATE-INPUT-DATA-FIELDS} screen-edit pass. Each missing field
+     * raises an {@link IllegalArgumentException} (mapped to HTTP 400 by the global handler) whose
+     * message matches the field-validation text specified by the migration plan.
+     *
+     * <p>This is defence-in-depth: the same constraints are declared on {@link TransactionRequest}
+     * via Jakarta Bean Validation and enforced by {@code @Valid} at the controller, but the service
+     * re-checks so that direct (non-HTTP) callers receive the same guarantees.</p>
+     *
+     * @param request the inbound request to validate
+     * @throws IllegalArgumentException if any required field is {@code null} or blank
+     */
+    private void validateInputFields(TransactionRequest request) {
+        // The originating timestamp is optional per the DTO contract (it defaults to "now" in
+        // addTransaction); however an explicitly-supplied-but-blank value is rejected with the
+        // COBOL date-edit message.
+        if (request.getOrigTimestamp() != null && request.getOrigTimestamp().isBlank()) {
+            throw new IllegalArgumentException(
+                "Date in CCYY-MM-DD format must be supplied...");
+        }
+        if (request.getAmount() == null) {
+            throw new IllegalArgumentException(
+                "Amount in -99999999.99 format must be supplied...");
+        }
+        if (request.getDescription() == null || request.getDescription().isBlank()) {
+            throw new IllegalArgumentException("Description must be supplied...");
+        }
+        if (request.getTypeCd() == null || request.getTypeCd().isBlank()) {
+            throw new IllegalArgumentException("Type CD must be supplied...");
+        }
+        if (request.getCategoryCd() == null || request.getCategoryCd().isBlank()) {
+            throw new IllegalArgumentException("Category CD must be supplied...");
+        }
+        if (request.getSource() == null || request.getSource().isBlank()) {
+            throw new IllegalArgumentException("Tran. Source must be supplied...");
+        }
+        if ((request.getCardNumber() == null || request.getCardNumber().isBlank())
+            && request.getAccountId() == null) {
+            throw new IllegalArgumentException(
+                "Account ID OR Card Number must be supplied...");
+        }
+        if (request.getMerchantId() == null) {
+            throw new IllegalArgumentException("Merchant ID must be supplied...");
+        }
+    }
+}
