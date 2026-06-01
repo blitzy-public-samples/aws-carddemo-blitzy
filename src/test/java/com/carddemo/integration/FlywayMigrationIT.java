@@ -26,6 +26,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.TestPropertySource;
 
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -99,6 +100,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @ActiveProfiles("test")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Import(FlywayMigrationIT.SecurityBeanFallbackTestConfig.class)
+// The @TestConfiguration fallback above is @ConditionalOnMissingBean-guarded so it registers its
+// PasswordEncoder/AuthenticationManager only when the production SecurityConfig is absent. Because the
+// @Import-ed @TestConfiguration is processed BEFORE the component-scanned com.carddemo.security.SecurityConfig,
+// the condition cannot "see" the real beans yet and both definitions get registered. Allowing bean-definition
+// overriding makes the later-registered real SecurityConfig beans win cleanly (instead of failing the context
+// with BeanDefinitionOverrideException), preserving this test's documented dual-mode (standalone + full-suite) intent.
+@TestPropertySource(properties = "spring.main.allow-bean-definition-overriding=true")
 @DisplayName("FlywayMigrationIT — Verifies all 5 Flyway migrations apply cleanly to fresh PostgreSQL 15 container")
 class FlywayMigrationIT {
 
