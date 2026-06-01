@@ -70,7 +70,7 @@ import java.util.List;
  * package ({@code com.carddemo.dto.card}) and therefore needs no import.</p>
  *
  * <p>Construction flow: {@code CardMapper.toListResponse(Page<Card> page)} builds this
- * record from a Spring Data {@code Page}; {@code CardService.findByAccountId(Long, Pageable)}
+ * record from a Spring Data {@code Page}; {@code CardService.listByAccount(Long, int, int)}
  * returns it; {@code CardController.listCards(...)} serializes it as the HTTP response body.</p>
  *
  * <p><strong>PR-28 (Jakarta EE namespace):</strong> all validation constraint annotations
