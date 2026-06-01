@@ -26,6 +26,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -806,6 +807,56 @@ public class GlobalExceptionHandler {
                 .timestamp(LocalDateTime.now())
                 .build();
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
+    }
+
+    /**
+     * Handles {@link AuthenticationException} raised <em>during handler-method
+     * invocation</em> &mdash; in practice, the credential-failure outcomes of the sign-on
+     * flow ({@code AuthService.authenticate(...)} invoked by
+     * {@code AuthController.login()}, replacing {@code app/cbl/COSGN00C.cbl:L211-L257}).
+     *
+     * <p>Because {@code POST /api/auth/login} is a {@code permitAll()} endpoint
+     * ({@code SecurityConfig}), the request reaches the controller and the
+     * {@code AuthenticationException} ({@code BadCredentialsException} for a wrong password
+     * or unknown user, {@code AuthenticationServiceException} for an unexpected failure) is
+     * thrown from <em>inside</em> the {@code DispatcherServlet}. It is therefore resolved
+     * here by {@code @ControllerAdvice} &mdash; it never reaches the
+     * {@code ExceptionTranslationFilter}/{@code AuthenticationEntryPoint}, which only sees
+     * authentication failures originating in the security <em>filter chain</em> (e.g. a
+     * missing/expired bearer token on a protected endpoint, handled by
+     * {@code SecurityConfig.jsonAuthenticationEntryPoint}). This handler is what makes a
+     * failed login return {@code 401} rather than being swallowed as {@code 500} by the
+     * catch-all {@link Exception} handler below; both 401 paths emit the same
+     * {@code "UNAUTHORIZED"} {@link ErrorResponse} shape for a consistent client contract.</p>
+     *
+     * <p><strong>User-enumeration defence (PR-17 / AAP &sect;0.6.8):</strong> the COBOL
+     * program distinguished "Wrong Password. Try again ..." ({@code COSGN00C.cbl:L242}) from
+     * "User not found. Try again ..." ({@code COSGN00C.cbl:L249}); the REST surface instead
+     * returns a single, indistinguishable {@code "Invalid credentials"} message so an
+     * attacker cannot tell whether the user id or the password was wrong. The exact COBOL
+     * message preserved on {@code ex.getMessage()} is logged server-side at {@code WARN}
+     * (no stack trace &mdash; a failed login is an expected client condition) for
+     * diagnostics; it contains no password or PII and is never returned to the client.</p>
+     *
+     * @param ex      the authentication failure carrying the preserved (non-sensitive)
+     *                COBOL diagnostic message
+     * @param request the current request, used to populate the error {@code path}
+     * @return a {@code 401} {@link ErrorResponse} with the generic {@code "Invalid credentials"}
+     *         message
+     */
+    @ExceptionHandler(AuthenticationException.class)
+    public ResponseEntity<ErrorResponse> handleAuthentication(
+            AuthenticationException ex,
+            HttpServletRequest request) {
+        log.warn("Authentication failed at {}: {}", request.getRequestURI(), ex.getMessage());
+        ErrorResponse body = ErrorResponse.builder()
+                .status(HttpStatus.UNAUTHORIZED.value())
+                .code("UNAUTHORIZED")
+                .message("Invalid credentials")
+                .path(request.getRequestURI())
+                .timestamp(LocalDateTime.now())
+                .build();
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(body);
     }
 
     // =========================================================================
