@@ -58,7 +58,7 @@ import java.util.stream.Collectors;
  *   <tr><td>{@link OverlimitException} (COBOL 102)</td><td>422</td><td>"102"</td></tr>
  *   <tr><td>{@link ExpiredAccountException} (COBOL 103)</td><td>422</td><td>"103"</td></tr>
  *   <tr><td>{@link TransactionValidationException} (parent fallback)</td><td>400</td><td>numeric</td></tr>
- *   <tr><td>{@link DiscloseGroupNotFoundException}</td><td>500</td><td>"DISCLOSE_GROUP_NOT_FOUND"</td></tr>
+ *   <tr><td>{@link DiscloseGroupNotFoundException}</td><td>404</td><td>"DISCLOSE_GROUP_NOT_FOUND"</td></tr>
  *   <tr><td>{@link MethodArgumentNotValidException}</td><td>400</td><td>"VALIDATION_FAILED"</td></tr>
  *   <tr><td>{@link ConstraintViolationException}</td><td>400</td><td>"CONSTRAINT_VIOLATION"</td></tr>
  *   <tr><td>{@link HttpMessageNotReadableException}</td><td>400</td><td>"MALFORMED_REQUEST"</td></tr>
@@ -98,8 +98,7 @@ import java.util.stream.Collectors;
  *   <li>4xx client errors are logged at {@code WARN} with no stack trace (no trailing
  *       {@code ex} argument).</li>
  *   <li>5xx server errors are logged at {@code ERROR} <em>with</em> the full stack trace
- *       (trailing {@code ex} argument): the {@link DiscloseGroupNotFoundException} handler
- *       and the catch-all {@link Exception} handler.</li>
+ *       (trailing {@code ex} argument): the catch-all {@link Exception} handler.</li>
  *   <li>Sensitive data (passwords, card numbers, SSNs, BCrypt hashes, JWTs, PII) is never
  *       logged. In particular, rejected field values are never logged or echoed back, and
  *       generic public-facing messages are used for parser- and database-level failures so
@@ -278,34 +277,35 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Handles {@link DiscloseGroupNotFoundException} &mdash; a CRITICAL data-integrity
-     * failure where the disclosure-group interest-rate lookup missed even after the
-     * {@code DEFAULT}-group fallback retry ({@code CBACT04C.cbl} L443-L460,
-     * {@code 9999-ABEND-PROGRAM}). This should never happen with correctly seeded
-     * reference data.
+     * Handles {@link DiscloseGroupNotFoundException} &mdash; the disclosure-group
+     * interest-rate lookup missed even after the {@code DEFAULT}-group fallback retry
+     * ({@code CBACT04C.cbl} L443-L460, {@code 9999-ABEND-PROGRAM}).
      *
-     * <p>Maps to {@code 500 Internal Server Error} with the symbolic code
-     * {@code "DISCLOSE_GROUP_NOT_FOUND"}. Logged at {@code ERROR} with the full stack
-     * trace because it indicates a server-side reference-data defect, not client input.</p>
+     * <p>Maps to {@code 404 Not Found} with the symbolic code
+     * {@code "DISCLOSE_GROUP_NOT_FOUND"}: from the REST contract's perspective the
+     * requested disclosure-group interest rate could not be located &mdash; neither the
+     * account's own group nor the {@code DEFAULT} fallback row exists. Logged at
+     * {@code WARN} without a stack trace, consistent with the other not-found
+     * ({@code 404}) handlers such as {@link #handleAccountNotFound}.</p>
      *
      * @param ex      the disclosure-group-not-found exception
      * @param request the current request, used to populate the error {@code path}
-     * @return a {@code 500} {@link ErrorResponse}
+     * @return a {@code 404} {@link ErrorResponse}
      */
     @ExceptionHandler(DiscloseGroupNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleDiscloseGroupNotFound(
             DiscloseGroupNotFoundException ex,
             HttpServletRequest request) {
-        log.error("Disclose group not found (critical data integrity issue) at {}: {}",
-                request.getRequestURI(), ex.getMessage(), ex);
+        log.warn("Disclose group not found at {}: {}",
+                request.getRequestURI(), ex.getMessage());
         ErrorResponse body = ErrorResponse.builder()
-                .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
+                .status(HttpStatus.NOT_FOUND.value())
                 .code("DISCLOSE_GROUP_NOT_FOUND")
                 .message(ex.getMessage())
                 .path(request.getRequestURI())
                 .timestamp(LocalDateTime.now())
                 .build();
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
     }
 
     // =========================================================================

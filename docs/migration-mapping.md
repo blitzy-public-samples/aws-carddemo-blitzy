@@ -608,7 +608,7 @@ All exception → HTTP mappings are handled by `GlobalExceptionHandler`
 | `OverlimitException` | 102 `"OVERLIMIT TRANSACTION"` | 422 |
 | `ExpiredAccountException` | 103 `"TRANSACTION RECEIVED AFTER ACCT EXPIRATION"` | 422 |
 | `TransactionValidationException` | parent of 100/101/102/103 | (varies) |
-| `DiscloseGroupNotFoundException` | `DEFAULT` fallback miss in `CBACT04C` | 500 |
+| `DiscloseGroupNotFoundException` | `DEFAULT` fallback miss in `CBACT04C` | 404 |
 | `OptimisticLockException` (Spring built-in) | concurrent update (**PR-22**) | 409 |
 | `AccessDeniedException` (Spring built-in) | `@PreAuthorize` denial (**PR-18**) | 403 |
 

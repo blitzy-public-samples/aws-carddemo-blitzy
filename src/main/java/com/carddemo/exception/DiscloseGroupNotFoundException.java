@@ -75,9 +75,9 @@ package com.carddemo.exception;
  *
  * <h2>HTTP mapping</h2>
  * <p>Handled by {@code GlobalExceptionHandler} ({@code @ControllerAdvice}) and mapped to
- * {@code 500 Internal Server Error}, reflecting that a missing {@code DEFAULT}
- * disclosure-group row is a server-side reference-data defect rather than a client
- * request error.</p>
+ * {@code 404 Not Found}: from the REST contract's perspective the requested
+ * disclosure-group interest rate could not be located &mdash; neither the account's own
+ * group nor the {@code DEFAULT} fallback row exists.</p>
  *
  * @see app/cbl/CBACT04C.cbl L415-L460 (1200-GET-INTEREST-RATE,
  *      1200-A-GET-DEFAULT-INT-RATE)
