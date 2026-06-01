@@ -8,25 +8,25 @@ import org.springframework.transaction.annotation.Transactional;
 import com.carddemo.dto.transaction.TransactionDto;
 import com.carddemo.dto.transaction.TransactionListResponse;
 import com.carddemo.dto.transaction.TransactionRequest;
-import com.carddemo.entity.Account;
 import com.carddemo.entity.CardXref;
+import com.carddemo.entity.DailyTransaction;
 import com.carddemo.entity.Transaction;
 import com.carddemo.exception.AccountNotFoundException;
 import com.carddemo.exception.ExpiredAccountException;
 import com.carddemo.exception.InvalidCardException;
 import com.carddemo.exception.OverlimitException;
 import com.carddemo.mapper.TransactionMapper;
-import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.TransactionTypeRepository;
 import com.carddemo.util.BigDecimalUtil;
+import com.carddemo.util.CardNumberMasker;
 import com.carddemo.util.DateConversionUtil;
 import com.carddemo.util.TransactionIdGenerator;
+import com.carddemo.validation.TransactionValidator;
 
-import java.math.BigDecimal;
 import java.util.List;
 
 import lombok.RequiredArgsConstructor;
@@ -78,9 +78,10 @@ import lombok.extern.slf4j.Slf4j;
  * {@link TransactionIdGenerator}; <b>timestamps (PR-11)</b> use the 26-character DB2 external format
  * {@code yyyy-MM-dd-HH.mm.ss.SS'0000'} produced by {@link DateConversionUtil} at the I/O boundary
  * and normalized to {@code LocalDateTime} for storage. <b>All monetary arithmetic (PR-16)</b> uses
- * {@link BigDecimal} with scale 2 and {@link java.math.RoundingMode#HALF_UP} via
- * {@link BigDecimalUtil}, compared with {@link BigDecimal#compareTo(BigDecimal)} (never
- * {@code equals}); {@code float}/{@code double} are forbidden.</p>
+ * {@code BigDecimal} with scale 2 and {@link java.math.RoundingMode#HALF_UP} via
+ * {@link BigDecimalUtil}, compared with {@code BigDecimal.compareTo} (never {@code equals}); the
+ * shared {@link TransactionValidator} chain performs the credit-limit comparison.
+ * {@code float}/{@code double} are forbidden.</p>
  *
  * <p>Read methods are {@code @Transactional(readOnly = true)}; {@link #addTransaction} runs in a
  * read-write {@code @Transactional} scope that brackets the implicit CICS {@code SYNCPOINT}
@@ -118,11 +119,14 @@ public class TransactionService {
     private final CardXrefRepository cardXrefRepository;
 
     /**
-     * Account repository ({@code ACCTDAT}). {@code findById(accountId)} reproduces the keyed
-     * {@code READ ACCOUNT-FILE} of {@code CBTRN02C} {@code 1500-B-LOOKUP-ACCT} (code 101) and
-     * supplies the credit-limit (code 102) and expiration (code 103) inputs.
+     * Shared transaction validation chain ({@code CBTRN02C} {@code 1500-VALIDATE-TRAN}). The online
+     * add path delegates the account lookup (code 101) and the account-level credit-limit (code
+     * 102) and expiration (code 103) checks to this single component so it runs the IDENTICAL
+     * chain as the batch POSTTRAN processor &mdash; no duplicated repository or money/date
+     * arithmetic. The validator internally owns the {@code AccountRepository}; this service no
+     * longer reads accounts directly.
      */
-    private final AccountRepository accountRepository;
+    private final TransactionValidator transactionValidator;
 
     /**
      * Transaction-type reference-data repository. Wired for CBTRN02C-parity / reference-data access;
@@ -207,8 +211,11 @@ public class TransactionService {
      */
     @Transactional
     public TransactionDto addTransaction(TransactionRequest request) {
+        // SECURITY (CP4): never log the full PAN. accountId is a non-sensitive
+        // surrogate; the card number is masked to its last 4 digits via
+        // CardNumberMasker before it can reach any appender.
         log.info("Adding transaction for accountId={} cardNumber={}",
-            request.getAccountId(), request.getCardNumber());
+            request.getAccountId(), CardNumberMasker.mask(request.getCardNumber()));
 
         // PHASE A — field-level validation (COTRN02C input validation).
         validateInputFields(request);
@@ -230,39 +237,30 @@ public class TransactionService {
         }
         String resolvedCardNumber = xref.getXrefCardNum();
 
-        // Step 2: account lookup (CBTRN02C 1500-B-LOOKUP-ACCT, L394-L416) -> code 101.
-        Account account = accountRepository.findById(xref.getAccountId())
-            .orElseThrow(AccountNotFoundException::new);
-
         // Determine the originating timestamp (PR-11): use the supplied 26-char DB2 value, else now.
         String origTimestamp = (request.getOrigTimestamp() != null
                 && !request.getOrigTimestamp().isBlank())
             ? request.getOrigTimestamp()
             : DateConversionUtil.nowAsDb2Timestamp();
-        // The COBOL expiration test compares against DALYTRAN-ORIG-TS(1:10) — the leading YYYY-MM-DD.
+        // The COBOL expiration test compares against DALYTRAN-ORIG-TS(1:10) — the leading
+        // YYYY-MM-DD, which is also the 10-char PARM-DATE prefix of the generated id (PR-10).
         String tranDatePart = origTimestamp.length() >= DATE_PREFIX_LENGTH
             ? origTimestamp.substring(0, DATE_PREFIX_LENGTH)
             : DateConversionUtil.todayAsIso();
 
-        // Step 3: expiration check (CBTRN02C L417-L420) -> code 103.
-        // COBOL: IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS(1:10) CONTINUE ELSE MOVE 103.
-        // The LocalDate renders to ISO yyyy-MM-dd, so lexicographic compareTo preserves the COBOL
-        // string comparison (and is evaluated before overlimit so 103 wins when both fail).
-        if (account.getExpirationDate() != null
-            && account.getExpirationDate().toString().compareTo(tranDatePart) < 0) {
-            throw new ExpiredAccountException();
-        }
-
-        // Step 4: credit-limit check (CBTRN02C L393-L422) -> code 102.
-        // COBOL: WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT;
-        //        IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL CONTINUE ELSE MOVE 102.  (PR-04, PR-16)
-        BigDecimal tranAmount = BigDecimalUtil.ensureScaleTwo(request.getAmount());
-        BigDecimal projectedBalance = BigDecimalUtil
-            .scaledSubtract(account.getCurrCycCredit(), account.getCurrCycDebit())
-            .add(tranAmount);
-        if (BigDecimalUtil.ensureScaleTwo(account.getCreditLimit()).compareTo(projectedBalance) < 0) {
-            throw new OverlimitException();
-        }
+        // Steps 2-4: account lookup (code 101), credit-limit (code 102) and expiration (code 103)
+        // are delegated VERBATIM to the shared TransactionValidator (CBTRN02C 1500-B-LOOKUP-ACCT),
+        // so the online add path and the batch POSTTRAN path run the IDENTICAL chain — same exact
+        // COBOL messages, same strict 100->101->102->103 ordering, and the same both-fail
+        // precedence (103 wins, via AccountValidator's last-writer-wins logic). Build the
+        // DALYTRAN-equivalent candidate carrying the resolved card number, the scaled amount
+        // (PR-16) and the originating timestamp; the validator's internal xref re-read on the
+        // already-resolved card succeeds, so the only failures it can raise here are 101/102/103.
+        DailyTransaction candidate = new DailyTransaction();
+        candidate.setCardNum(resolvedCardNumber);
+        candidate.setAmount(BigDecimalUtil.ensureScaleTwo(request.getAmount()));
+        candidate.setOrigTimestamp(DateConversionUtil.fromDb2Timestamp(origTimestamp));
+        transactionValidator.validate(candidate);
 
         // PHASE C — build and persist the transaction record.
         // The mapper translates cardNumber->cardNum, scales the amount, and parses the request
@@ -270,7 +268,13 @@ public class TransactionService {
         // generated id, and the originating/processing timestamps).
         Transaction transaction = transactionMapper.toEntity(request);
         transaction.setCardNum(resolvedCardNumber);
-        transaction.setTranId(transactionIdGenerator.nextBatchId(tranDatePart));   // PR-10
+        // PR-10 / AAP §0.6.10: the ONLINE path draws its 6-digit suffix from the PostgreSQL
+        // sequence transaction_id_seq — unique across concurrent requests and monotonic across
+        // restarts — NOT from the batch in-memory AtomicLong (reserved for INTCALC/CBACT04C
+        // interest postings, which would reset on restart and could collide for the same date
+        // prefix). nextOnlineId composes parmDate(10) + suffix(6) and validates the 16-char width.
+        long onlineSuffix = transactionRepository.nextTransactionIdSuffix();
+        transaction.setTranId(transactionIdGenerator.nextOnlineId(tranDatePart, onlineSuffix)); // PR-10
         transaction.setOrigTimestamp(DateConversionUtil.fromDb2Timestamp(origTimestamp)); // PR-11
         transaction.setProcTimestamp(
             DateConversionUtil.fromDb2Timestamp(DateConversionUtil.nowAsDb2Timestamp())); // PR-11
@@ -289,7 +293,8 @@ public class TransactionService {
      */
     @Transactional(readOnly = true)
     public List<TransactionDto> findByCardNum(String cardNumber) {
-        log.debug("Listing transactions for card {}", cardNumber);
+        // SECURITY (CP4): mask the PAN before logging — only the last 4 digits appear.
+        log.debug("Listing transactions for card {}", CardNumberMasker.mask(cardNumber));
         return transactionMapper.toDtoList(transactionRepository.findByCardNum(cardNumber));
     }
 

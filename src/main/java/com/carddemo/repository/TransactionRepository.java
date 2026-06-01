@@ -2,6 +2,7 @@ package com.carddemo.repository;
 
 import com.carddemo.entity.Transaction;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
@@ -174,4 +175,36 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *         {@code null}
      */
     List<Transaction> findByCardNum(String cardNum);
+
+    /**
+     * Allocates the next value of the PostgreSQL sequence {@code transaction_id_seq} and
+     * returns it as the 6-digit suffix source for an <strong>online</strong> 16-character
+     * {@code TRAN-ID} (PR-10, AAP &sect;0.6.10).
+     *
+     * <p><strong>Why a DB sequence for the online path.</strong> AAP &sect;0.6.10 mandates two
+     * distinct {@code TRAN-ID} suffix sources: batch interest posting ({@code CBACT04C} /
+     * INTCALC) uses a per-{@code JobExecution} in-memory counter ({@code TransactionIdGenerator}'s
+     * {@code AtomicLong}, reset at job start for deterministic, restartable suffixes), whereas
+     * online creation ({@code POST /api/transactions}, {@code COTRN02C}) must guarantee uniqueness
+     * across concurrent requests and across application restarts. A process-local counter cannot:
+     * it resets to zero on restart and would collide on the same {@code parmDate} prefix. The
+     * monotonic, persistent {@code transaction_id_seq} (declared {@code START 1 INCREMENT 1 NO
+     * CYCLE} in {@code src/main/resources/db/migration/V1__schema.sql}) provides a gap-tolerant,
+     * concurrency-safe allocation: each {@code nextval} call returns a distinct value even under
+     * parallel transactions, because sequence allocation is non-transactional in PostgreSQL.</p>
+     *
+     * <p><strong>Composition.</strong> {@code TransactionService} fetches a value here and passes
+     * it to {@code TransactionIdGenerator.nextOnlineId(parmDate, sequenceValue)}, which formats the
+     * 16-character id as {@code parmDate(10) + %06d(suffix)} &mdash; the same fixed width and
+     * layout the batch path produces, keeping PR-10 uniform across both surfaces.</p>
+     *
+     * <p>Implemented as a native query because {@code nextval(...)} is a PostgreSQL function with
+     * no JPQL equivalent; it returns a single {@code bigint} row mapped to a Java {@code long}.</p>
+     *
+     * @return the next sequence value (a positive, strictly increasing {@code long}); used as the
+     *         online {@code TRAN-ID} suffix and combined with the date prefix by
+     *         {@code TransactionIdGenerator.nextOnlineId(String, long)}
+     */
+    @Query(value = "SELECT nextval('transaction_id_seq')", nativeQuery = true)
+    long nextTransactionIdSuffix();
 }

@@ -3,6 +3,7 @@ package com.carddemo.batch;
 import com.carddemo.entity.TransactionCategoryBalance;
 import com.carddemo.entity.TransactionCategoryBalanceId;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
+import com.carddemo.util.BatchOutputPathResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.Job;
@@ -17,6 +18,10 @@ import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import java.io.BufferedWriter;
@@ -26,11 +31,8 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Comparator;
-import java.util.List;
 
 /**
  * Spring Batch configuration for the <strong>{@code categoryBalanceReportJob}</strong> — the
@@ -57,12 +59,12 @@ import java.util.List;
  * {@link Step} backed by a {@link Tasklet}. The tasklet:
  * <ol>
  *   <li>reads the optional {@code outputDir} {@link JobParameters} (default
- *       {@link #DEFAULT_OUTPUT_DIR});</li>
- *   <li>loads every {@link TransactionCategoryBalance} row through
- *       {@link TransactionCategoryBalanceRepository#findAll()} (replacing the VSAM
- *       {@code TCATBALF} sequential read / REPRO);</li>
- *   <li>sorts the records in memory by the composite key
- *       {@code (accountId, typeCd, categoryCd)} — reproducing the JCL
+ *       {@link #DEFAULT_OUTPUT_SUBDIR}) and resolves it through {@link BatchOutputPathResolver}
+ *       so reports can only be written under the configured batch-output root;</li>
+ *   <li>pages through {@link TransactionCategoryBalance} rows via
+ *       {@link TransactionCategoryBalanceRepository#findAll(Pageable)} ordered by the composite key
+ *       {@code (accountId, typeCd, categoryCd)} — replacing the VSAM
+ *       {@code TCATBALF} sequential read / REPRO while reproducing the JCL
  *       {@code SORT FIELDS=(TRANCAT-ACCT-ID,A,TRANCAT-TYPE-CD,A,TRANCAT-CD,A)} order
  *       (PR-15); and</li>
  *   <li>writes a fixed-width text report with a header, one detail line per balance, a
@@ -78,7 +80,7 @@ import java.util.List;
  *
  * <h2>Refactoring rules enforced</h2>
  * <ul>
- *   <li><strong>PR-15</strong> (composite-key fidelity): the in-memory sort orders by
+ *   <li><strong>PR-15</strong> (composite-key fidelity): the paged repository query orders by
  *       {@code accountId} then {@code typeCd} then {@code categoryCd}, exactly matching the
  *       COBOL {@code TRAN-CAT-KEY} concatenation and the JCL {@code SORT FIELDS} order.</li>
  *   <li><strong>PR-16</strong> (exact money arithmetic): every per-account subtotal and the
@@ -92,7 +94,7 @@ import java.util.List;
  *       Boot context and written to the local filesystem — no external reporting service.</li>
  *   <li><strong>PR-28</strong> (Jakarta / Spring 6 baseline): only Spring Framework 6.1 /
  *       Spring Batch 5.1 APIs and JDK types are used; no {@code javax.*} types.</li>
- *   <li><strong>PR-29</strong> (constructor injection only): the three collaborators are
+ *   <li><strong>PR-29</strong> (constructor injection only): the collaborators are
  *       {@code final} and injected through the Lombok {@code @RequiredArgsConstructor}-generated
  *       constructor — no field injection, no {@code @Autowired}.</li>
  * </ul>
@@ -126,8 +128,15 @@ public class CategoryBalanceReportJobConfig {
     /** Logical name of the single report {@link Step}. */
     private static final String STEP_NAME = "categoryBalanceReportStep";
 
-    /** Default output directory used when the {@code outputDir} job parameter is absent. */
-    private static final String DEFAULT_OUTPUT_DIR = "./reports";
+    /** Default relative report subdirectory used when the {@code outputDir} job parameter is absent. */
+    private static final String DEFAULT_OUTPUT_SUBDIR = "reports";
+
+    /** Number of TCATBAL rows fetched per repository page; bounds memory while preserving report order. */
+    private static final int TCATBAL_PAGE_SIZE = 100;
+
+    /** Sort order mirroring {@code SORT FIELDS=(TRANCAT-ACCT-ID,A,TRANCAT-TYPE-CD,A,TRANCAT-CD,A)}. */
+    private static final Sort TCATBAL_REPORT_ORDER =
+            Sort.by("id.accountId", "id.typeCd", "id.categoryCd");
 
     /** Stem of the generated report file name; a timestamp and {@code .txt} suffix are appended. */
     private static final String REPORT_FILE_PREFIX = "category-balance-report-";
@@ -166,27 +175,31 @@ public class CategoryBalanceReportJobConfig {
 
     /**
      * Transaction manager bracketing the report step's unit of work (PR-24). The step is read-only
-     * (it issues a single {@code SELECT} via {@code findAll()} and writes only to the filesystem),
-     * but Spring Batch requires a transaction manager to delimit step processing.
+     * (it pages through repository reads and writes only to the filesystem), but Spring Batch
+     * requires a transaction manager to delimit step processing.
      */
     private final PlatformTransactionManager transactionManager;
 
     /**
-     * Spring Data JPA repository over the {@code tran_cat_balances} table. The tasklet calls
-     * {@link TransactionCategoryBalanceRepository#findAll()} to load every category-balance row
-     * (replacing the VSAM {@code TCATBALF} sequential read of {@code PRTCATBL.jcl}).
+     * Spring Data JPA repository over the {@code tran_cat_balances} table. The tasklet pages through
+     * {@link TransactionCategoryBalanceRepository#findAll(Pageable)} to replace the VSAM
+     * {@code TCATBALF} sequential read of {@code PRTCATBL.jcl} without materializing the full table.
      */
     private final TransactionCategoryBalanceRepository tcatbalRepository;
+
+    /** Resolves caller-supplied output directories safely under the configured batch-output root. */
+    private final BatchOutputPathResolver pathResolver;
 
     /**
      * The report-producing {@link Tasklet}.
      *
-     * <p>Reads the optional {@code outputDir} job parameter, loads every
-     * {@link TransactionCategoryBalance} record, sorts it by the composite key
-     * {@code (accountId, typeCd, categoryCd)} (PR-15), and writes a fixed-width report with a
-     * per-account subtotal at every account break and a closing grand total. All monetary
-     * accumulation uses {@link BigDecimal} at {@link #MONEY_SCALE} with {@link #MONEY_ROUNDING}
-     * (PR-16). The number of reported records is recorded as the step's write count.</p>
+     * <p>Reads the optional {@code outputDir} job parameter, validates and normalizes it under the
+     * configured batch-output root, then pages through {@link TransactionCategoryBalance} records in
+     * composite-key order (PR-15). The account-control-break state is deliberately carried across
+     * page boundaries so subtotals remain identical to the original sorted sequential report. All
+     * monetary accumulation uses {@link BigDecimal} at {@link #MONEY_SCALE} with
+     * {@link #MONEY_ROUNDING} (PR-16). The number of reported records is recorded as the step's
+     * write count.</p>
      *
      * @return a {@link Tasklet} that generates the category-balance detail report and returns
      *         {@link RepeatStatus#FINISHED}
@@ -198,27 +211,17 @@ public class CategoryBalanceReportJobConfig {
 
             JobParameters params =
                     chunkContext.getStepContext().getStepExecution().getJobParameters();
-            String outputDir = params.getString("outputDir", DEFAULT_OUTPUT_DIR);
+            String outputDir = params.getString("outputDir", DEFAULT_OUTPUT_SUBDIR);
 
-            // Ensure the output directory exists (idempotent — no error if already present).
-            Path outputPath = Paths.get(outputDir);
+            // Resolve under the configured base directory before creating/writing anything. This
+            // rejects absolute paths and ".." traversal supplied through job parameters.
+            Path outputPath = pathResolver.resolve(outputDir);
             Files.createDirectories(outputPath);
 
             String fileStamp = LocalDateTime.now().format(FILE_TIMESTAMP);
             Path outputFile = outputPath.resolve(REPORT_FILE_PREFIX + fileStamp + REPORT_FILE_SUFFIX);
 
-            // Load every TCATBAL record (replaces the VSAM TCATBALF sequential read / REPRO).
-            List<TransactionCategoryBalance> records = tcatbalRepository.findAll();
-            log.info("Report covers {} TCATBAL record(s)", records.size());
-
-            // Sort by composite key: accountId, then typeCd, then categoryCd — reproduces
-            // SORT FIELDS=(TRANCAT-ACCT-ID,A,TRANCAT-TYPE-CD,A,TRANCAT-CD,A) (PR-15). The three
-            // key components are NOT-NULL primary-key columns, so natural ordering is safe.
-            records.sort(Comparator
-                    .<TransactionCategoryBalance, Long>comparing(r -> r.getId().getAccountId())
-                    .thenComparing(r -> r.getId().getTypeCd())
-                    .thenComparing(r -> r.getId().getCategoryCd()));
-
+            int grandCount = 0;
             try (BufferedWriter writer = Files.newBufferedWriter(outputFile, StandardCharsets.UTF_8)) {
                 writeReportHeader(writer);
 
@@ -227,27 +230,37 @@ public class CategoryBalanceReportJobConfig {
                 int acctCount = 0;
 
                 BigDecimal grandTotal = zeroMoney();
-                int grandCount = 0;
 
-                for (TransactionCategoryBalance tcb : records) {
-                    Long acctId = tcb.getId().getAccountId();
+                int pageNumber = 0;
+                boolean morePages = true;
+                while (morePages) {
+                    Pageable pageable =
+                            PageRequest.of(pageNumber, TCATBAL_PAGE_SIZE, TCATBAL_REPORT_ORDER);
+                    Page<TransactionCategoryBalance> page = tcatbalRepository.findAll(pageable);
 
-                    // Account break — emit the subtotal for the account that just ended
-                    // (the COBOL CONTROL-BREAK pattern) before resetting the accumulators.
-                    if (currentAcct != null && !acctId.equals(currentAcct)) {
-                        writeAccountSubtotal(writer, currentAcct, acctTotal, acctCount);
-                        acctTotal = zeroMoney();
-                        acctCount = 0;
+                    for (TransactionCategoryBalance tcb : page.getContent()) {
+                        Long acctId = tcb.getId().getAccountId();
+
+                        // Account break — emit the subtotal for the account that just ended
+                        // (the COBOL CONTROL-BREAK pattern) before resetting the accumulators.
+                        if (currentAcct != null && !acctId.equals(currentAcct)) {
+                            writeAccountSubtotal(writer, currentAcct, acctTotal, acctCount);
+                            acctTotal = zeroMoney();
+                            acctCount = 0;
+                        }
+                        currentAcct = acctId;
+
+                        writeDetailLine(writer, tcb);
+
+                        BigDecimal bal = tcb.getTranCatBal() == null ? BigDecimal.ZERO : tcb.getTranCatBal();
+                        acctTotal = acctTotal.add(bal).setScale(MONEY_SCALE, MONEY_ROUNDING);
+                        acctCount++;
+                        grandTotal = grandTotal.add(bal).setScale(MONEY_SCALE, MONEY_ROUNDING);
+                        grandCount++;
                     }
-                    currentAcct = acctId;
 
-                    writeDetailLine(writer, tcb);
-
-                    BigDecimal bal = tcb.getTranCatBal() == null ? BigDecimal.ZERO : tcb.getTranCatBal();
-                    acctTotal = acctTotal.add(bal).setScale(MONEY_SCALE, MONEY_ROUNDING);
-                    acctCount++;
-                    grandTotal = grandTotal.add(bal).setScale(MONEY_SCALE, MONEY_ROUNDING);
-                    grandCount++;
+                    morePages = page.hasNext();
+                    pageNumber++;
                 }
 
                 // Final account subtotal for the last account in the stream.
@@ -260,9 +273,9 @@ public class CategoryBalanceReportJobConfig {
             }
 
             log.info("Category balance report written to {} ({} record(s))",
-                    outputFile.toAbsolutePath(), records.size());
+                    outputFile.toAbsolutePath(), grandCount);
 
-            contribution.incrementWriteCount(records.size());
+            contribution.incrementWriteCount(grandCount);
             return RepeatStatus.FINISHED;
         };
     }

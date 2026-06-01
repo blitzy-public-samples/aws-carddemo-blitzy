@@ -4,6 +4,7 @@ import com.carddemo.entity.Account;
 import com.carddemo.entity.CardXref;
 import com.carddemo.entity.Customer;
 import com.carddemo.entity.Transaction;
+import com.carddemo.util.BatchOutputPathResolver;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -12,6 +13,8 @@ import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,14 +25,10 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -55,20 +54,24 @@ import java.util.Objects;
  * byte-for-byte {@code CBSTM03A} HTML-emission port, PR-09). Concretely it:</p>
  * <ol>
  *   <li>resolves the output directory from the optional {@code outputDir} job parameter
- *       (default {@code ./statements}) and ensures it exists;</li>
- *   <li>pre-loads every transaction ordered by {@code cardNum} then {@code tranId} &mdash; the
- *       {@code CREASTMT.JCL} {@code STEP010} {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} sequence
- *       &mdash; and groups them per card number into a {@link LinkedHashMap} (mirroring the
- *       in-memory {@code WS-TRANS-PER-CARD-TABLE} 51&times;10 matrix that
- *       {@code CBSTM03A}'s {@code 8500-READTRNX-READ} builds);</li>
- *   <li>pre-loads every cross-reference in {@code xrefCardNum} (KSDS) order &mdash; the
- *       {@code XREFFILE} sequential driver &mdash; and aggregates the card numbers per unique
- *       {@code (customer, account)} pair;</li>
- *   <li>for each {@code (customer, account)} pair, looks up the customer and account once, collects
- *       and tranId-sorts the transactions across all of that account's cards, computes the
- *       {@link BigDecimal} running total (scale 2, {@link RoundingMode#HALF_UP}; PR-16), and emits
- *       both an HTML statement (delegated to {@link StatementHtmlBuilder}) and a sibling plain-text
- *       statement.</li>
+ *       (default subdirectory {@code statements}) <em>under a configured base directory</em> via
+ *       {@link BatchOutputPathResolver} &mdash; rejecting absolute paths and {@code ..} traversal
+ *       (CP4 path-traversal guard) &mdash; and ensures it exists;</li>
+ *   <li><strong>streams</strong> the cross-reference file one bounded page at a time in
+ *       {@code (custId, accountId, xrefCardNum)} order
+ *       ({@link StatementIoSubroutine#findXrefsForStatements(org.springframework.data.domain.Pageable)}),
+ *       so the {@code XREFFILE} sequential driver is reproduced without materializing the whole
+ *       file in memory (CP4 batch-streaming requirement);</li>
+ *   <li>performs a <strong>control-break</strong> on {@code (custId, accountId)}: because the page
+ *       order makes every card of one {@code (customer, account)} pair contiguous, the card numbers
+ *       are accumulated until the key changes, at which point the completed group is emitted &mdash;
+ *       memory is bounded to the cards of the single group in flight, not the whole table;</li>
+ *   <li>for each {@code (customer, account)} group, looks up the customer and account once, fetches
+ *       that group's transactions <strong>per card</strong>
+ *       ({@link StatementIoSubroutine#findTransactionsByCardNumber(String)}) rather than pre-loading
+ *       the whole {@code TRNXFILE}, tranId-sorts the aggregate, computes the {@link BigDecimal}
+ *       running total (scale 2, {@link RoundingMode#HALF_UP}; PR-16), and emits both an HTML
+ *       statement (delegated to {@link StatementHtmlBuilder}) and a sibling plain-text statement.</li>
  * </ol>
  *
  * <p><strong>One statement per (customer, account).</strong> Although {@code XREFFILE} is keyed by
@@ -118,11 +121,22 @@ import java.util.Objects;
 @Slf4j
 public class StatementGenerationTasklet implements Tasklet {
 
-    /** Default output directory when the {@code outputDir} job parameter is not supplied. */
-    private static final String DEFAULT_OUTPUT_DIR = "./statements";
+    /**
+     * Default output <em>subdirectory</em> (relative to the {@link BatchOutputPathResolver} base)
+     * when the {@code outputDir} job parameter is not supplied. The value is a plain subpath, never
+     * an absolute path, so it always resolves safely under the configured base directory.
+     */
+    private static final String DEFAULT_OUTPUT_SUBDIR = "statements";
 
-    /** Job-parameter key selecting the directory the statement files are written to. */
+    /** Job-parameter key selecting the directory (subpath under the base) statement files go to. */
     private static final String PARAM_OUTPUT_DIR = "outputDir";
+
+    /**
+     * Page size (100) for the streaming cross-reference reader. Bounds the number of
+     * {@link CardXref} rows held in memory at once while walking {@code XREFFILE} for the
+     * control-break; large enough to amortize round-trips, small enough to bound heap (CP4).
+     */
+    private static final int XREF_PAGE_SIZE = 100;
 
     /** Scale (2) applied to every monetary {@link BigDecimal} (PR-16). */
     private static final int MONEY_SCALE = 2;
@@ -147,14 +161,26 @@ public class StatementGenerationTasklet implements Tasklet {
     private final StatementHtmlBuilder htmlBuilder;
 
     /**
+     * Resolves the job-parameter output directory <em>under a configured base directory</em>,
+     * rejecting absolute paths and {@code ..} traversal (CP4 path-traversal guard). The statement
+     * files are written only beneath {@link BatchOutputPathResolver#getBaseDir()}.
+     */
+    private final BatchOutputPathResolver pathResolver;
+
+    /**
      * Orchestrates the full statement run &mdash; the Java port of {@code CBSTM03A}
      * {@code 1000-MAINLINE} (L316-L329).
      *
-     * <p>Loads the ordered transaction and cross-reference streams once, aggregates the
-     * cross-references into unique {@code (customer, account)} statement contexts, then emits one
-     * HTML statement and one plain-text statement per context. The number of statements emitted is
-     * reported to Spring Batch via {@link StepContribution#incrementWriteCount(long)} so it appears
-     * in the step's write-count metric.</p>
+     * <p><strong>Streaming control-break (CP4).</strong> Rather than pre-loading the whole
+     * {@code XREFFILE} and {@code TRNXFILE} into memory, this walks the cross-references one bounded
+     * page at a time in {@code (custId, accountId, xrefCardNum)} order and performs a control-break
+     * on {@code (custId, accountId)}: the contiguous cards of each {@code (customer, account)} pair
+     * are accumulated, and when the key changes the completed group is emitted as one HTML statement
+     * and one plain-text statement (its transactions fetched per card on demand). The number of
+     * statements emitted is reported to Spring Batch via
+     * {@link StepContribution#incrementWriteCount(long)} so it appears in the step's write-count
+     * metric. Heap use is bounded by one page of cross-references plus the single group in flight,
+     * not by the table cardinality.</p>
      *
      * <p>Runs inside a single read-only {@code REQUIRES_NEW} transaction (PR-24). Any failure while
      * emitting a statement is logged with its {@code (customer, account)} context and re-thrown so
@@ -174,64 +200,85 @@ public class StatementGenerationTasklet implements Tasklet {
             throws Exception {
         log.info("StatementGenerationTasklet starting");
 
-        // Resolve the output directory from the (optional) job parameter; default to ./statements.
-        // StepContext.getJobParameters() returns Map<String,Object>, so the value is cast to String.
+        // Resolve + validate the output directory under the configured base (CP4 path-traversal
+        // guard): BatchOutputPathResolver rejects absolute paths and ".." traversal and normalizes
+        // the requested subpath beneath its base directory. Default subdirectory: "statements".
+        // StepContext.getJobParameters() returns Map<String,Object>, so the value is read as String.
         Object outputDirParam = chunkContext.getStepContext()
                 .getJobParameters()
-                .getOrDefault(PARAM_OUTPUT_DIR, DEFAULT_OUTPUT_DIR);
-        String outputDir = outputDirParam != null ? outputDirParam.toString() : DEFAULT_OUTPUT_DIR;
-        Path outputPath = Paths.get(outputDir);
+                .getOrDefault(PARAM_OUTPUT_DIR, DEFAULT_OUTPUT_SUBDIR);
+        String requestedDir = outputDirParam != null
+                ? outputDirParam.toString() : DEFAULT_OUTPUT_SUBDIR;
+        Path outputPath = pathResolver.resolve(requestedDir);
         Files.createDirectories(outputPath);
         log.info("Statement output directory: {}", outputPath.toAbsolutePath());
 
-        // === Pre-load transactions ordered by cardNum then tranId (CREASTMT.JCL STEP010 SORT) and
-        //     group them per card number (mirrors CBSTM03A 8500-READTRNX-READ matrix build). ===
-        List<Transaction> allTransactions = ioSubroutine.findAllTransactionsOrderedByCardAndId();
-        Map<String, List<Transaction>> txByCardNum = groupByCardNum(allTransactions);
-        log.info("Pre-loaded {} transactions across {} card(s)",
-                allTransactions.size(), txByCardNum.size());
-
-        // === Pre-load cross-references in xrefCardNum (KSDS) order (CBSTM03A XREFFILE driver). ===
-        List<CardXref> allXrefs = ioSubroutine.findAllXrefsOrdered();
-        log.info("Pre-loaded {} card cross-reference(s)", allXrefs.size());
-
-        // === Aggregate cross-references into one statement context per unique (customer, account).
-        //     CBSTM03A emits a single statement per customer/account; multiple cards on the same
-        //     account contribute their transactions to the same statement. ===
-        Map<CustomerAccountKey, StatementContext> contexts = new LinkedHashMap<>();
-        for (CardXref xref : allXrefs) {
-            Long custId = xref.getCustId();
-            Long acctId = xref.getAccountId();
-            String cardNum = xref.getXrefCardNum();
-
-            CustomerAccountKey key = new CustomerAccountKey(custId, acctId);
-            StatementContext ctx = contexts.computeIfAbsent(key,
-                    k -> new StatementContext(custId, acctId));
-            if (cardNum != null) {
-                ctx.cardNumbers.add(cardNum);
-            }
-        }
-        log.info("Resolved {} unique (customer, account) statement context(s)", contexts.size());
-
-        // === Emit one HTML + one plain-text statement per context. ===
+        // === Stream cross-references one bounded page at a time in (custId, accountId, xrefCardNum)
+        //     order and emit one statement per (customer, account) via a CONTROL BREAK (CP4
+        //     streaming). CBSTM03A emits a single statement per customer/account; because the page
+        //     order makes every card of one (customer, account) contiguous, we accumulate cards
+        //     until the key changes, then emit the completed group. Memory is bounded to one page
+        //     plus the single group in flight — the whole XREFFILE/TRNXFILE is never materialized. ===
         long emittedCount = 0L;
-        for (StatementContext ctx : contexts.values()) {
-            try {
-                if (emitStatement(ctx, txByCardNum, outputPath)) {
-                    emittedCount++;
+        int pageNumber = 0;
+        boolean morePages = true;
+        StatementContext current = null;
+        long xrefCount = 0L;
+
+        while (morePages) {
+            Page<CardXref> page =
+                    ioSubroutine.findXrefsForStatements(PageRequest.of(pageNumber, XREF_PAGE_SIZE));
+            for (CardXref xref : page.getContent()) {
+                xrefCount++;
+                Long custId = xref.getCustId();
+                Long acctId = xref.getAccountId();
+                String cardNum = xref.getXrefCardNum();
+
+                // Control break: a change in (custId, accountId) closes the current group.
+                if (current == null || !current.matches(custId, acctId)) {
+                    if (current != null) {
+                        emittedCount += emitStatementOrRethrow(current, outputPath);
+                    }
+                    current = new StatementContext(custId, acctId);
                 }
-            } catch (IOException e) {
-                // Mirror CBSTM03A's abend-on-I/O-failure behavior: surface the failing context and
-                // re-throw so the batch step fails (and is restartable) rather than silently skipping.
-                log.error("Failed to emit statement for customer={} account={}: {}",
-                        ctx.custId, ctx.acctId, e.getMessage(), e);
-                throw e;
+                if (cardNum != null) {
+                    current.cardNumbers.add(cardNum);
+                }
             }
+            morePages = page.hasNext();
+            pageNumber++;
+        }
+        // Emit the final group (the last control-break partition) once the stream is exhausted.
+        if (current != null) {
+            emittedCount += emitStatementOrRethrow(current, outputPath);
         }
 
-        log.info("StatementGenerationTasklet completed \u2014 emitted {} statement(s)", emittedCount);
+        log.info("StatementGenerationTasklet completed \u2014 streamed {} cross-reference(s), "
+                + "emitted {} statement(s)", xrefCount, emittedCount);
         contribution.incrementWriteCount(emittedCount);
         return RepeatStatus.FINISHED;
+    }
+
+    /**
+     * Emits the statement for a completed control-break group, translating the checked
+     * {@link IOException} from {@link #emitStatement} into a propagated failure that fails (and
+     * thus makes restartable) the batch step &mdash; mirroring {@code CBSTM03A}'s abend-on-I/O
+     * behavior rather than silently skipping. Returns the write-count delta (1 when a statement was
+     * emitted, 0 when the group was skipped because its customer or account was not found).
+     *
+     * @param ctx        the completed statement context (customer id, account id, owned cards)
+     * @param outputPath the validated output directory (already created)
+     * @return {@code 1} if a statement was emitted, {@code 0} if it was skipped
+     * @throws IOException if the statement files cannot be written (propagated to fail the step)
+     */
+    private long emitStatementOrRethrow(StatementContext ctx, Path outputPath) throws IOException {
+        try {
+            return emitStatement(ctx, outputPath) ? 1L : 0L;
+        } catch (IOException e) {
+            log.error("Failed to emit statement for customer={} account={}: {}",
+                    ctx.custId, ctx.acctId, e.getMessage(), e);
+            throw e;
+        }
     }
 
     /**
@@ -252,7 +299,6 @@ public class StatementGenerationTasklet implements Tasklet {
      * account id (matching the COBOL {@code ACCT-ID PIC 9(11)} width).</p>
      *
      * @param ctx        the statement context (customer id, account id, owned card numbers)
-     * @param txByCardNum transactions grouped by card number (pre-loaded once by {@link #execute})
      * @param outputDir  the directory the two statement files are written to (already created)
      * @return {@code true} if a statement was emitted; {@code false} if it was skipped because the
      *         customer or account could not be found
@@ -260,7 +306,6 @@ public class StatementGenerationTasklet implements Tasklet {
      */
     private boolean emitStatement(
             StatementContext ctx,
-            Map<String, List<Transaction>> txByCardNum,
             Path outputDir) throws IOException {
 
         // PR-23 lock order: CUSTOMER first.
@@ -279,10 +324,12 @@ public class StatementGenerationTasklet implements Tasklet {
 
         // Aggregate transactions across every card belonging to this customer/account and
         // accumulate the running total (CBSTM03A 4000-TRNXFILE-GET: ADD TRNX-AMT TO WS-TOTAL-AMT).
+        // Transactions are fetched PER CARD on demand (CARD link of the PR-23 lock order) instead
+        // of from a pre-loaded whole-file map, so only the current group's rows are held (CP4).
         List<Transaction> aggregated = new ArrayList<>();
         BigDecimal totalAmount = BigDecimal.ZERO.setScale(MONEY_SCALE, RoundingMode.HALF_UP);
         for (String cardNum : ctx.cardNumbers) {
-            List<Transaction> cardTxs = txByCardNum.getOrDefault(cardNum, Collections.emptyList());
+            List<Transaction> cardTxs = ioSubroutine.findTransactionsByCardNumber(cardNum);
             aggregated.addAll(cardTxs);
             for (Transaction tx : cardTxs) {
                 totalAmount = totalAmount.add(nullSafeBd(tx.getAmount()));
@@ -397,27 +444,6 @@ public class StatementGenerationTasklet implements Tasklet {
     // ---------------------------------------------------------------------------------------------
     // Helper methods
     // ---------------------------------------------------------------------------------------------
-
-    /**
-     * Groups the pre-loaded transactions by card number, preserving the encounter order of the
-     * supplied (card-then-id sorted) list &mdash; the Java analogue of the {@code CBSTM03A}
-     * {@code WS-TRANS-PER-CARD-TABLE} matrix built by {@code 8500-READTRNX-READ}. Transactions with
-     * a {@code null} card number are skipped (they cannot be attributed to a statement).
-     *
-     * @param all the transactions ordered by {@code cardNum} then {@code tranId} (non-{@code null})
-     * @return a {@link LinkedHashMap} of card number to its transactions, in first-seen card order
-     */
-    private static Map<String, List<Transaction>> groupByCardNum(List<Transaction> all) {
-        Map<String, List<Transaction>> map = new LinkedHashMap<>();
-        for (Transaction tx : all) {
-            String cardNum = tx.getCardNum();
-            if (cardNum == null) {
-                continue;
-            }
-            map.computeIfAbsent(cardNum, k -> new ArrayList<>()).add(tx);
-        }
-        return map;
-    }
 
     /**
      * Assembles the customer display name from the first / middle / last name parts, joining the
@@ -563,49 +589,11 @@ public class StatementGenerationTasklet implements Tasklet {
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * Immutable composite key used to de-duplicate card-keyed cross-references into one statement
-     * per unique {@code (customer, account)} pair. Provides value-based {@code equals}/
-     * {@code hashCode} so it can be used as a {@link Map} key.
-     */
-    private static final class CustomerAccountKey {
-
-        /** The customer id component of the key (may be {@code null}). */
-        private final Long custId;
-
-        /** The account id component of the key (may be {@code null}). */
-        private final Long acctId;
-
-        CustomerAccountKey(Long custId, Long acctId) {
-            this.custId = custId;
-            this.acctId = acctId;
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (!(o instanceof CustomerAccountKey k)) {
-                return false;
-            }
-            return Objects.equals(custId, k.custId) && Objects.equals(acctId, k.acctId);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(custId, acctId);
-        }
-
-        @Override
-        public String toString() {
-            return "CustomerAccountKey[custId=" + custId + ", acctId=" + acctId + "]";
-        }
-    }
-
-    /**
      * Mutable per-statement accumulator collecting the card numbers belonging to a single
-     * {@code (customer, account)} pair while the cross-references are scanned. One instance becomes
-     * one emitted statement.
+     * {@code (customer, account)} pair while the cross-references are streamed. One instance becomes
+     * one emitted statement. Because the paged cross-reference reader returns rows in
+     * {@code (custId, accountId, xrefCardNum)} order, every card for one pair arrives contiguously,
+     * so a single accumulator at a time suffices for the control-break (no whole-file map needed).
      */
     private static final class StatementContext {
 
@@ -621,6 +609,20 @@ public class StatementGenerationTasklet implements Tasklet {
         StatementContext(Long custId, Long acctId) {
             this.custId = custId;
             this.acctId = acctId;
+        }
+
+        /**
+         * Returns {@code true} when the supplied {@code (custId, acctId)} pair equals this
+         * context's key &mdash; the control-break "same group" test. Uses {@link Objects#equals}
+         * for null-safe value comparison so a {@code null} component (an orphaned cross-reference)
+         * is handled without throwing.
+         *
+         * @param otherCustId the customer id of the cross-reference being examined
+         * @param otherAcctId the account id of the cross-reference being examined
+         * @return {@code true} if both components match this context's key
+         */
+        private boolean matches(Long otherCustId, Long otherAcctId) {
+            return Objects.equals(custId, otherCustId) && Objects.equals(acctId, otherAcctId);
         }
     }
 }

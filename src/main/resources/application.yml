@@ -239,3 +239,19 @@ springdoc:
   show-actuator: false
   default-produces-media-type: application/json
   default-consumes-media-type: application/json
+
+# ============================================================================
+# CARDDEMO — Application-specific configuration
+# ============================================================================
+# batch.output.base-dir — Single approved filesystem subtree that batch jobs
+# (StatementGenerationTasklet, CategoryBalanceReportJobConfig) may write to.
+# The caller-supplied `outputDir` JobParameter is treated strictly as a RELATIVE
+# sub-path beneath this base; BatchOutputPathResolver rejects absolute paths and
+# `..` traversal and confines every resolved path under this directory. This
+# closes the CP4 path-traversal finding where outputDir was passed directly to
+# Paths.get(...). Override per environment as needed.
+# ============================================================================
+carddemo:
+  batch:
+    output:
+      base-dir: ./output

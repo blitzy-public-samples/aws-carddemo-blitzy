@@ -16,16 +16,18 @@ import org.springframework.batch.core.Step;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.item.ExecutionContext;
+import org.springframework.batch.item.ItemStreamReader;
 import org.springframework.batch.item.ItemWriter;
-import org.springframework.batch.item.data.RepositoryItemReader;
-import org.springframework.batch.item.data.builder.RepositoryItemReaderBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
 
 /**
  * Spring Batch configuration for the <strong>{@code transactionPostingJob}</strong> &mdash; the
@@ -49,10 +51,16 @@ import java.util.Map;
  * <h2>Target Spring Batch design</h2>
  * <p>This {@code @Configuration} assembles a single-{@link Step} chunk-oriented {@link Job}:</p>
  * <ol>
- *   <li><strong>Reader</strong> &mdash; {@link #dailyTransactionReader()} pages the
+ *   <li><strong>Reader</strong> &mdash; {@link #dailyTransactionReader()} streams the
  *       {@code daily_transactions} staging table (the materialized {@code DALYTRAN} feed,
- *       AAP &sect;0.6.6) in ascending {@code dalytranId} order via {@link RepositoryItemReader},
- *       reproducing the deterministic sequential read of the PS file.</li>
+ *       AAP &sect;0.6.6) in ascending {@code dalytranId} order using the Spring Batch
+ *       <em>process-indicator</em> pattern: it repeatedly reads the <em>first</em> page of rows
+ *       whose {@code processed} flag is still {@code false}. Because the writer commits
+ *       {@code processed = true} at every chunk boundary, the unprocessed window shrinks from the
+ *       front and each fresh page-0 query returns the next batch &mdash; reproducing the
+ *       deterministic sequential read of the PS file while remaining idempotent across reruns and
+ *       restarts (already-accounted rows are excluded by the {@code WHERE processed = false}
+ *       predicate, never re-posted).</li>
  *   <li><strong>Processor</strong> &mdash; the injected {@link TransactionPostingProcessor}
  *       reproduces {@code 1500-VALIDATE-TRAN} (PR-03/PR-04/PR-05): it resolves the card via the
  *       cross-reference, resolves the account, and applies the over-limit and expiration checks,
@@ -133,13 +141,12 @@ public class TransactionPostingJobConfig {
     private static final String STEP_NAME = "transactionPostingStep";
 
     /**
-     * {@link RepositoryItemReader} name &mdash; the key prefix under which the reader saves its
-     * paging state in the Spring Batch {@code ExecutionContext} for restart.
+     * Reader bean name (also the {@link ItemStreamReader} name used by Spring Batch when it
+     * registers the reader as a step stream).
      *
      * <p>Deliberately namespaced with the {@code transactionPosting} prefix so it does not collide
-     * with the structurally identical {@code RepositoryItemReader<DailyTransaction>} declared by
-     * the diagnostic {@code DailyTransactionReadJobConfig}: a shared state-key prefix could clash
-     * in the {@code ExecutionContext} and a shared Spring bean name triggers a
+     * with the structurally similar {@code DailyTransaction} reader declared by the diagnostic
+     * {@code DailyTransactionReadJobConfig}: a shared Spring bean name triggers a
      * {@code BeanDefinitionOverrideException} (bean-definition overriding is disabled by default
      * under Spring Boot 3). The same value is reused as the explicit {@code @Bean} name on
      * {@link #dailyTransactionReader()} below.</p>
@@ -148,9 +155,9 @@ public class TransactionPostingJobConfig {
 
     /**
      * Entity property the reader sorts on. {@code dalytranId} maps to the {@code tran_id} column;
-     * a non-empty ascending sort is mandatory for {@link RepositoryItemReader} paging and
-     * reproduces the deterministic sequential order in which {@code CBTRN02C} consumed the
-     * {@code DALYTRAN} PS feed.
+     * a stable ascending sort makes the per-page process-indicator query deterministic and
+     * reproduces the sequential order in which {@code CBTRN02C} consumed the {@code DALYTRAN} PS
+     * feed.
      */
     private static final String SORT_PROPERTY = "dalytranId";
 
@@ -165,42 +172,48 @@ public class TransactionPostingJobConfig {
     private final AccountBalanceUpdater accountBalanceUpdater;
 
     /**
-     * Chunk reader over the {@code daily_transactions} staging table.
+     * Chunk reader over the {@code daily_transactions} staging table implementing the Spring Batch
+     * <strong>process-indicator</strong> pattern (AAP &sect;0.6.6, CP4 restart-safety finding).
      *
-     * <p>Built on {@link RepositoryItemReader}, which invokes
-     * {@code dailyTransactionRepository.findAll(Pageable)} one page at a time (the repository
-     * extends {@code JpaRepository}, hence {@code PagingAndSortingRepository}). The configured
-     * {@code methodName} {@code "findAll"} combined with the {@code PageRequest} the reader passes
-     * resolves to {@code PagingAndSortingRepository.findAll(Pageable)}; the mandatory ascending
-     * sort on {@link #SORT_PROPERTY} guarantees deterministic paging and reproduces the
-     * sequential {@code DALYTRAN} read order. The page size is aligned with {@link #CHUNK_SIZE}
-     * so each page maps to one chunk transaction.</p>
+     * <p>Rather than paging by an advancing offset over {@code findAll(Pageable)} &mdash; which
+     * (a) re-reads <em>already-accounted</em> rows on a rerun/new launch because it ignores the
+     * {@code processed} flag, and (b) would skip rows if it advanced an offset over a result set
+     * that shrinks as rows are flipped &mdash; this reader always requests the <em>first</em> page
+     * of <em>unprocessed</em> rows via
+     * {@link com.carddemo.repository.DailyTransactionRepository#findByProcessedFalse(org.springframework.data.domain.Pageable)
+     * findByProcessedFalse(PageRequest.of(0, CHUNK_SIZE, Sort.ASC dalytranId))}. The writer commits
+     * {@code processed = true} for every row it accounts for at each chunk boundary, so the next
+     * page-0 query naturally returns the subsequent batch. Page size is aligned with
+     * {@link #CHUNK_SIZE} so a full page drains exactly at the chunk commit; a partial final page
+     * (fewer than {@link #CHUNK_SIZE} unprocessed rows remaining) terminates the step without an
+     * uncommitted re-query, and memory stays bounded to one page.</p>
      *
-     * <p>Reruns are safe: the writer flips {@code processed = true} on every row it accounts for,
-     * and re-posting is idempotent ({@link Transaction} is keyed by its natural {@code tran_id};
-     * the {@code TCATBAL} upsert and account update are deterministic), so a restart after a
-     * failed chunk does not double-post committed work.</p>
+     * <p><strong>Rerun / restart idempotency:</strong> because the driving predicate is
+     * {@code processed = false}, a brand-new {@code JobExecution} or a restart after a failed chunk
+     * never re-reads committed rows &mdash; eliminating duplicate {@code TRANSACT} inserts (which
+     * would otherwise fail on the natural {@code tran_id} key) and double {@code TCATBAL}/account
+     * balance effects. The reader holds no paging offset in the {@code ExecutionContext}; its
+     * idempotency derives entirely from the database flag, and {@link ItemStreamReader#open} resets
+     * the in-memory page buffer so repeated launches in the same JVM (e.g. tests) start clean.</p>
      *
      * <p>The bean is registered under the explicit, unique name {@link #READER_NAME} (rather than
      * the default method-derived name {@code "dailyTransactionReader"}) to avoid a
-     * {@code BeanDefinitionOverrideException} with the structurally identical reader bean declared
-     * by {@code DailyTransactionReadJobConfig}. The factory method name is intentionally preserved
-     * so intra-class wiring in {@link #transactionPostingStep()} resolves the singleton through the
-     * standard {@code @Configuration} CGLIB factory-method interception.</p>
+     * {@code BeanDefinitionOverrideException} with the reader bean declared by
+     * {@code DailyTransactionReadJobConfig}. The factory method name is intentionally preserved so
+     * intra-class wiring in {@link #transactionPostingStep()} resolves the singleton through the
+     * standard {@code @Configuration} CGLIB factory-method interception, and because the returned
+     * reader implements {@link ItemStreamReader} the step automatically invokes its
+     * {@code open}/{@code update}/{@code close} lifecycle.</p>
      *
-     * @return a configured {@link RepositoryItemReader} streaming {@link DailyTransaction} rows
+     * @return a configured {@link ItemStreamReader} streaming unprocessed {@link DailyTransaction}
+     *         rows
      */
     @Bean(name = READER_NAME)
-    public RepositoryItemReader<DailyTransaction> dailyTransactionReader() {
-        Map<String, Sort.Direction> sortMap = new HashMap<>();
-        sortMap.put(SORT_PROPERTY, Sort.Direction.ASC);
-        return new RepositoryItemReaderBuilder<DailyTransaction>()
-                .name(READER_NAME)
-                .repository(dailyTransactionRepository)
-                .methodName("findAll")
-                .sorts(sortMap)
-                .pageSize(CHUNK_SIZE)
-                .build();
+    public ItemStreamReader<DailyTransaction> dailyTransactionReader() {
+        return new UnprocessedDailyTransactionReader(
+                dailyTransactionRepository,
+                CHUNK_SIZE,
+                Sort.by(Sort.Direction.ASC, SORT_PROPERTY));
     }
 
     /**
@@ -375,5 +388,100 @@ public class TransactionPostingJobConfig {
         return new JobBuilder(JOB_NAME, jobRepository)
                 .start(transactionPostingStep())
                 .build();
+    }
+
+    /**
+     * Process-indicator {@link ItemStreamReader} over the {@code daily_transactions} staging table.
+     *
+     * <p>Each {@link #read()} serves the next row from an in-memory buffer holding the current page
+     * of <em>unprocessed</em> rows. When the buffer drains, the reader re-queries the
+     * <strong>first</strong> page ({@code PageRequest.of(0, pageSize, sort)}) of
+     * {@code findByProcessedFalse}. Because the posting writer commits {@code processed = true} at
+     * every chunk boundary, a full page drains exactly when a chunk commits, so the re-query sees
+     * the shrunken (post-commit) unprocessed window and returns the next batch &mdash; never the
+     * rows just served. A page returning fewer than {@code pageSize} rows is the tail of the feed
+     * for this run: it is served and then the reader reports end-of-data ({@code null}) instead of
+     * issuing an uncommitted re-query that would re-serve those same rows.</p>
+     *
+     * <p>The reader stores no offset in the {@link ExecutionContext}; idempotency across reruns and
+     * restarts derives solely from the {@code processed = false} predicate, and {@link #open} resets
+     * the buffer so repeated launches in the same JVM start clean. Memory is bounded to one page.</p>
+     */
+    static final class UnprocessedDailyTransactionReader
+            implements ItemStreamReader<DailyTransaction> {
+
+        private final DailyTransactionRepository repository;
+        private final int pageSize;
+        private final Sort sort;
+
+        /** Buffer of the current unprocessed page; drained one row per {@link #read()}. */
+        private Iterator<DailyTransaction> buffer = Collections.emptyIterator();
+
+        /**
+         * Set once a page smaller than {@link #pageSize} (or empty) has been fetched, marking the
+         * tail of the feed for this run. Prevents an uncommitted mid-chunk re-query that would
+         * re-serve the partial page's still-uncommitted rows.
+         */
+        private boolean exhausted = false;
+
+        UnprocessedDailyTransactionReader(DailyTransactionRepository repository,
+                                          int pageSize,
+                                          Sort sort) {
+            this.repository = repository;
+            this.pageSize = pageSize;
+            this.sort = sort;
+        }
+
+        /**
+         * Resets buffer state at the start of every step execution so repeated launches and
+         * restarts begin from a clean slate (the unprocessed window is recomputed from the DB).
+         */
+        @Override
+        public void open(ExecutionContext executionContext) {
+            this.buffer = Collections.emptyIterator();
+            this.exhausted = false;
+        }
+
+        @Override
+        public DailyTransaction read() {
+            if (buffer.hasNext()) {
+                return buffer.next();
+            }
+            if (exhausted) {
+                return null;
+            }
+            // Always page 0: the writer flips processed=true at each chunk commit, so the
+            // unprocessed window shrinks from the front and this fresh query returns the next
+            // batch. This is inherently rerun/restart-safe (committed rows are excluded by the
+            // WHERE processed = false predicate) and never advances an offset over a shifting set.
+            List<DailyTransaction> page =
+                    repository.findByProcessedFalse(PageRequest.of(0, pageSize, sort));
+            if (page.isEmpty()) {
+                exhausted = true;
+                return null;
+            }
+            if (page.size() < pageSize) {
+                // Partial final page: serve it, but do not re-query afterwards — those rows are
+                // not yet committed, so a re-query would return them again (duplicate). Fewer than
+                // pageSize unprocessed rows means this is the tail of the feed for this run.
+                exhausted = true;
+            }
+            buffer = page.iterator();
+            return buffer.next();
+        }
+
+        /**
+         * No-op: idempotency derives from the {@code processed} flag in the database, not from a
+         * persisted paging offset, so there is no cursor state to checkpoint.
+         */
+        @Override
+        public void update(ExecutionContext executionContext) {
+            // intentionally empty
+        }
+
+        @Override
+        public void close() {
+            this.buffer = Collections.emptyIterator();
+        }
     }
 }

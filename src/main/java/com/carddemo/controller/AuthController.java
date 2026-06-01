@@ -12,6 +12,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -79,12 +81,12 @@ import org.springframework.web.bind.annotation.RestController;
  * the next screen itself.</p>
  *
  * <h2>Authorization</h2>
- * <p>Both endpoints are intentionally <strong>public</strong> and carry <em>no</em>
- * {@code @PreAuthorize}: {@code /api/auth/login} <em>is</em> the authentication step, so
- * requiring authentication to reach it would be circular, and {@code /api/auth/logout}
- * must be reachable even after a token has expired. Both are registered with
- * {@code permitAll()} in {@code com.carddemo.security.SecurityConfig}, and CSRF is
- * disabled there because the API is stateless and token-based (never cookie-based).</p>
+ * <p>{@code /api/auth/login} is intentionally public because it <em>is</em> the authentication
+ * step, so requiring authentication to reach it would be circular. {@code /api/auth/logout},
+ * however, is an authenticated operation: {@code com.carddemo.security.SecurityConfig} deliberately
+ * omits it from the {@code permitAll()} set, and this controller also performs a defense-in-depth
+ * principal check before returning {@code 204}. Anonymous logout attempts receive {@code 401},
+ * matching the documented API contract.</p>
  *
  * <h2>Error-status ownership (separation of concerns)</h2>
  * <ul>
@@ -212,14 +214,24 @@ public class AuthController {
      * transaction (the CICS task simply ended); this endpoint is the modern, idempotent
      * equivalent.</p>
      *
-     * <p>For defence-in-depth hygiene the current thread's
-     * {@link SecurityContextHolder} context is cleared. Because the API is stateless this
-     * has minimal practical effect (the next request starts from a fresh context), but it
-     * guarantees no authenticated principal lingers on the thread after this call. The
-     * authenticated {@code userId} (or {@code "anonymous"} when the context is empty) is
-     * logged for audit purposes.</p>
+     * <p><strong>Authentication is required (CP4).</strong> Logout invalidates an
+     * <em>established</em> identity, so it is not a public route: {@code SecurityConfig}
+     * omits it from the {@code permitAll} set, and the filter chain rejects an anonymous
+     * caller with a 401 before this method runs. This method additionally performs a
+     * defence-in-depth guard &mdash; if the {@link SecurityContextHolder} carries no
+     * {@link Authentication}, an unauthenticated one, or an
+     * {@link AnonymousAuthenticationToken}, it returns {@code 401 Unauthorized} rather
+     * than acknowledging a no-op logout. This keeps the implementation faithful to the
+     * documented OpenAPI 401 response even if the URL-level rule is ever relaxed.</p>
      *
-     * @return {@code 204 No Content} acknowledging the logout
+     * <p>For an authenticated caller the current thread's {@link SecurityContextHolder}
+     * context is cleared. Because the API is stateless this has minimal practical effect
+     * (the next request starts from a fresh context), but it guarantees no authenticated
+     * principal lingers on the thread after this call. The authenticated {@code userId} is
+     * logged for audit purposes; no token contents are ever logged.</p>
+     *
+     * @return {@code 204 No Content} when an authenticated principal is logged out, or
+     *         {@code 401 Unauthorized} when no authenticated principal is present
      */
     @PostMapping("/logout")
     @Operation(
@@ -233,10 +245,20 @@ public class AuthController {
         @ApiResponse(responseCode = "401", description = "User not authenticated")
     })
     public ResponseEntity<Void> logout() {
-        String userId = SecurityContextHolder.getContext().getAuthentication() != null
-            ? SecurityContextHolder.getContext().getAuthentication().getName()
-            : "anonymous";
-        log.info("Logout for userId={}", userId);
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+
+        // SECURITY (CP4): logout requires an authenticated, non-anonymous principal.
+        // SecurityConfig already rejects anonymous callers with a 401 before this method is
+        // reached (logout is no longer in the permitAll set); this guard is defence-in-depth
+        // so the documented 401 contract holds regardless of the URL-rule configuration.
+        if (authentication == null
+                || !authentication.isAuthenticated()
+                || authentication instanceof AnonymousAuthenticationToken) {
+            log.warn("Logout rejected: no authenticated principal");
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        log.info("Logout for userId={}", authentication.getName());
 
         // Clear server-side security context (for the current request only).
         SecurityContextHolder.clearContext();

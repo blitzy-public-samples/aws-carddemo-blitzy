@@ -81,7 +81,7 @@ import java.time.LocalDateTime;
  *   <caption>URL-based authorization configured in {@link #filterChain(HttpSecurity)}</caption>
  *   <tr><th>Matcher</th><th>Access</th></tr>
  *   <tr><td>{@code POST /api/auth/login}</td><td>permitAll &mdash; the sign-on endpoint (replaces COSGN00C / CC00)</td></tr>
- *   <tr><td>{@code /api/auth/logout}</td><td>permitAll</td></tr>
+ *   <tr><td>{@code POST /api/auth/logout}</td><td>authenticated &mdash; rejects anonymous logout attempts with 401</td></tr>
  *   <tr><td>{@code /actuator/health}, {@code /actuator/info}</td><td>permitAll &mdash; operational probes</td></tr>
  *   <tr><td>{@code /v3/api-docs/**}, {@code /swagger-ui/**}, {@code /swagger-ui.html}</td><td>permitAll &mdash; API docs</td></tr>
  *   <tr><td>{@code OPTIONS /**}</td><td>permitAll &mdash; CORS preflight</td></tr>
@@ -272,9 +272,15 @@ public class SecurityConfig {
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 // URL-based authorization rules.
                 .authorizeHttpRequests(auth -> auth
-                        // Public endpoints — sign-on, sign-off, operational probes, and API docs.
+                        // Public endpoints — sign-on, operational probes, and API docs ONLY.
+                        // SECURITY (CP4): /api/auth/logout is deliberately NOT public. The checkpoint
+                        // public-route matrix admits only login, actuator health/info and the
+                        // swagger/openapi docs; logout must invalidate an established identity and
+                        // therefore requires an authenticated principal. Omitting it here lets it
+                        // fall through to .anyRequest().authenticated() below, so an anonymous caller
+                        // is rejected by jsonAuthenticationEntryPoint() with a 401 (matching the
+                        // OpenAPI 401 contract on AuthController#logout).
                         .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
-                        .requestMatchers("/api/auth/logout").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/info").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         // CORS preflight — allow OPTIONS without authentication.

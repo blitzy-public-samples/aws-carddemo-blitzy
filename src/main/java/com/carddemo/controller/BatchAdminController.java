@@ -31,6 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -124,6 +125,9 @@ public class BatchAdminController {
      */
     private static final String LAUNCH_TIMESTAMP_PARAM = "launchTimestamp";
 
+    /** Placeholder used in logs when a caller-supplied job parameter name suggests secret material. */
+    private static final String REDACTED_LOG_VALUE = "<redacted>";
+
     /**
      * Spring Boot 3.2 auto-configured (synchronous, primary) {@link JobLauncher}. Resolved by type;
      * the parameter name {@code jobLauncher} disambiguates it from the additional non-primary
@@ -189,7 +193,7 @@ public class BatchAdminController {
             JobRestartException, JobInstanceAlreadyCompleteException,
             JobParametersInvalidException {
 
-        log.info("Launching batch job: {} with parameters: {}", jobName, parameters);
+        log.info("Launching batch job: {} with parameters: {}", jobName, redactJobParameters(parameters));
 
         // Look up the registered Job bean by name (throws NoSuchJobException -> 404 if absent).
         Job job = jobRegistry.getJob(jobName);
@@ -226,6 +230,40 @@ public class BatchAdminController {
         log.info("Job {} launched successfully with executionId={}", jobName, execution.getId());
 
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
+    }
+
+    /**
+     * Returns a log-safe copy of job parameters, redacting values whose keys commonly carry secret
+     * material. The original parameter map is still used to launch the job; this helper only hardens
+     * observability so ad hoc operational parameters cannot leak credentials into application logs.
+     *
+     * @param parameters caller-supplied job parameters; may be {@code null}
+     * @return a non-null map safe to include in logs
+     */
+    private static Map<String, String> redactJobParameters(Map<String, String> parameters) {
+        if (parameters == null || parameters.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> redacted = new HashMap<>();
+        parameters.forEach((key, value) ->
+                redacted.put(key, isSensitiveJobParameterKey(key) ? REDACTED_LOG_VALUE : value));
+        return redacted;
+    }
+
+    /**
+     * Identifies secret-like parameter keys using conservative substrings aligned with common
+     * credential naming conventions.
+     */
+    private static boolean isSensitiveJobParameterKey(String key) {
+        if (key == null) {
+            return false;
+        }
+        String normalized = key.toLowerCase(Locale.ROOT);
+        return normalized.contains("password")
+                || normalized.contains("token")
+                || normalized.contains("secret")
+                || normalized.contains("credential")
+                || normalized.contains("key");
     }
 
     /**

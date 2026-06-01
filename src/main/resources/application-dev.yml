@@ -238,3 +238,15 @@ app:
 # ============================================================================
 jwt:
   secret: dev-only-jwt-secret-change-me-not-for-production-0123456789abcdef
+
+# ============================================================================
+# CARDDEMO — Application-specific configuration (development)
+# ============================================================================
+# Approved batch output subtree for local runs. The caller-supplied outputDir
+# JobParameter is confined beneath this base by BatchOutputPathResolver
+# (rejects absolute paths and `..` traversal).
+# ============================================================================
+carddemo:
+  batch:
+    output:
+      base-dir: ./output

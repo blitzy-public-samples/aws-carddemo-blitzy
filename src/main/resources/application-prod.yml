@@ -262,3 +262,16 @@ springdoc:
     enabled: false
   swagger-ui:
     enabled: false
+
+# ============================================================================
+# CARDDEMO — Application-specific configuration (production)
+# ============================================================================
+# Approved batch output subtree. Overridable via CARDDEMO_BATCH_OUTPUT_DIR so
+# operators can point statement/report generation at a managed volume. The
+# caller-supplied outputDir JobParameter is confined beneath this base by
+# BatchOutputPathResolver (rejects absolute paths and `..` traversal).
+# ============================================================================
+carddemo:
+  batch:
+    output:
+      base-dir: ${CARDDEMO_BATCH_OUTPUT_DIR:./output}

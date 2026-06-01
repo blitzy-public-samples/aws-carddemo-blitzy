@@ -12,6 +12,9 @@ import com.carddemo.repository.TransactionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -191,6 +194,47 @@ public class StatementIoSubroutine {
     @Transactional(readOnly = true)
     public List<CardXref> findAllXrefsOrdered() {
         return cardXrefRepository.findAll(Sort.by("xrefCardNum"));
+    }
+
+    /**
+     * Stable statement-generation order for paged cross-reference reads:
+     * {@code custId} &rarr; {@code accountId} &rarr; {@code xrefCardNum} ascending. Because
+     * {@code CBSTM03A} emits a single statement per {@code (customer, account)} pair (with every
+     * owned card's transactions aggregated), ordering by this composite key guarantees that all
+     * cross-references for one {@code (customer, account)} are <em>contiguous</em> across page
+     * boundaries &mdash; the precondition for a streaming control-break that bounds memory to a
+     * single statement group rather than the whole {@code XREFFILE}.
+     */
+    public static final Sort XREF_STATEMENT_ORDER =
+            Sort.by("custId", "accountId", "xrefCardNum");
+
+    /**
+     * Reads one page of card cross-reference records in {@link #XREF_STATEMENT_ORDER} &mdash; the
+     * streaming/paging counterpart of the bulk {@link #findAllXrefsOrdered()}. It supersedes the
+     * full-file pre-load for statement generation (CP4 batch-streaming requirement): the
+     * statement tasklet walks the {@code XREFFILE} one bounded page at a time and performs a
+     * control-break on {@code (custId, accountId)} to emit one statement per group, so heap use is
+     * bounded by the page size plus the cards/transactions of the single group in flight rather
+     * than by the table cardinality.
+     *
+     * <p>The page number and size are taken from {@code pageable}; the sort is always overridden
+     * with {@link #XREF_STATEMENT_ORDER} so the contiguity guarantee cannot be defeated by a caller
+     * supplying a different (or absent) sort.</p>
+     *
+     * <p>Still a sequential read of {@code XREFFILE} (the third link in the PR-23 lock order
+     * CUSTOMER &rarr; ACCOUNT &rarr; CARD &rarr; TRANSACTION); paging changes only how the rows are
+     * fetched, not the per-statement read order.</p>
+     *
+     * @param pageable supplies the zero-based page number and page size (its sort, if any, is
+     *                 replaced by {@link #XREF_STATEMENT_ORDER})
+     * @return the requested page of cross-reference records in statement order (never {@code null};
+     *         possibly empty)
+     */
+    @Transactional(readOnly = true)
+    public Page<CardXref> findXrefsForStatements(Pageable pageable) {
+        Pageable ordered = PageRequest.of(
+                pageable.getPageNumber(), pageable.getPageSize(), XREF_STATEMENT_ORDER);
+        return cardXrefRepository.findAll(ordered);
     }
 
     /**

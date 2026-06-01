@@ -34,14 +34,31 @@ import org.springframework.stereotype.Component;
  * {@link AtomicLong#incrementAndGet()}.
  *
  * <h2>Batch mode vs. online mode</h2>
- * <p>This component implements <b>only</b> the batch-mode counter (per
- * AAP §0.6.10). Online transaction creation (the {@code POST /api/transactions}
- * endpoint) instead relies on the PostgreSQL sequence
- * {@code transaction_id_seq}, applied by JPA at INSERT time through the
- * {@code Transaction} entity's {@code @SequenceGenerator} annotation — it does
- * <em>not</em> use this class. Keeping the two paths separate guarantees unique
- * IDs across concurrent online requests while preserving deterministic,
- * restartable suffixes for batch parity.
+ * <p>Per AAP §0.6.10 the two transaction surfaces use two distinct suffix
+ * sources, and this component exposes a method for each:
+ * <ul>
+ *   <li><b>Batch mode</b> — {@link #nextBatchId(String)} draws the suffix from
+ *       the in-memory {@link #batchCounter} (an {@link AtomicLong} reset at job
+ *       start). This yields deterministic, restartable suffixes for the interest
+ *       posting flow ({@code CBACT04C} / INTCALC), matching the COBOL
+ *       {@code WS-TRANID-SUFFIX} working-storage counter.</li>
+ *   <li><b>Online mode</b> — {@link #nextOnlineId(String, long)} is a pure
+ *       formatter that accepts a suffix value the caller has already allocated
+ *       from the PostgreSQL sequence {@code transaction_id_seq} (via
+ *       {@code TransactionRepository.nextTransactionIdSuffix()}). The persistent,
+ *       monotonic sequence guarantees unique IDs across concurrent
+ *       {@code POST /api/transactions} requests AND across application restarts —
+ *       a process-local counter cannot, because it resets to zero on restart and
+ *       would collide on the same {@code parmDate} prefix. This method does
+ *       <em>not</em> touch {@link #batchCounter}, so the online and batch suffix
+ *       spaces never interfere.</li>
+ * </ul>
+ * <p>Note: the {@code Transaction} entity intentionally carries no JPA
+ * {@code @SequenceGenerator}/{@code @GeneratedValue} on its {@code tranId} primary
+ * key, because the 16-character {@code TRAN-ID} is a composite of the date prefix
+ * and the sequence-derived suffix (PR-10) rather than a bare numeric identity
+ * column — the composition is therefore performed explicitly in the service layer
+ * through {@link #nextOnlineId(String, long)}.
  *
  * <h2>Thread safety</h2>
  * <p>The backing counter is an {@link AtomicLong}, so {@link #nextBatchId(String)},
@@ -147,6 +164,55 @@ public class TransactionIdGenerator {
                 + ". Call resetCounter() between batch jobs.");
         }
         return ID_FORMAT.formatted(parmDate, suffix);
+    }
+
+    /**
+     * Formats the next 16-character transaction ID for the <strong>online</strong> add path
+     * ({@code POST /api/transactions}, COBOL {@code COTRN02C}) from a suffix value the caller has
+     * already allocated from the PostgreSQL sequence {@code transaction_id_seq}.
+     *
+     * <p>Unlike {@link #nextBatchId(String)}, this method is a <em>pure formatter</em>: it does
+     * NOT touch the in-memory {@link #batchCounter}. The caller — {@code TransactionService} —
+     * obtains the suffix via {@code TransactionRepository.nextTransactionIdSuffix()} (a
+     * {@code SELECT nextval('transaction_id_seq')}) and passes it here. Sourcing the suffix from
+     * the persistent, monotonic database sequence (rather than a process-local counter) is
+     * mandated by AAP §0.6.10: it guarantees unique IDs across concurrent online requests and
+     * across application restarts, closing the collision/reset gap a shared {@link AtomicLong}
+     * would leave on the online surface.</p>
+     *
+     * <p>The returned ID has the identical layout to the batch path — {@code parmDate} (10 chars)
+     * followed by the suffix rendered as a 6-digit, zero-padded decimal (PR-10) — so both surfaces
+     * emit {@code TRAN-ID PIC X(16)} values of the same fixed width and shape.</p>
+     *
+     * <p>Example: {@code nextOnlineId("2024-07-18", 42L)} returns {@code "2024-07-18000042"}.</p>
+     *
+     * @param parmDate      the 10-character date prefix (MUST be exactly 10 chars), typically the
+     *                      leading {@code yyyy-MM-dd} of the transaction's originating timestamp
+     * @param sequenceValue the suffix value allocated from {@code transaction_id_seq}; must be in
+     *                      the inclusive range {@code [0, 999999]} to fit the 6-digit
+     *                      {@code WS-TRANID-SUFFIX} width
+     * @return a 16-character transaction ID ({@code parmDate(10) + %06d(sequenceValue)})
+     * @throws IllegalArgumentException if {@code parmDate} is {@code null} or not exactly 10
+     *         characters
+     * @throws IllegalStateException if {@code sequenceValue} is negative or exceeds
+     *         {@value #MAX_SUFFIX} (which would force a 7th digit and break the fixed
+     *         16-character {@code TRAN-ID} width, PR-10)
+     */
+    public String nextOnlineId(String parmDate, long sequenceValue) {
+        if (parmDate == null || parmDate.length() != PARM_DATE_LENGTH) {
+            throw new IllegalArgumentException(
+                "parmDate must be exactly " + PARM_DATE_LENGTH + " characters but was: "
+                + (parmDate == null
+                    ? "null"
+                    : "'" + parmDate + "' (length " + parmDate.length() + ")"));
+        }
+        if (sequenceValue < 0 || sequenceValue > MAX_SUFFIX) {
+            throw new IllegalStateException(
+                "Online transaction ID suffix out of range [0, " + MAX_SUFFIX + "]: "
+                + sequenceValue + ". The transaction_id_seq has exhausted the 6-digit TRAN-ID "
+                + "suffix width (PR-10).");
+        }
+        return ID_FORMAT.formatted(parmDate, sequenceValue);
     }
 
     /**

@@ -1,8 +1,11 @@
 package com.carddemo.repository;
 
 import com.carddemo.entity.DailyTransaction;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
+
+import java.util.List;
 
 /**
  * Spring Data JPA repository for {@link DailyTransaction} staging-table records.
@@ -94,4 +97,38 @@ import org.springframework.stereotype.Repository;
  */
 @Repository
 public interface DailyTransactionRepository extends JpaRepository<DailyTransaction, Long> {
+
+    /**
+     * Returns one page of staging rows that have NOT yet been posted
+     * ({@code processed = false}), ordered by the supplied {@link Pageable}.
+     *
+     * <p><strong>Rerun / restart idempotency (POSTTRAN, CBTRN02C parity).</strong> The
+     * POSTTRAN posting step ({@code TransactionPostingJobConfig}) must never re-post a
+     * staging row it has already accounted for; doing so would double-apply the PR-06
+     * {@code TCATBAL} upsert and the PR-07 account-balance bucket update, or fail on a
+     * duplicate {@code TRAN-ID} primary key. The posting writer flips
+     * {@code DailyTransaction.processed = true} for every accepted <em>and</em> rejected
+     * row inside the chunk transaction, so this finder is the filtered read that lets a
+     * rerun (a brand-new {@code JobInstance}) or a restart (after a failed chunk) naturally
+     * resume over only the rows that remain unprocessed &mdash; reproducing the
+     * once-and-only-once semantics of the original sequential {@code DALYTRAN} consumption.</p>
+     *
+     * <p><strong>Process-indicator paging contract.</strong> The posting reader invokes this
+     * finder with {@code PageRequest.of(0, chunkSize, Sort.by(ASC, "dalytranId"))} and
+     * re-issues the <em>same page-0 request</em> each time its in-memory buffer drains, rather
+     * than incrementing the page index. Because the previous chunk has, by then, committed
+     * {@code processed = true} on the rows it consumed, page 0 of the residual
+     * {@code processed = false} set returns the next distinct batch &mdash; avoiding the
+     * classic offset-pagination defect in which advancing the page index while the result set
+     * shrinks under mutation skips rows. Spring Data derives the query as
+     * {@code WHERE processed = false} (entity field {@code processed}; physical column
+     * {@code processed BOOLEAN NOT NULL}).</p>
+     *
+     * @param pageable the page request (size aligned with the posting chunk size and an
+     *                 ascending {@code dalytranId} sort for deterministic ordering); must not
+     *                 be {@code null}
+     * @return the unprocessed staging rows for the requested page (an empty list when none
+     *         remain, which signals the posting step to stop); never {@code null}
+     */
+    List<DailyTransaction> findByProcessedFalse(Pageable pageable);
 }

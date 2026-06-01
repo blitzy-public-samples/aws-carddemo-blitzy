@@ -1,5 +1,6 @@
 package com.carddemo.batch;
 
+import com.carddemo.batch.reader.AsciiFixedWidthItemReader;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
 import com.carddemo.entity.CardXref;
@@ -27,28 +28,22 @@ import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
-import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
-import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.step.tasklet.Tasklet;
+import org.springframework.batch.item.ExecutionContext;
+import org.springframework.batch.item.ItemStreamException;
+import org.springframework.batch.item.ItemStreamReader;
+import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.io.ClassPathResource;
-import org.springframework.core.io.FileSystemResource;
-import org.springframework.core.io.Resource;
 import org.springframework.transaction.PlatformTransactionManager;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.function.LongSupplier;
 
 /**
  * Spring Batch configuration for the <strong>{@code dataInitializationJob}</strong> &mdash; the
@@ -82,9 +77,10 @@ import java.util.List;
  * {@link Card}, {@link CardXref}, and {@code Transaction} replace the VSAM alternate indexes, so the
  * VSAM {@code DEFINE}/{@code BLDINDEX} mechanics of the original jobs require no Java equivalent. This
  * job reuses the <em>same</em> {@code app/data/ASCII/*.txt} fixtures (preserved unchanged per PR-27)
- * as a programmatic seed/re-load path: each of the nine {@code @Bean Step}s reads one fixture,
- * parses every fixed-width line into the matching JPA entity, and batch-persists the result through
- * the corresponding repository.
+ * as a programmatic seed/re-load path: each fixture-backed {@code @Bean Step} streams one file with
+ * {@link AsciiFixedWidthItemReader}, maps each fixed-width line into the matching JPA entity, and
+ * persists records in Spring Batch chunks through the corresponding repository. Missing mandatory
+ * fixture files now fail the empty-table load path instead of silently succeeding with zero records.
  *
  * <h2>Dependency-aware step ordering (PR-23)</h2>
  * The {@link #dataInitializationJob()} chains the steps so that every foreign-key target is present
@@ -167,6 +163,9 @@ public class DataInitializationJobConfig {
     /** Implied decimal scale for all COBOL {@code S9(n)V99} money/rate fields (PR-16). */
     private static final int MONEY_SCALE = 2;
 
+    /** Chunk size used by all fixed-width fixture loads. */
+    private static final int FIXTURE_CHUNK_SIZE = 100;
+
     private final JobRepository jobRepository;
     private final PlatformTransactionManager transactionManager;
     private final TransactionTypeRepository transactionTypeRepository;
@@ -198,38 +197,116 @@ public class DataInitializationJobConfig {
     }
 
     /**
-     * Reads every non-empty line of a fixed-width fixture, trying the classpath first
-     * ({@code fixtures/<fileName>}) and then the repository-root filesystem path
-     * ({@code app/data/ASCII/<fileName>}). If the fixture is found in neither location the method
-     * logs a warning and returns an empty list, allowing the owning step to complete as a no-op
-     * rather than fail.
+     * Builds a chunk-oriented fixed-width fixture load step. The returned step streams records through
+     * {@link AsciiFixedWidthItemReader}, preserving restart/checkpoint behavior and failing loudly if
+     * a mandatory fixture is missing while the target table is empty.
      *
-     * @param fileName the bare fixture file name (e.g. {@code "acctdata.txt"})
-     * @return the fixture's non-empty lines, in file order; never {@code null}
-     * @throws IOException if the resolved resource exists but cannot be read
+     * @param stepName      unique Spring Batch step name
+     * @param fileName      bare fixture file name
+     * @param existingCount supplier for the target table row count; non-zero means the step is an
+     *                      idempotent no-op
+     * @param minLength     minimum line length required by this mapper
+     * @param mapper        fixed-width line mapper
+     * @param writer        chunk writer that persists mapped entities
+     * @param <T>           entity type produced by the mapper
+     * @return a fully built chunk-oriented {@link Step}
      */
-    private List<String> readFixtureLines(String fileName) throws IOException {
-        Resource resource = new ClassPathResource(CLASSPATH_FIXTURE_PREFIX + fileName);
-        if (!resource.exists()) {
-            resource = new FileSystemResource(FILESYSTEM_FIXTURE_PREFIX + fileName);
+    private <T> Step buildFixtureLoadStep(
+            String stepName,
+            String fileName,
+            LongSupplier existingCount,
+            int minLength,
+            AsciiFixedWidthItemReader.RecordMapper<T> mapper,
+            ItemWriter<T> writer) {
+        return new StepBuilder(stepName, jobRepository)
+                .<T, T>chunk(FIXTURE_CHUNK_SIZE, transactionManager)
+                .reader(fixtureReader(stepName, fileName, existingCount, minLength, mapper))
+                .writer(writer)
+                .build();
+    }
+
+    /**
+     * Creates an existing-data-aware streaming reader for one mandatory fixture. If the target table
+     * already contains rows, the wrapper returns EOF without opening the resource (safe re-run); when
+     * the table is empty, the underlying {@link AsciiFixedWidthItemReader#open(ExecutionContext)}
+     * validates that the required fixture exists and raises {@link ItemStreamException} if not.
+     */
+    private <T> ItemStreamReader<T> fixtureReader(
+            String stepName,
+            String fileName,
+            LongSupplier existingCount,
+            int minLength,
+            AsciiFixedWidthItemReader.RecordMapper<T> mapper) {
+        AsciiFixedWidthItemReader<T> delegate = new AsciiFixedWidthItemReader<>(
+                AsciiFixedWidthItemReader.resolveFixtureResource(fileName),
+                line -> {
+                    if (line.length() < minLength) {
+                        throw new IllegalArgumentException(
+                                "Short fixed-width record in " + fileName
+                                        + " at length " + line.length()
+                                        + "; expected at least " + minLength);
+                    }
+                    return mapper.mapLine(line);
+                });
+        delegate.setName(stepName + "Reader");
+        return new ExistingDataSkippingReader<>(stepName, fileName, existingCount, delegate);
+    }
+
+    /**
+     * Reader wrapper that preserves idempotent re-runs without weakening missing-fixture validation on
+     * empty tables. It also centralizes the skip log so individual chunk steps do not need tasklet
+     * guards.
+     */
+    private final class ExistingDataSkippingReader<T> implements ItemStreamReader<T> {
+
+        private final String stepName;
+        private final String fileName;
+        private final LongSupplier existingCount;
+        private final AsciiFixedWidthItemReader<T> delegate;
+        private boolean skip;
+
+        private ExistingDataSkippingReader(
+                String stepName,
+                String fileName,
+                LongSupplier existingCount,
+                AsciiFixedWidthItemReader<T> delegate) {
+            this.stepName = stepName;
+            this.fileName = fileName;
+            this.existingCount = existingCount;
+            this.delegate = delegate;
         }
-        if (!resource.exists()) {
-            log.warn("Fixture '{}' not found on classpath ('{}{}') or filesystem ('{}{}'); "
-                            + "skipping load (0 records)",
-                    fileName, CLASSPATH_FIXTURE_PREFIX, fileName, FILESYSTEM_FIXTURE_PREFIX, fileName);
-            return new ArrayList<>();
+
+        @Override
+        public void open(ExecutionContext executionContext) throws ItemStreamException {
+            long count = existingCount.getAsLong();
+            if (count > 0) {
+                skip = true;
+                log.info("{}: target table already populated (count={}); skipping {} seed load",
+                        stepName, count, fileName);
+                return;
+            }
+            skip = false;
+            delegate.open(executionContext);
         }
-        List<String> lines = new ArrayList<>();
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (!line.isEmpty()) {
-                    lines.add(line);
-                }
+
+        @Override
+        public T read() throws Exception {
+            return skip ? null : delegate.read();
+        }
+
+        @Override
+        public void update(ExecutionContext executionContext) throws ItemStreamException {
+            if (!skip) {
+                delegate.update(executionContext);
             }
         }
-        return lines;
+
+        @Override
+        public void close() throws ItemStreamException {
+            if (!skip) {
+                delegate.close();
+            }
+        }
     }
 
     /**
@@ -329,32 +406,22 @@ public class DataInitializationJobConfig {
      */
     @Bean
     public Step loadTransactionTypesStep() {
-        return buildStep("loadTransactionTypesStep",
-                (StepContribution contribution, ChunkContext chunkContext) -> {
-            long existing = transactionTypeRepository.count();
-            if (existing > 0) {
-                log.info("loadTransactionTypesStep: transaction_types already populated (count={}); "
-                        + "skipping seed load", existing);
-                return RepeatStatus.FINISHED;
-            }
-            List<String> lines = readFixtureLines("trantype.txt");
-            List<TransactionType> entities = new ArrayList<>(lines.size());
-            for (String line : lines) {
-                if (line.length() < 52) {
-                    log.warn("Skipping short trantype.txt record (len={} < 52): '{}'", line.length(), line);
-                    continue;
-                }
-                TransactionType e = new TransactionType();
-                e.setTypeCd(FixedWidthRecordParser.parseString(line, 0, 2));
-                e.setTypeDesc(FixedWidthRecordParser.parseString(line, 2, 50));
-                entities.add(e);
-            }
-            transactionTypeRepository.saveAll(entities);
-            contribution.incrementWriteCount(entities.size());
-            log.info("loadTransactionTypesStep: loaded {} TransactionType record(s) from trantype.txt",
-                    entities.size());
-            return RepeatStatus.FINISHED;
-        });
+        return buildFixtureLoadStep(
+                "loadTransactionTypesStep",
+                "trantype.txt",
+                transactionTypeRepository::count,
+                52,
+                line -> {
+                    TransactionType e = new TransactionType();
+                    e.setTypeCd(FixedWidthRecordParser.parseString(line, 0, 2));
+                    e.setTypeDesc(FixedWidthRecordParser.parseString(line, 2, 50));
+                    return e;
+                },
+                chunk -> {
+                    transactionTypeRepository.saveAll(chunk.getItems());
+                    log.info("loadTransactionTypesStep: loaded {} TransactionType record(s) from trantype.txt",
+                            chunk.size());
+                });
     }
 
     /**
@@ -368,35 +435,25 @@ public class DataInitializationJobConfig {
      */
     @Bean
     public Step loadTransactionCategoriesStep() {
-        return buildStep("loadTransactionCategoriesStep",
-                (StepContribution contribution, ChunkContext chunkContext) -> {
-            long existing = transactionCategoryRepository.count();
-            if (existing > 0) {
-                log.info("loadTransactionCategoriesStep: transaction_categories already populated "
-                        + "(count={}); skipping seed load", existing);
-                return RepeatStatus.FINISHED;
-            }
-            List<String> lines = readFixtureLines("trancatg.txt");
-            List<TransactionCategory> entities = new ArrayList<>(lines.size());
-            for (String line : lines) {
-                if (line.length() < 56) {
-                    log.warn("Skipping short trancatg.txt record (len={} < 56): '{}'", line.length(), line);
-                    continue;
-                }
-                TransactionCategoryId id = new TransactionCategoryId();
-                id.setTypeCd(FixedWidthRecordParser.parseString(line, 0, 2));
-                id.setCategoryCd(FixedWidthRecordParser.parseString(line, 2, 4));
-                TransactionCategory e = new TransactionCategory();
-                e.setId(id);
-                e.setCategoryDesc(FixedWidthRecordParser.parseString(line, 6, 50));
-                entities.add(e);
-            }
-            transactionCategoryRepository.saveAll(entities);
-            contribution.incrementWriteCount(entities.size());
-            log.info("loadTransactionCategoriesStep: loaded {} TransactionCategory record(s) "
-                    + "from trancatg.txt", entities.size());
-            return RepeatStatus.FINISHED;
-        });
+        return buildFixtureLoadStep(
+                "loadTransactionCategoriesStep",
+                "trancatg.txt",
+                transactionCategoryRepository::count,
+                56,
+                line -> {
+                    TransactionCategoryId id = new TransactionCategoryId();
+                    id.setTypeCd(FixedWidthRecordParser.parseString(line, 0, 2));
+                    id.setCategoryCd(FixedWidthRecordParser.parseString(line, 2, 4));
+                    TransactionCategory e = new TransactionCategory();
+                    e.setId(id);
+                    e.setCategoryDesc(FixedWidthRecordParser.parseString(line, 6, 50));
+                    return e;
+                },
+                chunk -> {
+                    transactionCategoryRepository.saveAll(chunk.getItems());
+                    log.info("loadTransactionCategoriesStep: loaded {} TransactionCategory record(s) "
+                            + "from trancatg.txt", chunk.size());
+                });
     }
 
     /**
@@ -412,36 +469,26 @@ public class DataInitializationJobConfig {
      */
     @Bean
     public Step loadDisclosureGroupsStep() {
-        return buildStep("loadDisclosureGroupsStep",
-                (StepContribution contribution, ChunkContext chunkContext) -> {
-            long existing = disclosureGroupRepository.count();
-            if (existing > 0) {
-                log.info("loadDisclosureGroupsStep: disclosure_groups already populated (count={}); "
-                        + "skipping seed load", existing);
-                return RepeatStatus.FINISHED;
-            }
-            List<String> lines = readFixtureLines("discgrp.txt");
-            List<DisclosureGroup> entities = new ArrayList<>(lines.size());
-            for (String line : lines) {
-                if (line.length() < 22) {
-                    log.warn("Skipping short discgrp.txt record (len={} < 22): '{}'", line.length(), line);
-                    continue;
-                }
-                DisclosureGroupId id = new DisclosureGroupId();
-                id.setAccountGroupId(FixedWidthRecordParser.parseString(line, 0, 10));
-                id.setTranTypeCd(FixedWidthRecordParser.parseString(line, 10, 2));
-                id.setTranCatCd(FixedWidthRecordParser.parseString(line, 12, 4));
-                DisclosureGroup e = new DisclosureGroup();
-                e.setId(id);
-                e.setDisIntRate(parseMoney(line, 16, 6, MONEY_SCALE));
-                entities.add(e);
-            }
-            disclosureGroupRepository.saveAll(entities);
-            contribution.incrementWriteCount(entities.size());
-            log.info("loadDisclosureGroupsStep: loaded {} DisclosureGroup record(s) from discgrp.txt",
-                    entities.size());
-            return RepeatStatus.FINISHED;
-        });
+        return buildFixtureLoadStep(
+                "loadDisclosureGroupsStep",
+                "discgrp.txt",
+                disclosureGroupRepository::count,
+                22,
+                line -> {
+                    DisclosureGroupId id = new DisclosureGroupId();
+                    id.setAccountGroupId(FixedWidthRecordParser.parseString(line, 0, 10));
+                    id.setTranTypeCd(FixedWidthRecordParser.parseString(line, 10, 2));
+                    id.setTranCatCd(FixedWidthRecordParser.parseString(line, 12, 4));
+                    DisclosureGroup e = new DisclosureGroup();
+                    e.setId(id);
+                    e.setDisIntRate(parseMoney(line, 16, 6, MONEY_SCALE));
+                    return e;
+                },
+                chunk -> {
+                    disclosureGroupRepository.saveAll(chunk.getItems());
+                    log.info("loadDisclosureGroupsStep: loaded {} DisclosureGroup record(s) from discgrp.txt",
+                            chunk.size());
+                });
     }
 
     /**
@@ -454,47 +501,38 @@ public class DataInitializationJobConfig {
      */
     @Bean
     public Step loadCustomersStep() {
-        return buildStep("loadCustomersStep",
-                (StepContribution contribution, ChunkContext chunkContext) -> {
-            long existing = customerRepository.count();
-            if (existing > 0) {
-                log.info("loadCustomersStep: customers already populated (count={}); skipping seed load",
-                        existing);
-                return RepeatStatus.FINISHED;
-            }
-            List<String> lines = readFixtureLines("custdata.txt");
-            List<Customer> entities = new ArrayList<>(lines.size());
-            for (String line : lines) {
-                if (line.length() < 332) {
-                    log.warn("Skipping short custdata.txt record (len={} < 332): '{}'", line.length(), line);
-                    continue;
-                }
-                Customer e = new Customer();
-                e.setCustId(FixedWidthRecordParser.parseLong(line, 0, 9));
-                e.setFirstName(FixedWidthRecordParser.parseString(line, 9, 25));
-                e.setMiddleName(FixedWidthRecordParser.parseString(line, 34, 25));
-                e.setLastName(FixedWidthRecordParser.parseString(line, 59, 25));
-                e.setAddrLine1(FixedWidthRecordParser.parseString(line, 84, 50));
-                e.setAddrLine2(FixedWidthRecordParser.parseString(line, 134, 50));
-                e.setAddrLine3(FixedWidthRecordParser.parseString(line, 184, 50));
-                e.setStateCd(FixedWidthRecordParser.parseString(line, 234, 2));
-                e.setCountryCd(FixedWidthRecordParser.parseString(line, 236, 3));
-                e.setZipCd(FixedWidthRecordParser.parseString(line, 239, 10));
-                e.setPhoneNum1(FixedWidthRecordParser.parseString(line, 249, 15));
-                e.setPhoneNum2(FixedWidthRecordParser.parseString(line, 264, 15));
-                e.setSsn(FixedWidthRecordParser.parseString(line, 279, 9));
-                e.setGovtIssuedId(FixedWidthRecordParser.parseString(line, 288, 20));
-                e.setDob(FixedWidthRecordParser.parseDate(line, 308, 10, ISO_DATE_PATTERN));
-                e.setEftAccountId(FixedWidthRecordParser.parseString(line, 318, 10));
-                e.setPrimaryCardHolderInd(FixedWidthRecordParser.parseString(line, 328, 1));
-                e.setFicoScore(FixedWidthRecordParser.parseInteger(line, 329, 3));
-                entities.add(e);
-            }
-            customerRepository.saveAll(entities);
-            contribution.incrementWriteCount(entities.size());
-            log.info("loadCustomersStep: loaded {} Customer record(s) from custdata.txt", entities.size());
-            return RepeatStatus.FINISHED;
-        });
+        return buildFixtureLoadStep(
+                "loadCustomersStep",
+                "custdata.txt",
+                customerRepository::count,
+                332,
+                line -> {
+                    Customer e = new Customer();
+                    e.setCustId(FixedWidthRecordParser.parseLong(line, 0, 9));
+                    e.setFirstName(FixedWidthRecordParser.parseString(line, 9, 25));
+                    e.setMiddleName(FixedWidthRecordParser.parseString(line, 34, 25));
+                    e.setLastName(FixedWidthRecordParser.parseString(line, 59, 25));
+                    e.setAddrLine1(FixedWidthRecordParser.parseString(line, 84, 50));
+                    e.setAddrLine2(FixedWidthRecordParser.parseString(line, 134, 50));
+                    e.setAddrLine3(FixedWidthRecordParser.parseString(line, 184, 50));
+                    e.setStateCd(FixedWidthRecordParser.parseString(line, 234, 2));
+                    e.setCountryCd(FixedWidthRecordParser.parseString(line, 236, 3));
+                    e.setZipCd(FixedWidthRecordParser.parseString(line, 239, 10));
+                    e.setPhoneNum1(FixedWidthRecordParser.parseString(line, 249, 15));
+                    e.setPhoneNum2(FixedWidthRecordParser.parseString(line, 264, 15));
+                    e.setSsn(FixedWidthRecordParser.parseString(line, 279, 9));
+                    e.setGovtIssuedId(FixedWidthRecordParser.parseString(line, 288, 20));
+                    e.setDob(FixedWidthRecordParser.parseDate(line, 308, 10, ISO_DATE_PATTERN));
+                    e.setEftAccountId(FixedWidthRecordParser.parseString(line, 318, 10));
+                    e.setPrimaryCardHolderInd(FixedWidthRecordParser.parseString(line, 328, 1));
+                    e.setFicoScore(FixedWidthRecordParser.parseInteger(line, 329, 3));
+                    return e;
+                },
+                chunk -> {
+                    customerRepository.saveAll(chunk.getItems());
+                    log.info("loadCustomersStep: loaded {} Customer record(s) from custdata.txt",
+                            chunk.size());
+                });
     }
 
     /**
@@ -510,41 +548,32 @@ public class DataInitializationJobConfig {
      */
     @Bean
     public Step loadAccountsStep() {
-        return buildStep("loadAccountsStep",
-                (StepContribution contribution, ChunkContext chunkContext) -> {
-            long existing = accountRepository.count();
-            if (existing > 0) {
-                log.info("loadAccountsStep: accounts already populated (count={}); skipping seed load",
-                        existing);
-                return RepeatStatus.FINISHED;
-            }
-            List<String> lines = readFixtureLines("acctdata.txt");
-            List<Account> entities = new ArrayList<>(lines.size());
-            for (String line : lines) {
-                if (line.length() < 122) {
-                    log.warn("Skipping short acctdata.txt record (len={} < 122): '{}'", line.length(), line);
-                    continue;
-                }
-                Account e = new Account();
-                e.setAcctId(FixedWidthRecordParser.parseLong(line, 0, 11));
-                e.setActiveStatus(FixedWidthRecordParser.parseString(line, 11, 1));
-                e.setCurrBal(parseMoney(line, 12, 12, MONEY_SCALE));
-                e.setCreditLimit(parseMoney(line, 24, 12, MONEY_SCALE));
-                e.setCashCreditLimit(parseMoney(line, 36, 12, MONEY_SCALE));
-                e.setOpenDate(FixedWidthRecordParser.parseDate(line, 48, 10, ISO_DATE_PATTERN));
-                e.setExpirationDate(FixedWidthRecordParser.parseDate(line, 58, 10, ISO_DATE_PATTERN));
-                e.setReissueDate(FixedWidthRecordParser.parseDate(line, 68, 10, ISO_DATE_PATTERN));
-                e.setCurrCycCredit(parseMoney(line, 78, 12, MONEY_SCALE));
-                e.setCurrCycDebit(parseMoney(line, 90, 12, MONEY_SCALE));
-                e.setAddrZip(FixedWidthRecordParser.parseString(line, 102, 10));
-                e.setGroupId(FixedWidthRecordParser.parseString(line, 112, 10));
-                entities.add(e);
-            }
-            accountRepository.saveAll(entities);
-            contribution.incrementWriteCount(entities.size());
-            log.info("loadAccountsStep: loaded {} Account record(s) from acctdata.txt", entities.size());
-            return RepeatStatus.FINISHED;
-        });
+        return buildFixtureLoadStep(
+                "loadAccountsStep",
+                "acctdata.txt",
+                accountRepository::count,
+                122,
+                line -> {
+                    Account e = new Account();
+                    e.setAcctId(FixedWidthRecordParser.parseLong(line, 0, 11));
+                    e.setActiveStatus(FixedWidthRecordParser.parseString(line, 11, 1));
+                    e.setCurrBal(parseMoney(line, 12, 12, MONEY_SCALE));
+                    e.setCreditLimit(parseMoney(line, 24, 12, MONEY_SCALE));
+                    e.setCashCreditLimit(parseMoney(line, 36, 12, MONEY_SCALE));
+                    e.setOpenDate(FixedWidthRecordParser.parseDate(line, 48, 10, ISO_DATE_PATTERN));
+                    e.setExpirationDate(FixedWidthRecordParser.parseDate(line, 58, 10, ISO_DATE_PATTERN));
+                    e.setReissueDate(FixedWidthRecordParser.parseDate(line, 68, 10, ISO_DATE_PATTERN));
+                    e.setCurrCycCredit(parseMoney(line, 78, 12, MONEY_SCALE));
+                    e.setCurrCycDebit(parseMoney(line, 90, 12, MONEY_SCALE));
+                    e.setAddrZip(FixedWidthRecordParser.parseString(line, 102, 10));
+                    e.setGroupId(FixedWidthRecordParser.parseString(line, 112, 10));
+                    return e;
+                },
+                chunk -> {
+                    accountRepository.saveAll(chunk.getItems());
+                    log.info("loadAccountsStep: loaded {} Account record(s) from acctdata.txt",
+                            chunk.size());
+                });
     }
 
     /**
@@ -558,38 +587,29 @@ public class DataInitializationJobConfig {
      */
     @Bean
     public Step loadCardsStep() {
-        return buildStep("loadCardsStep",
-                (StepContribution contribution, ChunkContext chunkContext) -> {
-            long existing = cardRepository.count();
-            if (existing > 0) {
-                log.info("loadCardsStep: cards already populated (count={}); skipping seed load", existing);
-                return RepeatStatus.FINISHED;
-            }
-            List<String> lines = readFixtureLines("carddata.txt");
-            List<Card> entities = new ArrayList<>(lines.size());
-            for (String line : lines) {
-                if (line.length() < 91) {
-                    log.warn("Skipping short carddata.txt record (len={} < 91): '{}'", line.length(), line);
-                    continue;
-                }
-                Card e = new Card();
-                e.setCardNum(FixedWidthRecordParser.parseString(line, 0, 16));
-                e.setAccountId(FixedWidthRecordParser.parseLong(line, 16, 11));
-                // CARD-CVV-CD PIC 9(03) -> Short; leave null only when the field is blank/absent.
-                Integer cvv = FixedWidthRecordParser.parseInteger(line, 27, 3);
-                if (cvv != null) {
-                    e.setCvvCd(cvv.shortValue());
-                }
-                e.setEmbossedName(FixedWidthRecordParser.parseString(line, 30, 50));
-                e.setExpirationDate(FixedWidthRecordParser.parseDate(line, 80, 10, ISO_DATE_PATTERN));
-                e.setActiveStatus(FixedWidthRecordParser.parseString(line, 90, 1));
-                entities.add(e);
-            }
-            cardRepository.saveAll(entities);
-            contribution.incrementWriteCount(entities.size());
-            log.info("loadCardsStep: loaded {} Card record(s) from carddata.txt", entities.size());
-            return RepeatStatus.FINISHED;
-        });
+        return buildFixtureLoadStep(
+                "loadCardsStep",
+                "carddata.txt",
+                cardRepository::count,
+                91,
+                line -> {
+                    Card e = new Card();
+                    e.setCardNum(FixedWidthRecordParser.parseString(line, 0, 16));
+                    e.setAccountId(FixedWidthRecordParser.parseLong(line, 16, 11));
+                    // CARD-CVV-CD PIC 9(03) -> Short; leave null only when the field is blank/absent.
+                    Integer cvv = FixedWidthRecordParser.parseInteger(line, 27, 3);
+                    if (cvv != null) {
+                        e.setCvvCd(cvv.shortValue());
+                    }
+                    e.setEmbossedName(FixedWidthRecordParser.parseString(line, 30, 50));
+                    e.setExpirationDate(FixedWidthRecordParser.parseDate(line, 80, 10, ISO_DATE_PATTERN));
+                    e.setActiveStatus(FixedWidthRecordParser.parseString(line, 90, 1));
+                    return e;
+                },
+                chunk -> {
+                    cardRepository.saveAll(chunk.getItems());
+                    log.info("loadCardsStep: loaded {} Card record(s) from carddata.txt", chunk.size());
+                });
     }
 
     /**
@@ -603,32 +623,23 @@ public class DataInitializationJobConfig {
      */
     @Bean
     public Step loadCardXrefsStep() {
-        return buildStep("loadCardXrefsStep",
-                (StepContribution contribution, ChunkContext chunkContext) -> {
-            long existing = cardXrefRepository.count();
-            if (existing > 0) {
-                log.info("loadCardXrefsStep: card_xref already populated (count={}); skipping seed load",
-                        existing);
-                return RepeatStatus.FINISHED;
-            }
-            List<String> lines = readFixtureLines("cardxref.txt");
-            List<CardXref> entities = new ArrayList<>(lines.size());
-            for (String line : lines) {
-                if (line.length() < 36) {
-                    log.warn("Skipping short cardxref.txt record (len={} < 36): '{}'", line.length(), line);
-                    continue;
-                }
-                CardXref e = new CardXref();
-                e.setXrefCardNum(FixedWidthRecordParser.parseString(line, 0, 16));
-                e.setCustId(FixedWidthRecordParser.parseLong(line, 16, 9));
-                e.setAccountId(FixedWidthRecordParser.parseLong(line, 25, 11));
-                entities.add(e);
-            }
-            cardXrefRepository.saveAll(entities);
-            contribution.incrementWriteCount(entities.size());
-            log.info("loadCardXrefsStep: loaded {} CardXref record(s) from cardxref.txt", entities.size());
-            return RepeatStatus.FINISHED;
-        });
+        return buildFixtureLoadStep(
+                "loadCardXrefsStep",
+                "cardxref.txt",
+                cardXrefRepository::count,
+                36,
+                line -> {
+                    CardXref e = new CardXref();
+                    e.setXrefCardNum(FixedWidthRecordParser.parseString(line, 0, 16));
+                    e.setCustId(FixedWidthRecordParser.parseLong(line, 16, 9));
+                    e.setAccountId(FixedWidthRecordParser.parseLong(line, 25, 11));
+                    return e;
+                },
+                chunk -> {
+                    cardXrefRepository.saveAll(chunk.getItems());
+                    log.info("loadCardXrefsStep: loaded {} CardXref record(s) from cardxref.txt",
+                            chunk.size());
+                });
     }
 
     /**
@@ -643,36 +654,26 @@ public class DataInitializationJobConfig {
      */
     @Bean
     public Step loadTcatbalsStep() {
-        return buildStep("loadTcatbalsStep",
-                (StepContribution contribution, ChunkContext chunkContext) -> {
-            long existing = transactionCategoryBalanceRepository.count();
-            if (existing > 0) {
-                log.info("loadTcatbalsStep: tran_cat_balances already populated (count={}); "
-                        + "skipping seed load", existing);
-                return RepeatStatus.FINISHED;
-            }
-            List<String> lines = readFixtureLines("tcatbal.txt");
-            List<TransactionCategoryBalance> entities = new ArrayList<>(lines.size());
-            for (String line : lines) {
-                if (line.length() < 28) {
-                    log.warn("Skipping short tcatbal.txt record (len={} < 28): '{}'", line.length(), line);
-                    continue;
-                }
-                TransactionCategoryBalanceId id = new TransactionCategoryBalanceId();
-                id.setAccountId(FixedWidthRecordParser.parseLong(line, 0, 11));
-                id.setTypeCd(FixedWidthRecordParser.parseString(line, 11, 2));
-                id.setCategoryCd(FixedWidthRecordParser.parseString(line, 13, 4));
-                TransactionCategoryBalance e = new TransactionCategoryBalance();
-                e.setId(id);
-                e.setTranCatBal(parseMoney(line, 17, 11, MONEY_SCALE));
-                entities.add(e);
-            }
-            transactionCategoryBalanceRepository.saveAll(entities);
-            contribution.incrementWriteCount(entities.size());
-            log.info("loadTcatbalsStep: loaded {} TransactionCategoryBalance record(s) from tcatbal.txt",
-                    entities.size());
-            return RepeatStatus.FINISHED;
-        });
+        return buildFixtureLoadStep(
+                "loadTcatbalsStep",
+                "tcatbal.txt",
+                transactionCategoryBalanceRepository::count,
+                28,
+                line -> {
+                    TransactionCategoryBalanceId id = new TransactionCategoryBalanceId();
+                    id.setAccountId(FixedWidthRecordParser.parseLong(line, 0, 11));
+                    id.setTypeCd(FixedWidthRecordParser.parseString(line, 11, 2));
+                    id.setCategoryCd(FixedWidthRecordParser.parseString(line, 13, 4));
+                    TransactionCategoryBalance e = new TransactionCategoryBalance();
+                    e.setId(id);
+                    e.setTranCatBal(parseMoney(line, 17, 11, MONEY_SCALE));
+                    return e;
+                },
+                chunk -> {
+                    transactionCategoryBalanceRepository.saveAll(chunk.getItems());
+                    log.info("loadTcatbalsStep: loaded {} TransactionCategoryBalance record(s) from tcatbal.txt",
+                            chunk.size());
+                });
     }
 
     /**
@@ -687,7 +688,7 @@ public class DataInitializationJobConfig {
     @Bean
     public Step loadTransactionsStep() {
         return buildStep("loadTransactionsStep",
-                (StepContribution contribution, ChunkContext chunkContext) -> {
+                (contribution, chunkContext) -> {
             log.info("loadTransactionsStep: no transaction seed fixture; transactions are populated by "
                     + "POSTTRAN (TransactionPostingJobConfig). Current transaction count={}",
                     transactionRepository.count());

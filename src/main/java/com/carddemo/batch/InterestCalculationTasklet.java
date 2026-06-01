@@ -22,17 +22,17 @@ import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 import java.util.Optional;
-import java.util.TreeMap;
 
 /**
  * Spring Batch {@link Tasklet} that performs the monthly interest run &mdash; the Java port of the
@@ -51,14 +51,13 @@ import java.util.TreeMap;
  * ({@code 1050-UPDATE-ACCOUNT}).</p>
  *
  * <p><strong>What this tasklet does.</strong> It reproduces that orchestration against the relational
- * model. Rather than relying on physical file ordering, it reads all
- * {@link TransactionCategoryBalance} rows ({@code findAll()}) and groups them by account into a
- * {@link TreeMap} so accounts are processed in ascending {@code account_id} order &mdash; a
- * deterministic equivalent of the COBOL key sequence (important for stable interest-transaction-ID
- * assignment and reproducible parity output). For each account it then performs the exact COBOL
- * per-row logic and a single end-of-account update. The result is value-for-value identical to
- * {@code CBACT04C} because the program's only cross-row state is the per-account accumulator, which
- * is reset on every account boundary.</p>
+ * model by paging through {@link TransactionCategoryBalance} rows ordered by
+ * {@code (accountId, typeCd, categoryCd)}. That repository sort is the relational equivalent of the
+ * COBOL key sequence and allows the tasklet to keep only one account's control-break state in
+ * memory: current account, current card number, current disclosure group and {@code WS-TOTAL-INT}.
+ * At each account boundary (and once at end-of-stream) it performs the exact COBOL account rewrite.
+ * The result is value-for-value identical to {@code CBACT04C} because the program's only cross-row
+ * state is the per-account accumulator, which is reset on every account boundary.</p>
  *
  * <h2>Preserved business rules</h2>
  * <ul>
@@ -136,6 +135,13 @@ public class InterestCalculationTasklet implements Tasklet {
      */
     private static final String DEFAULT_GROUP_ID = "DEFAULT";
 
+    /** Number of TCATBAL rows read per repository page; bounds memory while preserving key order. */
+    private static final int TCATBAL_PAGE_SIZE = 100;
+
+    /** Sort order matching the COBOL {@code TRAN-CAT-KEY}: account, transaction type, category. */
+    private static final Sort TCATBAL_INTEREST_ORDER =
+            Sort.by("id.accountId", "id.typeCd", "id.categoryCd");
+
     /**
      * Transaction type code stamped on every interest transaction. {@code CBACT04C} {@code 1300-B-WRITE-TX}
      * [L482] {@code MOVE '01' TO TRAN-TYPE-CD}; persisted to the {@code CHAR(2)} {@code type_cd} column.
@@ -196,9 +202,9 @@ public class InterestCalculationTasklet implements Tasklet {
      * <p>The run date is taken from the {@value #PARAM_TRAN_DATE} job parameter (COBOL
      * {@code PARM='2022071800'}) and validated to be exactly {@value #TRAN_DATE_LENGTH} characters,
      * since it forms the 10-character prefix of every generated transaction ID (PR-10). The
-     * per-execution transaction-ID counter is reset so suffixes begin at {@code 000001}. All
-     * transaction-category-balance rows are then read and grouped by account (ascending
-     * {@code account_id}), and each account is processed by {@link #processAccount}.</p>
+     * per-execution transaction-ID counter is reset so suffixes begin at {@code 000001}. TCATBAL rows
+     * are then paged in {@link #TCATBAL_INTEREST_ORDER}; account-control-break state is carried
+     * across page boundaries so {@code 1050-UPDATE-ACCOUNT} runs once per account.</p>
      *
      * <p>Runs in its own transaction ({@code REQUIRES_NEW}, PR-24); the delegated account update and
      * all transaction writes join this transaction.</p>
@@ -230,106 +236,168 @@ public class InterestCalculationTasklet implements Tasklet {
         // (COBOL WS-TRANID-SUFFIX PIC 9(06) VALUE 0, pre-incremented in 1300-B-WRITE-TX).
         transactionIdGenerator.resetCounter();
 
-        // === Read every TCATBAL row and group by account in ascending account_id order. ===
-        // The COBOL relies on the physical TRAN-CAT-KEY (account+type+category) ordering of TCATBAL;
-        // the TreeMap reproduces that deterministic account sequence over an unordered findAll().
-        List<TransactionCategoryBalance> allBalances = tranCatBalRepository.findAll();
-        Map<Long, List<TransactionCategoryBalance>> balancesByAccount = groupByAccount(allBalances);
-        log.info("Loaded {} TCATBAL row(s) across {} account(s)",
-                allBalances.size(), balancesByAccount.size());
-
+        // === Page through TCATBAL in COBOL key order with a cross-page account control break. ===
+        Long currentAcct = null;
+        Account currentAccount = null;
+        String currentGroupId = EMPTY_MERCHANT_FIELD;
+        String currentCardNum = EMPTY_MERCHANT_FIELD;
+        BigDecimal wsTotalInt = BigDecimalUtil.ZERO;
         long processedAccounts = 0L;
-        for (Map.Entry<Long, List<TransactionCategoryBalance>> entry : balancesByAccount.entrySet()) {
-            processAccount(entry.getKey(), entry.getValue(), tranDate);
+        long visitedBalances = 0L;
+
+        int pageNumber = 0;
+        boolean morePages = true;
+        while (morePages) {
+            Pageable pageable = PageRequest.of(pageNumber, TCATBAL_PAGE_SIZE, TCATBAL_INTEREST_ORDER);
+            Page<TransactionCategoryBalance> page = tranCatBalRepository.findAll(pageable);
+
+            for (TransactionCategoryBalance tcb : page.getContent()) {
+                visitedBalances++;
+                Long acctId = extractAccountId(tcb);
+
+                // Account break: close the prior managed account before initializing the next one.
+                // The state variables intentionally live outside the page loop so accounts spanning
+                // pages still receive exactly one COBOL-equivalent 1050-UPDATE-ACCOUNT rewrite.
+                if (currentAcct == null || !currentAcct.equals(acctId)) {
+                    if (currentAcct != null && currentAccount != null) {
+                        accountBalanceUpdater.applyInterestAndCloseCycle(currentAccount, wsTotalInt);
+                        processedAccounts++;
+                    }
+
+                    currentAcct = acctId;
+                    currentAccount = loadAccountForInterest(acctId);
+                    wsTotalInt = BigDecimalUtil.ZERO;
+
+                    if (currentAccount != null) {
+                        currentGroupId = resolveAccountGroupId(currentAccount);
+                        currentCardNum = resolveCardNumber(acctId);
+                    } else {
+                        currentGroupId = EMPTY_MERCHANT_FIELD;
+                        currentCardNum = EMPTY_MERCHANT_FIELD;
+                    }
+                }
+
+                if (currentAccount == null) {
+                    // Missing-account rows are ignored as in the prior resilient implementation: no
+                    // transaction is emitted and there is no account row to REWRITE/close.
+                    continue;
+                }
+
+                wsTotalInt = processBalanceRow(
+                        currentAcct,
+                        tcb,
+                        currentGroupId,
+                        currentCardNum,
+                        tranDate,
+                        wsTotalInt);
+            }
+
+            morePages = page.hasNext();
+            pageNumber++;
+        }
+
+        // Final account subtotal/rewrite at end-of-stream.
+        if (currentAcct != null && currentAccount != null) {
+            accountBalanceUpdater.applyInterestAndCloseCycle(currentAccount, wsTotalInt);
             processedAccounts++;
         }
 
-        log.info("InterestCalculationTasklet completed \u2014 processedAccounts={}, interestTransactionsEmitted={}",
-                processedAccounts, transactionIdGenerator.currentCounter());
+        log.info("InterestCalculationTasklet completed \u2014 visitedBalances={}, processedAccounts={}, "
+                        + "interestTransactionsEmitted={}",
+                visitedBalances, processedAccounts, transactionIdGenerator.currentCounter());
         contribution.incrementWriteCount(processedAccounts);
         return RepeatStatus.FINISHED;
     }
 
     /**
-     * Processes a single account's transaction-category-balance rows, porting the per-account body of
-     * the {@code CBACT04C} main loop plus the end-of-account update.
+     * Loads the account master record at an account control break.
      *
-     * <p>Steps (lock order ACCOUNT -&gt; DISCGRP -&gt; TRANSACTION -&gt; ACCOUNT, PR-23):</p>
-     * <ol>
-     *   <li>load the account ({@code 1100-GET-ACCT-DATA}); if it is absent, log and skip &mdash; there
-     *       is no account record to update, so nothing (not even cycle-bucket zeroing) is applied;</li>
-     *   <li>resolve the card number once via the cross-reference ({@code 1110-GET-XREF-DATA}); the
-     *       first card on the account is used for every interest transaction, as in the COBOL which
-     *       reads the XREF once per account;</li>
-     *   <li>for each category row: resolve the rate with DEFAULT fallback and, when the rate is
-     *       non-zero (COBOL {@code IF DIS-INT-RATE NOT = 0}), compute the monthly interest (PR-01),
-     *       accumulate it into the per-account total, and emit an interest transaction;</li>
-     *   <li>apply the accumulated total to the account and zero the cycle buckets exactly once
-     *       ({@code 1050-UPDATE-ACCOUNT}, PR-08) &mdash; performed even when the total is zero so the
-     *       cycle credit/debit accumulators are always reset for the new cycle.</li>
-     * </ol>
-     *
-     * @param accountId the account id (the group key, equal to {@code TRANCAT-ACCT-ID} / {@code ACCT-ID})
-     * @param balances  the account's transaction-category-balance rows
-     * @param parmDate  the validated 10-character run date used as the transaction-ID prefix
+     * @param accountId account id from {@code TRANCAT-ACCT-ID}
+     * @return the managed account, or {@code null} when TCATBAL references a missing account
      */
-    private void processAccount(Long accountId, List<TransactionCategoryBalance> balances, String parmDate) {
-        // 1100-GET-ACCT-DATA: load the account master record.
+    private Account loadAccountForInterest(Long accountId) {
         Account account = accountRepository.findById(accountId).orElse(null);
         if (account == null) {
             // COBOL displays 'ACCOUNT NOT FOUND' for the key; with no managed account row there is
             // nothing to REWRITE, so we skip this account rather than abend (resilient batch behavior).
             log.warn("Skipping account {} \u2014 no matching row in accounts table (TCATBAL references a missing account)",
                     accountId);
-            return;
         }
+        return account;
+    }
 
-        // ACCT-GROUP-ID drives the disclosure-group lookup; trim the fixed-width value (COBOL PIC X(10)).
-        String accountGroupId = account.getGroupId() != null ? account.getGroupId().trim() : "";
+    /**
+     * Returns the trimmed fixed-width account group id used for disclosure-group lookup.
+     *
+     * @param account the account loaded at the current control break
+     * @return trimmed account group id, or spaces-equivalent empty string when absent
+     */
+    private String resolveAccountGroupId(Account account) {
+        return account.getGroupId() != null ? account.getGroupId().trim() : EMPTY_MERCHANT_FIELD;
+    }
 
-        // 1110-GET-XREF-DATA: resolve the card number once per account (first cross-reference card).
-        // The cross-reference element type is inferred from CardXrefRepository.findByAccountId so the
-        // entity type need not be named/imported here (only the whitelisted repository is depended on).
-        String cardNum = cardXrefRepository.findByAccountId(accountId).stream()
+    /**
+     * Resolves the first card number for the current account, matching the COBOL one-xref-read-per-account
+     * behavior used by the interest transaction writer.
+     *
+     * @param accountId the current account id
+     * @return the first cross-reference card number, or spaces-equivalent empty string when absent
+     */
+    private String resolveCardNumber(Long accountId) {
+        return cardXrefRepository.findByAccountId(accountId).stream()
                 .findFirst()
                 .map(xref -> xref.getXrefCardNum())
                 .orElse(EMPTY_MERCHANT_FIELD);
+    }
 
-        // WS-TOTAL-INT, reset to zero at each account boundary (scale-2 monetary zero, PR-16).
-        BigDecimal wsTotalInt = BigDecimalUtil.ZERO;
+    /**
+     * Processes one TCATBAL row for the current account, preserving the per-row CBACT04C interest
+     * calculation and returning the updated per-account {@code WS-TOTAL-INT} accumulator.
+     *
+     * @param accountId      current account id
+     * @param tcb            current transaction-category-balance row
+     * @param accountGroupId trimmed disclosure-group id from the account
+     * @param cardNum        card number resolved at the account boundary
+     * @param parmDate       validated 10-character run date used as the transaction-ID prefix
+     * @param wsTotalInt     current per-account interest accumulator
+     * @return the updated accumulator after applying this row
+     */
+    private BigDecimal processBalanceRow(
+            Long accountId,
+            TransactionCategoryBalance tcb,
+            String accountGroupId,
+            String cardNum,
+            String parmDate,
+            BigDecimal wsTotalInt) {
+        String typeCd = extractTypeCd(tcb);
+        String catCd = extractCategoryCd(tcb);
+        // TRAN-CAT-BAL is the interest base; treat a null balance as zero (PR-16).
+        BigDecimal tranCatBal = BigDecimalUtil.nullSafe(tcb.getTranCatBal());
 
-        for (TransactionCategoryBalance tcb : balances) {
-            String typeCd = extractTypeCd(tcb);
-            String catCd = extractCategoryCd(tcb);
-            // TRAN-CAT-BAL is the interest base; treat a null balance as zero (PR-16).
-            BigDecimal tranCatBal = BigDecimalUtil.nullSafe(tcb.getTranCatBal());
+        // 1200-GET-INTEREST-RATE (with PR-02 DEFAULT fallback).
+        BigDecimal rate = lookupInterestRate(accountGroupId, typeCd, catCd);
 
-            // 1200-GET-INTEREST-RATE (with PR-02 DEFAULT fallback).
-            BigDecimal rate = lookupInterestRate(accountGroupId, typeCd, catCd);
+        // Rate gate (COBOL L214: IF DIS-INT-RATE NOT = 0). Compute + emit only when rate is non-zero.
+        if (rate != null && rate.signum() != 0) {
+            // PR-01: monthlyInterest = (TRAN-CAT-BAL * DIS-INT-RATE) / 1200, scale 2, HALF_UP.
+            // Direct multiply().divide() keeps full intermediate precision before the single
+            // scale-2 rounding (do NOT pre-round the product).
+            BigDecimal monthlyInterest = tranCatBal
+                    .multiply(rate)
+                    .divide(BigDecimalUtil.INTEREST_DIVISOR, BigDecimalUtil.SCALE_TWO, RoundingMode.HALF_UP);
 
-            // Rate gate (COBOL L214: IF DIS-INT-RATE NOT = 0). Compute + emit only when rate is non-zero.
-            if (rate != null && rate.signum() != 0) {
-                // PR-01: monthlyInterest = (TRAN-CAT-BAL * DIS-INT-RATE) / 1200, scale 2, HALF_UP.
-                // Direct multiply().divide() keeps full intermediate precision before the single
-                // scale-2 rounding (do NOT pre-round the product).
-                BigDecimal monthlyInterest = tranCatBal
-                        .multiply(rate)
-                        .divide(BigDecimalUtil.INTEREST_DIVISOR, BigDecimalUtil.SCALE_TWO, RoundingMode.HALF_UP);
+            // ADD WS-MONTHLY-INT TO WS-TOTAL-INT.
+            BigDecimal updatedTotal = BigDecimalUtil.scaledAdd(wsTotalInt, monthlyInterest);
 
-                // ADD WS-MONTHLY-INT TO WS-TOTAL-INT.
-                wsTotalInt = BigDecimalUtil.scaledAdd(wsTotalInt, monthlyInterest);
+            // 1300-B-WRITE-TX: emit the interest transaction (unconditional within the rate gate).
+            emitInterestTransaction(accountId, monthlyInterest, parmDate, cardNum);
 
-                // 1300-B-WRITE-TX: emit the interest transaction (unconditional within the rate gate).
-                emitInterestTransaction(accountId, monthlyInterest, parmDate, cardNum);
-
-                log.debug("Interest acct={} type={} cat={} bal={} rate={} monthlyInt={}",
-                        accountId, typeCd, catCd, tranCatBal, rate, monthlyInterest);
-            }
+            log.debug("Interest acct={} type={} cat={} bal={} rate={} monthlyInt={}",
+                    accountId, typeCd, catCd, tranCatBal, rate, monthlyInterest);
+            return updatedTotal;
         }
 
-        // 1050-UPDATE-ACCOUNT (PR-08): ADD WS-TOTAL-INT TO ACCT-CURR-BAL, zero both cycle buckets,
-        // REWRITE. Always invoked (even with a zero total) so the cycle accumulators are reset.
-        accountBalanceUpdater.applyInterestAndCloseCycle(account, wsTotalInt);
+        return wsTotalInt;
     }
 
     /**
@@ -408,25 +476,6 @@ public class InterestCalculationTasklet implements Tasklet {
 
         // WRITE FD-TRANFILE-REC FROM TRAN-RECORD.
         transactionRepository.save(tx);
-    }
-
-    /**
-     * Groups transaction-category-balance rows by account id into a {@link TreeMap}, yielding ascending
-     * {@code account_id} iteration order. This reproduces the deterministic account sequence the COBOL
-     * obtains from the physical {@code TRAN-CAT-KEY} ordering of the {@code TCATBAL} file, which is
-     * required for stable interest-transaction-ID assignment and reproducible parity output.
-     *
-     * @param all all transaction-category-balance rows
-     * @return an account-id-ordered map from account id to that account's rows
-     */
-    private static Map<Long, List<TransactionCategoryBalance>> groupByAccount(
-            List<TransactionCategoryBalance> all) {
-        Map<Long, List<TransactionCategoryBalance>> grouped = new TreeMap<>();
-        for (TransactionCategoryBalance balance : all) {
-            Long acctId = extractAccountId(balance);
-            grouped.computeIfAbsent(acctId, key -> new ArrayList<>()).add(balance);
-        }
-        return grouped;
     }
 
     /**

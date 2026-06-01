@@ -37,6 +37,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -62,9 +63,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *   <li>{@code POST /api/auth/login} &mdash; the sign-on path that replaces the COBOL VSAM
  *       {@code USRSEC} keyed {@code READ} followed by the plaintext comparison
  *       {@code IF SEC-USR-PWD = WS-USER-PWD} ({@code app/cbl/COSGN00C.cbl:L221-L257});</li>
- *   <li>{@code POST /api/auth/logout} &mdash; the stateless, idempotent sign-off that
- *       acknowledges with {@code 204 No Content} (the legacy program had no explicit
- *       sign-off transaction; the CICS task simply ended).</li>
+ *   <li>{@code POST /api/auth/logout} &mdash; the stateless sign-off that clears the
+ *       security context and acknowledges with {@code 204 No Content} for an
+ *       authenticated caller, or {@code 401 Unauthorized} for an anonymous caller
+ *       (CP4: logout is not a public route).</li>
  * </ul>
  *
  * <h2>COBOL outcome &rarr; HTTP status parity ({@code READ-USER-SEC-FILE})</h2>
@@ -103,10 +105,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *       {@code MethodArgumentNotValidException} &rarr; {@code 400}, and
  *       {@code HttpMessageNotReadableException} &rarr; {@code 400}.</li>
  *   <li>{@link AutoConfigureMockMvc @AutoConfigureMockMvc(addFilters = false)} disables the
- *       security filter chain. Both endpoints are {@code permitAll()} in production
- *       ({@link SecurityConfig}) &mdash; {@code /api/auth/login} <em>is</em> the
- *       authentication step &mdash; so no authenticated principal is needed and no
- *       {@code @WithMockUser} is used here.</li>
+ *       security filter chain so the controller's HTTP behaviour is asserted in isolation.
+ *       In production ({@link SecurityConfig}) only {@code POST /api/auth/login} is
+ *       {@code permitAll()} &mdash; it <em>is</em> the authentication step; {@code logout}
+ *       is NOT public (CP4) and requires an authenticated principal. The controller reads
+ *       {@code SecurityContextHolder} directly, so logout's authenticated path is exercised
+ *       with {@code @WithMockUser} (which populates the context via the test execution
+ *       listener, independent of the disabled filter chain) and the anonymous path with no
+ *       annotation (empty context &rarr; {@code 401}).</li>
  * </ul>
  *
  * <p>Because {@code /api/auth/login} delegates the whole credential check to
@@ -343,14 +349,26 @@ class AuthControllerTest {
      * the server cannot truly invalidate a token (no blacklist, per AAP &sect;0.7.2); the
      * endpoint clears the request-scoped security context and returns {@code 204 No Content}
      * to hint the client to discard its token.
+     *
+     * <p><strong>CP4 security contract.</strong> Logout requires an authenticated principal:
+     * the production {@link SecurityConfig} no longer lists it under {@code permitAll}, and the
+     * controller guards against an absent/anonymous {@code Authentication} by returning
+     * {@code 401 Unauthorized}. Both branches are asserted below &mdash; an authenticated caller
+     * ({@code @WithMockUser}) receives {@code 204}, while an anonymous caller (no security context)
+     * receives {@code 401}. In every case the {@code AuthService} is untouched (sign-off performs
+     * no credential check).</p>
      */
     @Nested
     @DisplayName("POST /api/auth/logout")
     class Logout {
 
         @Test
-        @DisplayName("Logout -> 204 No Content with an empty body (stateless JWT; client discards token)")
-        void logoutReturns204WithEmptyBody() throws Exception {
+        @WithMockUser(username = "ADMIN001")
+        @DisplayName("Authenticated logout -> 204 No Content with an empty body (stateless JWT; client discards token)")
+        void authenticatedLogoutReturns204WithEmptyBody() throws Exception {
+            // @WithMockUser populates the SecurityContextHolder via the test execution listener,
+            // independent of the disabled MockMvc filter chain. The controller reads the context
+            // directly and, finding an authenticated non-anonymous principal, returns 204.
             MvcResult result = mockMvc.perform(post("/api/auth/logout").with(csrf()))
                     .andExpect(status().isNoContent())
                     .andReturn();
@@ -361,6 +379,20 @@ class AuthControllerTest {
                     "Stateless logout must return an empty 204 body");
 
             // Sign-off performs no credential check, so the authentication service is untouched.
+            verifyNoInteractions(authService);
+        }
+
+        @Test
+        @DisplayName("Anonymous logout -> 401 Unauthorized (CP4: logout is not a public route)")
+        void anonymousLogoutReturns401() throws Exception {
+            // No @WithMockUser: the SecurityContextHolder carries no Authentication, so the
+            // controller's defence-in-depth guard rejects the call with 401 — matching the
+            // documented OpenAPI 401 contract and the SecurityConfig rule that removed logout
+            // from the permitAll set (CP4).
+            mockMvc.perform(post("/api/auth/logout").with(csrf()))
+                    .andExpect(status().isUnauthorized());
+
+            // No credential check is attempted on the rejected path either.
             verifyNoInteractions(authService);
         }
     }

@@ -211,8 +211,8 @@ public class ReportController {
     @Operation(
         summary = "Submit a transaction report job (async)",
         description = "Submits a Spring Batch report job and returns immediately with the job execution ID. "
-            + "The actual report generation runs asynchronously. Client can poll job status via "
-            + "the BatchAdminController (GET /api/admin/jobs/{jobName}/executions/{executionId}). "
+            + "The actual report generation runs asynchronously; the response contains the launched "
+            + "job execution ID for operator correlation. "
             + "Replaces CORPT00C's WRITEQ TD QUEUE('JOBS') pattern with JobLauncher.run() @Async. "
             + "Report types: MONTHLY (current month), YEARLY (current year), CUSTOM (user-supplied date range). "
             + "Cross-field validation: when reportType=CUSTOM, both startDate and endDate are required and "
