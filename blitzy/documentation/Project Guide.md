@@ -1,73 +1,65 @@
-# Blitzy Project Guide — CBTRN02C Inactive-Account Rejection (Reason Code 104)
-
-> Reject Daily Transactions Targeting Inactive/Closed Accounts in the POSTTRAN Batch Pipeline
-
----
+# Blitzy Project Guide — AWS CardDemo: CBTRN02C Inactive-Account Posting Fix
 
 ## 1. Executive Summary
 
 ### 1.1 Project Overview
 
-AWS CardDemo is a mainframe credit-card batch and online demonstration application written in COBOL with VSAM, CICS, and BMS components. This project remediates a high-severity **silent logic defect** in the batch transaction-posting program `CBTRN02C` (job step `POSTTRAN.STEP15`) that allowed daily transactions targeting inactive, closed, or otherwise non-active accounts to be posted to `TRANSACT.VSAM.KSDS` and applied to `ACCTFILE`/`TCATBAL` exactly as if the account were active. The fix is a single in-place edit to paragraph `1500-B-LOOKUP-ACCT` adding an `ACCT-ACTIVE-STATUS NOT = 'Y'` check, assigning reason code `104` (`ACCOUNT NOT ACTIVE`), and routing affected transactions through the existing `DALYREJS` reject pipeline so downstream consumers (`CBSTM03A`, `CBACT04C`) operate on a clean transaction master.
+This project remediates a silent data-integrity defect in the AWS CardDemo mainframe batch program **CBTRN02C** (job step `POSTTRAN.STEP15`). Before the fix, the transaction-posting validation paragraph `1500-B-LOOKUP-ACCT` never inspected the `ACCT-ACTIVE-STATUS` flag, so daily transactions targeting **closed or inactive accounts** were silently posted to `TRANSACT.VSAM.KSDS` and applied to `ACCTFILE`/`TCATBAL`, corrupting downstream statements (`CBSTM03A`) and interest calculations (`CBACT04C`). The fix adds an `ACCT-ACTIVE-STATUS NOT = 'Y'` check that routes non-active accounts to the existing reject pipeline (`DALYREJS`) with new reason code `0104` "ACCOUNT NOT ACTIVE". Target users are mainframe batch operations and downstream financial reporting consumers; the business impact is restored transaction-master integrity.
 
 ### 1.2 Completion Status
 
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': {'pie1':'#5B39F3', 'pie2':'#FFFFFF', 'pieStrokeColor':'#B23AF2', 'pieOuterStrokeColor':'#B23AF2', 'pieTitleTextSize':'16px', 'pieSectionTextSize':'14px', 'pieLegendTextSize':'14px'}}}%%
-pie showData
-    title Project Completion — 85% Complete
-    "Completed Work (AI)" : 17
-    "Remaining Work" : 3
+%%{init: {'theme':'base', 'themeVariables': {'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieOuterStrokeColor':'#B23AF2','pieTitleTextSize':'16px','pieSectionTextSize':'14px','pieLegendTextSize':'13px'}}}%%
+pie showData title Project Completion — 80.0% Complete
+    "Completed Work (h)" : 20.0
+    "Remaining Work (h)" : 5.0
 ```
 
 | Metric | Value |
 |---|---|
-| **Total Project Hours** | 20.0 |
-| **Completed Hours (AI + Manual)** | 17.0 (AI: 17.0 · Manual: 0.0) |
-| **Remaining Hours** | 3.0 |
-| **Completion Percentage** | **85.0%** |
+| **Total Hours** | 25.0 |
+| **Completed Hours (AI + Manual)** | 20.0 |
+| **Remaining Hours** | 5.0 |
+| **Completion** | **80.0%** |
 
-> Completion is computed strictly from AAP-scoped and path-to-production hours: `17.0 / (17.0 + 3.0) × 100 = 85.0%`.
+Completion is computed using the AAP-scoped, hours-based methodology: `20.0 / (20.0 + 5.0) × 100 = 80.0%`. The entire AAP-scoped **code deliverable** is 100% implemented and validated in the Blitzy environment; the remaining 5.0 hours are **path-to-production** activities that require the real mainframe runtime and VSAM datasets (unavailable in the autonomous environment). Colors: Completed = Dark Blue `#5B39F3`, Remaining = White `#FFFFFF`.
 
 ### 1.3 Key Accomplishments
 
-- ✅ Root cause definitively identified: missing `ACCT-ACTIVE-STATUS` check in paragraph `1500-B-LOOKUP-ACCT`
-- ✅ Surgical single-paragraph fix committed (`c3a0a32d`) in `app/cbl/CBTRN02C.cbl` (`+29 / -16`, net `+13` lines)
-- ✅ Byte-for-byte adherence to AAP §0.4.1.1 specification verified (reason `104` = `ACCOUNT NOT ACTIVE`)
-- ✅ Defensive `NOT = 'Y'` comparison covers `'N'`, `'C'`, blanks, `LOW-VALUES`, and any corrupt status byte
-- ✅ Existing reason codes (`100`, `101`, `102`, `103`, `109`) preserved; `102`/`103` re-nested in the new `ELSE` branch without logic change
-- ✅ Compile-clean under GnuCOBOL 3.2.0 IBM dialect — `cobc -fsyntax-only` exit 0, zero new warnings; module build produces a valid 51,840-byte ELF shared object
-- ✅ **Automated regression test delivered** — `tests/test_cbtrn02c.sh` (480 lines): GnuCOBOL flat-file simulation with `'Y'`/`'N'`/`'C'`/`' '` fixtures, **25/25 assertions passing**, including a negative control that proves the pre-fix program fails the test
-- ✅ **Operations runbook addendum delivered** — `blitzy/docs/operations_runbook_addendum.md` (292 lines): reason code `104`, `RC=4` semantics, daily SYSOUT checklist, z/OS deployment, troubleshooting/rollback
-- ✅ Scope boundary enforced: only `CBTRN02C.cbl` modified; all excluded files (copybooks, JCL, CSD, BMS, downstream programs) and the Apache 2.0 header untouched
-- ✅ Working tree clean; single linear commit history on the target branch with correct `agent@blitzy.com` authorship
+- ✅ Root-caused the silent posting defect to the single omission in paragraph `1500-B-LOOKUP-ACCT` of `app/cbl/CBTRN02C.cbl`.
+- ✅ Implemented the exact fix specified by the AAP §0.4.1.1: `IF ACCT-ACTIVE-STATUS NOT = 'Y'` → reason code `104` + description `ACCOUNT NOT ACTIVE`, with the existing credit-limit (`102`) and expiration (`103`) checks preserved verbatim inside the new `ELSE` branch.
+- ✅ Maintained perfect scope discipline — **exactly one** application file changed (`git diff --name-only origin/main...HEAD -- app/` returns a single line); 0 files created/deleted/moved in `app/`; Apache 2.0 header preserved.
+- ✅ Compiles cleanly: `cobc -fsyntax-only` exits 0 with **0 warnings**; all 10 sibling batch programs still compile clean (no cross-program regression).
+- ✅ Authored a 480-line automated regression harness (`tests/test_cbtrn02c.sh`) that simulates VSAM via GnuCOBOL indexed files and asserts all four status scenarios — **25/25 assertions pass**.
+- ✅ Delivered supporting production-readiness artifacts: a hardened CI workflow, a senior-architect PR review checklist, and an operations runbook addendum.
 
 ### 1.4 Critical Unresolved Issues
 
+There are **no blocking compilation or test failures** within the project scope — the in-scope code compiles clean and passes 25/25 tests. The open items below are path-to-production validations that require the real mainframe environment.
+
 | Issue | Impact | Owner | ETA |
 |---|---|---|---|
-| Mainframe JCL end-to-end verification (AAP §0.6.1) cannot execute on Linux | Final confirmation of `DALYREJS` byte layout and VSAM side-effects on real z/OS deferred until mainframe run | Mainframe Operations / QA | Pre-production cutover (1.5 h) |
-| Code review and PR approval pending | Cannot merge to mainline until reviewed per change-control | Senior COBOL Architect | 0.5 h after PR open |
-| Production deployment (recompile + link-edit into `LOADLIB`) | `POSTTRAN.STEP15` will not load the patched module until deployed | Mainframe Operations | At deployment window (0.5 h) |
-| Downstream smoke checks (`CREASTMT.jcl`, `INTCALC.jcl`) not yet run | Business effect on statements/interest unconfirmed end-to-end | QA | After mainframe verification (0.5 h) |
+| Fix validated on GnuCOBOL 3.2.0 proxy, not the production runtime (z/OS COBOL / AWS Blu Age / Micro Focus) | Compile/link/runtime behavior on the target platform not yet confirmed (low risk — only universal COBOL constructs used) | Mainframe Build/SCM team | After HT-1 + HT-2 (2.5h) |
+| Real-VSAM `POSTTRAN.jcl` execution not yet performed | End-to-end behavior against real `ACCTFILE`/`DALYTRAN`/`TRANSACT` datasets not yet observed | Batch / QA Engineering | After HT-2 (1.5h) |
+| Downstream smoke tests (`CREASTMT.jcl`/`CBSTM03A`, `INTCALC.jcl`/`CBACT04C`) pending | Intended business effect (clean transaction master) not yet confirmed end-to-end | Batch / QA Engineering | After HT-3 (1.0h) |
+| Scheduler return-code handling unverified | `RC=4` now fires when inactive-account rejects occur (previously `RC=0`); Control-M/CA-7 logic must treat it as a warning, not a hard failure | Release / Operations | After HT-5 (0.5h) |
 
 ### 1.5 Access Issues
 
 | System/Resource | Type of Access | Issue Description | Resolution Status | Owner |
 |---|---|---|---|---|
-| z/OS LPAR or AWS Mainframe Modernization (M2) / Micro Focus Enterprise Server | Execution (JES2 / VSAM KSDS) | Linux container lacks JES2, VSAM KSDS, and mainframe load-library management required to execute the AAP §0.6 verification protocol end-to-end | Architectural limitation — protocol must run in a mainframe-equivalent environment; substantially de-risked by the GnuCOBOL regression test | Mainframe Operations |
-| Production change-management workflow | Approval | PR merge to mainline requires senior reviewer approval per organizational change-control policy | Pending PR submission | Release Manager |
-| `CICS` preprocessor (for 17 online programs) | Build tooling | Not required for this fix; noted only because 17 out-of-scope CICS programs cannot compile under GnuCOBOL without it | Out of scope — no action for this fix | N/A |
+| Production mainframe runtime (z/OS Enterprise COBOL / AWS Blu Age / Micro Focus Enterprise Server) | Compile, link-edit, execute | Not available in the Blitzy autonomous environment; **GnuCOBOL 3.2.0** used as a validated proxy | Open — requires human with mainframe/emulator access | Mainframe team |
+| Real VSAM datasets (`ACCTFILE`, `DALYTRAN`, `XREFFILE`, `TRANSACT`, `TCATBAL`, `DALYREJS`) | Dataset provisioning | Not available in proxy environment; the test harness simulates them via GnuCOBOL indexed files using production copybooks | Open — provision representative datasets in a test region | Batch / QA Engineering |
+
+No repository-permission, source-control, or credential access issues were identified — all in-scope code work was completed and committed on branch `blitzy-1c1270d2-e0c7-4c24-86dc-d97d79d5ab64`.
 
 ### 1.6 Recommended Next Steps
 
-1. **[High]** Open the pull request and obtain senior COBOL architect review/approval of the `CBTRN02C` diff, the regression test, and the runbook (0.5 h).
-2. **[High]** Execute the AAP §0.6.1 mainframe verification: load `Y/N/C/blank` fixtures, submit `POSTTRAN.jcl`, and confirm `DALYREJS` (`0104` / `ACCOUNT NOT ACTIVE`), no posting of non-active transactions, and `RC=4` (1.5 h).
-3. **[Medium]** Recompile and link-edit the patched `CBTRN02C` into `AWS.M2.CARDDEMO.LOADLIB` per runbook §5 so `POSTTRAN.STEP15` picks it up (0.5 h).
-4. **[Medium]** Run downstream smoke checks (`CREASTMT.jcl`, `INTCALC.jcl`) to confirm statements exclude rejected transactions and inactive-account balances are unchanged (0.5 h).
-5. **[Low]** Brief operations staff on the new reason code `104` and the "`RC=4` is expected/normal" semantics using the delivered runbook addendum.
-
----
+1. **[High]** Compile and link-edit `CBTRN02C` on the target mainframe runtime into the application load library (HT-1, 1.0h).
+2. **[High]** Execute `POSTTRAN.jcl` (STEP15) against real VSAM datasets with inactive-account fixtures; verify `0104` rejects to `DALYREJS`, no posting to `TRANSACT`/`ACCTFILE`/`TCATBAL`, and `RC=4` (HT-2, 1.5h).
+3. **[Medium]** Run downstream smoke tests `CREASTMT.jcl` and `INTCALC.jcl` to confirm inactive-account transactions are excluded from statements and interest (HT-3, 1.0h).
+4. **[Medium]** Complete human code review and PR approval/merge using `blitzy/docs/pr_review_checklist.md` (HT-4, 1.0h).
+5. **[Low]** Deploy to the production load library and coordinate release, confirming the scheduler treats `RC=4` as a warning and reject monitoring recognizes reason `0104` (HT-5, 0.5h).
 
 ## 2. Project Hours Breakdown
 
@@ -75,314 +67,282 @@ pie showData
 
 | Component | Hours | Description |
 |---|---|---|
-| Root Cause Diagnostic Analysis | 2.5 | Identified the single defect site in `1500-B-LOOKUP-ACCT`; enumerated existing reason codes (`100`, `101`, `102`, `103`, `109` — `104` free); confirmed `ACCT-ACTIVE-STATUS` already in scope via `COPY CVACT01Y`; produced the 16-row evidence table mapping AAP requirements to code locations (AAP §0.2–§0.3) |
-| Core Code Fix + Comment Block | 2.5 | Wrapped the existing credit-limit (`102`) and expiration (`103`) checks inside the `ELSE` of a new `IF ACCT-ACTIVE-STATUS NOT = 'Y'` setting reason `104` / `ACCOUNT NOT ACTIVE`; authored the 7-line explanatory comment block; net `+13` lines; preserved original logic byte-for-byte; committed in `c3a0a32d` (AAP §0.4.1) |
-| Compile & Link Validation | 1.0 | `cobc -fsyntax-only -std=ibm` exit 0 zero output; `cobc -m` produces a valid 51,840-byte ELF `.so`; zero new warnings versus the pre-fix baseline (AAP §0.4.3) |
-| Regression Compile Baseline | 0.5 | Verified the 10 clean-compiling batch programs (CBACT01–04C, CBCUS01C, CBSTM03B, CBTRN01–03C, CSUTLDTC) continue to compile post-fix (AAP §0.6.2.5) |
-| Static Control-Flow + Runtime Smoke Verification | 1.0 | Verified all six paths in the fix region by static analysis (active `'Y'`, inactive `'N'`, closed `'C'`, blank/`LOW-VALUES`, account-not-found `101`, invalid-card `100`); confirmed the module loads and executes under `cobcrun` |
-| Scope Boundary + Git Hygiene Verification | 1.0 | Confirmed only `CBTRN02C.cbl` modified; copybooks, JCL, CSD, BMS, downstream programs, and the Apache 2.0 header untouched; single clean commit on the target branch (AAP §0.5) |
-| Validation Report Compilation | 0.5 | Compiled the 5-gate production-readiness report; transparently documented out-of-scope pre-existing issues (17 CICS programs need a CICS preprocessor; `CBSTM03A` blocked by hard tabs in the excluded `CUSTREC.cpy`) |
-| Automated Regression Test Harness | 5.0 | `tests/test_cbtrn02c.sh` (480 lines): GnuCOBOL flat-file simulation that generates a 350-byte `DALYTRAN` input and BDB-indexed `XREFFILE`/`ACCTFILE`/`TCATBALF` fixtures via an embedded COBOL loader reusing production copybooks (`CVTRA06Y`/`CVACT01Y`/`CVACT03Y`) for byte-exact layout; compiles and runs `CBTRN02C`; **25 assertions**; negative control proving the pre-fix build fails; self-cleaning and idempotent (automates AAP §0.6.1/§0.6.2) |
-| Operations Runbook Addendum | 2.0 | `blitzy/docs/operations_runbook_addendum.md` (292 lines): reason code `104`, reject-code catalog, `RC=4` semantics, daily SYSOUT/operations checklist, z/OS recompile + link-edit deployment, troubleshooting/rollback, quick reference — all DSNs/DD/PROC names verified against the repo |
-| Production-Readiness Re-Validation | 1.0 | Re-ran all 5 gates against the new deliverables; confirmed the test is idempotent across repeated runs and a different CWD; validated test quality via negative control (authentic pre-fix `CBTRN02C` → 0 rejects → test correctly fails) |
-| **Total Completed Hours** | **17.0** | |
+| Root-cause diagnosis & code investigation | 3.5 | Located the missing `ACCT-ACTIVE-STATUS` check in `1500-B-LOOKUP-ACCT`; confirmed the validation framework, reason-code scheme, reject pipeline, and JCL provisioning already supported the fix (AAP §0.2/§0.3). |
+| Core fix implementation | 2.0 | Inserted `IF ACCT-ACTIVE-STATUS NOT = 'Y'` → reason `104` + `ACCOUNT NOT ACTIVE`; wrapped existing credit-limit (`102`) and expiration (`103`) logic verbatim in the `ELSE`; added a 7-line explanatory comment header (AAP §0.4). |
+| Automated regression test harness | 6.0 | `tests/test_cbtrn02c.sh` (480 lines): simulates VSAM via GnuCOBOL indexed files using production copybooks; 4 scenarios (`Y` posts; `N`/`C`/blank rejected) across 25 assertions covering `0104` layout, RC=4, and counters. |
+| CI workflow | 2.0 | `.github/workflows/cbtrn02c-regression.yml` (75 lines): push + PR triggers, ubuntu-latest, GnuCOBOL install, harness as gating step; least-privilege permissions, concurrency control, yamllint-clean. |
+| PR review checklist | 1.5 | `blitzy/docs/pr_review_checklist.md` (220 lines): 6-section senior-architect review with exact line-number verification of the fix and all six reason codes; pymarkdown-clean. |
+| Operations runbook addendum | 2.5 | `blitzy/docs/operations_runbook_addendum.md` (292 lines): operational guidance for the new `0104` reject reason, RC=4 signaling, and monitoring impact. |
+| Compilation, cross-regression & lint validation | 2.5 | Clean `cobc -fsyntax-only` (0 warnings); 10-program compile-regression; multi-linter validation (cobc/yamllint/pymarkdown); scope-discipline proof. |
+| **Total** | **20.0** | **Sums to Completed Hours in Section 1.2** |
 
 ### 2.2 Remaining Work Detail
 
 | Category | Hours | Priority |
 |---|---|---|
-| Mainframe JCL End-to-End Verification (AAP §0.6.1) — load `Y`/`N`/`C`/blank fixtures and submit `POSTTRAN.jcl` on z/OS / AWS M2 / Micro Focus; verify `DALYREJS` byte layout (`0104` at 351–354, `ACCOUNT NOT ACTIVE` at 355–430), absence of non-active transactions in `TRANSACT.VSAM.KSDS`, unchanged `ACCTFILE`/`TCATBAL` balances, and `RC=4` semantics | 1.5 | High |
-| Code Review & Pull Request Approval — senior COBOL architect reviews the `+29/-16` diff, the regression test, and the runbook; PR approval per organizational change-control | 0.5 | High |
-| Production Deployment — recompile (`IGYCRCTL`) and link-edit (`HEWL`) the patched `CBTRN02C` into `AWS.M2.CARDDEMO.LOADLIB` so `POSTTRAN.STEP15` loads it on the next run (per runbook §5) | 0.5 | Medium |
-| Downstream Smoke Verification (AAP §0.6.2.4) — run `CREASTMT.jcl` and `INTCALC.jcl` after a `POSTTRAN` execution containing inactive-account transactions; confirm statements exclude rejected transactions and inactive-account balances remain at the pre-job state | 0.5 | Medium |
-| **Total Remaining Hours** | **3.0** | |
+| Production-runtime compile + link-edit (z/OS COBOL / AWS Blu Age / Micro Focus) into the load library | 1.0 | High |
+| Real-VSAM-dataset `POSTTRAN.jcl` execution + dataset verification in a test region | 1.5 | High |
+| Downstream smoke tests (`CREASTMT.jcl`/`CBSTM03A`; `INTCALC.jcl`/`CBACT04C`) | 1.0 | Medium |
+| Human code review & PR approval/merge | 1.0 | Medium |
+| Deploy to production load library & release coordination | 0.5 | Low |
+| **Total** | **5.0** | — |
 
 ### 2.3 Hours Calculation Trace
 
-```
-Completed Hours = 2.5 + 2.5 + 1.0 + 0.5 + 1.0 + 1.0 + 0.5 + 5.0 + 2.0 + 1.0 = 17.0
-Remaining Hours = 1.5 + 0.5 + 0.5 + 0.5                                     =  3.0
-Total Hours     = 17.0 + 3.0                                                = 20.0
-Completion %    = 17.0 / 20.0 × 100                                         = 85.0%
-```
-
----
+- Completed = 3.5 + 2.0 + 6.0 + 2.0 + 1.5 + 2.5 + 2.5 = **20.0h** (Section 2.1)
+- Remaining = 1.0 + 1.5 + 1.0 + 1.0 + 0.5 = **5.0h** (Section 2.2)
+- Total = 20.0 + 5.0 = **25.0h**
+- Completion = 20.0 / 25.0 × 100 = **80.0%**
+- Cross-section integrity: Section 2.1 (20.0) + Section 2.2 (5.0) = Total (25.0) ✓; Remaining = 5.0 in Sections 1.2, 2.2, and 7 ✓.
 
 ## 3. Test Results
 
-All tests below originate from Blitzy's autonomous validation logs for this project and were independently re-executed during this assessment. There is no third-party or pre-existing test suite for `CBTRN02C`; the harness in `tests/test_cbtrn02c.sh` was authored as part of this work.
+All tests below originate from Blitzy's autonomous validation logs for this project and were re-executed live during this assessment session.
 
 | Test Category | Framework | Total Tests | Passed | Failed | Coverage % | Notes |
 |---|---|---|---|---|---|---|
-| Unit / Regression (functional) | GnuCOBOL 3.2.0 flat-file simulation (`tests/test_cbtrn02c.sh`) | 25 assertions | 25 | 0 | Path: all 6 fix-region branches exercised | `Y`/`N`/`C`/blank scenarios; verifies `0104` at bytes 351–354 and `ACCOUNT NOT ACTIVE` at 355–430; active `'Y'` posts to `TRANFILE`, non-active rejected to `DALYREJS` |
-| Compilation (static) | GnuCOBOL `cobc -fsyntax-only -std=ibm` | 1 | 1 | 0 | N/A | Exit 0, zero output; zero new warnings vs pre-fix baseline |
-| Build (code generation) | GnuCOBOL `cobc -m -std=ibm` | 1 | 1 | 0 | N/A | Valid 51,840-byte ELF 64-bit shared object |
-| Runtime (end-to-end) | `cobcrun` via the harness | 1 | 1 | 0 | N/A | `CBTRN02C` runs to completion; SYSOUT = 4 processed / 3 rejected; `RC=4` (expected); `DALYREJS` = 3 × 430 bytes |
-| Negative Control (test-validity) | GnuCOBOL (authentic pre-fix `CBTRN02C`) | 1 | 1 | 0 | N/A | Pre-fix build produces 0 rejects and wrongly posts the inactive account → harness correctly **fails**, proving the test genuinely detects the defect |
-| **Totals** | — | **29** | **29** | **0** | — | 100% pass rate across all autonomous test categories |
+| Functional Regression | GnuCOBOL 3.2.0 + bash harness (`tests/test_cbtrn02c.sh`) | 25 | 25 | 0 | 100% of fix paths | Verifies `Y` posts; `N`/`C`/blank rejected with `0104`; RC=4; processed=4/rejected=3; DALYREJS 3×430 bytes; reason bytes 351–354=`0104`, desc=`ACCOUNT NOT ACTIVE`. |
+| Compilation / Static | `cobc -fsyntax-only -std=ibm` | 10 | 10 | 0 | All clean batch programs | CBACT01C–04C, CBCUS01C, CBSTM03B, CBTRN01C–03C, CSUTLDTC compile with 0 warnings — no cross-program regression from the fix. |
+| **Totals** | — | **35** | **35** | **0** | — | 100% pass rate across all autonomous tests. |
 
-**Coverage note:** GnuCOBOL line-coverage tooling is not configured for this batch program; coverage is reported as functional **path coverage** — the regression test exercises every branch in the modified region (`'Y'` active fall-through, `'N'`/`'C'`/blank → reason `104`, plus the preserved `100`/`101` paths). Reason codes `102`/`103` were intentionally isolated out (all fixtures are within credit limit and unexpired) so that reason `104` is the sole failing predicate for non-active accounts.
-
----
+**Note on the in-scope file:** `CBTRN02C.cbl` itself compiles syntax-only at exit 0 with 0 warnings and builds a loadable module (`cobc -m` → `CBTRN02C.so`) with only a benign `_FORTIFY_SOURCE` gcc note. Out-of-scope programs `CBSTM03A.CBL` and the 17 CICS `CO*.cbl` do not compile under GnuCOBOL — these are **pre-existing** failures (byte-identical to `origin/main`), explicitly excluded by AAP §0.5.4, and unrelated to this fix.
 
 ## 4. Runtime Validation & UI Verification
 
-**Runtime health (batch program, executed via `cobcrun` on GnuCOBOL):**
+**Runtime health (GnuCOBOL proxy — simulated `POSTTRAN.STEP15`):**
 
-- ✅ **Operational** — `CBTRN02C` loads and runs to normal completion; PROCEDURE DIVISION executes end-to-end.
-- ✅ **Operational** — Reject pipeline: `DALYREJS` receives exactly 3 × 430-byte reject records for the `'N'`/`'C'`/`' '` accounts, each carrying `0104` / `ACCOUNT NOT ACTIVE`.
-- ✅ **Operational** — Posting path: the active `'Y'` transaction is written to `TRANFILE` and is absent from `DALYREJS`.
-- ✅ **Operational** — Counters and return code: SYSOUT reports `4` processed / `3` rejected; step returns `RC=4` (the expected, normal signal when rejects occur — **not** a failure).
-- ⚠ **Partial** — Mainframe end-to-end runtime (real VSAM KSDS under z/OS / AWS M2) is **pending** (AAP §0.6.1); the Linux flat-file simulation substantially de-risks but does not replace it.
+- ✅ **Operational** — `CBTRN02C` compiles clean (0 warnings) and builds a loadable module.
+- ✅ **Operational** — End-to-end harness run completes: active `Y` accounts post correctly.
+- ✅ **Operational** — Inactive `N`, closed `C`, and blank status accounts are rejected with reason `0104` and written to `DALYREJS` (430-byte records); **not** posted to `TRANSACT`/`ACCTFILE`/`TCATBAL`.
+- ✅ **Operational** — Counters and return code correct: processed=4, rejected=3, `RC=4` when rejects occur.
+- ✅ **Operational** — 10 sibling batch programs compile clean (no regression).
+- ⚠ **Partial** — Production-runtime (z/OS / Blu Age / Micro Focus) compile/link/execute pending (HT-1, HT-2).
+- ⚠ **Partial** — Downstream `CBSTM03A` (statements) and `CBACT04C` (interest) smoke tests pending (HT-3).
 
-**UI verification:**
+**API integration:** ❌ Not applicable — `CBTRN02C` is a non-interactive JCL-invoked batch program with no network service or API surface.
 
-- ➖ **Not Applicable** — `CBTRN02C` is a non-interactive batch program invoked by JCL. It performs no terminal I/O and has no BMS map (AAP §0.4.4). There is no UI surface to verify.
-
-**API integration:**
-
-- ➖ **Not Applicable** — The program uses sequential/VSAM file I/O only; there are no HTTP/REST/web-service integrations.
-
----
+**UI verification:** ❌ Not applicable — the program performs no terminal I/O, has no BMS map, and is not a CICS transaction (AAP §0.4.4). No screens to verify.
 
 ## 5. Compliance & Quality Review
 
-AAP deliverables cross-mapped to Blitzy quality and compliance benchmarks. "Fixes applied" reflects work completed during autonomous implementation/validation.
+AAP deliverables cross-mapped to Blitzy quality benchmarks. Status legend: ✅ Pass · ⚠ Pending (path-to-production).
 
-| Benchmark / AAP Requirement | Status | Progress | Evidence / Notes |
-|---|---|---|---|
-| Defect remediated per AAP §0.4.1 (reason `104` in `1500-B-LOOKUP-ACCT`) | ✅ Pass | 100% | `c3a0a32d`; byte-for-byte match to §0.4.1.1; reason `104` at line 411 |
-| Single-file scope boundary (AAP §0.5.1) | ✅ Pass | 100% | `git show c3a0a32d --name-only` = only `app/cbl/CBTRN02C.cbl` |
-| Excluded files untouched (AAP §0.5.4) | ✅ Pass | 100% | 0 files changed in `app/cpy`, `app/jcl`, `app/csd`, `app/bms` across the branch |
-| No refactor / no additions beyond scope (AAP §0.5.5–§0.5.6) | ✅ Pass | 100% | Reason-code scheme, trailer layout, dispatcher, and reject writer unchanged |
-| Apache 2.0 license header preserved (AAP §0.7.3) | ✅ Pass | 100% | Lines 7–21 intact in `CBTRN02C.cbl` |
-| Coding conventions (3-digit reason in `PIC 9(04)`, uppercase desc, `NOT = 'Y'` literal compare, `*`-comment) | ✅ Pass | 100% | New code mirrors existing `100`/`101`/`102`/`103` patterns |
-| Compile clean, zero new warnings (AAP §0.4.3, §0.6.2.5) | ✅ Pass | 100% | `cobc -fsyntax-only` exit 0; warning count unchanged vs pre-fix |
-| Bug-elimination confirmation (AAP §0.6.1) | ✅ Pass (Linux) | 100% on Linux | 25/25 assertions in `tests/test_cbtrn02c.sh` |
-| Regression checks for reasons `100`/`101`/`102`/`103`/`109` (AAP §0.6.2) | ✅ Pass | 100% | Active `'Y'` posts; non-active rejected; reason codes intact; compile-time regression clean |
-| Automated test deliverable | ✅ Pass | 100% | `tests/test_cbtrn02c.sh` with negative control |
-| Operations documentation deliverable | ✅ Pass | 100% | `blitzy/docs/operations_runbook_addendum.md` |
-| Mainframe end-to-end verification (AAP §0.6.1 literal) | ⚠ Pending | 0% | Requires z/OS/M2; tracked as remaining (HT-1) |
-| Downstream smoke checks (AAP §0.6.2.4) | ⚠ Pending | 0% | Requires mainframe; tracked as remaining (HT-4) |
-| Code review / PR approval | ⚠ Pending | 0% | Human change-control; tracked as remaining (HT-2) |
-| Production deployment / link-edit (AAP §0.5.3) | ⚠ Pending | 0% | Requires z/OS; runbook §5 documents procedure; tracked as remaining (HT-3) |
+| # | AAP Requirement | Benchmark | Status | Evidence |
+|---|---|---|---|---|
+| R1 | Root-cause diagnosis (§0.2/§0.3) | Correct defect localization | ✅ Pass | Fix targets `1500-B-LOOKUP-ACCT`; AAP documents full diagnosis. |
+| R2 | Core fix `IF ACCT-ACTIVE-STATUS NOT = 'Y'` (§0.4.1) | Matches spec verbatim | ✅ Pass | Diff matches AAP §0.4.1.1 exactly; source ~L410. |
+| R3 | Reason code `104` + `ACCOUNT NOT ACTIVE` (§0.4.1) | Correct reason/desc | ✅ Pass | Source L411–412; harness asserts bytes 351–354=`0104`, desc string. |
+| R4 | Preserve `102`/`103` + `COMPUTE` in `ELSE` (§0.4.2.2) | No regression to existing checks | ✅ Pass | Reason codes 100/101/102/103/104/109 present at L385/397/422/429/411/569. |
+| R5 | Explanatory comments (§0.7.4) | Maintainability | ✅ Pass | 7-line comment header present. |
+| R6 | Reuse infra; no new WS/SELECT/FD/COPY/JCL (§0.5.2) | Minimal footprint | ✅ Pass | Only paragraph body changed. |
+| R7 | Preserve Apache header L7–21 (§0.5.4) | License integrity | ✅ Pass | Header intact. |
+| R8 | Scope discipline: 1 file modified in `app/` (§0.5.1) | No scope creep | ✅ Pass | `git diff --name-only origin/main...HEAD -- app/` = 1 line. |
+| R9 | Compile clean, 0 new warnings (§0.6.2.5) | Build quality | ✅ Pass (proxy) | `cobc -fsyntax-only` exit 0, 0 warnings. Production compile = HT-1. |
+| R10 | Functional verification Y/N/C/blank + RC=4 + `0104` layout (§0.6.1) | Bug elimination | ✅ Pass (proxy) | 25/25 harness assertions. Real-dataset run = HT-2. |
+| R11 | Regression for reasons 100/101/102/103/109 + counters + I/O (§0.6.2) | No behavioral drift | ✅ Pass (proxy) | Active path posts; non-active rejected; 10-program compile regression clean. |
+| R12 | Downstream smoke tests `CREASTMT`/`INTCALC` (§0.6.2.4) | End-to-end business effect | ⚠ Pending | Requires real datasets — HT-3. |
+| S1 | Automated test harness | Test coverage | ✅ Pass | `tests/test_cbtrn02c.sh` (480 ln, 25 assertions). |
+| S2 | CI gating workflow | Continuous validation | ✅ Pass | `cbtrn02c-regression.yml` (75 ln), yamllint-clean. |
+| S3 | PR review checklist | Review readiness | ✅ Pass | `pr_review_checklist.md` (220 ln), pymarkdown-clean. |
+| S4 | Operations runbook addendum | Operational readiness | ✅ Pass | `operations_runbook_addendum.md` (292 ln). |
 
----
+**Fixes applied during autonomous validation:** YAML lint hardening (document-start, quoted `on:` key) → zero yamllint violations; Markdown MD031 fix → zero pymarkdown violations; cleared a false-positive in the compile-regression loop (uppercase `.CBL` extensions). **Outstanding compliance items:** R12 (downstream smoke tests) — deferred to path-to-production HT-3.
 
 ## 6. Risk Assessment
 
 | Risk | Category | Severity | Probability | Mitigation | Status |
 |---|---|---|---|---|---|
-| Mainframe (Enterprise COBOL / AWS Blu Age) vs GnuCOBOL behavioral parity — verification ran on GnuCOBOL, not the production runtime | Technical | Low | Low | Fix uses only universal constructs (`IF/ELSE/END-IF`, `MOVE` literal, `PIC X(01)` equality) per AAP §0.7.5; HT-1 confirms on z/OS | Open (mitigated) |
-| Fix short-circuits credit-limit (`102`) / expiration (`103`) checks for non-active accounts | Technical | Low | Low | By design per AAP §0.3.3.3 — reason `104` is the primary failure; `102`/`103` immaterial for non-active accounts; covered by tests | Accepted / Resolved |
-| No new security exposure; fix is a data-integrity improvement preventing silent corruption of `TRANSACT`/`ACCTFILE`/`TCATBAL`; defensive `NOT = 'Y'` is fail-safe for blank/`LOW-VALUES`/corrupt bytes | Security | Low | Low | No new file, `CALL`, SQL, or CICS verb introduced | Resolved |
-| Operators may misinterpret `RC=4` as a job failure (previously silent `RC=0`; now rejects → `RC=4`) | Operational | Medium | Medium | Runbook §3 documents `RC=4` as expected/normal; escalate only on `RC≥8`; scheduler guidance provided | Mitigated |
-| `DALYREJS` reject volume increases once non-active transactions are diverted | Operational | Low | Low–Medium | Runbook daily SYSOUT checklist + reject-code catalog | Mitigated |
-| Deployment must ensure `POSTTRAN.STEP15` loads the patched module | Operational | Medium | Low | Runbook §5 deployment + activation steps (batch — no CICS NEWCOPY) | Open (pending HT-3) |
-| Downstream `CBSTM03A`/`CBACT04C` depend on the now-clean transaction master/balances (positive effect, unverified on mainframe) | Integration | Low–Medium | Low | Downstream smoke checks (HT-4) using `CREASTMT.jcl`/`INTCALC.jcl` | Open (pending HT-4) |
-| Load-library module pickup (drop-in replacement) | Integration | Low | Low | Runbook §5.3 activation; batch program auto-loads next run | Open (pending HT-3) |
+| Production-compiler dialect divergence (validated on GnuCOBOL proxy, not z/OS/Blu Age/Micro Focus) | Technical | Low | Low | Only universal COBOL constructs used (AAP §0.7.5); production compile+link (HT-1) and functional run (HT-2) | Open — mitigated by remaining task |
+| Status values beyond `Y`/`N`/`C`/blank rejected by defensive `NOT = 'Y'` | Technical | Low–Med | Low | Canonical convention is `Y`/`N` only (AAP §0.7.3); inspect `acctdata` for stray values | Accepted (intended fail-safe) |
+| Inactive accounts now report `104` instead of `102`/`103` when also over-limit/expired | Technical | Low | Med | Documented intended behavior (AAP §0.3.3.3); `104` is the correct primary reason | Accepted (by design) |
+| Security posture | Security | None–Low | N/A | Fix adds no I/O, files, calls, SQL, or CICS; strictly tightens validation, blocking posting to closed accounts (reduces abuse vector) | Mitigated (net improvement) |
+| CI supply-chain exposure | Security | Low | Low | Least-privilege `permissions: contents: read`; pinned `actions/checkout@v4` | Mitigated (hardened) |
+| `RC=4` now fires for inactive-account batches (was `RC=0`) | Operational | Medium | Med | Verify scheduler (Control-M/CA-7) treats `RC=4` as a warning, not a hard failure; ops runbook documents it (HT-5) | Open — human verify |
+| Increased `DALYREJS` volume + new `0104` reason | Operational | Low | Med | `DALYREJS` already `LRECL=430` with headroom; update reject-monitoring dashboards/reports | Open |
+| Operator awareness of new `0104` reason | Operational | Low | Low | Operations runbook addendum created | Mitigated |
+| Downstream `CBSTM03A`/`CBACT04C` not yet e2e-verified with real data | Integration | Low–Med | Low | Smoke tests `CREASTMT.jcl` + `INTCALC.jcl` (HT-3) | Open — remaining task |
+| Real-environment dataset provisioning for `POSTTRAN` run | Integration | Low | Med | Derive fixtures from `app/data/ASCII` per AAP §0.6.1.1 | Open — remaining task |
 
----
+**Overall risk profile: LOW.** The change is a minimal, defensive, single-paragraph validation tightening that adds no new infrastructure and preserves the active-account path bit-for-bit. The most material item is operational (scheduler `RC=4` handling), addressed by HT-5 and the operations runbook addendum.
 
 ## 7. Visual Project Status
 
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': {'pie1':'#5B39F3', 'pie2':'#FFFFFF', 'pieStrokeColor':'#B23AF2', 'pieOuterStrokeColor':'#B23AF2', 'pieTitleTextSize':'16px', 'pieSectionTextSize':'14px', 'pieLegendTextSize':'14px'}}}%%
-pie showData
-    title Project Hours Breakdown — 85% Complete
-    "Completed Work" : 17
-    "Remaining Work" : 3
+%%{init: {'theme':'base', 'themeVariables': {'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieOuterStrokeColor':'#B23AF2','pieTitleTextSize':'16px','pieSectionTextSize':'14px','pieLegendTextSize':'13px'}}}%%
+pie showData title Project Hours Breakdown (Total 25.0h)
+    "Completed Work" : 20.0
+    "Remaining Work" : 5.0
 ```
 
-**Remaining hours by priority (from Section 2.2):**
+**Remaining work by priority (5.0h total):**
 
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': {'pie1':'#5B39F3', 'pie2':'#A8FDD9', 'pieStrokeColor':'#B23AF2', 'pieOuterStrokeColor':'#B23AF2', 'pieTitleTextSize':'16px', 'pieSectionTextSize':'14px', 'pieLegendTextSize':'14px'}}}%%
-pie showData
-    title Remaining Work by Priority (3.0 h)
-    "High (mainframe verify + review)" : 2.0
-    "Medium (deploy + downstream smoke)" : 1.0
+%%{init: {'theme':'base', 'themeVariables': {'pie1':'#5B39F3','pie2':'#B23AF2','pie3':'#A8FDD9','pieStrokeColor':'#B23AF2','pieOuterStrokeColor':'#B23AF2','pieTitleTextSize':'15px','pieSectionTextSize':'13px','pieLegendTextSize':'12px'}}}%%
+pie showData title Remaining Hours by Priority
+    "High" : 2.5
+    "Medium" : 2.0
+    "Low" : 0.5
 ```
 
-| Remaining Category | Hours | Priority |
+| Priority | Remaining Hours | Tasks |
 |---|---|---|
-| Mainframe JCL End-to-End Verification | 1.5 | High |
-| Code Review & PR Approval | 0.5 | High |
-| Production Deployment (link-edit) | 0.5 | Medium |
-| Downstream Smoke Verification | 0.5 | Medium |
-| **Total** | **3.0** | |
+| High | 2.5 | HT-1 (1.0), HT-2 (1.5) |
+| Medium | 2.0 | HT-3 (1.0), HT-4 (1.0) |
+| Low | 0.5 | HT-5 (0.5) |
+| **Total** | **5.0** | Equals Section 1.2 Remaining and Section 2.2 sum ✓ |
 
-> Integrity: "Remaining Work" = **3** matches Section 1.2 Remaining Hours and the Section 2.2 sum. "Completed Work" = **17** matches Section 1.2 Completed Hours.
-
----
+Colors: Completed = Dark Blue `#5B39F3`, Remaining = White `#FFFFFF` (priority chart uses brand accents `#5B39F3`/`#B23AF2`/`#A8FDD9`).
 
 ## 8. Summary & Recommendations
 
-**Achievements.** The high-severity silent defect in `CBTRN02C` is fixed exactly as specified by the AAP: paragraph `1500-B-LOOKUP-ACCT` now rejects any transaction whose target account is not active (`ACCT-ACTIVE-STATUS NOT = 'Y'`) with reason code `104` / `ACCOUNT NOT ACTIVE`, protecting `TRANSACT.VSAM.KSDS`, `ACCTFILE`, and `TCATBAL` from corruption. Beyond the core fix, this engagement delivered two production-hardening assets that did not previously exist: a 480-line GnuCOBOL regression test (25/25 assertions, with a negative control proving its validity) and a 292-line operations runbook addendum covering the new reason code, `RC=4` semantics, and the z/OS deployment procedure.
+**Achievements.** The project is **80.0% complete** (20.0 of 25.0 hours). The entire AAP-scoped code deliverable — the single-paragraph fix to `CBTRN02C` that rejects transactions targeting non-active accounts — is fully implemented and matches the AAP specification verbatim. It compiles clean with zero warnings, passes 25/25 automated assertions across all four account-status scenarios, and introduces no regression to the 10 sibling batch programs. Scope discipline is provably perfect: exactly one application file changed. Supporting production-readiness artifacts (test harness, CI gate, PR checklist, operations runbook) are complete.
 
-**Completion.** The project is **85.0% complete** (17.0 of 20.0 AAP-scoped hours). All autonomously achievable work — diagnosis, the code fix, compile/link validation, automated functional verification, and operations documentation — is finished and committed on a clean branch.
+**Remaining gaps.** The remaining 5.0 hours are exclusively **path-to-production** activities that cannot be performed in the Blitzy autonomous environment because they require the real mainframe runtime and VSAM datasets: production compile/link-edit (HT-1), real-dataset `POSTTRAN.jcl` execution (HT-2), downstream smoke tests (HT-3), human code review/merge (HT-4), and deployment/release coordination (HT-5).
 
-**Remaining gaps & critical path.** The remaining **3.0 hours** are inherently human- and mainframe-bound and cannot be performed in the Linux assessment environment: (1) end-to-end verification by submitting `POSTTRAN.jcl` against real VSAM on z/OS/AWS M2 (1.5 h, High), (2) code review and PR approval (0.5 h, High), (3) recompile + link-edit into the production load library (0.5 h, Medium), and (4) downstream smoke checks via `CREASTMT.jcl`/`INTCALC.jcl` (0.5 h, Medium). The critical path is **review → mainframe verification → deployment → downstream smoke**.
+**Critical path to production.** HT-1 → HT-2 (High priority, 2.5h) form the critical path: once the patched module is compiled, linked, and validated against real datasets, the remaining medium/low tasks (review, smoke tests, deploy) follow. Total human effort to production: **5.0 hours**.
 
-**Success metrics.** Acceptance is met when, on the mainframe, every non-active fixture appears in `DALYREJS` with `0104`, no non-active transaction reaches `TRANSACT.VSAM.KSDS`, inactive-account balances are unchanged, active accounts still post, and the step returns `RC=4` when rejects occur (`RC=0` otherwise).
+**Success metrics.** Production acceptance criteria (AAP §0.6.3): inactive-account transactions appear in `DALYREJS` with reason `0104`; `TRANSACT.VSAM.KSDS` and inactive-account balances in `ACCTFILE`/`TCATBAL` remain unchanged; active-account posting is unaffected; `RC=4` on rejects.
 
-**Production-readiness assessment.** The in-scope code change is **production-ready**: it compiles clean with zero new warnings, passes a rigorous automated regression suite, respects every scope boundary, and ships with operations documentation. Residual risk is low and concentrated in environment-bound verification and standard change-control/deployment activities. **Recommendation: proceed to review and schedule the mainframe verification + deployment.**
-
----
+**Production readiness assessment.** The code is **production-ready pending standard mainframe deployment validation**. Confidence is **High** for the in-scope fix (well-defined, minimal, defensively coded, fully tested in proxy) and **Medium** for the path-to-production steps (standard mainframe operations dependent on environment access). No blocking defects remain in scope.
 
 ## 9. Development Guide
 
 ### 9.1 System Prerequisites
 
-- **OS:** Linux (validated on Ubuntu 25.10) or any environment with GnuCOBOL.
-- **GnuCOBOL 3.2.0+** — provides `cobc` (compiler) and `cobcrun` (runtime).
-- **gcc** (validated: 15.2.0) — GnuCOBOL's C back-end.
-- **Berkeley DB indexed-file handler** — bundled with GnuCOBOL; required for the BDB-backed VSAM simulation in the test.
-- **bash** and **git**.
-- **No package manifest or lock file exists** in the repository — the toolchain *is* the complete dependency set. There is nothing to `npm install` / `pip install`.
-
-Verify the toolchain:
-
-```bash
-cobc --version      # expect: cobc (GnuCOBOL) 3.2.0
-cobcrun --version   # expect: cobcrun (GnuCOBOL) 3.2.0
-gcc --version       # expect: gcc ... 15.2.0
-```
+- **Proxy / CI runtime:** Linux/Unix host, **GnuCOBOL 3.2.0** (`cobc`), `bash`, `git`.
+- **Production runtime:** IBM z/OS Enterprise COBOL, AWS Blu Age, or Micro Focus Enterprise Server, with VSAM KSDS support and the CardDemo JCL/proc library.
+- **Dependencies:** none at the language level (pure COBOL/JCL repository). The single external tool dependency is GnuCOBOL.
 
 ### 9.2 Environment Setup
 
 ```bash
-# From the repository root (the directory containing app/, tests/, blitzy/)
-cd <repository-root>
+# Clone and switch to the fix branch
+git clone <repository-url> aws-carddemo
+cd aws-carddemo
+git checkout blitzy-1c1270d2-e0c7-4c24-86dc-d97d79d5ab64
 
-# No environment variables are required for Linux verification.
-# Copybook include paths are passed on the cobc command line (-I app/cpy -I app/cpy-bms).
+# Copybook include directories used by all compile commands
+#   -I app/cpy        (data copybooks: CVACT01Y, CVTRA06Y, ...)
+#   -I app/cpy-bms    (BMS copybooks)
 ```
 
-### 9.3 Build / Compile
+No environment variables are required for proxy validation.
+
+### 9.3 Dependency Installation
 
 ```bash
-# 1) Read-only syntax check (no artifacts written) — expect exit 0, zero output
+# Install GnuCOBOL (same step the CI workflow runs)
+sudo apt-get update && sudo apt-get install -y gnucobol
+
+# Verify
+cobc --version    # expect: cobc (GnuCOBOL) 3.2.0
+```
+
+### 9.4 Build / Compile
+
+```bash
+# 1) Syntax-only validation of the in-scope fix (expect exit 0, 0 warnings)
 cobc -fsyntax-only -std=ibm -I app/cpy -I app/cpy-bms app/cbl/CBTRN02C.cbl
 
-# 2) Build the dynamically-loadable module (.so) — expect exit 0; valid ELF shared object
-cobc -m -std=ibm -I app/cpy -I app/cpy-bms -o /tmp/CBTRN02C.so app/cbl/CBTRN02C.cbl
-file /tmp/CBTRN02C.so   # => ELF 64-bit LSB shared object, x86-64
+# 2) Build a loadable module (expect exit 0; a benign _FORTIFY_SOURCE note is normal)
+cobc -m -std=ibm -I app/cpy -I app/cpy-bms app/cbl/CBTRN02C.cbl
+# -> produces CBTRN02C.so
 ```
 
-> Note: `cobc -m` may emit a single benign `'_FORTIFY_SOURCE' redefined` note from the build environment. This is **not** a source-code warning and does not affect correctness.
-
-### 9.4 Run the Regression Test
+### 9.5 Run / Verify
 
 ```bash
-# Runs the full GnuCOBOL flat-file simulation and asserts the reason-104 behavior
-./tests/test_cbtrn02c.sh
+# Run the regression harness (expect: Assertions passed: 25  failed: 0 ; exit 0)
+bash tests/test_cbtrn02c.sh
 
-# Optional: retain the temporary work directory (fixtures, DALYREJS, TRANFILE, SYSOUT) for inspection
-KEEP_ARTIFACTS=1 ./tests/test_cbtrn02c.sh
+# Prove scope discipline (expect exactly one line: app/cbl/CBTRN02C.cbl)
+git diff --name-only origin/main...HEAD -- app/
 ```
 
-### 9.5 Verification — Expected Output
+### 9.6 Example Usage & Expected Output
 
-The test prints a banner, builds fixtures, compiles and runs `CBTRN02C`, then prints assertions. Expected tail:
+The harness exercises four account-status scenarios against a simulated `POSTTRAN.STEP15`:
 
-```
- Assertions passed: 25   failed: 0
- RESULT: PASS - reason code 104 (ACCOUNT NOT ACTIVE) verified
-```
+| Scenario | `ACCT-ACTIVE-STATUS` | Expected Result |
+|---|---|---|
+| Active | `Y` | Transaction **posts** (not rejected) |
+| Inactive | `N` | **Rejected** → `DALYREJS` reason `0104` `ACCOUNT NOT ACTIVE`; not posted |
+| Closed | `C` | **Rejected** → reason `0104`; not posted |
+| Blank | ` ` | **Rejected** → reason `0104`; not posted |
 
-- The wrapper **exit code is 0** on success.
-- Internally, `CBTRN02C` returns **`RC=4`** because rejects are present — this is the **expected, normal** signal, not a failure.
-- `DALYREJS` is `1290` bytes = `3 × 430`-byte reject records, each `0104` at bytes 351–354 and `ACCOUNT NOT ACTIVE` at 355–430.
+Expected harness summary: `TRANSACTIONS PROCESSED : 4`, `TRANSACTIONS REJECTED : 3`, `DALYREJS` = 3×430-byte records, step `RC=4`.
 
-### 9.6 Production Deployment (z/OS) — Pointer
-
-For mainframe build and activation, follow `blitzy/docs/operations_runbook_addendum.md` §5:
-
-- Recompile with Enterprise COBOL (`BATCMP.jcl` `SET MEMNAME=CBTRN02C` → `IGYCRCTL`).
-- Link-edit (`HEWL`) into `AWS.M2.CARDDEMO.LOADLIB`.
-- `POSTTRAN.STEP15` auto-loads the patched module on the next run (batch — no CICS `NEWCOPY` / CSD refresh required).
+**Production run (HT-2):** submit `app/jcl/POSTTRAN.jcl`; `STEP15 EXEC PGM=CBTRN02C` runs against the loaded `ACCTFILE`/`DALYTRAN` datasets. Confirm `0104` rejects in `DALYREJS` and that inactive-account balances are unchanged.
 
 ### 9.7 Troubleshooting
 
-| Symptom | Resolution |
-|---|---|
-| `cobc: command not found` | Install GnuCOBOL 3.2.0+ (e.g., `apt-get install -y gnucobol`). |
-| Copybook-not-found compile error | Ensure `-I app/cpy -I app/cpy-bms` are present and you are running from the repository root. |
-| Test fails after intentional source changes | Re-run with `KEEP_ARTIFACTS=1` and inspect the printed work directory (fixtures, `DALYREJS`, `TRANFILE`, SYSOUT). |
-| `permission denied` running the test | `chmod +x tests/test_cbtrn02c.sh` (already executable in the repo). |
-| `_FORTIFY_SOURCE redefined` note on `cobc -m` | Benign build-environment note; ignore. |
-
----
+- **`_FORTIFY_SOURCE redefined` note on `cobc -m`** — benign gcc note, not an error. Ignore.
+- **`grep -ci warning` returns `0` but breaks an `&&` chain** — `grep` exits non-zero when there are no matches; run it as a standalone command.
+- **`CBSTM03A.CBL` fails to compile** (`app/cpy/CUSTREC.cpy` unbalanced parentheses) — **pre-existing and out-of-scope** (AAP §0.5.4); byte-identical to `origin/main`; not introduced by this fix.
+- **17 CICS `CO*.cbl` programs fail to compile** — they require a CICS translator and `DFH*` copybooks unavailable in GnuCOBOL; out-of-scope and unrelated.
+- **CI green-check** — on push to the fix branch or PR to `main`, `.github/workflows/cbtrn02c-regression.yml` installs GnuCOBOL and runs the harness as a gating step (non-zero exit fails the check).
 
 ## 10. Appendices
 
-### Appendix A — Command Reference
+### A. Command Reference
 
 | Purpose | Command |
 |---|---|
-| Syntax check | `cobc -fsyntax-only -std=ibm -I app/cpy -I app/cpy-bms app/cbl/CBTRN02C.cbl` |
-| Build module | `cobc -m -std=ibm -I app/cpy -I app/cpy-bms -o /tmp/CBTRN02C.so app/cbl/CBTRN02C.cbl` |
-| Run regression test | `./tests/test_cbtrn02c.sh` |
-| Run test, keep artifacts | `KEEP_ARTIFACTS=1 ./tests/test_cbtrn02c.sh` |
-| View the fix | `sed -n '393,435p' app/cbl/CBTRN02C.cbl` |
-| Confirm reason codes | `grep -n "WS-VALIDATION-FAIL-REASON" app/cbl/CBTRN02C.cbl` |
-| View the core fix diff | `git show c3a0a32d -- app/cbl/CBTRN02C.cbl` |
+| Toolchain version | `cobc --version` |
+| Syntax-only compile (in-scope) | `cobc -fsyntax-only -std=ibm -I app/cpy -I app/cpy-bms app/cbl/CBTRN02C.cbl` |
+| Build loadable module | `cobc -m -std=ibm -I app/cpy -I app/cpy-bms app/cbl/CBTRN02C.cbl` |
+| Run regression harness | `bash tests/test_cbtrn02c.sh` |
+| Scope-discipline proof | `git diff --name-only origin/main...HEAD -- app/` |
+| View the fix diff | `git diff origin/main...HEAD -- app/cbl/CBTRN02C.cbl` |
+| Install GnuCOBOL | `sudo apt-get update && sudo apt-get install -y gnucobol` |
 
-### Appendix B — Port Reference
+### B. Port Reference
 
-➖ Not applicable. `CBTRN02C` is a batch program with no network listener; no ports are opened or required.
+Not applicable — `CBTRN02C` is a batch program with no network listener or service port.
 
-### Appendix C — Key File Locations
+### C. Key File Locations
 
 | File | Role |
 |---|---|
-| `app/cbl/CBTRN02C.cbl` | The fixed batch posting program (paragraph `1500-B-LOOKUP-ACCT`, reason `104`) |
-| `app/cpy/CVACT01Y.cpy` | Account record copybook declaring `ACCT-ACTIVE-STATUS` (offset 12) — referenced, not modified |
-| `app/jcl/POSTTRAN.jcl` | Job that runs `STEP15 EXEC PGM=CBTRN02C`; provisions `DALYREJS` at `LRECL=430` — not modified |
-| `tests/test_cbtrn02c.sh` | Automated GnuCOBOL regression test (25 assertions) — new |
-| `blitzy/docs/operations_runbook_addendum.md` | Operations runbook for reason `104`, `RC=4`, deployment — new |
-| `app/data/ASCII/acctdata.txt` | Sample account data (active accounts carry `'Y'` at offset 12) |
+| `app/cbl/CBTRN02C.cbl` | The modified program (paragraph `1500-B-LOOKUP-ACCT`) — the only changed `app/` file. |
+| `app/cpy/CVACT01Y.cpy` | Defines `ACCT-ACTIVE-STATUS` at offset 12 of the 300-byte account record. |
+| `app/jcl/POSTTRAN.jcl` | Batch job; `STEP15 EXEC PGM=CBTRN02C`; provisions `DALYREJS` at `LRECL=430`. |
+| `tests/test_cbtrn02c.sh` | 480-line GnuCOBOL regression harness (25 assertions). |
+| `.github/workflows/cbtrn02c-regression.yml` | CI gating workflow (75 lines). |
+| `blitzy/docs/pr_review_checklist.md` | Senior-architect PR review checklist (220 lines). |
+| `blitzy/docs/operations_runbook_addendum.md` | Operations guidance for the `0104` reject reason (292 lines). |
+| `app/data/ASCII/acctdata.txt` | Sample account data; source for test fixtures (toggle byte 12). |
 
-### Appendix D — Technology Versions
+### D. Technology Versions
 
 | Component | Version |
 |---|---|
-| GnuCOBOL (`cobc`/`cobcrun`) | 3.2.0 |
-| gcc | 15.2.0 |
-| COBOL dialect flag | `-std=ibm` |
-| Indexed-file handler | Berkeley DB (BDB) |
-| Target production runtime | IBM Enterprise COBOL on z/OS / AWS Mainframe Modernization (M2) |
+| GnuCOBOL (`cobc`) | 3.2.0 (proxy/CI runtime) |
+| CI runner | `ubuntu-latest` |
+| Compile dialect | `-std=ibm` |
+| Production runtime | z/OS Enterprise COBOL / AWS Blu Age / Micro Focus (target) |
+| Source control | Git; branch `blitzy-1c1270d2-e0c7-4c24-86dc-d97d79d5ab64` |
 
-### Appendix E — Environment Variable Reference
+### E. Environment Variable Reference
 
-| Variable | Scope | Purpose |
-|---|---|---|
-| `KEEP_ARTIFACTS` | `tests/test_cbtrn02c.sh` | When set to `1`, retains the temporary work directory (fixtures, `DALYREJS`, `TRANFILE`, SYSOUT) for inspection instead of cleaning up |
+No environment variables are required for proxy compilation, the test harness, or the CI workflow. Production execution is governed by JCL DD statements (e.g., `DALYREJS` at `LRECL=430`), not environment variables.
 
-> No environment variables are required to compile or run `CBTRN02C` itself in the Linux verification flow.
+### F. Developer Tools Guide
 
-### Appendix F — Reject Reason Code Reference (`CBTRN02C`)
+- **GnuCOBOL (`cobc`)** — syntax validation (`-fsyntax-only`) and module build (`-m`) in the proxy/CI environment.
+- **bash test harness** — `tests/test_cbtrn02c.sh` simulates VSAM via GnuCOBOL indexed files; returns non-zero on any assertion failure (the CI gate).
+- **GitHub Actions** — `cbtrn02c-regression.yml` runs the harness on push/PR with least-privilege permissions and concurrency control.
+- **Linters used in validation** — `cobc -fsyntax-only` (COBOL), `yamllint` (workflow), `pymarkdown` (docs) — all clean.
 
-| Code | Description | Trigger |
-|---|---|---|
-| `0100` | `INVALID CARD NUMBER FOUND` | Card number not found in `XREFFILE` |
-| `0101` | `ACCOUNT RECORD NOT FOUND` | Cross-referenced account missing from `ACCTFILE` |
-| `0102` | `OVERLIMIT TRANSACTION` | Active account, but transaction exceeds credit limit |
-| `0103` | `TRANSACTION RECEIVED AFTER ACCT EXPIRATION` | Active account, but transaction date past expiration |
-| `0104` | `ACCOUNT NOT ACTIVE` | **New** — `ACCT-ACTIVE-STATUS` is not `'Y'` (covers `'N'`, `'C'`, blank, corrupt) |
-| `0109` | (REWRITE failure handler) | `REWRITE` against `ACCOUNT-FILE` fails during posting |
+### G. Glossary
 
-### Appendix G — Glossary
-
-| Term | Definition |
+| Term | Meaning |
 |---|---|
-| `CBTRN02C` | Batch COBOL program that posts daily transactions; executed by `POSTTRAN.STEP15` |
-| `1500-B-LOOKUP-ACCT` | Paragraph that reads the account record and validates it before posting (the fix site) |
-| `ACCT-ACTIVE-STATUS` | Single-byte account flag; `'Y'` = active, `'N'` = inactive, `'C'` = closed |
-| `DALYREJS` | Reject file (430-byte records) receiving rejected transactions plus an 80-byte validation trailer |
-| `DALYTRAN` | Daily transaction input file (350-byte records) |
-| `TRANSACT.VSAM.KSDS` | Posted-transaction master (downstream of `CBTRN02C`) |
-| `TCATBAL` | Transaction-category balance file updated during posting |
-| `RC=4` | Step return code emitted when `WS-REJECT-COUNT > 0`; **expected/normal**, not a failure |
-| VSAM KSDS | Key-Sequenced Data Set — IBM indexed file organization simulated by BDB on Linux |
+| `CBTRN02C` | Daily transaction posting batch program (job step `POSTTRAN.STEP15`). |
+| `ACCT-ACTIVE-STATUS` | Single-character account flag; `Y` = active, `N` = inactive (canonical convention). |
+| Reason code `0104` | New reject reason `ACCOUNT NOT ACTIVE` introduced by this fix. |
+| `DALYREJS` | Daily reject output dataset (430-byte records: 350 payload + 80 trailer). |
+| `TRANSACT.VSAM.KSDS` | Transaction master updated by posting. |
+| `ACCTFILE` / `TCATBAL` | Account master / transaction-category balance datasets. |
+| `RC=4` | Step return code emitted when one or more transactions are rejected. |
+| Path-to-production | Deployment/validation activities outside the autonomous environment requiring the real mainframe runtime. |
