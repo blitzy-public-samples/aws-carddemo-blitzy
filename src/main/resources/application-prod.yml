@@ -199,8 +199,23 @@ logging:
     # Suppress HikariCP info noise in steady state.
     com.zaxxer.hikari: WARN
   pattern:
-    console: '{"timestamp":"%d{yyyy-MM-dd''T''HH:mm:ss.SSSZ}","level":"%level","thread":"%thread","logger":"%logger{36}","message":"%msg","trace_id":"%X{traceId:-}","span_id":"%X{spanId:-}"}%n'
-    file: '{"timestamp":"%d{yyyy-MM-dd''T''HH:mm:ss.SSSZ}","level":"%level","thread":"%thread","logger":"%logger{36}","message":"%msg","trace_id":"%X{traceId:-}","span_id":"%X{spanId:-}"}%n'
+    # JSON-safe message escaping (QA F5 Finding #3): %msg is wrapped in nested
+    # %replace converters so any literal backslash, double-quote, or CR/LF inside a
+    # log message is escaped, keeping every emitted line valid JSON. The order is
+    # mandatory — backslash FIRST (\ -> \\), THEN double-quote (" -> \"), THEN CR/LF
+    # ([\r\n] -> \n) — so the backslashes added for quotes/newlines are not themselves
+    # re-escaped. Without this, framework messages such as the startup banner
+    # (... active: "prod") and Flyway lines (... schema "public": 5) produced
+    # malformed JSON that strict parsers (CloudWatch/ELK/Splunk/Datadog) reject.
+    # A dedicated JSON encoder is intentionally NOT used here: logback is pinned to
+    # 1.3.15 (its built-in JsonEncoder first shipped in 1.5.0, which is binary-
+    # incompatible with Spring Boot 3.2.12 — see pom.xml), and adding
+    # logstash-logback-encoder would introduce a new runtime dependency contrary to
+    # the single-monolith / no-new-runtime-services constraints (PR-25 / PR-26).
+    # NOTE: in a YAML single-quoted scalar the only escape is '' -> ', so every
+    # single quote inside the %replace options below is doubled.
+    console: '{"timestamp":"%d{yyyy-MM-dd''T''HH:mm:ss.SSSZ}","level":"%level","thread":"%thread","logger":"%logger{36}","message":"%replace(%replace(%replace(%msg){''\\'',''\\\\''}){''"'',''\\"''}){''[\r\n]'',''\\n''}","trace_id":"%X{traceId:-}","span_id":"%X{spanId:-}"}%n'
+    file: '{"timestamp":"%d{yyyy-MM-dd''T''HH:mm:ss.SSSZ}","level":"%level","thread":"%thread","logger":"%logger{36}","message":"%replace(%replace(%replace(%msg){''\\'',''\\\\''}){''"'',''\\"''}){''[\r\n]'',''\\n''}","trace_id":"%X{traceId:-}","span_id":"%X{spanId:-}"}%n'
   file:
     name: ${LOG_FILE:logs/carddemo.log}
 

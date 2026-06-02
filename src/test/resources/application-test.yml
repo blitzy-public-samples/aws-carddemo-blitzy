@@ -110,7 +110,10 @@ logging:
     org.springframework.batch: DEBUG
     org.springframework.security: INFO
     org.hibernate.SQL: DEBUG
-    org.hibernate.orm.jdbc.bind: TRACE
+    # SECURITY (QA F5 Finding #1 / PR-17): org.hibernate.orm.jdbc.bind is intentionally
+    # NOT set to TRACE — at TRACE it logs every bound JDBC parameter VALUE, including the
+    # BCrypt sec_usr_pwd hash and any raw SSN. org.hibernate.SQL: DEBUG above already
+    # provides statement-level visibility (with '?' placeholders) for test debugging.
     com.carddemo: DEBUG
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"

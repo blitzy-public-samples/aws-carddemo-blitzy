@@ -60,9 +60,11 @@ spring:
   # ddl-auto: validate — Flyway owns the schema; Hibernate only validates the
   #   entity mappings against the live schema and NEVER mutates it.
   # show-sql: true — log every generated SQL statement; paired with
-  #   logging.level.org.hibernate.SQL=DEBUG and org.hibernate.orm.jdbc.bind=TRACE
-  #   for full parameter-binding visibility (invaluable for BigDecimal/parity
-  #   debugging). format_sql + use_sql_comments make the output readable.
+  #   logging.level.org.hibernate.SQL=DEBUG so each statement is visible with bind
+  #   '?' placeholders. Parameter-VALUE binding (org.hibernate.orm.jdbc.bind=TRACE)
+  #   is deliberately NOT enabled because it leaks credentials/PII into the log (see
+  #   the LOGGING section below and QA F5 Finding #1 / PR-17). format_sql +
+  #   use_sql_comments make the output readable.
   # --------------------------------------------------------------------------
   jpa:
     hibernate:
@@ -143,7 +145,13 @@ server:
     include-exception: true
 
 # ============================================================================
-# LOGGING — DEBUG-level for application, with parameter binding trace
+# LOGGING — DEBUG-level for application code; framework levels tuned for safety
+# ============================================================================
+# Application packages (com.carddemo) log at DEBUG and Hibernate SQL at DEBUG for
+# rich local diagnostics. Framework levels that would serialize secrets into the
+# log are deliberately held down: org.springframework.web=INFO (no response-body
+# logging of the JWT) and org.hibernate.orm.jdbc.bind is left unset (no bound
+# parameter VALUES, i.e. no BCrypt hash / SSN). See QA F5 Findings #1 & #2 / PR-17.
 # ============================================================================
 logging:
   level:
@@ -151,12 +159,22 @@ logging:
     com.carddemo: DEBUG
     org.springframework: INFO
     org.springframework.security: DEBUG
-    org.springframework.web: DEBUG
+    # SECURITY (QA F5 Finding #2 / PR-17): org.springframework.web stays at INFO, NOT
+    # DEBUG. At DEBUG, Spring MVC's HttpEntityMethodProcessor logs serialized response
+    # bodies (e.g. the LoginResponse), which leaks the signed JWT bearer token — and any
+    # other response payload — into the log. INFO keeps response bodies out of the log
+    # and matches the base/prod profiles.
+    org.springframework.web: INFO
     org.springframework.batch: DEBUG
-    # Hibernate verbose SQL + parameter binding (org.hibernate.orm.jdbc.bind is
-    # the modern Spring Boot 3.x replacement for the old BasicBinder logger).
+    # Hibernate generated SQL at DEBUG shows each statement with bind '?' placeholders —
+    # enough for entity load/save visibility (AAP §0.6.12) WITHOUT exposing bound values.
     org.hibernate.SQL: DEBUG
-    org.hibernate.orm.jdbc.bind: TRACE
+    # SECURITY (QA F5 Finding #1 / PR-17): org.hibernate.orm.jdbc.bind is intentionally
+    # NOT set to TRACE. At TRACE, Hibernate logs EVERY bound JDBC parameter VALUE, which
+    # leaks the BCrypt sec_usr_pwd hash bound on user insert/update (and would leak a raw
+    # SSN on any Customer write). If parameter-value visibility is ever needed locally,
+    # enable it only in a git-ignored developer override (e.g. an uncommitted
+    # application-local.yml), never in this committed, shipped dev profile.
     org.hibernate.tool.schema: INFO
     # Flyway migration visibility
     org.flywaydb: INFO
