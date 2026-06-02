@@ -30,7 +30,7 @@ filesystem only**, with no external cloud runtime services (PR-26).
 
 ## Table of Contents
 
-1. [Header and Introduction](#cardemo-cobol--java-migration-mapping) *(this section)*
+1. [Header and Introduction](#carddemo-cobol--java-migration-mapping) *(this section)*
 2. [Cross-Cutting Mappings Overview](#section-2-cross-cutting-mappings-overview)
 3. [CICS Online Programs → REST Controllers + Services](#section-3-cics-online-programs--rest-controllers--services)
 4. [Batch COBOL Programs → Spring Batch Jobs](#section-4-batch-cobol-programs--spring-batch-jobs)
@@ -89,7 +89,7 @@ authoritative AAP sub-section.
 | `STARTBR` / `READNEXT` / `READPREV` / `ENDBR` browse cursor | Spring Data `Pageable` (`PageRequest.of(page, size, Sort.by(...))`) | — | §0.6.1 |
 | `EXEC CICS WRITEQ TD QUEUE('JOBS')` (`CORPT00C`) | `JobLauncher.run(...)` with `@Async` | — | §0.6.1 |
 | COBOL `PIC S9(n)V99 COMP-3` (packed-decimal money) | `java.math.BigDecimal` scale 2, `RoundingMode.HALF_UP` | PR-16 | §0.6.4 |
-| DB2 timestamp `YYYY-MM-DD-HH.MM.SS.MIL0000` (26 chars) | `DateTimeFormatter.ofPattern("yyyy-MM-dd-HH.mm.ss.SSS'0000'")` | PR-11 | §0.6.5 |
+| DB2 timestamp `YYYY-MM-DD-HH.MM.SS.MIL0000` (26 chars) | `DateTimeFormatter.ofPattern("yyyy-MM-dd-HH.mm.ss.SS'0000'")` | PR-11 | §0.6.5 |
 | DALYTRAN PS sequential file | `daily_transactions` staging table fed by `DailyTransactionReadJobConfig` | — | §0.6.6 |
 | RACF + plaintext `USRSEC` compare | Spring Security 6 + BCrypt + `DaoAuthenticationProvider` | PR-17 | §0.6.8 |
 | User type `'A'` / `'U'` (`COCOM01Y` L26-28; `CSUSR01Y` L22) | `ROLE_ADMIN` / `ROLE_USER` via `CustomAuthorityMapper` | PR-19 | §0.6.8 |
@@ -472,7 +472,7 @@ utility constants, or REFERENCE-only artifacts (AAP §0.4.1.4).
 | `../app/cpy/CVTRA06Y.cpy` (350-byte `DALYTRAN-RECORD`) | `DailyTransaction.java` entity + `RejectedTransaction.java` entity | `daily_transactions` staging table (no FK; mirrors the PS feed) per AAP §0.6.6. `RejectedTransaction` adds an 80-byte reject trailer (350 + 80 = 430 bytes) with `validation_code` and `rejection_reason` columns (the DALYREJS layout). |
 | `../app/cpy/CVTRA07Y.cpy` | Report DTO classes (`../src/main/java/com/carddemo/dto/report/`) | Transaction report layout (AAP §0.4.1.7). |
 | `../app/cpy/CSUSR01Y.cpy` (80-byte `SEC-USER-DATA`) | `User.java` entity implementing `org.springframework.security.core.userdetails.UserDetails` | **PR-17:** `SEC-USR-PWD PIC X(08)` at **L21** (plaintext) replaced by `sec_usr_pwd VARCHAR(60)` storing a BCrypt hash. **PR-19:** `SEC-USR-TYPE PIC X(01)` at L22 (`'A'`/`'U'`) mapped to authorities via `CustomAuthorityMapper`. |
-| `../app/cpy/COCOM01Y.cpy` (1024-byte `CARDDEMO-COMMAREA`) | Decomposed across `AuthenticationDto`, Spring Security `SecurityContextHolder`, HTTP path/query params, and DTO context fields | See [§0.6.1 cross-cutting](#section-2-cross-cutting-mappings-overview). The `CDEMO-USER-TYPE` 88-levels at **L26-28** (`CDEMO-USRTYP-ADMIN VALUE 'A'`, `CDEMO-USRTYP-USER VALUE 'U'`) directly inform `CustomAuthorityMapper` (**PR-19**). |
+| `../app/cpy/COCOM01Y.cpy` (1024-byte `CARDDEMO-COMMAREA`) | Decomposed across `AuthenticationDto` (a conceptual decomposition target — not a source file), Spring Security `SecurityContextHolder`, HTTP path/query params, and DTO context fields | See [§0.6.1 cross-cutting](#section-2-cross-cutting-mappings-overview). The `CDEMO-USER-TYPE` 88-levels at **L26-28** (`CDEMO-USRTYP-ADMIN VALUE 'A'`, `CDEMO-USRTYP-USER VALUE 'U'`) directly inform `CustomAuthorityMapper` (**PR-19**). |
 | `../app/cpy/COMEN02Y.cpy` | `MenuOption.java` records / static menu config consumed by `MenuController` | User menu structure. |
 | `../app/cpy/COADM02Y.cpy` | Static menu config (admin variant) | Admin menu structure. |
 | `../app/cpy/COSTM01.CPY` | Statement template constants used by `StatementHtmlBuilder` | Statement formatting constants. |
@@ -546,7 +546,7 @@ uppercase `.CPY` extension.
 | `../app/cpy-bms/COTRN02.CPY` | `TransactionRequest.java` (create) |
 | `../app/cpy-bms/COBIL00.CPY` | `BillPaymentRequest.java`, `BillPaymentResponse.java` (`../src/main/java/com/carddemo/dto/billpayment/`) |
 | `../app/cpy-bms/CORPT00.CPY` | `ReportRequest.java` (`../src/main/java/com/carddemo/dto/report/`) |
-| `../app/cpy-bms/COUSR00.CPY` | `UserListResponse.java` (admin) (`../src/main/java/com/carddemo/dto/user/`) |
+| `../app/cpy-bms/COUSR00.CPY` | `Page<UserDto>` (Spring Data `Page`, admin) via `UserController.listUsers` (element type `../src/main/java/com/carddemo/dto/user/UserDto.java`) |
 | `../app/cpy-bms/COUSR01.CPY` | `UserCreateRequest.java` |
 | `../app/cpy-bms/COUSR02.CPY` | `UserDto.java` (update view) |
 | `../app/cpy-bms/COUSR03.CPY` | `UserDto.java` (delete view) |
@@ -660,7 +660,7 @@ programs cannot be verified.
 | `../src/test/java/com/carddemo/businesslogic/StatementGenerationParityTest.java` | `CBSTM03A` `5100-WRITE-HTML-HEADER` HTML output matches COBOL byte-for-byte | **PR-09, PR-21** |
 | `../src/test/java/com/carddemo/controller/*Test.java` | MockMvc tests per controller (happy path + 4xx errors + security scenarios) | (general) |
 | `../src/test/java/com/carddemo/service/*Test.java` | Mockito unit tests for service logic | (general) |
-| `../src/test/java/com/carddemo/batch/*JobTest.java` | `JobLauncherTestUtils` + `JobRepositoryTestUtils` per batch job | (general) |
+| `../src/test/java/com/carddemo/batch/*JobIT.java` (Failsafe integration tests; plus unit `*Test.java`) | `JobLauncherTestUtils` + `JobRepositoryTestUtils` per batch job | (general) |
 | `../src/test/java/com/carddemo/integration/*IT.java` | Testcontainers PostgreSQL — verifies Flyway migrations apply cleanly; end-to-end REST + batch scenarios | (general) |
 | `../src/test/resources/application-test.yml` | Testcontainers PostgreSQL config | (general) |
 | `../src/test/resources/fixtures/*.csv` | CSV mirrors of the `../app/data/ASCII/*.txt` fixtures | (general) |

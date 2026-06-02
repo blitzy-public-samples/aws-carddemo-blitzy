@@ -193,14 +193,22 @@ public class TransactionRequest {
     /**
      * Transaction source (COBOL TRNSRCI PIC X(10) — TRAN-SOURCE PIC X(10)).
      * Free-form text identifying origin channel (e.g., POS, WEB, MOBILE).
+     *
+     * <p><b>MANDATORY (PR-03):</b> the original COBOL {@code COTRN02C} paragraph
+     * {@code VALIDATE-INPUT-DATA-FIELDS} (app/cbl/COTRN02C.cbl L264-268) rejects an
+     * empty source with {@code "Source can NOT be empty..."}. The {@code @NotBlank}
+     * constraint enforces that same contract here so the OpenAPI schema, Jakarta Bean
+     * Validation, and {@code TransactionService.validateInputFields} all agree that
+     * {@code source} is required.</p>
      */
+    @NotBlank(message = "Source is required")
     @Size(max = 10, message = "Source must not exceed 10 characters")
     @Schema(
-        description = "Transaction source/channel (10-char free-form)",
+        description = "Transaction source/channel (10-char free-form, e.g. POS/WEB/MOBILE). "
+            + "Mandatory — mirrors the COBOL COTRN02C TRAN-SOURCE edit (\"Source can NOT be empty...\").",
         example = "POS",
         maxLength = 10,
-        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
-        nullable = true
+        requiredMode = Schema.RequiredMode.REQUIRED
     )
     private String source;
 

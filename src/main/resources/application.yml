@@ -73,7 +73,7 @@ spring:
   # for V*.sql scripts and applies them in version order.
   #
   # Applied scripts:
-  #   V1__schema.sql              — 14 base tables + sequences
+  #   V1__schema.sql              — 12 base tables + sequences
   #   V2__indexes.sql             — Secondary indexes replacing the VSAM AIX
   #   V3__seed_reference_data.sql — 7 types + 18 categories + 51 disclosure groups
   #   V4__seed_users.sql          — 10 default users with BCrypt-hashed passwords

@@ -107,13 +107,22 @@ Schema creation and seed-data loading are handled automatically by **Flyway** on
 
 | Migration | Purpose |
 | :-------- | :------ |
-| `V1__schema.sql` | Creates all 14 base tables matching the original VSAM record layouts (accounts, cards, card_xref, customers, transactions, daily_transactions, rejected_transactions, tran_cat_balances, disclosure_groups, transaction_types, transaction_categories, users, plus Spring Batch metadata tables auto-created by Spring Boot) |
+| `V1__schema.sql` | Creates all 12 base tables matching the original VSAM record layouts (accounts, cards, card_xref, customers, transactions, daily_transactions, rejected_transactions, tran_cat_balances, disclosure_groups, transaction_types, transaction_categories, users). The Spring Batch metadata tables (`BATCH_*`) are created separately by Spring Boot at startup (`spring.batch.jdbc.initialize-schema`), not by this migration |
 | `V2__indexes.sql` | Secondary B-tree indexes replacing the original VSAM AIX alternate indexes: `idx_card_account_id` (replaces `CARDDATA.AIX`), `idx_xref_account_id` (replaces `CARDXREF.AIX`), `idx_transaction_orig_ts` (replaces `TRANSACT.AIX`) |
 | `V3__seed_reference_data.sql` | Seeds 7 transaction types, 18 transaction categories, 51 disclosure groups |
 | `V4__seed_users.sql` | Inserts 10 default users (`ADMIN001`-`ADMIN005`, `USER0001`-`USER0005`) with BCrypt-hashed password `"PASSWORD"`. Each user receives a distinct hash due to BCrypt's random salt |
-| `V5__seed_master_data.sql` | Seeds 50 customers, 50 accounts, 50 cards, 50 card cross-references, 100 transaction-category balances from the ASCII fixture data in `app/data/ASCII/` |
+| `V5__seed_master_data.sql` | Seeds 50 customers, 50 accounts, 50 cards, 50 card cross-references, 50 transaction-category balances from the ASCII fixture data in `app/data/ASCII/` |
 
-Flyway tracks applied migrations in the `flyway_schema_history` table; subsequent application restarts skip already-applied scripts. To inspect status: `mvn flyway:info`.
+Flyway tracks applied migrations in the `flyway_schema_history` table; subsequent application restarts skip already-applied scripts. Migrations run automatically at application startup (Spring Boot-managed) — there is no separate manual migration step.
+
+To inspect migration status with the standalone Flyway Maven goal, pass the datasource parameters explicitly. The `flyway-maven-plugin` is not bound in `pom.xml` and does not read Spring's `application-*.yml`, so without these `-D` parameters the goal fails with `Unable to connect to the database`:
+
+```bash
+mvn flyway:info \
+  -Dflyway.url=jdbc:postgresql://localhost:5432/carddemo \
+  -Dflyway.user=carddemo \
+  -Dflyway.password=carddemo
+```
 
 ## Build the Application
 
@@ -242,7 +251,9 @@ curl -X POST http://localhost:8080/api/transactions \
     "categoryCd":"0001",
     "amount":123.45,
     "merchantId":123456789,
-    "description":"Grocery purchase at Whole Foods"
+    "description":"Grocery purchase at Whole Foods",
+    "source":"POS",
+    "origTimestamp":"2024-01-15-14.30.45.120000"
   }'
 ```
 
@@ -250,12 +261,22 @@ Required fields (per `TransactionRequest`): `accountId` (numeric; used to resolv
 cross-reference — send the plain integer `1`, not the zero-padded path form), `typeCd` (2-digit
 transaction type, FK to `transaction_types`), `categoryCd` (**4-digit** category, FK to
 `transaction_categories` — leading zeros preserved, e.g. `"0001"`), `amount` (decimal, scale 2,
-positive = credit / negative = debit), `merchantId` (numeric, ≤ 9 digits), and `description` (≤ 60
-chars). Optional fields: `cardNumber` (16 digits — alternative cardholder key when `accountId` is
-omitted), `source` (≤ 10), `merchantName` (≤ 30), `merchantCity` (≤ 25), `merchantZip` (≤ 10), and
+positive = credit / negative = debit), `merchantId` (numeric, ≤ 9 digits), `description` (≤ 60
+chars), and `source` (≤ 10 — the origin channel, e.g. `POS`/`WEB`/`MOBILE`; **mandatory**, mirroring
+the `TRAN-SOURCE` edit in COBOL `COTRN02C`, which rejects an empty source). Optional fields:
+`cardNumber` (16 digits — alternative cardholder key when `accountId` is omitted), `merchantName`
+(≤ 30), `merchantCity` (≤ 25), `merchantZip` (≤ 10), and
 `origTimestamp` (26-char DB2 format `yyyy-MM-dd-HH.mm.ss.SS'0000'`; the server stamps the current
 time when omitted). The server generates `tranId` and `procTimestamp` — they are never accepted from
 the client (PR-10).
+
+> **Note — account expiration (reason code 103):** the bundled seed accounts have expiration dates in
+> 2024-2025. Faithful to COBOL `CBTRN02C`/`COTRN02C` (validation code 103,
+> `"TRANSACTION RECEIVED AFTER ACCT EXPIRATION"`), a transaction whose date is after the account's
+> expiration is rejected. The sample therefore supplies an explicit past-dated `origTimestamp` within
+> the account's valid window so the request succeeds. If you omit `origTimestamp`, the server stamps
+> the current date — which the (now-expired) seed accounts will reject — so pass a date on or before
+> the target account's expiration when exercising this endpoint against seed data.
 
 ### Submit a bill payment (replaces `COBIL00C`)
 
@@ -370,12 +391,12 @@ carddemo/
     ├── bms/                                        (3270 BMS map sources)
     ├── catlg/LISTCAT.txt                           (VSAM catalog snapshot)
     ├── cbl/                                        (28 COBOL programs)
-    ├── cpy/                                        (27 record-defining copybooks)
+    ├── cpy/                                        (27 record-defining of 28 copybooks)
     ├── cpy-bms/                                    (17 BMS symbolic copybooks)
     ├── csd/CARDDEMO.CSD                            (CICS resource definitions)
     ├── ctl/REPROCT.ctl                             (IDCAMS control card)
     ├── data/ASCII/                                 (9 fixed-width seed fixture files)
-    ├── jcl/                                        (28 JCL jobs)
+    ├── jcl/                                        (29 JCL jobs)
     └── proc/                                       (JCL procs)
 ```
 
