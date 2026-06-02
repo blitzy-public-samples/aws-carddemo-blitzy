@@ -1,6 +1,7 @@
 package com.carddemo.controller;
 
 import com.carddemo.controller.advice.GlobalExceptionHandler;
+import com.carddemo.entity.Transaction;
 import com.carddemo.exception.AccountNotFoundException;
 import com.carddemo.exception.DiscloseGroupNotFoundException;
 import com.carddemo.exception.ExpiredAccountException;
@@ -16,11 +17,15 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.FilterType;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.mapping.PropertyReferenceException;
+import org.springframework.data.util.TypeInformation;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -176,6 +181,14 @@ class GlobalExceptionHandlerTest {
         public void throwUnhandled() {
             throw new RuntimeException("Something unexpected");
         }
+
+        @GetMapping("/test/invalid-sort")
+        public void throwInvalidSort() {
+            // Mirrors what Spring Data raises when a request supplies a Pageable sort property
+            // that does not exist on the target entity (e.g. GET /api/transactions?sort=bogus).
+            throw new PropertyReferenceException(
+                    "bogus", TypeInformation.of(Transaction.class), List.of());
+        }
     }
 
     @Test
@@ -275,6 +288,20 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.code").exists())
                 .andExpect(jsonPath("$.message").exists())
                 .andExpect(jsonPath("$.path").value("/test/unhandled"))
+                .andExpect(jsonPath("$.timestamp").exists());
+    }
+
+    @Test
+    @DisplayName("Invalid Pageable sort property → 400 Bad Request with INVALID_SORT (not 500)")
+    void shouldReturn400ForInvalidSortProperty() throws Exception {
+        // A client-supplied invalid `sort` property must be a 400 (bad input), never a 500.
+        mockMvc.perform(get("/test/invalid-sort"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.code").value("INVALID_SORT"))
+                // The offending property name is echoed to help the caller correct the request.
+                .andExpect(jsonPath("$.message", Matchers.containsString("bogus")))
+                .andExpect(jsonPath("$.path").value("/test/invalid-sort"))
                 .andExpect(jsonPath("$.timestamp").exists());
     }
 }

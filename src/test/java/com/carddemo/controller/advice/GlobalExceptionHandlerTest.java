@@ -2,13 +2,17 @@ package com.carddemo.controller.advice;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.carddemo.entity.Transaction;
 import com.carddemo.exception.ErrorResponse;
 import com.carddemo.exception.ExpiredAccountException;
 import com.carddemo.exception.OverlimitException;
 import java.math.BigDecimal;
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.mapping.PropertyReferenceException;
+import org.springframework.data.util.TypeInformation;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -156,6 +160,31 @@ class GlobalExceptionHandlerTest {
             assertThat(resp.getBody()).isNotNull();
             assertThat(resp.getBody().message()).doesNotContain("5500000000000004");
             assertThat(resp.getBody().message()).contains("************0004");
+        }
+    }
+
+    @Nested
+    @DisplayName("Invalid Pageable sort property → 400 INVALID_SORT (not 500)")
+    class InvalidSortProperty {
+
+        @Test
+        @DisplayName("PropertyReferenceException maps to 400 with INVALID_SORT and echoes the bad property")
+        void mapsTo400() {
+            // Mirrors Spring Data's behaviour for GET /api/transactions?sort=bogus — an unknown
+            // sort property on the target entity. Without a dedicated handler this would surface as
+            // a misleading 500 on purely client-controllable input.
+            PropertyReferenceException ex = new PropertyReferenceException(
+                    "bogus", TypeInformation.of(Transaction.class), List.of());
+
+            ResponseEntity<ErrorResponse> resp =
+                    handler.handleInvalidSortProperty(ex, request("/api/transactions"));
+
+            assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(resp.getBody()).isNotNull();
+            assertThat(resp.getBody().status()).isEqualTo(400);
+            assertThat(resp.getBody().code()).isEqualTo("INVALID_SORT");
+            assertThat(resp.getBody().message()).contains("bogus");
+            assertThat(resp.getBody().path()).isEqualTo("/api/transactions");
         }
     }
 }

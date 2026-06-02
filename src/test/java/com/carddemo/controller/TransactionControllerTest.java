@@ -86,11 +86,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *       {@link TransactionService#listTransactions(Long, String, Pageable)} &mdash; the actual
  *       service API &mdash; so tests stub and verify exactly that method.</li>
  *   <li><b>View</b> &mdash; {@code GET /api/transactions/{tranId}} returns the full
- *       {@link TransactionDto}; a missing / malformed id surfaces as
+ *       {@link TransactionDto}; a malformed (null / non-16-character) id surfaces as
  *       {@code IllegalArgumentException} from {@link TransactionService#getTransaction(String)},
- *       which {@link GlobalExceptionHandler} maps to {@code 400 Bad Request} &mdash; the COTRN01C
- *       behaviour of treating a missing id as a re-enterable input error rather than a hard
- *       {@code 404} (per the controller contract).</li>
+ *       which {@link GlobalExceptionHandler} maps to {@code 400 Bad Request} (a re-enterable input
+ *       error), whereas a well-formed id that matches no transaction surfaces as
+ *       {@code AccountNotFoundException}, mapped to {@code 404 Not Found} &mdash; consistent with
+ *       the sibling accounts/cards/customers read endpoints.</li>
  *   <li><b>Create &mdash; PR-03 validation codes (the headline of this controller):</b> the four
  *       {@code CBTRN02C} reason codes are surfaced by
  *       {@link TransactionService#addTransaction(TransactionRequest)} as the dedicated exceptions
@@ -340,17 +341,19 @@ class TransactionControllerTest {
         }
 
         @Test
-        @DisplayName("Unknown/missing transaction id -> 400 Bad Request (COTRN01C re-enterable input error)")
+        @DisplayName("Unknown (well-formed) transaction id -> 404 Not Found (consistent with sibling read endpoints)")
         @WithMockUser
-        void shouldReturn400ForUnknownTransaction() throws Exception {
-            // COTRN01C treats a missing transaction id as a re-enterable input error, NOT a hard
-            // not-found: TransactionService.getTransaction throws IllegalArgumentException with the
-            // COTRN02C message literal, which GlobalExceptionHandler maps to 400 (not 404).
+        void shouldReturn404ForUnknownTransaction() throws Exception {
+            // A well-formed 16-character id that matches no record is a not-found condition:
+            // TransactionService.getTransaction throws AccountNotFoundException (carrying the verbatim
+            // COTRN02C message literal), which GlobalExceptionHandler maps to 404 — the same REST
+            // semantics as the sibling accounts/cards/customers read endpoints. (A malformed id —
+            // null or not 16 characters — would instead be a 400 IllegalArgumentException.)
             when(transactionService.getTransaction("9999999999999999"))
-                    .thenThrow(new IllegalArgumentException("Transaction ID NOT found..."));
+                    .thenThrow(AccountNotFoundException.withMessage("Transaction ID NOT found..."));
 
             mockMvc.perform(get("/api/transactions/{tranId}", "9999999999999999"))
-                    .andExpect(status().isBadRequest());
+                    .andExpect(status().isNotFound());
 
             verify(transactionService).getTransaction("9999999999999999");
         }

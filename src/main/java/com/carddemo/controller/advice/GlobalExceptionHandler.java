@@ -21,6 +21,7 @@ import org.springframework.batch.core.repository.JobExecutionAlreadyRunningExcep
 import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
 import org.springframework.batch.core.repository.JobRestartException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.mapping.PropertyReferenceException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -80,6 +81,7 @@ import java.util.stream.Collectors;
  *   <tr><td>{@link JobRestartException}</td><td>409</td><td>"JOB_RESTART_FAILED"</td></tr>
  *   <tr><td>{@link JobParametersInvalidException}</td><td>400</td><td>"INVALID_JOB_PARAMETERS"</td></tr>
  *   <tr><td>{@link AccessDeniedException}</td><td>403</td><td>"ACCESS_DENIED"</td></tr>
+ *   <tr><td>{@link PropertyReferenceException} (invalid sort property)</td><td>400</td><td>"INVALID_SORT"</td></tr>
  *   <tr><td>{@link Exception} (catch-all)</td><td>500</td><td>"INTERNAL_ERROR"</td></tr>
  * </table>
  *
@@ -1010,6 +1012,43 @@ public class GlobalExceptionHandler {
                 .timestamp(LocalDateTime.now())
                 .build();
         return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE).body(body);
+    }
+
+    // =========================================================================
+    // Invalid Pageable sort property (client-supplied bad input → 400, not 500)
+    // =========================================================================
+
+    /**
+     * Handles {@link PropertyReferenceException} raised by Spring Data when a request supplies a
+     * {@code sort} property that does not exist on the target entity (for example
+     * {@code GET /api/transactions?sort=bogus}). Spring Data resolves the {@link
+     * org.springframework.data.domain.Pageable} {@code Sort} against the entity metamodel while
+     * building the query and throws this {@link RuntimeException} for an unknown property.
+     *
+     * <p>Maps to {@code 400 Bad Request} with code {@code "INVALID_SORT"}. The offending property
+     * name is echoed back (it is the client's own input — a field token, never a value, so it
+     * carries no PII/PAN) to help API consumers correct the request. Without this handler the
+     * exception would fall through to the catch-all and surface as a misleading {@code 500} on
+     * purely client-controllable input, which pollutes error budgets and alerting.</p>
+     *
+     * @param ex      the property-reference exception carrying the unresolved sort property
+     * @param request the current request, used to populate the error {@code path}
+     * @return a {@code 400} {@link ErrorResponse} with code {@code "INVALID_SORT"}
+     */
+    @ExceptionHandler(PropertyReferenceException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidSortProperty(
+            PropertyReferenceException ex,
+            HttpServletRequest request) {
+        String propertyName = ex.getPropertyName();
+        log.warn("Invalid sort property at {}: '{}'", request.getRequestURI(), propertyName);
+        ErrorResponse body = ErrorResponse.builder()
+                .status(HttpStatus.BAD_REQUEST.value())
+                .code("INVALID_SORT")
+                .message("Invalid sort property: '" + propertyName + "'")
+                .path(request.getRequestURI())
+                .timestamp(LocalDateTime.now())
+                .build();
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }
 
     // =========================================================================

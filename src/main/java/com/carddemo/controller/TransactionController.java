@@ -78,10 +78,11 @@ import java.net.URI;
  *       {@code CARDXREF} cross-reference, and otherwise pages the full master;</li>
  *   <li>the COTRN01C transaction-id input edits and keyed read &mdash;
  *       {@link TransactionService#getTransaction(String)} rejects a null / non-16-character id with
- *       {@code IllegalArgumentException} ({@code "Tran ID must be 16 characters"}) and a
- *       not-found id with {@code IllegalArgumentException} ({@code "Transaction ID NOT found..."}),
- *       both mapped to {@code 400} (this preserves the COTRN01C behavior of treating a bad/missing
- *       id as a re-enterable input error rather than a REST {@code 404});</li>
+ *       {@code IllegalArgumentException} ({@code "Tran ID must be 16 characters"}) mapped to
+ *       {@code 400} (a malformed re-enterable input error), and reports a well-formed-but-not-found
+ *       id with {@code AccountNotFoundException} ({@code "Transaction ID NOT found..."}) mapped to
+ *       {@code 404} &mdash; consistent with the sibling read endpoints (accounts, cards, customers),
+ *       which all surface a missing resource as a REST {@code 404};</li>
  *   <li>the COTRN02C add chain &mdash; {@link TransactionService#addTransaction(TransactionRequest)}
  *       performs the cross-reference / account lookups and the validation codes
  *       100 ("INVALID CARD NUMBER FOUND"), 101 (account not found), 102 ("OVERLIMIT TRANSACTION"),
@@ -262,11 +263,13 @@ public class TransactionController {
             summary = "Get a transaction by ID",
             description = "Retrieves a single transaction by its 16-character ID. "
                     + "Replaces COTRN01C CICS transaction view (TRANID=CT01). "
-                    + "An empty ID returns 400 ('Tran ID can NOT be empty...'); a missing or "
-                    + "malformed ID also returns 400 (re-enterable input error), per COTRN01C.")
+                    + "An empty or non-16-character ID returns 400 (malformed re-enterable input); "
+                    + "a well-formed ID that matches no transaction returns 404 (not found), "
+                    + "consistent with the sibling accounts/cards/customers read endpoints.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Transaction found"),
-            @ApiResponse(responseCode = "400", description = "Tran ID can NOT be empty / not 16 characters / not found"),
+            @ApiResponse(responseCode = "400", description = "Tran ID can NOT be empty / not 16 characters"),
+            @ApiResponse(responseCode = "404", description = "Transaction not found"),
             @ApiResponse(responseCode = "401", description = "User not authenticated")
     })
     public ResponseEntity<TransactionDto> getTransaction(
@@ -277,9 +280,11 @@ public class TransactionController {
 
         log.debug("GET /api/transactions/{}", tranId);
 
-        // Delegate to the service, which validates the id format and performs the keyed read,
-        // throwing IllegalArgumentException (-> 400) for a bad/missing id, and returns a
-        // TransactionDto. The controller forwards it unchanged.
+        // Delegate to the service, which validates the id format and performs the keyed read:
+        // a null / non-16-character id throws IllegalArgumentException (-> 400, malformed input),
+        // while a well-formed id with no matching record throws AccountNotFoundException (-> 404,
+        // consistent with sibling read endpoints). On success it returns a TransactionDto, which
+        // the controller forwards unchanged.
         TransactionDto transaction = transactionService.getTransaction(tranId);
         return ResponseEntity.ok(transaction);
     }

@@ -235,10 +235,20 @@ public class TransactionService {
      * an id of the wrong length is rejected up front, and a missing record surfaces the original
      * {@code COTRN02C} message {@code "Transaction ID NOT found..."}.
      *
+     * <p>Consistent with the sibling read endpoints (accounts, cards, customers), a syntactically
+     * valid 16-character id that matches no record is reported as a not-found condition via
+     * {@link AccountNotFoundException} (which {@code GlobalExceptionHandler} maps to HTTP 404),
+     * whereas a {@code null} or wrong-length id remains a malformed-input error via
+     * {@link IllegalArgumentException} (mapped to HTTP 400). The verbatim
+     * {@link AccountNotFoundException#withMessage(String)} factory preserves the exact COBOL
+     * {@code COTRN02C} message on the REST error payload.</p>
+     *
      * @param tranId the 16-character transaction id
      * @return the {@link TransactionDto} for the requested transaction
-     * @throws IllegalArgumentException if {@code tranId} is {@code null}, not exactly 16 characters,
-     *                                  or does not correspond to an existing transaction
+     * @throws IllegalArgumentException  if {@code tranId} is {@code null} or not exactly 16 characters
+     *                                   (malformed input &rarr; HTTP 400)
+     * @throws AccountNotFoundException  if {@code tranId} is well-formed but does not correspond to
+     *                                   an existing transaction (not found &rarr; HTTP 404)
      */
     @Transactional(readOnly = true)
     public TransactionDto getTransaction(String tranId) {
@@ -247,7 +257,7 @@ public class TransactionService {
             throw new IllegalArgumentException("Tran ID must be 16 characters");
         }
         Transaction transaction = transactionRepository.findById(tranId)
-            .orElseThrow(() -> new IllegalArgumentException("Transaction ID NOT found..."));
+            .orElseThrow(() -> AccountNotFoundException.withMessage("Transaction ID NOT found..."));
         return transactionMapper.toDto(transaction);
     }
 
