@@ -1,5 +1,6 @@
 package com.carddemo.service;
 
+import com.carddemo.batch.BatchConfig;
 import com.carddemo.dto.report.OutputFormat;
 import com.carddemo.dto.report.ReportRequest;
 import com.carddemo.dto.report.ReportType;
@@ -20,6 +21,7 @@ import org.springframework.batch.core.launch.NoSuchJobException;
 import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
 import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
 import org.springframework.batch.core.repository.JobRestartException;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -133,9 +135,26 @@ public class ReportService {
     private static final OutputFormat DEFAULT_OUTPUT_FORMAT = OutputFormat.PDF;
 
     /**
-     * The Spring Boot 3.2 auto-configured {@link JobLauncher} used to start the report job.
-     * Injected by type via the Lombok-generated constructor (PR-29).
+     * The <strong>non-blocking</strong> {@link JobLauncher} used to start the report job.
+     *
+     * <p>This is deliberately the {@link BatchConfig#ASYNC_JOB_LAUNCHER asyncJobLauncher} bean
+     * (a {@code TaskExecutorJobLauncher} backed by a {@code SimpleAsyncTaskExecutor}), selected via
+     * {@link Qualifier @Qualifier} &mdash; <em>not</em> the Spring Boot auto-configured, synchronous,
+     * primary {@code jobLauncher}. Resolving by type/name would bind the primary launcher, whose
+     * {@link JobLauncher#run(Job, JobParameters) run(...)} blocks until the job reaches a terminal
+     * status; combined with the controller's {@code .join()} that would monopolize the Tomcat
+     * worker thread for the entire job duration instead of returning {@code 202 Accepted}
+     * immediately (AAP &sect;0.6.1 fire-and-forget; QA finding F4-ASYNC-01). With the async launcher,
+     * {@code run(...)} returns as soon as the job is handed to the task executor (execution in the
+     * {@code STARTED} state) so the future completes promptly with the {@code jobExecutionId} and the
+     * request thread unblocks without waiting for completion.</p>
+     *
+     * <p>Injected via the Lombok-generated constructor over this {@code final} field (PR-29). The
+     * field-level {@code @Qualifier} is propagated onto the generated constructor parameter by the
+     * {@code lombok.copyableAnnotations} setting in the repository-root {@code lombok.config}, so the
+     * qualifier is honored during constructor injection.</p>
      */
+    @Qualifier(BatchConfig.ASYNC_JOB_LAUNCHER)
     private final JobLauncher jobLauncher;
 
     /**

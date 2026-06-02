@@ -229,6 +229,34 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
     Page<Transaction> findByCardNumIn(Collection<String> cardNums, Pageable pageable);
 
     /**
+     * Finds <em>all</em> transactions recorded against any of the given card numbers, in a single
+     * query (no pagination).
+     *
+     * <p>Non-paged counterpart of {@link #findByCardNumIn(Collection, Pageable)} used by the
+     * batch statement-generation flow ({@code CBSTM03A} port). The
+     * {@link com.carddemo.batch.StatementGenerationTasklet} streams the card cross-reference one
+     * bounded page at a time and, for each page of completed {@code (customer, account)} groups,
+     * pre-loads every owned card's transactions with one call to this method instead of issuing a
+     * separate {@link #findByCardNum(String)} per card. That collapses the previous per-row query
+     * storm (one transaction query per card &mdash; QA finding F4-NPLUS1-01) into a single
+     * {@code WHERE t.cardNum IN (:cardNums)} query per page (AAP &sect;0.6.12 N+1 avoidance), while
+     * the page-bounded card set keeps memory use bounded (CP4). Spring Data derives JPQL equivalent
+     * to {@code WHERE t.cardNum IN :cardNums} (entity field {@code cardNum}; physical column
+     * {@code card_num}); no {@code ORDER BY} is implied &mdash; the tasklet re-sorts the aggregate
+     * by {@code tranId} so statement output stays byte-for-byte identical (PR-09) regardless of the
+     * row order returned here.</p>
+     *
+     * <p>The caller never invokes this with an empty collection (it short-circuits to an empty
+     * result first), so the degenerate empty {@code IN ()} predicate is not exercised.</p>
+     *
+     * @param cardNums the card numbers to match (each {@code TRAN-CARD-NUM PIC X(16)}); must not be
+     *                 {@code null} and is invoked non-empty by the caller
+     * @return all transactions whose {@code cardNum} is in {@code cardNums} (a possibly-empty list);
+     *         never {@code null}
+     */
+    List<Transaction> findByCardNumIn(Collection<String> cardNums);
+
+    /**
      * Allocates the next value of the PostgreSQL sequence {@code transaction_id_seq} and
      * returns it as the 6-digit suffix source for an <strong>online</strong> 16-character
      * {@code TRAN-ID} (PR-10, AAP &sect;0.6.10).

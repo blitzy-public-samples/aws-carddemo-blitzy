@@ -279,6 +279,53 @@ class UserControllerTest {
                     .andExpect(content().string(not(containsString("$2a$"))))
                     .andExpect(content().string(not(containsString("$2b$"))));
         }
+
+        @Test
+        @DisplayName("F4-PAG-01: ADMIN + sort=password → 400 INVALID_SORT (not 500)")
+        @WithMockUser(username = "ADMIN001", roles = {"ADMIN"})
+        void shouldRejectPasswordSortPropertyWith400() throws Exception {
+            // 'password' resolves as a UserDetails bean getter on the User entity, so without an
+            // explicit allowlist Spring Data would let it through and Hibernate would later fail
+            // (mapped column is sec_usr_pwd) as an unmapped 500. The controller's sort allowlist
+            // must instead reject it with the SAME 400 INVALID_SORT contract as the other lists.
+            mockMvc.perform(get("/api/admin/users").param("sort", "password"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("INVALID_SORT"));
+
+            // The sort is validated in the controller BEFORE the service is ever invoked.
+            verify(userService, never()).listUsers(any());
+        }
+
+        @Test
+        @DisplayName("F4-PAG-01: ADMIN + sort=secUsrPwd (sensitive column) → 400 INVALID_SORT")
+        @WithMockUser(username = "ADMIN001", roles = {"ADMIN"})
+        void shouldRejectSensitiveColumnSortPropertyWith400() throws Exception {
+            // The real password-hash column must never be an accepted sort key either; the
+            // allowlist ({userId, firstName, lastName, userType}) excludes it.
+            mockMvc.perform(get("/api/admin/users").param("sort", "secUsrPwd"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("INVALID_SORT"));
+
+            verify(userService, never()).listUsers(any());
+        }
+
+        @Test
+        @DisplayName("F4-PAG-01: ADMIN + sort=firstName (whitelisted) → 200 OK")
+        @WithMockUser(username = "ADMIN001", roles = {"ADMIN"})
+        void shouldAllowWhitelistedSortProperty() throws Exception {
+            when(userService.listUsers(any(Pageable.class)))
+                    .thenReturn(new PageImpl<>(
+                            List.of(sampleAdminUser),
+                            PageRequest.of(0, 10),
+                            1));
+
+            mockMvc.perform(get("/api/admin/users").param("sort", "firstName"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.content").isArray());
+
+            // A valid sort property passes the allowlist and reaches the service.
+            verify(userService).listUsers(any(Pageable.class));
+        }
     }
 
     // =========================================================================

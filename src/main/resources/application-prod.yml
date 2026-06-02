@@ -39,6 +39,23 @@
 
 spring:
   # --------------------------------------------------------------------------
+  # SPRING DATA WEB — pagination hardening (production defense-in-depth)
+  # --------------------------------------------------------------------------
+  # max-page-size caps the effective page size a client may request on the
+  # paginated list endpoints (transactions, cards, users). Spring Data's
+  # framework default is 2000; in production this is tightened to 100 so a
+  # crafted `?size=...` can never coerce a single-page full-table scan or an
+  # oversized response. Per AAP §0.7.2 performance tuning is deferred for the
+  # demonstration dataset, so this cap is applied to the production profile
+  # ONLY — the dev/test profiles retain the framework default and their
+  # documented demo behavior (e.g. size=2001 → clamped to 2000) is unchanged.
+  # --------------------------------------------------------------------------
+  data:
+    web:
+      pageable:
+        max-page-size: 100
+
+  # --------------------------------------------------------------------------
   # DATASOURCE — All credentials via environment variables (no secrets in VCS)
   # --------------------------------------------------------------------------
   # spring.datasource.url has NO default: Spring Boot startup FAILS FAST if the

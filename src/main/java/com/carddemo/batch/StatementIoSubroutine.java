@@ -19,7 +19,12 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -283,6 +288,107 @@ public class StatementIoSubroutine {
     @Transactional(readOnly = true)
     public List<Transaction> findTransactionsByCardNumber(String cardNum) {
         return transactionRepository.findByCardNum(cardNum);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Batched (per-page) reads — N+1 avoidance for statement generation (AAP §0.6.12, F4-NPLUS1-01)
+    // -----------------------------------------------------------------------------------------
+    //
+    // The per-row accessors above (findCustomer / findAccount / findTransactionsByCardNumber)
+    // faithfully mirror the CBSTM03B per-record I/O call shape and are retained as the documented
+    // subroutine surface. The three accessors below are their SET-based counterparts: the statement
+    // tasklet collects the (customer, account, card) keys of a whole page of completed control-break
+    // groups and pre-loads them with one query each — collapsing the previous O(rows) query storm
+    // (one customer + one account + one transactions-by-card query per statement) into O(pages)
+    // (three queries per page) while keeping memory bounded to a single page (CP4). Every read
+    // remains within the PR-24 read-only boundary; callers invoke them in the PR-23 lock order
+    // CUSTOMER → ACCOUNT → TRANSACTION.
+
+    /**
+     * Bulk-loads the customers for a set of ids &mdash; the batched counterpart of
+     * {@link #findCustomer(Long)} ({@code CBSTM03B} {@code CUSTFILE} keyed read), keyed by
+     * {@code custId} for O(1) lookup while emitting each statement.
+     *
+     * <p>Delegates to {@link CustomerRepository#findAllById(Iterable)} (one
+     * {@code WHERE cust_id IN (...)} query). Only existing customers appear in the result; a missing
+     * id is simply absent from the map (the tasklet treats an absent customer as the COBOL
+     * {@code INVALID KEY} skip, exactly as {@code findCustomer(...).orElse(null)} did). An empty or
+     * {@code null} input short-circuits to an empty map so no degenerate {@code IN ()} query is
+     * issued. First link in the PR-23 lock order (CUSTOMER).</p>
+     *
+     * @param custIds the customer ids to load (may be {@code null}/empty)
+     * @return a map of {@code custId} &rarr; {@link Customer} for every id that exists (never
+     *         {@code null}; empty when the input is empty or no row matches)
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, Customer> findCustomersByIds(Collection<Long> custIds) {
+        if (custIds == null || custIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<Long, Customer> byId = new HashMap<>();
+        for (Customer customer : customerRepository.findAllById(custIds)) {
+            byId.put(customer.getCustId(), customer);
+        }
+        return byId;
+    }
+
+    /**
+     * Bulk-loads the accounts for a set of ids &mdash; the batched counterpart of
+     * {@link #findAccount(Long)} ({@code CBSTM03B} {@code ACCTFILE} keyed read), keyed by
+     * {@code acctId} for O(1) lookup while emitting each statement.
+     *
+     * <p>Delegates to {@link AccountRepository#findAllById(Iterable)} (one
+     * {@code WHERE acct_id IN (...)} query). A missing id is absent from the map (treated as the
+     * COBOL {@code INVALID KEY} skip, matching {@code findAccount(...).orElse(null)}). An empty or
+     * {@code null} input short-circuits to an empty map. Second link in the PR-23 lock order
+     * (ACCOUNT), invoked after {@link #findCustomersByIds(Collection)}.</p>
+     *
+     * @param acctIds the account ids to load (may be {@code null}/empty)
+     * @return a map of {@code acctId} &rarr; {@link Account} for every id that exists (never
+     *         {@code null}; empty when the input is empty or no row matches)
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, Account> findAccountsByIds(Collection<Long> acctIds) {
+        if (acctIds == null || acctIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<Long, Account> byId = new HashMap<>();
+        for (Account account : accountRepository.findAllById(acctIds)) {
+            byId.put(account.getAcctId(), account);
+        }
+        return byId;
+    }
+
+    /**
+     * Bulk-loads the transactions for a set of card numbers, grouped by card &mdash; the batched
+     * counterpart of {@link #findTransactionsByCardNumber(String)} ({@code CBSTM03B}
+     * {@code TRNXFILE} per-card slice).
+     *
+     * <p>Delegates to {@link TransactionRepository#findByCardNumIn(Collection)} (one
+     * {@code WHERE card_num IN (...)} query) and partitions the result by {@code cardNum}. For any
+     * given card the grouped list contains exactly the same rows {@code findByCardNum(cardNum)}
+     * would return; the tasklet re-sorts the aggregate by {@code tranId} before rendering, so
+     * statement output is byte-for-byte identical (PR-09) regardless of the order rows come back in.
+     * A card with no transactions is simply absent from the map (callers use
+     * {@code getOrDefault(card, List.of())}). An empty or {@code null} input short-circuits to an
+     * empty map so no degenerate {@code IN ()} query is issued. Final link in the PR-23 lock order
+     * (TRANSACTION).</p>
+     *
+     * @param cardNums the card numbers to load transactions for (may be {@code null}/empty)
+     * @return a map of {@code cardNum} &rarr; that card's transactions, for every card that has at
+     *         least one transaction (never {@code null}; empty when the input is empty or no row
+     *         matches)
+     */
+    @Transactional(readOnly = true)
+    public Map<String, List<Transaction>> findTransactionsByCardNumbers(Collection<String> cardNums) {
+        if (cardNums == null || cardNums.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, List<Transaction>> byCard = new HashMap<>();
+        for (Transaction transaction : transactionRepository.findByCardNumIn(cardNums)) {
+            byCard.computeIfAbsent(transaction.getCardNum(), key -> new ArrayList<>()).add(transaction);
+        }
+        return byCard;
     }
 
     /**

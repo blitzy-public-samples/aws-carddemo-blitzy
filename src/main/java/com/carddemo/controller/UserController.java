@@ -17,6 +17,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mapping.PropertyReferenceException;
+import org.springframework.data.util.TypeInformation;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -33,6 +36,8 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
+import java.util.Collections;
+import java.util.Set;
 
 /**
  * User-administration REST endpoints &mdash; the stateless, ADMIN-only replacement for the four
@@ -185,6 +190,27 @@ public class UserController {
     private final UserService userService;
 
     /**
+     * Allowlist of properties a client may sort the user list by &mdash; the bound set of valid
+     * {@code sort} parameter values for {@code GET /api/admin/users} (QA finding F4-PAG-01).
+     *
+     * <p>These are exactly the four fields the {@link UserDto} exposes ({@code userId},
+     * {@code firstName}, {@code lastName}, {@code userType}), each of which is also a real,
+     * sortable JPA attribute of the {@code User} entity. An explicit allowlist is required here
+     * (unlike the transaction/card endpoints, where an unknown sort property already surfaces as a
+     * clean {@code PropertyReference} &rarr; 400) because the {@code User} entity implements
+     * {@code org.springframework.security.core.userdetails.UserDetails} and therefore carries bean
+     * getters such as {@code getPassword()}/{@code getUsername()} that Spring Data's property
+     * introspection happily resolves. Without this guard a request like {@code ?sort=password}
+     * passes property resolution but then fails deep in Hibernate (the mapped column is
+     * {@code sec_usr_pwd}/field {@code secUsrPwd}, not {@code password}) as an unmapped
+     * {@code InvalidDataAccessApiUsageException} &rarr; HTTP 500. Bounding the sort here yields the
+     * same {@code 400 INVALID_SORT} contract as the other list endpoints and never leaks the
+     * password-hash column as a sortable key.</p>
+     */
+    private static final Set<String> SORTABLE_PROPERTIES =
+            Set.of("userId", "firstName", "lastName", "userType");
+
+    /**
      * Lists users one page at a time &mdash; the REST replacement for {@code COUSR00C}
      * (TRANID {@code CU00}). The COBOL {@code STARTBR} / {@code READNEXT} / {@code READPREV} browse
      * cursor over {@code USRSEC}, driven by PF7 (previous) and PF8 (next) ten rows at a time, is
@@ -217,8 +243,37 @@ public class UserController {
             @PageableDefault(size = 10, sort = "userId") Pageable pageable) {
 
         log.debug("GET /api/admin/users page={} size={}", pageable.getPageNumber(), pageable.getPageSize());
+        validateSort(pageable.getSort());
         Page<UserDto> users = userService.listUsers(pageable);
         return ResponseEntity.ok(users);
+    }
+
+    /**
+     * Bounds the requested sort to {@link #SORTABLE_PROPERTIES}, rejecting any other property with a
+     * clean {@code 400 Bad Request} instead of a deep {@code 500} (QA finding F4-PAG-01).
+     *
+     * <p>For each {@link Sort.Order} whose property is not in the allowlist, this throws a
+     * {@link PropertyReferenceException} &mdash; the very exception Spring Data raises for an
+     * unknown sort property on the other list endpoints &mdash; so {@code GlobalExceptionHandler}
+     * maps it to the identical {@code 400} response with code {@code "INVALID_SORT"} and message
+     * {@code "Invalid sort property: '<name>'"}. The exception is constructed against
+     * {@link UserDto} (the client-facing shape) with an empty already-resolved path; only
+     * {@link PropertyReferenceException#getPropertyName()} is consumed by the handler. The first
+     * offending property is reported (matching the natural single-property failure behavior).</p>
+     *
+     * @param sort the requested sort (never {@code null}; {@link Sort#unsorted()} when absent)
+     * @throws PropertyReferenceException if any ordered property is outside {@link #SORTABLE_PROPERTIES}
+     */
+    private void validateSort(Sort sort) {
+        for (Sort.Order order : sort) {
+            String property = order.getProperty();
+            if (!SORTABLE_PROPERTIES.contains(property)) {
+                log.debug("Rejecting invalid user sort property '{}' (allowed: {})",
+                        property, SORTABLE_PROPERTIES);
+                throw new PropertyReferenceException(
+                        property, TypeInformation.of(UserDto.class), Collections.emptyList());
+            }
+        }
     }
 
     /**

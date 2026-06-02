@@ -27,9 +27,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Spring Batch {@link Tasklet} that orchestrates customer-statement generation, the Java port of
@@ -64,14 +68,21 @@ import java.util.Objects;
  *       file in memory (CP4 batch-streaming requirement);</li>
  *   <li>performs a <strong>control-break</strong> on {@code (custId, accountId)}: because the page
  *       order makes every card of one {@code (customer, account)} pair contiguous, the card numbers
- *       are accumulated until the key changes, at which point the completed group is emitted &mdash;
- *       memory is bounded to the cards of the single group in flight, not the whole table;</li>
- *   <li>for each {@code (customer, account)} group, looks up the customer and account once, fetches
- *       that group's transactions <strong>per card</strong>
- *       ({@link StatementIoSubroutine#findTransactionsByCardNumber(String)}) rather than pre-loading
- *       the whole {@code TRNXFILE}, tranId-sorts the aggregate, computes the {@link BigDecimal}
- *       running total (scale 2, {@link RoundingMode#HALF_UP}; PR-16), and emits both an HTML
- *       statement (delegated to {@link StatementHtmlBuilder}) and a sibling plain-text statement.</li>
+ *       are accumulated until the key changes, at which point the completed group is queued for the
+ *       page's batched emission &mdash; memory is bounded to one page of cross-references plus the
+ *       single group in flight, not the whole table;</li>
+ *   <li><strong>batches the per-group lookups per page</strong> to avoid an N+1 query storm (AAP
+ *       &sect;0.6.12; QA finding F4-NPLUS1-01): the customers, accounts and transactions for all of
+ *       a page's completed groups are pre-loaded with one query each
+ *       ({@link StatementIoSubroutine#findCustomersByIds(java.util.Collection)},
+ *       {@link StatementIoSubroutine#findAccountsByIds(java.util.Collection)},
+ *       {@link StatementIoSubroutine#findTransactionsByCardNumbers(java.util.Collection)}) &mdash;
+ *       O(pages) queries rather than O(rows) &mdash; and each statement is then rendered from those
+ *       in-memory maps: it tranId-sorts the account's aggregated transactions, computes the
+ *       {@link BigDecimal} running total (scale 2, {@link RoundingMode#HALF_UP}; PR-16), and emits
+ *       both an HTML statement (delegated to {@link StatementHtmlBuilder}) and a sibling plain-text
+ *       statement. The transaction <em>set</em> and the post-sort order are unchanged, so output
+ *       stays byte-for-byte identical (PR-09).</li>
  * </ol>
  *
  * <p><strong>One statement per (customer, account).</strong> Although {@code XREFFILE} is keyed by
@@ -175,12 +186,14 @@ public class StatementGenerationTasklet implements Tasklet {
      * {@code XREFFILE} and {@code TRNXFILE} into memory, this walks the cross-references one bounded
      * page at a time in {@code (custId, accountId, xrefCardNum)} order and performs a control-break
      * on {@code (custId, accountId)}: the contiguous cards of each {@code (customer, account)} pair
-     * are accumulated, and when the key changes the completed group is emitted as one HTML statement
-     * and one plain-text statement (its transactions fetched per card on demand). The number of
-     * statements emitted is reported to Spring Batch via
-     * {@link StepContribution#incrementWriteCount(long)} so it appears in the step's write-count
-     * metric. Heap use is bounded by one page of cross-references plus the single group in flight,
-     * not by the table cardinality.</p>
+     * are accumulated, and when the key changes the completed group is queued for that page's
+     * batched emission. Each page's completed groups are then emitted together by {@link #emitGroups}
+     * &mdash; their customers, accounts and transactions pre-loaded with one query each rather than
+     * per statement (N+1 avoidance, AAP &sect;0.6.12 / F4-NPLUS1-01) &mdash; producing one HTML
+     * statement and one plain-text statement apiece. The number of statements emitted is reported to
+     * Spring Batch via {@link StepContribution#incrementWriteCount(long)} so it appears in the step's
+     * write-count metric. Heap use is bounded by one page of cross-references (plus that page's
+     * prefetched rows and the single group in flight), not by the table cardinality.</p>
      *
      * <p>Runs inside a single read-only {@code REQUIRES_NEW} transaction (PR-24). Any failure while
      * emitting a statement is logged with its {@code (customer, account)} context and re-thrown so
@@ -218,26 +231,41 @@ public class StatementGenerationTasklet implements Tasklet {
         //     streaming). CBSTM03A emits a single statement per customer/account; because the page
         //     order makes every card of one (customer, account) contiguous, we accumulate cards
         //     until the key changes, then emit the completed group. Memory is bounded to one page
-        //     plus the single group in flight — the whole XREFFILE/TRNXFILE is never materialized. ===
+        //     plus the single group in flight — the whole XREFFILE/TRNXFILE is never materialized.
+        //
+        //     N+1 AVOIDANCE (AAP §0.6.12, F4-NPLUS1-01): rather than reading the customer, account
+        //     and per-card transactions one statement at a time, the groups that COMPLETE within a
+        //     page are collected and emitted together via emitGroups(), which pre-loads that page's
+        //     customers/accounts/transactions with one query each (O(pages) instead of O(rows)).
+        //     A group whose cards straddle a page boundary stays open in `current` and is carried
+        //     forward; it is only added to a page's completed list when its (custId, accountId) key
+        //     changes, and the final still-open group is emitted once the stream is exhausted — so
+        //     every emitted group always has its full card set, preserving multi-card aggregation. ===
         long emittedCount = 0L;
         int pageNumber = 0;
         boolean morePages = true;
         StatementContext current = null;
         long xrefCount = 0L;
+        // Groups completed within the page currently being scanned (reused across pages; the still
+        // -open `current` is never added here until its control-break key changes). Bounds heap to
+        // at most one page's worth of (mostly single-card) group accumulators.
+        List<StatementContext> completedInPage = new ArrayList<>();
 
         while (morePages) {
             Page<CardXref> page =
                     ioSubroutine.findXrefsForStatements(PageRequest.of(pageNumber, XREF_PAGE_SIZE));
+            completedInPage.clear();
             for (CardXref xref : page.getContent()) {
                 xrefCount++;
                 Long custId = xref.getCustId();
                 Long acctId = xref.getAccountId();
                 String cardNum = xref.getXrefCardNum();
 
-                // Control break: a change in (custId, accountId) closes the current group.
+                // Control break: a change in (custId, accountId) closes the current group, which is
+                // queued for this page's batched emission (NOT emitted one-at-a-time).
                 if (current == null || !current.matches(custId, acctId)) {
                     if (current != null) {
-                        emittedCount += emitStatementOrRethrow(current, outputPath);
+                        completedInPage.add(current);
                     }
                     current = new StatementContext(custId, acctId);
                 }
@@ -247,10 +275,15 @@ public class StatementGenerationTasklet implements Tasklet {
             }
             morePages = page.hasNext();
             pageNumber++;
+            // Bulk-emit the groups that completed during this page (the still-open `current` carries
+            // over to the next page). One customer + one account + one transactions query for the
+            // whole batch (N+1 avoidance) rather than three per statement.
+            emittedCount += emitGroups(completedInPage, outputPath);
         }
-        // Emit the final group (the last control-break partition) once the stream is exhausted.
+        // Emit the final group (the last control-break partition) once the stream is exhausted. Its
+        // full card set is complete, so its batched emission aggregates every owned card.
         if (current != null) {
-            emittedCount += emitStatementOrRethrow(current, outputPath);
+            emittedCount += emitGroups(List.of(current), outputPath);
         }
 
         log.info("StatementGenerationTasklet completed \u2014 streamed {} cross-reference(s), "
@@ -260,20 +293,97 @@ public class StatementGenerationTasklet implements Tasklet {
     }
 
     /**
-     * Emits the statement for a completed control-break group, translating the checked
-     * {@link IOException} from {@link #emitStatement} into a propagated failure that fails (and
-     * thus makes restartable) the batch step &mdash; mirroring {@code CBSTM03A}'s abend-on-I/O
-     * behavior rather than silently skipping. Returns the write-count delta (1 when a statement was
-     * emitted, 0 when the group was skipped because its customer or account was not found).
+     * Bulk-emits a batch of completed control-break groups, pre-loading their customers, accounts
+     * and transactions with one query each before emitting any statement &mdash; the N+1-avoidance
+     * core of this tasklet (AAP &sect;0.6.12, QA finding F4-NPLUS1-01).
      *
-     * @param ctx        the completed statement context (customer id, account id, owned cards)
+     * <p>The previous implementation read the customer, the account and the per-card transactions
+     * one statement at a time, so the query count scaled linearly with the number of
+     * customers/accounts/cards (e.g. 151 queries for 50 single-card groups). Here the keys for the
+     * whole batch (one page's completed groups) are de-duplicated and fetched in three set-based
+     * queries via {@link StatementIoSubroutine#findCustomersByIds(java.util.Collection)},
+     * {@link StatementIoSubroutine#findAccountsByIds(java.util.Collection)} and
+     * {@link StatementIoSubroutine#findTransactionsByCardNumbers(java.util.Collection)}; each group
+     * is then rendered from the in-memory maps with no further repository access. The reads are
+     * issued in the canonical PR-23 lock order CUSTOMER &rarr; ACCOUNT &rarr; TRANSACTION. Null keys
+     * (orphaned cross-references) are excluded from the prefetch and resolve to an absent map entry,
+     * so the owning group is skipped exactly as a missing record would be.</p>
+     *
+     * <p>Emission order within the batch follows the group order (which is cross-reference scan
+     * order), and each statement is rendered identically to the per-row path &mdash; the aggregate
+     * is re-sorted by {@code tranId} before rendering, so output is byte-for-byte unchanged
+     * (PR-09). The returned value is the number of statements actually emitted (groups skipped for a
+     * missing customer/account contribute 0), matching the prior write-count semantics.</p>
+     *
+     * @param groups     the completed statement contexts to emit (may be empty; never {@code null})
      * @param outputPath the validated output directory (already created)
+     * @return the number of statements emitted (0..{@code groups.size()})
+     * @throws IOException if any statement file cannot be written (propagated to fail the step)
+     */
+    private long emitGroups(List<StatementContext> groups, Path outputPath) throws IOException {
+        if (groups.isEmpty()) {
+            return 0L;
+        }
+
+        // De-duplicate the batch's keys (LinkedHashSet keeps a stable, debuggable order). Null keys
+        // — orphaned cross-references — are excluded; the owning group resolves to an absent map
+        // entry and is skipped during emission, matching the prior findById-not-found behavior.
+        Set<Long> custIds = new LinkedHashSet<>();
+        Set<Long> acctIds = new LinkedHashSet<>();
+        Set<String> cardNums = new LinkedHashSet<>();
+        for (StatementContext ctx : groups) {
+            if (ctx.custId != null) {
+                custIds.add(ctx.custId);
+            }
+            if (ctx.acctId != null) {
+                acctIds.add(ctx.acctId);
+            }
+            for (String cardNum : ctx.cardNumbers) {
+                if (cardNum != null) {
+                    cardNums.add(cardNum);
+                }
+            }
+        }
+
+        // PR-23 lock order at the batch level: CUSTOMER → ACCOUNT → TRANSACTION (one query each).
+        Map<Long, Customer> customersById = ioSubroutine.findCustomersByIds(custIds);
+        Map<Long, Account> accountsById = ioSubroutine.findAccountsByIds(acctIds);
+        Map<String, List<Transaction>> transactionsByCard =
+                ioSubroutine.findTransactionsByCardNumbers(cardNums);
+
+        long emitted = 0L;
+        for (StatementContext ctx : groups) {
+            emitted += emitStatementOrRethrow(
+                    ctx, outputPath, customersById, accountsById, transactionsByCard);
+        }
+        return emitted;
+    }
+
+    /**
+     * Emits the statement for a single completed control-break group from the pre-loaded batch maps,
+     * translating the checked {@link IOException} from {@link #emitStatement} into a propagated
+     * failure that fails (and thus makes restartable) the batch step &mdash; mirroring
+     * {@code CBSTM03A}'s abend-on-I/O behavior rather than silently skipping. Returns the
+     * write-count delta (1 when a statement was emitted, 0 when the group was skipped because its
+     * customer or account was not found in the prefetched maps).
+     *
+     * @param ctx                the completed statement context (customer id, account id, owned cards)
+     * @param outputPath         the validated output directory (already created)
+     * @param customersById      the batch's prefetched customers keyed by {@code custId}
+     * @param accountsById       the batch's prefetched accounts keyed by {@code acctId}
+     * @param transactionsByCard the batch's prefetched transactions grouped by {@code cardNum}
      * @return {@code 1} if a statement was emitted, {@code 0} if it was skipped
      * @throws IOException if the statement files cannot be written (propagated to fail the step)
      */
-    private long emitStatementOrRethrow(StatementContext ctx, Path outputPath) throws IOException {
+    private long emitStatementOrRethrow(
+            StatementContext ctx,
+            Path outputPath,
+            Map<Long, Customer> customersById,
+            Map<Long, Account> accountsById,
+            Map<String, List<Transaction>> transactionsByCard) throws IOException {
         try {
-            return emitStatement(ctx, outputPath) ? 1L : 0L;
+            return emitStatement(ctx, outputPath, customersById, accountsById, transactionsByCard)
+                    ? 1L : 0L;
         } catch (IOException e) {
             log.error("Failed to emit statement for customer={} account={}: {}",
                     ctx.custId, ctx.acctId, e.getMessage(), e);
@@ -282,41 +392,55 @@ public class StatementGenerationTasklet implements Tasklet {
     }
 
     /**
-     * Emits the HTML and plain-text statements for a single {@code (customer, account)} context
-     * &mdash; the Java port of {@code CBSTM03A} {@code 5000-CREATE-STATEMENT} (L458-L505) together
-     * with the per-card transaction-listing loop of {@code 4000-TRNXFILE-GET} (L416-L437).
+     * Emits the HTML and plain-text statements for a single {@code (customer, account)} context from
+     * the pre-loaded batch maps &mdash; the Java port of {@code CBSTM03A} {@code 5000-CREATE-STATEMENT}
+     * (L458-L505) together with the per-card transaction-listing loop of {@code 4000-TRNXFILE-GET}
+     * (L416-L437).
      *
-     * <p>Reads the customer then the account (PR-23 lock order CUSTOMER &rarr; ACCOUNT). A missing
-     * customer or account reproduces the COBOL {@code INVALID KEY} ({@code '23'}) skip: the
-     * statement is not emitted and a warning is logged (returns {@code false}). Otherwise it
-     * aggregates the transactions across every card of the account, accumulates the
-     * {@link BigDecimal} total (scale 2, {@link RoundingMode#HALF_UP}), sorts the aggregate by
-     * {@code tranId} ascending (the {@code 1000-TRNXFILE-GET} sequence), renders the HTML via
-     * {@link StatementHtmlBuilder} and the plain text locally, and writes both files.</p>
+     * <p>Resolves the customer then the account from the prefetched maps (PR-23 lock order
+     * CUSTOMER &rarr; ACCOUNT; the actual queries were issued once for the whole batch in
+     * {@link #emitGroups}). A missing customer or account &mdash; an absent map entry, the same
+     * outcome the per-row {@code findById(...).orElse(null)} produced &mdash; reproduces the COBOL
+     * {@code INVALID KEY} ({@code '23'}) skip: the statement is not emitted and a warning is logged
+     * (returns {@code false}). Otherwise it aggregates the transactions across every card of the
+     * account by reading the prefetched per-card lists, accumulates the {@link BigDecimal} total
+     * (scale 2, {@link RoundingMode#HALF_UP}), sorts the aggregate by {@code tranId} ascending (the
+     * {@code 1000-TRNXFILE-GET} sequence &mdash; making the per-card fetch order irrelevant to the
+     * output), renders the HTML via {@link StatementHtmlBuilder} and the plain text locally, and
+     * writes both files. Because the transaction <em>set</em> is identical to the prior per-card
+     * reads and the aggregate is re-sorted by the unique {@code tranId}, the emitted files are
+     * byte-for-byte identical (PR-09).</p>
      *
      * <p>Output files are named {@code statement-acct-NNNNNNNNNNN.html} and
      * {@code statement-acct-NNNNNNNNNNN.txt}, where {@code NNNNNNNNNNN} is the 11-digit zero-padded
      * account id (matching the COBOL {@code ACCT-ID PIC 9(11)} width).</p>
      *
-     * @param ctx        the statement context (customer id, account id, owned card numbers)
-     * @param outputDir  the directory the two statement files are written to (already created)
+     * @param ctx                the statement context (customer id, account id, owned card numbers)
+     * @param outputDir          the directory the two statement files are written to (already created)
+     * @param customersById      the batch's prefetched customers keyed by {@code custId}
+     * @param accountsById       the batch's prefetched accounts keyed by {@code acctId}
+     * @param transactionsByCard the batch's prefetched transactions grouped by {@code cardNum}
      * @return {@code true} if a statement was emitted; {@code false} if it was skipped because the
      *         customer or account could not be found
      * @throws IOException if either statement file cannot be written
      */
     private boolean emitStatement(
             StatementContext ctx,
-            Path outputDir) throws IOException {
+            Path outputDir,
+            Map<Long, Customer> customersById,
+            Map<Long, Account> accountsById,
+            Map<String, List<Transaction>> transactionsByCard) throws IOException {
 
-        // PR-23 lock order: CUSTOMER first.
-        Customer customer = ioSubroutine.findCustomer(ctx.custId).orElse(null);
+        // PR-23 lock order: CUSTOMER first (resolved from the batch prefetch; null key or absent
+        // entry => skip, identical to the prior findCustomer(...).orElse(null) behavior).
+        Customer customer = ctx.custId == null ? null : customersById.get(ctx.custId);
         if (customer == null) {
             log.warn("Skipping statement \u2014 customer {} not found", ctx.custId);
             return false;
         }
 
-        // PR-23 lock order: ACCOUNT second.
-        Account account = ioSubroutine.findAccount(ctx.acctId).orElse(null);
+        // PR-23 lock order: ACCOUNT second (resolved from the batch prefetch).
+        Account account = ctx.acctId == null ? null : accountsById.get(ctx.acctId);
         if (account == null) {
             log.warn("Skipping statement \u2014 account {} not found", ctx.acctId);
             return false;
@@ -324,12 +448,14 @@ public class StatementGenerationTasklet implements Tasklet {
 
         // Aggregate transactions across every card belonging to this customer/account and
         // accumulate the running total (CBSTM03A 4000-TRNXFILE-GET: ADD TRNX-AMT TO WS-TOTAL-AMT).
-        // Transactions are fetched PER CARD on demand (CARD link of the PR-23 lock order) instead
-        // of from a pre-loaded whole-file map, so only the current group's rows are held (CP4).
+        // Transactions are read from the batch's prefetched per-card map (loaded once per page in
+        // emitGroups, replacing the prior per-card query — N+1 avoidance, F4-NPLUS1-01). Iterating
+        // ctx.cardNumbers (not a de-duplicated set) preserves the exact prior aggregation behavior,
+        // and the subsequent tranId sort makes the per-card grouping order irrelevant to the output.
         List<Transaction> aggregated = new ArrayList<>();
         BigDecimal totalAmount = BigDecimal.ZERO.setScale(MONEY_SCALE, RoundingMode.HALF_UP);
         for (String cardNum : ctx.cardNumbers) {
-            List<Transaction> cardTxs = ioSubroutine.findTransactionsByCardNumber(cardNum);
+            List<Transaction> cardTxs = transactionsByCard.getOrDefault(cardNum, List.of());
             aggregated.addAll(cardTxs);
             for (Transaction tx : cardTxs) {
                 totalAmount = totalAmount.add(nullSafeBd(tx.getAmount()));
