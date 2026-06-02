@@ -33,6 +33,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 /**
@@ -128,6 +129,36 @@ class CardServiceTest {
 
             assertThat(pageable.getValue().getPageSize()).isEqualTo(25);
             assertThat(pageable.getValue().getPageNumber()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("Always sorts the card page by cardNum ascending (deterministic CARDDATA.AIX "
+                + "browse order — review finding F2)")
+        void enforcesDeterministicCardNumAscendingSort() {
+            Card c = card(ACCT_ID);
+            Page<Card> page = new PageImpl<>(List.of(c));
+            when(cardXrefRepository.findByAccountId(ACCT_ID)).thenReturn(List.of(new CardXref()));
+            ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+            when(cardRepository.findByAccountId(eq(ACCT_ID), pageable.capture())).thenReturn(page);
+            when(cardMapper.toListResponse(page)).thenReturn(response(List.of(dto()), 7));
+
+            cardService.listByAccount(ACCT_ID, 0, 7);
+
+            // The Pageable handed to the repository must carry an explicit cardNum-ascending sort,
+            // independent of the (page, size) ints passed in: the service enforces the canonical
+            // CARDDATA.AIX browse order so card-list pagination is deterministic and stable (F2 —
+            // the COCRDLIC PF7/PF8 cursor replacement).
+            Sort sort = pageable.getValue().getSort();
+            assertThat(sort.isSorted())
+                    .as("the card page must be sorted, not unsorted")
+                    .isTrue();
+            Sort.Order order = sort.getOrderFor("cardNum");
+            assertThat(order)
+                    .as("the page must be ordered by the cardNum property")
+                    .isNotNull();
+            assertThat(order.getDirection())
+                    .as("cardNum must be sorted ascending (CARDDATA.AIX order)")
+                    .isEqualTo(Sort.Direction.ASC);
         }
 
         @Test

@@ -332,8 +332,11 @@ public class TransactionController {
     public ResponseEntity<TransactionDto> addTransaction(
             @Valid @RequestBody TransactionRequest request) {
 
-        log.info("POST /api/transactions accountId={} cardNumber={} amount={}",
-                request.getAccountId(), maskCardNumber(request.getCardNumber()), request.getAmount());
+        // CWE-532: log only non-sensitive operational identifiers — the account surrogate id and the
+        // masked card number (last four digits only). The transaction amount is sensitive financial
+        // data and is never written to the application log.
+        log.info("POST /api/transactions accountId={} cardNumber={}",
+                request.getAccountId(), maskCardNumber(request.getCardNumber()));
 
         // Delegate to the service, which runs the validation chain (codes 100/101/102/103),
         // generates the 16-char tranId (PR-10), and persists the Transaction inside a

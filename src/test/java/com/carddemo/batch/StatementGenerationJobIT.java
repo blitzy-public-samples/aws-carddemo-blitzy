@@ -6,6 +6,7 @@ import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -610,16 +611,21 @@ class StatementGenerationJobIT {
             assertThat(stepExecutions)
                     .allSatisfy(se -> assertThat(se.getExitStatus()).isEqualTo(ExitStatus.COMPLETED));
 
-            // The four step beans defined by StatementGenerationJobConfig (their execution order is
-            // structurally guaranteed by the JobBuilder start()/next() chain in the production job).
+            // Prove the EXACT CREASTMT step order (DELDEF01 -> STEP010 -> STEP020 -> STEP040).
+            // execution.getStepExecutions() does not guarantee iteration order, so sort the executions
+            // by their real execution order — start time, with the monotonically-increasing
+            // step-execution id as a tiebreaker for steps that start within the same clock tick —
+            // before asserting the precise sequence with containsExactly (order-sensitive).
             List<String> stepNames = stepExecutions.stream()
+                    .sorted(Comparator.comparing(StepExecution::getStartTime)
+                            .thenComparing(StepExecution::getId))
                     .map(StepExecution::getStepName)
                     .collect(Collectors.toList());
-            assertThat(stepNames).containsExactlyInAnyOrder(
-                    "statementPurgeStagingStep",
-                    "statementSortStep",
-                    "statementLoadStagingStep",
-                    "statementEmissionStep");
+            assertThat(stepNames).containsExactly(
+                    "statementPurgeStagingStep",   // DELDEF01 — purge prior output / recreate staging
+                    "statementSortStep",           // STEP010  — sort by card + transaction id
+                    "statementLoadStagingStep",    // STEP020  — load the sorted rows into staging
+                    "statementEmissionStep");      // STEP040  — CBSTM03A statement emission
         }
     }
 

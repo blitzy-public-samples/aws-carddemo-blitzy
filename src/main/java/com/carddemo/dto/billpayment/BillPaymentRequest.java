@@ -19,15 +19,11 @@ package com.carddemo.dto.billpayment;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 
-import jakarta.validation.constraints.DecimalMin;
-import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
-
-import java.math.BigDecimal;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -40,8 +36,13 @@ import lombok.NoArgsConstructor;
  *
  * <p>Models the BMS screen input fields from {@code app/cpy-bms/COBIL00.CPY}
  * that the original COBOL program {@code COBIL00C}
- * ({@code app/cbl/COBIL00C.cbl}) accepted from the 3270 user terminal,
- * plus a modernization-added {@code paymentMethod} hint.
+ * ({@code app/cbl/COBIL00C.cbl}) accepted from the 3270 user terminal.
+ * COBIL00C took <em>no</em> amount input: it always paid the full current
+ * balance ({@code MOVE ACCT-CURR-BAL TO TRAN-AMT}, COBIL00C L224). The only
+ * user-supplied fields are the account id and the {@code Y}/{@code N}
+ * confirmation flag, so this DTO carries exactly those two fields (AAP
+ * &sect;0.7.2 / PR-25 — no feature additions; the paid amount and the resulting
+ * balance are returned via {@link BillPaymentResponse}).
  *
  * <p>Field provenance:
  * <pre>
@@ -49,21 +50,15 @@ import lombok.NoArgsConstructor;
  *   ──────────      ────────────                                  ────────────────────
  *   accountId       COBIL00.CPY ACTIDINI PIC X(11) line 60        Long accommodates 11-digit
  *                   (also CVACT01Y ACCT-ID PIC 9(11))             account IDs. @NotNull required.
- *   amount          Derived from COBIL00.CPY CURBALI PIC X(14)    BigDecimal scale 2 (PR-16);
- *                   line 66 / COBIL00C WS-TRAN-AMT                @DecimalMin("0.01") enforces
- *                   PIC +99999999.99 line 55                      positive non-zero;
- *                   (CVACT01Y ACCT-CURR-BAL PIC S9(10)V99)        @Digits(10,2) matches PIC.
- *   paymentMethod   Modernization addition (no direct COBOL       Optional String. Typical
- *                   field — original COBOL always paid full       values: FULL, PARTIAL,
- *                   balance via WRITE-TRANSACT-FILE).             MINIMUM. Validated only
- *                                                                 if non-null.
  *   confirmation    COBIL00.CPY CONFIRMI PIC X(1) line 72         Exactly 1 char, uppercase
  *                   (matches COBOL CONF-PAY-YES = 'Y' check)      Y or N only per folder spec.
  * </pre>
  *
- * <p><b>CRITICAL — PR-16 (BigDecimal for money):</b> {@code amount} is
- * {@code java.math.BigDecimal}, NEVER {@code float}/{@code double}.
- * Floating-point arithmetic would corrupt cents.
+ * <p><b>CRITICAL — PR-25 (no feature additions):</b> the payment amount is
+ * <em>not</em> a client input. COBIL00C always paid the full pre-payment
+ * balance; {@code BillPaymentService} reproduces that exactly. There is no
+ * partial/minimum/overpayment path — overpayment is structurally impossible
+ * because no amount can be supplied.
  *
  * <p><b>CRITICAL — PR-28 (Jakarta EE namespace):</b> All validation
  * annotations come from {@code jakarta.validation.constraints.*}, NOT
@@ -98,12 +93,13 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 @Builder
 @Schema(description = "Bill payment request — submitted to POST /api/accounts/{acctId}/payments. " +
-        "Mirrors the COBOL COBIL00C input screen (BMS map COBIL00) with fields for account ID, " +
-        "payment amount (BigDecimal scale 2 per PR-16), optional payment method hint, and Y/N " +
-        "confirmation flag. Per AAP §0.4.1.1, the bill payment flow atomically creates a payment " +
-        "Transaction and updates the Account balance within a single @Transactional boundary in " +
-        "BillPaymentService. The confirmation field must equal 'Y' for the payment to actually " +
-        "be processed (matches COBOL CONF-PAY-YES check).")
+        "Mirrors the COBOL COBIL00C input screen (BMS map COBIL00) with fields for account ID and a " +
+        "Y/N confirmation flag. COBIL00C took no amount input — it always paid the full current " +
+        "balance (MOVE ACCT-CURR-BAL TO TRAN-AMT) — so this request carries no amount or payment " +
+        "method (AAP §0.7.2 / PR-25 — no feature additions). Per AAP §0.4.1.1, the bill payment flow " +
+        "atomically creates a payment Transaction and zeroes the Account balance within a single " +
+        "@Transactional boundary in BillPaymentService. The confirmation field must equal 'Y' for " +
+        "the payment to actually be processed (matches COBOL CONF-PAY-YES check).")
 public class BillPaymentRequest {
 
     @NotNull(message = "accountId is required")
@@ -115,32 +111,6 @@ public class BillPaymentRequest {
             example = "10000000001",
             requiredMode = Schema.RequiredMode.REQUIRED)
     private Long accountId;
-
-    @NotNull(message = "amount is required")
-    @DecimalMin(value = "0.01", message = "amount must be at least 0.01 (positive non-zero)")
-    @Digits(integer = 10, fraction = 2, message = "amount must have at most 10 integer digits and 2 decimal places")
-    @Schema(description = "Payment amount in account currency (BigDecimal scale 2). " +
-            "Derived from COBIL00.CPY CURBALI PIC X(14) at line 66 (display field) and matches " +
-            "COBIL00C WS-TRAN-AMT PIC +99999999.99 at line 55 and CVACT01Y ACCT-CURR-BAL " +
-            "PIC S9(10)V99. Must be positive and non-zero (>= 0.01). Cannot exceed 9999999999.99. " +
-            "PR-16: BigDecimal — NEVER float/double.",
-            example = "150.00",
-            minimum = "0.01",
-            requiredMode = Schema.RequiredMode.REQUIRED)
-    private BigDecimal amount;
-
-    @Size(max = 16, message = "paymentMethod cannot exceed 16 characters")
-    @Pattern(regexp = "FULL|PARTIAL|MINIMUM", flags = Pattern.Flag.CASE_INSENSITIVE,
-            message = "paymentMethod must be one of: FULL, PARTIAL, MINIMUM")
-    @Schema(description = "Optional payment method hint. Modernization addition (no direct COBOL " +
-            "equivalent — original COBIL00C always paid the full current balance). Allowed values: " +
-            "FULL, PARTIAL, MINIMUM. Case-insensitive. If null/omitted, BillPaymentService defaults " +
-            "to FULL (matching original COBOL behavior).",
-            example = "FULL",
-            allowableValues = {"FULL", "PARTIAL", "MINIMUM"},
-            nullable = true,
-            requiredMode = Schema.RequiredMode.NOT_REQUIRED)
-    private String paymentMethod;
 
     @NotBlank(message = "confirmation is required")
     @Size(min = 1, max = 1, message = "confirmation must be exactly 1 character")

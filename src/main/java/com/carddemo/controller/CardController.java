@@ -190,10 +190,14 @@ public class CardController {
      * account id, displaying at most {@code WS-MAX-SCREEN-LINES VALUE 7} rows per 3270 screen with
      * PF7 (page-up) / PF8 (page-down) navigation. That stateful browse cursor is replaced by
      * stateless Spring Data {@link Pageable} pagination (AAP &sect;0.6.1): each request recomputes
-     * its window from the {@code page}/{@code size}/{@code sort} request parameters with no
-     * server-side cursor lifecycle. The {@link PageableDefault} default size of {@code 7} preserves
-     * the COCRDLIC seven-row screen, and the default sort of {@code cardNum} ascending mirrors the
-     * {@code CARDDAT} primary-key order.</p>
+     * its window from the {@code page}/{@code size} request parameters with no server-side cursor
+     * lifecycle. The {@link PageableDefault} default size of {@code 7} preserves the COCRDLIC
+     * seven-row screen. The result order is <strong>always {@code cardNum} ascending</strong> &mdash;
+     * {@link CardService#listByAccount(Long, int, int)} enforces this canonical order server-side (it
+     * builds the page request with an explicit {@code Sort.by("cardNum").ascending()}), so the window
+     * is deterministic and stable, faithfully replacing the ordered {@code CARDDATA.AIX} browse. The
+     * order is therefore not client-overridable; this is intentional parity with COCRDLIC (which only
+     * ever browsed in {@code CARDAIX} order) and the review finding F2 fix.</p>
      *
      * <p>The cross-reference existence check, the paged browse, and the preserved COBOL messages are
      * delegated entirely to {@link CardService#listByAccount(Long, int, int)}:</p>
@@ -216,9 +220,11 @@ public class CardController {
      *
      * @param acctId   the account primary key, mirroring {@code CARD-ACCT-ID PIC 9(11)}; must be a
      *                 non-zero 11-digit number ({@code 1 .. 99999999999})
-     * @param pageable the pagination request bound from the {@code page}/{@code size}/{@code sort}
-     *                 parameters; defaults to page&nbsp;0, size&nbsp;7, sorted by {@code cardNum}
-     *                 ascending to match the COCRDLIC screen and {@code CARDDAT} key order
+     * @param pageable the pagination request bound from the {@code page}/{@code size} parameters;
+     *                 defaults to page&nbsp;0, size&nbsp;7. Only the page index and size are used: the
+     *                 result order is fixed to {@code cardNum} ascending by the service (the
+     *                 deterministic {@code CARDDATA.AIX} replacement), so any client-supplied
+     *                 {@code sort} component is intentionally not honored
      * @return {@code 200 OK} with the requested page of cards as a {@link CardListResponse}
      */
     @GetMapping("/api/accounts/{acctId}/cards")
@@ -227,8 +233,10 @@ public class CardController {
             description = "Returns a paginated list of credit cards for the given account. "
                     + "Default page size is 7 (matches BMS COCRDLI 7-row display). "
                     + "Replaces COCRDLIC CICS card list (TRANID=CCLI) and CARDDATA.AIX browse. "
-                    + "Pagination uses Spring Data Pageable (page, size, sort) instead of the "
-                    + "PF7/PF8 cursor. An empty result is a valid 200 with an empty list, not a 404.")
+                    + "Pagination uses Spring Data Pageable (page, size) instead of the PF7/PF8 "
+                    + "cursor; results are always sorted by cardNum ascending (enforced server-side, "
+                    + "the deterministic CARDDATA.AIX order). An empty result is a valid 200 with an "
+                    + "empty list, not a 404.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Cards returned (possibly empty list)"),
             @ApiResponse(responseCode = "400", description = "Invalid account ID format, or no card rows for a cross-referenced account"),
@@ -242,7 +250,8 @@ public class CardController {
             @Min(value = 1L, message = "Account number must be a non zero 11 digit number")
             @Max(value = 99999999999L, message = "Account number must be a non zero 11 digit number")
             Long acctId,
-            @Parameter(description = "Pagination parameters (page=0-indexed, size, sort=cardNum,asc by default)")
+            @Parameter(description = "Pagination parameters (page=0-indexed, size). Results are always "
+                    + "sorted by cardNum ascending, enforced server-side; a client sort is not honored.")
             @PageableDefault(size = 7, sort = "cardNum", direction = Sort.Direction.ASC)
             Pageable pageable) {
 
@@ -252,8 +261,11 @@ public class CardController {
 
         // Delegate to the service. The service signature is (acctId, page, size); the stateless
         // Pageable is destructured into its zero-based page index and size, replacing the COCRDLIC
-        // PF7/PF8 cursor. The service performs the cross-reference existence check and the paged
-        // CARDAIX browse, and returns a CardListResponse (empty page => empty list, still 200).
+        // PF7/PF8 cursor. The service itself enforces the deterministic cardNum-ascending order (it
+        // builds the PageRequest with Sort.by("cardNum").ascending()), so the canonical CARDDATA.AIX
+        // browse order is guaranteed regardless of the page/size passed here (F2). The service performs
+        // the cross-reference existence check and the paged browse, and returns a CardListResponse
+        // (empty page => empty list, still 200).
         CardListResponse response = cardService.listByAccount(
                 acctId, pageable.getPageNumber(), pageable.getPageSize());
         return ResponseEntity.ok(response);

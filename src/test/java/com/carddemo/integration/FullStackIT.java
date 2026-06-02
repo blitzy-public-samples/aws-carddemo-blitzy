@@ -1186,10 +1186,10 @@ class FullStackIT {
             BigDecimal startingBalance = new BigDecimal("150.00");
             setAccountBalance(ACCT_BILLPAY_FULL, startingBalance);
 
+            // COBIL00C takes no amount/method input — it always pays the full balance. The request
+            // carries only the account id and the Y/N confirmation (PR-25 — no feature additions).
             BillPaymentRequest req = BillPaymentRequest.builder()
                     .accountId(ACCT_BILLPAY_FULL)
-                    .amount(startingBalance)
-                    .paymentMethod("FULL")
                     .confirmation("Y")
                     .build();
 
@@ -1256,10 +1256,11 @@ class FullStackIT {
             makeAccountTransactable(ACCT_BILLPAY_ZERO);
             setAccountBalance(ACCT_BILLPAY_ZERO, BigDecimal.ZERO);
 
+            // COBIL00C takes no amount/method input — it always pays the full balance (PR-25). On a
+            // zero-balance account the nothing-to-pay guard fires regardless, so the request carries
+            // only the account id and the Y/N confirmation.
             BillPaymentRequest req = BillPaymentRequest.builder()
                     .accountId(ACCT_BILLPAY_ZERO)
-                    .amount(new BigDecimal("0.01"))
-                    .paymentMethod("FULL")
                     .confirmation("Y")
                     .build();
 
@@ -1285,10 +1286,11 @@ class FullStackIT {
             String card = cardNumberForAccount(ACCT_BILLPAY_ZERO);
             long txCountBefore = transactionRepository.findByCardNum(card).size();
 
+            // COBIL00C takes no amount/method input — it always pays the full balance (PR-25). On a
+            // zero-balance account the nothing-to-pay guard fires regardless, so the request carries
+            // only the account id and the Y/N confirmation.
             BillPaymentRequest req = BillPaymentRequest.builder()
                     .accountId(ACCT_BILLPAY_ZERO)
-                    .amount(new BigDecimal("0.01"))
-                    .paymentMethod("FULL")
                     .confirmation("Y")
                     .build();
 

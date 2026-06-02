@@ -1240,6 +1240,225 @@ class CriticalBatchSequenceIT {
                     .as("Distinct parameters must yield distinct JobInstances")
                     .isNotEqualTo(first.getJobInstance().getInstanceId());
         }
+
+        /**
+         * The definitive PR-12 proof and the resolution of review finding F3: launches the full
+         * {@code POSTTRAN → INTCALC → COMBTRAN → CREASTMT} chain against a single isolated account and
+         * asserts the EXACT cumulative state after each job rather than merely that every job reached
+         * {@code COMPLETED}. The prior full-sequence tests proved ordering and file emission but never
+         * the aggregate data effects the checkpoint mandates: the specific accepted postings, the TCATBAL
+         * composite-key upsert (PR-06), the cycle buckets being credited then zeroed (PR-07 → PR-08),
+         * the interest applied to the account balance via the WS-TOTAL-INT identity, the
+         * consolidated-transaction contents and idempotency, and the generated statement content for the
+         * very account driven through the chain (PR-09).
+         *
+         * <p>The shared {@code PER_CLASS} container accumulates business data across tests, so every
+         * assertion is a before/after delta over one account isolated by draining the daily feed and
+         * zeroing its cycle buckets up front; absolute table counts are never used (the only count
+         * assertion is COMBTRAN rerun-stability, itself a delta).</p>
+         */
+        @Test
+        @DisplayName("CRITICAL — Verifies the exact cumulative state across the full sequence (PR-12 aggregate proof, F3)")
+        void shouldVerifyCumulativeStateAcrossFullSequence() throws Exception {
+            // ===========================================================================================
+            // Step 0 — Isolate one account. Drain every pending daily row so POSTTRAN processes ONLY the
+            // three rows seeded below, and zero the account's cycle buckets so the post / interest deltas
+            // are measured from a known base under the shared PER_CLASS container.
+            // ===========================================================================================
+            dailyTransactionRepository.deleteAll();
+
+            Long acctId = accountWithCard(0);
+            String card = cardForAccount(acctId);
+
+            Account seed = accountRepository.findById(acctId).orElseThrow();
+            seed.setCurrCycCredit(BigDecimal.ZERO);
+            seed.setCurrCycDebit(BigDecimal.ZERO);
+            accountRepository.save(seed);
+
+            Account beforePost = accountRepository.findById(acctId).orElseThrow();
+            BigDecimal balBeforePost = beforePost.getCurrBal();
+
+            TransactionCategoryBalanceId tcatKey = TransactionCategoryBalanceId.builder()
+                    .accountId(acctId).typeCd("01").categoryCd("0001").build();
+            BigDecimal tcatBeforePost = tcatBalanceRepository.findById(tcatKey)
+                    .map(TransactionCategoryBalance::getTranCatBal)
+                    .orElse(BigDecimal.ZERO);
+
+            // Three known, valid, positive daily transactions (type 01 / cat 0001) summing to 6.00.
+            String postedId1 = nextDtId();
+            String postedId2 = nextDtId();
+            String postedId3 = nextDtId();
+            dailyTransactionRepository.save(createDailyTransaction(postedId1, card, new BigDecimal("1.00")));
+            dailyTransactionRepository.save(createDailyTransaction(postedId2, card, new BigDecimal("2.00")));
+            dailyTransactionRepository.save(createDailyTransaction(postedId3, card, new BigDecimal("3.00")));
+
+            // ===========================================================================================
+            // Step 1 — POSTTRAN (CBTRN02C). Assert the three SPECIFIC accepted postings, the TCATBAL
+            // composite-key upsert (PR-06), the sign-based cycle-bucket update (PR-07), and curr_bal.
+            // ===========================================================================================
+            JobExecution posting = jobLauncher.run(transactionPostingJob, runParams());
+            assertThat(posting.getStatus())
+                    .as("Step 1 POSTTRAN must complete")
+                    .isEqualTo(BatchStatus.COMPLETED);
+
+            for (String postedId : List.of(postedId1, postedId2, postedId3)) {
+                assertThat(transactionRepository.findById(postedId))
+                        .as("Each seeded daily transaction must be posted, retaining its 16-char id (%s)", postedId)
+                        .isPresent();
+            }
+            assertThat(transactionRepository.findById(postedId1).orElseThrow().getAmount())
+                    .as("Posting 1 must carry its DALYTRAN-AMT")
+                    .isEqualByComparingTo(new BigDecimal("1.00"));
+            assertThat(transactionRepository.findById(postedId2).orElseThrow().getAmount())
+                    .as("Posting 2 must carry its DALYTRAN-AMT")
+                    .isEqualByComparingTo(new BigDecimal("2.00"));
+            assertThat(transactionRepository.findById(postedId3).orElseThrow().getAmount())
+                    .as("Posting 3 must carry its DALYTRAN-AMT")
+                    .isEqualByComparingTo(new BigDecimal("3.00"));
+            assertThat(transactionRepository.findById(postedId1).orElseThrow().getCardNum())
+                    .as("Posting must retain the originating card number")
+                    .isEqualTo(card);
+
+            // PR-06 — TCATBAL upsert by composite key: prior balance + Σ DALYTRAN-AMT (1 + 2 + 3 = 6.00).
+            BigDecimal tcatAfterPost = tcatBalanceRepository.findById(tcatKey).orElseThrow().getTranCatBal();
+            assertThat(tcatAfterPost)
+                    .as("TCATBAL('01','0001') must be upserted to prior + 6.00 per PR-06")
+                    .isEqualByComparingTo(tcatBeforePost.add(new BigDecimal("6.00")));
+
+            // PR-07 — positive amounts add to curr_cyc_credit and curr_bal; curr_cyc_debit untouched.
+            Account afterPost = accountRepository.findById(acctId).orElseThrow();
+            assertThat(afterPost.getCurrCycCredit())
+                    .as("Positive postings must accumulate into curr_cyc_credit (6.00) per PR-07")
+                    .isEqualByComparingTo(new BigDecimal("6.00"));
+            assertThat(afterPost.getCurrCycDebit())
+                    .as("curr_cyc_debit must remain zero for all-positive postings per PR-07")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(afterPost.getCurrBal())
+                    .as("curr_bal must increase by the total posted amount (6.00) per PR-07")
+                    .isEqualByComparingTo(balBeforePost.add(new BigDecimal("6.00")));
+            BigDecimal balAfterPost = afterPost.getCurrBal();
+
+            // ===========================================================================================
+            // Step 2 — INTCALC (CBACT04C). Force a deterministic TCATBAL of 1200.00 for (acct,'01','0001')
+            // so the canonical interest equals (1200.00 × DEFAULT rate) / 1200 (PR-01 with the PR-02
+            // DEFAULT-group fallback). Assert the canonical amount is emitted, BOTH cycle buckets are
+            // zeroed (PR-08), and curr_bal grows by EXACTLY the sum of the emitted interest amounts (the
+            // WS-TOTAL-INT identity — robust whether the account has one or several category balances).
+            // ===========================================================================================
+            TransactionCategoryBalance tcb = tcatBalanceRepository.findById(tcatKey).orElseThrow();
+            tcb.setTranCatBal(new BigDecimal("1200.00"));
+            tcatBalanceRepository.save(tcb);
+
+            DisclosureGroupId defKey = new DisclosureGroupId("DEFAULT", "01", "0001");
+            BigDecimal rate = discGroupRepository.findById(defKey)
+                    .map(DisclosureGroup::getDisIntRate)
+                    .orElseThrow();
+            BigDecimal expectedCanonicalInterest = new BigDecimal("1200.00")
+                    .multiply(rate)
+                    .divide(BigDecimal.valueOf(1200), 2, RoundingMode.HALF_UP);
+
+            JobExecution interest = jobLauncher.run(interestCalculationJob, interestParams(PARM_DATE));
+            assertThat(interest.getStatus())
+                    .as("Step 2 INTCALC must complete")
+                    .isEqualTo(BatchStatus.COMPLETED);
+
+            List<Transaction> acctInterest = interestTransactionsForAccount(acctId);
+            assertThat(acctInterest)
+                    .as("INTCALC must emit at least one interest transaction for the account")
+                    .isNotEmpty();
+            assertThat(acctInterest)
+                    .as("The canonical (1200.00 × DEFAULT rate) / 1200 interest must appear per PR-01/PR-02")
+                    .anyMatch(t -> t.getAmount().compareTo(expectedCanonicalInterest) == 0);
+
+            BigDecimal totalInterest = acctInterest.stream()
+                    .map(Transaction::getAmount)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            Account afterInterest = accountRepository.findById(acctId).orElseThrow();
+            assertThat(afterInterest.getCurrCycCredit())
+                    .as("curr_cyc_credit must be zeroed after interest per PR-08")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(afterInterest.getCurrCycDebit())
+                    .as("curr_cyc_debit must be zeroed after interest per PR-08")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(afterInterest.getCurrBal())
+                    .as("curr_bal must grow by EXACTLY the sum of emitted interest amounts (WS-TOTAL-INT identity, PR-08)")
+                    .isEqualByComparingTo(balAfterPost.add(totalInterest));
+            BigDecimal balAfterInterest = afterInterest.getCurrBal();
+            List<String> interestIds = acctInterest.stream().map(Transaction::getTranId).toList();
+
+            // ===========================================================================================
+            // Step 3 — COMBTRAN (CBTRN03C + SORT/REPRO). Assert the postings AND the interest rows all
+            // survive consolidation, no duplicate tran_ids are produced, the table stays queryable in
+            // ascending tran_id order, rerunning is idempotent (ON CONFLICT DO NOTHING), and accounts are
+            // left untouched (COMBTRAN consolidates transactions only).
+            // ===========================================================================================
+            JobExecution consolidation = jobLauncher.run(transactionConsolidationJob, runParams());
+            assertThat(consolidation.getStatus())
+                    .as("Step 3 COMBTRAN must complete")
+                    .isEqualTo(BatchStatus.COMPLETED);
+
+            for (String postedId : List.of(postedId1, postedId2, postedId3)) {
+                assertThat(transactionRepository.findById(postedId))
+                        .as("Posted transaction %s must survive consolidation", postedId)
+                        .isPresent();
+            }
+            for (String interestId : interestIds) {
+                assertThat(transactionRepository.findById(interestId))
+                        .as("Interest transaction %s must survive consolidation", interestId)
+                        .isPresent();
+            }
+
+            Integer duplicateIds = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM (SELECT tran_id FROM transactions GROUP BY tran_id "
+                            + "HAVING COUNT(*) > 1) AS dups", Integer.class);
+            assertThat(duplicateIds)
+                    .as("No tran_id may appear more than once after COMBTRAN")
+                    .isZero();
+
+            List<String> orderedIds = jdbcTemplate.queryForList(
+                    "SELECT tran_id FROM transactions ORDER BY tran_id ASC", String.class);
+            assertThat(orderedIds)
+                    .as("Consolidated transactions must be retrievable in ascending tran_id order "
+                            + "(SORT FIELDS=(1,16,CH,A))")
+                    .isSorted();
+
+            long countAfterFirstCombtran = transactionRepository.count();
+            JobExecution consolidationRerun = jobLauncher.run(transactionConsolidationJob, runParams());
+            assertThat(consolidationRerun.getStatus())
+                    .as("COMBTRAN rerun must complete")
+                    .isEqualTo(BatchStatus.COMPLETED);
+            assertThat(transactionRepository.count())
+                    .as("Re-running COMBTRAN must not change the transaction count (idempotent ON CONFLICT DO NOTHING)")
+                    .isEqualTo(countAfterFirstCombtran);
+
+            assertThat(accountRepository.findById(acctId).orElseThrow().getCurrBal())
+                    .as("COMBTRAN must not mutate account balances")
+                    .isEqualByComparingTo(balAfterInterest);
+
+            // ===========================================================================================
+            // Step 4 — CREASTMT (CBSTM03A). Assert a statement is generated for THIS account: both the
+            // file name and its content carry the 11-digit zero-padded account id (PR-09 structure).
+            // ===========================================================================================
+            JobExecution statements = jobLauncher.run(statementGenerationJob, statementParams("statements"));
+            assertThat(statements.getStatus())
+                    .as("Step 4 CREASTMT must complete")
+                    .isEqualTo(BatchStatus.COMPLETED);
+
+            String zeroPaddedAcctId = String.format("%011d", acctId);
+            List<Path> produced = statementFiles(".html");
+            produced.addAll(statementFiles(".txt"));
+            List<Path> mine = produced.stream()
+                    .filter(p -> p.getFileName().toString().contains(zeroPaddedAcctId))
+                    .toList();
+            assertThat(mine)
+                    .as("CREASTMT must emit a statement file named for the account driven through the chain "
+                            + "(statement-acct-%s)", zeroPaddedAcctId)
+                    .isNotEmpty();
+            assertThat(Files.readString(mine.get(0)))
+                    .as("The generated statement must render the 11-digit zero-padded account id per CBSTM03A (PR-09)")
+                    .contains(zeroPaddedAcctId);
+        }
     }
 
     /**

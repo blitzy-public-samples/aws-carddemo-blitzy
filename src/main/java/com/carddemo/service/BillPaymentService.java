@@ -65,8 +65,8 @@ import java.time.LocalDateTime;
  *   <li>{@code TRAN-DESC = 'BILL PAYMENT - ONLINE'} &rarr; {@code description = "BILL PAYMENT -
  *       ONLINE"};</li>
  *   <li>{@code TRAN-AMT = ACCT-CURR-BAL} (the legacy program <em>always</em> paid the full current
- *       balance) &rarr; for the default/{@code FULL} method the paid amount is the full
- *       pre-payment balance; see "Payment method" below;</li>
+ *       balance) &rarr; the paid amount is always the full pre-payment balance, so the account
+ *       balance is reduced to zero;</li>
  *   <li>{@code TRAN-CARD-NUM = XREF-CARD-NUM} &rarr; {@code cardNum} from the cross-reference;</li>
  *   <li>{@code TRAN-MERCHANT-ID = 999999999} &rarr; {@code merchantId = 999999999L};</li>
  *   <li>{@code TRAN-MERCHANT-NAME = 'BILL PAYMENT'} &rarr; {@code merchantName = "BILL PAYMENT"};</li>
@@ -76,18 +76,14 @@ import java.time.LocalDateTime;
  *       procTimestamp} (the same instant, L231-232).</li>
  * </ul>
  *
- * <h2>Payment method (modernization detail honored from {@code BillPaymentRequest})</h2>
- * <p>The legacy COBIL00C had no payment-method concept &mdash; it always paid the full balance. The
- * {@code BillPaymentRequest} DTO adds an optional {@code paymentMethod} hint whose own contract
- * documents the rule this service implements:</p>
- * <ul>
- *   <li>{@code paymentMethod} null/blank or {@code FULL} &rarr; pay the full pre-payment balance
- *       (exact COBIL00C behavior, {@code TRAN-AMT = ACCT-CURR-BAL});</li>
- *   <li>{@code paymentMethod} {@code PARTIAL} or {@code MINIMUM} &rarr; pay the request
- *       {@code amount} (the DTO requires a positive, scale-2 amount).</li>
- * </ul>
- * <p>No new behavior beyond what the existing DTO already advertises is introduced (AAP &sect;0.7.2
- * &mdash; no feature additions).</p>
+ * <h2>Full-balance-only payment (PR-25 &mdash; no feature additions)</h2>
+ * <p>COBIL00C had no payment-amount or payment-method concept: it <em>always</em> paid the full
+ * current balance ({@code MOVE ACCT-CURR-BAL TO TRAN-AMT}, COBIL00C L224) and then reduced the
+ * balance by that same amount ({@code COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT}, L234),
+ * leaving the account balance at zero. This service reproduces that behavior exactly: the paid amount
+ * is the full pre-payment balance and the new balance is always zero. No client-supplied amount is
+ * accepted, so partial, minimum, or overpayment is structurally impossible (AAP &sect;0.7.2 / PR-25
+ * &mdash; no feature additions; PR-25 also guarantees the balance can never be driven negative).</p>
  *
  * <h2>Identifier and timestamp generation (PR-10 / PR-11)</h2>
  * <p>Although COBIL00C derived the next id by reading the last {@code TRANSACT} row and adding one,
@@ -117,7 +113,7 @@ import java.time.LocalDateTime;
  * <p>Version reference: CardDemo_v1.0-15-g27d6c6f-68 (COBIL00C bill-payment program).
  *
  * @see com.carddemo.controller.BillPaymentController the REST adapter that exposes this service
- * @see BillPaymentRequest the request payload (account id, amount, method, Y/N confirmation)
+ * @see BillPaymentRequest the request payload (account id and Y/N confirmation only)
  * @see BillPaymentResponse the response payload (tran id, balances, available credit, message)
  * @since 1.0
  */
@@ -133,9 +129,6 @@ public class BillPaymentService {
      * identical constant in {@link TransactionService}.
      */
     private static final int DATE_PREFIX_LENGTH = 10;
-
-    /** Default/explicit "pay the full balance" method hint (the exact COBIL00C behavior). */
-    private static final String METHOD_FULL = "FULL";
 
     /** Verbatim COBIL00C "nothing to pay" message (L201) &rarr; HTTP 422. */
     private static final String MSG_NOTHING_TO_PAY = "You have nothing to pay...";
@@ -207,8 +200,8 @@ public class BillPaymentService {
      * @param acctId  the account primary key from the request path (the authoritative account id;
      *                {@code BillPaymentController} has already verified the body's
      *                {@code accountId} matches this path value)
-     * @param request the validated bill-payment request (amount, optional method hint, and the
-     *                {@code Y}/{@code N} confirmation flag)
+     * @param request the validated bill-payment request (the {@code Y}/{@code N} confirmation flag;
+     *                there is no client-supplied amount &mdash; the full balance is always paid)
      * @return a {@link BillPaymentResponse} echoing the generated transaction id, the processed
      *         amount, the previous and new balances, the resulting available credit, the 26-character
      *         DB2 {@code processedAt} timestamp, and the verbatim COBIL00C success message
@@ -252,16 +245,12 @@ public class BillPaymentService {
                 .orElseThrow(() -> AccountNotFoundException.withMessage(MSG_ACCOUNT_NOT_FOUND));
         String cardNum = xref.getXrefCardNum();
 
-        // Determine the amount to pay. COBIL00C always paid the full balance (TRAN-AMT =
-        // ACCT-CURR-BAL); the optional paymentMethod hint preserves that as the FULL/default case
-        // and lets PARTIAL/MINIMUM pay the supplied (already positive, scale-2) request amount.
-        String method = request.getPaymentMethod();
-        String effectiveMethod = (method == null || method.isBlank())
-                ? METHOD_FULL
-                : method.trim().toUpperCase();
-        BigDecimal paymentAmount = METHOD_FULL.equals(effectiveMethod)
-                ? previousBalance
-                : BigDecimalUtil.ensureScaleTwo(request.getAmount());
+        // Determine the amount to pay. COBIL00C had no amount input: it ALWAYS paid the full current
+        // balance (MOVE ACCT-CURR-BAL TO TRAN-AMT, L224). The paid amount is therefore the full
+        // pre-payment balance and nothing else — there is no client-supplied amount and no partial /
+        // minimum mode, so overpayment is structurally impossible and the balance cannot be driven
+        // negative (PR-25 — no feature additions).
+        BigDecimal paymentAmount = previousBalance;
 
         // STEP 5 — generate the id and timestamps (PR-10 / PR-11), using the same idiom as
         // TransactionService.addTransaction. origTimestamp == procTimestamp (COBIL00C L231-232).
@@ -309,8 +298,9 @@ public class BillPaymentService {
         // complete the message.
         String successMessage = "Payment successful.  Your Transaction ID is " + tranId + ".";
 
-        log.info("Bill payment posted for accountId={} tranId={} newBalance={}",
-                acctId, tranId, newBalance);
+        // CWE-532: log only non-sensitive operational identifiers (accountId surrogate + generated
+        // tranId). Monetary values (balances, amounts) are never written to the application log.
+        log.info("Bill payment posted for accountId={} tranId={}", acctId, tranId);
 
         return new BillPaymentResponse(
                 tranId,

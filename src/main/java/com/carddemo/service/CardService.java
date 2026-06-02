@@ -21,6 +21,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -206,12 +207,18 @@ public class CardService {
      *       {@link AccountNotFoundException} with the exact message {@value #MSG_ACCT_NOT_IN_XREF}
      *       (COCRDSLC line 152 &rarr; HTTP 404).</li>
      *   <li><strong>Card window.</strong> {@link CardRepository#findByAccountId(Long, Pageable)}
-     *       returns the requested page (backed by {@code idx_card_account_id}). As a defensive
-     *       guard for the COCRDLIC "NO RECORDS FOUND FOR THIS SEARCH CONDITION." path (COCRDLIC
-     *       line 122) &mdash; a data inconsistency where the cross-reference lists the account but
-     *       the card master yields no rows on the first page &mdash; an empty first page raises
-     *       {@link InvalidCardException} (code 100 &rarr; HTTP 400). Paging past the end (any page
-     *       beyond the first) simply returns an empty {@link CardListResponse} with HTTP 200.</li>
+     *       returns the requested page (backed by {@code idx_card_account_id}), <strong>always sorted
+     *       by {@code cardNum} ascending</strong>. This service builds the {@link Pageable} with an
+     *       explicit {@code Sort.by("cardNum").ascending()} so the ordering is deterministic and the
+     *       page window is stable across requests &mdash; the faithful replacement for the ordered
+     *       {@code CARDDATA.AIX} browse and the COCRDLIC PF7/PF8 cursor. The sort is enforced
+     *       server-side and cannot be discarded regardless of how the caller (or a controller
+     *       {@code @PageableDefault}) supplies the page/size arguments (review finding F2). As a
+     *       defensive guard for the COCRDLIC "NO RECORDS FOUND FOR THIS SEARCH CONDITION." path
+     *       (COCRDLIC line 122) &mdash; a data inconsistency where the cross-reference lists the
+     *       account but the card master yields no rows on the first page &mdash; an empty first page
+     *       raises {@link InvalidCardException} (code 100 &rarr; HTTP 400). Paging past the end (any
+     *       page beyond the first) simply returns an empty {@link CardListResponse} with HTTP 200.</li>
      * </ol>
      *
      * @param accountId the account whose cards to list ({@code CARD-ACCT-ID PIC 9(11)}); the
@@ -239,8 +246,12 @@ public class CardService {
             throw AccountNotFoundException.withMessage(MSG_ACCT_NOT_IN_XREF);
         }
 
-        // Stage 2: paginated browse of the card master, replacing CARDAIX STARTBR/READNEXT.
-        Pageable pageable = PageRequest.of(page, pageSize);
+        // Stage 2: paginated browse of the card master, replacing CARDAIX STARTBR/READNEXT. The page
+        // is ALWAYS sorted by cardNum ascending so the window is deterministic and stable across
+        // requests — the faithful replacement for the ordered CARDDATA.AIX browse (the COCRDLIC
+        // PF7/PF8 cursor). The sort is enforced here in the service so it cannot be lost regardless of
+        // how the caller (or a controller default) populates the page/size arguments (F2).
+        Pageable pageable = PageRequest.of(page, pageSize, Sort.by("cardNum").ascending());
         Page<Card> cardsPage = cardRepository.findByAccountId(accountId, pageable);
 
         // COCRDLIC "NO RECORDS FOUND FOR THIS SEARCH CONDITION." defensive guard: the

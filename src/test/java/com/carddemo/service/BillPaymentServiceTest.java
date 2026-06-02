@@ -32,6 +32,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.InOrder;
@@ -193,11 +195,12 @@ class BillPaymentServiceTest {
     }
 
     /**
-     * Builds a confirmed, FULL-method bill-payment request. {@code confirmation = "Y"} clears the
-     * COBIL00C confirmation guard; {@code paymentMethod} is left {@code null} so the service defaults
-     * to FULL — the exact COBIL00C behavior of paying the entire current balance
-     * ({@code TRAN-AMT = ACCT-CURR-BAL}). {@code amount} is intentionally not set because the FULL
-     * path never reads it.
+     * Builds a confirmed bill-payment request. {@code confirmation = "Y"} clears the COBIL00C
+     * confirmation guard. The {@link BillPaymentRequest} carries <em>only</em> the account id and the
+     * {@code Y}/{@code N} confirmation flag — there is no client-supplied amount or payment method
+     * (PR-25, no feature additions): COBIL00C always pays the entire current balance
+     * ({@code TRAN-AMT = ACCT-CURR-BAL}), so the paid amount can never be influenced by the caller and
+     * overpayment is structurally impossible.
      */
     private BillPaymentRequest paymentRequest(Long acctId) {
         BillPaymentRequest request = new BillPaymentRequest();
@@ -473,6 +476,81 @@ class BillPaymentServiceTest {
             // nothing downstream is touched and nothing is persisted
             verifyNoInteractions(cardXrefRepository, transactionRepository, transactionIdGenerator);
             verify(accountRepository, never()).saveAndFlush(any(Account.class));
+        }
+    }
+
+    // ==========================================================================================
+    // Group 7 — Full-balance-only payment / overpayment structurally impossible (F1, PR-25)
+    // ==========================================================================================
+
+    @Nested
+    @DisplayName("Full-balance-only payment — overpayment structurally impossible (F1, PR-25)")
+    class FullBalanceOnly {
+
+        /**
+         * For ANY positive starting balance, the paid amount equals the full pre-payment balance and
+         * the resulting account balance is exactly zero. Because the {@link BillPaymentRequest} carries
+         * no amount and no payment-method input, the caller cannot influence the paid amount, so
+         * overpayment (a negative resulting balance) is structurally impossible. This is the regression
+         * proof for review finding F1 (the removed {@code PARTIAL}/{@code MINIMUM} modes) and for PR-25
+         * (no feature additions) — it reproduces the COBIL00C invariant
+         * {@code TRAN-AMT = ACCT-CURR-BAL} (L224) then {@code ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT}
+         * (L234).
+         */
+        @ParameterizedTest(name = "balance {0} -> pays {0}, new balance 0.00")
+        @ValueSource(strings = {"0.01", "1.00", "100.00", "1500.00", "9999999999.99"})
+        @DisplayName("Pays exactly the full balance and zeroes the account for any positive balance")
+        void shouldAlwaysPayFullBalanceAndZeroTheAccount(String balanceText) {
+            // given — an account whose current balance is the parameter value
+            BigDecimal startingBalance = new BigDecimal(balanceText);
+            Account account = buildAccount(ACCT_ID, startingBalance);
+            stubHappyPath(account, CARD_NUM);
+
+            // when
+            BillPaymentResponse response =
+                    billPaymentService.processBillPayment(ACCT_ID, paymentRequest(ACCT_ID));
+
+            // then — the written transaction's amount equals the FULL pre-payment balance (never more)
+            verify(transactionRepository).save(transactionCaptor.capture());
+            assertThat(transactionCaptor.getValue().getAmount())
+                    .as("TRAN-AMT must equal the full pre-payment balance (COBIL00C L224); the caller "
+                            + "cannot supply a different amount")
+                    .isEqualByComparingTo(startingBalance);
+
+            // ...the account is rewritten to exactly zero (never negative -> overpayment impossible)
+            verify(accountRepository).saveAndFlush(accountCaptor.capture());
+            assertThat(accountCaptor.getValue().getCurrBal())
+                    .as("ACCT-CURR-BAL must be exactly zero after the payment (COBIL00C L234); it can "
+                            + "never be driven negative")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+
+            // ...and the response mirrors that: it paid the full balance and the new balance is zero
+            assertThat(response.paymentAmount())
+                    .as("Response paymentAmount must equal the full pre-payment balance")
+                    .isEqualByComparingTo(startingBalance);
+            assertThat(response.previousBalance()).isEqualByComparingTo(startingBalance);
+            assertThat(response.newBalance())
+                    .as("Response newBalance must be exactly zero — overpayment is impossible")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(response.newBalance().signum())
+                    .as("the resulting balance is never negative")
+                    .isZero();
+        }
+
+        /**
+         * The committed {@link BillPaymentRequest} exposes no amount or payment-method accessor, so a
+         * caller has no way to request a partial, minimum, or over-payment. This compile-time/structural
+         * guarantee is the root-cause fix for F1: the unsupported modes were removed from the DTO at the
+         * source rather than merely validated away (PR-25 — no feature additions).
+         */
+        @Test
+        @DisplayName("BillPaymentRequest exposes no amount/paymentMethod accessor (F1 root-cause removal)")
+        void requestShouldNotExposeAmountOrPaymentMethod() {
+            assertThat(BillPaymentRequest.class.getMethods())
+                    .as("BillPaymentRequest must not expose any amount/paymentMethod accessor — the "
+                            + "PARTIAL/MINIMUM feature was removed at the source (F1 / PR-25)")
+                    .extracting(java.lang.reflect.Method::getName)
+                    .doesNotContain("getAmount", "setAmount", "getPaymentMethod", "setPaymentMethod");
         }
     }
 }

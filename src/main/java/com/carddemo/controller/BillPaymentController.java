@@ -98,7 +98,7 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>Version reference: CardDemo_v1.0-15-g27d6c6f-68 (COBIL00C bill-payment program).
  *
  * @see BillPaymentService the service that performs the COBIL00C logic
- * @see BillPaymentRequest the request payload (account id, amount, optional method, Y/N confirmation)
+ * @see BillPaymentRequest the request payload (account id and Y/N confirmation only)
  * @see BillPaymentResponse the response payload (tran id, balances, available credit, message)
  * @see com.carddemo.controller.advice.GlobalExceptionHandler exception-to-HTTP-status mapping
  * @since 1.0
@@ -132,19 +132,19 @@ public class BillPaymentController {
      * {@code ObjectOptimisticLockingFailureException} &rarr; {@code 409 Conflict}.</p>
      *
      * <p>{@code @Valid} triggers Jakarta Bean Validation on the {@link BillPaymentRequest} body
-     * before the service runs &mdash; rejecting (with {@code 400}) a missing or non-positive
-     * {@code amount}, a {@code paymentMethod} outside {FULL, PARTIAL, MINIMUM}, or a confirmation
-     * flag other than {@code Y}/{@code N} (the latter mirrors the COBIL00C {@code WHEN OTHER}
-     * "Invalid value. Valid values are (Y/N)..." edit at L187). The {@code acctId} path variable is
-     * authoritative; a mismatching non-null body {@code accountId} is rejected with {@code 400} (see
-     * the class JavaDoc).</p>
+     * before the service runs &mdash; rejecting (with {@code 400}) a confirmation flag other than
+     * {@code Y}/{@code N} (mirroring the COBIL00C {@code WHEN OTHER} "Invalid value. Valid values are
+     * (Y/N)..." edit at L187). There is no client-supplied amount or payment method: COBIL00C always
+     * paid the full balance, so the request carries only the account id and the confirmation flag. The
+     * {@code acctId} path variable is authoritative; a mismatching non-null body {@code accountId} is
+     * rejected with {@code 400} (see the class JavaDoc).</p>
      *
      * @param acctId  the account primary key from the path, mirroring COBOL {@code ACCT-ID PIC
      *                9(11)} ({@code app/cpy/CVACT01Y.cpy} L5); must be a non-zero 11-digit number
      *                ({@code 1 .. 99999999999}) per PR-13
-     * @param request the validated bill-payment request carrying the amount
-     *                ({@link java.math.BigDecimal}, PR-16), the optional payment-method hint, and the
-     *                {@code Y}/{@code N} confirmation flag
+     * @param request the validated bill-payment request carrying only the {@code Y}/{@code N}
+     *                confirmation flag (and an optional body {@code accountId} that must match the
+     *                path); there is no client-supplied amount &mdash; the full balance is always paid
      * @return {@code 200 OK} with the {@link BillPaymentResponse} summarizing the posted payment
      */
     @PostMapping
@@ -154,9 +154,10 @@ public class BillPaymentController {
                     + "account exists, the balance is positive (otherwise: 'You have nothing to "
                     + "pay...' -> 422), and the confirmation flag is 'Y' (otherwise: 'Confirm to make "
                     + "a bill payment...' -> 422). Creates a new payment transaction record and reduces "
-                    + "the balance atomically within a single @Transactional scope (PR-24). The "
-                    + "default/FULL method pays the full balance (exact COBIL00C behavior); "
-                    + "PARTIAL/MINIMUM pays the request amount. Replaces COBIL00C (TRANID=CB00).")
+                    + "the balance atomically within a single @Transactional scope (PR-24). Mirroring "
+                    + "COBIL00C exactly, the payment always pays the FULL current balance (there is no "
+                    + "client-supplied amount and no partial/minimum mode), so the balance is reduced to "
+                    + "zero. Replaces COBIL00C (TRANID=CB00).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Payment processed successfully"),
             @ApiResponse(responseCode = "400",
@@ -180,10 +181,11 @@ public class BillPaymentController {
             Long acctId,
             @Valid @RequestBody BillPaymentRequest request) {
 
-        // INFO log of the inbound request. amount/paymentMethod/confirmation are non-sensitive
-        // (no PAN, no PII): the card number is resolved inside the service and is never logged.
-        log.info("POST /api/accounts/{}/payments amount={} method={} confirmation={}",
-                acctId, request.getAmount(), request.getPaymentMethod(), request.getConfirmation());
+        // INFO log of the inbound request. CWE-532: only the non-sensitive accountId surrogate and
+        // the Y/N confirmation flag are logged — never any monetary amount, and never the card number
+        // (which is resolved inside the service and never logged).
+        log.info("POST /api/accounts/{}/payments confirmation={}",
+                acctId, request.getConfirmation());
 
         // The path acctId is authoritative. The BillPaymentRequest.accountId @Schema explicitly
         // states the controller validates consistency, and BillPaymentService's contract relies on
@@ -199,9 +201,10 @@ public class BillPaymentController {
         // inside one optimistically-locked @Transactional unit of work and returns the response.
         BillPaymentResponse response = billPaymentService.processBillPayment(acctId, request);
 
-        // INFO log of the outcome: the generated transaction id and the resulting account balance.
-        log.info("POST /api/accounts/{}/payments completed tranId={} newBalance={}",
-                acctId, response.tranId(), response.newBalance());
+        // INFO log of the outcome: only non-sensitive operational identifiers (accountId surrogate +
+        // generated tranId). CWE-532: monetary values (balances, amounts) are never logged.
+        log.info("POST /api/accounts/{}/payments completed tranId={}",
+                acctId, response.tranId());
 
         return ResponseEntity.ok(response);
     }
