@@ -32,7 +32,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
@@ -153,6 +152,26 @@ class CardServiceTest {
             assertThatThrownBy(() -> cardService.listByAccount(ACCT_ID, 0, 7))
                     .isInstanceOf(InvalidCardException.class);
             verify(cardMapper, never()).toListResponse(any());
+        }
+
+        @Test
+        @DisplayName("Paging beyond the last page for a cross-referenced account returns an empty response (no throw)")
+        void pagingBeyondEndReturnsEmptyResponse() {
+            // COCRDLIC defensive guard is scoped to page 0 only: when the cross-reference confirms
+            // the account but a non-first page (page > 0) yields no rows, the service must NOT raise
+            // the "NO RECORDS FOUND" InvalidCardException — it returns a well-formed empty page
+            // (HTTP 200), mirroring a PF8 scroll past the final card.
+            Page<Card> emptyPage = new PageImpl<>(List.of());
+            CardListResponse empty = new CardListResponse(List.of(), 0, 0, 1, 7, false, true);
+            when(cardXrefRepository.findByAccountId(ACCT_ID)).thenReturn(List.of(new CardXref()));
+            when(cardRepository.findByAccountId(eq(ACCT_ID), any(Pageable.class))).thenReturn(emptyPage);
+            when(cardMapper.toListResponse(emptyPage)).thenReturn(empty);
+
+            CardListResponse result = cardService.listByAccount(ACCT_ID, 1, 7);
+
+            assertThat(result).isSameAs(empty);
+            assertThat(result.content()).isEmpty();
+            assertThat(result.currentPage()).isEqualTo(1);
         }
     }
 
