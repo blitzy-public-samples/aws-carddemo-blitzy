@@ -1,78 +1,121 @@
 package com.carddemo.batch;
 
+import com.carddemo.batch.reader.AsciiFixedWidthItemReader;
 import com.carddemo.entity.DailyTransaction;
 import com.carddemo.repository.DailyTransactionRepository;
+import com.carddemo.util.FixedWidthRecordParser;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
-import org.springframework.batch.item.ItemProcessor;
-import org.springframework.batch.item.ItemWriter;
-import org.springframework.batch.item.data.RepositoryItemReader;
-import org.springframework.batch.item.data.builder.RepositoryItemReaderBuilder;
+import org.springframework.batch.item.ExecutionContext;
+import org.springframework.batch.item.ItemStreamException;
+import org.springframework.batch.item.ItemStreamReader;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
-
-import java.util.Collections;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Spring Batch configuration for the <strong>{@code dailyTransactionReadJob}</strong> — the
  * Java/PostgreSQL replacement for the legacy batch COBOL program {@code app/cbl/CBTRN01C.cbl}
- * ("Post the records from daily transaction file").
+ * ("Post the records from daily transaction file") in its role as the <em>daily-feed staging
+ * loader</em>.
  *
  * <h2>Legacy mainframe behavior (CBTRN01C.cbl)</h2>
  * The original COBOL program opens the sequential {@code DALYTRAN-FILE} (a PS file laid out by
- * {@code app/cpy/CVTRA06Y.cpy} {@code DALYTRAN-RECORD}) together with the indexed
- * {@code CUSTFILE}, {@code XREFFILE}, {@code CARDFILE}, {@code ACCTFILE} and {@code TRANFILE}
- * VSAM datasets. Its {@code MAIN-PARA} loops {@code PERFORM UNTIL END-OF-DAILY-TRANS-FILE = 'Y'}:
- * each iteration reads the next daily-transaction record ({@code 1000-DALYTRAN-GET-NEXT}),
- * {@code DISPLAY}s it, then performs a cross-reference lookup by card number
- * ({@code 2000-LOOKUP-XREF}) and, on success, an account read ({@code 3000-READ-ACCOUNT}),
- * emitting diagnostic {@code DISPLAY} lines for every record and every lookup outcome. It does
- * <em>not</em> mutate any file — its sole purpose is to surface (verify) the contents of the
- * daily-transaction feed for an operator.
+ * {@code app/cpy/CVTRA06Y.cpy} {@code DALYTRAN-RECORD}, RECLN 350) and loops
+ * {@code PERFORM UNTIL END-OF-DAILY-TRANS-FILE = 'Y'}, reading each daily-transaction record from
+ * the feed. In the mainframe pipeline this sequential PS file is the input consumed downstream by
+ * the posting program {@code CBTRN02C} (the {@code POSTTRAN} job).
  *
- * <h2>Modernized Spring Batch behavior — diagnostic reader</h2>
- * Per the AAP transformation plan (&sect;0.4.1.2), the substantive validation/posting logic of the
- * daily feed (validation codes 100/101/102/103, the {@code TCATBAL} upsert, and the sign-based
- * account-balance bucket) is owned by the {@code POSTTRAN} job
- * ({@code TransactionPostingJobConfig} / {@code TransactionPostingProcessor}). This job is
- * therefore kept deliberately as a <strong>read-only diagnostic</strong>: a chunk-oriented step
- * that pages over the {@code daily_transactions} staging table (the relational stand-in for the
- * sequential {@code DALYTRAN} PS file, AAP &sect;0.6.6) and logs each staged row — the faithful
- * Spring equivalent of the COBOL {@code DISPLAY DALYTRAN-RECORD} loop. It is intended for
- * operator verification of staging-table contents and never writes back to the database.
+ * <h2>Modernized Spring Batch behavior — staging loader (AAP &sect;0.6.6 step 1)</h2>
+ * PostgreSQL cannot directly consume the fixed-width EBCDIC/ASCII PS feed, so this job
+ * <strong>materializes</strong> the daily feed into the {@code daily_transactions} staging table —
+ * the relational stand-in for the sequential {@code DALYTRAN} PS file. Per the AAP transformation
+ * plan (&sect;0.4.1.2 and &sect;0.6.6 step 1):
  *
- * <p>The CICS/VSAM verification reads ({@code 2000-LOOKUP-XREF}, {@code 3000-READ-ACCOUNT}) are
- * intentionally omitted here because their business intent is fully realized by the posting
- * pipeline; reproducing them in this diagnostic job would duplicate that logic without adding
- * verification value.</p>
+ * <blockquote>"{@code DailyTransactionReadJobConfig} … reads {@code app/data/ASCII/dailytran.txt}
+ * via {@code FlatFileItemReader} + {@code FixedWidthRecordParser}; persists to
+ * {@code daily_transactions} staging table … with {@code processed = false}."</blockquote>
+ *
+ * The chunk-oriented step therefore streams the 300 fixed-width records of
+ * {@code app/data/ASCII/dailytran.txt} through {@link AsciiFixedWidthItemReader} (the AAP-planned
+ * fixed-width reader, also used by {@code DataInitializationJobConfig}), maps each line to a
+ * {@link DailyTransaction} entity via the {@code CVTRA06Y} {@code PIC}-clause offsets, and persists
+ * the batch through {@link DailyTransactionRepository#saveAll(Iterable)}. Each staged row is written
+ * with {@code processed = false} so the downstream {@code POSTTRAN} job
+ * ({@code TransactionPostingJobConfig}) — whose reader selects unprocessed rows via
+ * {@link DailyTransactionRepository#findByProcessedFalse(org.springframework.data.domain.Pageable)}
+ * — has real input to validate and post (validation codes 100/101/102/103, the {@code TCATBAL}
+ * upsert, and the sign-based account-balance bucket).
+ *
+ * <p>This is precisely the <em>pre-step</em> described in AAP &sect;0.6.6: in a clean environment,
+ * launching this job loads the daily feed so that {@code POSTTRAN → INTCALC → COMBTRAN → CREASTMT}
+ * (PR-12) can run end-to-end unaided. The substantive validation/posting business logic remains
+ * owned by {@code POSTTRAN}; this job's sole responsibility is faithful ingestion of the feed.</p>
+ *
+ * <h2>Fixed-width record layout — {@code app/cpy/CVTRA06Y.cpy} {@code DALYTRAN-RECORD} (350 bytes)</h2>
+ * <table border="1">
+ *   <caption>Field offsets (zero-based) and lengths derived from the COBOL {@code PIC} clauses</caption>
+ *   <tr><th>COBOL field</th><th>PIC</th><th>offset</th><th>length</th><th>Java target</th></tr>
+ *   <tr><td>DALYTRAN-ID</td><td>X(16)</td><td>0</td><td>16</td><td>{@code dalytranId} (String)</td></tr>
+ *   <tr><td>DALYTRAN-TYPE-CD</td><td>X(02)</td><td>16</td><td>2</td><td>{@code typeCd} (String, CHAR(2))</td></tr>
+ *   <tr><td>DALYTRAN-CAT-CD</td><td>9(04)</td><td>18</td><td>4</td><td>{@code categoryCd} (String, CHAR(4); leading zeros preserved)</td></tr>
+ *   <tr><td>DALYTRAN-SOURCE</td><td>X(10)</td><td>22</td><td>10</td><td>{@code source} (String)</td></tr>
+ *   <tr><td>DALYTRAN-DESC</td><td>X(100)</td><td>32</td><td>100</td><td>{@code description} (String)</td></tr>
+ *   <tr><td>DALYTRAN-AMT</td><td>S9(09)V99</td><td>132</td><td>11</td><td>{@code amount} (BigDecimal, scale 2; zoned-decimal sign overpunch)</td></tr>
+ *   <tr><td>DALYTRAN-MERCHANT-ID</td><td>9(09)</td><td>143</td><td>9</td><td>{@code merchantId} (Long)</td></tr>
+ *   <tr><td>DALYTRAN-MERCHANT-NAME</td><td>X(50)</td><td>152</td><td>50</td><td>{@code merchantName} (String)</td></tr>
+ *   <tr><td>DALYTRAN-MERCHANT-CITY</td><td>X(50)</td><td>202</td><td>50</td><td>{@code merchantCity} (String)</td></tr>
+ *   <tr><td>DALYTRAN-MERCHANT-ZIP</td><td>X(10)</td><td>252</td><td>10</td><td>{@code merchantZip} (String)</td></tr>
+ *   <tr><td>DALYTRAN-CARD-NUM</td><td>X(16)</td><td>262</td><td>16</td><td>{@code cardNum} (String)</td></tr>
+ *   <tr><td>DALYTRAN-ORIG-TS</td><td>X(26)</td><td>278</td><td>26</td><td>{@code origTimestamp} (LocalDateTime)</td></tr>
+ *   <tr><td>DALYTRAN-PROC-TS</td><td>X(26)</td><td>304</td><td>26</td><td>{@code procTimestamp} (LocalDateTime; blank in feed &rarr; {@code null})</td></tr>
+ *   <tr><td>FILLER</td><td>X(20)</td><td>330</td><td>20</td><td>(unmapped)</td></tr>
+ * </table>
+ *
+ * <p>The monetary {@code DALYTRAN-AMT} field is COBOL zoned-decimal with the sign overpunched on the
+ * trailing digit (e.g. {@code 'G'} &rarr; {@code +7}, {@code '}'} &rarr; {@code -0}); it is decoded
+ * and scaled by {@link AsciiFixedWidthItemReader#parseZonedDecimal(String, int, int, int)} to a
+ * {@link java.math.BigDecimal} of scale 2 with {@link java.math.RoundingMode#HALF_UP} (PR-16). The
+ * two 26-character timestamps in {@code dailytran.txt} are stored in the form
+ * {@code "yyyy-MM-dd HH:mm:ss.SSSSSS"} and are parsed by
+ * {@link FixedWidthRecordParser#parseLocalDateTime(String, int, int, String)}; {@code DALYTRAN-PROC-TS}
+ * is blank in the feed (the rows are unprocessed) and therefore maps to {@code null}.</p>
+ *
+ * <h2>Idempotent re-runs</h2>
+ * <p>The streaming reader is wrapped in {@link ExistingDataSkippingReader}: if the
+ * {@code daily_transactions} table is already populated, the load is skipped (returns EOF without
+ * opening the fixture), so re-launching the job does not stack duplicate feed rows. When the table
+ * is empty, the underlying {@link AsciiFixedWidthItemReader#open(ExecutionContext)} validates that
+ * {@code dailytran.txt} exists and raises {@link ItemStreamException} otherwise. This mirrors the
+ * existing-data guard used by {@code DataInitializationJobConfig} for every fixture load.</p>
  *
  * <h2>Step shape</h2>
  * <pre>
- *   RepositoryItemReader&lt;DailyTransaction&gt;  (pages daily_transactions via findAll, sorted by dalytranId ASC)
- *        -&gt; ItemProcessor (logs each row, pass-through)
- *        -&gt; ItemWriter   (no-op; logs the chunk size only)
+ *   AsciiFixedWidthItemReader&lt;DailyTransaction&gt; (over app/data/ASCII/dailytran.txt, CVTRA06Y layout)
+ *        wrapped by ExistingDataSkippingReader (skip when daily_transactions already populated)
+ *        -&gt; ItemWriter (DailyTransactionRepository.saveAll; rows persisted with processed=false)
  * </pre>
- * The reader sorts by the business feed identifier {@code dalytranId} (the {@code tran_id}
- * column, originally COBOL {@code DALYTRAN-ID PIC X(16)}) in ascending order. Because the feed
- * identifiers are zero-padded fixed-width strings, lexicographic ascending order reproduces the
- * natural numeric sequence in which {@code CBTRN01C} read the sequential file. A deterministic,
- * non-empty sort is also a hard requirement of the paging {@link RepositoryItemReader}.
  *
  * <h2>Refactoring rules enforced</h2>
  * <ul>
- *   <li><strong>PR-11</strong> (DB2 timestamp format): {@code origTimestamp} is the normalized
- *       form of the 26-character DB2 external timestamp {@code YYYY-MM-DD-HH.MM.SS.MIL0000}; it
- *       is rendered here only for diagnostic logging (a read-only I/O boundary).</li>
+ *   <li><strong>PR-11</strong> (DB2 timestamp format): {@code origTimestamp}/{@code procTimestamp}
+ *       are normalized from the 26-character external timestamp at this I/O boundary.</li>
+ *   <li><strong>PR-13</strong> (record-length fidelity): field offsets/lengths mirror the
+ *       {@code CVTRA06Y} {@code PIC} clauses exactly.</li>
+ *   <li><strong>PR-16</strong> (exact decimal): {@code amount} is a {@link java.math.BigDecimal} of
+ *       scale 2 with {@link java.math.RoundingMode#HALF_UP}; {@code float}/{@code double} are never
+ *       used.</li>
  *   <li><strong>PR-25</strong> (single monolith): this batch job runs inside the one Spring Boot
  *       context — no microservice or external scheduler.</li>
+ *   <li><strong>PR-27</strong> (sources preserved): {@code app/data/ASCII/dailytran.txt} and the
+ *       {@code CVTRA06Y} copybook are read unchanged as input/REFERENCE.</li>
  *   <li><strong>PR-28</strong> (Jakarta / Spring 6 baseline): only Spring Framework 6.1 / Spring
  *       Batch 5.1 APIs are used; no {@code javax.*} types.</li>
  *   <li><strong>PR-29</strong> (constructor injection only): the three collaborators are
@@ -84,20 +127,15 @@ import java.util.concurrent.atomic.AtomicLong;
  * Boot 3.x the {@code spring-boot-starter-batch} auto-configuration supplies the
  * {@link JobRepository}, {@code JobLauncher}, {@code JobRegistry} and {@code JobExplorer}; adding
  * {@code @EnableBatchProcessing} would disable that auto-configuration (see {@code BatchConfig}).
- * Both {@code @Bean Job} and {@code @Bean Step} defined here are auto-registered with the
+ * Both the {@code @Bean Job} and {@code @Bean Step} defined here are auto-registered with the
  * {@code JobRegistry}, so {@code BatchAdminController} can launch this job by its
  * {@link #JOB_NAME}.</p>
  *
- * <p>Entity field accessors used by the logging processor are taken from the committed
- * {@link DailyTransaction} entity: {@code getDalytranId()} / {@code getCardNum()} /
- * {@code getTypeCd()} return {@code String}, {@code getCategoryCd()} returns {@code String},
- * {@code getAmount()} returns {@code java.math.BigDecimal}, {@code getOrigTimestamp()} returns
- * {@code java.time.LocalDateTime}, and {@code getProcessed()} returns {@code Boolean}.</p>
- *
  * @see com.carddemo.entity.DailyTransaction
  * @see com.carddemo.repository.DailyTransactionRepository
+ * @see com.carddemo.batch.reader.AsciiFixedWidthItemReader
  * @see TransactionPostingJobConfig
- * @see org.springframework.batch.item.data.RepositoryItemReader
+ * @see DataInitializationJobConfig
  */
 @Configuration
 @RequiredArgsConstructor
@@ -105,130 +143,164 @@ import java.util.concurrent.atomic.AtomicLong;
 public class DailyTransactionReadJobConfig {
 
     /**
-     * Logical name of the diagnostic {@link Job} bean. Used by the {@code JobRegistry} and the
+     * Logical name of the {@link Job} bean. Used by the {@code JobRegistry} and the
      * {@code BatchAdminController} ({@code POST /api/admin/jobs/{jobName}/launch}) to launch this
-     * job by name for operator verification of the {@code daily_transactions} staging table.
+     * staging-loader job by name.
      */
     public static final String JOB_NAME = "dailyTransactionReadJob";
 
-    /** Logical name of the single chunk-oriented diagnostic {@link Step}. */
+    /** Logical name of the single chunk-oriented staging {@link Step}. */
     private static final String STEP_NAME = "dailyTransactionReadStep";
 
     /**
-     * {@link RepositoryItemReader} name — used as the key prefix under which the reader saves and
-     * restores its paging state in the step {@code ExecutionContext}. Must be unique within the
-     * step.
+     * {@link AsciiFixedWidthItemReader} name — used as the key prefix under which the reader saves
+     * and restores its restart line-count in the step {@code ExecutionContext}. Distinct from the
+     * {@code POSTTRAN} reader name ({@code "transactionPostingDailyTransactionReader"}) to avoid any
+     * {@code ExecutionContext}/bean-name collision.
      */
-    private static final String READER_NAME = "dailyTransactionReader";
+    private static final String READER_NAME = "dailyTransactionStagingReader";
+
+    /** Bare name of the daily-feed fixture under {@code app/data/ASCII/} (PR-27, read-only input). */
+    private static final String FIXTURE_FILE = "dailytran.txt";
 
     /**
-     * Chunk size, doubling as the reader page size. A value of {@value} balances log granularity
-     * against round-trips for the demonstration-grade data volume; it matches the codebase-wide
-     * default chunk size (AAP &sect;0.3.3 #7).
+     * Chunk size, doubling as the commit granularity. A value of {@value} matches the codebase-wide
+     * default chunk size (AAP &sect;0.3.3 #7) and the {@code DataInitializationJobConfig} fixture
+     * loads; each committed chunk is a Spring Batch checkpoint boundary supporting restart.
      */
     private static final int CHUNK_SIZE = 100;
 
+    /** Implied decimal scale for the COBOL {@code S9(09)V99} {@code DALYTRAN-AMT} field (PR-16). */
+    private static final int MONEY_SCALE = 2;
+
     /**
-     * Entity property the reader sorts on (mapped to the {@code tran_id} column). Sorting by the
-     * zero-padded feed identifier ascending reproduces the sequential read order of the original
-     * {@code DALYTRAN} PS file and provides the deterministic ordering the paging reader requires.
+     * Minimum line length required to safely extract every mapped field. The last mapped field,
+     * {@code DALYTRAN-PROC-TS}, ends at offset {@value} (304 + 26); the trailing 20-byte
+     * {@code FILLER} is intentionally not read. A shorter line indicates a truncated/corrupt record
+     * and is rejected loudly (mirrors the short-record guard in {@code DataInitializationJobConfig}).
      */
-    private static final String SORT_PROPERTY = "dalytranId";
+    private static final int MIN_RECORD_LENGTH = 330;
+
+    /**
+     * Layout of the 26-character timestamp fields as stored in {@code dailytran.txt}
+     * ({@code "2022-06-10 19:27:53.000000"} — date, space, time, six fractional-second digits). The
+     * DB2 external form ({@code "yyyy-MM-dd-HH.mm.ss.SSSSSS"}) is reproduced separately at output
+     * boundaries via {@code DateConversionUtil} (PR-11); here we parse the source feed layout.
+     */
+    private static final String FEED_TIMESTAMP_PATTERN = "yyyy-MM-dd HH:mm:ss.SSSSSS";
+
+    // --- CVTRA06Y DALYTRAN-RECORD field offsets/lengths (verified against the fixture) ---
+    private static final int ID_OFFSET = 0;
+    private static final int ID_LENGTH = 16;
+    private static final int TYPE_CD_OFFSET = 16;
+    private static final int TYPE_CD_LENGTH = 2;
+    private static final int CAT_CD_OFFSET = 18;
+    private static final int CAT_CD_LENGTH = 4;
+    private static final int SOURCE_OFFSET = 22;
+    private static final int SOURCE_LENGTH = 10;
+    private static final int DESC_OFFSET = 32;
+    private static final int DESC_LENGTH = 100;
+    private static final int AMT_OFFSET = 132;
+    private static final int AMT_LENGTH = 11;
+    private static final int MERCHANT_ID_OFFSET = 143;
+    private static final int MERCHANT_ID_LENGTH = 9;
+    private static final int MERCHANT_NAME_OFFSET = 152;
+    private static final int MERCHANT_NAME_LENGTH = 50;
+    private static final int MERCHANT_CITY_OFFSET = 202;
+    private static final int MERCHANT_CITY_LENGTH = 50;
+    private static final int MERCHANT_ZIP_OFFSET = 252;
+    private static final int MERCHANT_ZIP_LENGTH = 10;
+    private static final int CARD_NUM_OFFSET = 262;
+    private static final int CARD_NUM_LENGTH = 16;
+    private static final int ORIG_TS_OFFSET = 278;
+    private static final int ORIG_TS_LENGTH = 26;
+    private static final int PROC_TS_OFFSET = 304;
+    private static final int PROC_TS_LENGTH = 26;
 
     /** Spring Batch metadata repository (auto-configured by Spring Boot 3.x). */
     private final JobRepository jobRepository;
 
     /**
      * Transaction manager bracketing each chunk's unit of work — the {@code SYNCPOINT}-equivalent
-     * boundary for the read step (PR-24). Even though this diagnostic step performs no writes,
-     * Spring Batch requires a transaction manager to delimit chunk processing.
+     * boundary for the staging step (PR-24). Each committed chunk persists its staged rows and
+     * advances the reader's restart cursor atomically.
      */
     private final PlatformTransactionManager transactionManager;
 
     /**
-     * Spring Data JPA repository over the {@code daily_transactions} staging table. Supplied to the
-     * {@link RepositoryItemReaderBuilder} to provide a paged full-table read via its inherited
-     * {@code findAll(Pageable)} method.
+     * Spring Data JPA repository over the {@code daily_transactions} staging table. Used both to
+     * persist the parsed feed rows ({@link DailyTransactionRepository#saveAll(Iterable)}) and to
+     * decide whether a prior load already populated the table ({@code count()} idempotency guard).
      */
     private final DailyTransactionRepository dailyTransactionRepository;
 
     /**
-     * Paging reader over the {@code daily_transactions} staging table.
+     * Maps a single fixed-width {@code DALYTRAN-RECORD} line to a transient {@link DailyTransaction}
+     * staging entity, using the verified {@code CVTRA06Y} offsets.
      *
-     * <p>Built on {@link RepositoryItemReader}, which invokes
-     * {@code dailyTransactionRepository.findAll(Pageable)} ({@code DailyTransactionRepository}
-     * extends {@code JpaRepository}, hence {@code PagingAndSortingRepository}) one page at a time.
-     * A non-empty sort on {@link #SORT_PROPERTY} ascending is mandatory for the paging reader and
-     * yields the deterministic, COBOL-equivalent sequential ordering; the page size is set to
-     * {@link #CHUNK_SIZE} so each page aligns with one processing chunk.</p>
+     * <p>Plain alphanumeric/date/numeric fields are extracted by {@link FixedWidthRecordParser}; the
+     * signed {@code DALYTRAN-AMT} money field is decoded (zoned-decimal sign overpunch) and scaled by
+     * {@link AsciiFixedWidthItemReader#parseZonedDecimal(String, int, int, int)} (PR-16). Every row is
+     * staged with {@code processed = false} so the downstream {@code POSTTRAN} job picks it up via
+     * {@code findByProcessedFalse}.</p>
      *
-     * @return a configured {@link RepositoryItemReader} streaming the staging table in ascending
-     *         {@code dalytranId} order
+     * @param line a non-blank fixed-width line at least {@link #MIN_RECORD_LENGTH} characters long
+     * @return the mapped, transient {@link DailyTransaction} (not yet persisted)
      */
-    @Bean
-    public RepositoryItemReader<DailyTransaction> dailyTransactionReader() {
-        return new RepositoryItemReaderBuilder<DailyTransaction>()
-                .name(READER_NAME)
-                .repository(dailyTransactionRepository)
-                .methodName("findAll")
-                .sorts(Collections.singletonMap(SORT_PROPERTY, Sort.Direction.ASC))
-                .pageSize(CHUNK_SIZE)
-                .build();
+    static DailyTransaction mapDailyTransaction(String line) {
+        DailyTransaction dt = new DailyTransaction();
+        dt.setDalytranId(FixedWidthRecordParser.parseString(line, ID_OFFSET, ID_LENGTH));
+        dt.setTypeCd(FixedWidthRecordParser.parseString(line, TYPE_CD_OFFSET, TYPE_CD_LENGTH));
+        dt.setCategoryCd(FixedWidthRecordParser.parseString(line, CAT_CD_OFFSET, CAT_CD_LENGTH));
+        dt.setSource(FixedWidthRecordParser.parseString(line, SOURCE_OFFSET, SOURCE_LENGTH));
+        dt.setDescription(FixedWidthRecordParser.parseString(line, DESC_OFFSET, DESC_LENGTH));
+        dt.setAmount(AsciiFixedWidthItemReader.parseZonedDecimal(line, AMT_OFFSET, AMT_LENGTH, MONEY_SCALE));
+        dt.setMerchantId(FixedWidthRecordParser.parseLong(line, MERCHANT_ID_OFFSET, MERCHANT_ID_LENGTH));
+        dt.setMerchantName(FixedWidthRecordParser.parseString(line, MERCHANT_NAME_OFFSET, MERCHANT_NAME_LENGTH));
+        dt.setMerchantCity(FixedWidthRecordParser.parseString(line, MERCHANT_CITY_OFFSET, MERCHANT_CITY_LENGTH));
+        dt.setMerchantZip(FixedWidthRecordParser.parseString(line, MERCHANT_ZIP_OFFSET, MERCHANT_ZIP_LENGTH));
+        dt.setCardNum(FixedWidthRecordParser.parseString(line, CARD_NUM_OFFSET, CARD_NUM_LENGTH));
+        dt.setOrigTimestamp(
+                FixedWidthRecordParser.parseLocalDateTime(line, ORIG_TS_OFFSET, ORIG_TS_LENGTH, FEED_TIMESTAMP_PATTERN));
+        dt.setProcTimestamp(
+                FixedWidthRecordParser.parseLocalDateTime(line, PROC_TS_OFFSET, PROC_TS_LENGTH, FEED_TIMESTAMP_PATTERN));
+        dt.setProcessed(false);
+        return dt;
     }
 
     /**
-     * Pass-through {@link ItemProcessor} that logs each staged daily-transaction row — the Spring
-     * equivalent of the COBOL {@code DISPLAY DALYTRAN-RECORD} diagnostic.
+     * Builds the streaming reader for the daily feed: an {@link AsciiFixedWidthItemReader} over
+     * {@code app/data/ASCII/dailytran.txt} (classpath {@code fixtures/} first, filesystem fallback),
+     * mapping each line via {@link #mapDailyTransaction(String)} and wrapped in an
+     * {@link ExistingDataSkippingReader} so an already-populated table makes the load an idempotent
+     * no-op. Not exposed as a {@code @Bean} (it is reader state local to the single step), mirroring
+     * the {@code DataInitializationJobConfig} fixture-reader idiom.
      *
-     * <p>A per-bean {@link AtomicLong} captured by the returned lambda emits a monotonically
-     * increasing record number ({@code [#n]}) so operators can correlate the log against the
-     * staging-table row count. The item is returned unchanged so the chunk flows on to the no-op
-     * writer. Field labels mirror the COBOL {@code DALYTRAN-*} names for traceability, while the
-     * accessor calls use the actual committed {@link DailyTransaction} getters
-     * ({@code getCategoryCd()} for the category code and {@code getAmount()} for the monetary
-     * amount).</p>
-     *
-     * @return a logging, identity-mapping {@link ItemProcessor}
+     * @return the configured, idempotency-aware {@link ItemStreamReader}
      */
-    @Bean
-    public ItemProcessor<DailyTransaction, DailyTransaction> dailyTransactionLoggingProcessor() {
-        final AtomicLong counter = new AtomicLong(0L);
-        return dt -> {
-            long recordNumber = counter.incrementAndGet();
-            log.info("[CBTRN01C-DIAG] [#{}] dalytranId={} cardNum={} typeCd={} catCd={} amt={} "
-                            + "origTs={} processed={}",
-                    recordNumber,
-                    dt.getDalytranId(),
-                    dt.getCardNum(),
-                    dt.getTypeCd(),
-                    dt.getCategoryCd(),
-                    dt.getAmount(),
-                    dt.getOrigTimestamp(),
-                    dt.getProcessed());
-            return dt;
-        };
+    private ItemStreamReader<DailyTransaction> dailyTransactionStagingReader() {
+        AsciiFixedWidthItemReader<DailyTransaction> delegate = new AsciiFixedWidthItemReader<>(
+                AsciiFixedWidthItemReader.resolveFixtureResource(FIXTURE_FILE),
+                line -> {
+                    if (line.length() < MIN_RECORD_LENGTH) {
+                        throw new IllegalArgumentException(
+                                "Short DALYTRAN record in " + FIXTURE_FILE + " at length "
+                                        + line.length() + "; expected at least " + MIN_RECORD_LENGTH);
+                    }
+                    return mapDailyTransaction(line);
+                });
+        delegate.setName(READER_NAME);
+        return new ExistingDataSkippingReader(delegate);
     }
 
     /**
-     * No-op {@link ItemWriter} for the diagnostic step. Because this job only verifies staging-table
-     * contents (it never persists anything), the writer merely records the number of items in each
-     * processed chunk at {@code DEBUG} level. The lambda parameter is a Spring Batch 5
-     * {@code Chunk<? extends DailyTransaction>}, whose {@code size()} yields the chunk item count.
+     * Chunk-oriented staging {@link Step} wiring the fixed-width reader to a repository-backed writer.
      *
-     * @return a write-nothing {@link ItemWriter} that logs the chunk size
-     */
-    @Bean
-    public ItemWriter<DailyTransaction> dailyTransactionNoOpWriter() {
-        return items -> log.debug("Chunk of {} DailyTransaction record(s) read", items.size());
-    }
-
-    /**
-     * Chunk-oriented diagnostic {@link Step} wiring the reader, logging processor and no-op writer.
-     *
-     * <p>The {@link #transactionManager} delimits each chunk's transaction boundary (PR-24) and the
-     * chunk size is {@link #CHUNK_SIZE}. The step reads {@link DailyTransaction} items and emits
-     * {@link DailyTransaction} items (identity processing), mirroring the single sequential pass of
-     * the COBOL {@code MAIN-PARA} loop.</p>
+     * <p>The {@link #transactionManager} delimits each chunk's transaction boundary (PR-24); the
+     * chunk size is {@link #CHUNK_SIZE}. The inline writer persists each chunk through
+     * {@link DailyTransactionRepository#saveAll(Iterable)} (the proven {@code DataInitializationJobConfig}
+     * writer idiom) so the mapped {@link DailyTransaction} rows — each with {@code processed = false}
+     * — land in the {@code daily_transactions} staging table.</p>
      *
      * @return the {@code dailyTransactionReadStep} bean
      */
@@ -236,20 +308,24 @@ public class DailyTransactionReadJobConfig {
     public Step dailyTransactionReadStep() {
         return new StepBuilder(STEP_NAME, jobRepository)
                 .<DailyTransaction, DailyTransaction>chunk(CHUNK_SIZE, transactionManager)
-                .reader(dailyTransactionReader())
-                .processor(dailyTransactionLoggingProcessor())
-                .writer(dailyTransactionNoOpWriter())
+                .reader(dailyTransactionStagingReader())
+                .writer(chunk -> {
+                    dailyTransactionRepository.saveAll(chunk.getItems());
+                    log.info("{}: staged {} DailyTransaction record(s) from {} into daily_transactions "
+                                    + "(processed=false)",
+                            STEP_NAME, chunk.size(), FIXTURE_FILE);
+                })
                 .build();
     }
 
     /**
-     * The diagnostic {@link Job} bean ({@link #JOB_NAME}) consisting of the single
+     * The staging-loader {@link Job} bean ({@link #JOB_NAME}) consisting of the single
      * {@link #dailyTransactionReadStep()}.
      *
-     * <p>Auto-registered with the Spring Batch {@code JobRegistry} by Spring Boot
-     * auto-configuration, so it is launchable by name through {@code BatchAdminController}. Running
-     * the job with the same parameters returns the existing {@code JobExecution} (idempotent);
-     * supplying a distinct parameter set creates a new execution.</p>
+     * <p>Auto-registered with the Spring Batch {@code JobRegistry} by Spring Boot auto-configuration,
+     * so it is launchable by name through {@code BatchAdminController}. In a clean environment this is
+     * the pre-step that loads the daily feed into {@code daily_transactions} before the
+     * {@code POSTTRAN} job posts it (AAP &sect;0.6.6).</p>
      *
      * @return the {@code dailyTransactionReadJob} bean
      */
@@ -258,5 +334,59 @@ public class DailyTransactionReadJobConfig {
         return new JobBuilder(JOB_NAME, jobRepository)
                 .start(dailyTransactionReadStep())
                 .build();
+    }
+
+    /**
+     * {@link ItemStreamReader} wrapper that preserves idempotent re-runs without weakening
+     * missing-fixture validation on an empty table.
+     *
+     * <p>On {@link #open(ExecutionContext)} it consults {@link DailyTransactionRepository#count()}:
+     * when the {@code daily_transactions} table already holds rows it sets a skip flag and returns
+     * EOF on every {@link #read()} (no fixture is opened), so re-launching the staging job is a safe
+     * no-op rather than a source of duplicate feed rows. When the table is empty it delegates to the
+     * underlying {@link AsciiFixedWidthItemReader}, whose {@code open} validates that the fixture
+     * exists and raises {@link ItemStreamException} otherwise. This mirrors the
+     * {@code DataInitializationJobConfig.ExistingDataSkippingReader} guard.</p>
+     */
+    private final class ExistingDataSkippingReader implements ItemStreamReader<DailyTransaction> {
+
+        private final AsciiFixedWidthItemReader<DailyTransaction> delegate;
+        private boolean skip;
+
+        private ExistingDataSkippingReader(AsciiFixedWidthItemReader<DailyTransaction> delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public void open(ExecutionContext executionContext) throws ItemStreamException {
+            long count = dailyTransactionRepository.count();
+            if (count > 0) {
+                skip = true;
+                log.info("{}: daily_transactions already populated (count={}); skipping {} staging load",
+                        STEP_NAME, count, FIXTURE_FILE);
+                return;
+            }
+            skip = false;
+            delegate.open(executionContext);
+        }
+
+        @Override
+        public DailyTransaction read() throws Exception {
+            return skip ? null : delegate.read();
+        }
+
+        @Override
+        public void update(ExecutionContext executionContext) throws ItemStreamException {
+            if (!skip) {
+                delegate.update(executionContext);
+            }
+        }
+
+        @Override
+        public void close() throws ItemStreamException {
+            if (!skip) {
+                delegate.close();
+            }
+        }
     }
 }

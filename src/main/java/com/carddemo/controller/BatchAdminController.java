@@ -96,11 +96,16 @@ import java.util.Map;
  * <ul>
  *   <li><strong>Stateless:</strong> no {@code HttpSession} and no server-side state are held between
  *       requests; each launch is self-contained.</li>
- *   <li><strong>Idempotency / re-runs:</strong> Spring Batch identifies a {@code JobInstance} by its
- *       identifying {@link JobParameters}; launching a job twice with identical parameters would
- *       raise {@link JobInstanceAlreadyCompleteException}. To make each manual launch a distinct
- *       instance, a unique identifying {@code launchTimestamp} parameter is added via
- *       {@link JobParametersBuilder#addLong(String, Long, boolean)} with {@code identifying=true}.</li>
+ *   <li><strong>Idempotency / re-runs (AAP &sect;0.6.3 / PR-12):</strong> Spring Batch identifies a
+ *       {@code JobInstance} by its identifying {@link JobParameters}. To honor the documented
+ *       same-parameter idempotency contract, the {@code JobInstance} identity is left to the
+ *       caller-supplied parameters only (e.g. {@code tranDate}); the {@code launchTimestamp} this
+ *       controller appends via {@link JobParametersBuilder#addLong(String, Long, boolean)} is
+ *       <strong>non-identifying</strong> ({@code identifying=false}) and serves audit/observability
+ *       purposes alone. Consequently, re-launching a job with identical caller parameters resolves
+ *       to the same instance and raises {@link JobInstanceAlreadyCompleteException} (mapped to
+ *       {@code 409 JOB_ALREADY_COMPLETE} by the {@code GlobalExceptionHandler}) instead of creating a
+ *       duplicate instance, while a changed parameter value yields a new instance/execution.</li>
  *   <li><strong>Centralized exception handling:</strong> the Spring Batch launch exceptions are
  *       mapped by the application-wide {@code com.carddemo.controller.advice.GlobalExceptionHandler}
  *       &mdash; {@link NoSuchJobException} &rarr; {@code 404}, the launch-conflict exceptions
@@ -127,9 +132,13 @@ import java.util.Map;
 public class BatchAdminController {
 
     /**
-     * Bean name of the unique, identifying job parameter injected on every launch so that repeated
-     * manual launches of the same job create distinct {@code JobInstance}s instead of failing with
-     * {@link JobInstanceAlreadyCompleteException}.
+     * Name of the <strong>non-identifying</strong> {@code launchTimestamp} job parameter appended on
+     * every launch for audit/observability. Because it is added with {@code identifying=false}, it is
+     * excluded from {@code JobInstance} identity, so the documented same-parameter idempotency
+     * contract (AAP &sect;0.6.3 / PR-12) is preserved: a job is identified by its caller-supplied
+     * parameters only, and re-launching with identical parameters raises
+     * {@link JobInstanceAlreadyCompleteException} (mapped to {@code 409 JOB_ALREADY_COMPLETE}) rather
+     * than creating a duplicate instance.
      */
     private static final String LAUNCH_TIMESTAMP_PARAM = "launchTimestamp";
 
@@ -159,9 +168,14 @@ public class BatchAdminController {
      * on the configured {@link JobLauncher} (the auto-configured launcher runs synchronously, so the
      * returned status reflects the terminal or in-progress state at return time).</p>
      *
-     * <p>A unique identifying {@code launchTimestamp} parameter is always appended so that launching
-     * the same job repeatedly with otherwise-identical parameters produces distinct
-     * {@code JobInstance}s rather than failing as an already-completed instance.</p>
+     * <p>A {@code launchTimestamp} parameter is always appended for audit/observability, but it is
+     * <strong>non-identifying</strong> ({@code identifying=false}), so it does not participate in
+     * {@code JobInstance} identity. The instance is therefore identified solely by the
+     * caller-supplied parameters, which preserves the documented same-parameter idempotency contract
+     * (AAP &sect;0.6.3 / PR-12): re-launching with identical caller parameters resolves to the same
+     * {@code JobInstance} and raises {@link JobInstanceAlreadyCompleteException} (mapped to
+     * {@code 409 JOB_ALREADY_COMPLETE}) instead of creating a duplicate instance, whereas a different
+     * parameter value (e.g. a new {@code tranDate}) yields a new instance/execution.</p>
      *
      * @param jobName    the name of a {@link Job} registered with the {@link JobRegistry}
      *                   (bound from the path)
@@ -211,10 +225,15 @@ public class BatchAdminController {
         if (parameters != null) {
             parameters.forEach(paramsBuilder::addString);
         }
-        // Append a unique, identifying launch timestamp so repeat launches form distinct
-        // JobInstances. Without this, an identical (job + parameters) combination would raise
-        // JobInstanceAlreadyCompleteException on the second invocation.
-        paramsBuilder.addLong(LAUNCH_TIMESTAMP_PARAM, System.currentTimeMillis(), true);
+        // Append a NON-IDENTIFYING launch timestamp for audit/observability only. Passing
+        // identifying=false keeps it out of the JobInstance identity, so the JobInstance is
+        // identified solely by the caller-supplied parameters (e.g. tranDate). This preserves the
+        // documented same-parameter idempotency contract (AAP 0.6.3 / PR-12): re-launching a job
+        // with identical caller parameters resolves to the SAME JobInstance and raises
+        // JobInstanceAlreadyCompleteException (-> 409 JOB_ALREADY_COMPLETE via GlobalExceptionHandler)
+        // rather than silently creating a duplicate instance. A different parameter value (e.g. a
+        // new tranDate) still yields a new JobInstance/execution.
+        paramsBuilder.addLong(LAUNCH_TIMESTAMP_PARAM, System.currentTimeMillis(), false);
 
         JobParameters jobParameters = paramsBuilder.toJobParameters();
 
