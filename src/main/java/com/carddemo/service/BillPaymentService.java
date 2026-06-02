@@ -220,7 +220,7 @@ public class BillPaymentService {
      *                                  confirmed ({@code "Confirm to make a bill payment..."})
      */
     @Transactional
-    public BillPaymentResponse processPayment(Long acctId, BillPaymentRequest request) {
+    public BillPaymentResponse processBillPayment(Long acctId, BillPaymentRequest request) {
         // accountId is a non-sensitive surrogate; no PII is logged here (the card number, resolved
         // below from the cross-reference, is never logged).
         log.info("Processing bill payment for accountId={}", acctId);

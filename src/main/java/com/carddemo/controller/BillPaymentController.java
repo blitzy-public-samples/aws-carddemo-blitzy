@@ -115,7 +115,7 @@ public class BillPaymentController {
      * {@link BillPaymentResponse}.
      *
      * <p>This is the REST replacement for {@code app/cbl/COBIL00C.cbl} (TRANID {@code CB00}). The
-     * full COBIL00C flow runs inside {@link BillPaymentService#processPayment(Long, BillPaymentRequest)}
+     * full COBIL00C flow runs inside {@link BillPaymentService#processBillPayment(Long, BillPaymentRequest)}
      * within a single {@code @Transactional} unit of work (PR-24); the account balance update uses
      * {@code @Version} optimistic locking (PR-22).</p>
      *
@@ -169,7 +169,7 @@ public class BillPaymentController {
         // Delegate to the service, which performs the full COBIL00C flow (read account -> balance
         // guard -> confirmation guard -> resolve card -> write transaction -> reduce balance) inside
         // one optimistically-locked @Transactional unit of work, and returns the BillPaymentResponse.
-        BillPaymentResponse response = billPaymentService.processPayment(acctId, request);
+        BillPaymentResponse response = billPaymentService.processBillPayment(acctId, request);
 
         log.info("POST /api/accounts/{}/payments completed; tranId={}", acctId, response.tranId());
         return ResponseEntity.ok(response);
