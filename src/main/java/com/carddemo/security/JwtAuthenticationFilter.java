@@ -1,13 +1,6 @@
 package com.carddemo.security;
 
-import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.ExpiredJwtException;
-import io.jsonwebtoken.JwtException;
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.MalformedJwtException;
-import io.jsonwebtoken.UnsupportedJwtException;
-import io.jsonwebtoken.security.Keys;
-import io.jsonwebtoken.security.SignatureException;
+import com.carddemo.util.JwtCodec;
 import jakarta.annotation.PostConstruct;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -25,10 +18,10 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-import javax.crypto.SecretKey;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
+import java.util.Map;
 
 /**
  * JWT bearer-token authentication filter for the stateless CardDemo REST API.
@@ -174,8 +167,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
      * configured {@code jwt.secret}. HMAC-SHA256 (HS256) requires a key of at
      * least 256 bits; {@code 256 / 8 = 32} bytes. A shorter key is rejected at
      * startup by {@link #initSigningKey()} rather than silently weakening the
-     * signature, and jjwt itself would reject one at signing time via
-     * {@link Keys#hmacShaKeyFor(byte[])}.
+     * signature. (The previous JJWT-based implementation also enforced this at
+     * signing time; the strength check is now performed here explicitly since the
+     * standalone JWT library was removed.)
      */
     private static final int MIN_SECRET_BYTES = 32;
 
@@ -203,19 +197,21 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private String jwtSecret;
 
     /**
-     * The HS256 verification key, derived once from {@link #jwtSecret} at startup
-     * by {@link #initSigningKey()} and reused for every token verification.
+     * The HS256 verification key bytes, captured once from {@link #jwtSecret} at
+     * startup by {@link #initSigningKey()} and reused for every token verification.
      *
-     * <p>Precomputing the {@link SecretKey} (rather than rebuilding it from the
-     * raw bytes on each {@link #parseToken(String)} call) both removes per-request
-     * key-derivation overhead and guarantees that the key-length validation in
+     * <p>Validating and caching the key material at startup (rather than re-encoding
+     * the secret on each {@link #parseToken(String)} call) both removes per-request
+     * overhead and guarantees that the key-length validation in
      * {@link #initSigningKey()} has succeeded before any request is served.
+     * {@link com.carddemo.util.JwtCodec} consumes these raw bytes directly to compute
+     * the HMAC, mirroring the key material {@code AuthService} signs with.
      */
-    private SecretKey signingKey;
+    private byte[] signingKeyBytes;
 
     /**
-     * Validates the injected {@link #jwtSecret} and precomputes the HS256
-     * {@link #signingKey}, failing application startup if the secret is unusable.
+     * Validates the injected {@link #jwtSecret} and captures the HS256
+     * {@link #signingKeyBytes}, failing application startup if the secret is unusable.
      *
      * <p>Runs once, immediately after dependency injection (Jakarta
      * {@link PostConstruct}; PR-28). Two conditions are enforced:
@@ -250,7 +246,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                             + " bytes; a minimum of " + MIN_SECRET_BYTES
                             + " bytes (256 bits) is required.");
         }
-        this.signingKey = Keys.hmacShaKeyFor(keyBytes);
+        this.signingKeyBytes = keyBytes;
         log.info("JWT signing key initialized for HS256 ({} key bytes).", keyBytes.length);
     }
 
@@ -284,11 +280,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         if (StringUtils.hasText(token) && existingAuthentication == null) {
             try {
-                final Claims claims = parseToken(token);
+                final Map<String, Object> claims = parseToken(token);
 
                 // sub -> CDEMO-USER-ID (COCOM01Y L25); userType -> CDEMO-USER-TYPE (L26).
-                final String userId = claims.getSubject();
-                final String userType = claims.get(USER_TYPE_CLAIM, String.class);
+                final String userId = asString(claims.get(JwtCodec.CLAIM_SUBJECT));
+                final String userType = asString(claims.get(USER_TYPE_CLAIM));
 
                 if (StringUtils.hasText(userId)) {
                     // PR-19: 'A' -> ROLE_ADMIN, 'U' -> ROLE_USER (fail-closed otherwise).
@@ -310,19 +306,21 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     // principal; leave the context unauthenticated.
                     log.warn("JWT is valid but carries no subject (sub) claim; request left unauthenticated");
                 }
-            } catch (ExpiredJwtException ex) {
-                // Expected, benign condition: the token simply timed out. Do NOT
-                // throw — the downstream entry point returns 401 if the target
-                // resource is protected. Never log the token string itself.
-                log.warn("JWT expired: {}", ex.getMessage());
-            } catch (SignatureException | MalformedJwtException | UnsupportedJwtException ex) {
-                // Bad signature / structurally invalid / unsupported token. A
-                // tampered token lands here because the HMAC no longer matches.
-                log.warn("Invalid JWT: {}", ex.getMessage());
-            } catch (JwtException | IllegalArgumentException ex) {
-                // Catch-all for any other jjwt failure plus the IllegalArgumentException
-                // jjwt raises for a null/blank token, so no token problem can escape
-                // this filter and disrupt the chain.
+            } catch (JwtCodec.JwtVerificationException ex) {
+                if (ex.isExpired()) {
+                    // Expected, benign condition: the token simply timed out. Do NOT
+                    // throw — the downstream entry point returns 401 if the target
+                    // resource is protected. Never log the token string itself.
+                    log.warn("JWT expired: {}", ex.getMessage());
+                } else {
+                    // Bad signature / structurally invalid / unsupported algorithm. A
+                    // tampered token lands here because the HMAC no longer matches.
+                    log.warn("Invalid JWT: {}", ex.getMessage());
+                }
+            } catch (RuntimeException ex) {
+                // Defensive catch-all so no unexpected token-processing failure can
+                // escape this filter and disrupt the chain; authorization is still
+                // decided downstream on the unauthenticated context.
                 log.warn("JWT processing error: {}", ex.getMessage());
             }
         }
@@ -355,27 +353,37 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     /**
      * Parses and verifies a JWT, returning its claim set.
      *
-     * <p>Verifies the token with the precomputed HS256 {@link #signingKey}
-     * (derived and validated once at startup by {@link #initSigningKey()}) and
-     * calls {@code parseSignedClaims}, which both checks the HMAC signature and
-     * enforces the {@code exp} expiry. Any verification failure surfaces as a
-     * {@link JwtException} subclass (or {@link IllegalArgumentException} for a
-     * null/blank token), all of which the caller handles by leaving the security
-     * context unpopulated.
+     * <p>Delegates to {@link com.carddemo.util.JwtCodec#verifyHs256(byte[], String)}
+     * using the validated {@link #signingKeyBytes} (captured once at startup by
+     * {@link #initSigningKey()}). The codec recomputes the HS256 MAC and compares it
+     * to the token signature in constant time, pins the header algorithm to
+     * {@code HS256}, and enforces the {@code exp} expiry. Any verification failure
+     * surfaces as a {@link com.carddemo.util.JwtCodec.JwtVerificationException}, which
+     * the caller handles by leaving the security context unpopulated.
      *
      * @param token the bare JWT (no {@value #BEARER_PREFIX} prefix)
-     * @return the verified {@link Claims} payload
-     * @throws ExpiredJwtException      if the token's {@code exp} is in the past
-     * @throws SignatureException       if the HMAC signature does not match
-     * @throws MalformedJwtException    if the token is not a well-formed JWT
-     * @throws UnsupportedJwtException  if the token format is unsupported
-     * @throws IllegalArgumentException if the token is {@code null} or blank
+     * @return the verified payload claims keyed by claim name
+     * @throws com.carddemo.util.JwtCodec.JwtVerificationException if the token is
+     *         null/blank, malformed, has a bad signature, uses an unsupported
+     *         algorithm, or is expired (its {@code isExpired()} flag distinguishes the
+     *         expiry case)
      */
-    private Claims parseToken(String token) {
-        return Jwts.parser()
-                .verifyWith(signingKey)
-                .build()
-                .parseSignedClaims(token)
-                .getPayload();
+    private Map<String, Object> parseToken(String token) {
+        return JwtCodec.verifyHs256(signingKeyBytes, token);
+    }
+
+    /**
+     * Coerces a decoded JWT claim value to a {@link String}, returning {@code null}
+     * for absent or non-string values.
+     *
+     * <p>The {@code sub} and {@value #USER_TYPE_CLAIM} claims are always serialized as
+     * JSON strings by {@code AuthService}; this guard simply keeps the filter robust
+     * against a malformed or unexpected claim type without throwing.
+     *
+     * @param claimValue the raw claim value from the decoded payload map
+     * @return the value as a {@link String}, or {@code null} if absent or not a string
+     */
+    private static String asString(Object claimValue) {
+        return (claimValue instanceof String) ? (String) claimValue : null;
     }
 }

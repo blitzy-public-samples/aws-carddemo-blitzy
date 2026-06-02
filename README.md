@@ -237,13 +237,25 @@ curl -X POST http://localhost:8080/api/transactions \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "cardNumber":"4111111111111111",
-    "tranTypeCd":"01",
-    "tranCatCd":"01",
-    "amount":42.50,
-    "description":"Test transaction"
+    "accountId":1,
+    "typeCd":"01",
+    "categoryCd":"0001",
+    "amount":123.45,
+    "merchantId":123456789,
+    "description":"Grocery purchase at Whole Foods"
   }'
 ```
+
+Required fields (per `TransactionRequest`): `accountId` (numeric; used to resolve the card via the
+cross-reference — send the plain integer `1`, not the zero-padded path form), `typeCd` (2-digit
+transaction type, FK to `transaction_types`), `categoryCd` (**4-digit** category, FK to
+`transaction_categories` — leading zeros preserved, e.g. `"0001"`), `amount` (decimal, scale 2,
+positive = credit / negative = debit), `merchantId` (numeric, ≤ 9 digits), and `description` (≤ 60
+chars). Optional fields: `cardNumber` (16 digits — alternative cardholder key when `accountId` is
+omitted), `source` (≤ 10), `merchantName` (≤ 30), `merchantCity` (≤ 25), `merchantZip` (≤ 10), and
+`origTimestamp` (26-char DB2 format `yyyy-MM-dd-HH.mm.ss.SS'0000'`; the server stamps the current
+time when omitted). The server generates `tranId` and `procTimestamp` — they are never accepted from
+the client (PR-10).
 
 ### Submit a bill payment (replaces `COBIL00C`)
 
@@ -251,15 +263,30 @@ curl -X POST http://localhost:8080/api/transactions \
 curl -X POST http://localhost:8080/api/accounts/00000000001/payments \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"amount":100.00}'
+  -d '{"accountId":1,"confirmation":"Y"}'
 ```
+
+`BillPaymentRequest` accepts exactly two fields: `accountId` (numeric — must equal the `{acctId}`
+path variable; send the plain integer `1`, not the zero-padded path form) and `confirmation`
+(uppercase `"Y"` or `"N"` only). **No payment amount is accepted.** Faithful to `COBIL00C`
+(`MOVE ACCT-CURR-BAL TO TRAN-AMT`), the endpoint always pays the full current balance and zeroes the
+account; there is no partial-, minimum-, or over-payment path (PR-25 — no feature additions). Submit
+`"confirmation":"Y"` to process the payment; `"N"` cancels the request.
 
 ### Launch a batch job (replaces the JCL submitter; admin only)
 
 ```bash
-curl -X POST "http://localhost:8080/api/admin/jobs/interestCalculationJob/launch?tranDate=2022071800" \
-  -H "Authorization: Bearer <token-with-ROLE_ADMIN>"
+curl -X POST http://localhost:8080/api/admin/jobs/interestCalculationJob/launch \
+  -H "Authorization: Bearer <token-with-ROLE_ADMIN>" \
+  -H "Content-Type: application/json" \
+  -d '{"tranDate":"2022071800"}'
 ```
+
+`BatchAdminController.launchJob` reads job parameters from the JSON **request body** (a
+`Map<String,String>`), not from query parameters. Supply each Spring Batch job parameter as a body
+key — for `interestCalculationJob` the `tranDate` parameter (equivalent to the original
+`INTCALC.jcl PARM='2022071800'`) is required, and omitting it causes `InterestCalculationTasklet` to
+reject the run. Jobs with no parameters may be launched with an empty body (`{}`) or none at all.
 
 Supported job names mirror the JCL inventory: `transactionPostingJob` (replaces `POSTTRAN.jcl`), `interestCalculationJob` (replaces `INTCALC.jcl`), `transactionConsolidationJob` (replaces `COMBTRAN.jcl`), `statementGenerationJob` (replaces `CREASTMT.JCL`), `dataInitializationJob`, `userSeedingJob`, `transactionBackupJob`, `transactionReportJob`, `categoryBalanceReportJob`, plus diagnostic file-read jobs.
 

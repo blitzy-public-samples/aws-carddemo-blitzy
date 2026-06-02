@@ -19,6 +19,7 @@ package com.carddemo.integration;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -30,7 +31,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -154,16 +154,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers
 @ActiveProfiles("test")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@Disabled("""
-        Deferred to CP4. This IT boots the full Spring application context and exercises the \
-        complete REST + security vertical, which depends on components that do not exist until \
-        CP4: SecurityConfig, the PasswordEncoder bean, JwtAuthenticationFilter, and the online \
-        controllers (AuthController, AccountController, CardController, CustomerController, \
-        TransactionController, BillPaymentController, ReportController, UserController, \
-        MenuController, BatchAdminController). With these absent the context fails to start \
-        (UserSeedingJobConfig requires a PasswordEncoder bean that CP4's SecurityConfig will \
-        provide), so an enabled IT here would make `mvn verify` fail. Re-enable in CP4 by \
-        removing this annotation once the security configuration and online controllers exist.""")
 @DisplayName("FullStackIT — End-to-end REST + service + repository + database + Spring Security verification")
 class FullStackIT {
 
@@ -195,8 +185,15 @@ class FullStackIT {
     /** Exact COBOL CBTRN02C code-100 message (app/cbl/CBTRN02C.cbl L380-L392). */
     private static final String MSG_INVALID_CARD = "INVALID CARD NUMBER FOUND";
 
-    /** Exact COBOL CBTRN02C code-101 message (app/cbl/CBTRN02C.cbl L393-L401). */
-    private static final String MSG_ACCOUNT_NOT_FOUND = "ACCOUNT RECORD NOT FOUND";
+    /**
+     * Exact COACTVWC online account-view "not in card cross-reference" message
+     * (app/cbl/COACTVWC.cbl L130; {@code AccountService.MSG_NOT_IN_XREF}). The online
+     * account-view endpoint reports a missing account with this COACTVWC string, which is
+     * distinct from the batch CBTRN02C code-101 literal {@code "ACCOUNT RECORD NOT FOUND"}
+     * used on the POSTTRAN transaction-posting path.
+     */
+    private static final String MSG_ACCT_NOT_IN_XREF =
+            "Did not find this account in account card xref file";
 
     /** Exact COBOL CBTRN02C code-102 message (app/cbl/CBTRN02C.cbl L402-L416). */
     private static final String MSG_OVERLIMIT = "OVERLIMIT TRANSACTION";
@@ -207,9 +204,15 @@ class FullStackIT {
     /**
      * DB2 external timestamp format {@code YYYY-MM-DD-HH.MM.SS.MIL0000} (26 chars,
      * trailing literal {@code 0000}) — PR-11 (app/cbl/CBACT04C.cbl L613-L626).
+     *
+     * <p>The {@code MIL} segment is a 2-digit centisecond value: the COBOL source field is
+     * {@code DB2-MIL PIC 9(02)} and {@code DateConversionUtil} formats it with the pattern
+     * {@code yyyy-MM-dd-HH.mm.ss.SS'0000'} (two-digit {@code SS} + literal {@code 0000}), which is
+     * exactly 26 characters. Matching {@code \\d{2}0000} (not {@code \\d{3}0000}) keeps the test
+     * aligned with PR-11 and the passing {@code DateConversionServiceTest}.</p>
      */
     private static final Pattern DB2_TIMESTAMP_PATTERN =
-            Pattern.compile("^\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{3}0000$");
+            Pattern.compile("^\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{2}0000$");
 
     /** BCrypt hash shape: {@code $2[aby]$NN$} + 53 chars (60 total) — PR-17. */
     private static final Pattern BCRYPT_PATTERN =
@@ -596,7 +599,7 @@ class FullStackIT {
         }
 
         @Test
-        @DisplayName("GET unknown account → 404 with the COBOL code-101 message (PR-03)")
+        @DisplayName("GET unknown account → 404 with the COACTVWC card-xref miss message")
         void shouldReturn404ForUnknownAccount() {
             String adminToken = login(ADMIN_ID, DEFAULT_PASSWORD);
             ResponseEntity<ErrorResponse> resp =
@@ -607,8 +610,9 @@ class FullStackIT {
                     .isEqualTo(HttpStatus.NOT_FOUND);
             if (resp.getBody() != null && resp.getBody().message() != null) {
                 assertThat(resp.getBody().message())
-                        .as("Code-101 message must preserve the COBOL CBTRN02C string (PR-03)")
-                        .contains(MSG_ACCOUNT_NOT_FOUND);
+                        .as("Online account-view 404 must carry the COACTVWC card-xref miss "
+                            + "message (AccountService.MSG_NOT_IN_XREF, COACTVWC L130)")
+                        .contains(MSG_ACCT_NOT_IN_XREF);
             }
         }
 
@@ -989,8 +993,8 @@ class FullStackIT {
         }
 
         @Test
-        @DisplayName("TCATBAL is upserted by the created transaction's amount (PR-06)")
-        void shouldUpsertTransactionCategoryBalance() {
+        @DisplayName("Online create does NOT upsert TCATBAL — posting is deferred to POSTTRAN batch (PR-06)")
+        void shouldNotUpsertTcatbalOnOnlineCreate() {
             makeAccountTransactable(ACCT_TXN_TCATBAL);
             String card = cardNumberForAccount(ACCT_TXN_TCATBAL);
             BigDecimal amount = new BigDecimal("12.50");
@@ -1005,15 +1009,17 @@ class FullStackIT {
 
             BigDecimal after = tcatBalanceOrZero(ACCT_TXN_TCATBAL, VALID_TYPE_CD, VALID_CAT_CD);
             assertThat(after.subtract(before))
-                    .as("PR-06: TCATBAL for (acct=%d,type=%s,cat=%s) must increase by exactly the "
-                        + "transaction amount (insert-or-add upsert)",
+                    .as("PR-06: faithful to COTRN02C, the online add path only inserts the "
+                        + "TRAN-RECORD; the TCATBAL upsert (CBTRN02C 2700-UPDATE-TCATBAL) is "
+                        + "performed by the POSTTRAN batch job, so the category balance for "
+                        + "(acct=%d,type=%s,cat=%s) must be UNCHANGED by the online POST",
                         ACCT_TXN_TCATBAL, VALID_TYPE_CD, VALID_CAT_CD)
-                    .isEqualByComparingTo(amount);
+                    .isEqualByComparingTo(BigDecimal.ZERO);
         }
 
         @Test
-        @DisplayName("Positive amount increments curr_cyc_credit and curr_bal (PR-07)")
-        void shouldUpdateAccountCurrCycCreditForPositiveAmount() {
+        @DisplayName("Online create with a positive amount does NOT post account buckets — deferred to POSTTRAN batch (PR-07)")
+        void shouldNotPostAccountBucketsOnOnlineCreatePositive() {
             makeAccountTransactable(ACCT_TXN_VALID);
             Account before = accountRepository.findById(ACCT_TXN_VALID).orElseThrow();
             BigDecimal balBefore = before.getCurrBal();
@@ -1029,20 +1035,22 @@ class FullStackIT {
             assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.CREATED);
 
             Account after = accountRepository.findById(ACCT_TXN_VALID).orElseThrow();
-            assertThat(after.getCurrBal().subtract(balBefore))
-                    .as("PR-07: curr_bal must increase by the (positive) amount")
-                    .isEqualByComparingTo(amount);
-            assertThat(after.getCurrCycCredit().subtract(creditBefore))
-                    .as("PR-07: a positive amount must accrue to curr_cyc_credit")
-                    .isEqualByComparingTo(amount);
+            assertThat(after.getCurrBal())
+                    .as("PR-07: the online add path defers posting to POSTTRAN; curr_bal must be "
+                        + "UNCHANGED by the online POST")
+                    .isEqualByComparingTo(balBefore);
+            assertThat(after.getCurrCycCredit())
+                    .as("PR-07: the sign-based bucket update (CBTRN02C 2800-UPDATE-ACCOUNT-REC) is "
+                        + "a batch responsibility; curr_cyc_credit must be UNCHANGED by the online POST")
+                    .isEqualByComparingTo(creditBefore);
             assertThat(after.getCurrCycDebit())
-                    .as("PR-07: a positive amount must NOT touch curr_cyc_debit")
+                    .as("PR-07: curr_cyc_debit must be UNCHANGED by the online POST")
                     .isEqualByComparingTo(debitBefore);
         }
 
         @Test
-        @DisplayName("Negative amount increments curr_cyc_debit and decreases curr_bal (PR-07)")
-        void shouldUpdateAccountCurrCycDebitForNegativeAmount() {
+        @DisplayName("Online create with a negative amount does NOT post account buckets — deferred to POSTTRAN batch (PR-07)")
+        void shouldNotPostAccountBucketsOnOnlineCreateNegative() {
             makeAccountTransactable(ACCT_TXN_NEGATIVE);
             Account before = accountRepository.findById(ACCT_TXN_NEGATIVE).orElseThrow();
             BigDecimal balBefore = before.getCurrBal();
@@ -1058,14 +1066,16 @@ class FullStackIT {
             assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.CREATED);
 
             Account after = accountRepository.findById(ACCT_TXN_NEGATIVE).orElseThrow();
-            assertThat(after.getCurrBal().subtract(balBefore))
-                    .as("PR-07: curr_bal must change by the signed amount (here, -15.00)")
-                    .isEqualByComparingTo(amount);
-            assertThat(after.getCurrCycDebit().compareTo(debitBefore))
-                    .as("PR-07: a negative amount must move curr_cyc_debit (the debit bucket)")
-                    .isNotEqualTo(0);
+            assertThat(after.getCurrBal())
+                    .as("PR-07: the online add path defers posting to POSTTRAN; curr_bal must be "
+                        + "UNCHANGED by the online POST (regardless of sign)")
+                    .isEqualByComparingTo(balBefore);
+            assertThat(after.getCurrCycDebit())
+                    .as("PR-07: the debit-bucket update (CBTRN02C 2800-UPDATE-ACCOUNT-REC) is a "
+                        + "batch responsibility; curr_cyc_debit must be UNCHANGED by the online POST")
+                    .isEqualByComparingTo(debitBefore);
             assertThat(after.getCurrCycCredit())
-                    .as("PR-07: a negative amount must NOT touch curr_cyc_credit")
+                    .as("PR-07: curr_cyc_credit must be UNCHANGED by the online POST")
                     .isEqualByComparingTo(creditBefore);
         }
 
@@ -1349,13 +1359,7 @@ class FullStackIT {
         void shouldCreateNewUserViaPostWithBcryptHashing() {
             String newUserId = "TESTNEW1";
             String rawPassword = "newPassword";
-            UserCreateRequest req = UserCreateRequest.builder()
-                    .userId(newUserId)
-                    .firstName("FIRST")
-                    .lastName("USER")
-                    .password(rawPassword)
-                    .userType("U")
-                    .build();
+            Map<String, Object> req = userPayload(newUserId, "FIRST", "USER", rawPassword, "U");
 
             String adminToken = login(ADMIN_ID, DEFAULT_PASSWORD);
             try {
@@ -1392,17 +1396,14 @@ class FullStackIT {
             String userId = "TESTUPD1";
             String adminToken = login(ADMIN_ID, DEFAULT_PASSWORD);
             try {
-                postWithAuth(ADMIN_USERS_PATH, adminToken, UserCreateRequest.builder()
-                        .userId(userId).firstName("FIRST").lastName("USER")
-                        .password("origPass1").userType("U").build(), UserDto.class);
+                postWithAuth(ADMIN_USERS_PATH, adminToken,
+                        userPayload(userId, "FIRST", "USER", "origPass1", "U"), UserDto.class);
                 String originalHash = userRepository.findById(userId).orElseThrow().getPassword();
 
                 String newPassword = "rotated2";
                 ResponseEntity<UserDto> update = putWithAuth(
                         ADMIN_USERS_PATH + "/" + userId, adminToken,
-                        UserCreateRequest.builder()
-                                .userId(userId).firstName("FIRST").lastName("USER")
-                                .password(newPassword).userType("U").build(),
+                        userPayload(userId, "FIRST", "USER", newPassword, "U"),
                         UserDto.class);
                 assertThat(update.getStatusCode())
                         .as("A user update must succeed (COUSR02C REWRITE equivalent)")
@@ -1427,9 +1428,8 @@ class FullStackIT {
             String userId = "TESTDEL1";
             String adminToken = login(ADMIN_ID, DEFAULT_PASSWORD);
             try {
-                postWithAuth(ADMIN_USERS_PATH, adminToken, UserCreateRequest.builder()
-                        .userId(userId).firstName("FIRST").lastName("USER")
-                        .password("delPass12").userType("U").build(), UserDto.class);
+                postWithAuth(ADMIN_USERS_PATH, adminToken,
+                        userPayload(userId, "FIRST", "USER", "delPass12", "U"), UserDto.class);
                 assertThat(userRepository.findById(userId))
                         .as("Precondition: the user to delete must exist")
                         .isPresent();
@@ -1810,6 +1810,37 @@ class FullStackIT {
     private <T> ResponseEntity<T> deleteWithAuth(String path, String token, Class<T> responseType) {
         return restTemplate.exchange(
                 path, HttpMethod.DELETE, new HttpEntity<>(authHeaders(token)), responseType);
+    }
+
+    /**
+     * Builds a user create/update request body as a {@link Map} so the {@code password} field is
+     * actually serialized into the outbound JSON.
+     *
+     * <p>The {@link UserCreateRequest} DTO annotates {@code password} with
+     * {@code @JsonProperty(access = WRITE_ONLY)} (PR-17 — the secret must never appear in any
+     * response). A side effect of {@code WRITE_ONLY} is that Jackson also OMITS the field when it
+     * <em>serializes the DTO object as a request body</em>. Serializing the DTO from the test would
+     * therefore send a password-less body and the server would reject the create with
+     * "Password can NOT be empty". A real REST client (curl, SPA) sends raw JSON that contains the
+     * password; this helper reproduces that exact wire payload because a plain {@code Map} carries
+     * no Jackson access annotations and every entry is written verbatim.</p>
+     *
+     * @param userId    the 1-8 char uppercase user id
+     * @param firstName the user first name
+     * @param lastName  the user last name
+     * @param password  the raw (plaintext) password to send on the wire
+     * @param userType  {@code "A"} (admin) or {@code "U"} (user)
+     * @return an ordered map representing the JSON request body, password included
+     */
+    private Map<String, Object> userPayload(String userId, String firstName,
+                                            String lastName, String password, String userType) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("userId", userId);
+        body.put("firstName", firstName);
+        body.put("lastName", lastName);
+        body.put("password", password);
+        body.put("userType", userType);
+        return body;
     }
 
     /**

@@ -1,7 +1,9 @@
 package com.carddemo.batch;
 
+import com.carddemo.util.BatchOutputPathResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.Step;
@@ -21,7 +23,6 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -51,8 +52,11 @@ import java.util.concurrent.TimeUnit;
  *
  * <h2>Job parameters</h2>
  * <ul>
- *   <li>{@code backupDir} (String, optional) — output directory for the dump file; defaults to
- *       {@value #DEFAULT_BACKUP_DIR}. The directory is created if it does not exist.</li>
+ *   <li>{@code backupDir} (String, optional) — output <em>sub-path</em> for the dump file, resolved
+ *       beneath the approved {@code carddemo.batch.output.base-dir} subtree by
+ *       {@link BatchOutputPathResolver} (absolute paths and {@code ..} parent traversal are rejected —
+ *       CWE-22 hardening); defaults to {@value #DEFAULT_BACKUP_DIR}. The directory is created if
+ *       absent.</li>
  *   <li>{@code runTimestamp} (Long, optional, <strong>non-identifying</strong>) — supplied by the
  *       launcher (via {@code JobParametersBuilder.addLong("runTimestamp", value, false)}) purely to
  *       make the job re-runnable multiple times per day without colliding with a prior
@@ -66,12 +70,16 @@ import java.util.concurrent.TimeUnit;
  * {@code prod} profiles. The password is passed to {@code pg_dump} through the {@code PGPASSWORD}
  * process environment variable (never on the command line and never logged).</p>
  *
- * <h2>Resilience</h2>
+ * <h2>Resilience &amp; failure semantics</h2>
  * <p>The {@code pg_dump} invocation is bounded by a {@value #PROCESS_TIMEOUT_MINUTES}-minute timeout;
- * a hung process is force-terminated and the step fails. If {@code pg_dump} is absent from the
- * {@code PATH} or exits non-zero (e.g., in a minimal test/CI JVM image), the job falls back to writing
- * a small placeholder marker file so the batch still completes — production deployments must ensure
- * {@code pg_dump} is installed.</p>
+ * a hung process is force-terminated. <strong>By default any backup failure (missing {@code pg_dump},
+ * timeout, or non-zero exit) FAILS the job</strong> so operators are never given false assurance that
+ * a backup exists when it does not. Only when {@code carddemo.batch.backup.allow-placeholder-fallback}
+ * is explicitly set to {@code true} (intended for minimal test/CI JVM images where {@code pg_dump} is
+ * deliberately absent) does the step instead write a small placeholder marker and complete with a
+ * distinct non-success exit status ({@code COMPLETED_PLACEHOLDER_NO_BACKUP}) — never reported as a
+ * successful backup. Production deployments leave the fallback disabled and must ensure
+ * {@code pg_dump} is installed on the {@code PATH}.</p>
  *
  * <h2>Scheduling / retention is out of scope</h2>
  * <p>Per AAP §0.2.2, cron / Kubernetes {@code CronJob} scheduling and the 76-generation retention
@@ -114,8 +122,12 @@ public class TransactionBackupJobConfig {
     /** Name of the single {@link Step} that performs the {@code pg_dump} invocation. */
     private static final String STEP_NAME = "transactionBackupStep";
 
-    /** Default backup output directory, used when the {@code backupDir} job parameter is absent. */
-    private static final String DEFAULT_BACKUP_DIR = "./backups";
+    /**
+     * Default backup output <em>sub-path</em>, used when the {@code backupDir} job parameter is absent.
+     * Resolved beneath the approved {@code carddemo.batch.output.base-dir} subtree by
+     * {@link BatchOutputPathResolver}; it is never passed to {@code Paths.get(...)} directly.
+     */
+    private static final String DEFAULT_BACKUP_DIR = "backups";
 
     /** Fully-qualified table dumped by this job (the JPA successor of the TRANSACT VSAM file). */
     private static final String BACKUP_TABLE = "public.transactions";
@@ -177,6 +189,15 @@ public class TransactionBackupJobConfig {
     private final Environment env;
 
     /**
+     * Confines the caller-supplied {@code backupDir} job parameter beneath the single approved
+     * {@code carddemo.batch.output.base-dir} subtree (CWE-22 hardening).
+     * {@link BatchOutputPathResolver#resolve(String)} rejects absolute paths and {@code ..} parent
+     * traversal, so an ADMIN-launched backup job cannot write outside the base directory. Injected via
+     * the Lombok {@link RequiredArgsConstructor} constructor (PR-29 — no field injection).
+     */
+    private final BatchOutputPathResolver pathResolver;
+
+    /**
      * The {@link Tasklet} that performs the actual backup by invoking {@code pg_dump} against the
      * {@value #BACKUP_TABLE} table and writing a timestamped SQL dump into the configured directory.
      *
@@ -192,8 +213,10 @@ public class TransactionBackupJobConfig {
      *       stdout. The invocation is bounded by a {@value #PROCESS_TIMEOUT_MINUTES}-minute timeout.</li>
      *   <li>On success, log the resulting file size and record the file path and size in the step
      *       {@code ExecutionContext} for auditing.</li>
-     *   <li>On any failure (missing executable, timeout, non-zero exit), log the cause and fall back to
-     *       writing a placeholder marker file so the job still completes.</li>
+     *   <li>On any failure (missing executable, timeout, non-zero exit): by default FAIL the job (so a
+     *       non-existent backup is never reported as success); only when
+     *       {@code carddemo.batch.backup.allow-placeholder-fallback=true} write a placeholder marker and
+     *       complete with the non-success {@code COMPLETED_PLACEHOLDER_NO_BACKUP} exit status.</li>
      * </ol>
      *
      * @return the backup tasklet (registered as a Spring bean so it can be reused/tested independently)
@@ -207,7 +230,10 @@ public class TransactionBackupJobConfig {
             JobParameters params =
                     chunkContext.getStepContext().getStepExecution().getJobParameters();
             String backupDir = params.getString("backupDir", DEFAULT_BACKUP_DIR);
-            Path outputPath = Paths.get(backupDir);
+            // CWE-22 hardening: confine the caller-supplied backupDir beneath the approved
+            // carddemo.batch.output.base-dir subtree. Absolute paths and parent ("..") traversal are
+            // rejected by the resolver, so an ADMIN-launched job cannot write outside the base.
+            Path outputPath = pathResolver.resolve(backupDir);
             if (!Files.exists(outputPath)) {
                 Files.createDirectories(outputPath);
                 log.info("Created backup output directory: {}", outputPath.toAbsolutePath());
@@ -270,17 +296,42 @@ public class TransactionBackupJobConfig {
                         .putLong(CTX_BACKUP_SIZE, fileSize);
 
             } catch (Exception e) {
-                // Preserve interrupt status if the wait was interrupted, then degrade gracefully.
+                // Preserve interrupt status if the wait was interrupted.
                 if (e instanceof InterruptedException) {
                     Thread.currentThread().interrupt();
                 }
                 log.error("pg_dump invocation failed: {}", e.getMessage(), e);
-                log.warn("Falling back to placeholder backup marker "
-                        + "(pg_dump unavailable or failed in this environment)");
+
+                // Operational-safety gate (prevents false "backup succeeded" assurance): by default a
+                // backup failure FAILS the job so operators are never told a non-existent backup
+                // completed. The placeholder-marker fallback is reserved for environments that
+                // explicitly opt in (test/CI images where pg_dump is intentionally absent) via
+                // carddemo.batch.backup.allow-placeholder-fallback=true.
+                boolean allowPlaceholderFallback = env.getProperty(
+                        "carddemo.batch.backup.allow-placeholder-fallback", Boolean.class, Boolean.FALSE);
+                if (!allowPlaceholderFallback) {
+                    // Production path: surface the failure so the JobExecution ends FAILED rather than
+                    // reporting success for a backup that was never produced.
+                    throw new IllegalStateException(
+                            "Transaction backup failed: pg_dump did not produce a dump file for table '"
+                                    + BACKUP_TABLE + "'. Ensure the pg_dump client is installed and "
+                                    + "reachable on the PATH. Root cause: " + e.getMessage(), e);
+                }
+
+                // Test/CI-only path: write a placeholder marker and report a NON-SUCCESS exit status so
+                // the run is never mistaken for a real backup, even though the step technically
+                // completes. No write count is incremented (no unit of real work was performed).
+                log.warn("carddemo.batch.backup.allow-placeholder-fallback=true: writing a placeholder "
+                        + "marker INSTEAD of a real backup (NON-PRODUCTION ONLY); no SQL dump produced.");
                 performJpaBackup(outputPath, timestamp);
+                contribution.setExitStatus(new ExitStatus(
+                        "COMPLETED_PLACEHOLDER_NO_BACKUP",
+                        "pg_dump unavailable or failed; a placeholder marker was written and NO SQL "
+                                + "dump was produced. This is not a valid backup."));
+                return RepeatStatus.FINISHED;
             }
 
-            // A single logical unit of work was performed (the table backup).
+            // Success path only: a real pg_dump file was produced; count the unit of work.
             contribution.incrementWriteCount(1);
             return RepeatStatus.FINISHED;
         };
@@ -326,14 +377,17 @@ public class TransactionBackupJobConfig {
     }
 
     /**
-     * Fallback used when {@code pg_dump} is unavailable or fails: writes a small placeholder marker
-     * file (UTF-8) so the batch step still completes successfully in minimal/test environments.
+     * Test/CI-only fallback, invoked when {@code pg_dump} is unavailable or fails <em>and</em>
+     * {@code carddemo.batch.backup.allow-placeholder-fallback=true}: writes a small placeholder marker
+     * file (UTF-8). It is <strong>not</strong> a valid backup — the caller pairs it with a non-success
+     * {@link ExitStatus} ({@code COMPLETED_PLACEHOLDER_NO_BACKUP}) so the run is never reported as a
+     * successful backup. In production (the default — fallback disabled) a {@code pg_dump} failure
+     * fails the job instead of invoking this method.
      *
-     * <p>This is intentionally a marker, not a real export — production deployments MUST provide
-     * {@code pg_dump}. The marker shares the run timestamp with the intended {@code .sql} artifact so
-     * it is easy to correlate in the output directory.</p>
+     * <p>The marker shares the run timestamp with the intended {@code .sql} artifact so it is easy to
+     * correlate in the output directory.</p>
      *
-     * @param outputPath the (already-created) backup output directory
+     * @param outputPath the (already-created, path-confined) backup output directory
      * @param timestamp  the run timestamp ({@value #BACKUP_TIMESTAMP} pattern) shared with the dump file
      * @throws IOException if the marker file cannot be written
      */

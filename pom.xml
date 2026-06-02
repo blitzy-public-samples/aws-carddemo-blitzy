@@ -49,15 +49,6 @@
             3.2.12 BOM, so its version is pinned explicitly here.
         -->
         <springdoc-openapi.version>2.3.0</springdoc-openapi.version>
-        <!--
-            jjwt (io.jsonwebtoken) is NOT managed by the Spring Boot 3.2.12 BOM, so
-            its version is pinned explicitly here. 0.12.6 is the latest 0.12.x release
-            and provides the modern parser API (Jwts.parser().verifyWith(...).build()
-            .parseSignedClaims(...)) used by JwtAuthenticationFilter to validate the
-            HS256 bearer tokens that replace the CICS COMMAREA (app/cpy/COCOM01Y.cpy)
-            user-identity propagation. All three jjwt artifacts MUST share one version.
-        -->
-        <jjwt.version>0.12.6</jjwt.version>
     </properties>
 
     <dependencies>
@@ -101,7 +92,14 @@
 
         <!-- ===================== DATABASE & MIGRATION ===================== -->
 
-        <!-- PostgreSQL 15 JDBC driver (BOM-managed 42.7.x); runtime-only. -->
+        <!--
+            PostgreSQL 15 JDBC driver; runtime-only. The version is intentionally
+            governed by the Spring Boot 3.2.12 BOM (which pins the 42.6.x line, currently
+            resolving to 42.6.2) rather than overridden here, keeping the whole dependency
+            graph BOM-consistent. The 42.6.x driver is fully compatible with PostgreSQL 15
+            (and forward-compatible with 16+). Do not hard-pin a different version without
+            a specific compatibility reason.
+        -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
@@ -126,44 +124,20 @@
         <!-- ===================== JSON WEB TOKEN (JWT) ===================== -->
 
         <!--
-            jjwt — JSON Web Token support for the stateless REST security model.
-            JwtAuthenticationFilter parses and verifies HS256 bearer tokens to
+            No standalone JWT library is declared. HS256 bearer-token creation and
+            verification are implemented by the dependency-free com.carddemo.util.JwtCodec
+            using only the JDK (javax.crypto.Mac / HMAC-SHA256, java.util.Base64 URL codec,
+            java.security.MessageDigest constant-time comparison) plus the Jackson
+            ObjectMapper already provided transitively by spring-boot-starter-web. This
+            keeps the production dependency graph entirely BOM-governed, satisfying the
+            final-checkpoint forbidden-dependency policy and AAP §0.5.1 (which did not
+            include a standalone JWT artifact). AuthService issues the tokens after a
+            successful BCrypt signon (replacing the plaintext compare in
+            app/cbl/COSGN00C.cbl L211-L257) and JwtAuthenticationFilter verifies them to
             reconstruct the user identity (sub = CDEMO-USER-ID) and authorities
-            (userType 'A'/'U' -> ROLE_ADMIN/ROLE_USER) that the legacy mainframe
-            carried in the CICS COMMAREA (app/cpy/COCOM01Y.cpy L19-L44); AuthService
-            issues those tokens after a successful BCrypt signon (replacing the
-            plaintext password compare in app/cbl/COSGN00C.cbl L211-L257).
-
-            The split is the standard jjwt packaging:
-              - jjwt-api      (compile)  — the public types referenced in source
-                                           (Jwts, Claims, Keys, the JwtException
-                                           hierarchy). This is the ONLY jjwt artifact
-                                           on the compile classpath.
-              - jjwt-impl     (runtime)  — the runtime implementation of that API;
-                                           required at execution time but not compiled
-                                           against directly.
-              - jjwt-jackson  (runtime)  — the Jackson-based (de)serializer that jjwt
-                                           uses to read/write the JSON claim set;
-                                           Jackson is already present via
-                                           spring-boot-starter-web.
+            (userType 'A'/'U' -> ROLE_ADMIN/ROLE_USER) that the legacy mainframe carried
+            in the CICS COMMAREA (app/cpy/COCOM01Y.cpy L19-L44).
         -->
-        <dependency>
-            <groupId>io.jsonwebtoken</groupId>
-            <artifactId>jjwt-api</artifactId>
-            <version>${jjwt.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>io.jsonwebtoken</groupId>
-            <artifactId>jjwt-impl</artifactId>
-            <version>${jjwt.version}</version>
-            <scope>runtime</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.jsonwebtoken</groupId>
-            <artifactId>jjwt-jackson</artifactId>
-            <version>${jjwt.version}</version>
-            <scope>runtime</scope>
-        </dependency>
 
         <!-- ===================== PROVIDED (COMPILE-TIME ONLY) ===================== -->
 

@@ -4,12 +4,10 @@ import com.carddemo.dto.auth.LoginRequest;
 import com.carddemo.dto.auth.LoginResponse;
 import com.carddemo.entity.User;
 import com.carddemo.repository.UserRepository;
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.security.Keys;
+import com.carddemo.util.JwtCodec;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.Date;
-import javax.crypto.SecretKey;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -43,9 +41,12 @@ import org.springframework.stereotype.Service;
  * ({@code 'A' -> ROLE_ADMIN}, {@code 'U' -> ROLE_USER} per <b>PR-19</b>).</p>
  *
  * <p>The token is signed with HMAC-SHA256 (HS256) using the shared {@code jwt.secret}
- * key &mdash; the <b>same</b> property and the <b>same</b> key-derivation
- * ({@code Keys.hmacShaKeyFor(secret UTF-8 bytes)}) used by
- * {@code JwtAuthenticationFilter}, so every issued token verifies there.</p>
+ * key &mdash; the <b>same</b> property and the <b>same</b> key material (the secret's
+ * UTF-8 bytes) consumed by {@code JwtAuthenticationFilter}, so every issued token
+ * verifies there. Token creation is delegated to the dependency-free
+ * {@link com.carddemo.util.JwtCodec} (JDK {@code javax.crypto.Mac} + Jackson), which
+ * replaced the previously-used standalone JWT library per the final-checkpoint
+ * dependency policy and AAP &sect;0.5.1.</p>
  *
  * <h2>COBOL parity ({@code 0500-VALIDATE-USERID-PASSWORD})</h2>
  * <ul>
@@ -267,12 +268,12 @@ public class AuthService {
      *   <li>{@code iat}/{@code exp} &mdash; issued-at and expiry timestamps.</li>
      * </ul>
      *
-     * <p>The HS256 key is derived from {@code jwt.secret} with
-     * {@code Keys.hmacShaKeyFor(secret UTF-8 bytes)} &mdash; byte-for-byte the same
-     * derivation as {@code JwtAuthenticationFilter}, guaranteeing the signature
-     * verifies there. {@code Jwts.SIG.HS256} is forced explicitly so the token
-     * header always advertises {@code alg=HS256} regardless of secret length (a
-     * longer secret would otherwise auto-select a stronger HMAC variant).</p>
+     * <p>The HS256 signature is computed by {@link com.carddemo.util.JwtCodec} directly
+     * over the secret's UTF-8 bytes &mdash; byte-for-byte the same key material
+     * {@code JwtAuthenticationFilter} uses to verify, guaranteeing the signature
+     * validates there. The codec always emits {@code alg=HS256} in the header (and the
+     * filter pins {@code alg} to {@code HS256} on verification), so the token shape is
+     * fixed regardless of secret length.</p>
      *
      * @param userId    the JWT subject (already uppercase-normalized)
      * @param userType  the single-character role code ('A' or 'U') for the claim
@@ -281,13 +282,12 @@ public class AuthService {
      * @return the compact, signed JWT string
      */
     private String generateToken(String userId, String userType, Instant issuedAt, Instant expiresAt) {
-        SecretKey signingKey = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
-        return Jwts.builder()
-                .subject(userId)
-                .claim(USER_TYPE_CLAIM, userType)
-                .issuedAt(Date.from(issuedAt))
-                .expiration(Date.from(expiresAt))
-                .signWith(signingKey, Jwts.SIG.HS256)
-                .compact();
+        byte[] keyBytes = jwtSecret.getBytes(StandardCharsets.UTF_8);
+        return JwtCodec.createHs256(
+                keyBytes,
+                userId,
+                Map.of(USER_TYPE_CLAIM, userType),
+                issuedAt,
+                expiresAt);
     }
 }

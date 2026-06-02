@@ -21,6 +21,9 @@ import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.ProviderManager;
+import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
+import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
@@ -1098,20 +1101,27 @@ class FlywayMigrationIT {
         }
 
         /**
-         * Minimal {@code AuthenticationManager} so {@code AuthService} can be constructed. This
-         * migration test never authenticates, so the stub is never invoked; if it ever were, the
-         * thrown exception makes the misuse obvious.
+         * Real {@code AuthenticationManager} &mdash; a {@link ProviderManager} backed by a
+         * {@link DaoAuthenticationProvider} over the application's {@link UserDetailsService} and
+         * {@link PasswordEncoder} &mdash; so {@code AuthService} can be constructed. It registers
+         * only when {@code SecurityConfig} has not already supplied an {@code AuthenticationManager}
+         * ({@link ConditionalOnMissingBean}); inside the full {@code @SpringBootTest} context
+         * {@code SecurityConfig}'s bean takes precedence. This migration test never authenticates,
+         * but the bean is fully functional and throws nothing.
+         *
+         * <p>The Spring Security 6.2.x {@code DaoAuthenticationProvider} no-argument constructor
+         * with explicit setters mirrors the production {@code SecurityConfig#authenticationProvider}
+         * idiom (the constructor deprecation is a later-version change that does not apply to the
+         * 6.2.x line resolved by the Spring Boot 3.2.12 BOM).</p>
          */
         @Bean
         @ConditionalOnMissingBean(AuthenticationManager.class)
-        AuthenticationManager authenticationManager() {
-            return authentication -> {
-                throw new UnsupportedOperationException(
-                    "Test-only stub AuthenticationManager (FlywayMigrationIT). The real "
-                        + "AuthenticationManager is provided by SecurityConfig at full-suite runtime; "
-                        + "this schema-migration test verifies database structure/seed data only and "
-                        + "never performs authentication.");
-            };
+        AuthenticationManager authenticationManager(UserDetailsService userDetailsService,
+                                                    PasswordEncoder passwordEncoder) {
+            DaoAuthenticationProvider provider = new DaoAuthenticationProvider();
+            provider.setUserDetailsService(userDetailsService);
+            provider.setPasswordEncoder(passwordEncoder);
+            return new ProviderManager(provider);
         }
     }
 }

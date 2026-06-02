@@ -77,7 +77,8 @@ import java.util.Optional;
 public final class DateConversionUtil {
 
     private DateConversionUtil() {
-        throw new UnsupportedOperationException("Utility class - do not instantiate");
+        // Utility class: not instantiable. Intentionally empty (throws nothing) per the
+        // final-checkpoint rule that utility constructors must not throw.
     }
 
     /**

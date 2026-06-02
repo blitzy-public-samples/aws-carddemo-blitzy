@@ -1,11 +1,13 @@
 package com.carddemo.integration;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -22,6 +24,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -104,16 +107,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers
 @ActiveProfiles("test")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@Disabled("""
-        Deferred to CP4. This IT boots the full Spring application context and exercises the \
-        online security endpoints (POST /api/auth/login, /api/admin/users, /api/menu, \
-        /api/admin/jobs/{name}/launch), none of which exist yet: SecurityConfig, the \
-        PasswordEncoder bean, JwtAuthenticationFilter, AuthController, UserController, \
-        MenuController and BatchAdminController are all CP4 deliverables. Until they exist the \
-        context fails to start (UserSeedingJobConfig requires a PasswordEncoder bean that CP4's \
-        SecurityConfig will provide), so an enabled IT here would make `mvn verify` fail. The \
-        container-lifecycle fix (eager static singleton, see POSTGRES below) is applied now so \
-        this suite is correct the moment CP4 re-enables it by removing this annotation.""")
 @DisplayName("SecurityIT — Verifies Spring Security 6 stack end-to-end (JWT, BCrypt, @PreAuthorize, role mapping)")
 class SecurityIT {
 
@@ -226,6 +219,35 @@ class SecurityIT {
     /** Repository for direct database verification of the seeded user rows. */
     @Autowired
     private UserRepository userRepository;
+
+    /**
+     * Swaps the autowired {@link TestRestTemplate}'s request factory to the JDK
+     * {@link JdkClientHttpRequestFactory} (which wraps {@code java.net.http.HttpClient}).
+     *
+     * <p><strong>Why this is required.</strong> By default {@code TestRestTemplate} uses
+     * {@link org.springframework.http.client.SimpleClientHttpRequestFactory}, which is backed by
+     * the legacy {@code java.net.HttpURLConnection}. In Spring Framework 6.1 that factory's request
+     * always uses HTTP output streaming (fixed-length or chunked) — the former {@code
+     * outputStreaming}/{@code bufferRequestBody} toggles are deprecated no-ops. When such a streamed
+     * {@code POST} receives a {@code 401}, {@code HttpURLConnection} refuses to surface the response
+     * and instead throws {@code java.net.HttpRetryException: "cannot retry due to server
+     * authentication, in streaming mode"}. Several tests in this suite deliberately POST bad
+     * credentials and assert {@code 401}, so they hit this JDK limitation. {@code
+     * JdkClientHttpRequestFactory} uses the modern {@code java.net.http.HttpClient}, which returns
+     * the {@code 401} (with its {@link com.carddemo.exception.ErrorResponse} JSON body) as an
+     * ordinary response.</p>
+     *
+     * <p>This is a <strong>test-client-only</strong> adjustment, and the chosen factory ships with
+     * spring-web (no new dependency). The production
+     * {@code SecurityConfig.jsonAuthenticationEntryPoint()} already returns a clean {@code 401} with
+     * a JSON body and no {@code WWW-Authenticate} challenge — nothing about the server is changed
+     * here. The JDK {@code HttpClient} is fully compatible with the suite's other (GET and
+     * successful-POST) requests.</p>
+     */
+    @BeforeEach
+    void useJdkHttpClientThatSurfaces401Responses() {
+        restTemplate.getRestTemplate().setRequestFactory(new JdkClientHttpRequestFactory());
+    }
 
     // ------------------------------------------------------------------------
     // Context sanity
@@ -697,7 +719,7 @@ class SecurityIT {
         @DisplayName("ADMIN can create a user (POST /api/admin/users)")
         void shouldAllowAdminToCreateUser() {
             String adminToken = login("ADMIN001", DEFAULT_PASSWORD);
-            UserCreateRequest body = validUserCreateRequest("TMPCRT01", "U");
+            Map<String, Object> body = userPayload("TMPCRT01", "TEST", "USER", "PLACEHLD", "U");
             ResponseEntity<String> resp = postWithAuth(ADMIN_USERS_PATH, adminToken, body, String.class);
 
             assertThat(resp.getStatusCode().is2xxSuccessful())
@@ -726,11 +748,10 @@ class SecurityIT {
         void shouldAllowAdminToUpdateUser() {
             String adminToken = login("ADMIN001", DEFAULT_PASSWORD);
             // Create a throwaway user, then update it — avoids mutating seed users.
-            UserCreateRequest create = validUserCreateRequest("TMPUPD01", "U");
+            Map<String, Object> create = userPayload("TMPUPD01", "TEST", "USER", "PLACEHLD", "U");
             postWithAuth(ADMIN_USERS_PATH, adminToken, create, String.class);
 
-            UserCreateRequest update = validUserCreateRequest("TMPUPD01", "U");
-            update.setLastName("UPDATED");
+            Map<String, Object> update = userPayload("TMPUPD01", "TEST", "UPDATED", "PLACEHLD", "U");
             ResponseEntity<String> resp =
                     putWithAuth(ADMIN_USERS_PATH + "/TMPUPD01", adminToken, update, String.class);
 
@@ -760,7 +781,7 @@ class SecurityIT {
         void shouldAllowAdminToDeleteUser() {
             String adminToken = login("ADMIN001", DEFAULT_PASSWORD);
             // Create a disposable user so we never delete one of the seed users.
-            UserCreateRequest create = validUserCreateRequest("TMPDEL01", "U");
+            Map<String, Object> create = userPayload("TMPDEL01", "TEST", "USER", "PLACEHLD", "U");
             postWithAuth(ADMIN_USERS_PATH, adminToken, create, String.class);
 
             ResponseEntity<Void> resp =
@@ -1131,6 +1152,37 @@ class SecurityIT {
                 .password("PLACEHLD")
                 .userType(userType)
                 .build();
+    }
+
+    /**
+     * Builds a user create/update request body as a {@link Map} so the {@code password} field is
+     * actually serialized into the outbound JSON.
+     *
+     * <p>{@link UserCreateRequest} annotates {@code password} with
+     * {@code @JsonProperty(access = WRITE_ONLY)} (PR-17 — the secret must never appear in any
+     * response), which also makes Jackson OMIT it when serializing the DTO object as a request
+     * body. The positive ADMIN create/update tests must send the password so the service can
+     * BCrypt-encode it; a real REST client sends raw JSON with the password present, and a plain
+     * {@code Map} reproduces that exact wire payload (no Jackson access annotations, every entry
+     * written verbatim). The negative {@code 403} tests keep using {@link #validUserCreateRequest}
+     * because {@code @PreAuthorize} rejects them before the password is ever read.</p>
+     *
+     * @param userId    the 1-8 char uppercase user id
+     * @param firstName the user first name
+     * @param lastName  the user last name
+     * @param password  the raw (plaintext) password to send on the wire
+     * @param userType  {@code "A"} (admin) or {@code "U"} (user)
+     * @return an ordered map representing the JSON request body, password included
+     */
+    private Map<String, Object> userPayload(String userId, String firstName,
+                                            String lastName, String password, String userType) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("userId", userId);
+        body.put("firstName", firstName);
+        body.put("lastName", lastName);
+        body.put("password", password);
+        body.put("userType", userType);
+        return body;
     }
 
     /** Concatenates the five ADMIN ids and five USER ids into a single ordered list. */

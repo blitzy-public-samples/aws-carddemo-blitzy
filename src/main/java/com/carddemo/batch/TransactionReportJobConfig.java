@@ -2,6 +2,7 @@ package com.carddemo.batch;
 
 import com.carddemo.entity.Transaction;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.util.BatchOutputPathResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.Job;
@@ -25,7 +26,6 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -130,8 +130,13 @@ public class TransactionReportJobConfig {
     /** Logical name of the single report {@link Step}. */
     private static final String STEP_NAME = "transactionReportStep";
 
-    /** Default output directory used when the {@code outputDir} job parameter is absent. */
-    private static final String DEFAULT_OUTPUT_DIR = "./reports";
+    /**
+     * Default output sub-directory used when the {@code outputDir} job parameter is absent.
+     * This is a <b>relative</b> sub-path resolved beneath the approved batch output base
+     * directory by {@link BatchOutputPathResolver}; it is never passed to {@code Paths.get}
+     * directly (CWE-22 confinement).
+     */
+    private static final String DEFAULT_OUTPUT_DIR = "reports";
 
     /** Stem of the generated report file name; a timestamp and {@code .txt} suffix are appended. */
     private static final String REPORT_FILE_PREFIX = "transaction-report-";
@@ -201,6 +206,17 @@ public class TransactionReportJobConfig {
     private final TransactionRepository transactionRepository;
 
     /**
+     * Confines the caller-supplied {@code outputDir} job parameter beneath the approved
+     * {@code carddemo.batch.output.base-dir} subtree. Because {@code BatchAdminController}
+     * lets an ADMIN caller supply arbitrary job parameters, the raw value must never reach
+     * {@code Paths.get(...)} directly; {@link BatchOutputPathResolver#resolve(String)} rejects
+     * absolute paths and {@code ..} traversal and normalizes the result inside the base
+     * directory (CWE-22 path-traversal mitigation). Injected via the Lombok
+     * {@code @RequiredArgsConstructor}-generated constructor (PR-29).
+     */
+    private final BatchOutputPathResolver pathResolver;
+
+    /**
      * The report-producing {@link Tasklet}.
      *
      * <p>Reads the optional {@code startDate} / {@code endDate} (DB2-normalized
@@ -224,8 +240,11 @@ public class TransactionReportJobConfig {
             LocalDateTime endTs = params.getLocalDateTime("endDate", DEFAULT_END);
             String outputDir = params.getString("outputDir", DEFAULT_OUTPUT_DIR);
 
-            // Ensure the output directory exists (idempotent — no error if already present).
-            Path outputPath = Paths.get(outputDir);
+            // CWE-22 confinement: resolve the caller-supplied outputDir strictly beneath the
+            // approved carddemo.batch.output.base-dir subtree (rejecting absolute paths and
+            // ".." traversal) instead of trusting it directly via Paths.get(...).
+            Path outputPath = pathResolver.resolve(outputDir);
+            // Ensure the (confined) output directory exists (idempotent — no error if present).
             Files.createDirectories(outputPath);
 
             String fileStamp = LocalDateTime.now().format(FILE_TIMESTAMP);

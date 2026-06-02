@@ -403,7 +403,7 @@ have **no Java artifact** — their semantics are subsumed by Flyway DDL and JPA
 | `../app/jcl/TRANTYPE.jcl` | step within `DataInitializationJobConfig` | Loads `trantype.txt` (7 types). |
 | `../app/jcl/TRANCATG.jcl` | step within `DataInitializationJobConfig` | Loads `trancatg.txt` (18 categories). |
 | `../app/jcl/DISCGRP.jcl` | step within `DataInitializationJobConfig` | Loads `discgrp.txt` (51 disclosure groups). |
-| `../app/jcl/TCATBALF.jcl` | step within `DataInitializationJobConfig` | Loads `tcatbal.txt` (100 transaction category balances). |
+| `../app/jcl/TCATBALF.jcl` | step within `DataInitializationJobConfig` | Loads `tcatbal.txt` (50 transaction category balances). |
 | `../app/jcl/TRANFILE.jcl` | step within `DataInitializationJobConfig` | Loads transaction master records. |
 | `../app/jcl/CBADMCDJ.jcl` | step within `DataInitializationJobConfig` | Admin data initialization. |
 | `../app/jcl/PRTCATBL.jcl` | `CategoryBalanceReportJobConfig` | Prints all TCATBAL records grouped by account. |
@@ -413,7 +413,7 @@ have **no Java artifact** — their semantics are subsumed by Flyway DDL and JPA
 | `../app/jcl/READCARD.jcl` | `CardFileReadJobConfig` | Diagnostic reader (paired with `CBACT02C`). |
 | `../app/jcl/READCUST.jcl` | `CustomerFileReadJobConfig` | Diagnostic reader (paired with `CBCUS01C`). |
 | `../app/jcl/READXREF.jcl` | `XrefFileReadJobConfig` | Diagnostic reader (paired with `CBACT03C`). |
-| `../app/jcl/REPTFILE.jcl` | `ReportFileJobConfig` | Report file generation. |
+| `../app/jcl/REPTFILE.jcl` | (no Java artifact) | IDCAMS `DEFINE GENERATIONDATAGROUP(NAME(AWS.M2.CARDDEMO.TRANREPT) LIMIT(10))` — a pure GDG-base define (no program execution, no data processing), functionally identical to the `AWS.M2.CARDDEMO.TRANREPT` define already present inside `DEFGDGB.jcl`. The GDG that would have held report output is replaced by filesystem output written beneath `carddemo.batch.output.base-dir` (path-confined by `BatchOutputPathResolver`); the report **content** is produced by `TransactionReportJobConfig` (`TRANREPT.jcl`, above). No Java artifact is emitted — an empty `Job` bean would be a forbidden no-op stub (PR-25, zero-stub policy). |
 | `../app/jcl/CLOSEFIL.jcl` | (no Java artifact) | VSAM file CLOSE — irrelevant in the JPA model; superseded by HikariCP connection pooling. |
 | `../app/jcl/OPENFIL.jcl` | (no Java artifact) | VSAM file OPEN — irrelevant in the JPA model. |
 | `../app/jcl/DEFCUST.jcl` | (no Java artifact) | IDCAMS `DEFINE CLUSTER` — replaced by Flyway `V1__schema.sql`. |
@@ -421,9 +421,12 @@ have **no Java artifact** — their semantics are subsumed by Flyway DDL and JPA
 | `../app/jcl/TRANIDX.jcl` | (no Java artifact) | VSAM AIX rebuild (`DELETE → DEFINE → BLDINDEX → DEFINE PATH`) — replaced by PostgreSQL B-tree `@Index` maintained automatically (AAP §0.6.13). |
 | `../app/jcl/DALYREJS.jcl` | (no Java artifact) | DALYREJS GDG define — replaced by the `rejected_transactions` table created in `V1__schema.sql`. |
 
-**Job count:** 29 JCL jobs total — 23 map to Spring Batch `Job` beans (10 of
-which are steps within the composite `DataInitializationJobConfig`), and 6 are
-no-ops (`CLOSEFIL`, `OPENFIL`, `DEFCUST`, `DEFGDGB`, `TRANIDX`, `DALYREJS`).
+**Job count:** 29 JCL jobs total — 22 map to Spring Batch `Job` beans (10 of
+which are steps within the composite `DataInitializationJobConfig`), and 7 are
+no-ops (`CLOSEFIL`, `OPENFIL`, `DEFCUST`, `DEFGDGB`, `TRANIDX`, `DALYREJS`,
+`REPTFILE`). `REPTFILE.jcl` is a pure GDG-base define — like the other GDG/VSAM-define
+jobs it emits no Java artifact; the transaction report itself is produced by
+`TransactionReportJobConfig` (`TRANREPT.jcl`).
 
 ### 5.1 Critical Batch Sequence
 
@@ -622,9 +625,10 @@ security rather than silently routed away by a menu.
 ## Section 9: Build, Configuration, Flyway Migrations
 
 Build, application configuration, Flyway DDL/seed migrations, and the statement
-HTML template (AAP §0.4.1.8). The 5 Flyway scripts create all 14 base tables,
-the secondary indexes (replacing the VSAM AIX), and the seed data (reference
-data, the 10 default users with BCrypt hashes, and the master data).
+HTML template (AAP §0.4.1.8). The 5 Flyway scripts create all 12 base tables
+plus the `transaction_id_seq` sequence, the secondary indexes (replacing the
+VSAM AIX), and the seed data (reference data, the 10 default users with BCrypt
+hashes, and the master data).
 
 | Target File | Source | Key Notes |
 | :---------- | :----- | :-------- |
@@ -632,11 +636,11 @@ data, the 10 default users with BCrypt hashes, and the master data).
 | `../src/main/resources/application.yml` | (new) | Base config — JPA dialect `org.hibernate.dialect.PostgreSQLDialect`, Flyway enabled, Jackson `WRITE_BIGDECIMAL_AS_PLAIN`, Actuator endpoints (`/actuator/health`, `/info`, `/metrics`). |
 | `../src/main/resources/application-dev.yml` | (new) | Local PostgreSQL JDBC URL; `ddl-auto: validate`; debug logging. |
 | `../src/main/resources/application-prod.yml` | (new) | Production JDBC URL via environment; `ddl-auto: validate`; INFO/structured JSON logging. |
-| `../src/main/resources/db/migration/V1__schema.sql` | All record-defining copybooks (`CVACT01Y`, `CVACT02Y`, `CVACT03Y`, `CVCUS01Y`, `CVTRA01Y`–`CVTRA07Y`, `CSUSR01Y`) | DDL creating all 14 base tables matching the VSAM record layouts (**PR-13**). |
+| `../src/main/resources/db/migration/V1__schema.sql` | All record-defining copybooks (`CVACT01Y`, `CVACT02Y`, `CVACT03Y`, `CVCUS01Y`, `CVTRA01Y`–`CVTRA07Y`, `CSUSR01Y`) | DDL creating all 12 base tables (matching the VSAM record layouts, **PR-13**) plus the `transaction_id_seq` sequence backing online transaction-ID generation. |
 | `../src/main/resources/db/migration/V2__indexes.sql` | `../app/catlg/LISTCAT.txt` + `../app/csd/CARDDEMO.CSD` | Secondary B-tree indexes `idx_card_account_id`, `idx_xref_account_id`, `idx_transaction_orig_ts` (replace the three VSAM AIX). |
 | `../src/main/resources/db/migration/V3__seed_reference_data.sql` | `../app/data/ASCII/trantype.txt` + `trancatg.txt` + `discgrp.txt` | 7 transaction types + 18 categories + 51 disclosure groups. |
 | `../src/main/resources/db/migration/V4__seed_users.sql` | `../app/jcl/DUSRSECJ.jcl` (REFERENCE) | 10 default users (`ADMIN001`–`ADMIN005`, `USER0001`–`USER0005`) with **pre-computed BCrypt hashes** of literal `"PASSWORD"` (**PR-17**). |
-| `../src/main/resources/db/migration/V5__seed_master_data.sql` | All `../app/data/ASCII/*.txt` master files | 50 customers + 50 accounts + 50 cards + 50 cross-references + 100 TCATBAL records. |
+| `../src/main/resources/db/migration/V5__seed_master_data.sql` | All `../app/data/ASCII/*.txt` master files | 50 customers + 50 accounts + 50 cards + 50 cross-references + 50 TCATBAL records. |
 | `../src/main/resources/templates/statement-template.html` | `../app/cbl/CBSTM03A.CBL` L506-555 | HTML template extracted from `5100-WRITE-HTML-HEADER` (**PR-09** byte-for-byte). |
 | `../README.md` | (existing) | Updated to add the "Java Spring Boot 3.2 Modernization" section; original mainframe documentation preserved unchanged. |
 | `../docs/migration-mapping.md` | (this AAP) | **This document** — the per-file mapping companion. |

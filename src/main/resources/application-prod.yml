@@ -52,10 +52,10 @@ spring:
     password: ${SPRING_DATASOURCE_PASSWORD}
     driver-class-name: org.postgresql.Driver
     hikari:
-      # Production pool sized for the demonstration-grade workload. AAP §0.7.2:
-      # "the default Hibernate connection pool ... is acceptable for the
-      # demonstration-grade workload (50 accounts, 311 transactions, 100 TCATBAL
-      # records)." Tune maximum-pool-size via HIKARI_MAX_POOL_SIZE if needed.
+      # Production pool sized for the demonstration-grade workload. Per AAP §0.7.2,
+      # the default Hibernate/HikariCP connection pool is acceptable here: the seeded
+      # dataset is small (50 accounts, 50 cards, 50 transaction-category balances).
+      # Tune maximum-pool-size via HIKARI_MAX_POOL_SIZE if needed.
       maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:20}
       minimum-idle: 5
       connection-timeout: 30000

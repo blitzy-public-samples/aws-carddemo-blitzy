@@ -161,3 +161,21 @@ app:
 # ============================================================================
 jwt:
   secret: test-only-jwt-secret-not-for-production-0123456789abcdef0123456789
+
+# ============================================================================
+# CARDDEMO BATCH — backup placeholder fallback (TEST/CI ONLY)
+# ============================================================================
+# carddemo.batch.backup.allow-placeholder-fallback lets TransactionBackupJobConfig
+# write a placeholder marker (with a NON-SUCCESS "COMPLETED_PLACEHOLDER_NO_BACKUP"
+# exit status) instead of FAILING the job when the pg_dump client is absent from the
+# PATH. The Testcontainers PostgreSQL image used by *IT tests does NOT ship pg_dump,
+# so this opt-in keeps any backup-job test runnable WITHOUT ever masking a real
+# production backup failure — production leaves this at its false default (fail-fast).
+# Defined ONLY in the test profile. (carddemo.batch.output.base-dir is inherited from
+# application.yml as ./output.)
+# ============================================================================
+carddemo:
+  batch:
+    backup:
+      allow-placeholder-fallback: true
+
