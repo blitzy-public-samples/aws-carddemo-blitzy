@@ -37,8 +37,14 @@ import org.springframework.transaction.PlatformTransactionManager;
  * idempotent SQL UPSERT executed inside one Spring Batch tasklet. Approved transactions are
  * already written directly into the {@code transactions} master table by the upstream
  * {@code POSTTRAN} job ({@link TransactionPostingJobConfig}); this job therefore acts as a
- * de-duplicating safety net that merges any {@code processed = TRUE} rows still residing only
- * in the {@code daily_transactions} staging table into {@code transactions}. The explicit
+ * de-duplicating safety net that merges any <em>accepted</em> {@code processed = TRUE} rows still
+ * residing only in the {@code daily_transactions} staging table into {@code transactions}. Rows
+ * that {@code POSTTRAN} <em>rejected</em> (validation codes 100/101/102/103) are explicitly
+ * excluded — they are also flagged {@code processed = TRUE} but live solely in
+ * {@code rejected_transactions} (the DALYREJS equivalent), and per PR-03 they must never enter the
+ * master {@code transactions} table that statement generation ({@code CREASTMT}) reads. This
+ * mirrors {@code COMBTRAN.jcl}, which merges only the already-posted master backup and the
+ * system-generated transactions and never reads the daily/reject stream. The explicit
  * {@code SORT FIELDS=(TRAN-ID,A)} of STEP05R is satisfied implicitly by the
  * {@code transactions} primary-key B-tree index on {@code tran_id}, which governs the read
  * order consumed by downstream statement generation ({@code CREASTMT}).
@@ -51,6 +57,10 @@ import org.springframework.transaction.PlatformTransactionManager;
  *
  * <h2>Refactoring rules enforced</h2>
  * <ul>
+ *   <li><b>PR-03</b> — preserves reject segregation: transactions rejected by {@code POSTTRAN}
+ *       (validation codes 100/101/102/103) remain solely in {@code rejected_transactions} and are
+ *       never consolidated into the master {@code transactions} table (enforced by the second
+ *       {@code NOT EXISTS} guard in {@link #CONSOLIDATION_UPSERT_SQL}).</li>
  *   <li><b>PR-12</b> — preserves the critical batch sequence ordering; independently runnable.</li>
  *   <li><b>PR-22</b> — {@code ON CONFLICT (tran_id) DO NOTHING} guarantees no data loss: existing
  *       master rows written by {@code POSTTRAN} are never clobbered, and reruns are idempotent.</li>
@@ -91,11 +101,26 @@ public class TransactionConsolidationJobConfig {
      * <p>Semantics:
      * <ul>
      *   <li>Selects only {@code processed = TRUE} rows from the {@code daily_transactions} staging
-     *       table — i.e. transactions already validated and posted by {@code POSTTRAN}. This
+     *       table — i.e. rows the upstream {@code POSTTRAN} job has already accounted for. This
      *       guarantees the {@code NOT NULL} business columns required by {@code transactions}
-     *       ({@code type_cd}, {@code cat_cd}, {@code card_num}, {@code amount}) are populated.</li>
-     *   <li>The {@code NOT EXISTS} correlated sub-query skips staging rows already present in the
-     *       master table, so the common case (POSTTRAN already inserted them) performs zero writes.</li>
+     *       ({@code type_cd}, {@code cat_cd}, {@code card_num}, {@code amount}) are populated.
+     *       <strong>Note:</strong> {@code POSTTRAN} sets {@code processed = TRUE} for
+     *       <em>both</em> accepted rows (written to {@code transactions}) <em>and</em> rejected
+     *       rows (written only to {@code rejected_transactions}); the {@code processed} flag alone
+     *       therefore does <em>not</em> distinguish accepted from rejected, which is why the two
+     *       {@code NOT EXISTS} guards below are both required.</li>
+     *   <li>The first {@code NOT EXISTS} correlated sub-query (against {@code transactions}) skips
+     *       staging rows already present in the master table, so the common case (POSTTRAN already
+     *       inserted the accepted rows) performs zero writes.</li>
+     *   <li>The second {@code NOT EXISTS} correlated sub-query (against {@code rejected_transactions})
+     *       excludes any staging row whose {@code tran_id} was rejected by {@code POSTTRAN} (codes
+     *       100/101/102/103). Rejected transactions must reside <em>only</em> in the
+     *       {@code rejected_transactions} sink (the DALYREJS equivalent — a separate store, PR-03)
+     *       and must never contaminate the master {@code transactions} table consumed by statement
+     *       generation ({@code CREASTMT}). This faithfully preserves the original
+     *       {@code COMBTRAN.jcl} contract: STEP05R sorts only {@code TRANSACT.BKUP(0)} (already-posted
+     *       master) and {@code SYSTRAN(0)} (system-generated) — it never reads the daily/reject
+     *       stream, so a rejected transaction can never enter the master.</li>
      *   <li>{@code COALESCE(proc_timestamp, orig_timestamp)} guarantees a non-null processing
      *       timestamp even when the staged {@code DALYTRAN-PROC-TS} was never set.</li>
      *   <li>{@code ON CONFLICT (tran_id) DO NOTHING} is the final safety net: it absorbs both
@@ -121,6 +146,9 @@ public class TransactionConsolidationJobConfig {
             WHERE dt.processed = TRUE
               AND NOT EXISTS (
                   SELECT 1 FROM transactions t WHERE t.tran_id = dt.tran_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM rejected_transactions r WHERE r.tran_id = dt.tran_id
               )
             ON CONFLICT (tran_id) DO NOTHING
             """;

@@ -72,11 +72,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * INSERT INTO transactions (...) SELECT ... FROM daily_transactions dt
  *   WHERE dt.processed = TRUE
  *     AND NOT EXISTS (SELECT 1 FROM transactions t WHERE t.tran_id = dt.tran_id)
+ *     AND NOT EXISTS (SELECT 1 FROM rejected_transactions r WHERE r.tran_id = dt.tran_id)
  *   ON CONFLICT (tran_id) DO NOTHING
  * }</pre>
  * Consequently the observable contract verified here is:
  * <ul>
  *   <li>only {@code processed = TRUE} staging rows are consolidated;</li>
+ *   <li>staging rows whose {@code tran_id} was rejected by {@code POSTTRAN} (and therefore reside in
+ *       {@code rejected_transactions}) are NEVER consolidated into the master — preserving reject
+ *       segregation (PR-03 / finding F2-001), verified by the {@code RejectSegregation} group;</li>
  *   <li>the {@code SORT FIELDS=(TRAN-ID,A)} ordering is preserved by the {@code transactions}
  *       primary-key B-tree (asserted via {@code findAll(Sort.by("tranId"))});</li>
  *   <li>{@code ON CONFLICT DO NOTHING} together with the {@code NOT EXISTS} guard preserves any
@@ -280,6 +284,9 @@ class TransactionConsolidationJobIT {
      *   <li>a raw {@code DELETE FROM daily_transactions} empties the staging table — mandatory,
      *       because {@code deleteAll()} does not touch the staging table the job actually reads,
      *       and leftover {@code processed = TRUE} rows would otherwise bleed across tests;</li>
+     *   <li>a raw {@code DELETE FROM rejected_transactions} empties the reject sink — mandatory for
+     *       the {@code RejectSegregation} scenarios, which seed rejected rows the consolidation SQL
+     *       must exclude; leftover rejects would otherwise bleed across tests;</li>
      *   <li>{@code jobLauncherTestUtils.setJobLauncher(jobLauncher)} installs the synchronous
      *       launcher explicitly (see the {@link #jobLauncher} field Javadoc — {@code @SpringBatchTest}
      *       cannot auto-resolve it because two {@link JobLauncher} beans exist);</li>
@@ -292,6 +299,7 @@ class TransactionConsolidationJobIT {
         jobRepositoryTestUtils.removeJobExecutions();
         transactionRepository.deleteAll();
         jdbcTemplate.update("DELETE FROM daily_transactions");
+        jdbcTemplate.update("DELETE FROM rejected_transactions");
         jobLauncherTestUtils.setJobLauncher(jobLauncher);
         jobLauncherTestUtils.setJob(transactionConsolidationJob);
     }
@@ -388,6 +396,32 @@ class TransactionConsolidationJobIT {
                 tranId, typeCd, catCd, source, description, amount, merchantId,
                 merchantName, merchantCity, merchantZip, cardNum,
                 LocalDateTime.now(), LocalDateTime.now());
+    }
+
+    /**
+     * Inserts a row into the {@code rejected_transactions} sink (the DALYREJS equivalent) modelling
+     * a transaction the upstream {@code POSTTRAN} job rejected. The two {@code NOT NULL} reject
+     * columns ({@code validation_code}, {@code rejection_reason}) are populated; {@code rejected_date}
+     * defaults to {@code CURRENT_TIMESTAMP}. Used by the {@code RejectSegregation} scenarios to assert
+     * that the consolidation job excludes any staging row whose {@code tran_id} also appears here
+     * (finding F2-001 / PR-03 reject segregation).
+     *
+     * @param tranId         the 16-character transaction id (the {@code tran_id} column shared with
+     *                       {@code daily_transactions} and {@code transactions})
+     * @param amount         the monetary amount
+     * @param cardNum        the owning card number
+     * @param validationCode the {@code CBTRN02C} validation code (100/101/102/103)
+     * @param reason         the exact COBOL rejection message
+     */
+    private void seedRejectedTransaction(String tranId, BigDecimal amount, String cardNum,
+            int validationCode, String reason) {
+        jdbcTemplate.update(
+                "INSERT INTO rejected_transactions "
+                        + "(tran_id, type_cd, cat_cd, source, description, amount, card_num, "
+                        + "orig_timestamp, proc_timestamp, validation_code, rejection_reason) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                tranId, TYPE_CD, CAT_CD, "POS", "Rejected by POSTTRAN", amount, cardNum,
+                LocalDateTime.now(), LocalDateTime.now(), validationCode, reason);
     }
 
 
@@ -605,6 +639,98 @@ class TransactionConsolidationJobIT {
             assertThat(sorted)
                     .extracting(Transaction::getTranId)
                     .containsExactly("0000000000000061", "0000000000000062");
+        }
+    }
+
+    /**
+     * Reject-segregation regression coverage for finding <strong>F2-001</strong> (MAJOR).
+     *
+     * <p>The upstream {@code POSTTRAN} job marks <em>every</em> daily transaction it accounts for —
+     * accepted <em>and</em> rejected — with {@code processed = TRUE}, but writes rejected rows only
+     * to the {@code rejected_transactions} sink (the DALYREJS equivalent), never to the master
+     * {@code transactions} table. Before the fix, the consolidation SQL guarded only against rows
+     * already present in {@code transactions}, so a rejected row (processed but absent from the
+     * master) satisfied the predicate and was wrongly inserted into the master — contaminating the
+     * statements that {@code CREASTMT} renders from {@code transactions}.
+     *
+     * <p>The fix adds a second {@code NOT EXISTS (SELECT 1 FROM rejected_transactions r WHERE
+     * r.tran_id = dt.tran_id)} guard, preserving the {@code COMBTRAN.jcl} contract (PR-03) that a
+     * rejected transaction can never enter the master. These tests reproduce the original defect's
+     * data shape and assert the leak is closed while accepted rows still consolidate.
+     */
+    @Nested
+    @DisplayName("Reject segregation (F2-001): rejected transactions must never enter the master")
+    class RejectSegregation {
+
+        /**
+         * T8 — the exact F2-001 reproduction. A staging row flagged {@code processed = TRUE} whose
+         * {@code tran_id} also exists in {@code rejected_transactions} (as POSTTRAN leaves it) must
+         * NOT be consolidated into the master {@code transactions} table. The QA verification query —
+         * counting {@code tran_id}s present in BOTH tables — must return zero (it returned 38 before
+         * the fix).
+         */
+        @Test
+        @DisplayName("Should NOT consolidate a processed staging row whose tran_id was rejected by POSTTRAN")
+        void shouldNotLeakRejectedTransactionIntoMaster() throws Exception {
+            String rejectedId = "0000000040455859";
+            // POSTTRAN over-limit reject: written to rejected_transactions AND flagged processed=TRUE
+            // in the staging table (the overloaded-flag condition that caused the leak).
+            seedRejectedTransaction(rejectedId, new BigDecimal("715.44"), CARD_ACCT_1,
+                    102, "OVERLIMIT TRANSACTION");
+            seedProcessedDailyTransaction(rejectedId, new BigDecimal("715.44"), CARD_ACCT_1);
+
+            JobExecution execution = jobLauncherTestUtils.launchJob();
+
+            assertThat(execution.getExitStatus()).isEqualTo(ExitStatus.COMPLETED);
+            // The rejected transaction must NOT appear in the master table.
+            assertThat(transactionRepository.findById(rejectedId))
+                    .as("A POSTTRAN-rejected transaction must never be consolidated into the master")
+                    .isEmpty();
+            assertThat(transactionRepository.count())
+                    .as("No master rows should be created from a purely-rejected staging set")
+                    .isZero();
+            // The QA verification query from finding F2-001 — must be zero.
+            Integer contradictions = jdbcTemplate.queryForObject(
+                    "SELECT count(*) FROM transactions t WHERE EXISTS ("
+                            + "SELECT 1 FROM rejected_transactions r WHERE r.tran_id = t.tran_id)",
+                    Integer.class);
+            assertThat(contradictions)
+                    .as("No tran_id may exist in BOTH transactions and rejected_transactions (F2-001)")
+                    .isZero();
+        }
+
+        /**
+         * T9 — in a mixed staging set, only the accepted row is consolidated. The rejected row
+         * (present in {@code rejected_transactions}) is excluded by the second {@code NOT EXISTS}
+         * guard, proving the new predicate excludes <em>only</em> rejects and does not regress the
+         * normal consolidation of accepted rows.
+         */
+        @Test
+        @DisplayName("Should consolidate the accepted row while excluding the rejected row in a mixed set")
+        void shouldConsolidateAcceptedButExcludeRejectedInMixedSet() throws Exception {
+            String acceptedId = "0000000000000200";
+            String rejectedId = "0000000000000300";
+
+            // Accepted: staged + processed, NOT in rejected_transactions → must reach the master.
+            seedProcessedDailyTransaction(acceptedId, new BigDecimal("50.00"), CARD_ACCT_2);
+            // Rejected: staged + processed AND present in rejected_transactions → must be excluded.
+            seedProcessedDailyTransaction(rejectedId, new BigDecimal("999.99"), CARD_ACCT_3);
+            seedRejectedTransaction(rejectedId, new BigDecimal("999.99"), CARD_ACCT_3,
+                    103, "TRANSACTION RECEIVED AFTER ACCT EXPIRATION");
+
+            JobExecution execution = jobLauncherTestUtils.launchJob();
+
+            assertThat(execution.getExitStatus()).isEqualTo(ExitStatus.COMPLETED);
+            // Exactly one master row — only the accepted transaction.
+            assertThat(transactionRepository.count())
+                    .as("Only the accepted transaction should be consolidated")
+                    .isEqualTo(1);
+            assertThat(transactionRepository.findById(acceptedId))
+                    .as("The accepted transaction must be consolidated into the master")
+                    .isPresent();
+            assertThat(transactionRepository.findById(rejectedId))
+                    .as("The rejected transaction must be excluded from the master (PR-03)")
+                    .isEmpty();
         }
     }
 }
