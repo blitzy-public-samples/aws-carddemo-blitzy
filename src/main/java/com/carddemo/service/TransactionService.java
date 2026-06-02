@@ -154,20 +154,79 @@ public class TransactionService {
     private final TransactionMapper transactionMapper;
 
     /**
-     * Lists posted transactions with stateless pagination — the REST equivalent of
-     * {@code COTRN00C} ({@code STARTBR}/{@code READNEXT} browse). The original PF7/PF8 cursor is
-     * replaced by a Spring Data {@link Pageable}; each request recomputes its page independently
-     * (AAP &sect;0.6.1).
+     * Lists posted transactions with stateless pagination and optional account / card filtering —
+     * the REST equivalent of {@code COTRN00C} ({@code STARTBR}/{@code READNEXT} browse, TRANID
+     * {@code 'CT00'}). The original PF7/PF8 cursor is replaced by a Spring Data {@link Pageable};
+     * each request recomputes its page independently (AAP &sect;0.6.1).
+     *
+     * <p><b>Filter resolution (matches the COTRN00C key fields).</b> The legacy screen let the
+     * operator narrow the browse by card number or account id; this method reproduces that with a
+     * single, deterministic precedence:</p>
+     * <ol>
+     *   <li><b>{@code cardNumber} supplied</b> (non-blank) &rarr; the listing is restricted to that
+     *       card via {@link TransactionRepository#findByCardNum(String, Pageable)} (entity field
+     *       {@code cardNum}, column {@code card_num}).</li>
+     *   <li><b>else {@code accountId} supplied</b> &rarr; the account's cards are resolved through
+     *       the {@code CARDXREF} cross-reference ({@link CardXrefRepository#findByAccountId(Long)},
+     *       the {@code CXACAIX} alternate-index path) and the listing is restricted to those cards
+     *       via {@link TransactionRepository#findByCardNumIn(java.util.Collection, Pageable)}. An
+     *       account that owns no cards short-circuits to an empty page (never an empty {@code IN ()}
+     *       predicate).</li>
+     *   <li><b>else</b> &rarr; the unfiltered full browse via
+     *       {@link TransactionRepository#findAll(Pageable)}.</li>
+     * </ol>
+     *
+     * <p>Card-number filtering is the surface exercised by {@code GET /api/transactions?cardNumber=...};
+     * account filtering by {@code GET /api/transactions?accountId=...}. The card number is masked to
+     * its last four digits before logging (CP4 / PCI hygiene) via {@link CardNumberMasker}.</p>
+     *
+     * @param accountId  optional 11-digit account-id filter ({@code ACCT-ID}); {@code null} when not
+     *                   supplied. Ignored when {@code cardNumber} is supplied.
+     * @param cardNumber optional 16-digit card-number filter ({@code TRAN-CARD-NUM}); {@code null}
+     *                   or blank when not supplied. Takes precedence over {@code accountId}.
+     * @param pageable   the page request (page number, size, and sort) supplied by the controller
+     * @return a {@link TransactionListResponse} carrying the page content and pagination metadata
+     */
+    @Transactional(readOnly = true)
+    public TransactionListResponse listTransactions(Long accountId, String cardNumber, Pageable pageable) {
+        // SECURITY (CP4): mask the PAN before logging — only the last 4 digits appear.
+        log.debug("Listing transactions accountId={} cardNumber={} page={} size={}",
+            accountId, CardNumberMasker.mask(cardNumber),
+            pageable.getPageNumber(), pageable.getPageSize());
+
+        Page<Transaction> page;
+        if (cardNumber != null && !cardNumber.isBlank()) {
+            // COTRN00C browse narrowed to a single card number.
+            page = transactionRepository.findByCardNum(cardNumber, pageable);
+        } else if (accountId != null) {
+            // COTRN00C browse narrowed to a single account: resolve the account's card
+            // numbers through the CARDXREF cross-reference (CXACAIX), then enumerate the
+            // transactions for those cards. No cards -> empty page (avoid a degenerate IN ()).
+            List<String> cardNums = cardXrefRepository.findByAccountId(accountId).stream()
+                .map(CardXref::getXrefCardNum)
+                .toList();
+            page = cardNums.isEmpty()
+                ? Page.<Transaction>empty(pageable)
+                : transactionRepository.findByCardNumIn(cardNums, pageable);
+        } else {
+            // Unfiltered full browse.
+            page = transactionRepository.findAll(pageable);
+        }
+        return transactionMapper.toListResponse(page);
+    }
+
+    /**
+     * Lists posted transactions with stateless pagination and no filtering — a convenience overload
+     * delegating to {@link #listTransactions(Long, String, Pageable)} with both filters
+     * {@code null}. Retained for callers (and historical wiring) that page the full {@code TRANSACT}
+     * browse without narrowing by account or card.
      *
      * @param pageable the page request (page number, size, and sort) supplied by the controller
      * @return a {@link TransactionListResponse} carrying the page content and pagination metadata
      */
     @Transactional(readOnly = true)
     public TransactionListResponse listTransactions(Pageable pageable) {
-        log.debug("Listing transactions page={} size={}",
-            pageable.getPageNumber(), pageable.getPageSize());
-        Page<Transaction> page = transactionRepository.findAll(pageable);
-        return transactionMapper.toListResponse(page);
+        return listTransactions(null, null, pageable);
     }
 
     /**

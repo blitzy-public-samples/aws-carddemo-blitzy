@@ -11,9 +11,13 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
@@ -22,8 +26,8 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.net.URI;
 
@@ -33,7 +37,7 @@ import java.net.URI;
  * <ul>
  *   <li>{@code app/cbl/COTRN00C.cbl} (transaction list, TRANID {@code CT00}) &mdash; browses the
  *       {@code TRANSACT} master ten rows at a time with {@code STARTBR}/{@code READNEXT} and
- *       PF7/PF8 navigation;</li>
+ *       PF7/PF8 navigation, optionally narrowed by account id or card number;</li>
  *   <li>{@code app/cbl/COTRN01C.cbl} (transaction view, TRANID {@code CT01}) &mdash; a
  *       transaction-id keyed read of {@code TRANSACT}
  *       ({@code EXEC CICS READ DATASET('TRANSACT') RIDFLD(tran-id)});</li>
@@ -49,8 +53,9 @@ import java.net.URI;
  *
  * <h2>Endpoints</h2>
  * <ul>
- *   <li>{@code GET /api/transactions} &mdash; list transactions, paginated; {@code 200 OK} with a
- *       {@link TransactionListResponse} (replaces the COTRN00C browse; PF7/PF8 paging becomes the
+ *   <li>{@code GET /api/transactions} &mdash; list transactions, paginated, with optional
+ *       {@code accountId} (11-digit) and {@code cardNumber} (16-digit) filters; {@code 200 OK} with
+ *       a {@link TransactionListResponse} (replaces the COTRN00C browse; PF7/PF8 paging becomes the
  *       Spring {@link Pageable} {@code page}/{@code size}/{@code sort} query parameters per AAP
  *       &sect;0.6.1).</li>
  *   <li>{@code GET /api/transactions/{tranId}} &mdash; retrieve one transaction by its 16-character
@@ -62,9 +67,15 @@ import java.net.URI;
  * </ul>
  *
  * <h2>Thin HTTP boundary (business logic lives in {@link TransactionService})</h2>
- * <p>This controller is intentionally a thin, stateless HTTP adapter. All transaction business
- * semantics live in {@link TransactionService}, including:</p>
+ * <p>This controller is intentionally a thin, stateless HTTP adapter. It performs only the
+ * argument-binding edits expressible as Jakarta Bean Validation annotations (the per-parameter
+ * {@link Min}/{@link Pattern}/{@link Size} filters and the {@code @Valid} body check); all
+ * transaction business semantics live in {@link TransactionService}, including:</p>
  * <ul>
+ *   <li>the COTRN00C browse with its optional account/card narrowing &mdash;
+ *       {@link TransactionService#listTransactions(Long, String, Pageable)} resolves the
+ *       {@code cardNumber} filter directly, the {@code accountId} filter through the
+ *       {@code CARDXREF} cross-reference, and otherwise pages the full master;</li>
  *   <li>the COTRN01C transaction-id input edits and keyed read &mdash;
  *       {@link TransactionService#getTransaction(String)} rejects a null / non-16-character id with
  *       {@code IllegalArgumentException} ({@code "Tran ID must be 16 characters"}) and a
@@ -81,8 +92,11 @@ import java.net.URI;
  * {@code com.carddemo.controller.advice.GlobalExceptionHandler}, which maps
  * {@code IllegalArgumentException} / {@code InvalidCardException} &rarr; {@code 400},
  * {@code AccountNotFoundException} &rarr; {@code 404},
- * {@code OverlimitException} / {@code ExpiredAccountException} &rarr; {@code 422}, and bean-validation
- * failures on the request body &rarr; {@code 400}.</p>
+ * {@code OverlimitException} / {@code ExpiredAccountException} &rarr; {@code 422},
+ * {@code OptimisticLockException} &rarr; {@code 409}, and bean-validation failures (the
+ * {@code @Valid} body via {@code MethodArgumentNotValidException}, and the per-parameter
+ * {@code @Min}/{@code @Pattern}/{@code @Size} via {@code ConstraintViolationException}) &rarr;
+ * {@code 400}.</p>
  *
  * <h2>Authorization</h2>
  * <p>Intentionally <strong>no</strong> class-level {@code @PreAuthorize}: any
@@ -95,6 +109,10 @@ import java.net.URI;
  *
  * <h2>Refactoring rules enforced</h2>
  * <ul>
+ *   <li><b>PR-03</b> &mdash; the four validation codes 100/101/102/103 raised by
+ *       {@link TransactionService} are mapped to their HTTP statuses by
+ *       {@code GlobalExceptionHandler} and documented on {@link #addTransaction} via
+ *       {@code @ApiResponses}.</li>
  *   <li><b>PR-10</b> &mdash; the 16-character {@code tranId} (parmDate(10) + 6-digit suffix) is
  *       generated inside {@link TransactionService} via {@code TransactionIdGenerator}; the
  *       controller only echoes it back and builds the {@code Location} header from it.</li>
@@ -112,13 +130,17 @@ import java.net.URI;
  * <h2>Design notes</h2>
  * <ul>
  *   <li><b>Stateless paging:</b> the COTRN00C PF7/PF8 browse cursor is replaced by a Spring
- *       {@link Pageable}; the {@link PageableDefault} of {@code size=10, sort="tranId"} matches the
- *       COTRN00C ten-row screen and its id ordering. Clients override via the {@code page},
- *       {@code size}, and {@code sort} query parameters.</li>
+ *       {@link Pageable}; the {@link PageableDefault} of {@code size=10, sort="tranId" desc} matches
+ *       the COTRN00C ten-row screen and its id ordering (most recent first). Clients override via
+ *       the {@code page}, {@code size}, and {@code sort} query parameters.</li>
+ *   <li><b>PCI hygiene:</b> log statements never emit a full PAN; the card number is masked to its
+ *       last four digits via {@link #maskCardNumber(String)} before it can reach any appender.</li>
  *   <li><b>201 semantics:</b> {@code POST} returns {@code 201 Created} with a {@code Location}
  *       header of {@code /api/transactions/{tranId}}, the canonical REST convention for resource
  *       creation, and includes the persisted {@link TransactionDto} in the body so clients need not
  *       issue a follow-up {@code GET}.</li>
+ *   <li><b>Append-only:</b> there is intentionally no {@code PUT}/{@code DELETE} &mdash; the legacy
+ *       system had no transaction update/delete; reversals are new transactions of opposite sign.</li>
  * </ul>
  *
  * <p>Version reference: CardDemo_v1.0-15-g27d6c6f-68 (CVTRA05Y transaction record layout).
@@ -148,41 +170,69 @@ public class TransactionController {
     private final TransactionService transactionService;
 
     /**
-     * Lists transactions, one page at a time, and returns a {@link TransactionListResponse}.
+     * Lists transactions, one page at a time, optionally narrowed by account id or card number, and
+     * returns a {@link TransactionListResponse}.
      *
      * <p>This is the REST replacement for {@code app/cbl/COTRN00C.cbl} (TRANID {@code CT00}), which
-     * browsed the {@code TRANSACT} master ten rows at a time. The paged read is delegated to
-     * {@link TransactionService#listTransactions(Pageable)}.</p>
+     * browsed the {@code TRANSACT} master ten rows at a time. The (optionally filtered) paged read
+     * is delegated to {@link TransactionService#listTransactions(Long, String, Pageable)}:</p>
+     * <ul>
+     *   <li>when {@code cardNumber} is supplied the listing is restricted to that card;</li>
+     *   <li>else when {@code accountId} is supplied it is restricted to the account's cards
+     *       (resolved through the {@code CARDXREF} cross-reference);</li>
+     *   <li>else the full master is paged.</li>
+     * </ul>
      *
      * <p>The COTRN00C PF7/PF8 paging is replaced by a stateless Spring {@link Pageable}; the cursor
      * is recomputed per request (AAP &sect;0.6.1). The {@link PageableDefault} of {@code size=10,
-     * sort="tranId"} matches the COTRN00C ten-row screen and its id ordering. Clients may override
-     * with the {@code page}, {@code size}, and {@code sort} query parameters.</p>
+     * sort="tranId" desc} matches the COTRN00C ten-row screen and its id ordering (most recent
+     * first). Clients may override with the {@code page}, {@code size}, and {@code sort} query
+     * parameters.</p>
      *
-     * @param pageable the page coordinates (defaults: {@code page=0}, {@code size=10},
-     *                 {@code sort=tranId})
+     * <p>The per-parameter constraints are enforced during argument binding by the class-level
+     * {@link Validated}; a violation raises {@code ConstraintViolationException}, mapped to
+     * {@code 400} by {@code GlobalExceptionHandler}.</p>
+     *
+     * @param accountId  optional 11-digit account-id filter; when present must be {@code >= 1}
+     *                   ({@link Min}). Ignored when {@code cardNumber} is supplied.
+     * @param cardNumber optional 16-digit card-number filter; when present must match
+     *                   {@code \d{16}} ({@link Pattern}). Takes precedence over {@code accountId}.
+     * @param pageable   the page coordinates (defaults: {@code page=0}, {@code size=10},
+     *                   {@code sort=tranId} descending)
      * @return {@code 200 OK} with the page of transactions as a {@link TransactionListResponse}
      */
     @GetMapping
     @Operation(
-            summary = "List transactions",
-            description = "Lists transactions, paginated. Replaces the COTRN00C TRANSACT browse "
+            summary = "List transactions (paginated)",
+            description = "Lists transactions, paginated, with optional accountId (11-digit) and "
+                    + "cardNumber (16-digit) filters. Replaces the COTRN00C TRANSACT browse "
                     + "(TRANID=CT00); PF7/PF8 paging becomes the page/size/sort query parameters. "
-                    + "Default page size 10 matches the COTRN00C screen.")
+                    + "Default page size 10 matches the COTRN00C screen; sorted by transaction ID "
+                    + "descending (most recent first).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Transactions listed (possibly empty page)"),
-            @ApiResponse(responseCode = "401", description = "User not authenticated"),
-            @ApiResponse(responseCode = "500", description = "Internal server error")
+            @ApiResponse(responseCode = "400", description = "Invalid filter parameters (accountId or cardNumber)"),
+            @ApiResponse(responseCode = "401", description = "User not authenticated")
     })
     public ResponseEntity<TransactionListResponse> listTransactions(
-            @PageableDefault(size = 10, sort = "tranId") Pageable pageable) {
+            @Parameter(description = "Optional 11-digit account ID filter", example = "00000000001")
+            @RequestParam(value = "accountId", required = false)
+            @Min(value = 1L, message = "Account number must be a non zero 11 digit number")
+            Long accountId,
+            @Parameter(description = "Optional 16-digit card number filter", example = "4111111111111111")
+            @RequestParam(value = "cardNumber", required = false)
+            @Pattern(regexp = "\\d{16}", message = "Card number if supplied must be a 16 digit number")
+            String cardNumber,
+            @Parameter(description = "Pagination parameters (page=0-indexed, size=10 default, sort=tranId desc default)")
+            @PageableDefault(size = 10, sort = "tranId", direction = Sort.Direction.DESC) Pageable pageable) {
 
-        log.debug("GET /api/transactions page={} size={} sort={}",
+        log.debug("GET /api/transactions accountId={} cardNumber={} page={} size={} sort={}",
+                accountId, maskCardNumber(cardNumber),
                 pageable.getPageNumber(), pageable.getPageSize(), pageable.getSort());
 
-        // Delegate to the service, which performs the paged TRANSACT browse and returns a
-        // TransactionListResponse. The controller forwards it unchanged.
-        TransactionListResponse response = transactionService.listTransactions(pageable);
+        // Delegate to the service, which performs the (optionally filtered) paged TRANSACT browse
+        // and returns a TransactionListResponse. The controller forwards it unchanged.
+        TransactionListResponse response = transactionService.listTransactions(accountId, cardNumber, pageable);
         return ResponseEntity.ok(response);
     }
 
@@ -190,10 +240,13 @@ public class TransactionController {
      * Retrieves a single transaction by its 16-character id and returns the {@link TransactionDto}.
      *
      * <p>This is the REST replacement for {@code app/cbl/COTRN01C.cbl} (TRANID {@code CT01}). The
-     * id input edits and the keyed {@code TRANSACT} read are delegated to
-     * {@link TransactionService#getTransaction(String)}, which preserves the COTRN01C behavior:</p>
+     * path variable carries the {@link Size}{@code (min=1, max=16)} edit so an empty id is rejected
+     * during binding with the exact COTRN01C message {@code "Tran ID can NOT be empty..."}
+     * ({@code ConstraintViolationException} &rarr; {@code 400}). The keyed {@code TRANSACT} read and
+     * the remaining id edits are delegated to {@link TransactionService#getTransaction(String)},
+     * which preserves the COTRN01C behavior:</p>
      * <ul>
-     *   <li>null / not exactly 16 characters &rarr; {@code IllegalArgumentException}
+     *   <li>not exactly 16 characters &rarr; {@code IllegalArgumentException}
      *       ({@code "Tran ID must be 16 characters"}), mapped to {@code 400};</li>
      *   <li>id not found &rarr; {@code IllegalArgumentException} ({@code "Transaction ID NOT
      *       found..."}), mapped to {@code 400} &mdash; the COTRN01C screen treats a missing id as a
@@ -209,16 +262,18 @@ public class TransactionController {
             summary = "Get a transaction by ID",
             description = "Retrieves a single transaction by its 16-character ID. "
                     + "Replaces COTRN01C CICS transaction view (TRANID=CT01). "
-                    + "A missing or malformed ID returns 400 (re-enterable input error), per COTRN01C.")
+                    + "An empty ID returns 400 ('Tran ID can NOT be empty...'); a missing or "
+                    + "malformed ID also returns 400 (re-enterable input error), per COTRN01C.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Transaction found"),
-            @ApiResponse(responseCode = "400", description = "Transaction ID missing, not 16 characters, or not found"),
-            @ApiResponse(responseCode = "401", description = "User not authenticated"),
-            @ApiResponse(responseCode = "500", description = "Internal server error")
+            @ApiResponse(responseCode = "400", description = "Tran ID can NOT be empty / not 16 characters / not found"),
+            @ApiResponse(responseCode = "401", description = "User not authenticated")
     })
     public ResponseEntity<TransactionDto> getTransaction(
             @Parameter(description = "16-character transaction ID", example = "2024011500000001")
-            @PathVariable("tranId") String tranId) {
+            @PathVariable("tranId")
+            @Size(min = 1, max = 16, message = "Tran ID can NOT be empty...")
+            String tranId) {
 
         log.debug("GET /api/transactions/{}", tranId);
 
@@ -251,11 +306,12 @@ public class TransactionController {
      * <p>{@code @Valid} triggers Jakarta Bean Validation on the {@link TransactionRequest} body
      * before the service is invoked; a body-level violation raises
      * {@code MethodArgumentNotValidException}, mapped to {@code 400} by
-     * {@code GlobalExceptionHandler}. The 16-character {@code tranId} is generated by the service
-     * (PR-10); the {@code Location} header is built from the returned id.</p>
+     * {@code GlobalExceptionHandler}. A concurrent-update conflict surfaces as
+     * {@code OptimisticLockException} &rarr; {@code 409} (PR-22). The 16-character {@code tranId} is
+     * generated by the service (PR-10); the {@code Location} header is built from the returned id.</p>
      *
-     * @param request the new-transaction payload (card number, type, category, amount, merchant,
-     *                 description)
+     * @param request the new-transaction payload (account id / card number, type, category, amount,
+     *                 merchant, description)
      * @return {@code 201 Created} with the persisted {@link TransactionDto} in the body and a
      *         {@code Location} header of {@code /api/transactions/{tranId}}
      */
@@ -266,30 +322,48 @@ public class TransactionController {
                     + "(codes 100/101/102/103) and generating the 16-character transaction ID (PR-10). "
                     + "Replaces COTRN02C CICS transaction add (TRANID=CT02).")
     @ApiResponses({
-            @ApiResponse(responseCode = "201", description = "Transaction created"),
+            @ApiResponse(responseCode = "201", description = "Transaction created; Location header points to /api/transactions/{tranId}"),
             @ApiResponse(responseCode = "400", description = "Validation error or invalid card number (code 100)"),
             @ApiResponse(responseCode = "401", description = "User not authenticated"),
             @ApiResponse(responseCode = "404", description = "Account not found (code 101)"),
             @ApiResponse(responseCode = "422", description = "Overlimit (code 102) or expired account (code 103)"),
-            @ApiResponse(responseCode = "500", description = "Internal server error")
+            @ApiResponse(responseCode = "409", description = "Optimistic lock conflict")
     })
     public ResponseEntity<TransactionDto> addTransaction(
             @Valid @RequestBody TransactionRequest request) {
 
-        log.info("POST /api/transactions creating transaction");
+        log.info("POST /api/transactions accountId={} cardNumber={} amount={}",
+                request.getAccountId(), maskCardNumber(request.getCardNumber()), request.getAmount());
 
         // Delegate to the service, which runs the validation chain (codes 100/101/102/103),
         // generates the 16-char tranId (PR-10), and persists the Transaction inside a
         // @Transactional unit of work (PR-24), returning the persisted TransactionDto.
         TransactionDto created = transactionService.addTransaction(request);
 
-        // Build the canonical Location header /api/transactions/{tranId} from the generated id.
-        URI location = ServletUriComponentsBuilder.fromCurrentRequest()
-                .path("/{tranId}")
-                .buildAndExpand(created.getTranId())
-                .toUri();
+        // Build the canonical Location header /api/transactions/{tranId} from the generated id
+        // (PR-10). java.net.URI is the whitelisted dependency for this purpose.
+        URI location = URI.create("/api/transactions/" + created.getTranId());
 
         log.info("POST /api/transactions created transaction {}", created.getTranId());
         return ResponseEntity.created(location).body(created);
+    }
+
+    /**
+     * Masks a card number for safe logging, exposing only its last four digits (PCI hygiene). The
+     * controller does this locally (rather than importing a shared masker) because its dependency
+     * whitelist is limited to {@link TransactionService} and the transaction DTOs.
+     *
+     * @param cardNum the raw card number, or {@code null}
+     * @return {@code null} if the input is {@code null}; {@code "****"} if shorter than four
+     *         characters; otherwise twelve asterisks followed by the last four characters
+     */
+    private String maskCardNumber(String cardNum) {
+        if (cardNum == null) {
+            return null;
+        }
+        if (cardNum.length() < 4) {
+            return "****";
+        }
+        return "************" + cardNum.substring(cardNum.length() - 4);
     }
 }

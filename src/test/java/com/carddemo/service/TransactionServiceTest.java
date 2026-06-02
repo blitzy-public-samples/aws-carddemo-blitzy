@@ -17,6 +17,7 @@
 package com.carddemo.service;
 
 import com.carddemo.dto.transaction.TransactionDto;
+import com.carddemo.dto.transaction.TransactionListResponse;
 import com.carddemo.dto.transaction.TransactionRequest;
 import com.carddemo.entity.CardXref;
 import com.carddemo.entity.Transaction;
@@ -32,6 +33,11 @@ import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.TransactionTypeRepository;
 import com.carddemo.util.TransactionIdGenerator;
 import com.carddemo.validation.TransactionValidator;
+
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -627,6 +633,120 @@ class TransactionServiceTest {
             assertThat(result).isSameAs(expected);
             assertThat(result.getTranId()).hasSize(16);
             assertThat(result.getAmount()).isEqualByComparingTo(new BigDecimal("100.00"));
+        }
+    }
+
+    /**
+     * Filter-routing coverage for the schema-authoritative 3-argument
+     * {@code listTransactions(Long accountId, String cardNumber, Pageable)} — the paginated COTRN00C
+     * list flow that {@code TransactionController.listTransactions(Long, String, Pageable)} delegates
+     * to. These tests lock the branch selection that distinguishes the three filter modes:
+     * <ul>
+     *   <li>a non-blank {@code cardNumber} routes to
+     *       {@link TransactionRepository#findByCardNum(String, Pageable)} and never touches the
+     *       cross-reference repository;</li>
+     *   <li>a non-null {@code accountId} resolves the account's card numbers via
+     *       {@link CardXrefRepository#findByAccountId(Long)} (entity field {@code xrefCardNum}) then
+     *       routes to {@link TransactionRepository#findByCardNumIn(java.util.Collection, Pageable)};</li>
+     *   <li>an {@code accountId} with no cross-referenced cards yields an empty page WITHOUT issuing a
+     *       transaction query (the short-circuit guard);</li>
+     *   <li>no filters route to {@link TransactionRepository#findAll(Pageable)};</li>
+     *   <li>the single-argument {@code listTransactions(Pageable)} overload delegates to the
+     *       no-filter path.</li>
+     * </ul>
+     * In every branch the resulting {@link Page} is handed to
+     * {@link TransactionMapper#toListResponse(Page)} and its result returned verbatim. This durable
+     * unit coverage complements the end-to-end {@code FullStackIT} section&nbsp;8
+     * ({@code GET /api/transactions?cardNumber=X}) exercising the same routing through the full
+     * REST + database stack.
+     */
+    @Nested
+    @DisplayName("listTransactions(Long, String, Pageable) — filter routing (COTRN00C list)")
+    class ListTransactionsFiltering {
+
+        private final Pageable pageable = PageRequest.of(0, 10);
+        private final TransactionListResponse sentinel =
+            new TransactionListResponse(List.of(), 0L, 0, 0, 10, false, false);
+
+        private Page<Transaction> onePage() {
+            return new PageImpl<>(List.of(new Transaction()), pageable, 1);
+        }
+
+        @Test
+        @DisplayName("cardNumber filter routes to findByCardNum and never queries the xref repository")
+        void shouldFilterByCardNumber() {
+            Page<Transaction> page = onePage();
+            when(transactionRepository.findByCardNum(VALID_CARD, pageable)).thenReturn(page);
+            when(transactionMapper.toListResponse(page)).thenReturn(sentinel);
+
+            TransactionListResponse result =
+                transactionService.listTransactions(null, VALID_CARD, pageable);
+
+            assertThat(result).isSameAs(sentinel);
+            verify(transactionRepository).findByCardNum(VALID_CARD, pageable);
+            verifyNoInteractions(cardXrefRepository);
+        }
+
+        @Test
+        @DisplayName("accountId filter resolves cards via xref then routes to findByCardNumIn")
+        void shouldFilterByAccountIdWithCards() {
+            CardXref xref = new CardXref();
+            xref.setXrefCardNum(VALID_CARD);
+            Page<Transaction> page = onePage();
+            when(cardXrefRepository.findByAccountId(VALID_ACCOUNT_ID)).thenReturn(List.of(xref));
+            when(transactionRepository.findByCardNumIn(List.of(VALID_CARD), pageable)).thenReturn(page);
+            when(transactionMapper.toListResponse(page)).thenReturn(sentinel);
+
+            TransactionListResponse result =
+                transactionService.listTransactions(VALID_ACCOUNT_ID, null, pageable);
+
+            assertThat(result).isSameAs(sentinel);
+            verify(transactionRepository).findByCardNumIn(List.of(VALID_CARD), pageable);
+            verify(transactionRepository, never()).findAll(any(Pageable.class));
+        }
+
+        @Test
+        @DisplayName("accountId with no cross-referenced cards yields an empty page without querying transactions")
+        void shouldReturnEmptyForAccountWithoutCards() {
+            when(cardXrefRepository.findByAccountId(VALID_ACCOUNT_ID)).thenReturn(List.of());
+            when(transactionMapper.toListResponse(any())).thenReturn(sentinel);
+
+            TransactionListResponse result =
+                transactionService.listTransactions(VALID_ACCOUNT_ID, null, pageable);
+
+            assertThat(result).isSameAs(sentinel);
+            verify(transactionRepository, never()).findByCardNumIn(any(), any());
+            verify(transactionRepository, never()).findByCardNum(any(), any());
+            verify(transactionRepository, never()).findAll(any(Pageable.class));
+        }
+
+        @Test
+        @DisplayName("no filters route to findAll(Pageable)")
+        void shouldListAllWithoutFilters() {
+            Page<Transaction> page = onePage();
+            when(transactionRepository.findAll(pageable)).thenReturn(page);
+            when(transactionMapper.toListResponse(page)).thenReturn(sentinel);
+
+            TransactionListResponse result =
+                transactionService.listTransactions(null, null, pageable);
+
+            assertThat(result).isSameAs(sentinel);
+            verify(transactionRepository).findAll(pageable);
+            verifyNoInteractions(cardXrefRepository);
+        }
+
+        @Test
+        @DisplayName("single-arg listTransactions(Pageable) delegates to the no-filter path")
+        void shouldDelegateSingleArgOverload() {
+            Page<Transaction> page = onePage();
+            when(transactionRepository.findAll(pageable)).thenReturn(page);
+            when(transactionMapper.toListResponse(page)).thenReturn(sentinel);
+
+            TransactionListResponse result = transactionService.listTransactions(pageable);
+
+            assertThat(result).isSameAs(sentinel);
+            verify(transactionRepository).findAll(pageable);
+            verifyNoInteractions(cardXrefRepository);
         }
     }
 }

@@ -1,11 +1,14 @@
 package com.carddemo.repository;
 
 import com.carddemo.entity.Transaction;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -175,6 +178,55 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *         {@code null}
      */
     List<Transaction> findByCardNum(String cardNum);
+
+    /**
+     * Finds transactions recorded against the given card number, one page at a time.
+     *
+     * <p>Paginated counterpart of {@link #findByCardNum(String)} backing the
+     * {@code COTRN00C} transaction list browse (TRANID {@code CT00}) when the caller
+     * narrows the listing to a single card (the {@code GET /api/transactions?cardNumber=...}
+     * filter). Spring Data derives JPQL equivalent to {@code WHERE t.cardNum = :cardNum}
+     * (entity field {@code cardNum}; physical column {@code card_num}) and applies the
+     * supplied {@link Pageable} for {@code LIMIT}/{@code OFFSET}/{@code ORDER BY}. The
+     * stateless {@link Pageable} replaces the server-side {@code STARTBR}/{@code READNEXT}/
+     * {@code READPREV} cursor and the PF7/PF8 navigation (AAP &sect;0.6.1).</p>
+     *
+     * <p>The method-name property segment is {@code CardNum} (not {@code CardNumber}) to
+     * match the entity field exactly; see {@link #findByCardNum(String)} for the
+     * {@code PropertyReferenceException} rationale.</p>
+     *
+     * @param cardNum  the 16-character card number (matches {@code TRAN-CARD-NUM
+     *                 PIC X(16)}); must not be {@code null}
+     * @param pageable the page coordinates (page number, size, and sort) supplied by the
+     *                 service layer; must not be {@code null}
+     * @return the requested page of transactions for this card (a possibly-empty page);
+     *         never {@code null}
+     */
+    Page<Transaction> findByCardNum(String cardNum, Pageable pageable);
+
+    /**
+     * Finds transactions recorded against any of the given card numbers, one page at a time.
+     *
+     * <p>Backs the {@code COTRN00C} transaction list browse when the caller narrows the
+     * listing to a single account (the {@code GET /api/transactions?accountId=...} filter):
+     * the service first resolves the account's card numbers through
+     * {@code CardXrefRepository.findByAccountId(...)} (the {@code CARDXREF}/{@code CXACAIX}
+     * cross-reference), then enumerates the matching transactions here. Spring Data derives
+     * JPQL equivalent to {@code WHERE t.cardNum IN :cardNums} (entity field {@code cardNum};
+     * physical column {@code card_num}) and applies the supplied {@link Pageable}.</p>
+     *
+     * <p>When the account owns no cards the service passes an empty collection is avoided by
+     * short-circuiting to an empty page at the service layer (an empty {@code IN ()} predicate
+     * is degenerate), so this method is invoked only with a non-empty collection.</p>
+     *
+     * @param cardNums the card numbers to match (each {@code TRAN-CARD-NUM PIC X(16)});
+     *                 must not be {@code null} and is invoked non-empty by the service
+     * @param pageable the page coordinates (page number, size, and sort) supplied by the
+     *                 service layer; must not be {@code null}
+     * @return the requested page of transactions for these cards (a possibly-empty page);
+     *         never {@code null}
+     */
+    Page<Transaction> findByCardNumIn(Collection<String> cardNums, Pageable pageable);
 
     /**
      * Allocates the next value of the PostgreSQL sequence {@code transaction_id_seq} and
