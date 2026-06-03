@@ -1,0 +1,357 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License.
+ */
+package com.carddemo.dto.account;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Digits;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
+
+import java.math.BigDecimal;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+/**
+ * Account Data Transfer Object — mirrors the COBOL {@code CVACT01Y} 300-byte
+ * {@code ACCOUNT-RECORD} layout for the account management REST API.
+ *
+ * <p><strong>Endpoints:</strong></p>
+ * <ul>
+ *   <li>{@code GET /api/accounts/{acctId}} — single account view (response body)</li>
+ *   <li>{@code PUT /api/accounts/{acctId}} — account update (request body, same DTO reused)</li>
+ * </ul>
+ *
+ * <p><strong>Mapping reference:</strong> Mirrors the 300-byte {@code ACCOUNT-RECORD}
+ * from {@code app/cpy/CVACT01Y.cpy} (12 user fields + 178-byte FILLER —
+ * FILLER is NOT exposed).</p>
+ *
+ * <p><strong>Field name reconciliation:</strong> All 12 field names map 1:1 to
+ * the {@code Account} JPA entity (acctId, activeStatus, currBal, creditLimit,
+ * cashCreditLimit, openDate, expirationDate, reissueDate, currCycCredit,
+ * currCycDebit, addrZip, groupId). The {@code AccountMapper} performs a
+ * straightforward field-to-field copy with BigDecimal scale preservation
+ * (and {@code String} &harr; {@code LocalDate} normalization for the three
+ * date fields, since the entity persists them as SQL {@code DATE}).</p>
+ *
+ * <p><strong>PR-13 (Field length fidelity):</strong> Each {@code @Size}
+ * annotation maximum matches the COBOL PIC clause length exactly. The 178-byte
+ * FILLER from CVACT01Y is intentionally NOT exposed.</p>
+ *
+ * <p><strong>PR-14 (Typo correction):</strong> The original COBOL field
+ * {@code ACCT-EXPIRAION-DATE} (misspelled "EXPIRAION") is corrected here to
+ * {@code expirationDate} (proper English spelling). The PostgreSQL column
+ * remains {@code expiration_date} (snake_case Java convention).</p>
+ *
+ * <p><strong>PR-16 (BigDecimal for money — CRITICAL):</strong> All 5 monetary
+ * fields ({@code currBal}, {@code creditLimit}, {@code cashCreditLimit},
+ * {@code currCycCredit}, {@code currCycDebit}) are typed as
+ * {@link java.math.BigDecimal} — NEVER {@code float} or {@code double}. The
+ * COBOL {@code PIC S9(10)V99 COMP-3} fields are exact packed-decimal;
+ * any floating-point representation would corrupt cents.</p>
+ *
+ * <p><strong>PR-22 (Optimistic locking):</strong> The {@code Account} entity
+ * has a {@code @Version} field. This DTO does NOT expose version (DTOs are
+ * not persisted). Concurrent update conflicts surface as
+ * {@code OptimisticLockException} mapped to HTTP 409 by
+ * {@code GlobalExceptionHandler}.</p>
+ *
+ * <p><strong>Date format:</strong> The 3 date fields ({@code openDate},
+ * {@code expirationDate}, {@code reissueDate}) are typed as {@code String} in
+ * ISO-8601 format {@code yyyy-MM-dd} (10 chars) to preserve the COBOL
+ * {@code PIC X(10)} fixed-width representation directly. Service-layer
+ * conversion to/from {@code LocalDate} is performed by
+ * {@code DateConversionUtil}.</p>
+ *
+ * <p><strong>Customer fields NOT exposed:</strong> The COACTVW BMS screen also
+ * displays customer fields (ACSTNUMI, ACSTSSNI, ACSTDOBI, ACSTFCOI, ACSFNAMI,
+ * ACSMNAMI, ACSLNAMI, ACSADL1I, ACSSTTEI, ACSADL2I, ACSZIPCI, ACSCITYI,
+ * ACSCTRYI, ACSPHN1I, ACSGOVTI, ACSPHN2I, ACSEFTCI, ACSPFLGI). These belong
+ * in {@code CustomerDto}, NOT this DTO. The service layer composes account +
+ * customer responses when a combined view is needed.</p>
+ *
+ * <p><strong>No PII masking:</strong> Unlike {@code CustomerDto.ssn},
+ * the Account entity has no PII fields requiring transformation. All fields
+ * are exposed verbatim through {@code AccountMapper}.</p>
+ *
+ * <p>This is a plain POJO with no dependency on the entity, repository, or
+ * service layers (DTO decoupling): it carries no {@code com.carddemo.*} imports
+ * and no JPA / persistence annotations. Boilerplate (getters, setters,
+ * {@code equals}/{@code hashCode}/{@code toString}, all-args + no-args
+ * constructors, and the fluent {@code builder()}) is generated by Lombok; the
+ * no-args constructor additionally supports Jackson (de)serialization.</p>
+ *
+ * @see app/cpy/CVACT01Y.cpy
+ * @see app/cpy-bms/COACTVW.CPY
+ * @see com.carddemo.entity.Account
+ */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+@Schema(
+    description = "Account DTO mirroring COBOL CVACT01Y 300-byte ACCOUNT-RECORD. "
+        + "Used as the response payload for GET /api/accounts/{acctId} (single view) "
+        + "and as the request body for PUT /api/accounts/{acctId} (update — same DTO reused). "
+        + "The 178-byte FILLER from CVACT01Y is intentionally NOT exposed. "
+        + "All 5 monetary fields use BigDecimal per PR-16 (NEVER float/double). "
+        + "COBOL field ACCT-EXPIRAION-DATE (misspelled) is corrected to expirationDate per PR-14. "
+        + "Date fields stored as ISO-8601 yyyy-MM-dd strings (10 chars) to preserve COBOL X(10) width."
+)
+public class AccountDto {
+
+    /**
+     * Account ID — maps COBOL {@code ACCT-ID PIC 9(11)}.
+     * Unsigned 11-digit numeric account identifier. Primary key in the
+     * {@code accounts} table.
+     * <p>Maximum value: 99,999,999,999 (eleven 9s).</p>
+     */
+    @NotNull(message = "Account ID is required")
+    @Positive(message = "Account ID must be positive")
+    @Max(value = 99_999_999_999L, message = "Account ID must not exceed 11 digits")
+    @Schema(
+        description = "11-digit account ID — primary identifier. Maps COBOL ACCT-ID PIC 9(11).",
+        example = "10000000001",
+        requiredMode = Schema.RequiredMode.REQUIRED
+    )
+    private Long acctId;
+
+    /**
+     * Account active status flag — maps COBOL {@code ACCT-ACTIVE-STATUS PIC X(01)}.
+     * Single character: {@code Y} (active), {@code N} (inactive), or {@code A}
+     * (alternate/archived).
+     */
+    @Size(min = 1, max = 1, message = "Active status must be exactly 1 character")
+    @Pattern(regexp = "[YNA]", message = "Active status must be Y, N, or A")
+    @Schema(
+        description = "Account active status: Y (active), N (inactive), or A (alternate/archived). "
+            + "Maps COBOL ACCT-ACTIVE-STATUS PIC X(01).",
+        example = "Y",
+        allowableValues = {"Y", "N", "A"},
+        minLength = 1,
+        maxLength = 1,
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private String activeStatus;
+
+    /**
+     * Current account balance — maps COBOL {@code ACCT-CURR-BAL PIC S9(10)V99}.
+     * Signed packed-decimal: up to 10 integer digits, exactly 2 fractional digits.
+     * Can be negative (overdraft / credit balance).
+     * <p><strong>PR-16:</strong> {@link java.math.BigDecimal} is mandatory —
+     * NEVER {@code float} or {@code double}. The COBOL packed-decimal arithmetic
+     * is exact; floating-point would corrupt cents.</p>
+     */
+    @Digits(integer = 10, fraction = 2, message = "Current balance must have at most 10 integer digits and 2 fractional digits")
+    @Schema(
+        description = "Current account balance in BigDecimal (scale=2). Maps COBOL ACCT-CURR-BAL PIC S9(10)V99. "
+            + "Signed: can be negative. PR-16 mandates BigDecimal (never float/double).",
+        example = "1234.56",
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private BigDecimal currBal;
+
+    /**
+     * Credit limit — maps COBOL {@code ACCT-CREDIT-LIMIT PIC S9(10)V99}.
+     * Maximum credit available on the account. Must be non-negative
+     * ({@code &gt;= 0.00}).
+     * <p>Used in the credit-limit check (CBTRN02C code 102) per
+     * {@code ACCT-CREDIT-LIMIT &lt; (ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT)}.</p>
+     * <p><strong>PR-16:</strong> {@link java.math.BigDecimal} is mandatory.</p>
+     */
+    @Digits(integer = 10, fraction = 2, message = "Credit limit must have at most 10 integer digits and 2 fractional digits")
+    @DecimalMin(value = "0.00", inclusive = true, message = "Credit limit must be non-negative")
+    @Schema(
+        description = "Credit limit (BigDecimal, non-negative). Maps COBOL ACCT-CREDIT-LIMIT PIC S9(10)V99. "
+            + "Used in CBTRN02C overlimit check (code 102).",
+        example = "5000.00",
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private BigDecimal creditLimit;
+
+    /**
+     * Cash credit limit — maps COBOL {@code ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99}.
+     * Maximum cash advance available. Must be non-negative.
+     * <p><strong>PR-16:</strong> {@link java.math.BigDecimal} is mandatory.</p>
+     */
+    @Digits(integer = 10, fraction = 2, message = "Cash credit limit must have at most 10 integer digits and 2 fractional digits")
+    @DecimalMin(value = "0.00", inclusive = true, message = "Cash credit limit must be non-negative")
+    @Schema(
+        description = "Cash advance credit limit (BigDecimal, non-negative). Maps COBOL ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99.",
+        example = "500.00",
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private BigDecimal cashCreditLimit;
+
+    /**
+     * Account opening date in ISO {@code yyyy-MM-dd} format — maps COBOL
+     * {@code ACCT-OPEN-DATE PIC X(10)}.
+     * Stored as {@code String} to preserve the COBOL 10-character fixed width
+     * directly. Service-layer conversion to/from {@code LocalDate} via
+     * {@code DateConversionUtil}.
+     */
+    @Size(min = 10, max = 10, message = "Open date must be exactly 10 characters (yyyy-MM-dd)")
+    @Pattern(
+        regexp = "\\d{4}-\\d{2}-\\d{2}",
+        message = "Open date must match yyyy-MM-dd format"
+    )
+    @Schema(
+        description = "Account opening date in ISO yyyy-MM-dd format (10 chars). Maps COBOL ACCT-OPEN-DATE PIC X(10).",
+        example = "2020-01-15",
+        minLength = 10,
+        maxLength = 10,
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private String openDate;
+
+    /**
+     * Account expiration date in ISO {@code yyyy-MM-dd} format — maps COBOL
+     * {@code ACCT-EXPIRAION-DATE PIC X(10)}.
+     * <p><strong>PR-14 typo correction:</strong> The original COBOL field name is
+     * misspelled as {@code ACCT-EXPIRAION-DATE} (should be EXPIRATION). The Java
+     * field uses the proper English spelling {@code expirationDate}.</p>
+     * <p>Used in the expiration check (CBTRN02C code 103) per
+     * {@code ACCT-EXPIRAION-DATE &lt; DALYTRAN-ORIG-TS(1:10)}.</p>
+     */
+    @Size(min = 10, max = 10, message = "Expiration date must be exactly 10 characters (yyyy-MM-dd)")
+    @Pattern(
+        regexp = "\\d{4}-\\d{2}-\\d{2}",
+        message = "Expiration date must match yyyy-MM-dd format"
+    )
+    @Schema(
+        description = "Account expiration date in ISO yyyy-MM-dd format (10 chars). "
+            + "Maps COBOL ACCT-EXPIRAION-DATE PIC X(10) (PR-14 typo correction). "
+            + "Used in CBTRN02C expiration check (code 103).",
+        example = "2026-12-31",
+        minLength = 10,
+        maxLength = 10,
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private String expirationDate;
+
+    /**
+     * Account reissue date in ISO {@code yyyy-MM-dd} format — maps COBOL
+     * {@code ACCT-REISSUE-DATE PIC X(10)}.
+     * Date when the account was last reissued (new card series, account number
+     * change, etc.).
+     */
+    @Size(min = 10, max = 10, message = "Reissue date must be exactly 10 characters (yyyy-MM-dd)")
+    @Pattern(
+        regexp = "\\d{4}-\\d{2}-\\d{2}",
+        message = "Reissue date must match yyyy-MM-dd format"
+    )
+    @Schema(
+        description = "Account reissue date in ISO yyyy-MM-dd format (10 chars). Maps COBOL ACCT-REISSUE-DATE PIC X(10).",
+        example = "2024-06-01",
+        minLength = 10,
+        maxLength = 10,
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private String reissueDate;
+
+    /**
+     * Current billing cycle credit total — maps COBOL
+     * {@code ACCT-CURR-CYC-CREDIT PIC S9(10)V99}.
+     * Sum of credit-side transactions (amount &gt;= 0) posted in the current
+     * billing cycle. Reset to zero on {@code 1050-UPDATE-ACCOUNT} per CBACT04C
+     * (interest calculation).
+     * <p><strong>PR-16:</strong> {@link java.math.BigDecimal} is mandatory.</p>
+     */
+    @Digits(integer = 10, fraction = 2, message = "Current cycle credit must have at most 10 integer digits and 2 fractional digits")
+    @Schema(
+        description = "Current billing cycle credit total (BigDecimal, signed). "
+            + "Maps COBOL ACCT-CURR-CYC-CREDIT PIC S9(10)V99. "
+            + "Reset on interest calculation per CBACT04C 1050-UPDATE-ACCOUNT.",
+        example = "250.00",
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private BigDecimal currCycCredit;
+
+    /**
+     * Current billing cycle debit total — maps COBOL
+     * {@code ACCT-CURR-CYC-DEBIT PIC S9(10)V99}.
+     * Sum of debit-side transactions (amount &lt; 0, added as positive per CBTRN02C
+     * 2800-UPDATE-ACCOUNT-REC) posted in the current billing cycle. Reset to zero
+     * on {@code 1050-UPDATE-ACCOUNT} per CBACT04C.
+     * <p><strong>PR-16:</strong> {@link java.math.BigDecimal} is mandatory.</p>
+     */
+    @Digits(integer = 10, fraction = 2, message = "Current cycle debit must have at most 10 integer digits and 2 fractional digits")
+    @Schema(
+        description = "Current billing cycle debit total (BigDecimal, signed). "
+            + "Maps COBOL ACCT-CURR-CYC-DEBIT PIC S9(10)V99. "
+            + "Per CBTRN02C 2800-UPDATE-ACCOUNT-REC, debit transactions add to this bucket as positive values.",
+        example = "75.50",
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private BigDecimal currCycDebit;
+
+    /**
+     * Account billing address ZIP/postal code — maps COBOL
+     * {@code ACCT-ADDR-ZIP PIC X(10)}.
+     * Up to 10 characters to accommodate 5-digit US ZIP, ZIP+4 (10 chars including
+     * dash), or international postal codes.
+     * <p><strong>Note:</strong> This is the ACCOUNT'S billing ZIP — distinct from
+     * the customer shipping ZIP ({@code Customer.zipCode} / {@code CustomerDto}).</p>
+     */
+    @Size(max = 10, message = "Address ZIP must not exceed 10 characters")
+    @Schema(
+        description = "Account billing ZIP/postal code (max 10 chars). Maps COBOL ACCT-ADDR-ZIP PIC X(10). "
+            + "Distinct from customer shipping ZIP.",
+        example = "12345-6789",
+        maxLength = 10,
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private String addrZip;
+
+    /**
+     * Account disclosure group ID — maps COBOL {@code ACCT-GROUP-ID PIC X(10)}.
+     * Used in conjunction with transaction type and category to look up the
+     * applicable interest rate from {@code DisclosureGroup}.
+     * <p><strong>PR-02 (DEFAULT fallback):</strong> If the lookup
+     * {@code (groupId, typeCd, catCd)} returns no result, CBACT04C falls back to
+     * {@code groupId='DEFAULT'} per {@code 1200-GET-INTEREST-RATE}. The literal
+     * value {@code "DEFAULT"} is therefore reserved.</p>
+     */
+    @Size(max = 10, message = "Group ID must not exceed 10 characters")
+    @Schema(
+        description = "Disclosure group ID (max 10 chars). Maps COBOL ACCT-GROUP-ID PIC X(10). "
+            + "Used with transaction type/category for interest rate lookup. "
+            + "PR-02: falls back to 'DEFAULT' if specific group not found in DisclosureGroup.",
+        example = "GROUP001",
+        maxLength = 10,
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private String groupId;
+}

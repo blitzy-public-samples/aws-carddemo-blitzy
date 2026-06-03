@@ -1,0 +1,270 @@
+# ============================================================================
+# CardDemo Spring Boot 3.2 — DEVELOPMENT Profile Configuration
+# ----------------------------------------------------------------------------
+# This file is loaded automatically by Spring Boot when the 'dev' profile is
+# active. It OVERRIDES matching properties from src/main/resources/application.yml.
+#
+# Activation:
+#   --spring.profiles.active=dev
+#   OR
+#   SPRING_PROFILES_ACTIVE=dev
+#   OR
+#   mvn spring-boot:run -Dspring-boot.run.profiles=dev
+#
+# Connects to a local PostgreSQL 15 instance with hardcoded development
+# credentials ('carddemo' / 'carddemo'). These credentials are appropriate
+# ONLY for local development and MUST NOT be used in any other environment.
+#
+# Quick start (Docker):
+#   docker run --name carddemo-postgres \
+#     -e POSTGRES_DB=carddemo \
+#     -e POSTGRES_USER=carddemo \
+#     -e POSTGRES_PASSWORD=carddemo \
+#     -p 5432:5432 -d postgres:15
+#
+# References:
+#   - AAP §0.4.1.8 (Development profile specification)
+#   - AAP §0.5.1 (PostgreSQL 15 + Flyway 9.22.x BOM-managed)
+#   - AAP §0.7.1 PR-26 (No external runtime services beyond PostgreSQL)
+# ============================================================================
+
+spring:
+  # --------------------------------------------------------------------------
+  # DATASOURCE — Local PostgreSQL 15 (developer machine)
+  # --------------------------------------------------------------------------
+  # The 'carddemo / carddemo' credentials are ONLY for local dev work.
+  # In dev we allow embedded credentials because the database is ephemeral
+  # and isolated to the developer's machine. The base application.yml declares
+  # NO datasource, so the dev (or prod) profile MUST provide one.
+  # --------------------------------------------------------------------------
+  datasource:
+    url: jdbc:postgresql://localhost:5432/carddemo
+    username: carddemo
+    password: carddemo
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      pool-name: CarddemoHikariCP-Dev
+      # auto-commit: false — JPA/Hibernate manages transaction boundaries
+      # explicitly (matching the CICS SYNCPOINT semantics, PR-24). Leaving
+      # the JDBC connection in manual-commit mode prevents premature commits.
+      auto-commit: false
+
+  # --------------------------------------------------------------------------
+  # JPA / HIBERNATE — Verbose SQL logging for development
+  # --------------------------------------------------------------------------
+  # ddl-auto: validate — Flyway owns the schema; Hibernate only validates the
+  #   entity mappings against the live schema and NEVER mutates it.
+  # show-sql: true — log every generated SQL statement; paired with
+  #   logging.level.org.hibernate.SQL=DEBUG so each statement is visible with bind
+  #   '?' placeholders. Parameter-VALUE binding (org.hibernate.orm.jdbc.bind=TRACE)
+  #   is deliberately NOT enabled because it leaks credentials/PII into the log (see
+  #   the LOGGING section below and QA F5 Finding #1 / PR-17). format_sql +
+  #   use_sql_comments make the output readable.
+  # --------------------------------------------------------------------------
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: true
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        use_sql_comments: true
+        jdbc:
+          time_zone: UTC
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+
+  # --------------------------------------------------------------------------
+  # FLYWAY — clean-disabled: false allows 'mvn flyway:clean' for fast resets
+  # --------------------------------------------------------------------------
+  # In dev, developers may need to wipe the schema and re-apply migrations
+  # to test schema changes. clean-disabled: false enables this.
+  # CRITICAL: production OVERRIDES this to clean-disabled: true to prevent
+  # catastrophic data loss.
+  # --------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+    clean-disabled: false
+    out-of-order: false
+
+  # --------------------------------------------------------------------------
+  # SPRING BATCH — no auto-execution of jobs on startup (same as base/prod)
+  # --------------------------------------------------------------------------
+  # job.enabled: false — Jobs are launched on demand via BatchAdminController
+  #   or JobLauncher, never automatically at context start.
+  # jdbc.initialize-schema: always — auto-create the BATCH_* metadata tables
+  #   on first startup (idempotent; skipped when they already exist).
+  # --------------------------------------------------------------------------
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      initialize-schema: always
+
+  # --------------------------------------------------------------------------
+  # DEVTOOLS — enable hot reload during development
+  # --------------------------------------------------------------------------
+  # If spring-boot-devtools is on the classpath (it is NOT in pom.xml currently),
+  # these properties tune its behavior. Harmless if devtools is absent — Spring
+  # Boot silently ignores unknown configuration keys.
+  # --------------------------------------------------------------------------
+  devtools:
+    restart:
+      enabled: true
+      additional-paths: src/main/java, src/main/resources
+    livereload:
+      enabled: true
+
+# ============================================================================
+# SERVER — dev defaults
+# ============================================================================
+server:
+  port: 8080
+  # Drain in-flight requests on SIGTERM before terminating.
+  shutdown: graceful
+  servlet:
+    context-path: /
+  # Verbose error responses to aid debugging. include-stacktrace: on_param lets
+  # developers append ?trace=true to a request to see the stack, without leaking
+  # it by default. Production OVERRIDES include-stacktrace to 'never'.
+  error:
+    include-message: always
+    include-stacktrace: on_param
+    include-binding-errors: always
+    include-exception: true
+
+# ============================================================================
+# LOGGING — DEBUG-level for application code; framework levels tuned for safety
+# ============================================================================
+# Application packages (com.carddemo) log at DEBUG and Hibernate SQL at DEBUG for
+# rich local diagnostics. Framework levels that would serialize secrets into the
+# log are deliberately held down: org.springframework.web=INFO (no response-body
+# logging of the JWT) and org.hibernate.orm.jdbc.bind is left unset (no bound
+# parameter VALUES, i.e. no BCrypt hash / SSN). See QA F5 Findings #1 & #2 / PR-17.
+# ============================================================================
+logging:
+  level:
+    root: INFO
+    com.carddemo: DEBUG
+    org.springframework: INFO
+    org.springframework.security: DEBUG
+    # SECURITY (QA F5 Finding #2 / PR-17): org.springframework.web stays at INFO, NOT
+    # DEBUG. At DEBUG, Spring MVC's HttpEntityMethodProcessor logs serialized response
+    # bodies (e.g. the LoginResponse), which leaks the signed JWT bearer token — and any
+    # other response payload — into the log. INFO keeps response bodies out of the log
+    # and matches the base/prod profiles.
+    org.springframework.web: INFO
+    org.springframework.batch: DEBUG
+    # Hibernate generated SQL at DEBUG shows each statement with bind '?' placeholders —
+    # enough for entity load/save visibility (AAP §0.6.12) WITHOUT exposing bound values.
+    org.hibernate.SQL: DEBUG
+    # SECURITY (QA F5 Finding #1 / PR-17): org.hibernate.orm.jdbc.bind is intentionally
+    # NOT set to TRACE. At TRACE, Hibernate logs EVERY bound JDBC parameter VALUE, which
+    # leaks the BCrypt sec_usr_pwd hash bound on user insert/update (and would leak a raw
+    # SSN on any Customer write). If parameter-value visibility is ever needed locally,
+    # enable it only in a git-ignored developer override (e.g. an uncommitted
+    # application-local.yml), never in this committed, shipped dev profile.
+    org.hibernate.tool.schema: INFO
+    # Flyway migration visibility
+    org.flywaydb: INFO
+    # Connection pool diagnostics
+    com.zaxxer.hikari: INFO
+  # Human-readable, ANSI-colored console pattern for dev. Production OVERRIDES
+  # this with a JSON-structured pattern for log aggregation.
+  pattern:
+    console: '%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %cyan(%logger{36}) - %msg%n'
+
+# ============================================================================
+# ACTUATOR — full endpoint exposure in dev
+# ============================================================================
+# All operational endpoints exposed for development convenience. These are
+# security-sensitive (env, beans, configprops, heapdump, threaddump) and the
+# production profile RESTRICTS exposure to avoid leaking config to attackers.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics, env, loggers, beans, configprops, mappings, heapdump, threaddump
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+    env:
+      enabled: true
+    loggers:
+      enabled: true
+  health:
+    db:
+      enabled: true
+    diskspace:
+      enabled: true
+
+# ============================================================================
+# SPRINGDOC OPENAPI — enabled in dev for API exploration via Swagger UI
+# ============================================================================
+# Developers explore the REST API interactively at
+# http://localhost:8080/swagger-ui.html. Production DISABLES both endpoints to
+# avoid exposing the API structure.
+springdoc:
+  api-docs:
+    enabled: true
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: true
+    path: /swagger-ui.html
+    operationsSorter: method
+    tagsSorter: alpha
+
+
+# ============================================================================
+# APPLICATION SECURITY — CORS allowlist (consumed by config/WebConfig.java)
+# ============================================================================
+# app.cors.allowed-origins is the EXPLICIT, credential-safe allowlist injected
+# into WebConfig#allowedOrigins. The previous credentialed wildcard
+# (allowedOriginPatterns("*") + allowCredentials(true)) was a security defect:
+# it extended credentialed cross-origin trust to every site. Each environment
+# now declares exactly which origins may send credentialed requests. For local
+# development these are the usual front-end dev-server ports.
+# ============================================================================
+app:
+  cors:
+    allowed-origins: http://localhost:3000,http://localhost:8080
+
+# ============================================================================
+# JWT — HS256 signing/verification secret (consumed by
+# security/JwtAuthenticationFilter.java and AuthService)
+# ============================================================================
+# jwt.secret has NO source-code default (CWE-798 fix): JwtAuthenticationFilter
+# fails startup if it is missing or shorter than 32 UTF-8 bytes (256 bits).
+# The value below is a NON-PRODUCTION development placeholder — it is long
+# enough to satisfy the HS256 minimum-length check and is intentionally obvious.
+# Production binds jwt.secret to the JWT_SECRET environment variable (see
+# application-prod.yml) with no default, so a missing prod secret is fatal.
+# ============================================================================
+jwt:
+  secret: dev-only-jwt-secret-change-me-not-for-production-0123456789abcdef
+
+# ============================================================================
+# CARDDEMO — Application-specific configuration (development)
+# ============================================================================
+# Approved batch output subtree for local runs. The caller-supplied outputDir
+# JobParameter is confined beneath this base by BatchOutputPathResolver
+# (rejects absolute paths and `..` traversal).
+# ============================================================================
+carddemo:
+  batch:
+    output:
+      base-dir: ./output

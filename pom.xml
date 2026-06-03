@@ -1,0 +1,496 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    CardDemo - Spring Boot 3.2 Modernization
+
+    Migrated from the original COBOL/CICS/VSAM mainframe application.
+    Functional parity preserved for CBACT04C (interest calculation),
+    CBTRN02C (transaction posting), and CBSTM03A (statement generation).
+
+    Dependency inventory follows the Agent Action Plan section 0.5.1 exactly.
+    All transitive versions are resolved via spring-boot-starter-parent 3.2.12 BOM,
+    sourced from Maven Central; no private package registry is used.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        Spring Boot 3.2.12 parent (final OSS release of the 3.2 branch).
+        Acts as the Bill of Materials (BOM) resolving Spring Framework 6.1.x,
+        Spring Security 6.2.x, Spring Batch 5.1.x, Hibernate ORM 6.4.x,
+        Tomcat 10.1.x, Jackson 2.15.x, Flyway 9.22.x, Lombok, PostgreSQL JDBC,
+        and Testcontainers. The empty <relativePath/> forces lookup of the
+        parent POM from the configured repositories rather than the filesystem.
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.12</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+
+    <groupId>com.carddemo</groupId>
+    <artifactId>carddemo</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+    <name>CardDemo</name>
+    <description>CardDemo Spring Boot 3.2 modernization of the legacy COBOL/CICS/VSAM mainframe application. Java services preserve 100% of the original business logic with parity tests for CBACT04C (interest), CBTRN02C (transaction posting), and CBSTM03A (statement generation).</description>
+
+    <properties>
+        <!-- Java 17 is the Spring Boot 3.x baseline (Jakarta EE 10, jakarta.* namespace). -->
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <!--
+            springdoc-openapi is the only dependency NOT managed by the Spring Boot
+            3.2.12 BOM, so its version is pinned explicitly here.
+
+            FINDING 9 (CRITICAL regression of the FINDING 2 fix) — springdoc-openapi
+            2.3.0 -> 2.8.6. springdoc 2.3.0 (released Dec 2023, built against Spring
+            Framework 6.1.x — the version the Spring Boot 3.2.12 BOM ships) calls the
+            org.springframework.web.method.ControllerAdviceBean(Object) constructor,
+            which Spring Framework 6.2.x REMOVED. Once FINDING 2 above re-pinned Spring
+            Framework to 6.2.18, springdoc 2.3.0 became binary-incompatible: at runtime,
+            generating the OpenAPI document (springdoc scans every @ControllerAdvice,
+            incl. GlobalExceptionHandler, in GenericResponseService#getGenericMapResponse)
+            throws "java.lang.NoSuchMethodError: 'void
+            org.springframework.web.method.ControllerAdviceBean.<init>(java.lang.Object)'"
+            -> GET /v3/api-docs returns HTTP 500 and Swagger UI shows "Failed to load API
+            definition". The unit/integration suites did NOT catch this because OpenAPI
+            document generation is a runtime-only reflective operation never exercised by
+            the controller MockMvc / service / batch / Testcontainers tests.
+
+            WHY 2.8.6: the springdoc 2.8.x line is built against Spring Framework 6.2 /
+            Spring Boot 3.5 and uses the CURRENT ControllerAdviceBean constructor
+            signatures, so it is the line that restores compatibility with the 6.2.18
+            override. (springdoc 2.5.0 and 2.6.0 still call the removed constructor and do
+            NOT fix the regression — verified against upstream issue reports.) 2.8.6 is a
+            conservative, independently field-validated 2.8.x patch known to work
+            end-to-end on the Spring-Framework-6.2.x line; it resolves cleanly from Maven
+            Central (verified: `mvn dependency:get
+            org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.6` -> BUILD SUCCESS).
+            OpenApiConfig only uses the stable io.swagger.v3.oas.models.* API (OpenAPI /
+            Info / Components / SecurityScheme / Server) — no springdoc-internal types —
+            so the bump needs no source change. springdoc 2.8.x bundles a newer
+            swagger-core (>=2.2.42) whose commons-lang3 floor is already satisfied by the
+            FINDING 4 commons-lang3 3.19.0 override.
+
+            PARENT RETAINED (AAP section 0.5.1): this is a PROPERTY OVERRIDE only — the
+            Spring Boot 3.2.12 parent is NOT bumped and the FINDING 2 Spring Framework
+            6.2.18 security fix is NOT reverted (reverting would re-open CVE-2025-41249).
+        -->
+        <springdoc-openapi.version>2.8.6</springdoc-openapi.version>
+
+        <!--
+            ================== SECURITY CVE REMEDIATION OVERRIDES ==================
+            The Spring Boot 3.2.12 parent BOM is RETAINED (mandated by AAP section 0.5.1).
+            The properties below override only the transitive dependency versions that
+            a dependency CVE scan (QA checkpoint FINAL F3) flagged as carrying unpatched
+            advisories. Each property below is consumed by the spring-boot-dependencies
+            BOM's <dependencyManagement>, so overriding it here re-pins the managed
+            version for the whole reactor WITHOUT upgrading the Spring Boot parent
+            (a parent bump to 3.3.x/3.4.x would change Spring Framework to 6.2.x and
+            other coordinates, contradicting AAP section 0.5.1). All target versions
+            remain within the same compatibility line the BOM was built against.
+
+            FINDING 1 (MAJOR, gate-failing) — embedded Apache Tomcat 10.1.33 carries
+            unpatched HIGH/CRITICAL CVEs: CVE-2025-24813, CVE-2024-50379/56337 (RCE via
+            write-enabled default servlet), CVE-2025-31650/31651 (DoS), CVE-2025-46701,
+            and CVE-2025-55752 (RewriteValve path traversal, fixed in 10.1.45).
+            10.1.55 is the latest 10.1.x patch and clears the entire fix train. It stays
+            on the Servlet 6.0 / Jakarta EE 10 line that Spring Boot 3.2.x targets.
+        -->
+        <tomcat.version>10.1.55</tomcat.version>
+
+        <!--
+            FINDING 2 (CRITICAL, gate-failing) — Spring Framework 6.1.21 -> 6.2.18.
+            6.1.21 sits inside the affected range of CVE-2025-41249 (HIGH, CVSS 7.5 —
+            "Spring Framework annotation detection mechanism may result in improper
+            authorization": method-security annotations on methods declared in generic
+            superclasses/interfaces with UNBOUNDED generics may be skipped). The affected
+            range is 5.3.0-5.3.44, 6.1.0-6.1.22, and 6.2.0-6.2.10.
+
+            EXPLOITABILITY vs THE VERSION-BASED GATE: CardDemo applies @PreAuthorize on the
+            CONCRETE UserController / BatchAdminController (not on a generic superclass), so
+            the bypass pattern is not reachable at runtime — the QA re-test confirmed the
+            authorization matrix still passes. However, the FINAL acceptance gate is
+            VERSION-BASED ("no unpatched HIGH/CRITICAL dependency CVE"), so the dependency
+            MUST be moved to a fixed release regardless of reachability.
+
+            WHY 6.2.18 (OSS) AND NOT A 6.1.x PATCH: OSS support for the 6.1.x generation has
+            ENDED. The CVE-2025-41249 fix was backported only to the COMMERCIAL releases
+            5.3.45 and 6.1.23 (Tanzu Spring Enterprise) — neither is published to Maven
+            Central (verified: `mvn dependency:get org.springframework:spring-core:6.1.23`
+            FAILS to resolve). The ONLY OSS-available fixed line is 6.2.11+; 6.2.18 is the
+            latest 6.2.x patch (consistent with the "latest patch of the line" convention
+            used for tomcat 10.1.55 above) and also carries every 6.2.x fix after 6.2.11.
+
+            PARENT RETAINED (AAP section 0.5.1): the Spring Boot 3.2.12 parent BOM is NOT
+            bumped. This is a PROPERTY OVERRIDE only — `spring-framework.version` is consumed
+            by the spring-boot-dependencies BOM, so re-pinning it moves spring-core / -web /
+            -webmvc / -context / -tx / -orm / -aop etc. to 6.2.18 across the reactor while
+            every other coordinate (Spring Security 6.2.8, Spring Batch 5.1.x, Hibernate
+            6.4.x, Tomcat 10.1.55, Jackson) stays BOM-managed. Spring Framework maintains
+            backward compatibility within the 6.x line, and the full `mvn verify` suite
+            (Surefire + Failsafe Testcontainers) plus a live dev-profile boot were re-run to
+            confirm the 6.2.18-on-3.2.12 pairing compiles, wires, and behaves correctly.
+
+            Companion CVE-2025-41248 affects Spring Security 6.4.0-6.4.9 / 6.5.0-6.5.3 only;
+            the BOM-managed Spring Security 6.2.8 here is NOT in range, so it is left as-is.
+            CVE-2025-41234 (RFD via Content-Disposition, fixed in 6.1.21/6.2.8) remains
+            closed at 6.2.18; CVE-2025-41242 (path traversal on NON-compliant servlet
+            containers; embedded Tomcat is compliant) is likewise resolved on this line.
+        -->
+        <spring-framework.version>6.2.18</spring-framework.version>
+
+        <!--
+            FINDING 3 (MINOR) — Logback 1.4.14 -> 1.3.15. Closes CVE-2024-12798
+            (EL-injection via JaninoEventEvaluator, CVSS 5.9) and CVE-2024-12801
+            (SSRF via SaxEventRecorder, CVSS 2.4). Both are non-remotely-exploitable
+            in CardDemo (no Janino on the classpath; the app uses the Spring Boot
+            default logback configuration), but the version-based CVE gate still
+            requires a patched release.
+
+            WHY 1.3.15 AND NOT THE 1.5.x LINE: the fix for these CVEs shipped in BOTH
+            logback 1.5.13 and the parallel 1.3.15 maintenance release; the 1.4.x branch
+            (where the BOM default 1.4.14 lives) received NO backport — 1.4.14 is the
+            last 1.4.x release. The ENTIRE logback 1.5.x line is BINARY-INCOMPATIBLE with
+            Spring Boot 3.2.12: logback 1.5.8+ changed the return type of
+            ch.qos.logback.core.ContextBase.getConfigurationLock() from java.lang.Object
+            to java.util.concurrent.locks.ReentrantLock, and Spring Boot 3.2.12's
+            LogbackConfigurator (compiled against the ()Ljava/lang/Object; descriptor)
+            throws NoSuchMethodError at logging-system initialization under any 1.5.x.
+            Spring Boot only adopted logback 1.5.x from 3.3.0 onward, which would require
+            abandoning the AAP section 0.5.1 -mandated 3.2.12 parent. logback 1.3.15 is
+            the slf4j-2.0 / Java-8 sibling maintenance line of 1.4.14: it RETAINS the
+            java.lang.Object return type (verified drop-in binary-compatible across every
+            Spring-Boot-consumed logback class — ContextBase, LoggerContext,
+            ConsoleAppender, RollingFileAppender, PatternLayoutEncoder, FileSize,
+            LevelChangePropagator) while carrying the CVE-2024-12798/12801 backport.
+
+            slf4j is intentionally NOT overridden: logback 1.3.15 targets slf4j 2.0.7 and
+            the Spring Boot 3.2.12 BOM default (slf4j 2.0.16) is a backward-compatible
+            superset — exactly the pairing the BOM already ships (slf4j 2.0.16 with the
+            default logback 1.4.14), so the BOM-managed slf4j version is correct as-is.
+        -->
+        <logback.version>1.3.15</logback.version>
+
+        <!--
+            FINDING 4 (MINOR) — Apache Commons Lang3 3.13.0 -> 3.19.0 (transitive via
+            springdoc / swagger-core). Closes CVE-2025-48924 (uncontrolled recursion in
+            ClassUtils.getClass leading to a StackOverflowError DoS; fixed in 3.18.0).
+            commons-lang3.version IS managed by the Spring Boot BOM, so this property
+            override re-pins it without needing an explicit <dependencyManagement> entry.
+        -->
+        <commons-lang3.version>3.19.0</commons-lang3.version>
+
+        <!--
+            FINDING 5 (CRITICAL, gate-failing) — PostgreSQL JDBC driver 42.6.2 -> 42.7.11.
+            The Spring Boot 3.2.12 BOM pins pgjdbc to the 42.6.x line (42.6.2), which sits
+            inside the affected range of CVE-2026-42198 (HIGH): >=42.2.0,<42.7.11. The flaw
+            is a client-side CPU/connection-pool exhaustion (DoS) during SCRAM-SHA-256
+            authentication — a malicious or compromised PostgreSQL server can advertise an
+            unbounded PBKDF2 iteration count, which the pre-fix client honours without limit.
+            42.7.11 (the latest 42.7.x release and the patched line; verified downloadable
+            from Maven Central) introduces a bounded iteration cap, closing the advisory.
+            `postgresql.version` IS managed by the Spring Boot BOM, so this property override
+            re-pins the driver across BOTH the runtime <dependency> and the Testcontainers
+            postgresql artifact WITHOUT bumping the AAP-mandated Spring Boot 3.2.12 parent.
+            42.7.x is also the driver line AAP section 0.5.1 expected, and is fully
+            compatible with PostgreSQL 15 (forward-compatible with 16+).
+        -->
+        <postgresql.version>42.7.11</postgresql.version>
+
+        <!--
+            FINDING 6 (MAJOR, gate-failing) — Spring Security 6.2.8 -> 6.3.8.
+            6.2.8 sits inside the affected range of CVE-2025-22228 (HIGH, CVSS 7.4,
+            disclosed 2025-03-19 — "BCryptPasswordEncoder.matches() incorrectly returns
+            true for passwords longer than 72 bytes when the first 72 bytes match"):
+            BCrypt only consumes its first 72 input bytes, and the pre-fix encoder did not
+            reject/guard over-length input, so two distinct passwords sharing a 72-byte
+            prefix both verify. The affected 6.2.x range is 6.2.0-6.2.9; the fix shipped in
+            6.2.10, 6.3.8, and 6.4.4. The vulnerable surface here is the active sign-on path
+            (BCryptPasswordEncoder.matches() invoked by DaoAuthenticationProvider via
+            UserDetailsServiceImpl, AuthService, and UserService — PR-17).
+
+            EXPLOITABILITY vs THE VERSION-BASED GATE: CardDemo carries a deliberate,
+            runtime-proven compensating control — LoginRequest.password and
+            UserCreateRequest.password are annotated @Size(min = 1, max = 72) and enforced
+            via @Valid/@Validated on AuthController.login and UserController.createUser/
+            updateUser, and seeding only ever encodes the 8-char literal "PASSWORD" — so a
+            > 72-char password is rejected with HTTP 400 VALIDATION_FAILED before BCrypt is
+            reached, making the CVE precondition unreachable through the validated REST
+            paths (this is why the severity is Major, not Critical). However, the FINAL
+            acceptance gate is VERSION-BASED ("no unpatched HIGH/CRITICAL dependency CVE"),
+            so the dependency MUST be moved to a fixed release regardless of reachability.
+            The @Size(max = 72) control is RETAINED as defense-in-depth.
+
+            WHY 6.3.8 (OSS) AND NOT A 6.2.x PATCH: the in-line fix 6.2.10 is a COMMERCIAL
+            release (Tanzu Spring Enterprise) and is NOT published to Maven Central
+            (verified: GET .../spring-security-crypto/6.2.10/...jar -> HTTP 404). The ONLY
+            OSS-available fixed releases on Maven Central are 6.3.8 and 6.4.4. 6.3.8 is the
+            NEAREST OSS-fixed line to the BOM-managed 6.2.x generation (6.3.x baselines on
+            Spring Framework 6.1+, satisfied by the FINDING 2 spring-framework 6.2.18
+            override), so it is the lowest-risk minor bump and is preferred over 6.4.4. This
+            mirrors exactly how FINDING 2 (spring-framework -> 6.2.18) and FINDING 5
+            (postgresql -> 42.7.11) were remediated: a version-based gate closed by moving
+            the affected coordinate to its nearest OSS-fixed release.
+
+            PARENT RETAINED (AAP section 0.5.1): the Spring Boot 3.2.12 parent BOM is NOT
+            bumped. This is a PROPERTY OVERRIDE only — `spring-security.version` is consumed
+            by the spring-boot-dependencies BOM, so re-pinning it moves spring-security-core
+            / -config / -web / -crypto (and the test-scoped spring-security-test) to 6.3.8
+            across the reactor while every other coordinate (Spring Framework 6.2.18, Spring
+            Batch 5.1.x, Hibernate 6.4.x, Tomcat 10.1.55, Jackson) stays as already pinned.
+            The stable Spring Security APIs CardDemo uses — the SecurityFilterChain lambda
+            DSL, BCryptPasswordEncoder (no-arg ctor + matches/encode), DaoAuthenticationProvider
+            (no-arg ctor + setUserDetailsService + setPasswordEncoder), @EnableMethodSecurity
+            / @PreAuthorize, and UserDetailsService — are unchanged in 6.3.8 (verified), so the
+            bump needs no source change. The full `mvn verify` suite (Surefire + Failsafe
+            Testcontainers) plus a live dev-profile boot were re-run to confirm the
+            6.3.8-on-3.2.12 pairing compiles, wires, and behaves correctly (login 200/401,
+            > 72-char password -> 400, admin authorization matrix intact).
+        -->
+        <spring-security.version>6.3.8</spring-security.version>
+    </properties>
+
+    <dependencies>
+        <!-- ===================== COMPILE-SCOPE STARTERS ===================== -->
+
+        <!-- Web / REST controllers: embedded Tomcat 10.1.x + Spring MVC @RestController. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Spring Data JPA + Hibernate ORM 6.4.x for the 12 repositories. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- Spring Security 6.2.x: SecurityFilterChain, BCryptPasswordEncoder, @PreAuthorize. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Spring Batch 5.1.x: Job, Step, JobLauncher, JobRegistry for the batch jobs. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <!-- Jakarta Bean Validation 3.0 for @Valid on request DTOs. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Actuator operational endpoints: /actuator/health, /info, /metrics. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- ===================== DATABASE & MIGRATION ===================== -->
+
+        <!--
+            PostgreSQL 15 JDBC driver; runtime-only. The Spring Boot 3.2.12 BOM pins the
+            42.6.x line (resolving to 42.6.2), which sits inside the affected range of
+            CVE-2026-42198 (see FINDING 5 in <properties>): a client-side DoS during
+            SCRAM-SHA-256 authentication where a malicious/compromised server can request an
+            unbounded PBKDF2 iteration count, exhausting client CPU and connection pools.
+            The `postgresql.version` property override re-pins the driver to 42.7.11 (the
+            patched release, which adds the scramMaxIterations cap) WITHOUT bumping the Boot
+            parent; the version is therefore intentionally OMITTED from this <dependency>
+            element so the property-driven BOM management applies. 42.7.x is also the driver
+            line AAP section 0.5.1 expected, and is fully compatible with PostgreSQL 15
+            (forward-compatible with 16+).
+        -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Flyway schema migration (BOM-managed 9.22.x; native PostgreSQL 15 support). -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+
+        <!-- ===================== API DOCUMENTATION ===================== -->
+
+        <!-- OpenAPI 3 + Swagger UI at /swagger-ui.html (explicitly versioned; not in the BOM). -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>${springdoc-openapi.version}</version>
+        </dependency>
+
+        <!-- ===================== JSON WEB TOKEN (JWT) ===================== -->
+
+        <!--
+            No standalone JWT library is declared. HS256 bearer-token creation and
+            verification are implemented by the dependency-free com.carddemo.util.JwtCodec
+            using only the JDK (javax.crypto.Mac / HMAC-SHA256, java.util.Base64 URL codec,
+            java.security.MessageDigest constant-time comparison) plus the Jackson
+            ObjectMapper already provided transitively by spring-boot-starter-web. This
+            keeps the production dependency graph entirely BOM-governed, satisfying the
+            final-checkpoint forbidden-dependency policy and AAP §0.5.1 (which did not
+            include a standalone JWT artifact). AuthService issues the tokens after a
+            successful BCrypt signon (replacing the plaintext compare in
+            app/cbl/COSGN00C.cbl L211-L257) and JwtAuthenticationFilter verifies them to
+            reconstruct the user identity (sub = CDEMO-USER-ID) and authorities
+            (userType 'A'/'U' -> ROLE_ADMIN/ROLE_USER) that the legacy mainframe carried
+            in the CICS COMMAREA (app/cpy/COCOM01Y.cpy L19-L44).
+        -->
+
+        <!-- ===================== PROVIDED (COMPILE-TIME ONLY) ===================== -->
+
+        <!--
+            Lombok: @RequiredArgsConstructor (constructor injection), @Getter/@Setter,
+            @Builder. provided + optional means it is on the compile classpath only and
+            is NOT propagated transitively or packaged into the runtime artifact.
+        -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- ===================== TEST ===================== -->
+
+        <!-- JUnit 5 Jupiter, Mockito, AssertJ, Spring Test (MockMvc). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- JobLauncherTestUtils / JobRepositoryTestUtils for batch parity tests. -->
+        <dependency>
+            <groupId>org.springframework.batch</groupId>
+            <artifactId>spring-batch-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- @WithMockUser / @WithUserDetails for security slice tests. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers PostgreSQL container for integration tests (*IT.java). -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- JUnit 5 integration for Testcontainers. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+                Java 17 compilation with -parameters. The <parameters>true</parameters>
+                flag is mandatory for Spring Framework 6.1 (Spring Boot 3.2), which no
+                longer deduces parameter names by parsing bytecode; without it,
+                @RequestParam / @PathVariable / @RequestHeader name resolution fails.
+
+                Lombok is registered as an annotation processor. An explicit
+                <version>${lombok.version}</version> is REQUIRED because the
+                BOM-managed maven-compiler-plugin is 3.11.0, and versions earlier
+                than 3.12.0 do not inherit annotationProcessorPaths versions from
+                dependency management. ${lombok.version} resolves via the Spring Boot BOM.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                    <parameters>true</parameters>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+
+            <!--
+                Executable JAR packaging via the default repackage goal (bound to the
+                package phase). Lombok is excluded from the repackaged artifact because
+                it is purely compile-time and must not be on the runtime classpath.
+            -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+
+            <!--
+                Surefire runs fast unit tests (*Test.java) on `mvn test`. Integration
+                tests (*IT.java) are explicitly excluded so they run only under Failsafe.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <includes>
+                        <include>**/*Test.java</include>
+                    </includes>
+                    <excludes>
+                        <exclude>**/*IT.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+
+            <!--
+                Failsafe runs integration tests (*IT.java) in the integration-test phase
+                and reports failures in the verify phase, so post-test cleanup (e.g.,
+                Testcontainers shutdown) always runs before the build is failed.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <includes>
+                        <include>**/*IT.java</include>
+                    </includes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

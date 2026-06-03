@@ -1,0 +1,334 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License.
+ */
+package com.carddemo.dto.transaction;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+
+import jakarta.validation.constraints.Digits;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
+
+import java.math.BigDecimal;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+/**
+ * Inbound request DTO for online transaction creation —
+ * {@code POST /api/transactions}.
+ *
+ * <p>Translates the COBOL {@code COTRN02C} (online add-transaction) program's
+ * BMS input screen ({@code app/cpy-bms/COTRN02.CPY}, input map {@code COTRN2AI})
+ * into a Spring REST request body. The original program's
+ * {@code ADD-TRANSACTION} paragraph ({@code app/cbl/COTRN02C.cbl} lines 442-466)
+ * builds a {@code TRAN-RECORD} ({@code app/cpy/CVTRA05Y.cpy}) from the screen
+ * input fields and server-generates the transaction ID by browsing the
+ * transaction file for the last key and adding 1.</p>
+ *
+ * <p><b>SERVER-GENERATED FIELDS EXCLUDED (PR-10):</b></p>
+ * <ul>
+ *   <li>{@code tranId} — 16-char identifier ({@code parmDate(10) + suffix(6)})
+ *       produced by {@code TransactionIdGenerator}; NEVER accepted from the
+ *       client.</li>
+ *   <li>{@code procTimestamp} — stamped by the server at processing time; NEVER
+ *       accepted from the client.</li>
+ * </ul>
+ *
+ * <p><b>CARDHOLDER IDENTIFICATION (COTRN02C VALIDATE-INPUT-KEY-FIELDS,
+ * lines 193-230):</b> Either {@code accountId} or {@code cardNumber} identifies
+ * the cardholder. When {@code accountId} is supplied the server resolves the
+ * card number via the cross-reference ({@code CardXrefRepository}); when only
+ * {@code cardNumber} is supplied the server resolves the account. {@code accountId}
+ * is the primary identifier and is mandatory in this DTO; {@code cardNumber} is an
+ * optional alternative.</p>
+ *
+ * <p><b>FIELD-LENGTH FIDELITY — BMS WIDTHS, NOT RECORD WIDTHS (PR-13):</b> For
+ * inbound payloads the field lengths mirror the narrower {@code COTRN02} BMS
+ * display widths rather than the wider {@code CVTRA05Y} record widths. Notably:
+ * {@code description} = 60 (BMS {@code TDESCI X(60)}) vs 100 (record),
+ * {@code merchantName} = 30 (BMS {@code MNAMEI X(30)}) vs 50 (record),
+ * {@code merchantCity} = 25 (BMS {@code MCITYI X(25)}) vs 50 (record). The
+ * response-side {@link com.carddemo.dto.transaction.TransactionDto} uses the full
+ * record widths.</p>
+ *
+ * <p><b>CRITICAL — PR-16 (BigDecimal for money):</b> {@code amount} is
+ * {@code java.math.BigDecimal}, NEVER {@code float}/{@code double}. It is
+ * constrained by {@code @Digits(integer = 9, fraction = 2)} to preserve the COBOL
+ * packed-decimal {@code TRAN-AMT PIC S9(09)V99} semantics exactly. The COBOL
+ * display format is {@code -99999999.99} / {@code +99999999.99} (12 chars with
+ * sign); the sign convention is positive = credit, negative = debit.</p>
+ *
+ * <p><b>CRITICAL — PR-11 (DB2 timestamp format preserved):</b> {@code origTimestamp}
+ * is an OPTIONAL {@code String} in DB2 external format
+ * {@code yyyy-MM-dd-HH.mm.ss.SS'0000'} (exactly 26 chars). If omitted, the server
+ * stamps the current time. (The BMS screen field {@code TORIGDTI} is only the
+ * 10-char {@code YYYY-MM-DD} date; this DTO accepts the full 26-char DB2 form so a
+ * caller may supply a precise origin timestamp.)</p>
+ *
+ * <p><b>CRITICAL — PR-28 (Jakarta EE namespace):</b> All validation annotations
+ * come from {@code jakarta.validation.constraints.*}, NEVER {@code javax.validation.*}.
+ * Validation is triggered by {@code @Valid} on the {@code TransactionController}
+ * handler; violations are mapped to HTTP 400 by {@code GlobalExceptionHandler}.</p>
+ *
+ * <p>This is a plain POJO with no dependency on the entity, repository, or service
+ * layers (DTO decoupling): it carries no {@code com.carddemo.*} imports and no JPA /
+ * persistence annotations. Boilerplate (getters, setters,
+ * {@code equals}/{@code hashCode}/{@code toString}, all-args + no-args constructors,
+ * and the fluent {@code builder()}) is generated by Lombok per PR-29; the no-args
+ * constructor additionally supports Jackson JSON deserialization of the request
+ * body.</p>
+ *
+ * <p><b>Downstream consumers:</b></p>
+ * <ul>
+ *   <li>{@code TransactionController.createTransaction(@Valid @RequestBody TransactionRequest)}</li>
+ *   <li>{@code TransactionService.create(TransactionRequest)}</li>
+ *   <li>{@code TransactionMapper.toEntity(TransactionRequest)} — handles the
+ *       {@code cardNumber} → {@code cardNum} name translation.</li>
+ * </ul>
+ *
+ * @see com.carddemo.dto.transaction.TransactionDto
+ */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+@Schema(
+    description = "Inbound payload for online transaction creation (POST /api/transactions). "
+        + "Mirrors COBOL COTRN02C/COTRN02 add-transaction screen. Either accountId or cardNumber "
+        + "is used to identify the cardholder (accountId looks up card via xref). Server generates "
+        + "tranId (16-char: parmDate(10)+suffix(6) per PR-10) and stamps procTimestamp."
+)
+public class TransactionRequest {
+
+    /**
+     * Account ID used to look up the associated card via xref (COBOL ACTIDINI PIC X(11)).
+     * Primary identifier — server uses this to find card number via CardXrefRepository.
+     * Required field. Maps to COBOL COTRN02C VALIDATE-INPUT-KEY-FIELDS (L196-L209).
+     */
+    @NotNull(message = "Account ID is required")
+    @Positive(message = "Account ID must be positive")
+    @Max(value = 99_999_999_999L, message = "Account ID must not exceed 11 digits")
+    @Schema(
+        description = "Account ID for cardholder lookup (11-digit max per COBOL ACTIDINI PIC X(11))",
+        example = "10000000001",
+        requiredMode = Schema.RequiredMode.REQUIRED
+    )
+    private Long accountId;
+
+    /**
+     * Card number (COBOL CARDNINI PIC X(16) — TRAN-CARD-NUM PIC X(16) in record).
+     * Optional alternative to accountId. If both provided, accountId takes precedence.
+     * 16-digit numeric string.
+     */
+    @Size(min = 16, max = 16, message = "Card number must be exactly 16 digits")
+    @Pattern(regexp = "\\d{16}", message = "Card number must contain only digits")
+    @Schema(
+        description = "16-digit card number (optional alternative to accountId per COBOL OR-logic)",
+        example = "4111111111111111",
+        minLength = 16,
+        maxLength = 16,
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private String cardNumber;
+
+    /**
+     * Transaction type code (COBOL TTYPCDI PIC X(2) — TRAN-TYPE-CD PIC X(02) in record).
+     * Foreign key to transaction_types table. Despite PIC X(2), COBOL validates it must be NUMERIC
+     * (see COTRN02C L323-L328).
+     */
+    @NotBlank(message = "Transaction type code is required")
+    @Size(min = 2, max = 2, message = "Transaction type code must be exactly 2 characters")
+    @Pattern(regexp = "\\d{2}", message = "Transaction type code must be 2 numeric digits")
+    @Schema(
+        description = "2-digit transaction type code (FK to transaction_types)",
+        example = "01",
+        minLength = 2,
+        maxLength = 2,
+        requiredMode = Schema.RequiredMode.REQUIRED
+    )
+    private String typeCd;
+
+    /**
+     * Transaction category code (COBOL TCATCDI PIC X(4) BMS / TRAN-CAT-CD PIC 9(04) record).
+     * Fixed 4-character numeric string preserving leading zeros, matching the entity
+     * {@code CHAR(4)} column (PR-13). Modeled as {@code String} (not {@code Integer}) so
+     * values such as {@code "0001"} retain their leading zeros.
+     */
+    @NotNull(message = "Category code is required")
+    @Size(min = 4, max = 4, message = "Category code must be exactly 4 characters")
+    @Pattern(regexp = "\\d{4}", message = "Category code must be exactly 4 numeric digits")
+    @Schema(
+        description = "4-digit numeric transaction category code (fixed-width, leading zeros preserved; "
+            + "FK to transaction_categories)",
+        example = "5411",
+        minLength = 4,
+        maxLength = 4,
+        pattern = "\\d{4}",
+        requiredMode = Schema.RequiredMode.REQUIRED
+    )
+    private String categoryCd;
+
+    /**
+     * Transaction source (COBOL TRNSRCI PIC X(10) — TRAN-SOURCE PIC X(10)).
+     * Free-form text identifying origin channel (e.g., POS, WEB, MOBILE).
+     *
+     * <p><b>MANDATORY (PR-03):</b> the original COBOL {@code COTRN02C} paragraph
+     * {@code VALIDATE-INPUT-DATA-FIELDS} (app/cbl/COTRN02C.cbl L264-268) rejects an
+     * empty source with {@code "Source can NOT be empty..."}. The {@code @NotBlank}
+     * constraint enforces that same contract here so the OpenAPI schema, Jakarta Bean
+     * Validation, and {@code TransactionService.validateInputFields} all agree that
+     * {@code source} is required.</p>
+     */
+    @NotBlank(message = "Source is required")
+    @Size(max = 10, message = "Source must not exceed 10 characters")
+    @Schema(
+        description = "Transaction source/channel (10-char free-form, e.g. POS/WEB/MOBILE). "
+            + "Mandatory — mirrors the COBOL COTRN02C TRAN-SOURCE edit (\"Source can NOT be empty...\").",
+        example = "POS",
+        maxLength = 10,
+        requiredMode = Schema.RequiredMode.REQUIRED
+    )
+    private String source;
+
+    /**
+     * Transaction description (COBOL TDESCI PIC X(60) BMS — TRAN-DESC PIC X(100) record).
+     * IMPORTANT: BMS limits inbound to 60 chars per AAP folder spec (record allows 100).
+     */
+    @NotBlank(message = "Description is required")
+    @Size(max = 60, message = "Description must not exceed 60 characters")
+    @Schema(
+        description = "Transaction description (BMS-limited to 60 chars on input per COTRN02 TDESCI X(60))",
+        example = "Grocery purchase at Whole Foods",
+        maxLength = 60,
+        requiredMode = Schema.RequiredMode.REQUIRED
+    )
+    private String description;
+
+    /**
+     * Transaction amount (COBOL TRNAMTI PIC X(12) display / TRAN-AMT PIC S9(09)V99 record).
+     * MUST be BigDecimal per PR-16. NEVER use float or double for money.
+     * Format: max 9 integer digits, exactly 2 decimal places (matches COBOL S9(09)V99).
+     * COBOL display format: -99999999.99 or +99999999.99 (12 chars including sign).
+     */
+    @NotNull(message = "Amount is required")
+    @Digits(integer = 9, fraction = 2, message = "Amount must have at most 9 integer digits and 2 decimal places")
+    @Schema(
+        description = "Transaction amount (BigDecimal, scale=2). Maps COBOL S9(09)V99 - max ±999999999.99",
+        example = "123.45",
+        type = "number",
+        format = "decimal",
+        requiredMode = Schema.RequiredMode.REQUIRED
+    )
+    private BigDecimal amount;
+
+    /**
+     * Merchant ID (COBOL MIDI PIC X(9) BMS — TRAN-MERCHANT-ID PIC 9(09) record).
+     * 9-digit numeric merchant identifier.
+     */
+    @NotNull(message = "Merchant ID is required")
+    @Min(value = 0, message = "Merchant ID must be 0 or greater")
+    @Max(value = 999_999_999L, message = "Merchant ID must not exceed 9 digits")
+    @Schema(
+        description = "9-digit merchant identifier",
+        example = "123456789",
+        minimum = "0",
+        maximum = "999999999",
+        requiredMode = Schema.RequiredMode.REQUIRED
+    )
+    private Long merchantId;
+
+    /**
+     * Merchant name (COBOL MNAMEI PIC X(30) BMS — TRAN-MERCHANT-NAME PIC X(50) record).
+     * IMPORTANT: BMS limits inbound to 30 chars per AAP folder spec (record allows 50).
+     */
+    @Size(max = 30, message = "Merchant name must not exceed 30 characters")
+    @Schema(
+        description = "Merchant name (BMS-limited to 30 chars on input per COTRN02 MNAMEI X(30))",
+        example = "Whole Foods Market",
+        maxLength = 30,
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private String merchantName;
+
+    /**
+     * Merchant city (COBOL MCITYI PIC X(25) BMS — TRAN-MERCHANT-CITY PIC X(50) record).
+     * IMPORTANT: BMS limits inbound to 25 chars per AAP folder spec (record allows 50).
+     */
+    @Size(max = 25, message = "Merchant city must not exceed 25 characters")
+    @Schema(
+        description = "Merchant city (BMS-limited to 25 chars on input per COTRN02 MCITYI X(25))",
+        example = "Austin",
+        maxLength = 25,
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private String merchantCity;
+
+    /**
+     * Merchant ZIP code (COBOL MZIPI PIC X(10) — TRAN-MERCHANT-ZIP PIC X(10)).
+     */
+    @Size(max = 10, message = "Merchant ZIP must not exceed 10 characters")
+    @Schema(
+        description = "Merchant ZIP code (US 5 or 9 digit; international free-form)",
+        example = "78701",
+        maxLength = 10,
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private String merchantZip;
+
+    /**
+     * Origin timestamp in DB2 external format (COBOL TRAN-ORIG-TS PIC X(26)).
+     * OPTIONAL — server stamps via {@code DateConversionUtil.DB2_TIMESTAMP_FORMATTER}
+     * if omitted (PR-11).
+     *
+     * <p>Format: {@code yyyy-MM-dd-HH.mm.ss.SS'0000'} — exactly 26 chars, byte-for-byte
+     * faithful to the COBOL {@code DB2-FORMAT-TS} field, which is 26 chars with a
+     * 2-digit centisecond component ({@code DB2-MIL PIC 9(02)}) followed by the literal
+     * {@code 0000}. This length and pattern align with the canonical output of
+     * {@code com.carddemo.util.DateConversionUtil} (which documents and emits a
+     * 26-character DB2 timestamp, e.g. {@code 2022-07-18-19.27.53.120000}) so a
+     * client-supplied value is accepted by the same contract the server produces.</p>
+     *
+     * <p>Note: the BMS {@code TORIGDTI} field is only the 10-char {@code YYYY-MM-DD}
+     * date on the 3270 screen; this DTO accepts the full 26-char DB2 timestamp.</p>
+     */
+    @Size(min = 26, max = 26, message = "Origin timestamp must be exactly 26 characters in DB2 format")
+    @Pattern(
+        regexp = "\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{2}0000",
+        message = "Origin timestamp must match DB2 format yyyy-MM-dd-HH.mm.ss.SS'0000'"
+    )
+    @Schema(
+        description = "Origin timestamp in DB2 format yyyy-MM-dd-HH.mm.ss.SS'0000' (26 chars; "
+            + "matches DateConversionUtil output). Optional — server stamps current time if omitted.",
+        example = "2024-01-15-14.30.45.120000",
+        minLength = 26,
+        maxLength = 26,
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        nullable = true
+    )
+    private String origTimestamp;
+}
