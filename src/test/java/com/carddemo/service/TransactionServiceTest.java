@@ -25,6 +25,7 @@ import com.carddemo.exception.AccountNotFoundException;
 import com.carddemo.exception.ExpiredAccountException;
 import com.carddemo.exception.InvalidCardException;
 import com.carddemo.exception.OverlimitException;
+import com.carddemo.exception.TransactionValidationException;
 import com.carddemo.mapper.TransactionMapper;
 import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
@@ -349,19 +350,6 @@ class TransactionServiceTest {
         }
 
         @Test
-        @DisplayName("Resolves by account id when no card supplied; empty xref list still raises code 100")
-        void shouldRejectWithCode100WhenAccountHasNoCard() {
-            when(cardXrefRepository.findByAccountId(VALID_ACCOUNT_ID)).thenReturn(List.of());
-
-            TransactionRequest request = buildValidRequest();
-            request.setCardNumber(null); // force the account-id resolution branch
-
-            assertThatThrownBy(() -> transactionService.addTransaction(request))
-                .isInstanceOf(InvalidCardException.class)
-                .hasMessage("INVALID CARD NUMBER FOUND");
-        }
-
-        @Test
         @DisplayName("On a card miss, never runs the validator and never persists (short-circuit precedence)")
         void shouldNotProceedPastCardLookupOnCardFailure() {
             when(cardXrefRepository.findById(MISSING_CARD)).thenReturn(Optional.empty());
@@ -374,6 +362,56 @@ class TransactionServiceTest {
 
             verify(transactionValidator, never()).validate(any());
             verifyNoInteractions(transactionRepository, transactionMapper, transactionIdGenerator);
+        }
+    }
+
+    // ==========================================================================================
+    // QA Issue 3 — account id / card number consistency check (REST-only; no COBOL code).
+    // When BOTH identifiers are supplied they must agree; a card that does not belong to the
+    // supplied account is rejected with a 400 TransactionValidationException and nothing is saved.
+    // ==========================================================================================
+
+    @Nested
+    @DisplayName("QA Issue 3: account id / card number mismatch is rejected (HTTP 400)")
+    class AccountCardMismatch {
+
+        /** A valid, seeded account id that is DIFFERENT from the one the resolved card belongs to. */
+        private static final Long MISMATCHED_ACCOUNT_ID = 99_999_999_999L;
+
+        @Test
+        @DisplayName("Rejects when the supplied card resolves to a DIFFERENT account than accountId")
+        void shouldRejectWhenCardDoesNotBelongToSuppliedAccount() {
+            // The card xref resolves successfully but to VALID_ACCOUNT_ID, while the request supplies
+            // a different (mismatched) accountId. accountId is authoritative, so this is a deterministic
+            // validation failure -> 400 with a PAN-free message; no transaction is created.
+            stubCardLookupSuccess(); // findById(VALID_CARD) -> xref with accountId == VALID_ACCOUNT_ID
+
+            TransactionRequest request = buildValidRequest();
+            request.setCardNumber(VALID_CARD);
+            request.setAccountId(MISMATCHED_ACCOUNT_ID);
+
+            assertThatThrownBy(() -> transactionService.addTransaction(request))
+                .isInstanceOf(TransactionValidationException.class)
+                .hasMessage("Card number does not belong to the supplied account id");
+
+            verify(transactionValidator, never()).validate(any());
+            verify(transactionRepository, never()).save(any(Transaction.class));
+        }
+
+        @Test
+        @DisplayName("Accepts when the supplied card and accountId are consistent (no mismatch)")
+        void shouldNotRejectWhenCardMatchesSuppliedAccount() {
+            // Sanity counter-test: when both identifiers agree, the consistency check passes and the
+            // flow proceeds normally (the happy-path stubs drive it through to a successful save).
+            stubHappyPath();
+
+            TransactionRequest request = buildValidRequest();
+            request.setCardNumber(VALID_CARD);
+            request.setAccountId(VALID_ACCOUNT_ID); // matches the xref's account
+
+            transactionService.addTransaction(request);
+
+            verify(transactionRepository).save(any(Transaction.class));
         }
     }
 
@@ -407,6 +445,26 @@ class TransactionServiceTest {
 
             assertThatThrownBy(() -> transactionService.addTransaction(buildValidRequest()))
                 .isInstanceOf(AccountNotFoundException.class);
+
+            verify(transactionRepository, never()).save(any(Transaction.class));
+        }
+
+        @Test
+        @DisplayName("QA Issue 5: account id supplied with no card xref -> 404 AccountNotFoundException "
+                + "(NOT code 100 / 'INVALID CARD NUMBER FOUND')")
+        void shouldReturnNotFoundWhenAccountHasNoCardXref() {
+            // An existing account that has no card cross-reference is a NOT-FOUND condition, not an
+            // invalid-explicit-card condition. The account-id resolution branch must surface a 404
+            // (AccountNotFoundException carries COBOL code 101 -> HTTP 404) with a domain-accurate
+            // message, distinguishing it from an explicitly supplied bad card number (code 100 / 400).
+            when(cardXrefRepository.findByAccountId(VALID_ACCOUNT_ID)).thenReturn(List.of());
+
+            TransactionRequest request = buildValidRequest();
+            request.setCardNumber(null); // force the account-id resolution branch
+
+            assertThatThrownBy(() -> transactionService.addTransaction(request))
+                .isInstanceOf(AccountNotFoundException.class)
+                .hasMessage("No card found for account: " + VALID_ACCOUNT_ID);
 
             verify(transactionRepository, never()).save(any(Transaction.class));
         }

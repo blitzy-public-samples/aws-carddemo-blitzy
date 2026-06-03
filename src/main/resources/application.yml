@@ -172,6 +172,18 @@ logging:
     org.springframework.security: INFO
     org.springframework.batch: INFO
     org.hibernate: WARN
+    # QA Issue 7 (observability) — silence the redundant ERROR/stack-trace noise emitted for an
+    # EXPECTED optimistic-lock conflict. When two requests update a @Version entity concurrently,
+    # the versioned "update ... where acct_id=? and version=?" matches 0 rows and Hibernate's
+    # batch executor logs "HHH100501: Exception executing batch [org.hibernate.StaleStateException
+    # ...]" at ERROR *before* the exception unwinds. That conflict is already handled correctly:
+    # GlobalExceptionHandler returns HTTP 409 and logs it at WARN with path/entity correlation
+    # context (no stack trace). Logback levels are TRACE<DEBUG<INFO<WARN<ERROR<OFF, so OFF is the
+    # only level above ERROR and thus the only way to suppress this specific pre-throw ERROR line.
+    # This is scoped to the batch-executor logger ONLY — genuine batch/flush failures still
+    # propagate as thrown exceptions and are logged by Spring Batch step/job failure handling or
+    # by GlobalExceptionHandler, so no real error diagnostics are lost.
+    org.hibernate.orm.jdbc.batch: OFF
     org.flywaydb: INFO
   pattern:
     # Human-readable default; the prod profile OVERRIDES with a JSON-structured pattern.

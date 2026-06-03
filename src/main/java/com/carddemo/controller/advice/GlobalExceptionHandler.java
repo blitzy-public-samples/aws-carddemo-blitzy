@@ -7,6 +7,7 @@ import com.carddemo.exception.ExpiredAccountException;
 import com.carddemo.exception.InvalidCardException;
 import com.carddemo.exception.OverlimitException;
 import com.carddemo.exception.TransactionValidationException;
+import com.carddemo.exception.UserNotFoundException;
 import com.carddemo.util.CardNumberMasker;
 
 import jakarta.persistence.OptimisticLockException;
@@ -308,6 +309,40 @@ public class GlobalExceptionHandler {
         ErrorResponse body = ErrorResponse.builder()
                 .status(HttpStatus.NOT_FOUND.value())
                 .code("DISCLOSE_GROUP_NOT_FOUND")
+                .message(ex.getMessage())
+                .path(request.getRequestURI())
+                .timestamp(LocalDateTime.now())
+                .build();
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
+    }
+
+    /**
+     * Handles {@link UserNotFoundException} &mdash; an admin user-administration lookup
+     * ({@code GET}/{@code PUT}/{@code DELETE} on {@code /api/admin/users/{userId}})
+     * referenced a user id that does not exist in the {@code users} table.
+     *
+     * <p>Maps to {@code 404 Not Found} with the symbolic code
+     * {@code "USER_NOT_FOUND"} and the user-domain message {@code "User not found: <id>"}.
+     * This deliberately does <em>not</em> reuse the account-domain code {@code 101} /
+     * {@code "Account not found: <id>"} payload (which is what {@code UserService} produced
+     * before this handler existed): user-not-found and account-not-found are distinct
+     * domain failures and must be distinguishable by API consumers and operators. Logged at
+     * {@code WARN} without a stack trace, consistent with the other not-found
+     * ({@code 404}) handlers such as {@link #handleAccountNotFound} and
+     * {@link #handleDiscloseGroupNotFound}.</p>
+     *
+     * @param ex      the user-not-found exception
+     * @param request the current request, used to populate the error {@code path}
+     * @return a {@code 404} {@link ErrorResponse}
+     */
+    @ExceptionHandler(UserNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleUserNotFound(
+            UserNotFoundException ex,
+            HttpServletRequest request) {
+        log.warn("User not found at {}: {}", request.getRequestURI(), ex.getMessage());
+        ErrorResponse body = ErrorResponse.builder()
+                .status(HttpStatus.NOT_FOUND.value())
+                .code(UserNotFoundException.CODE)
                 .message(ex.getMessage())
                 .path(request.getRequestURI())
                 .timestamp(LocalDateTime.now())

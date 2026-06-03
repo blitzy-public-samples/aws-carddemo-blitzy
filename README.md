@@ -3,6 +3,7 @@
 - [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-carddemo-application)
 - [Java Spring Boot 3.2 Modernization](#java-spring-boot-32-modernization)
   - [Java Technology Stack](#java-technology-stack)
+  - [Platform Support \& Security Maintenance](#platform-support--security-maintenance)
   - [Prerequisites](#prerequisites)
   - [PostgreSQL Setup](#postgresql-setup)
   - [Database Schema via Flyway](#database-schema-via-flyway)
@@ -61,6 +62,49 @@ The Java implementation **preserves 100% of the original CardDemo business logic
 | API Docs | springdoc-openapi 2.3.0 (Swagger UI) |
 | Observability | Spring Boot Actuator |
 | Testing | JUnit 5, Mockito, AssertJ, Spring Batch Test, Testcontainers (PostgreSQL) |
+
+## Platform Support & Security Maintenance
+
+The framework baseline is **intentionally pinned to Spring Boot 3.2.12** to match the
+project specification (AAP §0.5.1). This is a deliberate, documented constraint — the
+Spring Boot **parent POM is never bumped** as part of routine security work. Operators and
+future maintainers should be aware of the following lifecycle considerations:
+
+- **Spring Boot 3.2.x is no longer the current active OSS line.** Free community support
+  for the 3.2 branch has ended, so newly disclosed CVEs in Spring Boot's managed
+  dependencies are not automatically picked up by simply waiting for a 3.2.x patch release.
+- **Hibernate ORM 6.4.x** (resolved transitively by the 3.2.12 BOM) is likewise an older
+  stream. It is fully functional for this demonstration workload but carries the same
+  "older line" maintenance characteristics.
+
+### How security CVEs are remediated on the pinned line
+
+Rather than bumping the Spring Boot parent, individual transitive dependency versions are
+overridden **surgically** via `<properties>` entries in [`pom.xml`](pom.xml). Each override
+is annotated with the specific advisory it closes. The current overrides are:
+
+| Dependency | BOM-managed | Overridden to | Advisory closed |
+| :--------- | :---------- | :------------ | :-------------- |
+| Apache Tomcat (embedded) | 10.1.33 | **10.1.55** | Embedded Tomcat HIGH advisories |
+| Spring Framework | 6.1.21 | **6.2.18** | CVE-2025-41249 (HIGH — annotation/authorization) |
+| PostgreSQL JDBC | 42.6.2 | **42.7.11** | CVE-2026-42198 (HIGH — SCRAM-SHA-256 client DoS) |
+| Logback | 1.4.14 | **1.3.15** | CVE-2024-12798 / related |
+| Apache Commons Lang3 | 3.13.0 | **3.19.0** | CVE-2025-48924 (uncontrolled recursion DoS) |
+
+> The Spring Framework override to the `6.2.x` line is required because the OSS fix for
+> CVE-2025-41249 is only available from 6.2.11 onward — the `6.1.x` line's fixed release is
+> commercial-only and is not published to Maven Central. Spring Framework maintains binary
+> backward compatibility within the 6.x generation, so 6.2.18 runs on the 3.2.12 parent;
+> this combination is exercised by the full unit + Testcontainers integration test suites.
+
+### Recommended forward plan
+
+For production adoption beyond this demonstration, plan a **controlled upgrade** to a
+currently supported Spring Boot line (which brings supported Spring Framework, Spring
+Security, and Hibernate streams), **or** subscribe to a commercial support / extended
+security-patch offering for the pinned line. Until then, the surgical-override strategy
+above keeps the dependency graph free of known HIGH/CRITICAL advisories without violating
+the AAP-mandated parent pin.
 
 ## Prerequisites
 

@@ -15,6 +15,7 @@ import com.carddemo.exception.AccountNotFoundException;
 import com.carddemo.exception.ExpiredAccountException;
 import com.carddemo.exception.InvalidCardException;
 import com.carddemo.exception.OverlimitException;
+import com.carddemo.exception.TransactionValidationException;
 import com.carddemo.mapper.TransactionMapper;
 import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
@@ -271,12 +272,18 @@ public class TransactionService {
      *
      * @param request the inbound transaction request (validated at the controller via {@code @Valid})
      * @return the persisted transaction as a {@link TransactionDto}
-     * @throws IllegalArgumentException if a required field is missing
-     *                                  (see {@link #validateInputFields(TransactionRequest)})
-     * @throws InvalidCardException     code 100 — the card cross-reference lookup fails
-     * @throws AccountNotFoundException code 101 — the account lookup fails
-     * @throws ExpiredAccountException  code 103 — the account expired before the transaction date
-     * @throws OverlimitException       code 102 — the projected balance exceeds the credit limit
+     * @throws IllegalArgumentException        if a required field is missing
+     *                                         (see {@link #validateInputFields(TransactionRequest)})
+     * @throws InvalidCardException            code 100 — an explicitly supplied card number has no
+     *                                         cross-reference (HTTP 400)
+     * @throws TransactionValidationException  HTTP 400 — both {@code accountId} and {@code cardNumber}
+     *                                         were supplied but the card does not belong to that
+     *                                         account (QA Issue 3; PAN-free message)
+     * @throws AccountNotFoundException        code 101 — the account lookup fails, OR an
+     *                                         {@code accountId}-only request references an account
+     *                                         that has no card cross-reference (QA Issue 5; HTTP 404)
+     * @throws ExpiredAccountException         code 103 — the account expired before the transaction date
+     * @throws OverlimitException              code 102 — the projected balance exceeds the credit limit
      */
     @Transactional
     public TransactionDto addTransaction(TransactionRequest request) {
@@ -294,15 +301,39 @@ public class TransactionService {
         // Step 1: card cross-reference lookup (CBTRN02C 1500-A-LOOKUP-XREF, L380-L392) -> code 100.
         // COTRN02C VALIDATE-INPUT-KEY-FIELDS resolves the cardholder by card number OR account id;
         // either route ultimately yields the cross-reference record (and thus the account id).
+        // accountId is the PRIMARY/authoritative identifier (TransactionRequest DTO contract:
+        // "If both provided, accountId takes precedence"); cardNumber is an optional alternative.
         String requestedCardNumber = request.getCardNumber();
+        Long requestedAccountId = request.getAccountId();
         CardXref xref;
         if (requestedCardNumber != null && !requestedCardNumber.isBlank()) {
+            // Card number supplied: resolve the cross-reference by card number. A miss is an
+            // invalid explicit card number -> code 100 / HTTP 400 (unchanged, preserves PR-03).
             xref = cardXrefRepository.findById(requestedCardNumber)
                 .orElseThrow(InvalidCardException::new);
+            // QA Issue 3 — consistency check. When BOTH accountId and cardNumber are supplied they
+            // must agree: accountId is authoritative, so a card that does not belong to the supplied
+            // account is a deterministic, PAN-free validation failure (-> HTTP 400 via the
+            // TransactionValidationException fallback handler, code 0). This closes the gap where the
+            // supplied accountId was silently ignored and a transaction was created against the card
+            // regardless of the mismatch. (requestedAccountId may be null when only a card number was
+            // supplied; in that card-only case there is nothing to reconcile and the check is skipped.)
+            if (requestedAccountId != null
+                && !requestedAccountId.equals(xref.getAccountId())) {
+                throw new TransactionValidationException(
+                    "Card number does not belong to the supplied account id");
+            }
         } else {
-            xref = cardXrefRepository.findByAccountId(request.getAccountId()).stream()
+            // Account-id-only path: resolve the cardholder's card via the account cross-reference.
+            // QA Issue 5 — an existing account that has no card cross-reference (or simply no card)
+            // is a NOT-FOUND condition, not an invalid-card condition. Surface HTTP 404 with a
+            // domain-accurate message (AccountNotFoundException carries COBOL code 101 -> 404) rather
+            // than the previous InvalidCardException (code 100 / HTTP 400), so the three cases
+            // (invalid explicit card, missing account-card xref, missing account) are distinguishable.
+            xref = cardXrefRepository.findByAccountId(requestedAccountId).stream()
                 .findFirst()
-                .orElseThrow(InvalidCardException::new);
+                .orElseThrow(() -> AccountNotFoundException.withMessage(
+                    "No card found for account: " + requestedAccountId));
         }
         String resolvedCardNumber = xref.getXrefCardNum();
 

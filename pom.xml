@@ -47,8 +47,42 @@
         <!--
             springdoc-openapi is the only dependency NOT managed by the Spring Boot
             3.2.12 BOM, so its version is pinned explicitly here.
+
+            FINDING 9 (CRITICAL regression of the FINDING 2 fix) — springdoc-openapi
+            2.3.0 -> 2.8.6. springdoc 2.3.0 (released Dec 2023, built against Spring
+            Framework 6.1.x — the version the Spring Boot 3.2.12 BOM ships) calls the
+            org.springframework.web.method.ControllerAdviceBean(Object) constructor,
+            which Spring Framework 6.2.x REMOVED. Once FINDING 2 above re-pinned Spring
+            Framework to 6.2.18, springdoc 2.3.0 became binary-incompatible: at runtime,
+            generating the OpenAPI document (springdoc scans every @ControllerAdvice,
+            incl. GlobalExceptionHandler, in GenericResponseService#getGenericMapResponse)
+            throws "java.lang.NoSuchMethodError: 'void
+            org.springframework.web.method.ControllerAdviceBean.<init>(java.lang.Object)'"
+            -> GET /v3/api-docs returns HTTP 500 and Swagger UI shows "Failed to load API
+            definition". The unit/integration suites did NOT catch this because OpenAPI
+            document generation is a runtime-only reflective operation never exercised by
+            the controller MockMvc / service / batch / Testcontainers tests.
+
+            WHY 2.8.6: the springdoc 2.8.x line is built against Spring Framework 6.2 /
+            Spring Boot 3.5 and uses the CURRENT ControllerAdviceBean constructor
+            signatures, so it is the line that restores compatibility with the 6.2.18
+            override. (springdoc 2.5.0 and 2.6.0 still call the removed constructor and do
+            NOT fix the regression — verified against upstream issue reports.) 2.8.6 is a
+            conservative, independently field-validated 2.8.x patch known to work
+            end-to-end on the Spring-Framework-6.2.x line; it resolves cleanly from Maven
+            Central (verified: `mvn dependency:get
+            org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.6` -> BUILD SUCCESS).
+            OpenApiConfig only uses the stable io.swagger.v3.oas.models.* API (OpenAPI /
+            Info / Components / SecurityScheme / Server) — no springdoc-internal types —
+            so the bump needs no source change. springdoc 2.8.x bundles a newer
+            swagger-core (>=2.2.42) whose commons-lang3 floor is already satisfied by the
+            FINDING 4 commons-lang3 3.19.0 override.
+
+            PARENT RETAINED (AAP section 0.5.1): this is a PROPERTY OVERRIDE only — the
+            Spring Boot 3.2.12 parent is NOT bumped and the FINDING 2 Spring Framework
+            6.2.18 security fix is NOT reverted (reverting would re-open CVE-2025-41249).
         -->
-        <springdoc-openapi.version>2.3.0</springdoc-openapi.version>
+        <springdoc-openapi.version>2.8.6</springdoc-openapi.version>
 
         <!--
             ================== SECURITY CVE REMEDIATION OVERRIDES ==================
@@ -72,17 +106,45 @@
         <tomcat.version>10.1.55</tomcat.version>
 
         <!--
-            FINDING 2 (MINOR) — Spring Framework 6.1.15 -> 6.1.21 (the final OSS 6.1.x
-            release). Closes CVE-2025-41234 (reflected file download via Content-
-            Disposition). CVE-2025-41242 (path traversal on NON-compliant containers;
-            embedded Tomcat is compliant) and CVE-2025-41249 (method-security bypass over
-            GENERIC superclass hierarchies; CardDemo's @PreAuthorize is on the concrete
-            UserController / BatchAdminController) are confirmed NON-EXPLOITABLE here and
-            are only fixed in the 6.2.x line, which cannot be adopted without abandoning
-            the AAP-mandated Spring Boot 3.2.12 parent. Staying on 6.1.21 keeps the
-            framework within the line Spring Boot 3.2.12 was built and tested against.
+            FINDING 2 (CRITICAL, gate-failing) — Spring Framework 6.1.21 -> 6.2.18.
+            6.1.21 sits inside the affected range of CVE-2025-41249 (HIGH, CVSS 7.5 —
+            "Spring Framework annotation detection mechanism may result in improper
+            authorization": method-security annotations on methods declared in generic
+            superclasses/interfaces with UNBOUNDED generics may be skipped). The affected
+            range is 5.3.0-5.3.44, 6.1.0-6.1.22, and 6.2.0-6.2.10.
+
+            EXPLOITABILITY vs THE VERSION-BASED GATE: CardDemo applies @PreAuthorize on the
+            CONCRETE UserController / BatchAdminController (not on a generic superclass), so
+            the bypass pattern is not reachable at runtime — the QA re-test confirmed the
+            authorization matrix still passes. However, the FINAL acceptance gate is
+            VERSION-BASED ("no unpatched HIGH/CRITICAL dependency CVE"), so the dependency
+            MUST be moved to a fixed release regardless of reachability.
+
+            WHY 6.2.18 (OSS) AND NOT A 6.1.x PATCH: OSS support for the 6.1.x generation has
+            ENDED. The CVE-2025-41249 fix was backported only to the COMMERCIAL releases
+            5.3.45 and 6.1.23 (Tanzu Spring Enterprise) — neither is published to Maven
+            Central (verified: `mvn dependency:get org.springframework:spring-core:6.1.23`
+            FAILS to resolve). The ONLY OSS-available fixed line is 6.2.11+; 6.2.18 is the
+            latest 6.2.x patch (consistent with the "latest patch of the line" convention
+            used for tomcat 10.1.55 above) and also carries every 6.2.x fix after 6.2.11.
+
+            PARENT RETAINED (AAP section 0.5.1): the Spring Boot 3.2.12 parent BOM is NOT
+            bumped. This is a PROPERTY OVERRIDE only — `spring-framework.version` is consumed
+            by the spring-boot-dependencies BOM, so re-pinning it moves spring-core / -web /
+            -webmvc / -context / -tx / -orm / -aop etc. to 6.2.18 across the reactor while
+            every other coordinate (Spring Security 6.2.8, Spring Batch 5.1.x, Hibernate
+            6.4.x, Tomcat 10.1.55, Jackson) stays BOM-managed. Spring Framework maintains
+            backward compatibility within the 6.x line, and the full `mvn verify` suite
+            (Surefire + Failsafe Testcontainers) plus a live dev-profile boot were re-run to
+            confirm the 6.2.18-on-3.2.12 pairing compiles, wires, and behaves correctly.
+
+            Companion CVE-2025-41248 affects Spring Security 6.4.0-6.4.9 / 6.5.0-6.5.3 only;
+            the BOM-managed Spring Security 6.2.8 here is NOT in range, so it is left as-is.
+            CVE-2025-41234 (RFD via Content-Disposition, fixed in 6.1.21/6.2.8) remains
+            closed at 6.2.18; CVE-2025-41242 (path traversal on NON-compliant servlet
+            containers; embedded Tomcat is compliant) is likewise resolved on this line.
         -->
-        <spring-framework.version>6.1.21</spring-framework.version>
+        <spring-framework.version>6.2.18</spring-framework.version>
 
         <!--
             FINDING 3 (MINOR) — Logback 1.4.14 -> 1.3.15. Closes CVE-2024-12798
@@ -124,6 +186,23 @@
             override re-pins it without needing an explicit <dependencyManagement> entry.
         -->
         <commons-lang3.version>3.19.0</commons-lang3.version>
+
+        <!--
+            FINDING 5 (CRITICAL, gate-failing) — PostgreSQL JDBC driver 42.6.2 -> 42.7.11.
+            The Spring Boot 3.2.12 BOM pins pgjdbc to the 42.6.x line (42.6.2), which sits
+            inside the affected range of CVE-2026-42198 (HIGH): >=42.2.0,<42.7.11. The flaw
+            is a client-side CPU/connection-pool exhaustion (DoS) during SCRAM-SHA-256
+            authentication — a malicious or compromised PostgreSQL server can advertise an
+            unbounded PBKDF2 iteration count, which the pre-fix client honours without limit.
+            42.7.11 (the latest 42.7.x release and the patched line; verified downloadable
+            from Maven Central) introduces a bounded iteration cap, closing the advisory.
+            `postgresql.version` IS managed by the Spring Boot BOM, so this property override
+            re-pins the driver across BOTH the runtime <dependency> and the Testcontainers
+            postgresql artifact WITHOUT bumping the AAP-mandated Spring Boot 3.2.12 parent.
+            42.7.x is also the driver line AAP section 0.5.1 expected, and is fully
+            compatible with PostgreSQL 15 (forward-compatible with 16+).
+        -->
+        <postgresql.version>42.7.11</postgresql.version>
     </properties>
 
     <dependencies>
@@ -168,12 +247,17 @@
         <!-- ===================== DATABASE & MIGRATION ===================== -->
 
         <!--
-            PostgreSQL 15 JDBC driver; runtime-only. The version is intentionally
-            governed by the Spring Boot 3.2.12 BOM (which pins the 42.6.x line, currently
-            resolving to 42.6.2) rather than overridden here, keeping the whole dependency
-            graph BOM-consistent. The 42.6.x driver is fully compatible with PostgreSQL 15
-            (and forward-compatible with 16+). Do not hard-pin a different version without
-            a specific compatibility reason.
+            PostgreSQL 15 JDBC driver; runtime-only. The Spring Boot 3.2.12 BOM pins the
+            42.6.x line (resolving to 42.6.2), which sits inside the affected range of
+            CVE-2026-42198 (see FINDING 5 in <properties>): a client-side DoS during
+            SCRAM-SHA-256 authentication where a malicious/compromised server can request an
+            unbounded PBKDF2 iteration count, exhausting client CPU and connection pools.
+            The `postgresql.version` property override re-pins the driver to 42.7.11 (the
+            patched release, which adds the scramMaxIterations cap) WITHOUT bumping the Boot
+            parent; the version is therefore intentionally OMITTED from this <dependency>
+            element so the property-driven BOM management applies. 42.7.x is also the driver
+            line AAP section 0.5.1 expected, and is fully compatible with PostgreSQL 15
+            (forward-compatible with 16+).
         -->
         <dependency>
             <groupId>org.postgresql</groupId>

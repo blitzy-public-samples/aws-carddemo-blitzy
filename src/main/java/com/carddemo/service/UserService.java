@@ -3,7 +3,7 @@ package com.carddemo.service;
 import com.carddemo.dto.user.UserCreateRequest;
 import com.carddemo.dto.user.UserDto;
 import com.carddemo.entity.User;
-import com.carddemo.exception.AccountNotFoundException;
+import com.carddemo.exception.UserNotFoundException;
 import com.carddemo.mapper.UserMapper;
 import com.carddemo.repository.UserRepository;
 import java.util.List;
@@ -130,21 +130,20 @@ public class UserService {
      * <p>The id is uppercased before lookup to honor the COBOL uppercase-id convention (e.g.,
      * {@code "ADMIN001"}, {@code "USER0001"}; see {@code COSGN00C} {@code FUNCTION UPPER-CASE}).
      * A missing record &mdash; the COBOL {@code DFHRESP(NOTFND)} branch &mdash; raises
-     * {@link AccountNotFoundException}, mapped to HTTP 404 by {@code GlobalExceptionHandler}.</p>
+     * {@link UserNotFoundException}, mapped to HTTP 404 by {@code GlobalExceptionHandler}.</p>
      *
      * @param userId the user id (case-insensitive; normalized to uppercase)
      * @return the matching {@link UserDto} (without the password hash, per PR-17)
-     * @throws AccountNotFoundException if no user exists with the given id
+     * @throws UserNotFoundException if no user exists with the given id
      */
     @Transactional(readOnly = true)
     public UserDto getUser(String userId) {
         log.debug("Retrieving user {}", userId);
-        // AccountNotFoundException is reused as the generic "not found" (-> HTTP 404). Its
-        // (String) constructor prepends "Account not found: ", so the bare id is passed to
-        // produce a clean "Account not found: <id>" message (avoids a doubled prefix). The
-        // GlobalExceptionHandler surfaces ex.getMessage() to the client.
+        // UserNotFoundException carries the user-domain code "USER_NOT_FOUND" and the message
+        // "User not found: <id>" (-> HTTP 404 via GlobalExceptionHandler). The original id is
+        // passed (not the uppercased form) so the surfaced message echoes what the caller sent.
         User user = userRepository.findById(userId.toUpperCase())
-                .orElseThrow(() -> new AccountNotFoundException(userId));
+                .orElseThrow(() -> new UserNotFoundException(userId));
         return userMapper.toDto(user);
     }
 
@@ -238,8 +237,8 @@ public class UserService {
      * @param userId the id of the user to update (case-insensitive; normalized to uppercase)
      * @param req    the update request (any non-null/changed field is applied)
      * @return the updated user as a {@link UserDto} (without the password hash)
-     * @throws AccountNotFoundException if no user exists with the given id
-     * @throws IllegalStateException    if no field changed ({@code "Please modify to update ..."})
+     * @throws UserNotFoundException if no user exists with the given id
+     * @throws IllegalStateException if no field changed ({@code "Please modify to update ..."})
      */
     @Transactional
     public UserDto updateUser(String userId, UserCreateRequest req) {
@@ -247,7 +246,7 @@ public class UserService {
 
         String upperId = userId.toUpperCase();
         User user = userRepository.findById(upperId)
-                .orElseThrow(() -> new AccountNotFoundException(userId)); // -> 404 (see getUser note)
+                .orElseThrow(() -> new UserNotFoundException(userId)); // -> 404 (see getUser note)
 
         boolean modified = false;
 
@@ -287,13 +286,13 @@ public class UserService {
      * Deletes a user, porting {@code COUSR03C} (TRANID {@code 'CU03'}).
      *
      * <p>Mirrors the COBOL read-then-delete flow: the record is first loaded to confirm it exists
-     * (the COBOL {@code DFHRESP(NOTFND)} branch becomes {@link AccountNotFoundException}, HTTP
+     * (the COBOL {@code DFHRESP(NOTFND)} branch becomes {@link UserNotFoundException}, HTTP
      * 404) and then deleted. The original program required a PF5 confirmation keystroke; in REST
      * the {@code DELETE} request itself is the confirmation, so no extra confirmation step is
      * modeled here.</p>
      *
      * @param userId the id of the user to delete (case-insensitive; normalized to uppercase)
-     * @throws AccountNotFoundException if no user exists with the given id
+     * @throws UserNotFoundException if no user exists with the given id
      */
     @Transactional
     public void deleteUser(String userId) {
@@ -301,7 +300,7 @@ public class UserService {
 
         String upperId = userId.toUpperCase();
         User user = userRepository.findById(upperId)
-                .orElseThrow(() -> new AccountNotFoundException(userId)); // -> 404 (see getUser note)
+                .orElseThrow(() -> new UserNotFoundException(userId)); // -> 404 (see getUser note)
 
         userRepository.delete(user);
         log.info("User {} has been deleted ...", upperId);

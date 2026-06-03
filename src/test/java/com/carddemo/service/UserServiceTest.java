@@ -13,7 +13,7 @@ import static org.mockito.Mockito.when;
 import com.carddemo.dto.user.UserCreateRequest;
 import com.carddemo.dto.user.UserDto;
 import com.carddemo.entity.User;
-import com.carddemo.exception.AccountNotFoundException;
+import com.carddemo.exception.UserNotFoundException;
 import com.carddemo.mapper.UserMapper;
 import com.carddemo.repository.UserRepository;
 
@@ -77,7 +77,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
  *       "Please modify to update ..." no-change branch (here {@link IllegalStateException}) and
  *       PR-17 password re-encoding.</li>
  *   <li><strong>COUSR03C</strong> (delete) &mdash; read-to-confirm-then-delete, with the
- *       {@code NOTFND} branch raising {@link AccountNotFoundException}.</li>
+ *       {@code NOTFND} branch raising {@link UserNotFoundException}.</li>
  *   <li><strong>COUSR00C</strong> (list) &mdash; the COBOL {@code STARTBR}/{@code READNEXT}
  *       browse cursor replaced by a stateless Spring Data {@link Pageable}; PR-19 role flag
  *       ({@code 'A'}/{@code 'U'}) stored verbatim.</li>
@@ -368,7 +368,8 @@ class UserServiceTest {
 
             // when / then
             assertThatThrownBy(() -> userService.updateUser(userId, request))
-                    .isInstanceOf(AccountNotFoundException.class);
+                    .isInstanceOf(UserNotFoundException.class)
+                    .hasMessage("User not found: " + userId);
 
             verify(userRepository, never()).save(any(User.class));
             verify(passwordEncoder, never()).encode(anyString());
@@ -432,7 +433,8 @@ class UserServiceTest {
 
             // when / then
             assertThatThrownBy(() -> userService.deleteUser(userId))
-                    .isInstanceOf(AccountNotFoundException.class);
+                    .isInstanceOf(UserNotFoundException.class)
+                    .hasMessage("User not found: " + userId);
 
             verify(userRepository, never()).delete(any(User.class));
         }
@@ -497,7 +499,8 @@ class UserServiceTest {
 
             // when / then
             assertThatThrownBy(() -> userService.getUser(userId))
-                    .isInstanceOf(AccountNotFoundException.class);
+                    .isInstanceOf(UserNotFoundException.class)
+                    .hasMessage("User not found: " + userId);
         }
 
         @Test

@@ -2,6 +2,7 @@ package com.carddemo.batch;
 
 import com.carddemo.entity.Transaction;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.util.CardNumberMasker;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.Job;
@@ -223,11 +224,14 @@ public class TransactionReadJobConfig {
         final AtomicLong counter = new AtomicLong(0L);
         return transaction -> {
             long recordNumber = counter.incrementAndGet();
+            // SECURITY (QA Issue 4 / PR-20): the diagnostic dump must NEVER emit a full 16-digit PAN.
+            // Mask the card number to its last 4 digits (CardNumberMasker.mask) before it can reach
+            // any appender; all other TRAN-* fields are non-sensitive and logged verbatim.
             log.info("[CBTRN03C-DIAG] [#{}] tranId={} cardNum={} typeCd={} catCd={} amt={} "
                             + "origTs={} procTs={}",
                     recordNumber,
                     transaction.getTranId(),
-                    transaction.getCardNum(),
+                    CardNumberMasker.mask(transaction.getCardNum()),
                     transaction.getTypeCd(),
                     transaction.getCategoryCd(),
                     transaction.getAmount(),
