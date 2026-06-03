@@ -203,6 +203,58 @@
             compatible with PostgreSQL 15 (forward-compatible with 16+).
         -->
         <postgresql.version>42.7.11</postgresql.version>
+
+        <!--
+            FINDING 6 (MAJOR, gate-failing) — Spring Security 6.2.8 -> 6.3.8.
+            6.2.8 sits inside the affected range of CVE-2025-22228 (HIGH, CVSS 7.4,
+            disclosed 2025-03-19 — "BCryptPasswordEncoder.matches() incorrectly returns
+            true for passwords longer than 72 bytes when the first 72 bytes match"):
+            BCrypt only consumes its first 72 input bytes, and the pre-fix encoder did not
+            reject/guard over-length input, so two distinct passwords sharing a 72-byte
+            prefix both verify. The affected 6.2.x range is 6.2.0-6.2.9; the fix shipped in
+            6.2.10, 6.3.8, and 6.4.4. The vulnerable surface here is the active sign-on path
+            (BCryptPasswordEncoder.matches() invoked by DaoAuthenticationProvider via
+            UserDetailsServiceImpl, AuthService, and UserService — PR-17).
+
+            EXPLOITABILITY vs THE VERSION-BASED GATE: CardDemo carries a deliberate,
+            runtime-proven compensating control — LoginRequest.password and
+            UserCreateRequest.password are annotated @Size(min = 1, max = 72) and enforced
+            via @Valid/@Validated on AuthController.login and UserController.createUser/
+            updateUser, and seeding only ever encodes the 8-char literal "PASSWORD" — so a
+            > 72-char password is rejected with HTTP 400 VALIDATION_FAILED before BCrypt is
+            reached, making the CVE precondition unreachable through the validated REST
+            paths (this is why the severity is Major, not Critical). However, the FINAL
+            acceptance gate is VERSION-BASED ("no unpatched HIGH/CRITICAL dependency CVE"),
+            so the dependency MUST be moved to a fixed release regardless of reachability.
+            The @Size(max = 72) control is RETAINED as defense-in-depth.
+
+            WHY 6.3.8 (OSS) AND NOT A 6.2.x PATCH: the in-line fix 6.2.10 is a COMMERCIAL
+            release (Tanzu Spring Enterprise) and is NOT published to Maven Central
+            (verified: GET .../spring-security-crypto/6.2.10/...jar -> HTTP 404). The ONLY
+            OSS-available fixed releases on Maven Central are 6.3.8 and 6.4.4. 6.3.8 is the
+            NEAREST OSS-fixed line to the BOM-managed 6.2.x generation (6.3.x baselines on
+            Spring Framework 6.1+, satisfied by the FINDING 2 spring-framework 6.2.18
+            override), so it is the lowest-risk minor bump and is preferred over 6.4.4. This
+            mirrors exactly how FINDING 2 (spring-framework -> 6.2.18) and FINDING 5
+            (postgresql -> 42.7.11) were remediated: a version-based gate closed by moving
+            the affected coordinate to its nearest OSS-fixed release.
+
+            PARENT RETAINED (AAP section 0.5.1): the Spring Boot 3.2.12 parent BOM is NOT
+            bumped. This is a PROPERTY OVERRIDE only — `spring-security.version` is consumed
+            by the spring-boot-dependencies BOM, so re-pinning it moves spring-security-core
+            / -config / -web / -crypto (and the test-scoped spring-security-test) to 6.3.8
+            across the reactor while every other coordinate (Spring Framework 6.2.18, Spring
+            Batch 5.1.x, Hibernate 6.4.x, Tomcat 10.1.55, Jackson) stays as already pinned.
+            The stable Spring Security APIs CardDemo uses — the SecurityFilterChain lambda
+            DSL, BCryptPasswordEncoder (no-arg ctor + matches/encode), DaoAuthenticationProvider
+            (no-arg ctor + setUserDetailsService + setPasswordEncoder), @EnableMethodSecurity
+            / @PreAuthorize, and UserDetailsService — are unchanged in 6.3.8 (verified), so the
+            bump needs no source change. The full `mvn verify` suite (Surefire + Failsafe
+            Testcontainers) plus a live dev-profile boot were re-run to confirm the
+            6.3.8-on-3.2.12 pairing compiles, wires, and behaves correctly (login 200/401,
+            > 72-char password -> 400, admin authorization matrix intact).
+        -->
+        <spring-security.version>6.3.8</spring-security.version>
     </properties>
 
     <dependencies>
