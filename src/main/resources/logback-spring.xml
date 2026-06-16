@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  AWS CardDemo - Logback configuration (Spring Boot 3.2.x / Logback 1.4.x)
+  ============================================================================
+
+  Responsibilities
+  ================
+  1. Console + rolling-file appenders for the migrated CardDemo application.
+  2. Per-profile log levels via Spring Boot's <springProfile> extension
+     (dev / prod / and a fallback for any other profile such as "test").
+  3. Defense-in-depth PII suppression: the card CVV and the full customer SSN
+     MUST NEVER appear in logs, even if an upstream layer accidentally logs an
+     entity/DTO that still carries them.
+
+  Why this file is named "logback-spring.xml" (NOT "logback.xml")
+  ===============================================================
+  Spring Boot only enables the <springProfile> and <springProperty> extension
+  elements when the configuration file is named "logback-spring.xml" and is
+  loaded by Spring Boot's LogbackLoggingSystem (SpringBootJoranConfigurator).
+  Renaming this file to "logback.xml" would silently disable profile handling.
+
+  PII masking - source of truth & rules
+  =====================================
+  * CARD-CVV-CD  PIC 9(03)  (app/cpy/CVACT02Y.cpy) - 3-digit card verification
+    value. AAP 0.6.8 / 0.7.1: MUST NOT be serialized or logged.
+  * CUST-SSN     PIC 9(09)  (app/cpy/CVCUS01Y.cpy) - 9-digit SSN. May be exposed
+    at most as its last 4 digits; the full SSN MUST NOT appear in logs.
+  Masking here is the *secondary* control (a safety net). The *primary* control
+  is that the DTO/mapper layer never emits these fields (AAP 0.3.2, 0.6.8).
+
+  NOTE: the customer id CUST-ID is also PIC 9(09) (9 digits). A blanket
+  "mask every 9 consecutive digits" rule would therefore destroy legitimate
+  customer ids in the logs. We deliberately mask only (a) values explicitly
+  labelled "cvv"/"ssn" and (b) SSNs written in the dashed ddd-dd-dddd form,
+  which preserves customer/account ids while still suppressing the sensitive
+  fields in the realistic accidental-logging cases (field labels, toString()).
+
+  ============================================================================
+  CRITICAL ESCAPING NOTE - DO NOT "FIX" THE BACKSLASHES TO DOUBLE BACKSLASHES
+  ============================================================================
+  Logback's %replace(...) conversion word passes the regex option through to
+  java.util.regex VERBATIM - it performs NO backslash unescaping. Therefore:
+    * regex metacharacters use a SINGLE backslash: \d  \s  \b
+    * a LITERAL backslash in the regex uses a DOUBLE backslash: \\
+  Writing \\d here (intending the digit class) would reach the regex engine as
+  "literal-backslash followed by d", which never matches real text and SILENTLY
+  DISABLES MASKING. This escaping was verified at runtime against Logback 1.4.14
+  by emitting cvv=123 / "cvv":"1234" / ssn=123-45-6789 / ssn=123456789 and
+  confirming the output is masked. XML entities: &quot; = " , &amp; = & .
+  ============================================================================
+-->
+<configuration>
+
+    <!--
+      Spring Boot default conventions: registers the clr/wex/wEx/applicationName
+      conversion rules and the standard CONSOLE_LOG_PATTERN / charset properties,
+      plus noise-reducing logger levels. Safe to include; our custom pattern
+      below does not depend on the colour converters.
+    -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- Log directory + file. Override the directory via the LOG_PATH env var. -->
+    <property name="LOG_PATH" value="${LOG_PATH:-./logs}"/>
+    <property name="LOG_FILE" value="${LOG_PATH}/carddemo.log"/>
+
+    <!--
+      PII masking pattern (defense-in-depth). Three nested %replace calls are
+      applied to %msg, innermost first:
+        1) CVV   : a "cvv"-labelled 3-4 digit value                       -> ***
+        2) SSN   : a "ssn"-labelled 9-digit value (dashes optional)       -> ***-**-****
+        3) bare  : a dashed SSN of the form ddd-dd-dddd                    -> ***-**-****
+      The separator class [\\&quot;\s:=] matches a backslash, a double quote,
+      whitespace, ':' or '=', so labels written as cvv=123, "cvv":"123",
+      \"cvv\":\"123\", cvv: 123 etc. are all covered. (?i) = case-insensitive.
+    -->
+    <property name="MASKED_MSG"
+        value="%replace(%replace(%replace(%msg){'(?i)(cvv[\\&quot;\s:=]*)\d{3,4}','$1***'}){'(?i)(ssn[\\&quot;\s:=]*)\d{3}-?\d{2}-?\d{4}','$1***-**-****'}){'\b\d{3}-\d{2}-\d{4}\b','***-**-****'}"/>
+
+    <!-- Shared layout pattern; ${MASKED_MSG} guarantees masking everywhere. -->
+    <property name="CONSOLE_PATTERN"
+        value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - ${MASKED_MSG}%n"/>
+
+    <!-- Console appender (masked). -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${CONSOLE_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!--
+      Per-profile log levels (Spring Boot extension).
+      dev  : verbose application logging to the console.
+      prod : quiet root (WARN) so framework/entity toString() output is not
+             dumped; application logging at INFO; console + rolling file.
+      else : conservative INFO console fallback for any other profile (e.g.
+             "test", or when no profile is active).
+    -->
+    <springProfile name="dev">
+        <logger name="com.carddemo" level="DEBUG"/>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="prod">
+        <!--
+          The rolling-file appender (masked) is defined inside the prod profile so it
+          exists ONLY for the profile that references it. Defining it at the top level
+          while referencing it only here would make Logback emit an "appender not
+          referenced" warning under dev/test (which in turn triggers a full status
+          dump on every startup). Size + time based rotation; same masked pattern as
+          the console appender so the FILE output is masked too.
+        -->
+        <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <file>${LOG_FILE}</file>
+            <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                <fileNamePattern>${LOG_PATH}/carddemo-%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+                <maxFileSize>10MB</maxFileSize>
+                <maxHistory>30</maxHistory>
+                <totalSizeCap>500MB</totalSizeCap>
+            </rollingPolicy>
+            <encoder>
+                <pattern>${CONSOLE_PATTERN}</pattern>
+                <charset>UTF-8</charset>
+            </encoder>
+        </appender>
+        <logger name="com.carddemo" level="INFO"/>
+        <root level="WARN">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="FILE"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="!dev &amp; !prod">
+        <logger name="com.carddemo" level="INFO"/>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+</configuration>

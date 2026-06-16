@@ -1,0 +1,132 @@
+# =============================================================================
+# CardDemo - Base / Shared Spring Boot Configuration (application.yml)
+# -----------------------------------------------------------------------------
+# Layered Spring Boot 3.2.x monolith (Java 17) re-implementing the legacy
+# COBOL/CICS/VSAM AWS CardDemo application. This file holds settings shared by
+# ALL Spring profiles. Datasource specifics are intentionally DEFERRED to the
+# profile files:
+#   * application-dev.yml  -> H2 (in-memory, MODE=PostgreSQL)
+#   * application-prod.yml -> PostgreSQL 15.x
+#
+# Authority: AAP section 0.3.1, 0.4.1.5, 0.4.2, 0.5.3.
+#
+# -----------------------------------------------------------------------------
+# PROPERTY -> CONSUMER CONTRACT (binding keys; src/main/java is authored AFTER
+# this file and MUST bind to these EXACT keys):
+#   * jwt.secret, jwt.expiration-ms
+#         -> security/JwtTokenProvider  (HS256; secret >= 256-bit / >= 32 ASCII
+#            chars supplied via env JWT_SECRET; expiration via env
+#            JWT_EXPIRATION_MS, default 3600000 ms = 1 hour). AAP section 0.6.7.
+#   * report.output.path
+#         -> service/ReportService and service/StatementService /
+#            batch/StatementCreationJobConfig (statement/report output dir).
+#   * input.file.path
+#         -> batch/TransactionPostingJobConfig reader; ALSO injectable as a
+#            Spring Batch JOB PARAMETER for the daily-transaction posting job.
+#            AAP section 0.4.2.
+#   * spring.datasource.*  -> INTENTIONALLY NOT defined here. It is set in the
+#            profile files; production binds SPRING_DATASOURCE_URL /
+#            SPRING_DATASOURCE_USERNAME / SPRING_DATASOURCE_PASSWORD through
+#            Spring relaxed binding.
+# =============================================================================
+
+spring:
+  application:
+    name: carddemo
+
+  # Default profile is dev (H2) so `mvn spring-boot:run` works locally with no
+  # external DB. Production sets SPRING_PROFILES_ACTIVE=prod.
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+
+  jpa:
+    hibernate:
+      # Flyway owns the schema; Hibernate must ONLY validate it (never
+      # create/update). AAP section 0.4.2.
+      ddl-auto: validate
+    # Disable Open Session In View so lazy initialization stays inside the
+    # @Transactional service boundary rather than leaking to the web layer.
+    open-in-view: false
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        jdbc:
+          # Persist/read timestamps in UTC for deterministic financial parity.
+          time_zone: UTC
+    # NOTE: the concrete Hibernate dialect is set per-profile (H2 in dev,
+    # PostgreSQL in prod) - do NOT hardcode a dialect here.
+
+  flyway:
+    enabled: true
+    # Shared by both dev (H2 MODE=PostgreSQL) and prod (PostgreSQL) profiles.
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+    # Flyway runs V1__schema.sql .. V4__seed_users.sql on startup BEFORE JPA
+    # validation, so `ddl-auto: validate` always observes a populated schema.
+
+  # Spring Batch (Spring Boot 3.2 / Spring Batch 5).
+  batch:
+    job:
+      # DO NOT auto-execute jobs at startup; jobs run on-demand via JobLauncher.
+      # Spring Boot's JobLauncherApplicationRunner runs ALL jobs at boot when
+      # this property is missing (matchIfMissing=true), so it MUST stay false.
+      enabled: false
+    jdbc:
+      # Create BATCH_* metadata tables (JobRepository) independently of Flyway.
+      initialize-schema: always
+
+  jackson:
+    # Omit null fields from JSON responses for cleaner REST contracts.
+    default-property-inclusion: non_null
+    serialization:
+      # Emit ISO-8601 date/time strings instead of numeric epoch timestamps.
+      write-dates-as-timestamps: false
+    # NOTE: BigDecimal money serialization is finalized in
+    # config/JacksonConfig.java (do not rely solely on this block).
+
+server:
+  port: ${SERVER_PORT:8080}
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when_authorized
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+
+# ---- CardDemo application-specific properties (consumed by the Java layer) ----
+jwt:
+  # HS256 signing key - MUST be >= 256 bits (>= 32 ASCII chars). The default
+  # below is DEV-ONLY and INSECURE; production MUST supply a strong JWT_SECRET
+  # environment variable. AAP section 0.6.7.
+  secret: ${JWT_SECRET:change-me-dev-only-secret-min-32-characters-0123456789}
+  expiration-ms: ${JWT_EXPIRATION_MS:3600000}   # 1 hour
+
+report:
+  output:
+    # Statement/report batch output dir (ReportService / StatementService).
+    path: ${REPORT_OUTPUT_PATH:./reports/output}
+
+input:
+  file:
+    # Daily-transaction input; ALSO passed as a Spring Batch job parameter to
+    # the posting job (TransactionPostingJobConfig).
+    path: ${INPUT_FILE_PATH:./input/dailytran.txt}
+
+logging:
+  level:
+    root: INFO
+    com.carddemo: INFO
