@@ -30,6 +30,7 @@ import com.carddemo.exception.ValidationException;
 import com.carddemo.mapper.TransactionMapper;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardXrefRepository;
+import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.util.CardDemoConstants;
 import com.carddemo.util.TranIdGenerator;
@@ -86,10 +87,15 @@ import static org.mockito.Mockito.when;
  * business-rule failure.</p>
  *
  * <h2>Collaborators</h2>
- * <p>The real {@code TransactionService} constructor declares six collaborators, all mocked here and
+ * <p>The real {@code TransactionService} constructor declares seven collaborators, all mocked here and
  * wired through {@code @InjectMocks}: {@link TransactionRepository}, {@link CardXrefRepository},
- * {@link AccountRepository}, {@link TransactionMapper}, {@link TranIdGenerator}, and
- * {@link DateValidationService}. {@code TransactionMapper} is a genuine constructor dependency of the
+ * {@link AccountRepository}, {@link TransactionCategoryRepository}, {@link TransactionMapper},
+ * {@link TranIdGenerator}, and {@link DateValidationService}. {@link TransactionCategoryRepository} is
+ * the reference repository used by the add path to pre-validate that the supplied
+ * {@code (typeCd, categoryCd)} pair exists in {@code transaction_category} before the INSERT &mdash;
+ * guarding the {@code fk_tran_cat} foreign key (AAP &sect;0.3.1) so a non-existent pair is reported as
+ * a clean HTTP&nbsp;404 rather than surfacing as an unhandled HTTP&nbsp;500.
+ * {@code TransactionMapper} is a genuine constructor dependency of the
  * service (it owns the entity&harr;DTO boundary), so it must be mocked even though it is not in this
  * test's declared dependency list &mdash; otherwise {@code @InjectMocks} would inject {@code null} and
  * every service method would dereference it. Where the service delegates to the mapper, the mock is
@@ -174,6 +180,14 @@ class TransactionServiceTest {
     private AccountRepository accountRepository;
 
     /**
+     * Transaction type/category reference repository &mdash; mocked. The add path pre-validates the
+     * supplied {@code (typeCd, categoryCd)} pair via {@code existsById} so a non-existent reference is
+     * reported as HTTP&nbsp;404 before the INSERT trips the {@code fk_tran_cat} foreign key.
+     */
+    @Mock
+    private TransactionCategoryRepository transactionCategoryRepository;
+
+    /**
      * Entity&harr;DTO boundary mapper &mdash; mocked. A genuine constructor dependency of the service;
      * the mock is given faithful {@code thenAnswer} behaviour in the tests that exercise it.
      */
@@ -188,7 +202,7 @@ class TransactionServiceTest {
     @Mock
     private DateValidationService dateValidationService;
 
-    /** Class under test, with all six mocks injected through its constructor. */
+    /** Class under test, with all seven mocks injected through its constructor. */
     @InjectMocks
     private TransactionService transactionService;
 
@@ -291,8 +305,11 @@ class TransactionServiceTest {
                 SOURCE,
                 DESCRIPTION,
                 AMOUNT,
-                ORIG_DATE,
-                PROC_DATE,
+                // origDate/procDate are now raw YYYY-MM-DD text (String) on the DTO so that
+                // DateValidationService (CSUTLDTC parity) runs and can emit a field-specific message;
+                // the LocalDate constants remain for the start-of-day timestamp assertions below.
+                ORIG_DATE.toString(),
+                PROC_DATE.toString(),
                 MERCHANT_ID,
                 MERCHANT_NAME,
                 MERCHANT_CITY,
@@ -426,7 +443,7 @@ class TransactionServiceTest {
         // The XOR guard short-circuits before any collaboration or persistence.
         verify(transactionRepository, never()).save(any());
         verifyNoInteractions(cardXrefRepository, accountRepository, tranIdGenerator,
-                transactionMapper, dateValidationService);
+                transactionCategoryRepository, transactionMapper, dateValidationService);
     }
 
     @Test
@@ -439,7 +456,7 @@ class TransactionServiceTest {
 
         verify(transactionRepository, never()).save(any());
         verifyNoInteractions(cardXrefRepository, accountRepository, tranIdGenerator,
-                transactionMapper, dateValidationService);
+                transactionCategoryRepository, transactionMapper, dateValidationService);
     }
 
     @Test
@@ -450,7 +467,7 @@ class TransactionServiceTest {
 
         verify(transactionRepository, never()).save(any());
         verifyNoInteractions(cardXrefRepository, accountRepository, tranIdGenerator,
-                transactionMapper, dateValidationService);
+                transactionCategoryRepository, transactionMapper, dateValidationService);
     }
 
     // =============================================================================================
@@ -465,6 +482,8 @@ class TransactionServiceTest {
         when(accountRepository.existsById(ACCT_ID)).thenReturn(true);
         Page<CardXref> xrefPage = new PageImpl<>(List.of(xref), PageRequest.of(0, 1), 1);
         when(cardXrefRepository.findByXrefAcctId(eq(ACCT_ID), any(Pageable.class))).thenReturn(xrefPage);
+        // The (typeCd, categoryCd) reference exists, so Step 2.5 passes and the add proceeds.
+        when(transactionCategoryRepository.existsById(any())).thenReturn(true);
         // Dates pass through DateValidationService (CSUTLDTC parity), echoing the parsed calendar date.
         when(dateValidationService.validateAndParseDate(anyString(), anyString()))
                 .thenAnswer(inv -> LocalDate.parse(inv.getArgument(0)));
@@ -525,6 +544,8 @@ class TransactionServiceTest {
         // Arrange — card-key path: READ CCXREF by card number yields the owning account id.
         TransactionAddRequest req = addRequest(null, CARD_NUM);
         when(cardXrefRepository.findByXrefCardNum(CARD_NUM)).thenReturn(Optional.of(xref));
+        // The (typeCd, categoryCd) reference exists, so Step 2.5 passes and the add proceeds.
+        when(transactionCategoryRepository.existsById(any())).thenReturn(true);
         when(dateValidationService.validateAndParseDate(anyString(), anyString()))
                 .thenAnswer(inv -> LocalDate.parse(inv.getArgument(0)));
         when(transactionMapper.toEntity(any(TransactionAddRequest.class)))
@@ -565,6 +586,9 @@ class TransactionServiceTest {
         when(accountRepository.existsById(ACCT_ID)).thenReturn(true);
         Page<CardXref> xrefPage = new PageImpl<>(List.of(xref), PageRequest.of(0, 1), 1);
         when(cardXrefRepository.findByXrefAcctId(eq(ACCT_ID), any(Pageable.class))).thenReturn(xrefPage);
+        // The (typeCd, categoryCd) reference exists: Step 2.5 passes so the flow reaches date validation
+        // (Step 3), proving the date check is still live and runs after the category guard.
+        when(transactionCategoryRepository.existsById(any())).thenReturn(true);
         // CSUTLDTC parity: a malformed/invalid calendar date is reported as a ValidationException.
         when(dateValidationService.validateAndParseDate(anyString(), anyString()))
                 .thenThrow(new ValidationException("Orig Date is not a valid date"));
@@ -575,6 +599,32 @@ class TransactionServiceTest {
 
         // Once date validation fails, no id is generated and nothing is persisted.
         verify(tranIdGenerator, never()).generateTransactionId();
+        verify(transactionRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("addTransaction: a non-existent (typeCd, categoryCd) pair is rejected with ResourceNotFoundException (404 parity) before date validation or save")
+    void addTransactionUnknownTypeCategoryThrowsResourceNotFoundException() {
+        // Arrange — a single valid key (account path) so key resolution succeeds and the flow reaches
+        // the Step 2.5 (typeCd, categoryCd) reference guard that protects the fk_tran_cat foreign key.
+        TransactionAddRequest req = addRequest(ACCT_ID, null);
+        when(accountRepository.existsById(ACCT_ID)).thenReturn(true);
+        Page<CardXref> xrefPage = new PageImpl<>(List.of(xref), PageRequest.of(0, 1), 1);
+        when(cardXrefRepository.findByXrefAcctId(eq(ACCT_ID), any(Pageable.class))).thenReturn(xrefPage);
+        // The supplied type/category pair does NOT exist in transaction_category.
+        when(transactionCategoryRepository.existsById(any())).thenReturn(false);
+
+        // Act + Assert — a missing reference is reported as a clean ResourceNotFoundException (HTTP 404),
+        // mirroring the account/card not-found paths, rather than letting the fk_tran_cat foreign key
+        // trip at flush and surface as HTTP 500 (QA CKPT-2 Critical #1; AAP §0.3.1 / §0.6.1).
+        assertThatThrownBy(() -> transactionService.addTransaction(req))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessageContaining("Transaction type/category");
+
+        // The reference guard fires AFTER key resolution but BEFORE date validation, id generation,
+        // mapping, and persistence — proving the 404 short-circuit never reaches the INSERT.
+        verify(transactionCategoryRepository).existsById(any());
+        verifyNoInteractions(dateValidationService, tranIdGenerator, transactionMapper);
         verify(transactionRepository, never()).save(any());
     }
 }

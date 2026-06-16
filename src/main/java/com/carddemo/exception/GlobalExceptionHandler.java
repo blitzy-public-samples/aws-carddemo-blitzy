@@ -10,6 +10,8 @@ import jakarta.validation.Path;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -17,6 +19,8 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -65,9 +69,12 @@ import java.util.Set;
  *   <tr><td>401 Unauthorized</td><td>{@link AuthenticationException}</td></tr>
  *   <tr><td>403 Forbidden</td><td>{@link AccessDeniedException}</td></tr>
  *   <tr><td>404 Not Found</td><td>{@code ResourceNotFoundException}</td></tr>
+ *   <tr><td>405 Method Not Allowed</td><td>{@link HttpRequestMethodNotSupportedException}</td></tr>
  *   <tr><td>409 Conflict</td>
  *       <td>{@code ConcurrentModificationException} (the CardDemo domain type),
- *           {@link ObjectOptimisticLockingFailureException}</td></tr>
+ *           {@link ObjectOptimisticLockingFailureException},
+ *           {@link DataIntegrityViolationException}</td></tr>
+ *   <tr><td>415 Unsupported Media Type</td><td>{@link HttpMediaTypeNotSupportedException}</td></tr>
  *   <tr><td>500 Internal Server Error</td><td>{@link Exception} (catch-all fallback)</td></tr>
  * </table>
  *
@@ -150,6 +157,18 @@ public class GlobalExceptionHandler {
 
     /** Generic 500 message for unexpected failures (REST analogue of the COBOL ABEND path). */
     private static final String MSG_INTERNAL_ERROR = "An unexpected error occurred.";
+
+    /** Generic 415 message for an unsupported request {@code Content-Type}. */
+    private static final String MSG_UNSUPPORTED_MEDIA_TYPE =
+            "Unsupported media type; this endpoint consumes 'application/json'.";
+
+    /**
+     * Generic 409 message for a data-integrity (foreign-key / unique / NOT NULL) violation that
+     * reaches the handler. The underlying SQL, constraint name, and Hibernate detail are logged
+     * server-side only and never leaked to the client (AAP &sect;0.6.8).
+     */
+    private static final String MSG_DATA_INTEGRITY =
+            "The request could not be completed due to a data integrity conflict.";
 
     /** Fallback field name used when a constraint-violation property path cannot be resolved. */
     private static final String UNKNOWN_FIELD = "unknown";
@@ -453,6 +472,93 @@ public class GlobalExceptionHandler {
                 HttpStatus.CONFLICT.value(), HttpStatus.CONFLICT.getReasonPhrase(),
                 ex.getClass().getSimpleName());
         return build(HttpStatus.CONFLICT, message, request, null);
+    }
+
+    /**
+     * Handles a {@link DataIntegrityViolationException} &mdash; a database constraint violation
+     * (foreign key, unique, or NOT NULL) raised by Hibernate on flush and translated by Spring's
+     * persistence-exception layer.
+     *
+     * <p><strong>Defense in depth.</strong> The service layer pre-validates referenced data before
+     * persisting &mdash; for example {@code TransactionService} checks that the supplied
+     * {@code (typeCd, categoryCd)} pair exists in {@code transaction_category} and raises a clean
+     * {@code ResourceNotFoundException} (HTTP&nbsp;404) before the INSERT, so the {@code fk_tran_cat}
+     * foreign key (AAP &sect;0.3.1) is never reached on the normal path. This handler is the safety
+     * net for any constraint violation that nonetheless reaches the data layer: rather than letting
+     * it fall through to the catch-all and surface as HTTP&nbsp;500, it returns a clean
+     * <strong>HTTP&nbsp;409&nbsp;Conflict</strong>.</p>
+     *
+     * <p>Per AAP &sect;0.6.8 the underlying SQL statement, constraint name, and Hibernate detail are
+     * logged server-side only (at {@code WARN}, without a stack trace, recording just the exception
+     * type) and are <strong>never</strong> placed in the response body.</p>
+     *
+     * @param ex      the data-integrity violation (its detail is intentionally not surfaced)
+     * @param request the current request (for {@link ErrorResponse#path()})
+     * @return HTTP 409 with a generic conflict message that never exposes internal detail
+     */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ErrorResponse> handleDataIntegrityViolation(DataIntegrityViolationException ex,
+                                                                       HttpServletRequest request) {
+        log.warn("{} {} -> {} {} ({})",
+                (request != null) ? request.getMethod() : "-",
+                (request != null) ? request.getRequestURI() : "-",
+                HttpStatus.CONFLICT.value(), HttpStatus.CONFLICT.getReasonPhrase(),
+                ex.getClass().getSimpleName());
+        return build(HttpStatus.CONFLICT, MSG_DATA_INTEGRITY, request, null);
+    }
+
+    // =============================================================================================
+    // 405 Method Not Allowed / 415 Unsupported Media Type (Spring MVC protocol exceptions)
+    // =============================================================================================
+
+    /**
+     * Handles {@link HttpRequestMethodNotSupportedException} &mdash; an HTTP method that the matched
+     * endpoint does not support (for example {@code DELETE} or {@code PUT} on {@code /transactions},
+     * which exposes only {@code GET} and {@code POST}). Without this handler the exception would fall
+     * to the catch-all and surface as HTTP&nbsp;500; here it is mapped to the correct
+     * <strong>HTTP&nbsp;405&nbsp;Method&nbsp;Not&nbsp;Allowed</strong>, and an {@code Allow} response
+     * header advertising the supported methods is set when the framework supplies them (RFC&nbsp;9110
+     * &sect;15.5.6). The requested method name is echoed (it is the caller's own, non-sensitive input);
+     * no internal detail is leaked.
+     *
+     * @param ex      the method-not-supported exception (carries the supported method set)
+     * @param request the current request (for {@link ErrorResponse#path()})
+     * @return HTTP 405 with a clear message and, when available, an {@code Allow} header
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ErrorResponse> handleMethodNotSupported(HttpRequestMethodNotSupportedException ex,
+                                                                  HttpServletRequest request) {
+        String message = "Request method '" + ex.getMethod() + "' is not supported for this endpoint.";
+        logClientError(request, HttpStatus.METHOD_NOT_ALLOWED, message);
+        String path = (request != null) ? request.getRequestURI() : null;
+        ErrorResponse body = ErrorResponse.of(HttpStatus.METHOD_NOT_ALLOWED.value(),
+                HttpStatus.METHOD_NOT_ALLOWED.getReasonPhrase(), message, path);
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED);
+        Set<HttpMethod> supported = ex.getSupportedHttpMethods();
+        if (supported != null && !supported.isEmpty()) {
+            // RFC 9110: a 405 response SHOULD include an Allow header listing the supported methods.
+            builder.allow(supported.toArray(new HttpMethod[0]));
+        }
+        return builder.body(body);
+    }
+
+    /**
+     * Handles {@link HttpMediaTypeNotSupportedException} &mdash; a request whose {@code Content-Type}
+     * the endpoint cannot consume (for example {@code text/plain} sent to a JSON-only endpoint).
+     * Without this handler the exception would fall to the catch-all and surface as HTTP&nbsp;500;
+     * here it is mapped to the correct
+     * <strong>HTTP&nbsp;415&nbsp;Unsupported&nbsp;Media&nbsp;Type</strong>. The generic
+     * {@value #MSG_UNSUPPORTED_MEDIA_TYPE} message is returned; the offending media type is not echoed.
+     *
+     * @param ex      the unsupported-media-type exception (its detail is intentionally not surfaced)
+     * @param request the current request (for {@link ErrorResponse#path()})
+     * @return HTTP 415 with a generic message
+     */
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ErrorResponse> handleMediaTypeNotSupported(HttpMediaTypeNotSupportedException ex,
+                                                                     HttpServletRequest request) {
+        logClientError(request, HttpStatus.UNSUPPORTED_MEDIA_TYPE, MSG_UNSUPPORTED_MEDIA_TYPE);
+        return build(HttpStatus.UNSUPPORTED_MEDIA_TYPE, MSG_UNSUPPORTED_MEDIA_TYPE, request, null);
     }
 
     // =============================================================================================

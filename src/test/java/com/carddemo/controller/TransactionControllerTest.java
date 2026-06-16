@@ -1,8 +1,11 @@
 package com.carddemo.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -329,5 +332,147 @@ class TransactionControllerTest {
     void listTransactions_anonymous_returns401() throws Exception {
         mockMvc.perform(get("/transactions"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    // =============================================================================================
+    // Reference-integrity, date-message specificity, and HTTP-protocol robustness (QA CKPT-2 fixes)
+    // =============================================================================================
+
+    /**
+     * Supplying a syntactically valid but <strong>non-existent</strong> {@code (typeCd, categoryCd)}
+     * pair returns <strong>404&nbsp;Not&nbsp;Found</strong>, not HTTP&nbsp;500. The card path resolves
+     * account&nbsp;{@value #SEED_ACCT_ID}, but {@code categoryCd 9999} does not exist for type
+     * {@code 01} in {@code transaction_category}. The service pre-validates the reference and raises a
+     * clean {@code ResourceNotFoundException}, so the {@code fk_tran_cat} foreign key (AAP &sect;0.3.1)
+     * never trips at flush. The response body carries no internal detail (QA CKPT-2 Critical&nbsp;#1).
+     */
+    @Test
+    @DisplayName("POST /transactions with non-existent (typeCd, categoryCd) -> 404 (not 500), clean body")
+    void postTransaction_unknownTypeCategory_returns404NotFound() throws Exception {
+        String unknownCategory = "{"
+            + "\"cardNum\":\"0500024453765740\","
+            + "\"typeCd\":\"01\",\"categoryCd\":9999,\"source\":\"POS\",\"description\":\"x\","
+            + "\"amount\":1.00,\"origDate\":\"2024-01-15\",\"procDate\":\"2024-01-15\","
+            + "\"merchantId\":1,\"merchantName\":\"M\",\"merchantCity\":\"C\",\"merchantZip\":\"1\"}";
+        mockMvc.perform(post("/transactions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(unknownCategory))
+                .andExpect(status().isNotFound())                       // 404, NOT 500
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.error").value("Not Found"))
+                .andExpect(jsonPath("$.message").exists());
+    }
+
+    /**
+     * An out-of-type category for an otherwise valid type (here {@code typeCd 01}, {@code categoryCd
+     * 6} &mdash; type 01 seeds only categories 1&ndash;5) is likewise rejected with
+     * <strong>404</strong>, confirming the reference guard validates the full composite key, not just
+     * the type code (QA CKPT-2 Critical&nbsp;#1, second reproduction).
+     */
+    @Test
+    @DisplayName("POST /transactions with out-of-range categoryCd for a valid type -> 404 (not 500)")
+    void postTransaction_outOfRangeCategoryForValidType_returns404() throws Exception {
+        String outOfRange = "{"
+            + "\"cardNum\":\"0500024453765740\","
+            + "\"typeCd\":\"01\",\"categoryCd\":6,\"source\":\"POS\",\"description\":\"x\","
+            + "\"amount\":1.00,\"origDate\":\"2024-01-15\",\"procDate\":\"2024-01-15\","
+            + "\"merchantId\":1,\"merchantName\":\"M\",\"merchantCity\":\"C\",\"merchantZip\":\"1\"}";
+        mockMvc.perform(post("/transactions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(outOfRange))
+                .andExpect(status().isNotFound());                      // 404, NOT 500
+    }
+
+    /**
+     * A syntactically {@code YYYY-MM-DD} but <strong>impossible</strong> calendar date
+     * ({@code 2023-13-45}) returns <strong>400</strong> with a <em>date-specific</em> message from
+     * {@code DateValidationService} (CSUTLDTC parity) &mdash; not the generic "Malformed request
+     * body." Because the DTO now carries the date as raw text, the validator runs instead of Jackson
+     * rejecting it during deserialization (QA CKPT-2 Minor&nbsp;#2).
+     */
+    @Test
+    @DisplayName("POST /transactions with an impossible origDate -> 400 with a date-specific message")
+    void postTransaction_invalidOrigDate_returns400WithDateSpecificMessage() throws Exception {
+        String badDate = "{"
+            + "\"cardNum\":\"0500024453765740\","
+            + "\"typeCd\":\"01\",\"categoryCd\":1,\"source\":\"POS\",\"description\":\"x\","
+            + "\"amount\":1.00,\"origDate\":\"2023-13-45\",\"procDate\":\"2024-01-15\","
+            + "\"merchantId\":1,\"merchantName\":\"M\",\"merchantCity\":\"C\",\"merchantZip\":\"1\"}";
+        String body = mockMvc.perform(post("/transactions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(badDate))
+                .andExpect(status().isBadRequest())                     // 400
+                .andReturn().getResponse().getContentAsString();
+
+        JsonNode node = objectMapper.readTree(body);
+        String message = node.get("message").asText();
+        // Field-specific message from DateValidationService, NOT the generic malformed-body text.
+        assertThat(message).contains("Orig Date").contains("valid date");
+        assertThat(message).doesNotContain("Malformed request body");
+    }
+
+    /**
+     * Confirms the leap-year rule is still enforced after the date fields became raw text: the
+     * non-leap date {@code 2023-02-29} is rejected with <strong>400</strong> and a date-specific
+     * message, preserving CSUTLDTC functional parity (AAP &sect;0.7.1).
+     */
+    @Test
+    @DisplayName("POST /transactions with non-leap 2023-02-29 -> 400 with a date-specific message")
+    void postTransaction_nonLeapFeb29_returns400WithDateSpecificMessage() throws Exception {
+        String nonLeap = "{"
+            + "\"cardNum\":\"0500024453765740\","
+            + "\"typeCd\":\"01\",\"categoryCd\":1,\"source\":\"POS\",\"description\":\"x\","
+            + "\"amount\":1.00,\"origDate\":\"2023-02-29\",\"procDate\":\"2024-01-15\","
+            + "\"merchantId\":1,\"merchantName\":\"M\",\"merchantCity\":\"C\",\"merchantZip\":\"1\"}";
+        String body = mockMvc.perform(post("/transactions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(nonLeap))
+                .andExpect(status().isBadRequest())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(objectMapper.readTree(body).get("message").asText())
+                .contains("Orig Date").contains("valid date");
+    }
+
+    /**
+     * A request whose body media type the endpoint cannot consume ({@code text/plain} on a JSON-only
+     * endpoint) returns <strong>415&nbsp;Unsupported&nbsp;Media&nbsp;Type</strong>, not HTTP&nbsp;500.
+     * Without an explicit handler this framework exception fell through the catch-all
+     * (QA CKPT-2 Minor&nbsp;#3).
+     */
+    @Test
+    @DisplayName("POST /transactions with text/plain Content-Type -> 415 (not 500)")
+    void postTransaction_wrongContentType_returns415() throws Exception {
+        mockMvc.perform(post("/transactions")
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content(validAddJson()))
+                .andExpect(status().isUnsupportedMediaType());          // 415, NOT 500
+    }
+
+    /**
+     * An HTTP method the endpoint does not support ({@code DELETE} on {@code /transactions/{id}},
+     * which exposes only {@code GET}) returns <strong>405&nbsp;Method&nbsp;Not&nbsp;Allowed</strong>,
+     * not HTTP&nbsp;500, and advertises the supported methods via the {@code Allow} header
+     * (QA CKPT-2 Minor&nbsp;#3).
+     */
+    @Test
+    @DisplayName("DELETE /transactions/{id} -> 405 (not 500) with Allow header")
+    void deleteTransaction_methodNotAllowed_returns405() throws Exception {
+        mockMvc.perform(delete("/transactions/{tranId}", MISSING_TRAN_ID))
+                .andExpect(status().isMethodNotAllowed())               // 405, NOT 500
+                .andExpect(header().exists("Allow"));
+    }
+
+    /**
+     * {@code PUT /transactions} (the endpoint exposes {@code GET} and {@code POST}) returns
+     * <strong>405&nbsp;Method&nbsp;Not&nbsp;Allowed</strong>, not HTTP&nbsp;500 (QA CKPT-2
+     * Minor&nbsp;#3).
+     */
+    @Test
+    @DisplayName("PUT /transactions -> 405 (not 500)")
+    void putTransaction_methodNotAllowed_returns405() throws Exception {
+        mockMvc.perform(put("/transactions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validAddJson()))
+                .andExpect(status().isMethodNotAllowed());              // 405, NOT 500
     }
 }

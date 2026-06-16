@@ -16,7 +16,6 @@
 package com.carddemo.dto;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
 
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotBlank;
@@ -64,8 +63,14 @@ import jakarta.validation.constraints.Size;
  *   <li>Calendar validity of {@link #origDate()} and {@link #procDate()} (leap year,
  *       month range, real day-of-month, etc.) is delegated to
  *       {@code DateValidationService}, the Java parity of the {@code CSUTLDTC} date
- *       utility. The bean-validation constraints here only guarantee that the
- *       values were supplied and bound to a {@link LocalDate}.</li>
+ *       utility. These fields are therefore carried as the raw {@code YYYY-MM-DD}
+ *       <em>text</em> ({@code String}) rather than a pre-parsed {@code java.time.LocalDate}:
+ *       a strict Jackson date deserializer would reject an invalid date as a generic
+ *       "Malformed request body." <em>before</em> the service ran, whereas binding to a
+ *       {@code String} lets {@code DateValidationService} perform the validation and emit a
+ *       <em>field-specific</em> message (e.g. "Orig Date is not a valid date; expected format
+ *       YYYY-MM-DD"). The {@code @NotBlank} constraints here only guarantee that the values
+ *       were supplied; calendar validity is enforced by the service.</li>
  * </ul>
  *
  * <p>The BMS {@code CONFIRM} (Y/N) field is intentionally omitted: it is a 3270
@@ -134,15 +139,20 @@ public record TransactionAddRequest(
                 message = "Amount must have at most 9 integer digits and 2 fraction digits")
         BigDecimal amount,
 
-        // TORIGDT — BMS PIC X(10) origination date in YYYY-MM-DD. Required; calendar
-        // validity is delegated to DateValidationService (CSUTLDTC parity).
-        @NotNull(message = "Orig Date can NOT be empty")
-        LocalDate origDate,
+        // TORIGDT — BMS PIC X(10) origination date in YYYY-MM-DD. Required and non-blank. Carried
+        // as the raw text (String, not LocalDate) so DateValidationService (CSUTLDTC parity) runs
+        // the calendar validation and emits a field-specific message; a strict Jackson LocalDate
+        // deserializer would otherwise reject an invalid date as a generic "Malformed request body."
+        // before the service ran. @NotBlank guarantees the value was supplied; calendar validity
+        // (month 01-12, real day-of-month, leap year) is enforced by the service.
+        @NotBlank(message = "Orig Date can NOT be empty")
+        String origDate,
 
-        // TPROCDT — BMS PIC X(10) processing date in YYYY-MM-DD. Required
+        // TPROCDT — BMS PIC X(10) processing date in YYYY-MM-DD. Required and non-blank; calendar
+        // validity is delegated to DateValidationService exactly as for origDate above
         // (COTRN02C explicitly validates PROCDATE is not empty).
-        @NotNull(message = "Proc Date can NOT be empty")
-        LocalDate procDate,
+        @NotBlank(message = "Proc Date can NOT be empty")
+        String procDate,
 
         // MID — BMS PIC X(9) merchant id. Required; numeric-ness is enforced by the Long
         // binding and the 9-digit BMS width by @Digits

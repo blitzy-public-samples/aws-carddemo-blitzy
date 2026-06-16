@@ -14,11 +14,13 @@ import com.carddemo.dto.TransactionListItem;
 import com.carddemo.dto.TransactionResponse;
 import com.carddemo.entity.CardXref;
 import com.carddemo.entity.Transaction;
+import com.carddemo.entity.TransactionCategory;
 import com.carddemo.exception.ResourceNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.mapper.TransactionMapper;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardXrefRepository;
+import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.util.CardDemoConstants;
 import com.carddemo.util.TranIdGenerator;
@@ -103,6 +105,15 @@ public class TransactionService {
     /** Account existence verification for the account-key add path. */
     private final AccountRepository accountRepository;
 
+    /**
+     * Transaction type/category reference-data access. Used on the add path to pre-validate that the
+     * supplied {@code (typeCd, categoryCd)} pair exists in {@code transaction_category} <em>before</em>
+     * the insert, so a missing reference is reported as a clean HTTP&nbsp;404 (mirroring the
+     * account/card not-found paths) instead of letting the {@code fk_tran_cat} foreign key
+     * (AAP &sect;0.3.1) fail at flush and surface as an unhandled HTTP&nbsp;500.
+     */
+    private final TransactionCategoryRepository transactionCategoryRepository;
+
     /** Entity&harr;DTO boundary mapper. */
     private final TransactionMapper transactionMapper;
 
@@ -117,23 +128,28 @@ public class TransactionService {
      * dependency {@code final} (immutable, fully initialized, trivially testable) and is the
      * Spring re-expression of the COBOL {@code CALL}/{@code XCTL} static linkage between programs.
      *
-     * @param transactionRepository the transaction data-access repository; must not be {@code null}
-     * @param cardXrefRepository    the card cross-reference repository; must not be {@code null}
-     * @param accountRepository     the account repository; must not be {@code null}
-     * @param transactionMapper     the entity&harr;DTO mapper; must not be {@code null}
-     * @param tranIdGenerator       the online transaction-id generator; must not be {@code null}
-     * @param dateValidationService the date-validation service; must not be {@code null}
+     * @param transactionRepository         the transaction data-access repository; must not be {@code null}
+     * @param cardXrefRepository            the card cross-reference repository; must not be {@code null}
+     * @param accountRepository             the account repository; must not be {@code null}
+     * @param transactionCategoryRepository the transaction type/category reference repository, used to
+     *                                      pre-validate the {@code (typeCd, categoryCd)} pair on the add
+     *                                      path; must not be {@code null}
+     * @param transactionMapper             the entity&harr;DTO mapper; must not be {@code null}
+     * @param tranIdGenerator               the online transaction-id generator; must not be {@code null}
+     * @param dateValidationService         the date-validation service; must not be {@code null}
      */
     public TransactionService(
             TransactionRepository transactionRepository,
             CardXrefRepository cardXrefRepository,
             AccountRepository accountRepository,
+            TransactionCategoryRepository transactionCategoryRepository,
             TransactionMapper transactionMapper,
             TranIdGenerator tranIdGenerator,
             DateValidationService dateValidationService) {
         this.transactionRepository = transactionRepository;
         this.cardXrefRepository = cardXrefRepository;
         this.accountRepository = accountRepository;
+        this.transactionCategoryRepository = transactionCategoryRepository;
         this.transactionMapper = transactionMapper;
         this.tranIdGenerator = tranIdGenerator;
         this.dateValidationService = dateValidationService;
@@ -275,6 +291,21 @@ public class TransactionService {
             acctId = reqAcct;
         }
 
+        // --- Step 2.5: Validate the (typeCd, categoryCd) reference exists (fk_tran_cat guard) ----
+        // The relational schema adds a composite foreign key
+        //   fk_tran_cat (type_cd, cat_cd) -> transaction_category (type_cd, cat_cd)   (AAP §0.3.1).
+        // A syntactically valid but non-existent type/category pair would otherwise pass the
+        // declarative Bean Validation, reach the INSERT, and trip the foreign key at flush -
+        // surfacing as an unhandled HTTP 500 for client-correctable input. Pre-validating the
+        // reference here reports a missing pair as a clean HTTP 404, mirroring the account/card
+        // not-found paths above so every "referenced data does not exist" input returns a 4xx.
+        TransactionCategory.TransactionCategoryId categoryId =
+                new TransactionCategory.TransactionCategoryId(request.typeCd(), request.categoryCd());
+        if (!transactionCategoryRepository.existsById(categoryId)) {
+            throw ResourceNotFoundException.of(
+                    "Transaction type/category", request.typeCd() + "/" + request.categoryCd());
+        }
+
         // --- Step 3: Validate origination & processing dates (CSUTLDTC parity) -----------------
         // Both timestamps are persisted distinctly (discrepancy #10); a validated date becomes the
         // start-of-day instant, matching the COBOL move of the X(10) date into the X(26) timestamp.
@@ -295,25 +326,33 @@ public class TransactionService {
     }
 
     /**
-     * Validates a request date through {@link DateValidationService} (the {@code CSUTLDTC} parity)
-     * and converts it to a start-of-day {@link LocalDateTime} suitable for the {@code orig_ts} /
-     * {@code proc_ts} timestamp columns.
+     * Validates a raw request date string through {@link DateValidationService} (the
+     * {@code CSUTLDTC} parity) and converts it to a start-of-day {@link LocalDateTime} suitable for
+     * the {@code orig_ts} / {@code proc_ts} timestamp columns.
      *
-     * <p>Date validation is delegated exclusively to {@link DateValidationService} &mdash; this
-     * service never hand-rolls date parsing. The {@link LocalDate} is rendered to its ISO
-     * {@code uuuu-MM-dd} text and re-validated by the service, which returns the canonical parsed
-     * value (and raises a {@link ValidationException} for a {@code null} or malformed date). The
-     * result is anchored at {@link LocalDate#atStartOfDay()}, mirroring the COBOL move of the
-     * {@code X(10)} screen date into the {@code X(26)} timestamp field.</p>
+     * <p>The request carries {@code origDate}/{@code procDate} as the raw {@code YYYY-MM-DD}
+     * <strong>text</strong> the client supplied (see {@link TransactionAddRequest}), so date
+     * validation is delegated <em>entirely and exclusively</em> to {@link DateValidationService}:
+     * this service never hand-rolls date parsing. The service applies the {@code CSUTLDTC} rules
+     * (month {@code 01-12}, real day-of-month, leap-year correctness) and, on any malformed or
+     * impossible date, raises a {@link ValidationException} whose message is
+     * <em>field-specific</em> (for example "Orig Date is not a valid date; expected format
+     * YYYY-MM-DD") &mdash; the global handler renders that as HTTP&nbsp;400. Accepting the raw text
+     * here (rather than a pre-parsed {@link LocalDate}) is what keeps the wired date validator
+     * <strong>live</strong> on the add path: a strict Jackson {@code LocalDate} deserializer would
+     * otherwise reject an invalid date before this service ran, degrading the message to the generic
+     * "Malformed request body." On success the canonical parsed value is anchored at
+     * {@link LocalDate#atStartOfDay()}, mirroring the COBOL move of the {@code X(10)} screen date
+     * into the {@code X(26)} timestamp field.</p>
      *
-     * @param date       the request date to validate; may be {@code null} (rejected by the service)
-     * @param fieldLabel the human-readable field label used in any validation error message
+     * @param date       the raw request date text to validate; may be {@code null} (rejected by the
+     *                   service with a field-specific message)
+     * @param fieldLabel the human-readable field label used in the validation error message
      * @return the validated date as a start-of-day {@link LocalDateTime}
-     * @throws ValidationException if {@code date} is {@code null} or not a valid calendar date
+     * @throws ValidationException if {@code date} is {@code null}, blank, or not a valid calendar date
      */
-    private LocalDateTime validateToTimestamp(LocalDate date, String fieldLabel) {
-        LocalDate validated = dateValidationService.validateAndParseDate(
-                date == null ? null : date.toString(), fieldLabel);
+    private LocalDateTime validateToTimestamp(String date, String fieldLabel) {
+        LocalDate validated = dateValidationService.validateAndParseDate(date, fieldLabel);
         return validated.atStartOfDay();
     }
 }
