@@ -1,7 +1,12 @@
 package com.carddemo.service;
 
+import java.lang.reflect.RecordComponent;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -10,8 +15,13 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import com.carddemo.dto.PageResponse;
 import com.carddemo.dto.UserCreateRequest;
 import com.carddemo.dto.UserResponse;
 import com.carddemo.dto.UserUpdateRequest;
@@ -20,6 +30,7 @@ import com.carddemo.exception.BusinessRuleException;
 import com.carddemo.exception.ResourceNotFoundException;
 import com.carddemo.mapper.UserMapper;
 import com.carddemo.repository.UserRepository;
+import com.carddemo.util.CardDemoConstants;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -295,6 +306,69 @@ class UserServiceTest {
         verify(userRepository).existsById(existsIdCaptor.capture());
         assertThat(existsIdCaptor.getValue()).isEqualTo(NORM_ID);
         verify(userRepository, never()).deleteById(anyString());
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // listUsers (COUSR00C) — page-size-7 browse parity
+    // -----------------------------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("listUsers pins the legacy page size of 7 and maps every row to a credential-free response")
+    void listUsers_pinsPageSizeSeven_andMapsContent() {
+        // A page of 3 users out of a total of 20, requested with the parity page size.
+        List<User> users = List.of(
+                new User("USER0001", "Alice", "Anderson", "BCRYPT_HASH", "U"),
+                new User("USER0002", "Bob", "Brown", "BCRYPT_HASH", "U"),
+                new User("ADMIN001", "Carol", "Clark", "BCRYPT_HASH", "A"));
+        Page<User> page = new PageImpl<>(users, PageRequest.of(0, CardDemoConstants.PAGE_SIZE), 20);
+        when(userRepository.findAll(any(Pageable.class))).thenReturn(page);
+        // Faithful page-envelope conversion mirroring the real UserMapper.toPageResponse: every row is
+        // projected through the credential-free UserResponse view.
+        when(userMapper.toPageResponse(any())).thenAnswer(inv -> {
+            Page<User> p = inv.getArgument(0);
+            return PageResponse.from(p, u ->
+                    new UserResponse(u.getUserId(), u.getFirstName(), u.getLastName(), u.getUserType()));
+        });
+
+        PageResponse<UserResponse> resp = userService.listUsers(0);
+
+        // The Pageable handed to the repository pins the legacy fixed window of 7 rows (COUSR00C).
+        ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
+        verify(userRepository).findAll(pageableCaptor.capture());
+        Pageable used = pageableCaptor.getValue();
+        assertThat(CardDemoConstants.PAGE_SIZE).isEqualTo(7);
+        assertThat(used.getPageSize()).isEqualTo(CardDemoConstants.PAGE_SIZE);
+        assertThat(used.getPageNumber()).isEqualTo(0);
+
+        // The envelope reflects the source page and carries credential-free rows.
+        assertThat(resp.size()).isEqualTo(7);
+        assertThat(resp.page()).isEqualTo(0);
+        assertThat(resp.totalElements()).isEqualTo(20L);
+        assertThat(resp.content()).hasSize(3);
+        assertThat(resp.content())
+                .extracting(UserResponse::userId)
+                .containsExactly("USER0001", "USER0002", "ADMIN001");
+        UserResponse firstRow = resp.content().get(0);
+        assertThat(firstRow.firstName()).isEqualTo("Alice");
+        assertThat(firstRow.lastName()).isEqualTo("Anderson");
+        assertThat(firstRow.userType()).isEqualTo("U");
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Structural PII suppression — UserResponse can never carry a password (AAP §0.6.8 / §0.7.1)
+    // -----------------------------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("UserResponse declares no password component, so a credential can never be serialized")
+    void userResponse_hasNoPasswordComponent_structural() {
+        Set<String> components = Arrays.stream(UserResponse.class.getRecordComponents())
+                .map(RecordComponent::getName)
+                .collect(Collectors.toSet());
+
+        // The response projection exposes exactly the four non-sensitive attributes...
+        assertThat(components).containsExactlyInAnyOrder("userId", "firstName", "lastName", "userType");
+        // ...and carries no password / hash / secret of any name.
+        assertThat(components).doesNotContain("password", "pwd", "passwordHash", "hash", "secret");
     }
 
     // -----------------------------------------------------------------------------------------------
