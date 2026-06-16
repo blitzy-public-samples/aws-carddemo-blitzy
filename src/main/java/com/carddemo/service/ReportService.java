@@ -13,9 +13,9 @@ import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionException;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
-import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.stereotype.Service;
 
+import com.carddemo.config.ReportJobSubmitter;
 import com.carddemo.dto.ReportRequest;
 import com.carddemo.dto.ReportResponse;
 import com.carddemo.exception.ValidationException;
@@ -42,12 +42,16 @@ import com.carddemo.exception.ValidationException;
  * <h2>Java analog (AAP &sect;0.3.2 &mdash; asynchronous job submission)</h2>
  * <p>This service preserves that fire-and-forget semantics exactly: instead of
  * writing JCL to the internal reader, it launches a <strong>Spring Batch</strong>
- * job through the auto-configured {@link JobLauncher} and surfaces the resulting
- * {@link JobExecution} identifier as the report reference inside a
- * {@link ReportResponse}. The legacy {@code WS-START-DATE}/{@code WS-END-DATE}
- * character dates become the {@code startDate}/{@code endDate} job parameters,
- * and the legacy report-type screen flags become the {@code reportType}
- * discriminator.</p>
+ * job through the <strong>asynchronous</strong> {@link ReportJobSubmitter} &mdash; a
+ * submission port (declared in {@code config/BatchConfig}) that wraps a
+ * {@code TaskExecutorJobLauncher} backed by the bounded {@code taskExecutor} &mdash;
+ * and surfaces the resulting {@link JobExecution} identifier as the report reference
+ * inside a {@link ReportResponse}. Because the submitter runs the job on a worker
+ * thread, {@link ReportJobSubmitter#submit} returns <em>before</em> the report completes,
+ * reproducing {@code CORPT00C}'s submit-and-return behaviour rather than blocking
+ * on it. The legacy {@code WS-START-DATE}/{@code WS-END-DATE} character dates become
+ * the {@code startDate}/{@code endDate} job parameters, and the legacy report-type
+ * screen flags become the {@code reportType} discriminator.</p>
  *
  * <h2>Effective date range &mdash; faithful to CORPT00C (parity, AAP &sect;0.7.1/&sect;0.7.3)</h2>
  * <ul>
@@ -69,36 +73,35 @@ import com.carddemo.exception.ValidationException;
  * </ul>
  *
  * <h2>Asynchronous-submission contract</h2>
- * <p>{@code submitReport} returns a {@link ReportResponse} <em>synchronously</em>,
- * carrying the {@code JobExecution} id and the status captured at submission. Two
- * runtime modes are possible and the contract is identical in both:</p>
- * <ul>
- *   <li>With Spring Boot's <strong>auto-configured</strong> {@code JobLauncher}
- *       (a {@code SyncTaskExecutor}), {@link JobLauncher#run} runs the job inline
- *       and returns a {@code COMPLETED} execution.</li>
- *   <li>When the {@code JobLauncher} is backed by the asynchronous
- *       {@code taskExecutor} bean (see {@code config/AsyncConfig}),
- *       {@link JobLauncher#run} returns immediately with a {@code STARTING}/
- *       {@code STARTED} execution &mdash; the true fire-and-forget analog of
- *       {@code CORPT00C}.</li>
- * </ul>
- * <p>Either way a valid {@link JobExecution#getId()} and
- * {@link JobExecution#getStatus()} are available at return time, so this
- * method deliberately returns {@link ReportResponse} directly and is
+ * <p>{@code submitReport} itself returns its {@link ReportResponse} on the caller's
+ * thread, carrying the {@code JobExecution} id and the status captured at submission.
+ * The <em>job</em>, however, runs asynchronously: the injected {@link ReportJobSubmitter}
+ * wraps a {@code TaskExecutorJobLauncher} backed by the bounded {@code taskExecutor} (see
+ * {@code config/BatchConfig} and {@code config/AsyncConfig}), so
+ * {@link ReportJobSubmitter#submit} schedules the job on a worker thread and returns
+ * <strong>immediately</strong> with a non-terminal {@code STARTING}/{@code STARTED}
+ * execution &mdash; the true fire-and-forget analog of {@code CORPT00C}, which never
+ * blocked on report completion. A valid {@link JobExecution#getId()} and
+ * {@link JobExecution#getStatus()} are already available at return time (the launcher
+ * persists the execution before dispatching it), which is precisely the reference the
+ * report API echoes back to the caller.</p>
+ * <p>The method deliberately returns {@link ReportResponse} directly and is
  * <strong>NOT</strong> annotated {@code @Async}: {@code @Async} on a method that
  * returns a plain value (rather than {@code void} or a {@code Future}) is a Spring
- * anti-pattern that would hand the caller a {@code null} proxy result. Choosing
- * the synchronous-vs-asynchronous {@code JobLauncher} belongs to
- * {@code config}/{@code batch}, not to this service.</p>
+ * anti-pattern that would hand the caller a {@code null} proxy result. The asynchrony
+ * therefore lives in the <em>launcher</em> (a {@code config}/{@code batch} concern),
+ * not in this service &mdash; which keeps the {@code JobExecution} id synchronously
+ * available to return while the report is produced out of band.</p>
  *
  * <h2>Strict layering &amp; no batch leakage (AAP &sect;0.3.2, &sect;0.6/&sect;0.7)</h2>
  * <ul>
  *   <li>This service orchestrates the launcher and date validation <em>only</em>:
  *       no controller/web types, no repository or entity access, constructor
  *       injection throughout.</li>
- *   <li>It depends solely on Spring Batch <em>core</em> types
+ *   <li>It depends on Spring Batch <em>core</em> types
  *       ({@link Job}, {@link JobExecution}, {@link JobParameters},
- *       {@link JobParametersBuilder}, {@link JobLauncher}) and never imports any
+ *       {@link JobParametersBuilder}) plus the {@code config}-layer
+ *       {@link ReportJobSubmitter} submission port, and never imports any
  *       {@code com.carddemo.batch.*} type. The concrete report job lives in the
  *       {@code batch/} package and is resolved <em>by bean name</em> through an
  *       injected {@code Map<String, Job>} (Spring populates it with every
@@ -158,8 +161,16 @@ public class ReportService {
      */
     private static final String PARAM_RUN_ID = "run.id";
 
-    /** Spring Batch launcher (auto-configured by Spring Boot). */
-    private final JobLauncher jobLauncher;
+    /**
+     * The <strong>asynchronous</strong> report-submission port used to launch the report job. This is
+     * the {@code reportJobSubmitter} bean from {@code config/BatchConfig} &mdash; a
+     * {@link ReportJobSubmitter} that wraps a {@code TaskExecutorJobLauncher} backed by the bounded
+     * {@code taskExecutor} &mdash; so {@link ReportJobSubmitter#submit} returns before the job completes
+     * (fire-and-forget). It is intentionally <em>not</em> Spring Boot's default, synchronous
+     * {@code jobLauncher}; the async launcher is encapsulated behind this port so the context keeps a
+     * single {@code JobLauncher} bean (see {@link ReportJobSubmitter}).
+     */
+    private final ReportJobSubmitter reportJobSubmitter;
 
     /**
      * All {@link Job} beans keyed by bean name. Injected by Spring; empty until
@@ -181,15 +192,17 @@ public class ReportService {
      * additionally makes direct construction with a {@code null} map (e.g. in a
      * unit test) safe rather than NPE-prone.</p>
      *
-     * @param jobLauncher           the Spring Batch {@link JobLauncher}; must not be {@code null}
+     * @param reportJobSubmitter    the asynchronous report-submission port (the
+     *                              {@code reportJobSubmitter} bean from {@code config/BatchConfig});
+     *                              must not be {@code null}
      * @param jobs                  every {@link Job} bean keyed by bean name; may be empty (or
      *                              {@code null} when constructed directly), normalized to an empty map
      * @param dateValidationService the {@code CSUTLDTC}-equivalent date validator; must not be {@code null}
      */
-    public ReportService(JobLauncher jobLauncher,
+    public ReportService(ReportJobSubmitter reportJobSubmitter,
                          Map<String, Job> jobs,
                          DateValidationService dateValidationService) {
-        this.jobLauncher = jobLauncher;
+        this.reportJobSubmitter = reportJobSubmitter;
         this.jobs = (jobs != null) ? jobs : Collections.emptyMap();
         this.dateValidationService = dateValidationService;
     }
@@ -389,8 +402,15 @@ public class ReportService {
      * Launches the report job, translating the checked Spring Batch launch
      * failures into an unchecked {@link IllegalStateException}.
      *
-     * <p>{@link JobLauncher#run(Job, JobParameters)} declares four checked
-     * exceptions (already-running, restart, instance-already-complete, and
+     * <p>Because the injected {@link ReportJobSubmitter} wraps an asynchronous
+     * {@code TaskExecutorJobLauncher} backed by the bounded {@code taskExecutor},
+     * {@link ReportJobSubmitter#submit(Job, JobParameters)} dispatches the job to a
+     * worker thread and returns a non-terminal ({@code STARTING}/{@code STARTED})
+     * {@link JobExecution} without waiting for it to finish &mdash; the
+     * fire-and-forget submission this method exists to perform.</p>
+     *
+     * <p>{@link ReportJobSubmitter#submit(Job, JobParameters)} propagates the four checked
+     * Spring Batch launch exceptions (already-running, restart, instance-already-complete, and
      * invalid-parameters), all of which extend
      * {@link JobExecutionException}. Because this service always supplies a unique
      * {@code run.id}, those conditions are not expected in normal operation;
@@ -401,12 +421,12 @@ public class ReportService {
      *
      * @param job    the resolved report {@link Job}
      * @param params the assembled {@link JobParameters}
-     * @return the {@link JobExecution} produced by the launcher
-     * @throws IllegalStateException if the launcher fails to start the job
+     * @return the {@link JobExecution} produced by the submitter
+     * @throws IllegalStateException if the submitter fails to start the job
      */
     private JobExecution launchReportJob(Job job, JobParameters params) {
         try {
-            return jobLauncher.run(job, params);
+            return reportJobSubmitter.submit(job, params);
         } catch (JobExecutionException ex) {
             throw new IllegalStateException("Failed to submit report job '" + JOB_NAME + "'", ex);
         }

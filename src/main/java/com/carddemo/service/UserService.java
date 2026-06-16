@@ -239,10 +239,11 @@ public class UserService {
     @Transactional(readOnly = true)
     public UserResponse getUser(String userId) {
         // Primary-key read (the relational analogue of COUSR02C/COUSR03C's keyed READ of USRSEC),
-        // upper-casing the id for case-insensitive, sign-on-consistent access (AAP 0.6.7).
+        // trimming and upper-casing the id for case-insensitive, sign-on-consistent access (AAP 0.6.7)
+        // — the identical normalization applied by AuthService.signon and CustomUserDetailsService.
         // Absence -> 404 via GlobalExceptionHandler. The original userId (not the normalized form) is
         // echoed in the not-found message so the caller sees exactly what they requested.
-        User user = userRepository.findById(toUpperCaseRoot(userId))
+        User user = userRepository.findById(normalizeUserId(userId))
                 .orElseThrow(() -> ResourceNotFoundException.of("User", userId));
 
         // Map to the credential-free response DTO; the mapper never touches the password hash.
@@ -261,10 +262,14 @@ public class UserService {
      * "... can NOT be empty..." messages), so they are not repeated defensively here.</p>
      *
      * <p><strong>Credential parity (AAP &sect;0.6.7).</strong> The {@code userId} primary key is stored
-     * upper-cased and the password is BCrypt-encoded (strength 12) <em>after</em> being upper-cased,
-     * both with {@link Locale#ROOT}, so the new user can authenticate through the upper-casing sign-on
-     * path. The raw password is never logged and is discarded once the hash is computed; the entity is
-     * built by {@link UserMapper#toEntity(UserCreateRequest)}, which never copies the raw password.</p>
+     * <em>trimmed and upper-cased</em> (the same normalization applied by {@code AuthService.signon} and
+     * {@code CustomUserDetailsService}), while the password is BCrypt-encoded (strength 12) <em>after</em>
+     * being upper-cased only &mdash; the password is deliberately <strong>not</strong> trimmed, matching
+     * {@code AuthService.signon}, which upper-cases the password but does not trim it, so embedded/leading/
+     * trailing spaces remain significant. Both transformations use {@link Locale#ROOT}, so the new user can
+     * authenticate through the sign-on path regardless of the JVM default locale. The raw password is never
+     * logged and is discarded once the hash is computed; the entity is built by
+     * {@link UserMapper#toEntity(UserCreateRequest)}, which never copies the raw password.</p>
      *
      * @param request the validated create request carrying the id, profile fields, plaintext password,
      *                and user type; must not be {@code null}
@@ -273,11 +278,13 @@ public class UserService {
      *                               legacy {@code "User ID already exist..."} message (&rarr; HTTP 400)
      */
     public UserResponse createUser(UserCreateRequest request) {
-        // Parity normalization (AAP 0.6.7): the id is the natural key and is stored upper-cased so it
-        // matches the sign-on lookup (CustomUserDetailsService upper-cases with Locale.ROOT before
-        // findById). Field-level "... can NOT be empty..." validation is enforced upstream by the
-        // @NotBlank/@Size/@Pattern constraints on UserCreateRequest at the controller boundary.
-        String userId = toUpperCaseRoot(request.userId());
+        // Parity normalization (AAP 0.6.7): the id is the natural key and is stored trimmed + upper-cased
+        // so it matches the sign-on lookup (AuthService.signon and CustomUserDetailsService both
+        // trim().toUpperCase(Locale.ROOT) before findById). Trimming here closes the gap where a
+        // whitespace-padded id could be persisted but be unreachable at sign-on. Field-level
+        // "... can NOT be empty..." validation is enforced upstream by the @NotBlank/@Size/@Pattern
+        // constraints on UserCreateRequest at the controller boundary.
+        String userId = normalizeUserId(request.userId());
 
         // COUSR01C duplicate-key guard: a WRITE that hit DUPKEY/DUPREC was rejected with
         // "User ID already exist...". Here an existing primary key surfaces the same message as a
@@ -288,9 +295,11 @@ public class UserService {
         }
 
         // Build the entity from the request (id + profile fields; the mapper never sets the password),
-        // then overwrite the id with its upper-cased form and set the BCrypt hash of the upper-cased
-        // password (strength 12). Encoding the upper-cased password keeps create consistent with the
-        // upper-casing sign-on path so the new user can subsequently authenticate.
+        // then overwrite the id with its trimmed + upper-cased form and set the BCrypt hash of the
+        // upper-cased password (strength 12). The password is upper-cased ONLY (via toUpperCaseRoot, no
+        // trim) so it stays byte-for-byte consistent with AuthService.signon, which upper-cases but does
+        // not trim the password — this keeps create consistent with the sign-on path so the new user can
+        // subsequently authenticate.
         User user = userMapper.toEntity(request);
         user.setUserId(userId);
         user.setPassword(passwordEncoder.encode(toUpperCaseRoot(request.password())));
@@ -312,7 +321,7 @@ public class UserService {
      * &mdash; {@code REWRITE}s the full record. The id itself is never editable.</p>
      *
      * <p><strong>Java translation.</strong> The user is loaded by primary key (404 if absent, with the
-     * id upper-cased for case-insensitive, sign-on-consistent access per AAP &sect;0.6.7), the editable
+     * id trimmed and upper-cased for case-insensitive, sign-on-consistent access per AAP &sect;0.6.7), the editable
      * profile fields (first name, last name, user type) are applied by
      * {@link UserMapper#applyUpdate(UserUpdateRequest, User)}, and the managed entity is persisted with
      * {@link UserRepository#save(Object) save}. The whole sequence runs in the class-level read-write
@@ -335,9 +344,10 @@ public class UserService {
      */
     public UserResponse updateUser(String userId, UserUpdateRequest request) {
         // COUSR02C keyed READ of USRSEC; a missing record was rejected with "User ID NOT found...".
-        // The id is upper-cased for case-insensitive, sign-on-consistent lookup (AAP 0.6.7); absence
-        // -> 404 via GlobalExceptionHandler. The original userId is echoed in the not-found message.
-        User user = userRepository.findById(toUpperCaseRoot(userId))
+        // The id is trimmed and upper-cased for case-insensitive, sign-on-consistent lookup (AAP 0.6.7),
+        // matching AuthService.signon and CustomUserDetailsService; absence -> 404 via
+        // GlobalExceptionHandler. The original userId is echoed in the not-found message.
+        User user = userRepository.findById(normalizeUserId(userId))
                 .orElseThrow(() -> ResourceNotFoundException.of("User", userId));
 
         // Apply the editable profile fields (firstName/lastName/userType). The mapper never touches the
@@ -346,10 +356,12 @@ public class UserService {
         userMapper.applyUpdate(request, user);
 
         // Password change handling (COUSR02C compares PASSWDI to SEC-USR-PWD and rewrites on a
-        // difference): apply a new password only when one was supplied. The upper-cased password is
-        // BCrypt-encoded (strength 12) for sign-on consistency; a null/blank password leaves the
-        // existing hash untouched. (UserUpdateRequest validation normally requires a non-blank
-        // password, so this guard is the defensive lower bound for direct/non-validated callers.)
+        // difference): apply a new password only when one was supplied. The password is upper-cased
+        // ONLY (via toUpperCaseRoot, no trim) and BCrypt-encoded (strength 12), staying byte-for-byte
+        // consistent with AuthService.signon (which upper-cases but does not trim the password) for
+        // sign-on consistency; a null/blank password leaves the existing hash untouched.
+        // (UserUpdateRequest validation normally requires a non-blank password, so this guard is the
+        // defensive lower bound for direct/non-validated callers.)
         String newPassword = request.password();
         if (newPassword != null && !newPassword.isBlank()) {
             user.setPassword(passwordEncoder.encode(toUpperCaseRoot(newPassword)));
@@ -373,15 +385,18 @@ public class UserService {
      * surfaces as <em>HTTP&nbsp;404&nbsp;Not&nbsp;Found</em> rather than a silent no-op, faithfully
      * preserving the legacy not-found path.</p>
      *
-     * <p>The id is upper-cased (with {@link Locale#ROOT}) for case-insensitive, sign-on-consistent
-     * access (AAP &sect;0.6.7). The whole operation runs in the class-level read-write transaction.</p>
+     * <p>The id is trimmed and upper-cased (with {@link Locale#ROOT}) for case-insensitive,
+     * sign-on-consistent access (AAP &sect;0.6.7) &mdash; the same normalization applied by
+     * {@code AuthService.signon} and {@code CustomUserDetailsService}. The whole operation runs in the
+     * class-level read-write transaction.</p>
      *
      * @param userId the identifier of the user to delete (case-insensitive); must not be {@code null}
      * @throws ResourceNotFoundException if no user exists with the given id (&rarr; HTTP 404)
      */
     public void deleteUser(String userId) {
-        // Upper-case the id for case-insensitive, sign-on-consistent access (AAP 0.6.7).
-        String id = toUpperCaseRoot(userId);
+        // Trim and upper-case the id for case-insensitive, sign-on-consistent access (AAP 0.6.7),
+        // matching AuthService.signon and CustomUserDetailsService.
+        String id = normalizeUserId(userId);
 
         // COUSR03C keyed READ before DELETE; a missing record was rejected with "User ID NOT found...".
         // Existence is checked first so a delete of an unknown id surfaces as 404 (not a silent no-op),
@@ -396,18 +411,47 @@ public class UserService {
     }
 
     /**
-     * Upper-cases the supplied value using {@link Locale#ROOT}, the locale-independent transformation
-     * shared with {@code com.carddemo.security.CustomUserDetailsService} (which upper-cases the sign-on
-     * id with {@code Locale.ROOT} before {@code findById}).
+     * Normalizes a user id by <em>trimming</em> leading/trailing whitespace and then upper-casing with
+     * {@link Locale#ROOT} &mdash; the canonical, locale-independent user-id transformation shared with
+     * the authentication paths {@code com.carddemo.service.AuthService#signon} and
+     * {@code com.carddemo.security.CustomUserDetailsService#loadUserByUsername}, both of which apply
+     * {@code trim().toUpperCase(Locale.ROOT)} before the keyed {@code findById}.
      *
-     * <p>{@link Locale#ROOT} is used deliberately instead of the no-arg {@link String#toUpperCase()} so
-     * the result never varies with the JVM's default locale &mdash; most notably the Turkish dotted-I
-     * rule, under which {@code "admin".toUpperCase()} would yield {@code "ADM\u0130N"} and fail to match
-     * the {@code "ADMIN"} produced by the sign-on path. Applying the <em>same</em> transformation to the
-     * stored id/password here and to the sign-on inputs is precisely what guarantees a user created or
-     * updated by this service can subsequently authenticate (AAP &sect;0.6.7).</p>
+     * <p><strong>Why trim AND upper-case.</strong> The user id is the natural primary key. Persisting an
+     * id that has not been trimmed (e.g. {@code "user0001 "}) would store a row that the sign-on lookup
+     * &mdash; which <em>does</em> trim &mdash; can never reach, leaving the account unreachable at
+     * authentication. Applying the identical {@code trim().toUpperCase(Locale.ROOT)} here on every id
+     * path (create/update/delete/get) guarantees a user created or modified by this service can
+     * subsequently authenticate (AAP &sect;0.6.7).</p>
      *
-     * @param value the value to normalize; may be {@code null}
+     * <p><strong>Why {@link Locale#ROOT}.</strong> {@link Locale#ROOT} is used deliberately instead of
+     * the no-arg {@link String#toUpperCase()} so the result never varies with the JVM's default locale
+     * &mdash; most notably the Turkish dotted-I rule, under which {@code "admin".toUpperCase()} would
+     * yield {@code "ADM\u0130N"} and fail to match the {@code "ADMIN"} produced by the sign-on path.</p>
+     *
+     * @param value the user id to normalize; may be {@code null}
+     * @return the trimmed, upper-cased id, or {@code null} if {@code value} was {@code null}
+     */
+    private static String normalizeUserId(String value) {
+        return value == null ? null : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    /**
+     * Upper-cases the supplied <em>password</em> using {@link Locale#ROOT} <strong>without trimming</strong>.
+     *
+     * <p>This is the credential transformation, used exclusively on the password before BCrypt encoding
+     * in {@link #createUser(UserCreateRequest)} and {@link #updateUser(String, UserUpdateRequest)}. It is
+     * intentionally distinct from {@link #normalizeUserId(String)}: it must mirror
+     * {@code com.carddemo.service.AuthService#signon}, which upper-cases the password with
+     * {@code toUpperCase(Locale.ROOT)} but <em>does not</em> trim it. Trimming the password here would
+     * change the bytes fed to BCrypt relative to the sign-on path, so a password with leading/trailing
+     * spaces would no longer authenticate &mdash; therefore the password is upper-cased only.</p>
+     *
+     * <p>{@link Locale#ROOT} is used for the same locale-stability reason described on
+     * {@link #normalizeUserId(String)} (the Turkish dotted-I rule), keeping the stored credential hash
+     * consistent with the sign-on transformation regardless of the JVM default locale (AAP &sect;0.6.7).</p>
+     *
+     * @param value the password to upper-case; may be {@code null}
      * @return the upper-cased value, or {@code null} if {@code value} was {@code null}
      */
     private static String toUpperCaseRoot(String value) {

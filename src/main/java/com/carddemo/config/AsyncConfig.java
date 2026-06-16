@@ -32,25 +32,31 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
  * <p><strong>What this class provides.</strong> It supplies <em>only</em> the asynchronous
  * infrastructure:</p>
  * <ul>
- *   <li>{@link EnableAsync @EnableAsync} - activates Spring's {@code @Async} method-interception
- *       proxying so annotated methods execute on a managed thread pool rather than the caller's
- *       thread.</li>
  *   <li>A single, bounded {@link ThreadPoolTaskExecutor} registered under the canonical bean name
- *       {@value #TASK_EXECUTOR_BEAN_NAME}. Spring resolves a bare {@code @Async} method against a
- *       unique {@link TaskExecutor} bean or, failing uniqueness, against one named
- *       {@code taskExecutor}; this naming therefore gives {@code @Async} an unambiguous default.
- *       The sibling {@code com.carddemo.service.ReportService} owns the actual asynchronous
- *       {@code JobLauncher} submission (returning the {@code JobExecution} id) and annotates its
- *       submit method {@code @Async} or {@code @Async("taskExecutor")}.</li>
+ *       {@value #TASK_EXECUTOR_BEAN_NAME}. This is the load-bearing deliverable: it backs the
+ *       {@code TaskExecutorJobLauncher} encapsulated by the {@code reportJobSubmitter} port declared
+ *       in {@code com.carddemo.config.BatchConfig}, which {@code com.carddemo.service.ReportService}
+ *       uses to submit the transaction-report job. Because that launcher runs the job on this pool,
+ *       {@code JobLauncher.run(...)} returns immediately with a non-terminal {@code JobExecution}
+ *       &mdash; the fire-and-forget analog of {@code CORPT00C}. {@code ReportService} is therefore
+ *       <em>not</em> itself annotated {@code @Async} (it returns a plain value, for which
+ *       {@code @Async} would be an anti-pattern); the asynchrony is provided by the launcher this
+ *       executor backs.</li>
+ *   <li>{@link EnableAsync @EnableAsync} together with the {@link AsyncConfigurer} contract below -
+ *       this designates the {@value #TASK_EXECUTOR_BEAN_NAME} pool as the application's default
+ *       {@code @Async} executor and installs a PII-safe uncaught-exception handler, so that any
+ *       {@code void}-returning {@code @Async} method added in the future runs on the same bounded
+ *       pool with observable failures (rather than the unbounded default executor and silently
+ *       swallowed exceptions).</li>
  *   <li>A centralized {@link AsyncUncaughtExceptionHandler} (via {@link AsyncConfigurer}) that logs
- *       exceptions thrown from {@code void}-returning fire-and-forget {@code @Async} methods, which
- *       would otherwise be silently swallowed - exactly the failure mode that matters for the
- *       submit-and-return report model where the caller never observes a downstream error.</li>
+ *       exceptions thrown from {@code void}-returning {@code @Async} methods, which would otherwise be
+ *       silently swallowed.</li>
  * </ul>
  *
  * <p><strong>Strict layering.</strong> This class deliberately contains <em>no</em> report logic,
- * {@code JobLauncher} calls, or batch job definitions - those live in
- * {@code com.carddemo.service.ReportService} and the {@code com.carddemo.batch} package
+ * {@code JobLauncher} bean definitions, or batch job definitions - those live in
+ * {@code com.carddemo.service.ReportService}, {@code com.carddemo.config.BatchConfig} (the
+ * {@code reportJobSubmitter} that consumes this executor), and the {@code com.carddemo.batch} package
  * respectively. It also defines exactly one {@code Executor} bean: because Spring Boot's
  * {@code TaskExecutionAutoConfiguration} is {@code @ConditionalOnMissingBean(Executor.class)},
  * declaring this {@code taskExecutor} suppresses the auto-configured {@code applicationTaskExecutor},
@@ -101,8 +107,11 @@ public class AsyncConfig implements AsyncConfigurer {
     private static final int AWAIT_TERMINATION_SECONDS = 30;
 
     /**
-     * Builds the bounded {@link ThreadPoolTaskExecutor} that backs every {@code @Async} method in
-     * the application.
+     * Builds the bounded {@link ThreadPoolTaskExecutor} that backs asynchronous execution in the
+     * application: principally the {@code TaskExecutorJobLauncher} inside the {@code reportJobSubmitter}
+     * port in {@code com.carddemo.config.BatchConfig} that submits the report job without blocking the
+     * caller, and additionally any {@code @Async} method (for which it is the
+     * {@link AsyncConfigurer}-designated default executor).
      *
      * <p>The bean is registered under {@value #TASK_EXECUTOR_BEAN_NAME}.
      * {@link ThreadPoolTaskExecutor#initialize() initialize()} is invoked explicitly so the

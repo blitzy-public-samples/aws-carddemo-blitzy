@@ -14,8 +14,8 @@ import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
-import org.springframework.batch.core.launch.JobLauncher;
 
+import com.carddemo.config.ReportJobSubmitter;
 import com.carddemo.dto.ReportRequest;
 import com.carddemo.dto.ReportResponse;
 import com.carddemo.exception.ValidationException;
@@ -39,7 +39,7 @@ import static org.mockito.Mockito.when;
  * <p>{@code ReportService} is a thin <em>launcher</em>: it resolves an effective reporting
  * window from the request's {@code reportType}, (for {@code CUSTOM}) validates the keyed dates
  * through the {@code CSUTLDTC}-equivalent {@link DateValidationService}, resolves the batch job
- * from an injected name&rarr;{@link Job} map, fires it via {@link JobLauncher}, and returns the
+ * from an injected name&rarr;{@link Job} map, fires it via {@link ReportJobSubmitter}, and returns the
  * resulting {@link JobExecution} id/status inside a {@link ReportResponse} (AAP&nbsp;&sect;0.3.2 —
  * asynchronous job submission reproducing the legacy {@code SUBMIT-JOB-TO-INTRDR} hand-off). The
  * cases below verify, against the <strong>real production class</strong>:</p>
@@ -64,10 +64,10 @@ import static org.mockito.Mockito.when;
  * database, and <em>no</em> real batch execution. The four collaborators are mocked. Because a
  * {@code Map<String,Job>} cannot be cleanly populated through {@code @InjectMocks}, the service is
  * constructed <strong>explicitly per test</strong> with the real constructor argument order
- * ({@code jobLauncher}, {@code jobs}, {@code dateValidationService}). {@link JobLauncher#run} declares
- * checked Spring Batch exceptions, so test methods declare {@code throws Exception}. Strict stubbing
- * is honored: the {@code jobExecution}/{@code jobLauncher} stubs appear only in the launch tests, never
- * in the validation-failure or empty-map tests.</p>
+ * ({@code reportJobSubmitter}, {@code jobs}, {@code dateValidationService}).
+ * {@link ReportJobSubmitter#submit} declares a checked Spring Batch exception, so test methods declare
+ * {@code throws Exception}. Strict stubbing is honored: the {@code jobExecution}/{@code reportJobSubmitter}
+ * stubs appear only in the launch tests, never in the validation-failure or empty-map tests.</p>
  *
  * <p>No personally identifiable information (PII) appears in any test data — no CVV, SSN, card number,
  * or password values are used (AAP&nbsp;&sect;0.6.8, &sect;0.7.1).</p>
@@ -83,9 +83,9 @@ class ReportServiceTest {
     /** The exact bean name under which the transaction-report job is registered and resolved. */
     private static final String JOB_BEAN_NAME = "transactionReportJob";
 
-    /** Spring Batch launcher; stubbed only in the launch (happy-path) tests. */
+    /** Asynchronous report-submission port; stubbed only in the launch (happy-path) tests. */
     @Mock
-    private JobLauncher jobLauncher;
+    private ReportJobSubmitter reportJobSubmitter;
 
     /**
      * The transaction-report {@link Job} mock. Its variable name intentionally matches the
@@ -114,7 +114,7 @@ class ReportServiceTest {
      */
     private ReportService serviceWithJob() {
         return new ReportService(
-                jobLauncher,
+                reportJobSubmitter,
                 Map.of(JOB_BEAN_NAME, transactionReportJob),
                 dateValidationService);
     }
@@ -127,7 +127,7 @@ class ReportServiceTest {
     private void stubSuccessfulLaunch() throws Exception {
         when(jobExecution.getId()).thenReturn(7L);
         when(jobExecution.getStatus()).thenReturn(BatchStatus.COMPLETED);
-        when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
+        when(reportJobSubmitter.submit(eq(transactionReportJob), any(JobParameters.class)))
                 .thenReturn(jobExecution);
     }
 
@@ -160,7 +160,7 @@ class ReportServiceTest {
 
         // The resolved range must be forwarded to the job as run parameters (ISO yyyy-MM-dd strings).
         ArgumentCaptor<JobParameters> paramsCaptor = ArgumentCaptor.forClass(JobParameters.class);
-        verify(jobLauncher).run(eq(transactionReportJob), paramsCaptor.capture());
+        verify(reportJobSubmitter).submit(eq(transactionReportJob), paramsCaptor.capture());
         JobParameters params = paramsCaptor.getValue();
         assertThat(params.getString("reportType")).isEqualTo("MONTHLY");
         assertThat(params.getString("startDate")).isEqualTo(expectedStart.toString());
@@ -189,7 +189,7 @@ class ReportServiceTest {
         assertThat(resp.jobExecutionId()).isEqualTo(7L);
 
         ArgumentCaptor<JobParameters> paramsCaptor = ArgumentCaptor.forClass(JobParameters.class);
-        verify(jobLauncher).run(eq(transactionReportJob), paramsCaptor.capture());
+        verify(reportJobSubmitter).submit(eq(transactionReportJob), paramsCaptor.capture());
         JobParameters params = paramsCaptor.getValue();
         assertThat(params.getString("startDate")).isEqualTo(expectedStart.toString());
         assertThat(params.getString("endDate")).isEqualTo(expectedEnd.toString());
@@ -220,7 +220,7 @@ class ReportServiceTest {
         // ISO-8601 yyyy-MM-dd text, with the field label the production service passes.
         verify(dateValidationService).validateAndParseDate("2023-01-01", "Start date");
         verify(dateValidationService).validateAndParseDate("2023-03-31", "End date");
-        verify(jobLauncher).run(eq(transactionReportJob), any(JobParameters.class));
+        verify(reportJobSubmitter).submit(eq(transactionReportJob), any(JobParameters.class));
     }
 
     @Test
@@ -233,7 +233,7 @@ class ReportServiceTest {
         assertThatThrownBy(() -> service.submitReport(new ReportRequest("CUSTOM", null, null)))
                 .isInstanceOf(ValidationException.class);
 
-        verify(jobLauncher, never()).run(any(), any());
+        verify(reportJobSubmitter, never()).submit(any(), any());
         verifyNoInteractions(dateValidationService);
     }
 
@@ -251,7 +251,7 @@ class ReportServiceTest {
         assertThatThrownBy(() -> service.submitReport(new ReportRequest("CUSTOM", start, end)))
                 .isInstanceOf(ValidationException.class);
 
-        verify(jobLauncher, never()).run(any(), any());
+        verify(reportJobSubmitter, never()).submit(any(), any());
     }
 
     @Test
@@ -268,7 +268,7 @@ class ReportServiceTest {
                         new ReportRequest("CUSTOM", LocalDate.of(2023, 1, 1), LocalDate.of(2023, 3, 31))))
                 .isInstanceOf(ValidationException.class);
 
-        verify(jobLauncher, never()).run(any(), any());
+        verify(reportJobSubmitter, never()).submit(any(), any());
     }
 
     // =========================================================================================
@@ -285,7 +285,7 @@ class ReportServiceTest {
 
         // Proves the entry keyed "transactionReportJob" is the one actually launched, and that its
         // JobExecution id is surfaced in the response.
-        verify(jobLauncher).run(eq(transactionReportJob), any(JobParameters.class));
+        verify(reportJobSubmitter).submit(eq(transactionReportJob), any(JobParameters.class));
         assertThat(resp.jobExecutionId()).isEqualTo(7L);
     }
 
@@ -294,12 +294,12 @@ class ReportServiceTest {
     void emptyJobMap_throwsIllegalStateException() throws Exception {
         // No "transactionReportJob" entry → resolveReportJob() raises IllegalStateException (a
         // server-side configuration gap, surfaced as HTTP 500), rather than letting an NPE escape.
-        ReportService service = new ReportService(jobLauncher, Map.of(), dateValidationService);
+        ReportService service = new ReportService(reportJobSubmitter, Map.of(), dateValidationService);
 
         assertThatThrownBy(() -> service.submitReport(new ReportRequest("MONTHLY", null, null)))
                 .isInstanceOf(IllegalStateException.class);
 
-        verify(jobLauncher, never()).run(any(), any());
+        verify(reportJobSubmitter, never()).submit(any(), any());
     }
 
     // =========================================================================================
@@ -314,7 +314,7 @@ class ReportServiceTest {
         assertThatThrownBy(() -> service.submitReport(null))
                 .isInstanceOf(ValidationException.class);
 
-        verify(jobLauncher, never()).run(any(), any());
+        verify(reportJobSubmitter, never()).submit(any(), any());
     }
 
     @Test
@@ -325,7 +325,7 @@ class ReportServiceTest {
         assertThatThrownBy(() -> service.submitReport(new ReportRequest(null, null, null)))
                 .isInstanceOf(ValidationException.class);
 
-        verify(jobLauncher, never()).run(any(), any());
+        verify(reportJobSubmitter, never()).submit(any(), any());
     }
 
     @Test
@@ -336,6 +336,6 @@ class ReportServiceTest {
         assertThatThrownBy(() -> service.submitReport(new ReportRequest("WEEKLY", null, null)))
                 .isInstanceOf(ValidationException.class);
 
-        verify(jobLauncher, never()).run(any(), any());
+        verify(reportJobSubmitter, never()).submit(any(), any());
     }
 }
