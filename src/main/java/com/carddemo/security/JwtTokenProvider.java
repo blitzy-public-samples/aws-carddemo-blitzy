@@ -13,6 +13,7 @@ import javax.crypto.SecretKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.stereotype.Component;
 
@@ -108,6 +109,33 @@ public class JwtTokenProvider {
     public static final String ROLE_USER = "ROLE_USER";
 
     // ------------------------------------------------------------------
+    // Production secret-hardening guard (QA CKPT-5 finding S-4; AAP section
+    // 0.6.7 "production MUST supply a strong JWT_SECRET"). The values below are
+    // the PUBLICLY-KNOWN committed defaults baked into the dev/test config
+    // (application.yml / application-test.yml). They are perfectly fine for the
+    // dev and test profiles, but a production instance that signed tokens with
+    // one of them could be impersonated by anyone who reads the repository, so
+    // {@link #init()} refuses to start on them when the {@value #PROD_PROFILE}
+    // profile is active.
+    // ------------------------------------------------------------------
+
+    /** Spring profile under which the strong-secret requirement is enforced. */
+    static final String PROD_PROFILE = "prod";
+
+    /**
+     * The committed DEV default from {@code application.yml}
+     * ({@code jwt.secret = ${JWT_SECRET:...}}). 52 ASCII chars (&ge; 256 bits), so
+     * it passes the {@link io.jsonwebtoken.security.WeakKeyException} length check
+     * &mdash; which is exactly why a separate known-default guard is required.
+     */
+    static final String DEV_DEFAULT_SECRET =
+            "change-me-dev-only-secret-min-32-characters-0123456789";
+
+    /** The committed TEST default from {@code application-test.yml}. */
+    static final String TEST_DEFAULT_SECRET =
+            "test-only-carddemo-jwt-secret-key-minimum-32-bytes-0123456789";
+
+    // ------------------------------------------------------------------
     // Externalized configuration (bound from application*.yml; the keys are
     // contractually fixed: jwt.secret and the hyphenated jwt.expiration-ms).
     // ------------------------------------------------------------------
@@ -128,15 +156,86 @@ public class JwtTokenProvider {
     private SecretKey key;
 
     /**
+     * The Spring {@link Environment}, used by {@link #init()} to detect whether the
+     * {@value #PROD_PROFILE} profile is active so the production strong-secret guard
+     * (QA CKPT-5 finding S-4) is enforced only in production and never burdens the
+     * dev/test profiles. Injected via the constructor (immutable) per the migration's
+     * constructor-injection convention (AAP &sect;0.3.2).
+     */
+    private final Environment environment;
+
+    /**
+     * Creates the provider with the Spring {@link Environment} required by the
+     * production secret-hardening guard.
+     *
+     * <p>The signing secret and expiration are bound separately by field
+     * {@code @Value} injection; only the environment (needed before any
+     * {@code @Value} field is consulted, inside {@link #init()}) is constructor
+     * injected. A single constructor is auto-detected by Spring, so no
+     * {@code @Autowired} annotation is required.</p>
+     *
+     * @param environment the Spring environment used to detect the active profile;
+     *                    never {@code null}
+     */
+    public JwtTokenProvider(Environment environment) {
+        this.environment = environment;
+    }
+
+    /**
      * Builds the immutable signing key from the configured secret after Spring
      * has injected the {@code @Value} fields. Performed eagerly so that an
-     * under-strength secret fails fast at application startup with a
-     * {@code io.jsonwebtoken.security.WeakKeyException} rather than at the first
-     * authentication attempt.
+     * under-strength <em>or</em> insecure-default secret fails fast at application
+     * startup rather than at the first authentication attempt.
+     *
+     * <p>Two startup guards run here, in order:</p>
+     * <ol>
+     *   <li><strong>Production known-default guard (QA CKPT-5 finding S-4, AAP
+     *       &sect;0.6.7).</strong> When the {@value #PROD_PROFILE} profile is active and
+     *       the resolved {@code jwt.secret} equals one of the publicly-known committed
+     *       defaults ({@link #DEV_DEFAULT_SECRET} / {@link #TEST_DEFAULT_SECRET}),
+     *       startup is aborted with an {@link IllegalStateException}. This prevents a
+     *       production deployment from <em>silently</em> signing tokens with a key that
+     *       anyone can read from the repository &mdash; which would permit forging valid
+     *       admin tokens (a total authentication/authorization bypass). The companion
+     *       {@code application-prod.yml} removes the default from {@code jwt.secret}
+     *       (binding it to a bare {@code ${JWT_SECRET}}), so a <em>missing</em>
+     *       {@code JWT_SECRET} already fails fast at property resolution; this guard is
+     *       the defense-in-depth net for an operator who explicitly sets
+     *       {@code JWT_SECRET} to a known default.</li>
+     *   <li><strong>Weak-key guard.</strong> {@link Keys#hmacShaKeyFor(byte[])} throws
+     *       {@code io.jsonwebtoken.security.WeakKeyException} for an HS256 secret shorter
+     *       than 256 bits (32 ASCII chars), enforcing the AAP &sect;0.6.7 key-strength
+     *       requirement.</li>
+     * </ol>
+     *
+     * @throws IllegalStateException if the prod profile is active and the configured
+     *                               secret is a known committed default
      */
     @PostConstruct
     void init() {
+        if (environment != null
+                && environment.matchesProfiles(PROD_PROFILE)
+                && isKnownDefaultSecret(jwtSecret)) {
+            // Never log the secret itself; the message names only the remediation.
+            throw new IllegalStateException(
+                    "Refusing to start under the '" + PROD_PROFILE + "' profile with a "
+                    + "publicly-known default JWT signing secret. Set the JWT_SECRET "
+                    + "environment variable to a strong, unique value (>= 256 bits / "
+                    + ">= 32 ASCII characters). See AAP section 0.6.7.");
+        }
         this.key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Indicates whether the supplied secret is one of the publicly-known committed
+     * dev/test defaults that must never be used to sign production tokens.
+     *
+     * @param secret the resolved {@code jwt.secret} value (may be {@code null})
+     * @return {@code true} if {@code secret} equals {@link #DEV_DEFAULT_SECRET} or
+     *         {@link #TEST_DEFAULT_SECRET}
+     */
+    private static boolean isKnownDefaultSecret(String secret) {
+        return DEV_DEFAULT_SECRET.equals(secret) || TEST_DEFAULT_SECRET.equals(secret);
     }
 
     // ------------------------------------------------------------------

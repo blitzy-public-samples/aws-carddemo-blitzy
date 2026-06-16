@@ -96,6 +96,30 @@ spring:
       initialize-schema: always   # ensure BATCH_* metadata tables exist in PostgreSQL
 
 # -----------------------------------------------------------------------------
+# JWT signing secret - PRODUCTION HARDENING (QA CKPT-5 finding S-4, AAP section 0.6.7).
+# -----------------------------------------------------------------------------
+# The base application.yml binds jwt.secret to
+#   ${JWT_SECRET:change-me-dev-only-secret-min-32-characters-0123456789}
+# whose committed default is DEV-ONLY and PUBLICLY KNOWN. Under the prod profile that
+# default MUST NEVER be the silent fallback: a production instance that booted on the
+# public key would allow an attacker to forge valid admin tokens (total auth bypass).
+#
+# This profile-specific override removes the default entirely - jwt.secret resolves
+# SOLELY from the JWT_SECRET environment variable with NO fallback. If JWT_SECRET is
+# unset (or empty) when the prod profile is active, the ${JWT_SECRET} placeholder is
+# UNRESOLVABLE and the application FAILS FAST at startup (the @Value("${jwt.secret}")
+# injection in JwtTokenProvider cannot be satisfied) rather than silently running on
+# the insecure committed key. AAP section 0.6.7: "production MUST supply a strong
+# JWT_SECRET". The operator MUST set JWT_SECRET to a strong, unique, >= 256-bit
+# (>= 32 ASCII char) value (see the OPERATOR CHECKLIST above).
+#
+# Defense in depth: JwtTokenProvider additionally rejects, at startup, any resolved
+# secret that equals a known committed default while the prod profile is active - so
+# even explicitly setting JWT_SECRET to the public dev/test default aborts the boot.
+jwt:
+  secret: ${JWT_SECRET}
+
+# -----------------------------------------------------------------------------
 # Production logging: quieter than dev. Keep application logs at INFO while
 # suppressing framework chatter and SQL echo (no statement logging in prod).
 # -----------------------------------------------------------------------------

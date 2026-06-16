@@ -7,8 +7,10 @@ import com.carddemo.dto.PageResponse;
 import com.carddemo.service.CardService;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -64,7 +66,10 @@ import org.springframework.web.bind.annotation.RestController;
  *       mirrors the legacy {@code READ ... UPDATE} / {@code REWRITE} conflict) &rarr;
  *       HTTP&nbsp;409;</li>
  *   <li>a request body that violates the {@link CardUpdateRequest} Bean Validation constraints
- *       raises {@code MethodArgumentNotValidException} &rarr; HTTP&nbsp;400.</li>
+ *       raises {@code MethodArgumentNotValidException} &rarr; HTTP&nbsp;400;</li>
+ *   <li>a negative {@code page} index violates the class-level {@link Validated @Validated} /
+ *       {@link Min @Min(0)} parameter constraint and raises {@code ConstraintViolationException}
+ *       &rarr; HTTP&nbsp;400 (QA CKPT-5 S-1/S-2 hardening; previously surfaced as HTTP&nbsp;500).</li>
  * </ul>
  *
  * <h2>Security</h2>
@@ -91,6 +96,7 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @RestController
 @RequestMapping("/cards")
+@Validated
 public class CardController {
 
     /**
@@ -134,7 +140,7 @@ public class CardController {
     @GetMapping
     public ResponseEntity<PageResponse<CardListItem>> listCards(
             @RequestParam(required = false) Long accountId,
-            @RequestParam(defaultValue = "0") int page) {
+            @RequestParam(defaultValue = "0") @Min(0) int page) {
         return ResponseEntity.ok(cardService.listCards(accountId, page));
     }
 

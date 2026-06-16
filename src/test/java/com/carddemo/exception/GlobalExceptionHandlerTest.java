@@ -16,6 +16,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Focused unit test for the three exception handlers added to {@link GlobalExceptionHandler} to close
@@ -99,5 +100,28 @@ class GlobalExceptionHandlerTest {
         assertThat(body.path()).isEqualTo("/transactions/0000000000000001");
         // RFC 9110 §15.5.6: a 405 response advertises the supported methods via the Allow header.
         assertThat(response.getHeaders().getAllow()).contains(HttpMethod.GET);
+    }
+
+    @Test
+    @DisplayName("NoResourceFoundException (unmatched route) -> 404 with a generic, path-free message (S-1)")
+    void noResourceFound_maps404_noLeak() {
+        // QA CKPT-5 S-1: an authenticated request to an unmapped URL previously fell through to the
+        // catch-all and surfaced as HTTP 500; it must now map to HTTP 404 with the standard envelope.
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/nonexistentpath");
+        NoResourceFoundException ex = new NoResourceFoundException(HttpMethod.GET, "nonexistentpath");
+
+        ResponseEntity<ErrorResponse> response = handler.handleNoResourceFound(ex, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND); // 404, not 500
+        ErrorResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(404);
+        assertThat(body.error()).isEqualTo("Not Found");
+        assertThat(body.path()).isEqualTo("/nonexistentpath");
+        assertThat(body.message()).isNotBlank();
+        // The curated message must NOT echo the framework's "No static resource ..." text nor the
+        // raw path into the body (AAP §0.6.8 non-leakage discipline).
+        assertThat(body.message()).doesNotContain("No static resource");
+        assertThat(body.message()).doesNotContain("nonexistentpath");
     }
 }

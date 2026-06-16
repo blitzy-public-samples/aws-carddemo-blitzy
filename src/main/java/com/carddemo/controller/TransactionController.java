@@ -7,9 +7,11 @@ import com.carddemo.dto.TransactionResponse;
 import com.carddemo.service.TransactionService;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -76,7 +78,10 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li>an add that violates the Account/Card key rule, or that carries an invalid date, raises
  *       {@code ValidationException} &rarr; HTTP&nbsp;400;</li>
  *   <li>an add body that violates the {@link TransactionAddRequest} Bean Validation constraints
- *       raises {@code MethodArgumentNotValidException} &rarr; HTTP&nbsp;400.</li>
+ *       raises {@code MethodArgumentNotValidException} &rarr; HTTP&nbsp;400;</li>
+ *   <li>a negative {@code page} index violates the class-level {@link Validated @Validated} /
+ *       {@link Min @Min(0)} parameter constraint and raises {@code ConstraintViolationException}
+ *       &rarr; HTTP&nbsp;400 (QA CKPT-5 S-1/S-2 hardening; previously surfaced as HTTP&nbsp;500).</li>
  * </ul>
  *
  * <h2>Security</h2>
@@ -103,6 +108,7 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @RestController
 @RequestMapping("/transactions")
+@Validated
 public class TransactionController {
 
     /**
@@ -148,7 +154,7 @@ public class TransactionController {
     @GetMapping
     public ResponseEntity<PageResponse<TransactionListItem>> listTransactions(
             @RequestParam(required = false) Long accountId,
-            @RequestParam(defaultValue = "0") int page) {
+            @RequestParam(defaultValue = "0") @Min(0) int page) {
         return ResponseEntity.ok(transactionService.listTransactions(accountId, page));
     }
 

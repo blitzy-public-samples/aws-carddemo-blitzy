@@ -26,6 +26,8 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -68,7 +70,9 @@ import java.util.Set;
  *           {@link MissingServletRequestParameterException}</td></tr>
  *   <tr><td>401 Unauthorized</td><td>{@link AuthenticationException}</td></tr>
  *   <tr><td>403 Forbidden</td><td>{@link AccessDeniedException}</td></tr>
- *   <tr><td>404 Not Found</td><td>{@code ResourceNotFoundException}</td></tr>
+ *   <tr><td>404 Not Found</td>
+ *       <td>{@code ResourceNotFoundException} (CardDemo domain),
+ *           {@link NoResourceFoundException}, {@link NoHandlerFoundException} (unmatched route)</td></tr>
  *   <tr><td>405 Method Not Allowed</td><td>{@link HttpRequestMethodNotSupportedException}</td></tr>
  *   <tr><td>409 Conflict</td>
  *       <td>{@code ConcurrentModificationException} (the CardDemo domain type),
@@ -178,6 +182,15 @@ public class GlobalExceptionHandler {
     /** Generic 415 message for an unsupported request {@code Content-Type}. */
     private static final String MSG_UNSUPPORTED_MEDIA_TYPE =
             "Unsupported media type; this endpoint consumes 'application/json'.";
+
+    /**
+     * Generic 404 message for a request whose URL matches no mapped endpoint (or no static
+     * resource). A curated, path-free message is returned; the offending URL is not echoed into the
+     * message body (it is already carried, safely, by {@link ErrorResponse#path()}), and the
+     * framework exception's own text (for example "No static resource ...") is never surfaced
+     * (AAP &sect;0.6.8). Mapped via QA CKPT-5 finding S-1.
+     */
+    private static final String MSG_NO_RESOURCE = "The requested resource was not found.";
 
     /**
      * Generic 409 message for a data-integrity (foreign-key / unique / NOT NULL) violation that
@@ -445,6 +458,34 @@ public class GlobalExceptionHandler {
         String message = (ex.getMessage() != null) ? ex.getMessage() : "Resource not found.";
         logClientError(request, HttpStatus.NOT_FOUND, message);
         return build(HttpStatus.NOT_FOUND, message, request, null);
+    }
+
+    /**
+     * Handles Spring MVC's {@link NoResourceFoundException} and {@link NoHandlerFoundException}
+     * &mdash; a request whose URL matches <em>no</em> mapped controller method (or no static
+     * resource), for example {@code GET /nonexistentpath} or {@code GET /api/foo/bar}. Without this
+     * handler the exception falls through to the catch-all {@link #handleUnexpected} and surfaces as
+     * an incorrect <strong>HTTP&nbsp;500</strong> accompanied by an {@code ERROR}-level stack-trace
+     * log; here it is mapped to the semantically-correct <strong>HTTP&nbsp;404&nbsp;Not Found</strong>
+     * and logged at {@code WARN} (an unmatched route is an expected, client-driven condition, not a
+     * server fault). The standard {@link ErrorResponse} JSON envelope is returned with the generic,
+     * path-free {@value #MSG_NO_RESOURCE} message; the framework exception's own text (which can echo
+     * the raw path, e.g. "No static resource ...") is intentionally not surfaced (AAP &sect;0.6.8).
+     *
+     * <p>Resolves QA CKPT-5 finding S-1 (authenticated unmatched paths returned 500 instead of 404).
+     * {@code NoHandlerFoundException} is mapped alongside {@code NoResourceFoundException} so the
+     * behavior is uniform regardless of whether {@code spring.mvc.throw-exception-if-no-handler-found}
+     * / static-resource handling routes the miss through one type or the other.</p>
+     *
+     * @param ex      the no-resource / no-handler exception (its detail is intentionally not surfaced)
+     * @param request the current request (for {@link ErrorResponse#path()})
+     * @return HTTP 404 with the standard {@link ErrorResponse} and a generic, path-free message
+     */
+    @ExceptionHandler({NoResourceFoundException.class, NoHandlerFoundException.class})
+    public ResponseEntity<ErrorResponse> handleNoResourceFound(Exception ex,
+                                                               HttpServletRequest request) {
+        logClientError(request, HttpStatus.NOT_FOUND, MSG_NO_RESOURCE);
+        return build(HttpStatus.NOT_FOUND, MSG_NO_RESOURCE, request, null);
     }
 
     // =============================================================================================

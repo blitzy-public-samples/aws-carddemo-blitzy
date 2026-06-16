@@ -260,6 +260,36 @@ class TransactionControllerTest {
                 .andExpect(jsonPath("$.content[0].amount").exists());
     }
 
+    /**
+     * QA CKPT-5 finding S-2: a negative {@code page} index previously flowed unchecked into
+     * {@code PageRequest.of(-1, 7)}, which throws {@code IllegalArgumentException} and surfaced as an
+     * incorrect <strong>HTTP&nbsp;500</strong>. With the class-level {@link
+     * org.springframework.validation.annotation.Validated @Validated} and the {@code @Min(0)}
+     * constraint on the {@code page} parameter, the request must now be rejected with
+     * <strong>HTTP&nbsp;400</strong> (a {@code ConstraintViolationException} mapped by the
+     * {@code GlobalExceptionHandler}), matching the already-correct {@code /users} behavior.
+     */
+    @Test
+    @DisplayName("GET /transactions?page=-1: negative page index -> 400 (S-2), never 500")
+    void listTransactions_negativePage_returns400() throws Exception {
+        mockMvc.perform(get("/transactions").param("page", "-1"))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * Control for {@link #listTransactions_negativePage_returns400()}: the boundary value
+     * {@code page=0} is valid ({@code @Min(0)} is inclusive) and returns the first page normally —
+     * confirming the new constraint rejects only genuinely-negative indices without regressing the
+     * happy path.
+     */
+    @Test
+    @DisplayName("GET /transactions?page=0: boundary value is valid -> 200 (S-2 control)")
+    void listTransactions_pageZero_returns200() throws Exception {
+        mockMvc.perform(get("/transactions").param("page", "0"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.page").value(0));
+    }
+
     // =============================================================================================
     // POST /transactions validation failures (400) and unauthenticated access (401)
     // =============================================================================================
