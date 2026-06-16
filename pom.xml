@@ -5,75 +5,112 @@
     <modelVersion>4.0.0</modelVersion>
 
     <!--
-      AWS CardDemo - Spring Boot 3.2.x migration of the legacy COBOL/CICS/VSAM mainframe application.
-      Single Maven module, Java 17. Versions are governed by the Spring Boot parent BOM except where
-      a dependency is not Boot-managed (JJWT, springdoc) or is a build plugin pinned by policy (JaCoCo).
+      ============================================================================================
+      AWS CardDemo - Spring Boot 3.2.x modernization of the legacy COBOL/CICS/VSAM mainframe app.
+      ============================================================================================
+      This is the single-module Maven build manifest (Java 17 LTS) for the net-new Spring Boot
+      monolith that re-implements the AWS CardDemo sample application with 100% functional parity.
+
+      Version policy (AAP 0.5.2):
+        * Spring-managed artifacts are declared WITHOUT an explicit <version>; the Spring Boot
+          starter parent BOM (3.2.12) governs them. This guarantees a consistent, tested stack
+          (Hibernate, Jackson, Tomcat, Spring Security 6, Spring Batch 5, Flyway 9.x, H2,
+          PostgreSQL driver, JUnit 5, Mockito, AssertJ, etc.).
+        * Only dependencies that are NOT Boot-managed carry an explicit version: the JJWT trio
+          (0.12.6) and springdoc-openapi (2.6.0).
+        * Only the JaCoCo build plugin (0.8.12) is pinned by policy to enforce the >=80% coverage
+          gate via `mvn verify`.
+        * No placeholder versions (latest, RELEASE, 1.0.0 for deps) are used anywhere.
+
+      The system MUST remain a single monolithic module (AAP 0.2.2 - no microservice split) and
+      MUST NOT introduce cloud/MQ/Kafka/Db2 libraries (explicitly out of scope).
+      ============================================================================================
     -->
+
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <version>3.2.12</version>
+        <!-- Empty relativePath forces resolution from the repository, not a local parent. -->
         <relativePath/>
     </parent>
 
     <groupId>com.carddemo</groupId>
     <artifactId>carddemo</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
-    <name>carddemo</name>
-    <description>AWS CardDemo - Spring Boot 3.2.x migration of the legacy COBOL/CICS/VSAM mainframe application</description>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    <name>AWS CardDemo - Spring Boot Modernization</name>
+    <description>Spring Boot 3.2.x / Java 17 modernization of the legacy AWS CardDemo COBOL/CICS/VSAM mainframe application</description>
 
     <properties>
+        <!-- Spring Boot parent maps java.version to maven.compiler.release=17. -->
         <java.version>17</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- Versions for artifacts that are NOT managed by the Spring Boot parent BOM. -->
         <jjwt.version>0.12.6</jjwt.version>
         <springdoc.version>2.6.0</springdoc.version>
+
+        <!-- Build plugin pinned by policy to enforce the coverage gate. -->
         <jacoco.version>0.8.12</jacoco.version>
     </properties>
 
     <dependencies>
-        <!-- Web / REST controllers, embedded Tomcat, Jackson -->
+        <!-- ==========================================================================
+             Spring Boot starters (BOM-managed - declared WITHOUT an explicit version).
+             ========================================================================== -->
+
+        <!-- REST controllers, embedded Tomcat, Jackson JSON (replaces BMS 3270 screens). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <!-- Persistence: Hibernate/JPA replacing VSAM access -->
+        <!-- Hibernate/JPA persistence (replaces VSAM KSDS access). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
 
-        <!-- Security: authentication/authorization replacing RACF + COMMAREA -->
+        <!--
+          Authentication/authorization (replaces RACF + CICS COMMAREA session handoff).
+          Transitively provides spring-security-crypto for BCrypt (strength 12) password hashing.
+        -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
 
-        <!-- Batch: Spring Batch replacing JCL batch programs -->
+        <!-- Spring Batch 5 chunk-oriented jobs (replaces JCL-scheduled COBOL batch programs). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-batch</artifactId>
         </dependency>
 
-        <!-- Bean Validation on DTOs -->
+        <!-- Bean Validation (Jakarta) for request/response DTO constraints. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
-        <!-- Health / metrics endpoints -->
+        <!-- Health and metrics endpoints. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- Production JDBC driver (runtime) -->
+        <!-- ==========================================================================
+             Database drivers and schema migration (BOM-managed - no explicit version).
+             ========================================================================== -->
+
+        <!-- Production JDBC driver (prod profile -> PostgreSQL 15.x). Runtime only. -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
 
-        <!-- In-memory DB for dev/test (runtime) -->
+        <!-- In-memory database for the dev/test profiles. Runtime only. -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
@@ -81,17 +118,21 @@
         </dependency>
 
         <!--
-          Schema + seed migrations V1-V4. Spring Boot 3.2.x manages Flyway 9.x, which supports
-          PostgreSQL through flyway-core alone (the separate flyway-database-postgresql module is
-          only required under Flyway 10 / Spring Boot 3.3+). Declared WITHOUT an explicit version
-          so the parent BOM governs it.
+          Flyway schema + seed migrations (V1-V4) executed on startup before JPA validation.
+          Spring Boot 3.2.x manages Flyway 9.x, which supports PostgreSQL through flyway-core
+          ALONE. The separate flyway-database-postgresql module is only required under Flyway 10
+          (Spring Boot 3.3+); adding it here would break under the 9.x line. Declared WITHOUT an
+          explicit version so the parent BOM governs it.
         -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
         </dependency>
 
-        <!-- JWT (HS256, >=256-bit key) - JJWT 0.12.6, not Boot-managed -->
+        <!-- ==========================================================================
+             JWT (stateless auth replacing the COMMAREA handoff) - JJWT 0.12.6.
+             HS256 with a >=256-bit secret. NOT Boot-managed, so an explicit version is required.
+             ========================================================================== -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>
@@ -110,28 +151,34 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- OpenAPI / Swagger schema docs (springdoc 2.x, not Boot-managed) -->
+        <!-- ==========================================================================
+             OpenAPI / Swagger schema documentation - springdoc 2.x (NOT Boot-managed).
+             ========================================================================== -->
         <dependency>
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
             <version>${springdoc.version}</version>
         </dependency>
 
-        <!-- Test: JUnit 5, Mockito, AssertJ, MockMvc -->
+        <!-- ==========================================================================
+             Test dependencies (BOM-managed - no explicit version). Test scope only.
+             ========================================================================== -->
+
+        <!-- JUnit 5, Mockito 5.x, AssertJ, MockMvc, JSONassert. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
 
-        <!-- @SpringBatchTest job harness -->
+        <!-- @SpringBatchTest harness for batch job integration tests. -->
         <dependency>
             <groupId>org.springframework.batch</groupId>
             <artifactId>spring-batch-test</artifactId>
             <scope>test</scope>
         </dependency>
 
-        <!-- Security-context test support -->
+        <!-- Security-context test support (@WithMockUser, etc.). -->
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-test</artifactId>
@@ -141,13 +188,23 @@
 
     <build>
         <plugins>
-            <!-- Executable JAR packaging -->
+            <!--
+              Spring Boot Maven plugin - produces the executable (fat) JAR via the default
+              `repackage` goal. BOM-managed, so no explicit version.
+            -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
 
-            <!-- Coverage instrumentation; >=80% gate via `mvn verify` -->
+            <!--
+              JaCoCo coverage instrumentation. Enforces the >=80% line-coverage gate (AAP 0.7.2)
+              during `mvn verify`:
+                * prepare-agent - wires the coverage agent before tests run.
+                * report        - generates the HTML/XML coverage report after the test phase.
+                * check         - fails the build in the verify phase when bundle LINE coverage
+                                  drops below 0.80.
+            -->
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
