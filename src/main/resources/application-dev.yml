@@ -1,0 +1,84 @@
+# =============================================================================
+# CardDemo - DEV Profile Configuration (application-dev.yml)
+# -----------------------------------------------------------------------------
+# Spring profile: dev (the DEFAULT profile; the base application.yml sets
+# spring.profiles.active=${SPRING_PROFILES_ACTIVE:dev}). This document is a
+# PROFILE-SPECIFIC overlay activated SOLELY by its filename (application-dev.yml)
+# and is merged on top of the shared base application.yml.
+#
+# Authority: AAP section 0.3.1 ("+ application-dev.yml H2") and 0.4.1.5.
+#
+# Purpose: wire the application to an IN-MEMORY H2 database so the monolith runs
+# locally with NO external database. The Flyway migrations under
+# src/main/resources/db/migration (V1 schema + V2-V4 seeds) are PostgreSQL-dialect
+# SQL, so H2 is started in PostgreSQL COMPATIBILITY MODE (MODE=PostgreSQL) and the
+# Hibernate H2 dialect is selected; otherwise the PostgreSQL DDL would fail on H2.
+#
+# IMPORTANT - profile activation:
+#   This file is profile-specific BY FILENAME (application-dev.yml), so the 'dev'
+#   profile activates it automatically. 'spring.config.activate.on-profile' is
+#   intentionally OMITTED: inside a profile-specific file it is redundant with the
+#   filename and, under Spring Boot 3.2's config-data rules, layers a SECOND
+#   activation condition on top of it - if that condition ever diverged from 'dev'
+#   the entire document (including this datasource) would be SILENTLY dropped and
+#   the app would start with no H2 wiring. 'spring.profiles.active' is likewise
+#   never set in a profile file. (See the agent prompt's "Key Rules & Constraints":
+#   prefer filename-based activation.)
+#
+# This overlay deliberately adds ONLY datasource + dialect + dev-friendly console
+# and logging. Keys owned by the base file are NOT duplicated or overridden:
+#   * spring.jpa.hibernate.ddl-auto stays 'validate' (Flyway builds the schema
+#     first; Hibernate then validates it).
+#   * spring.batch.job.enabled stays 'false' (inherited from base).
+#   * spring.flyway.locations / baseline-on-migrate inherited from base.
+#   * spring.jpa.properties.hibernate.jdbc.time_zone=UTC inherited from base
+#     (leaf-level YAML merge keeps it while format_sql is overridden below).
+#
+# Coordination note (NOT implemented here): the downstream security/SecurityConfig
+# must permit unauthenticated access to /h2-console/** and disable frame options
+# for that path so the H2 console works under the dev profile.
+# =============================================================================
+
+spring:
+
+  # ---- In-memory H2 datasource (no external DB required for local dev) -------
+  # MODE=PostgreSQL          -> H2 accepts the PostgreSQL syntax used by the
+  #                             Flyway migrations (V1 schema + V2-V4 seeds).
+  # DATABASE_TO_LOWER=TRUE   -> unquoted identifiers fold to lower-case, matching
+  #                             the PostgreSQL lower_snake_case schema.
+  # DB_CLOSE_DELAY=-1        -> keep the in-memory DB alive for the JVM lifetime
+  #                             (not dropped when the last connection closes).
+  # DB_CLOSE_ON_EXIT=FALSE   -> let Spring/Flyway manage shutdown ordering.
+  datasource:
+    url: jdbc:h2:mem:carddemo;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+
+  # ---- JPA / Hibernate (dev overrides for visibility; H2 dialect) -----------
+  # database-platform selects the H2 dialect so Hibernate validates against H2.
+  # show-sql / format_sql override the base 'false' to aid local debugging.
+  # ddl-auto is intentionally NOT set here so the base 'validate' applies.
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+  # ---- H2 web console at http://localhost:8080/h2-console (dev debugging) ----
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  # ---- Flyway (explicit; the in-memory DB is rebuilt by V1..Vn on each boot) -
+  flyway:
+    enabled: true
+
+# ---- Dev logging: verbose application logs, quieter framework logs ----------
+logging:
+  level:
+    com.carddemo: DEBUG
+    org.springframework.security: INFO
+    org.flywaydb: INFO

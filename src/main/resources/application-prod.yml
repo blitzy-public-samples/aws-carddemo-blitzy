@@ -1,0 +1,106 @@
+# =============================================================================
+# CardDemo - PRODUCTION Spring Profile (application-prod.yml)
+# -----------------------------------------------------------------------------
+# Activated by the FILENAME (Spring Boot loads application-prod.yml whenever the
+# `prod` profile is active, e.g. SPRING_PROFILES_ACTIVE=prod). This document
+# OVERLAYS the shared settings in application.yml; only prod-specific overrides
+# live here.
+#
+# Authority: AAP section 0.3.1 ("application-prod.yml PostgreSQL"), 0.4.1.5,
+# 0.4.2, 0.5.3.
+#
+# -----------------------------------------------------------------------------
+# WHY NO `spring.config.activate.on-profile` HERE:
+#   This file is a PROFILE-SPECIFIC resource, so its FILENAME alone activates it
+#   for the `prod` profile - the canonical mechanism Spring Boot recommends for
+#   application-<profile>.yml files. An explicit
+#   `spring.config.activate.on-profile: prod` would be redundant here and, per
+#   the Spring Boot config-data rules, cannot be combined with profile groups
+#   (spring.profiles.group); it is therefore intentionally OMITTED to keep the
+#   prod profile clean and future-proof.
+#   MUST NOT appear in a profile-specific file: `spring.profiles.active`,
+#   `spring.profiles.default`, `spring.profiles.include`, `spring.profiles.group`
+#   - Spring Boot rejects these with InvalidConfigDataPropertyException at
+#   startup. Select the active profile externally instead, via the
+#   SPRING_PROFILES_ACTIVE env var or --spring.profiles.active.
+#
+# -----------------------------------------------------------------------------
+# OPERATOR CHECKLIST (environment variables that MUST/MAY be supplied in prod):
+#   * SPRING_DATASOURCE_URL       (REQUIRED) e.g. jdbc:postgresql://<host>:5432/carddemo
+#   * SPRING_DATASOURCE_USERNAME  (REQUIRED)
+#   * SPRING_DATASOURCE_PASSWORD  (REQUIRED)
+#   * JWT_SECRET                  (REQUIRED) HS256 signing key, >= 256-bit
+#                                 (>= 32 ASCII chars). The dev default baked
+#                                 into application.yml is INSECURE and MUST be
+#                                 overridden in production. AAP section 0.6.7.
+#   * JWT_EXPIRATION_MS           (optional) defaults to 3600000 ms (1 hour).
+#   * DB_POOL_MAX_SIZE            (optional) HikariCP max pool size, default 10.
+#   * DB_POOL_MIN_IDLE            (optional) HikariCP min idle, default 2.
+#   * REPORT_OUTPUT_PATH          (optional) overrides report.output.path
+#                                 (statement/report batch output directory).
+#   * INPUT_FILE_PATH             (optional) overrides input.file.path
+#                                 (daily-transaction posting input file).
+#
+# No real secrets, hostnames, or credentials are committed - only ${ENV_VAR}
+# placeholders. 2-space indentation, no tabs.
+# =============================================================================
+
+spring:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 15.x datasource. Credentials are externalized to environment
+  # variables with NO defaults: a missing value must FAIL FAST at startup rather
+  # than silently fall back to an unintended local database. AAP section 0.4.2.
+  # The org.postgresql:postgresql driver is on the classpath (runtime scope in
+  # the root pom.xml).
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    # HikariCP is the Spring Boot default connection pool. Sizing is made
+    # explicit here for production clarity and is overridable via env.
+    hikari:
+      pool-name: CardDemoHikariPool
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:10}
+      minimum-idle: ${DB_POOL_MIN_IDLE:2}
+      connection-timeout: 30000
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate. The PostgreSQL dialect is set HERE (the base application.yml
+  # intentionally leaves the dialect unset so each profile picks its own).
+  # ddl-auto stays `validate` (inherited from application.yml): Flyway V1-V4
+  # builds the schema and Hibernate only validates it against PostgreSQL 15.x.
+  # ---------------------------------------------------------------------------
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: false
+
+  # ---------------------------------------------------------------------------
+  # Flyway runs the V1__schema.sql .. V4__seed_users.sql migrations against the
+  # production PostgreSQL database on startup (enabled in the base config; kept
+  # explicit here so the prod profile is self-documenting).
+  # ---------------------------------------------------------------------------
+  flyway:
+    enabled: true
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch metadata. Create the BATCH_* JobRepository tables on the
+  # PostgreSQL instance independently of the Flyway-managed business schema.
+  # Startup auto-execution of jobs remains DISABLED (spring.batch.job.enabled is
+  # false in application.yml); jobs run on-demand via JobLauncher.
+  # ---------------------------------------------------------------------------
+  batch:
+    jdbc:
+      initialize-schema: always   # ensure BATCH_* metadata tables exist in PostgreSQL
+
+# -----------------------------------------------------------------------------
+# Production logging: quieter than dev. Keep application logs at INFO while
+# suppressing framework chatter and SQL echo (no statement logging in prod).
+# -----------------------------------------------------------------------------
+logging:
+  level:
+    com.carddemo: INFO
+    org.springframework: WARN
+    org.hibernate.SQL: WARN
