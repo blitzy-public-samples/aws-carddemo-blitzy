@@ -1,6 +1,6 @@
 ## CardDemo -- Mainframe CardDemo Application
 
-- [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-card-demo-application)
+- [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-carddemo-application)
 - [Description](#description)
 - [Modernized Java Edition (Spring Boot 3.2.x)](#modernized-java-edition-spring-boot-32x)
 - [Building and Running the Java Application](#building-and-running-the-java-application)
@@ -400,6 +400,8 @@ The Regular user can perform the user functions and the Admin users can only per
 <br/>
 
 ### Application Screens
+
+> **Legacy (mainframe) 3270 screens -- reference only.** The screens shown below are the original BMS 3270 character-terminal screens, retained as the source-of-truth reference. The modernized Java edition retires the BMS UI and exposes a JSON REST API with **no web UI** -- see *[Building and Running the Java Application](#building-and-running-the-java-application)* above.
 
 #### **Signon Screen**
 
