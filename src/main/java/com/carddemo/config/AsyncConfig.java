@@ -1,7 +1,6 @@
 package com.carddemo.config;
 
 import java.lang.reflect.Method;
-import java.util.Arrays;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
 
@@ -182,8 +181,14 @@ public class AsyncConfig implements AsyncConfigurer {
 
     /**
      * {@link AsyncUncaughtExceptionHandler} that records uncaught exceptions from {@code void}
-     * {@code @Async} methods via SLF4J, including the offending method and its arguments to aid
-     * diagnosis of failed asynchronous submissions.
+     * {@code @Async} methods via SLF4J, including the offending method signature to aid diagnosis
+     * of failed asynchronous submissions.
+     *
+     * <p><strong>Log-safety:</strong> the raw argument values are deliberately <em>never</em>
+     * logged. Asynchronous methods (e.g. report/batch submission) can receive request DTOs, JWTs,
+     * passwords, SSNs, or account/card identifiers; emitting their {@code toString()} would violate
+     * the AAP PII-suppression / log-safety rules (AAP &sect;0.6.8, &sect;0.7.1). Only the declaring
+     * class, the method name, and the (non-sensitive) argument <em>count</em> are recorded.</p>
      */
     static final class LoggingAsyncUncaughtExceptionHandler implements AsyncUncaughtExceptionHandler {
 
@@ -193,18 +198,23 @@ public class AsyncConfig implements AsyncConfigurer {
 
         /**
          * Logs the uncaught exception together with the fully-qualified method signature and the
-         * parameter values passed to the asynchronous invocation.
+         * number of arguments passed to the asynchronous invocation.
+         *
+         * <p>The argument <em>values</em> are intentionally omitted from the log to prevent leaking
+         * request DTOs, credentials, tokens, or other PII; only the argument count is recorded so
+         * the failure remains diagnosable without disclosing sensitive data.</p>
          *
          * @param ex     the exception thrown by the {@code @Async} method (never {@code null})
          * @param method the {@code @Async} method that raised the exception
-         * @param params the arguments supplied to the invocation (possibly empty)
+         * @param params the arguments supplied to the invocation (possibly empty); only the count
+         *               is logged, never the values
          */
         @Override
         public void handleUncaughtException(Throwable ex, Method method, Object... params) {
-            asyncLog.error("Uncaught exception in @Async method '{}.{}' invoked with parameters {}: {}",
+            asyncLog.error("Uncaught exception in @Async method '{}.{}' (paramCount={}): {}",
                     method.getDeclaringClass().getName(),
                     method.getName(),
-                    Arrays.toString(params),
+                    params.length,
                     ex.getMessage(),
                     ex);
         }

@@ -234,8 +234,16 @@
                                 <rule>
                                     <element>BUNDLE</element>
                                     <limits>
+                                        <!-- AAP §0.7.2 coverage gate: enforce >=80% for BOTH line
+                                             and instruction coverage so `mvn verify` cannot pass with
+                                             instruction coverage below the mandated threshold. -->
                                         <limit>
                                             <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>INSTRUCTION</counter>
                                             <value>COVEREDRATIO</value>
                                             <minimum>0.80</minimum>
                                         </limit>

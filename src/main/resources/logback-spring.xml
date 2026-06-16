@@ -65,17 +65,38 @@
     <property name="LOG_FILE" value="${LOG_PATH}/carddemo.log"/>
 
     <!--
-      PII masking pattern (defense-in-depth). Three nested %replace calls are
-      applied to %msg, innermost first:
-        1) CVV   : a "cvv"-labelled 3-4 digit value                       -> ***
-        2) SSN   : a "ssn"-labelled 9-digit value (dashes optional)       -> ***-**-****
-        3) bare  : a dashed SSN of the form ddd-dd-dddd                    -> ***-**-****
-      The separator class [\\&quot;\s:=] matches a backslash, a double quote,
+      PII / credential masking pattern (defense-in-depth). Seven nested %replace
+      calls are applied to %msg, innermost first:
+        1) CVV           : a "cvv"-labelled 3-4 digit value               -> ***
+        2) SSN           : a "ssn"-labelled 9-digit value (dashes opt.)   -> ***-**-****
+        3) bare          : a dashed SSN of the form ddd-dd-dddd           -> ***-**-****
+        4) password      : a "password"-labelled value                   -> ****
+        5) token         : a "token"-labelled value (incl. access_token) -> ****
+        6) bearer        : a "Bearer &lt;credential&gt;" value           -> ****
+        7) authorization : "Authorization: Bearer|Basic &lt;cred&gt;"    -> ****
+      The CVV/SSN separator class [\\&quot;\s:=] matches a backslash, a double quote,
       whitespace, ':' or '=', so labels written as cvv=123, "cvv":"123",
       \"cvv\":\"123\", cvv: 123 etc. are all covered. (?i) = case-insensitive.
+
+      The credential masks (4-7) require at least one separator AFTER the label (the
+      '+' quantifier) so ordinary words such as "passwordless" are NOT masked, and
+      they bound the secret with [^\s&quot;,&amp;]+ (stops at whitespace, a double
+      quote, a comma or an ampersand) so only the value is replaced - this masks the
+      ENTIRE secret regardless of its inner characters (e.g. p@ss!w0rd#) while leaving
+      adjacent fields, JSON quotes (&quot;password&quot;:&quot;****&quot;) and URL
+      params (password=****&amp;next=...) intact. Mask (6) handles both a bare
+      "Bearer &lt;jwt&gt;" and the credential inside an "Authorization: Bearer
+      &lt;jwt&gt;" header; mask (7) is scheme-anchored (Bearer|Basic) so a benign line
+      like "Authorization failed for user 42" is left intact.
+      NOTE: a literal '}' must NOT appear inside any %replace option even when quoted -
+      Logback's OptionTokenizer tracks brace depth and an unbalanced '}' aborts pattern
+      parsing (the \d{3,4} CVV mask is safe only because its braces are balanced). The
+      ',' and '&quot;' inside the class are safe because single-quoting protects them.
+      All appenders inherit this masking because they share ${CONSOLE_PATTERN}, which
+      embeds ${MASKED_MSG}.
     -->
     <property name="MASKED_MSG"
-        value="%replace(%replace(%replace(%msg){'(?i)(cvv[\\&quot;\s:=]*)\d{3,4}','$1***'}){'(?i)(ssn[\\&quot;\s:=]*)\d{3}-?\d{2}-?\d{4}','$1***-**-****'}){'\b\d{3}-\d{2}-\d{4}\b','***-**-****'}"/>
+        value="%replace(%replace(%replace(%replace(%replace(%replace(%replace(%msg){'(?i)(cvv[\\&quot;\s:=]*)\d{3,4}','$1***'}){'(?i)(ssn[\\&quot;\s:=]*)\d{3}-?\d{2}-?\d{4}','$1***-**-****'}){'\b\d{3}-\d{2}-\d{4}\b','***-**-****'}){'(?i)(password[\\&quot;\s:=]+)[^\s&quot;,&amp;]+','$1****'}){'(?i)(token[\\&quot;\s:=]+)[^\s&quot;,&amp;]+','$1****'}){'(?i)(bearer[\\&quot;\s:=]+)[^\s&quot;,&amp;]+','$1****'}){'(?i)(authorization[\\&quot;\s:=]+(?:bearer|basic)\s+)[^\s&quot;,&amp;]+','$1****'}"/>
 
     <!-- Shared layout pattern; ${MASKED_MSG} guarantees masking everywhere. -->
     <property name="CONSOLE_PATTERN"

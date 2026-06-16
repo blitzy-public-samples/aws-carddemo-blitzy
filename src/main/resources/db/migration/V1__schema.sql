@@ -25,7 +25,12 @@ CREATE TABLE disclosure_group (
     tran_type_cd CHAR(2)     NOT NULL,
     tran_cat_cd  INTEGER     NOT NULL,
     dis_int_rate NUMERIC(6,2),
-    CONSTRAINT pk_disclosure_group PRIMARY KEY (group_id, tran_type_cd, tran_cat_cd)
+    CONSTRAINT pk_disclosure_group PRIMARY KEY (group_id, tran_type_cd, tran_cat_cd),
+    -- Enforce the transaction type/category domain via FK, consistent with the other
+    -- category-bearing tables (transaction_category_balance, transactions). The parent
+    -- transaction_category is created above and seeded (V2) before disclosure_group rows.
+    CONSTRAINT fk_discgrp_cat FOREIGN KEY (tran_type_cd, tran_cat_cd)
+        REFERENCES transaction_category (type_cd, cat_cd)
 );
 
 -- ---------- Master / entity tables ----------

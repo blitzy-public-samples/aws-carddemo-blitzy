@@ -81,4 +81,32 @@ public record SignonResponse(
         String userType,
         String role
 ) {
+
+    /**
+     * Fixed mask substituted for the bearer token in every textual rendering of this record.
+     * A constant mask is used so that neither the token value nor its length is ever disclosed.
+     */
+    private static final String TOKEN_MASK = "****";
+
+    /**
+     * Returns a diagnostic-safe string representation of this response.
+     *
+     * <p>A {@code record}'s compiler-generated {@code toString()} renders every component, which
+     * would include the live bearer JWT in {@link #token()} and could leak a usable credential into
+     * application logs (for example via {@code log.debug("resp={}", response)}). This override
+     * always replaces the token with a fixed mask, honoring the rule that the token must never be
+     * logged or echoed (AAP &sect;0.6.8, &sect;0.7.1); the non-sensitive identity/role fields are
+     * rendered as-is to retain their diagnostic value.</p>
+     *
+     * @return a string representation in which {@code token} is replaced by a fixed mask
+     */
+    @Override
+    public String toString() {
+        return "SignonResponse[token=" + TOKEN_MASK
+                + ", tokenType=" + tokenType
+                + ", userId=" + userId
+                + ", userType=" + userType
+                + ", role=" + role
+                + "]";
+    }
 }

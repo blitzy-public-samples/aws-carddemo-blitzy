@@ -88,8 +88,13 @@ spring:
 server:
   port: ${SERVER_PORT:8080}
   error:
-    include-message: always
-    include-binding-errors: always
+    # Do NOT let the Spring Boot fallback error view expose exception messages or
+    # binding/validation details. Sanitized, client-safe error payloads are emitted
+    # exclusively by the application GlobalExceptionHandler (@RestControllerAdvice,
+    # AAP §0.3.2). 'never' ensures no internal/sensitive detail leaks even if a
+    # request bypasses the handler.
+    include-message: never
+    include-binding-errors: never
 
 management:
   endpoints:

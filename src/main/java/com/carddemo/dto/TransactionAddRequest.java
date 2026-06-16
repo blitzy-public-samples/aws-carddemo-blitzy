@@ -89,8 +89,11 @@ import jakarta.validation.constraints.Size;
  */
 public record TransactionAddRequest(
 
-        // ACTIDIN — BMS PIC X(11) numeric account id. Optional at the field level;
-        // TransactionService enforces "exactly one of accountId / cardNum" (COTRN02C XOR).
+        // ACTIDIN — BMS PIC X(11) numeric account id. Optional at the field level
+        // (TransactionService enforces "exactly one of accountId / cardNum", the COTRN02C XOR),
+        // but when supplied it must fit the 11-digit BMS width. @Digits is null-tolerant, so a
+        // null value still passes here and the account-or-card XOR is preserved.
+        @Digits(integer = 11, fraction = 0, message = "Account ID must be at most 11 digits")
         Long accountId,
 
         // CARDNIN — BMS PIC X(16) card number. Optional at the field level; when present
@@ -105,8 +108,10 @@ public record TransactionAddRequest(
         String typeCd,
 
         // TCATCD — BMS PIC X(4) transaction category code. Required; numeric-ness is
-        // enforced by the Integer binding (COTRN02C: "Category CD can NOT be empty...").
+        // enforced by the Integer binding and the 4-digit BMS width by @Digits
+        // (COTRN02C: "Category CD can NOT be empty...").
         @NotNull(message = "Category CD can NOT be empty")
+        @Digits(integer = 4, fraction = 0, message = "Category CD must be at most 4 digits")
         Integer categoryCd,
 
         // TRNSRC — BMS PIC X(10) transaction source. Required
@@ -140,8 +145,10 @@ public record TransactionAddRequest(
         LocalDate procDate,
 
         // MID — BMS PIC X(9) merchant id. Required; numeric-ness is enforced by the Long
-        // binding (COTRN02C: "Merchant ID can NOT be empty..." / "Merchant ID must be Numeric...").
+        // binding and the 9-digit BMS width by @Digits
+        // (COTRN02C: "Merchant ID can NOT be empty..." / "Merchant ID must be Numeric...").
         @NotNull(message = "Merchant ID can NOT be empty")
+        @Digits(integer = 9, fraction = 0, message = "Merchant ID must be at most 9 digits")
         Long merchantId,
 
         // MNAME — BMS PIC X(30) (persisted record CVTRA05Y is X(50); request uses the BMS

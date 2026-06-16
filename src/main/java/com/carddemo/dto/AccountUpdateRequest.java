@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 
 import jakarta.validation.constraints.Digits;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
@@ -35,10 +36,13 @@ import jakarta.validation.constraints.Size;
  *
  * <h2>Validation</h2>
  * <p>Bean Validation ({@code jakarta.validation}) constraints reproduce the
- * field-level edits performed by {@code COACTUPC}. Every constraint here is
- * null-tolerant by specification, which matches the partial-update semantics of
- * a {@code PUT}: a field omitted from the JSON body is left unchanged and skips
- * its constraint. Constraint violations are surfaced as HTTP&nbsp;400 by the
+ * field-level edits performed by {@code COACTUPC}. The editable account/customer
+ * fields are null-tolerant by specification, which matches the partial-update
+ * semantics of a {@code PUT}: a field omitted from the JSON body is left unchanged
+ * and skips its constraint. The sole exception is {@link #version()}, which is
+ * <strong>required</strong> ({@code @NotNull}): it is the optimistic-locking token,
+ * and accepting a null would silently bypass the concurrency contract
+ * (AAP&nbsp;&sect;0.6.6). Constraint violations are surfaced as HTTP&nbsp;400 by the
  * {@code GlobalExceptionHandler} when the request is bound with
  * {@code @Valid @RequestBody}.</p>
  *
@@ -78,7 +82,7 @@ import jakarta.validation.constraints.Size;
  * @param eftAccountId               EFT account id — {@code CUST-EFT-ACCOUNT-ID PIC X(10)}
  * @param primaryCardHolderIndicator primary card-holder flag — {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)}
  * @param ficoScore                  FICO credit score — {@code CUST-FICO-CREDIT-SCORE PIC 9(03)}
- * @param version                    optimistic-lock token echoed from {@code AccountResponse} (AAP&nbsp;&sect;0.6.6)
+ * @param version                    optimistic-lock token echoed from {@code AccountResponse}; required (rejected as HTTP&nbsp;400 if absent) so the concurrency contract cannot be bypassed (AAP&nbsp;&sect;0.6.6)
  */
 public record AccountUpdateRequest(
 
@@ -197,7 +201,10 @@ public record AccountUpdateRequest(
         // ===================== Optimistic-lock token =========================
 
         // Optimistic-lock handle echoed from AccountResponse; AccountService compares
-        // it with the JPA @Version column → HTTP 409 on concurrent modification (AAP §0.6.6)
+        // it with the JPA @Version column → HTTP 409 on concurrent modification (AAP §0.6.6).
+        // REQUIRED at the request boundary: a missing version would bypass the concurrency
+        // contract, so a null is rejected as HTTP 400 (unlike the null-tolerant edit fields).
+        @NotNull(message = "version is required")
         Long version
 
 ) {

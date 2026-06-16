@@ -76,4 +76,33 @@ public record UserCreateRequest(
         String userType
 
 ) {
+
+    /**
+     * Fixed-width mask substituted for the password in every textual rendering of this record.
+     * A constant mask is used deliberately so that neither the password value nor its length is
+     * ever disclosed.
+     */
+    private static final String PASSWORD_MASK = "********";
+
+    /**
+     * Returns a diagnostic-safe string representation of this request.
+     *
+     * <p>A {@code record}'s compiler-generated {@code toString()} renders every component, which
+     * would include the plaintext {@code password} and could leak the credential into application
+     * logs (for example via {@code log.debug("req={}", request)}). This override always replaces
+     * the password with a fixed mask, honoring the rule that the password must never be logged or
+     * echoed (AAP &sect;0.6.7, &sect;0.7.1); the non-sensitive fields are rendered as-is to retain
+     * their diagnostic value.</p>
+     *
+     * @return a string representation in which {@code password} is replaced by a fixed mask
+     */
+    @Override
+    public String toString() {
+        return "UserCreateRequest[userId=" + userId
+                + ", firstName=" + firstName
+                + ", lastName=" + lastName
+                + ", password=" + PASSWORD_MASK
+                + ", userType=" + userType
+                + "]";
+    }
 }
