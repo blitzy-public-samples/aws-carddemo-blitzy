@@ -54,17 +54,31 @@ import com.carddemo.util.CardDemoConstants;
  *       {@code DALYREJS} line through the injected {@link FlatFileItemWriter} delegate.</li>
  * </ul>
  *
- * <h2>The 109 reject is raised here</h2>
+ * <h2>The 109 reject is raised here &mdash; and ONLY for the account update</h2>
  * <p>Reject code&nbsp;109 ({@code ACCOUNT RECORD NOT FOUND}) completes the 100/101/102/103/109
- * superset (AAP&nbsp;&sect;0.6.1, &sect;0.7.3 #3). It corresponds to the COBOL
- * {@code 2800-UPDATE-ACCOUNT-REC} {@code REWRITE ... INVALID KEY} branch (L555&ndash;L558): when the
- * valid-path persistence throws (a missing account, or an
+ * superset (AAP&nbsp;&sect;0.6.1, &sect;0.7.3 #3). It corresponds <strong>exclusively</strong> to the
+ * COBOL {@code 2800-UPDATE-ACCOUNT-REC} {@code REWRITE ... INVALID KEY} branch (L555&ndash;L558): when
+ * the account update throws (a missing account, or an
  * {@link org.springframework.orm.ObjectOptimisticLockingFailureException} from the {@link Account}
- * {@code @Version} guard, or any other persistence failure), {@link #write(Chunk)} catches it, flips
- * the item to reject&nbsp;109 via {@link ProcessedTransaction#markRejected(int, String)} and emits the
- * reject line &mdash; the failure superset. Because the failure is converted to a soft reject rather
- * than rethrown, an ordinary account-update failure never fails the whole job (see exit-status
- * mapping below).</p>
+ * {@code @Version} guard), {@link #write(Chunk)} catches it, flips the item to reject&nbsp;109 via
+ * {@link ProcessedTransaction#markRejected(int, String)}, emits the reject line and skips the
+ * transaction write for that record. Because that single failure is converted to a soft reject rather
+ * than rethrown, an account-update failure never fails the whole job (see exit-status mapping below).</p>
+ *
+ * <p><strong>Scope of the 109 catch (parity, "actual COBOL governs").</strong> The 109 catch wraps
+ * <em>only</em> the {@code 2800} account update. The other two posting steps reproduce the legacy
+ * {@code PERFORM 9999-ABEND-PROGRAM} fault handling, so a failure in either is allowed to
+ * <strong>propagate</strong> out of {@link #write(Chunk)} and fail the Spring Batch step/job rather
+ * than being masked as a business reject:</p>
+ * <ul>
+ *   <li>{@code 2700-UPDATE-TCATBAL} I/O fault &rarr; {@code 9999-ABEND-PROGRAM} (L491/L522/L541)
+ *       &rarr; propagates (job fails); never 109.</li>
+ *   <li>{@code 2900-WRITE-TRANSACTION-FILE} I/O fault &rarr; {@code 9999-ABEND-PROGRAM} (L577)
+ *       &rarr; propagates (job fails); never 109.</li>
+ * </ul>
+ * <p>This keeps an infrastructure/transaction-write fault from being silently downgraded to a
+ * per-record reject, which would otherwise let the batch complete (with a WARNING) while a genuine
+ * persistence failure went unsurfaced.</p>
  *
  * <h2>RETURN-CODE&nbsp;=&nbsp;4 &rarr; WARNING exit status</h2>
  * <p>When {@code CBTRN02C} rejects at least one record it sets {@code RETURN-CODE = 4}
@@ -178,24 +192,37 @@ public class TransactionPostingWriter
                 continue;
             }
 
-            // Valid path: attempt the post (2700 + 2800 + 2900). A persistence failure mirrors the
-            // COBOL 2800 "REWRITE ... INVALID KEY" branch and is converted to a soft reject code 109
-            // rather than being allowed to fail the whole job.
+            // Valid path: post in the COBOL 2000-POST-TRANSACTION order 2700 -> 2800 -> 2900.
+            //
+            // PARITY (CBTRN02C, "actual COBOL governs"): ONLY 2800-UPDATE-ACCOUNT-REC has a
+            // "REWRITE ... INVALID KEY" branch that assigns the soft reject code 109 (L555-558).
+            // 2700-UPDATE-TCATBAL (L491/L522/L541) and 2900-WRITE-TRANSACTION-FILE (L577) instead
+            // "PERFORM 9999-ABEND-PROGRAM" on an I/O fault, i.e. they FAIL the program. We therefore
+            // wrap ONLY the account update in the code-109 catch and let a TCATBAL-upsert or a
+            // transaction-write failure PROPAGATE, so Spring Batch fails the step/job exactly as the
+            // legacy ABEND would rather than masking an infrastructure fault as a business reject.
+            Transaction tx = pt.getTransaction();
+
+            // --- 2700-UPDATE-TCATBAL --- propagates on failure (COBOL ABEND -> job fails).
+            updateTransactionCategoryBalance(tx);
+
+            // --- 2800-UPDATE-ACCOUNT-REC --- the ONLY reject-109 path (COBOL REWRITE INVALID KEY).
             try {
-                postValid(pt);
+                updateAccount(tx);
             } catch (Exception ex) {
-                // Capture the ids BEFORE markRejected(...) clears the built transaction, and do so
-                // null-safely so a logging access can never escape this catch block.
-                Transaction failed = pt.getTransaction();
-                String tranId = (failed != null) ? failed.getTranId() : null;
-                Long acctId = (failed != null) ? failed.getAcctId() : null;
-                log.warn("Account update/post failed for tranId={} acct={} -> reject 109: {}",
-                        tranId, acctId, ex.toString());
+                // Read the ids from the locally-held (still non-null) transaction BEFORE markRejected
+                // clears pt's built transaction, so a logging access can never escape this catch block.
+                log.warn("Account update failed for tranId={} acct={} -> reject 109: {}",
+                        tx.getTranId(), tx.getAcctId(), ex.toString());
 
                 pt.markRejected(CardDemoConstants.REJECT_CODE_ACCOUNT_UPDATE_FAILED,   // 109
                         CardDemoConstants.REJECT_DESC_ACCOUNT_UPDATE_FAILED);          // "ACCOUNT RECORD NOT FOUND"
                 rejectLines.add(buildRejectLine(pt));
+                continue; // rejected at the account-update step; do NOT write the transaction (2900)
             }
+
+            // --- 2900-WRITE-TRANSACTION-FILE --- propagates on failure (COBOL ABEND -> job fails).
+            writeTransaction(tx);
         }
 
         if (!rejectLines.isEmpty()) {
@@ -205,28 +232,26 @@ public class TransactionPostingWriter
     }
 
     /**
-     * Persists one valid transaction, reproducing COBOL {@code 2000-POST-TRANSACTION} in its exact
-     * order: {@code 2700-UPDATE-TCATBAL}, then {@code 2800-UPDATE-ACCOUNT-REC}, then
-     * {@code 2900-WRITE-TRANSACTION-FILE}.
+     * Reproduces COBOL {@code 2700-UPDATE-TCATBAL} (L467-L542): the per-category balance
+     * <em>insert-or-add</em> upsert keyed by {@code (acct_id, type_cd, cat_cd)}.
      *
-     * <p>All monetary arithmetic uses {@link BigDecimal} (signed {@code add}, {@code signum}) so the
-     * COBOL fixed-point semantics are reproduced without any rounding drift; the amount is already
-     * scale-2 as decoded by the reader.</p>
+     * <p>COBOL reads {@code TCATBAL} by {@code FD-TRAN-CAT-KEY}; on {@code INVALID KEY} it
+     * {@code INITIALIZE}s a new record (balance&nbsp;0) and {@code ADD}s the amount, otherwise it
+     * {@code ADD}s the amount to the existing balance and {@code REWRITE}s. The signed
+     * {@link BigDecimal#add(BigDecimal) add} reproduces the COBOL fixed-point arithmetic without
+     * rounding drift (the amount is already scale-2 as decoded by the reader).</p>
      *
-     * @param pt a valid processed item carrying the fully-built {@link Transaction} to post
-     * @throws RuntimeException (typically {@link IllegalStateException} for a missing account, or
-     *                          {@link org.springframework.orm.ObjectOptimisticLockingFailureException}
-     *                          for a stale {@code @Version}) when the post fails; the caller converts
-     *                          this to a code-109 reject
+     * <p><strong>Failure semantics (parity):</strong> COBOL {@code 2700} handles an I/O fault with
+     * {@code PERFORM 9999-ABEND-PROGRAM} (L491/L522/L541), failing the program. A persistence failure
+     * here is therefore <em>not</em> softened to a reject &mdash; it is allowed to propagate out of
+     * {@link #write(Chunk)} so Spring Batch fails the step/job. It is <strong>never</strong> code 109.</p>
+     *
+     * @param tx the valid transaction whose per-category balance is upserted
      */
-    private void postValid(ProcessedTransaction pt) {
-        Transaction tx = pt.getTransaction();
+    private void updateTransactionCategoryBalance(Transaction tx) {
         Long acctId = tx.getAcctId();
         BigDecimal amount = tx.getAmt();
 
-        // --- 2700-UPDATE-TCATBAL: per-category balance upsert keyed by (acct_id, type_cd, cat_cd). ---
-        // COBOL reads TCATBAL by FD-TRAN-CAT-KEY; if INVALID KEY it INITIALIZEs a new record (balance
-        // 0) and ADDs the amount, otherwise it ADDs the amount to the existing balance and REWRITEs.
         TransactionCategoryBalance.TransactionCategoryBalanceId key =
                 new TransactionCategoryBalance.TransactionCategoryBalanceId(
                         acctId, tx.getTypeCd(), tx.getCatCd());
@@ -241,11 +266,28 @@ public class TransactionPostingWriter
             tcb.setTranCatBal(tcb.getTranCatBal().add(amount));
         }
         tranCatBalRepository.save(tcb);
+    }
 
-        // --- 2800-UPDATE-ACCOUNT-REC: signed balance update + cycle credit/debit split. ---
-        // Re-fetch via the optimistic findById so the entity is managed within the chunk transaction
-        // and the @Version guard can throw on a stale write (converted to reject 109 by the caller).
-        // A missing account reproduces the COBOL "REWRITE ... INVALID KEY" -> 109 branch.
+    /**
+     * Reproduces COBOL {@code 2800-UPDATE-ACCOUNT-REC} (L545-L560): the signed account-balance update
+     * plus the cycle credit/debit split, whose {@code REWRITE ... INVALID KEY} guard (L555-L558) is the
+     * <strong>sole origin of reject code 109</strong> in the entire posting flow.
+     *
+     * <p>The account is re-fetched via the optimistic {@link AccountRepository#findById(Object)} (not
+     * the pessimistic {@code findByIdForUpdate}) so the entity is managed within the chunk transaction
+     * and the {@code @Version} guard can <em>throw</em> on a stale write. A missing account reproduces
+     * the COBOL {@code REWRITE ... INVALID KEY} branch. Both a missing account and a save-time
+     * {@link org.springframework.orm.ObjectOptimisticLockingFailureException} are caught by
+     * {@link #write(Chunk)} and converted to a code-109 reject &mdash; and <strong>only</strong>
+     * failures originating in this method ever become 109.</p>
+     *
+     * @param tx the valid transaction whose owning account balance is updated
+     * @throws IllegalStateException if the account no longer exists (COBOL {@code INVALID KEY} -> 109)
+     */
+    private void updateAccount(Transaction tx) {
+        Long acctId = tx.getAcctId();
+        BigDecimal amount = tx.getAmt();
+
         Account acct = accountRepository.findById(acctId)
                 .orElseThrow(() -> new IllegalStateException(
                         CardDemoConstants.REJECT_DESC_ACCOUNT_UPDATE_FAILED));
@@ -262,8 +304,20 @@ public class TransactionPostingWriter
             acct.setCurrCycDebit(acct.getCurrCycDebit().add(amount));
         }
         accountRepository.save(acct);
+    }
 
-        // --- 2900-WRITE-TRANSACTION-FILE: persist the posted transaction. ---
+    /**
+     * Reproduces COBOL {@code 2900-WRITE-TRANSACTION-FILE} (L562-L580): persistence of the posted
+     * transaction row. Runs only after {@link #updateAccount(Transaction)} has succeeded.
+     *
+     * <p><strong>Failure semantics (parity):</strong> COBOL {@code 2900} handles an I/O fault with
+     * {@code PERFORM 9999-ABEND-PROGRAM} (L577), failing the program. A persistence failure here is
+     * therefore <em>not</em> softened to a reject &mdash; it is allowed to propagate out of
+     * {@link #write(Chunk)} so Spring Batch fails the step/job. It is <strong>never</strong> code 109.</p>
+     *
+     * @param tx the valid transaction to persist
+     */
+    private void writeTransaction(Transaction tx) {
         transactionRepository.save(tx);
     }
 

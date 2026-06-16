@@ -33,6 +33,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -45,6 +47,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
@@ -311,7 +314,7 @@ class TransactionPostingJobTest {
         assertThat(after.getCurrBal()).isEqualByComparingTo(balBefore.add(new BigDecimal("1.00")));
 
         // The transaction-category balance for (acct, type '01', cat 1) is incremented by exactly the
-        // one valid post (CBTRN02C TCATBAL update, §0.6.1); rejected records never reach postValid.
+        // one valid post (CBTRN02C TCATBAL update, §0.6.1); rejected records are never posted.
         assertThat(tcbRepository.findById(tcbId).orElseThrow().getTranCatBal())
                 .isEqualByComparingTo(tcbBalBefore.add(new BigDecimal("1.00")));
 
@@ -524,11 +527,11 @@ class TransactionPostingJobTest {
     }
 
     /**
-     * Writer reject 109: a valid item whose account read fails during {@code postValid} is caught and
-     * re-marked rejected with code 109 (account update failed) and emitted to the reject writer.
-     * UNREACHABLE through a full-job integration run, so it is proven here at the component level. The
-     * 109 description intentionally shares 101's text in the legacy source, so only the {@code 0109}
-     * reason code is asserted (not the description).
+     * Writer reject 109: a valid item whose account read fails during the account-update step
+     * ({@code 2800-UPDATE-ACCOUNT-REC}) is caught and re-marked rejected with code 109 (account update
+     * failed) and emitted to the reject writer. UNREACHABLE through a full-job integration run, so it is
+     * proven here at the component level. The 109 description intentionally shares 101's text in the
+     * legacy source, so only the {@code 0109} reason code is asserted (not the description).
      */
     @Test
     void writer_rejects109_whenAccountUpdateFails() throws Exception {
@@ -622,6 +625,164 @@ class TransactionPostingJobTest {
 
         ExitStatus exit = writer.afterStep(MetaDataInstanceFactory.createStepExecution());
         assertThat(exit.getExitCode()).isEqualTo(ExitStatus.COMPLETED.getExitCode());
+    }
+
+    /**
+     * Parity (Finding #3): a {@code 2700-UPDATE-TCATBAL} persistence failure must PROPAGATE and fail
+     * the step/job (COBOL {@code PERFORM 9999-ABEND-PROGRAM}, L491/L522/L541) &mdash; it must NOT be
+     * softened to a code-109 reject. The TCATBAL save throws, so {@link TransactionPostingWriter#write}
+     * rethrows, the item is never marked rejected, and neither the account update nor the transaction
+     * write is attempted.
+     */
+    @Test
+    void writer_tcatbalUpdateFailure_propagates_notRejected109() throws Exception {
+        AccountRepository acctRepo = mock(AccountRepository.class);
+        TransactionCategoryBalanceRepository tcbRepo = mock(TransactionCategoryBalanceRepository.class);
+        TransactionRepository tranRepo = mock(TransactionRepository.class);
+        @SuppressWarnings("unchecked")
+        FlatFileItemWriter<String> rejectWriter = mock(FlatFileItemWriter.class);
+
+        TransactionPostingWriter writer =
+                new TransactionPostingWriter(acctRepo, tcbRepo, tranRepo, rejectWriter);
+        writer.beforeStep(MetaDataInstanceFactory.createStepExecution());
+
+        DailyTransactionRecord rec = DailyTransactionRecord.parse(buildRecord(
+                "0000000000000060", "01", 1, new BigDecimal("10.00"),
+                "4859452612877065", tsForDate(LocalDate.of(2020, 1, 1))));
+        Transaction tx = new Transaction();
+        tx.setTranId("0000000000000060");
+        tx.setAcctId(777L);
+        tx.setTypeCd("01");
+        tx.setCatCd(1);
+        tx.setAmt(new BigDecimal("10.00"));
+        tx.setCardNum("4859452612877065");
+        ProcessedTransaction pt = ProcessedTransaction.valid(rec, tx);
+
+        when(tcbRepo.findById(any())).thenReturn(Optional.empty());
+        // 2700 TCATBAL write fails -> COBOL ABEND -> must propagate (NOT reject 109).
+        when(tcbRepo.save(any())).thenThrow(new DataIntegrityViolationException("TCATBAL write failed"));
+
+        assertThatThrownBy(() -> writer.write(new Chunk<>(List.of(pt))))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        // The item is NOT downgraded to a 109 reject; the account update and transaction write — and
+        // the reject writer — are never reached.
+        assertThat(pt.isRejected()).isFalse();
+        assertThat(pt.getRejectCode()).isEqualTo(ProcessedTransaction.VALID);
+        verify(acctRepo, never()).save(any());
+        verify(tranRepo, never()).save(any());
+        verify(rejectWriter, never()).write(any());
+    }
+
+    /**
+     * Parity (Finding #3): a {@code 2900-WRITE-TRANSACTION-FILE} persistence failure must PROPAGATE and
+     * fail the step/job (COBOL {@code PERFORM 9999-ABEND-PROGRAM}, L577) &mdash; it must NOT be softened
+     * to a code-109 reject. The TCATBAL upsert and the account update succeed; the transaction save then
+     * throws, so {@link TransactionPostingWriter#write} rethrows and the item is never rejected.
+     */
+    @Test
+    void writer_transactionWriteFailure_propagates_notRejected109() throws Exception {
+        AccountRepository acctRepo = mock(AccountRepository.class);
+        TransactionCategoryBalanceRepository tcbRepo = mock(TransactionCategoryBalanceRepository.class);
+        TransactionRepository tranRepo = mock(TransactionRepository.class);
+        @SuppressWarnings("unchecked")
+        FlatFileItemWriter<String> rejectWriter = mock(FlatFileItemWriter.class);
+
+        TransactionPostingWriter writer =
+                new TransactionPostingWriter(acctRepo, tcbRepo, tranRepo, rejectWriter);
+        writer.beforeStep(MetaDataInstanceFactory.createStepExecution());
+
+        Account a = newAccount(777L, "100000.00", "0.00", LocalDate.of(2099, 12, 31));
+        a.setCurrBal(new BigDecimal("100.00"));
+
+        DailyTransactionRecord rec = DailyTransactionRecord.parse(buildRecord(
+                "0000000000000061", "01", 1, new BigDecimal("10.00"),
+                "4859452612877065", tsForDate(LocalDate.of(2020, 1, 1))));
+        Transaction tx = new Transaction();
+        tx.setTranId("0000000000000061");
+        tx.setAcctId(777L);
+        tx.setTypeCd("01");
+        tx.setCatCd(1);
+        tx.setAmt(new BigDecimal("10.00"));
+        tx.setCardNum("4859452612877065");
+        ProcessedTransaction pt = ProcessedTransaction.valid(rec, tx);
+
+        when(tcbRepo.findById(any())).thenReturn(Optional.empty());
+        when(acctRepo.findById(777L)).thenReturn(Optional.of(a));
+        // 2900 transaction write fails -> COBOL ABEND -> must propagate (NOT reject 109).
+        when(tranRepo.save(any())).thenThrow(new DataIntegrityViolationException("TRANSACT write failed"));
+
+        assertThatThrownBy(() -> writer.write(new Chunk<>(List.of(pt))))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        // The account update (2800) ran and succeeded, but the transaction-write failure is NOT
+        // softened to a 109 reject — the item stays valid and no reject line is written.
+        assertThat(pt.isRejected()).isFalse();
+        assertThat(pt.getRejectCode()).isEqualTo(ProcessedTransaction.VALID);
+        verify(acctRepo).save(a);
+        verify(rejectWriter, never()).write(any());
+    }
+
+    /**
+     * Parity (Finding #3): a {@code 2800-UPDATE-ACCOUNT-REC} failure at the REWRITE/save step (here an
+     * optimistic {@code @Version} conflict) IS the code-109 path (COBOL {@code REWRITE ... INVALID KEY},
+     * L555-558). The item is flipped to reject 109, the transaction write (2900) is skipped, and the
+     * step exits {@code WARNING} (the job still completes). This complements
+     * {@link #writer_rejects109_whenAccountUpdateFails()} (missing account) by proving a save-time
+     * account failure also becomes 109.
+     */
+    @Test
+    void writer_accountSaveFailure_becomes109_andSkipsTransactionWrite() throws Exception {
+        AccountRepository acctRepo = mock(AccountRepository.class);
+        TransactionCategoryBalanceRepository tcbRepo = mock(TransactionCategoryBalanceRepository.class);
+        TransactionRepository tranRepo = mock(TransactionRepository.class);
+        @SuppressWarnings("unchecked")
+        FlatFileItemWriter<String> rejectWriter = mock(FlatFileItemWriter.class);
+
+        TransactionPostingWriter writer =
+                new TransactionPostingWriter(acctRepo, tcbRepo, tranRepo, rejectWriter);
+        writer.beforeStep(MetaDataInstanceFactory.createStepExecution());
+
+        Account a = newAccount(777L, "100000.00", "0.00", LocalDate.of(2099, 12, 31));
+        a.setCurrBal(new BigDecimal("100.00"));
+
+        DailyTransactionRecord rec = DailyTransactionRecord.parse(buildRecord(
+                "0000000000000062", "01", 1, new BigDecimal("10.00"),
+                "4859452612877065", tsForDate(LocalDate.of(2020, 1, 1))));
+        Transaction tx = new Transaction();
+        tx.setTranId("0000000000000062");
+        tx.setAcctId(777L);
+        tx.setTypeCd("01");
+        tx.setCatCd(1);
+        tx.setAmt(new BigDecimal("10.00"));
+        tx.setCardNum("4859452612877065");
+        ProcessedTransaction pt = ProcessedTransaction.valid(rec, tx);
+
+        when(tcbRepo.findById(any())).thenReturn(Optional.empty());
+        when(acctRepo.findById(777L)).thenReturn(Optional.of(a));
+        // 2800 account REWRITE fails (optimistic @Version conflict) -> COBOL INVALID KEY -> reject 109.
+        when(acctRepo.save(any()))
+                .thenThrow(new ObjectOptimisticLockingFailureException(Account.class, 777L));
+
+        writer.write(new Chunk<>(List.of(pt)));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Chunk<String>> captor = ArgumentCaptor.forClass(Chunk.class);
+        verify(rejectWriter, atLeastOnce()).write(captor.capture());
+        List<String> rejectLines = captor.getAllValues().stream()
+                .flatMap(c -> c.getItems().stream())
+                .toList();
+
+        assertThat(rejectLines).hasSize(1);
+        assertThat(rejectLines.get(0)).hasSize(CardDemoConstants.DALYREJS_RECORD_WIDTH);
+        assertThat(rejectLines.get(0).substring(350, 354)).isEqualTo("0109");
+        assertThat(pt.isRejected()).isTrue();
+        assertThat(pt.getRejectCode()).isEqualTo(CardDemoConstants.REJECT_CODE_ACCOUNT_UPDATE_FAILED);
+        // 2900 transaction write must NOT run after the account-update failure.
+        verify(tranRepo, never()).save(any());
+
+        ExitStatus exit = writer.afterStep(MetaDataInstanceFactory.createStepExecution());
+        assertThat(exit.getExitCode()).isEqualTo("WARNING");
     }
 
     /**

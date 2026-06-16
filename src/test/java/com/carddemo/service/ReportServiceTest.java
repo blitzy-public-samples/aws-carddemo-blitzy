@@ -238,20 +238,30 @@ class ReportServiceTest {
     }
 
     @Test
-    @DisplayName("CUSTOM with a reversed range (start after end) throws ValidationException and never launches")
-    void custom_reversedRange_throwsValidationException() throws Exception {
+    @DisplayName("CUSTOM with a reversed range (start after end) is still submitted — CORPT00C "
+            + "validated each date independently and imposed no start<=end ordering rule")
+    void custom_reversedRange_individuallyValidDates_isSubmitted() throws Exception {
         ReportService service = serviceWithJob();
+        stubSuccessfulLaunch();
 
+        // A reversed but individually-valid range: each date passes CSUTLDTC validation. CORPT00C
+        // (the source of truth, AAP §0.7.3) validated the Start Date and End Date INDEPENDENTLY and
+        // never compared them, so there is no ordering guard to reproduce — the job MUST be submitted.
         LocalDate start = LocalDate.of(2023, 3, 31);
         LocalDate end = LocalDate.of(2023, 1, 1);
 
-        // Real class: both dates are first routed through DateValidationService (here unstubbed →
-        // returns null, which the service ignores), then the inline ordering guard rejects start>end
-        // with ValidationException("Start date must not be after end date").
-        assertThatThrownBy(() -> service.submitReport(new ReportRequest("CUSTOM", start, end)))
-                .isInstanceOf(ValidationException.class);
+        ReportResponse resp = service.submitReport(new ReportRequest("CUSTOM", start, end));
 
-        verify(reportJobSubmitter, never()).submit(any(), any());
+        // The reversed range is echoed back verbatim and the report job is launched.
+        assertThat(resp.reportType()).isEqualTo("CUSTOM");
+        assertThat(resp.startDate()).isEqualTo(start);
+        assertThat(resp.endDate()).isEqualTo(end);
+        assertThat(resp.jobExecutionId()).isEqualTo(7L);
+
+        // CSUTLDTC parity: each date is still re-validated through the date utility (no ordering check).
+        verify(dateValidationService).validateAndParseDate("2023-03-31", "Start date");
+        verify(dateValidationService).validateAndParseDate("2023-01-01", "End date");
+        verify(reportJobSubmitter).submit(eq(transactionReportJob), any(JobParameters.class));
     }
 
     @Test

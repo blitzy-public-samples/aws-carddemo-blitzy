@@ -220,8 +220,10 @@ public class ReportService {
      *   <li>{@code "MONTHLY"} &mdash; first day through last day of the current month;</li>
      *   <li>{@code "YEARLY"} &mdash; January&nbsp;1 through December&nbsp;31 of the current year;</li>
      *   <li>{@code "CUSTOM"} &mdash; the supplied {@code startDate}/{@code endDate}, which must both be
-     *       present, must each be a valid {@code yyyy-MM-dd} date (validated via
-     *       {@link DateValidationService}, the {@code CSUTLDTC} replacement), and must not be reversed.</li>
+     *       present and must each be a valid {@code yyyy-MM-dd} date (validated via
+     *       {@link DateValidationService}, the {@code CSUTLDTC} replacement). Their order is
+     *       <em>not</em> constrained &mdash; {@code CORPT00C} validated each date independently, so a
+     *       reversed range is accepted and submitted (AAP &sect;0.7.3 "actual COBOL governs").</li>
      * </ul>
      *
      * <p>The resolved range and report type are passed to the batch job as
@@ -237,7 +239,7 @@ public class ReportService {
      *         status, the echoed report type, and the effective start/end dates
      * @throws ValidationException   if the request or report type is missing, the report type is not
      *                               one of {@code MONTHLY}/{@code YEARLY}/{@code CUSTOM}, or a custom
-     *                               range is missing/invalid/reversed (surfaced as HTTP&nbsp;400)
+     *                               range is missing/invalid (surfaced as HTTP&nbsp;400)
      * @throws IllegalStateException if the {@code transactionReportJob} bean is not available, or the
      *                               launcher fails to start the job (surfaced as HTTP&nbsp;500) &mdash;
      *                               the analog of {@code CORPT00C}'s "Unable to Write TDQ (JOBS)..."
@@ -309,7 +311,9 @@ public class ReportService {
      * Validates a {@code CUSTOM} reporting range, reproducing the field-by-field
      * checks {@code CORPT00C} performed before submission (L256-436).
      *
-     * <p>Three rules are enforced, in order:</p>
+     * <p>Two rules are enforced, in order &mdash; and, per AAP &sect;0.7.3 ("actual COBOL governs"),
+     * <strong>no</strong> start&nbsp;&le;&nbsp;end ordering rule is imposed, because {@code CORPT00C}
+     * validated each supplied date independently and never compared the two:</p>
      * <ol>
      *   <li><strong>Presence</strong> &mdash; both dates must be supplied; a missing date yields a
      *       {@link ValidationException} whose per-field map names exactly which boundary
@@ -320,16 +324,15 @@ public class ReportService {
      *       {@code yyyy-MM-dd} text. The value is already a typed {@link LocalDate}, but routing it
      *       through the {@code CSUTLDTC} replacement preserves the legacy validation step (and its
      *       leap-year / month-range semantics) for strict parity.</li>
-     *   <li><strong>Ordering</strong> &mdash; the start must not be after the end. This is a defensive
-     *       guard added by the migration (the original program validated each date independently and
-     *       did not compare them); a reversed range is a clear client error, surfaced as HTTP&nbsp;400
-     *       rather than silently submitting a job that could never produce meaningful output.</li>
      * </ol>
+     *
+     * <p>A reversed but individually-valid range (start after end) is therefore <strong>accepted</strong>
+     * and submitted, reproducing {@code CORPT00C}'s behaviour exactly rather than adding a non-COBOL
+     * ordering guard.</p>
      *
      * @param startDate the requested inclusive start date, possibly {@code null}
      * @param endDate   the requested inclusive end date, possibly {@code null}
-     * @throws ValidationException if either date is missing, not a valid {@code yyyy-MM-dd} date, or
-     *                             the start date is after the end date
+     * @throws ValidationException if either date is missing or is not a valid {@code yyyy-MM-dd} date
      */
     private void validateCustomRange(LocalDate startDate, LocalDate endDate) {
         Map<String, String> fieldErrors = new LinkedHashMap<>();
@@ -346,13 +349,11 @@ public class ReportService {
 
         // CSUTLDTC parity (CORPT00C L388-426): validate each date through the date utility. STRICT
         // yyyy-MM-dd parsing rejects impossible dates; a failure is raised as a ValidationException.
+        // PARITY (AAP §0.7.3 "actual COBOL governs"): CORPT00C validated the Start Date and End Date
+        // INDEPENDENTLY and imposed NO start<=end ordering rule, so no reversed-range check is performed
+        // here. A reversed but individually-valid range is submitted exactly as the legacy program did.
         dateValidationService.validateAndParseDate(startDate.toString(), "Start date");
         dateValidationService.validateAndParseDate(endDate.toString(), "End date");
-
-        // Added migration guard: reject a reversed range (no COBOL equivalent).
-        if (startDate.isAfter(endDate)) {
-            throw new ValidationException("Start date must not be after end date");
-        }
     }
 
     /**

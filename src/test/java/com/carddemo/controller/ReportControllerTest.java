@@ -40,8 +40,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *       numeric {@code jobExecutionId}, the echoed {@code reportType}, and a present {@code status};</li>
  *   <li><strong>Validation failures</strong> &rarr; {@code 400 Bad Request} for an unrecognized or
  *       missing {@code reportType} (Bean Validation {@code @Pattern}/{@code @NotNull}) and for a
- *       CUSTOM request that omits the dates or supplies a reversed range (service-level
- *       {@code ValidationException});</li>
+ *       CUSTOM request that omits the dates (service-level {@code ValidationException});</li>
  *   <li><strong>Authentication</strong> &rarr; {@code 401 Unauthorized} when the caller is anonymous
  *       (the security filter chain rejects the request before the controller runs).</li>
  * </ul>
@@ -230,20 +229,28 @@ class ReportControllerTest {
     }
 
     /**
-     * CUSTOM with a reversed range ({@code startDate} after {@code endDate}) &rarr; {@code 400}.
+     * CUSTOM with a reversed range ({@code startDate} after {@code endDate}) &rarr; {@code 202 Accepted}.
      *
      * <p>Both dates are present and individually valid, so the request passes Bean Validation and the
-     * per-date {@code CSUTLDTC}-equivalent checks. The service then enforces ordering
-     * ({@code start <= end}) and raises a {@code ValidationException} for the reversed range, mapped to
-     * {@code 400}. No batch job is launched on this path.</p>
+     * per-date {@code CSUTLDTC}-equivalent checks. {@code CORPT00C} (the source of truth, AAP
+     * &sect;0.7.3 "actual COBOL governs") validated the Start Date and End Date <em>independently</em>
+     * and imposed <strong>no</strong> {@code start <= end} ordering rule, so the migrated service
+     * submits the job and the endpoint returns {@code 202 Accepted}, echoing the requested range
+     * verbatim (reversed). There is no non-COBOL ordering guard to reproduce.</p>
      */
     @Test
-    @DisplayName("POST /reports CUSTOM with startDate after endDate -> 400 Bad Request (start <= end)")
-    void submitCustomReport_withReversedDateRange_returns400() throws Exception {
+    @DisplayName("POST /reports CUSTOM with startDate after endDate -> 202 Accepted (no COBOL ordering rule)")
+    void submitCustomReport_withReversedDateRange_returns202EchoingRange() throws Exception {
         mockMvc.perform(post(REPORTS_ENDPOINT)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"reportType\":\"CUSTOM\",\"startDate\":\"2024-02-01\",\"endDate\":\"2024-01-01\"}"))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.jobExecutionId").exists())
+                .andExpect(jsonPath("$.jobExecutionId").isNumber())
+                .andExpect(jsonPath("$.reportType").value("CUSTOM"))
+                .andExpect(jsonPath("$.startDate").value("2024-02-01"))
+                .andExpect(jsonPath("$.endDate").value("2024-01-01"))
+                .andExpect(jsonPath("$.status").exists());
     }
 
     // =============================================================================================
