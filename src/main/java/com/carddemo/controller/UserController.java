@@ -7,10 +7,12 @@ import com.carddemo.dto.UserUpdateRequest;
 import com.carddemo.service.UserService;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -81,6 +83,10 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li>a request body that violates the {@link UserCreateRequest} / {@link UserUpdateRequest} Bean
  *       Validation constraints raises {@code MethodArgumentNotValidException} &rarr; HTTP&nbsp;400,
  *       carrying the preserved "... can NOT be empty..." field messages.</li>
+ *   <li>a negative {@code page} index on the list endpoint violates the {@link Min @Min(0)} parameter
+ *       constraint (activated by the class-level {@link Validated @Validated}) and raises
+ *       {@code ConstraintViolationException} &rarr; HTTP&nbsp;400 &mdash; an invalid client parameter
+ *       is reported as a client error, never an HTTP&nbsp;500.</li>
  * </ul>
  *
  * <h2>Security</h2>
@@ -111,6 +117,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/users")
 @PreAuthorize("hasRole('ADMIN')")
+@Validated
 public class UserController {
 
     /**
@@ -144,14 +151,24 @@ public class UserController {
      * the {@code first}/{@code last}/{@code totalElements} metadata that reproduces the COBOL
      * PF7/PF8 forward/backward paging indicators. Each row is a credential-free {@link UserResponse}.</p>
      *
-     * @param page the zero-based page index to retrieve; defaults to {@code 0} (the first page) when
-     *             the parameter is absent
+     * <p>The {@code page} index is constrained to be non-negative ({@link Min @Min(0)}, enforced by
+     * the class-level {@link Validated @Validated}). A client-supplied negative value (e.g.
+     * {@code ?page=-1}) is therefore rejected at the controller boundary with a
+     * {@code ConstraintViolationException}, which {@code GlobalExceptionHandler} translates into
+     * <strong>HTTP&nbsp;400&nbsp;Bad&nbsp;Request</strong> &mdash; a client error &mdash; rather than
+     * allowing {@code PageRequest.of(page, 7)} to raise an {@code IllegalArgumentException} that would
+     * surface as HTTP&nbsp;500. This matches how a non-numeric {@code page} is already rejected with
+     * 400, keeping invalid pagination input a consistent client error.</p>
+     *
+     * @param page the zero-based page index to retrieve; must be {@code >= 0} (a negative value is a
+     *             {@code 400 Bad Request}); defaults to {@code 0} (the first page) when the parameter
+     *             is absent
      * @return HTTP&nbsp;200 with a {@link PageResponse} of {@link UserResponse} rows whose {@code size}
      *         is the legacy 7, never carrying a password
      */
     @GetMapping
     public ResponseEntity<PageResponse<UserResponse>> listUsers(
-            @RequestParam(defaultValue = "0") int page) {
+            @RequestParam(defaultValue = "0") @Min(0) int page) {
         return ResponseEntity.ok(userService.listUsers(page));
     }
 

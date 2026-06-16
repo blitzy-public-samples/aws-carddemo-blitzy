@@ -145,11 +145,28 @@ public class GlobalExceptionHandler {
     /** Generic 400 message for an unparseable / malformed request body (never echoes parser detail). */
     private static final String MSG_MALFORMED_BODY = "Malformed request body.";
 
-    /** Generic 401 message; deliberately uniform to prevent user/credential enumeration. */
-    private static final String MSG_AUTH_FAILED = "Authentication failed.";
+    /**
+     * Generic 401 message; deliberately uniform to prevent user/credential enumeration.
+     *
+     * <p><strong>Visibility.</strong> Exposed {@code public} so the filter-chain
+     * {@code AuthenticationEntryPoint} configured in {@code security/SecurityConfig} can emit the
+     * <em>identical</em> message text on the 401 path that never reaches this advice (the JWT filter
+     * chain rejects missing/invalid credentials before the {@code DispatcherServlet}). Sharing the
+     * single constant &mdash; rather than duplicating the literal &mdash; guarantees the controller-
+     * dispatch and filter-chain 401 responses stay byte-for-byte uniform and can never drift apart.
+     */
+    public static final String MSG_AUTH_FAILED = "Authentication failed.";
 
-    /** Generic 403 message for authorization denials. */
-    private static final String MSG_ACCESS_DENIED = "Access is denied.";
+    /**
+     * Generic 403 message for authorization denials.
+     *
+     * <p><strong>Visibility.</strong> Exposed {@code public} so the filter-chain
+     * {@code AccessDeniedHandler} configured in {@code security/SecurityConfig} can emit the
+     * <em>identical</em> message text on the URL-rule 403 path (e.g. the {@code /users/**} ->
+     * {@code hasRole('ADMIN')} matcher that denies before dispatch). Sharing the single constant
+     * keeps the method-security and filter-chain 403 responses uniform with no risk of drift.
+     */
+    public static final String MSG_ACCESS_DENIED = "Access is denied.";
 
     /** Generic 409 message for optimistic-locking / concurrent-modification conflicts (AAP &sect;0.6.6). */
     private static final String MSG_CONFLICT =
