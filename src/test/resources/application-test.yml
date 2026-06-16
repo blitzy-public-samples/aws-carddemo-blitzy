@@ -1,0 +1,92 @@
+# =============================================================================
+# application-test.yml — CardDemo `test` profile (in-memory H2 in PostgreSQL mode).
+# -----------------------------------------------------------------------------
+# Loaded on top of the base src/main/resources/application.yml when the `test`
+# profile is active. Activation is FILENAME-BASED: a JUnit 5 class annotated with
+# @ActiveProfiles("test") (used with @SpringBootTest / @DataJpaTest /
+# @SpringBatchTest) selects this document. Because @ActiveProfiles REPLACES the
+# active profiles with exactly {test}, application-dev.yml is NOT loaded during
+# tests — therefore this file carries its OWN complete datasource + H2 dialect.
+#
+# Flyway applies V1__schema.sql .. V4__seed_users.sql on EACH test
+# ApplicationContext startup (10 tables + transaction_id_seq + 3 indexes, then the
+# reference/master/user seeds); Hibernate then ONLY validates (Flyway is
+# authoritative). Batch jobs are NOT auto-run — tests launch them explicitly via
+# JobLauncherTestUtils under @SpringBatchTest so per-test job parameters (e.g. the
+# dailytran fixture path) can be supplied and asserted deterministically.
+#
+# Authority: AAP §0.3.1 (test/resources tree: `application-test.yml (H2)`),
+# §0.4.1.5, §0.4.2, §0.7.2 (≥80% JaCoCo gate, FinancialParityTest,
+# TransactionPostingJobTest). Mirrors the structure of application-dev.yml but
+# uses a DISTINCT in-memory DB name (carddemo-test) to isolate test state from a
+# locally running dev instance.
+#
+# NOTE: spring.profiles.active and spring.config.activate.on-profile are
+# intentionally OMITTED — redundant (and risky) inside a profile-specific file.
+# =============================================================================
+spring:
+  datasource:
+    # H2 in PostgreSQL-compat mode so the PostgreSQL-dialect migrations run unchanged.
+    # MODE=PostgreSQL        -> accept the PostgreSQL syntax used by V1..V4.
+    # DATABASE_TO_LOWER=TRUE -> fold unquoted identifiers to lower-case (matches the
+    #                           lower_snake_case schema).
+    # DB_CLOSE_DELAY=-1      -> keep the in-memory DB alive for the JVM/test lifetime.
+    # DB_CLOSE_ON_EXIT=FALSE -> let Spring/Flyway manage shutdown ordering.
+    # Distinct DB name (carddemo-test) isolates from the dev instance.
+    url: jdbc:h2:mem:carddemo-test;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      # Flyway owns the schema; Hibernate must ONLY validate it (never create/update).
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration   # applies V1..V4 on each test context startup
+    baseline-on-migrate: false
+
+  # Spring Batch (Spring Boot 3.2 / Spring Batch 5)
+  batch:
+    job:
+      enabled: false            # DO NOT auto-run jobs at startup; tests drive them via JobLauncherTestUtils
+    jdbc:
+      initialize-schema: always # create BATCH_* metadata tables on H2 (V1 does not create them)
+
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+# ---- CardDemo application-specific properties (TEST values) ----
+jwt:
+  # HS256 signing key for tests — MUST be >= 256 bits (>= 32 ASCII chars). Test-only; env-overridable.
+  secret: ${JWT_SECRET:test-only-carddemo-jwt-secret-key-minimum-32-bytes-0123456789}
+  expiration-ms: ${JWT_EXPIRATION_MS:3600000}   # 1 hour
+
+report:
+  output:
+    path: ${REPORT_OUTPUT_PATH:./target/test-reports}   # statement/report batch output dir under target/
+
+input:
+  file:
+    # Default daily-transaction input for the posting job. NOTE: TransactionPostingJobTest supplies the
+    # actual fixture path (src/test/resources/fixtures/dailytran.txt -> target/test-classes/fixtures/...)
+    # as an explicit Spring Batch JOB PARAMETER, so this is only a fallback default.
+    path: ${INPUT_FILE_PATH:./target/test-classes/fixtures/dailytran.txt}
+
+logging:
+  level:
+    root: WARN
+    com.carddemo: DEBUG
+    org.flywaydb: INFO
+    org.springframework.batch: INFO
