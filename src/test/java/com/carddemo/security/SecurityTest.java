@@ -194,6 +194,56 @@ public class SecurityTest {
         return headerAndPayload + flipped + signature.substring(1);
     }
 
+    /**
+     * Mints a structurally valid JWT that is <strong>already expired</strong>, signed with the SAME
+     * configured HS256 secret ({@code jwt.secret}) the production {@link JwtTokenProvider} uses. The
+     * token carries the COMMAREA-equivalent subject and user-type claims, so it is well-formed in every
+     * respect EXCEPT its temporal validity: {@code iat} is two hours ago and {@code exp} is one hour
+     * ago. Verification therefore fails on <em>expiry</em> &mdash; not on signature or structure &mdash;
+     * isolating the "correctly-signed but lapsed lifetime" case that the {@code exp}-in-the-future
+     * sanity assertions ({@code commareaFields_mapToJwtClaims}) cannot prove.
+     *
+     * @param userId   the subject / {@code CDEMO-USER-ID} claim (kept &le; 8 chars by callers)
+     * @param userType the {@code CDEMO-USER-TYPE} claim ({@code 'A'} admin / {@code 'U'} user)
+     * @return a compact HS256 JWT whose {@code exp} is in the past
+     */
+    private String mintExpiredToken(String userId, String userType) {
+        SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
+        long now = System.currentTimeMillis();
+        return Jwts.builder()
+                .subject(userId)
+                .claim(JwtTokenProvider.CLAIM_USER_ID, userId)
+                .claim(JwtTokenProvider.CLAIM_USER_TYPE, userType)
+                .issuedAt(new Date(now - 7_200_000L))    // issued 2 hours ago
+                .expiration(new Date(now - 3_600_000L))  // expired 1 hour ago
+                .signWith(key, Jwts.SIG.HS256)
+                .compact();
+    }
+
+    /**
+     * Asserts the <strong>stateless</strong> contract (AAP &sect;0.6.7 / &sect;0.3.2: the legacy
+     * COMMAREA/{@code XCTL} session hand-off is replaced by a stateless JWT): a completed exchange must
+     * neither establish a server-side HTTP session nor emit a {@code JSESSIONID} session cookie, because
+     * {@code SecurityConfig} runs with
+     * {@link org.springframework.security.config.http.SessionCreationPolicy#STATELESS}.
+     *
+     * @param result a completed MockMvc exchange to inspect
+     */
+    private static void assertNoSessionCreated(MvcResult result) {
+        // No JSESSIONID cookie is set on the response.
+        assertThat(result.getResponse().getCookie("JSESSIONID"))
+                .as("stateless: no JSESSIONID cookie may be emitted")
+                .isNull();
+        // No Set-Cookie response header advertises a session cookie.
+        assertThat(result.getResponse().getHeaders("Set-Cookie"))
+                .as("stateless: no Set-Cookie header may reference JSESSIONID")
+                .noneMatch(header -> header.contains("JSESSIONID"));
+        // No server-side HTTP session was created (STATELESS policy: nothing calls request.getSession()).
+        assertThat(result.getRequest().getSession(false))
+                .as("stateless: no HTTP session may be created")
+                .isNull();
+    }
+
     // ==================================================================
     // Group 2 - Public sign-on + JWT issuance (BCrypt-12 + role routing parity).
     // ==================================================================
@@ -312,6 +362,59 @@ public class SecurityTest {
 
         mockMvc.perform(get("/menu").header("Authorization", "Bearer " + tampered))
                 .andExpect(status().isUnauthorized());
+    }
+
+    /**
+     * A genuine, correctly-signed JWT whose lifetime has lapsed ({@code exp} before {@code now}) is
+     * rejected with HTTP&nbsp;401: {@link JwtAuthenticationFilter} establishes no principal because
+     * {@link JwtTokenProvider#validateToken(String)} returns {@code false} for an expired token (JJWT's
+     * {@code ExpiredJwtException} is swallowed by {@code validateToken}, never thrown). This proves the
+     * stateless JWT's <strong>bounded lifetime is actually enforced</strong> &mdash; the temporal
+     * counterpart to the structural malformed/tampered rejections above, and the negative case the
+     * {@code exp}-in-the-future sanity assertions cannot cover. The token is minted with the configured
+     * {@code jwt.secret}, so the failure is unambiguously expiry (not a signature or structural defect).
+     */
+    @Test
+    @DisplayName("GET /menu with an expired (but correctly-signed) token -> 401")
+    void protectedEndpoint_withExpiredToken_returns401() throws Exception {
+        String expired = mintExpiredToken(USER_ID, "U");
+
+        // Sanity: the token is correctly signed with the configured key but past its exp, so the
+        // provider must reject it on EXPIRY (validateToken swallows ExpiredJwtException -> false).
+        assertThat(jwtTokenProvider.validateToken(expired)).isFalse();
+
+        mockMvc.perform(get("/menu").header("Authorization", "Bearer " + expired))
+                .andExpect(status().isUnauthorized());
+    }
+
+    /**
+     * The migration replaces the CICS COMMAREA/{@code XCTL} session hand-off with a STATELESS JWT
+     * filter chain (AAP &sect;0.6.7 / &sect;0.3.2), so the server must never create an HTTP session:
+     * neither the public token-issuing {@code POST /auth/signon} nor a subsequent
+     * bearer-authenticated protected request ({@code GET /menu}) may emit a {@code JSESSIONID} cookie or
+     * a session {@code Set-Cookie} header, and no server-side {@code HttpSession} may be created. This
+     * pins {@code SecurityConfig}'s {@code SessionCreationPolicy.STATELESS} at the HTTP boundary &mdash;
+     * the transport-level guarantee that identity is carried solely by the JWT, exactly as the legacy
+     * COMMAREA carried it from program to program.
+     */
+    @Test
+    @DisplayName("Sign-on and bearer-authenticated requests are stateless (no JSESSIONID / no session)")
+    void statelessAuth_emitsNoSessionCookie_andCreatesNoSession() throws Exception {
+        // (1) Sign-on (public, token-issuing) must not start a session or emit a session cookie.
+        String body = objectMapper.writeValueAsString(Map.of("userId", USER_ID, "password", PASSWORD));
+        MvcResult signon = mockMvc.perform(post("/auth/signon")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertNoSessionCreated(signon);
+
+        // (2) A bearer-authenticated protected request must likewise remain stateless.
+        String token = objectMapper.readTree(signon.getResponse().getContentAsString()).get("token").asText();
+        MvcResult protectedCall = mockMvc.perform(get("/menu").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertNoSessionCreated(protectedCall);
     }
 
     /**

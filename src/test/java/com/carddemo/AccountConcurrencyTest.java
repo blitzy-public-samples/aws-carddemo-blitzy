@@ -9,12 +9,17 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.carddemo.dto.AccountUpdateRequest;
+import com.carddemo.dto.ErrorResponse;
 import com.carddemo.entity.Account;
+import com.carddemo.exception.GlobalExceptionHandler;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.service.AccountService;
 import com.carddemo.service.MessageService;
@@ -56,14 +61,21 @@ import jakarta.persistence.EntityManager;
  *       conflict on {@code REWRITE} (Scenario&nbsp;B).</li>
  * </ol>
  * Scenario&nbsp;C is a sanity check proving the {@code @Version} token actually advances on a normal
- * update (without which optimistic locking would silently no-op).
+ * update (without which optimistic locking would silently no-op). Scenario&nbsp;D then proves the
+ * <strong>HTTP-status mapping</strong> of the {@code @Version} backstop: the application's
+ * {@code GlobalExceptionHandler} translates {@link ObjectOptimisticLockingFailureException} to
+ * <strong>HTTP&nbsp;409</strong>.
  *
- * <p>This root-level test proves the underlying optimistic-lock exceptions are raised <em>at their
- * source</em> (the service and persistence layers). The end-to-end assertion that
- * {@code GlobalExceptionHandler} maps both exceptions to the HTTP&nbsp;409 status is the responsibility
- * of the downstream {@code controller/AccountControllerTest}; the optional MockMvc reinforcement
- * (agent-prompt Phase&nbsp;5) is intentionally <strong>omitted here</strong> to keep this class focused
- * on exception types and free of web-security wiring.</p>
+ * <p>Together Scenarios&nbsp;B and&nbsp;D close the end-to-end "{@code @Version} conflict &rarr;
+ * HTTP&nbsp;409" proof at this level: Scenario&nbsp;B proves Hibernate genuinely raises
+ * {@link ObjectOptimisticLockingFailureException} on a real version race, and Scenario&nbsp;D proves the
+ * real {@code @RestControllerAdvice} bean maps that exact exception to HTTP&nbsp;409 (with the
+ * Hibernate/entity/SQL detail suppressed from the client body, AAP&nbsp;&sect;0.6.8). The complementary
+ * full web-stack assertion for the <em>explicit</em> stale-version guard (Scenario&nbsp;A's domain
+ * {@code com.carddemo.exception.ConcurrentModificationException}) is exercised through MockMvc by the
+ * sibling {@code controller/AccountControllerTest} ({@code updateAccount_staleVersion_returns409}); that
+ * domain-path MockMvc round-trip is deliberately not duplicated here so this class stays focused on the
+ * optimistic-lock contract rather than web-security wiring.</p>
  *
  * <h2>&#9888; Deliberate name-clash with {@code java.util.ConcurrentModificationException}</h2>
  * The production conflict exception {@code com.carddemo.exception.ConcurrentModificationException}
@@ -113,6 +125,14 @@ class AccountConcurrencyTest {
      */
     @Autowired
     private EntityManager entityManager;
+
+    /**
+     * The application's central {@code @RestControllerAdvice} &mdash; the SAME configured bean that maps
+     * exceptions to HTTP statuses in production. Autowired (rather than instantiated) so Scenario&nbsp;D
+     * proves the real, wired advice translates the JPA {@code @Version} backstop to HTTP&nbsp;409.
+     */
+    @Autowired
+    private GlobalExceptionHandler globalExceptionHandler;
 
     // ---------------------------------------------------------------------------------------------
     // Scenario A — explicit service-level stale-version guard -> domain ConcurrentModificationException
@@ -215,6 +235,55 @@ class AccountConcurrencyTest {
         Account reloaded = accountRepository.findById(ACCT_ID).orElseThrow();
         assertThat(reloaded.getVersion()).isGreaterThan(v0);
         assertThat(reloaded.getVersion()).isEqualTo(v0 + 1L);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Scenario D — the JPA @Version backstop SURFACES AS HTTP 409 (GlobalExceptionHandler mapping)
+    //   Completes Scenario B: B proves Hibernate RAISES ObjectOptimisticLockingFailureException on a
+    //   real @Version race; D proves the central @RestControllerAdvice MAPS that exact exception to
+    //   HTTP 409 — the second of the two convergent 409 paths required by AAP §0.6.6 / §0.7.1.
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Proves the HTTP-status half of the JPA {@code @Version} backstop: the application's
+     * {@code GlobalExceptionHandler} translates the {@link ObjectOptimisticLockingFailureException}
+     * raised by Hibernate (Scenario&nbsp;B) into <strong>HTTP&nbsp;409 Conflict</strong>, reproducing
+     * the legacy {@code COACTUPC} lost-update guard at the API boundary (AAP&nbsp;&sect;0.6.6).
+     *
+     * <p>The exact exception type Hibernate raises on a {@code @Version} flush race is constructed
+     * against the {@code @Version}-guarded {@link Account} aggregate and handed to the real, autowired
+     * {@code @RestControllerAdvice} &mdash; whose {@code @ExceptionHandler} covers both the CardDemo
+     * domain {@code ConcurrentModificationException} (Scenario&nbsp;A) and this Hibernate type. The
+     * response must carry HTTP&nbsp;409 and, per the PII/internals-suppression rule
+     * (AAP&nbsp;&sect;0.6.8), the client body must expose only the generic conflict message &mdash;
+     * never the Hibernate/entity/SQL detail (for example the {@code "Account"} entity name or the
+     * exception class name).</p>
+     *
+     * <p>This method is intentionally <em>not</em> {@link Transactional}: it asserts a pure
+     * exception&rarr;status mapping and touches no persistence, so it needs no transactional rollback.</p>
+     */
+    @Test
+    @DisplayName("Scenario D: ObjectOptimisticLockingFailureException -> HTTP 409 Conflict (GlobalExceptionHandler mapping)")
+    void optimisticLockFailure_isMappedToHttp409_byGlobalExceptionHandler() {
+        // Arrange: the precise exception Hibernate raises on a @Version conflict (proven in Scenario B),
+        // here against the @Version-guarded Account aggregate, plus a representative request path.
+        ObjectOptimisticLockingFailureException jpaConflict =
+                new ObjectOptimisticLockingFailureException(Account.class, ACCT_ID);
+        MockHttpServletRequest request = new MockHttpServletRequest("PUT", "/accounts/" + ACCT_ID);
+
+        // Act: the SAME @RestControllerAdvice bean wired in production translates the exception.
+        ResponseEntity<ErrorResponse> response = globalExceptionHandler.handleConflict(jpaConflict, request);
+
+        // Assert: HTTP 409 with a populated, PII-safe body.
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().status()).isEqualTo(HttpStatus.CONFLICT.value());
+        assertThat(response.getBody().message()).isNotBlank();
+
+        // Internals must NOT leak to the client (AAP §0.6.8): the generic conflict text carries no
+        // Hibernate/entity/SQL detail such as the "Account" entity name or the exception class name.
+        assertThat(response.getBody().message())
+                .doesNotContain("Account", "ObjectOptimisticLockingFailureException", "Optimistic");
     }
 
     // ---------------------------------------------------------------------------------------------

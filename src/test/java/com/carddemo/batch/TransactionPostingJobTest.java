@@ -341,13 +341,26 @@ class TransactionPostingJobTest {
 
     /**
      * Smoke test over the byte-exact production fixture {@code fixtures/dailytran.txt}. Asserts the
-     * job completes, reads every record, and — regardless of how many records the real feed matches
-     * against the seed — emits only structurally valid 430-byte reject records.
+     * job completes, reads <strong>every</strong> record the fixture contains &mdash; with the expected
+     * read count <em>derived dynamically from the fixture file itself</em> rather than hardcoded, so the
+     * test is robust to feed churn (the daily-transaction fixture has varied between 311 and 300 records;
+     * this test must assume neither count) &mdash; and, regardless of how many records the real feed
+     * matches against the seed, emits only structurally valid 430-byte reject records (AAP §0.6.2).
      */
     @Test
     @DirtiesContext(methodMode = DirtiesContext.MethodMode.AFTER_METHOD)
-    void postingJob_overRealDailytranFixture_completes_readsAll300_rejectsAre430Bytes() throws Exception {
+    void postingJob_overRealDailytranFixture_completes_readsAllRecords_rejectsAre430Bytes() throws Exception {
         String path = new ClassPathResource("fixtures/dailytran.txt").getFile().getAbsolutePath();
+
+        // Count-agnostic expected read count: derive it from the fixture itself (count the non-empty
+        // 350-byte records, mirroring how the FlatFileItemReader reads each line as one record) rather
+        // than asserting a magic number. This satisfies the checkpoint's count-agnostic requirement and
+        // will not break if the committed fixture's record count changes (e.g. 300 <-> 311).
+        long expectedReadCount = Files.readAllLines(Path.of(path)).stream()
+                .filter(line -> !line.isEmpty())
+                .count();
+        assertThat(expectedReadCount).as("fixture must contain at least one record").isGreaterThan(0L);
+
         Path rejectFile = tempDir.resolve("rejects-real.txt");
 
         JobParameters params = new JobParametersBuilder(jobLauncherTestUtils.getUniqueJobParameters())
@@ -360,8 +373,9 @@ class TransactionPostingJobTest {
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
         StepExecution step = execution.getStepExecutions().iterator().next();
-        // The committed fixture contains exactly 300 records of 350 bytes each.
-        assertThat(step.getReadCount()).isEqualTo(300);
+        // The job must read EVERY record present in the fixture (no read-time skipping/filtering),
+        // whatever that count is — proven against the dynamically-derived count, never a hardcoded 300/311.
+        assertThat(step.getReadCount()).isEqualTo(expectedReadCount);
 
         // Structural-only assertion: do not hardcode a reject count (the feed's match rate against the
         // seed is not asserted); only require that every reject record is a well-formed 430-byte line.
