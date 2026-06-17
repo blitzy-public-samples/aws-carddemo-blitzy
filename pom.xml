@@ -1,0 +1,350 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      ============================================================================================
+      AWS CardDemo - Spring Boot 3.2.x modernization of the legacy COBOL/CICS/VSAM mainframe app.
+      ============================================================================================
+      This is the single-module Maven build manifest (Java 17 LTS) for the net-new Spring Boot
+      monolith that re-implements the AWS CardDemo sample application with 100% functional parity.
+
+      Version policy (AAP 0.5.2):
+        * Spring-managed artifacts are declared WITHOUT an explicit <version>; the Spring Boot
+          starter parent BOM (3.2.12) governs them. This guarantees a consistent, tested stack
+          (Hibernate, Jackson, Tomcat, Spring Security 6, Spring Batch 5, Flyway 9.x, H2,
+          PostgreSQL driver, JUnit 5, Mockito, AssertJ, etc.).
+        * Only dependencies that are NOT Boot-managed carry an explicit version: the JJWT trio
+          (0.12.6) and springdoc-openapi (2.8.17 - the 6.2.x-compatible line; see the property note).
+        * Only the JaCoCo build plugin (0.8.12) is pinned by policy to enforce the >=80% coverage
+          gate via `mvn verify`.
+        * Four BOM-managed versions are bumped via property overrides for security remediation
+          (spring-framework 6.2.19, spring-security 6.5.11, tomcat 10.1.55, postgresql 42.7.11) -
+          see the detailed per-property CVE rationale in the <properties> block below. Spring Boot
+          itself stays on 3.2.12, so Flyway stays on the 9.x line (flyway-core only) and the rest of
+          the stack remains BOM-aligned.
+        * No placeholder versions (latest, RELEASE, 1.0.0 for deps) are used anywhere.
+
+      The system MUST remain a single monolithic module (AAP 0.2.2 - no microservice split) and
+      MUST NOT introduce cloud/MQ/Kafka/Db2 libraries (explicitly out of scope).
+      ============================================================================================
+    -->
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.12</version>
+        <!-- Empty relativePath forces resolution from the repository, not a local parent. -->
+        <relativePath/>
+    </parent>
+
+    <groupId>com.carddemo</groupId>
+    <artifactId>carddemo</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    <name>AWS CardDemo - Spring Boot Modernization</name>
+    <description>Spring Boot 3.2.x / Java 17 modernization of the legacy AWS CardDemo COBOL/CICS/VSAM mainframe application</description>
+
+    <properties>
+        <!-- Spring Boot parent maps java.version to maven.compiler.release=17. -->
+        <java.version>17</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- Versions for artifacts that are NOT managed by the Spring Boot parent BOM. -->
+        <jjwt.version>0.12.6</jjwt.version>
+        <!-- springdoc-openapi: bumped 2.6.0 -> 2.8.17 for Spring Framework 6.2.x COMPATIBILITY.
+             springdoc 2.6.0 targets Spring Framework 6.1.x and calls the (deprecated, since-removed)
+             constructor org.springframework.web.method.ControllerAdviceBean(Object); once the
+             security remediation below moved spring-framework to 6.2.19, that constructor no longer
+             exists and GET /v3/api-docs failed at runtime with NoSuchMethodError. springdoc 2.7.0+
+             is built against Spring Framework 6.2.x; 2.8.17 is the current stable line of that
+             series and restores OpenAPI/Swagger generation. Verified empirically (build + runtime
+             /v3/api-docs and /swagger-ui). Still NOT Boot-managed, so it carries an explicit version. -->
+        <springdoc.version>2.8.17</springdoc.version>
+
+        <!-- Build plugin pinned by policy to enforce the coverage gate. -->
+        <jacoco.version>0.8.12</jacoco.version>
+
+        <!-- ====================================================================================
+             SECURITY-DRIVEN MANAGED-VERSION OVERRIDES (FINAL_ALT dependency remediation).
+
+             These four properties override versions that are otherwise governed by the Spring
+             Boot 3.2.12 parent BOM. Overriding the BOM's version *properties* (rather than adding
+             explicit <version> tags on individual dependencies) is the Spring-Boot-sanctioned
+             mechanism for consuming a patched maintenance release while keeping the rest of the
+             stack BOM-aligned. Spring Boot itself stays on 3.2.12 (AAP 0.5 / 0.7.2 mandate a
+             "Spring Boot 3.2.x" monolith), so Flyway remains on the 9.x line (flyway-core only;
+             the flyway-database-postgresql module is NOT required until Flyway 10 / Boot 3.3+,
+             which the AAP 0.5 note explicitly warns against adding). Bumping the Boot parent itself
+             is therefore deliberately avoided.
+
+             The Spring Framework 6.1.x and Spring Security 6.3.x OSS lines reached end-of-OSS-life,
+             so the 2026 advisories below are NOT backported to them; clearing the advisories with
+             freely-available OSS artifacts requires moving onto the still-maintained 6.2.x
+             (framework) and 6.5.x (security) lines, which pair with each other (Spring Security
+             6.5.x targets Spring Framework 6.2.x). Each version is the latest OSS patch on Maven
+             Central (verified against repo1.maven.org) and the combination is validated end-to-end
+             by `mvn clean verify` (full test suite + JaCoCo gate) and a runtime boot/smoke check:
+
+               * spring-framework 6.1.21 -> 6.2.19
+                   Clears the spring-webmvc advisories flagged at FINAL_ALT: CVE-2025-41242 (MVC
+                   path traversal), CVE-2026-22735 (SSE stream corruption), CVE-2026-22737 (script
+                   view template path disclosure), CVE-2026-22741 (static-resource cache poisoning)
+                   and CVE-2026-22745 (static-resource DoS). All are fixed on the 6.2.x line; 6.2.19
+                   is its latest patch. 6.2.x keeps the Servlet 6.0 / Jakarta EE 10 spec level used
+                   by Spring Boot 3.2.x and remains binary-compatible at the API surface this app
+                   relies on (verified by the green build + boot smoke).
+               * spring-security 6.3.10 -> 6.5.11
+                   Clears CVE-2026-22732 (security-web: response security headers not written under
+                   some conditions; fixed in 6.5.9) and CVE-2026-22746 (security-core:
+                   DaoAuthenticationProvider user-enumeration/timing; fixed in 6.5.10). No OSS patch
+                   on the 6.3.x/6.4.x lines clears CVE-2026-22746, so the 6.5.x line is required;
+                   6.5.11 is its latest patch and targets Spring Framework 6.2.x, pairing correctly
+                   with the 6.2.19 override above. The app supplies its own SecurityFilterChain, so
+                   the Boot 3.2.x security auto-config surface is minimal; the upgrade is validated
+                   by the full security test suite and a runtime auth/headers smoke check.
+               * tomcat 10.1.55 (retained)
+                   Latest secure Apache Tomcat 10.1.x (10.1.54+ addresses the April 2026 advisories
+                   CVE-2026-29146 / CVE-2026-34486 / CVE-2026-34500). Same Servlet 6.0 / Jakarta
+                   EE 10 spec level as Spring Framework 6.2.x, so it remains a clean drop-in.
+               * postgresql 42.6.2 -> 42.7.11
+                   Clears CVE-2026-42198 (SCRAM PBKDF2 unbounded-iterations DoS triggerable by a
+                   malicious PostgreSQL server). Fixed in 42.7.11. The driver is prod-profile only
+                   (dev/test use H2), but the dependency posture is remediated regardless. Spring
+                   Boot manages this artifact via the postgresql.version property, so the override
+                   below governs it.
+             ==================================================================================== -->
+        <spring-framework.version>6.2.19</spring-framework.version>
+        <spring-security.version>6.5.11</spring-security.version>
+        <tomcat.version>10.1.55</tomcat.version>
+        <postgresql.version>42.7.11</postgresql.version>
+
+        <!-- logback 1.4.14 (Boot 3.2.12 BOM default) -> 1.5.34
+             Clears the full chain of known logback advisories. The Spring Boot 3.2.12 parent BOM
+             pins logback-classic AND logback-core to 1.4.14, which sits in the affected range of:
+               * CVE-2024-12798  ACE via JaninoEventEvaluator EL injection (<=1.5.12; fixed 1.5.13)
+               * CVE-2024-12801  SSRF via SaxEventRecorder external DTD     (<=1.5.12; fixed 1.5.13)
+               * CVE-2025-11226  ACE via the 'new' operator in <if> condition (<=1.5.18; fixed 1.5.19)
+               * CVE-2026-1225   ACE via incompatible component instantiation (<=1.5.24; fixed 1.5.25)
+               * CVE-2026-10532  deserialization whitelist bypass (HardenedObjectInputStream/Proxy;
+                                 fixed 1.5.34)
+             The latest OSS patch (1.5.34, verified on repo1.maven.org) is selected rather than the
+             minimum 1.5.13/1.5.19 patch because every interim 1.5.x release is itself still inside
+             one or more of the later affected ranges above; only 1.5.34 sits OUTSIDE all known
+             logback CVE ranges, satisfying the "no dependency in a known-vulnerable range when a
+             fix exists" bar (AAP 0.7.2 - security hardening within parity) and matching the
+             "latest OSS patch on Maven Central" policy already applied to the seven sibling
+             overrides. Spring Boot manages both logback artifacts through the single
+             ${logback.version} property, so this one override governs logback-classic and
+             logback-core together. The 1.5.x line keeps the SLF4J 2.0 / Jakarta logging surface
+             used by Boot 3.2.x (Boot 3.4 itself ships logback 1.5.x), and the shipped
+             logback-spring.xml uses none of the removed/affected features (no JaninoEventEvaluator,
+             no <if> EL condition, no DOCTYPE/external DTD); compatibility is validated end-to-end by
+             `mvn clean verify` (full suite + JaCoCo gate) plus a runtime boot/log-masking smoke test. -->
+        <logback.version>1.5.34</logback.version>
+    </properties>
+
+    <dependencies>
+        <!-- ==========================================================================
+             Spring Boot starters (BOM-managed - declared WITHOUT an explicit version).
+             ========================================================================== -->
+
+        <!-- REST controllers, embedded Tomcat, Jackson JSON (replaces BMS 3270 screens). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Hibernate/JPA persistence (replaces VSAM KSDS access). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!--
+          Authentication/authorization (replaces RACF + CICS COMMAREA session handoff).
+          Transitively provides spring-security-crypto for BCrypt (strength 12) password hashing.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Spring Batch 5 chunk-oriented jobs (replaces JCL-scheduled COBOL batch programs). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <!-- Bean Validation (Jakarta) for request/response DTO constraints. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Health and metrics endpoints. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- ==========================================================================
+             Database drivers and schema migration (BOM-managed - no explicit version).
+             ========================================================================== -->
+
+        <!-- Production JDBC driver (prod profile -> PostgreSQL 15.x). Runtime only. -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- In-memory database for the dev/test profiles. Runtime only. -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!--
+          Flyway schema + seed migrations (V1-V4) executed on startup before JPA validation.
+          Spring Boot 3.2.x manages Flyway 9.x, which supports PostgreSQL through flyway-core
+          ALONE. The separate flyway-database-postgresql module is only required under Flyway 10
+          (Spring Boot 3.3+); adding it here would break under the 9.x line. Declared WITHOUT an
+          explicit version so the parent BOM governs it.
+        -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+
+        <!-- ==========================================================================
+             JWT (stateless auth replacing the COMMAREA handoff) - JJWT 0.12.6.
+             HS256 with a >=256-bit secret. NOT Boot-managed, so an explicit version is required.
+             ========================================================================== -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>${jjwt.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- ==========================================================================
+             OpenAPI / Swagger schema documentation - springdoc 2.x (NOT Boot-managed).
+             ========================================================================== -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>${springdoc.version}</version>
+        </dependency>
+
+        <!-- ==========================================================================
+             Test dependencies (BOM-managed - no explicit version). Test scope only.
+             ========================================================================== -->
+
+        <!-- JUnit 5, Mockito 5.x, AssertJ, MockMvc, JSONassert. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- @SpringBatchTest harness for batch job integration tests. -->
+        <dependency>
+            <groupId>org.springframework.batch</groupId>
+            <artifactId>spring-batch-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Security-context test support (@WithMockUser, etc.). -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              Spring Boot Maven plugin - produces the executable (fat) JAR via the default
+              `repackage` goal. BOM-managed, so no explicit version.
+            -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!--
+              JaCoCo coverage instrumentation. Enforces the >=80% line-coverage gate (AAP 0.7.2)
+              during `mvn verify`:
+                * prepare-agent - wires the coverage agent before tests run.
+                * report        - generates the HTML/XML coverage report after the test phase.
+                * check         - fails the build in the verify phase when bundle LINE coverage
+                                  drops below 0.80.
+            -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <!-- AAP §0.7.2 coverage gate: enforce >=80% for BOTH line
+                                             and instruction coverage so `mvn verify` cannot pass with
+                                             instruction coverage below the mandated threshold. -->
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>INSTRUCTION</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
