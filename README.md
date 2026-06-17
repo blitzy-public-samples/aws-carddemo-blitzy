@@ -182,6 +182,7 @@ Endpoints that re-express the legacy 3270 browse screens (`/cards`, `/transactio
 | Status | Meaning in this API                                                                 |
 | :----- | :--------------------------------------------------------------------------------- |
 | `200`  | Successful `GET` / `PUT`.                                                          |
+| `201`  | Created — a new resource was created (`POST /transactions`, `POST /users`).      |
 | `202`  | Report request accepted for asynchronous processing (`POST /reports`).            |
 | `400`  | Validation failure (e.g. missing/invalid date, both-or-neither account/card key, oversize or malformed field, malformed JSON). |
 | `401`  | Missing, malformed, tampered, or expired JWT.                                      |
