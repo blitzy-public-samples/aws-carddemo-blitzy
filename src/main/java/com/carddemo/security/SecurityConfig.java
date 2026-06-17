@@ -237,8 +237,12 @@ public class SecurityConfig {
      */
     @Bean
     public AuthenticationManager authenticationManager() {
-        DaoAuthenticationProvider provider = new DaoAuthenticationProvider();
-        provider.setUserDetailsService(customUserDetailsService);
+        // Spring Security 6.5.x deprecated the no-arg DaoAuthenticationProvider()
+        // constructor and setUserDetailsService(...); the UserDetailsService is now
+        // supplied via the constructor. This wiring is behaviorally identical to the
+        // legacy two-step form (CustomUserDetailsService for the keyed lookup +
+        // BCrypt(12) PasswordEncoder for verification) and keeps the build warning-free.
+        DaoAuthenticationProvider provider = new DaoAuthenticationProvider(customUserDetailsService);
         provider.setPasswordEncoder(passwordEncoder());
         return new ProviderManager(provider);
     }
