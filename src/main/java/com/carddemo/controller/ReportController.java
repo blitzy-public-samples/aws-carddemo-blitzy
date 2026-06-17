@@ -57,9 +57,17 @@ import jakarta.validation.Valid;
  * delegation. Field-level request validation is driven by {@link Valid @Valid} on the
  * {@link ReportRequest} body &mdash; a {@code null} or non-{@code MONTHLY/YEARLY/CUSTOM}
  * {@code reportType} is rejected and surfaced as HTTP&nbsp;400 by the application's
- * {@code GlobalExceptionHandler}. The conditional cross-field rule (CUSTOM requires a valid,
- * non-reversed start/end range) cannot be expressed as a static annotation and is enforced inside
- * {@link ReportService}, which raises a validation error that likewise maps to HTTP&nbsp;400.</p>
+ * {@code GlobalExceptionHandler}. The conditional rule for a CUSTOM request (both
+ * {@code startDate} and {@code endDate} must be present and each must be an individually valid
+ * {@code yyyy-MM-dd} calendar date) cannot be expressed as a static annotation and is enforced
+ * inside {@link ReportService}, which raises a validation error that maps to HTTP&nbsp;400 when a
+ * date is missing or invalid. <strong>By design there is no {@code startDate}&nbsp;&le;&nbsp;{@code endDate}
+ * ordering rule:</strong> per AAP &sect;0.7.3 ("actual COBOL governs") and &sect;0.2.2 (no net-new
+ * behaviour absent from the original COBOL), the legacy {@code CORPT00C} validated each supplied
+ * date independently and never compared the two ({@code CORPT00C} L256-436). Consequently a
+ * reversed but individually-valid range (start after end) is <em>accepted</em> and submitted with
+ * HTTP&nbsp;202 exactly as the mainframe program behaved &mdash; it is not rejected with
+ * HTTP&nbsp;400.</p>
  *
  * <h2>Routing and security</h2>
  * <p>The single endpoint is mapped at the absolute path {@code /reports} (there is no {@code /api}
@@ -110,9 +118,11 @@ public class ReportController {
      * is first checked by Bean Validation via {@link Valid @Valid}; a missing or unrecognized value
      * is rejected as HTTP&nbsp;400 before this method body executes. The validated request is then
      * delegated, unmodified, to {@link ReportService#submitReport(ReportRequest)}, which derives the
-     * effective date range (for MONTHLY/YEARLY), validates and orders a CUSTOM range, and launches
-     * the Spring Batch report job. The service returns synchronously with the
-     * {@code JobExecution} reference.</p>
+     * effective date range (for MONTHLY/YEARLY), validates a CUSTOM range (both boundaries present
+     * and each an individually valid {@code yyyy-MM-dd} calendar date &mdash; with <em>no</em>
+     * {@code startDate}&nbsp;&le;&nbsp;{@code endDate} ordering rule, preserving {@code CORPT00C}
+     * parity per AAP &sect;0.7.3), and launches the Spring Batch report job. The service returns
+     * synchronously with the {@code JobExecution} reference.</p>
      *
      * <p>Because the report is produced out of band (fire-and-forget, exactly as the legacy program
      * behaved), the response is <strong>HTTP&nbsp;202&nbsp;Accepted</strong> carrying a

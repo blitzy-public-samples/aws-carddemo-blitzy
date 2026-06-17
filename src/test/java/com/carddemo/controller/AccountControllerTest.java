@@ -297,6 +297,38 @@ class AccountControllerTest {
     }
 
     /**
+     * QA FINAL_ALT Issue 1 (F-003) regression guard: a successful {@code PUT} MUST return the
+     * <em>incremented</em> optimistic-lock {@code version} in its response body, and that value MUST
+     * equal the version a subsequent {@code GET} reports &mdash; so a client can reuse the returned
+     * token for its next optimistic-locked update without an intervening re-read. The defect mapped the
+     * response from the managed entity <em>before</em> Hibernate flushed, returning the stale pre-flush
+     * value; the fix issues {@code saveAndFlush} (forcing the versioned UPDATE and the {@code @Version}
+     * bump) before the response is mapped. Account&nbsp;1 is seeded at {@code version 0}, so a valid
+     * update must surface {@code version 1} on BOTH the PUT response and the follow-up GET.
+     */
+    @Test
+    @DisplayName("PUT /accounts/{id}: response @Version is incremented and equals the persisted value (QA Issue 1)")
+    void updateAccount_responseVersionIsIncrementedAndMatchesPersisted() throws Exception {
+        ObjectNode body = fetchAccountAsObjectNode(EXISTING_ACCOUNT_ID);
+        long versionBefore = body.get("version").asLong();   // seeded version 0
+        body.put("activeStatus", "N");                       // a real, permitted edit
+        body.put("version", versionBefore);                  // current (correct) version -> guard passes
+
+        // PUT: the response carries the POST-FLUSH incremented version (defect returned the stale value).
+        mockMvc.perform(put("/accounts/{accountId}", EXISTING_ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(body)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.version").value((int) (versionBefore + 1)));
+
+        // GET-after: the persisted version equals the value the PUT response returned (versionBefore+1),
+        // proving the PUT response is no longer stale and is safe to reuse for the next update.
+        mockMvc.perform(get("/accounts/{accountId}", EXISTING_ACCOUNT_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.version").value((int) (versionBefore + 1)));
+    }
+
+    /**
      * The optimistic-lock parity (AAP &sect;0.6.6) &mdash; THE controller-level HTTP&nbsp;409 proof that
      * {@code AccountConcurrencyTest} delegates here. A well-formed update whose {@code version}
      * ({@code 999}) disagrees with the persisted account ({@code 0}) means the client edited a stale

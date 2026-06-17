@@ -296,12 +296,19 @@ public class AccountService {
         accountMapper.applyUpdate(request, account, customer);
 
         // Step 5 — persist atomically within this @Transactional unit of work, account then customer
-        // (matching COACTUPC's REWRITE order L4065/L4085). A concurrent change detected on flush raises
+        // (matching COACTUPC's REWRITE order L4065/L4085). saveAndFlush (NOT save) forces an IMMEDIATE
+        // Hibernate flush so the versioned UPDATE is issued now and the managed Account's @Version token
+        // is incremented IN PLACE *before* the response is mapped in step 6. With a plain save() the
+        // UPDATE is deferred to transaction commit, so the mapped response would echo the STALE pre-flush
+        // version (QA FINAL_ALT Issue 1) and force the client to re-read before its next optimistic-locked
+        // update. The explicit flush also surfaces a concurrent-modification conflict here as
         // ObjectOptimisticLockingFailureException, which propagates to GlobalExceptionHandler -> HTTP 409.
-        accountRepository.save(account);
-        customerRepository.save(customer);
+        accountRepository.saveAndFlush(account);
+        customerRepository.saveAndFlush(customer);
 
-        // Step 6 — return the new state, including the Hibernate-incremented version, with SSN masked.
+        // Step 6 — return the new state, including the Hibernate-incremented (post-flush) version, with
+        // SSN masked. Because step 5 flushed, account.getVersion() now equals the persisted value a
+        // subsequent GET reports, so the client can reuse the returned version for its next update.
         return accountMapper.toAccountResponse(account, customer);
     }
 

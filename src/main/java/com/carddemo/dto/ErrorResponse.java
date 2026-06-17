@@ -1,5 +1,6 @@
 package com.carddemo.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 import java.time.LocalDateTime;
@@ -66,7 +67,9 @@ import java.util.List;
  *       shape.</li>
  *   <li>The component names and types ({@code timestamp}, {@code status}, {@code error},
  *       {@code message}, {@code path}, {@code fieldErrors}) form a hard, published contract consumed by
- *       {@code GlobalExceptionHandler} and by API clients; they must not be renamed or reordered.</li>
+ *       {@code GlobalExceptionHandler} and by API clients; they must not be renamed or reordered.
+ *       Note that {@code path} is {@link JsonIgnore @JsonIgnore}d &mdash; it is part of the in-process
+ *       object contract but is deliberately excluded from the serialized wire contract (Issue 5).</li>
  * </ul>
  *
  * @param timestamp   the moment the error response was generated; serialized as an ISO-8601 string
@@ -74,7 +77,13 @@ import java.util.List;
  * @param error       the HTTP reason phrase (for example {@code "Bad Request"}, {@code "Conflict"})
  * @param message     a human-readable detail message describing the failure (ported from the
  *                    {@code CSMSG01Y}/{@code CSMSG02Y} style of standardized COBOL messages)
- * @param path        the request URI that produced the error
+ * @param path        the request URI that produced the error. <strong>Internal-only:</strong>
+ *                    annotated {@link JsonIgnore @JsonIgnore} so it is <em>never</em> serialized into
+ *                    the outbound JSON error envelope (QA finding: Issue 5 — information disclosure).
+ *                    It is retained as a record component purely for server-side use (logging,
+ *                    correlation, and unit-test assertions); API clients never receive it. Removing
+ *                    it from the wire prevents leaking the resolved request path back to the caller
+ *                    while keeping the accessor available in-process.
  * @param fieldErrors per-field validation details; {@code null} (and therefore omitted from JSON) unless
  *                    field-level validation failed
  */
@@ -84,7 +93,7 @@ public record ErrorResponse(
         int status,
         String error,
         String message,
-        String path,
+        @JsonIgnore String path,
         List<FieldErrorDetail> fieldErrors
 ) {
 

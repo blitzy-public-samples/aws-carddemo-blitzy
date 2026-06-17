@@ -317,11 +317,19 @@ public class SecurityConfig {
                                 writeJsonError(request, response, HttpStatus.FORBIDDEN,
                                         GlobalExceptionHandler.MSG_ACCESS_DENIED)));
 
-        // Dev-only: the H2 console renders in a frame, which the default
-        // X-Frame-Options: DENY header blocks. Disable frame options ONLY in dev;
-        // prod retains the protective header.
+        // Dev-only header relaxation for the H2 web console (QA finding: Issue 4 — security headers).
+        // The H2 console renders inside a frame, which the default X-Frame-Options: DENY blocks.
+        // Rather than DISABLING frame protection entirely in dev (which stripped X-Frame-Options/CSP
+        // from EVERY dev response — including /actuator/health, /auth/signon, and authenticated API
+        // calls), we downgrade only to SAME-ORIGIN framing and add an equivalent CSP
+        // 'frame-ancestors self' directive. The H2 console is served from the SAME origin, so it
+        // still frames correctly, while every response now carries a protective clickjacking header
+        // (X-Frame-Options: SAMEORIGIN and CSP frame-ancestors 'self'). Prod (devProfile == false)
+        // is untouched and retains Spring Security's default X-Frame-Options: DENY.
         if (devProfile) {
-            http.headers(headers -> headers.frameOptions(frameOptions -> frameOptions.disable()));
+            http.headers(headers -> headers
+                    .frameOptions(frameOptions -> frameOptions.sameOrigin())
+                    .contentSecurityPolicy(csp -> csp.policyDirectives("frame-ancestors 'self'")));
         }
 
         // Establish the bearer-token principal before form-login processing.

@@ -17,13 +17,14 @@
           (Hibernate, Jackson, Tomcat, Spring Security 6, Spring Batch 5, Flyway 9.x, H2,
           PostgreSQL driver, JUnit 5, Mockito, AssertJ, etc.).
         * Only dependencies that are NOT Boot-managed carry an explicit version: the JJWT trio
-          (0.12.6) and springdoc-openapi (2.6.0).
+          (0.12.6) and springdoc-openapi (2.8.17 - the 6.2.x-compatible line; see the property note).
         * Only the JaCoCo build plugin (0.8.12) is pinned by policy to enforce the >=80% coverage
           gate via `mvn verify`.
-        * Three BOM-managed versions are bumped via property overrides for security remediation
-          (spring-framework 6.1.21, spring-security 6.3.10, tomcat 10.1.55) - see the detailed
-          per-property CVE rationale in the <properties> block below. Spring Boot itself stays on
-          3.2.12, so Flyway stays on the 9.x line and the rest of the stack remains BOM-aligned.
+        * Four BOM-managed versions are bumped via property overrides for security remediation
+          (spring-framework 6.2.19, spring-security 6.5.11, tomcat 10.1.55, postgresql 42.7.11) -
+          see the detailed per-property CVE rationale in the <properties> block below. Spring Boot
+          itself stays on 3.2.12, so Flyway stays on the 9.x line (flyway-core only) and the rest of
+          the stack remains BOM-aligned.
         * No placeholder versions (latest, RELEASE, 1.0.0 for deps) are used anywhere.
 
       The system MUST remain a single monolithic module (AAP 0.2.2 - no microservice split) and
@@ -53,44 +54,72 @@
 
         <!-- Versions for artifacts that are NOT managed by the Spring Boot parent BOM. -->
         <jjwt.version>0.12.6</jjwt.version>
-        <springdoc.version>2.6.0</springdoc.version>
+        <!-- springdoc-openapi: bumped 2.6.0 -> 2.8.17 for Spring Framework 6.2.x COMPATIBILITY.
+             springdoc 2.6.0 targets Spring Framework 6.1.x and calls the (deprecated, since-removed)
+             constructor org.springframework.web.method.ControllerAdviceBean(Object); once the
+             security remediation below moved spring-framework to 6.2.19, that constructor no longer
+             exists and GET /v3/api-docs failed at runtime with NoSuchMethodError. springdoc 2.7.0+
+             is built against Spring Framework 6.2.x; 2.8.17 is the current stable line of that
+             series and restores OpenAPI/Swagger generation. Verified empirically (build + runtime
+             /v3/api-docs and /swagger-ui). Still NOT Boot-managed, so it carries an explicit version. -->
+        <springdoc.version>2.8.17</springdoc.version>
 
         <!-- Build plugin pinned by policy to enforce the coverage gate. -->
         <jacoco.version>0.8.12</jacoco.version>
 
         <!-- ====================================================================================
-             SECURITY-DRIVEN MANAGED-VERSION OVERRIDES (final-checkpoint dependency remediation).
+             SECURITY-DRIVEN MANAGED-VERSION OVERRIDES (FINAL_ALT dependency remediation).
 
-             These three properties override versions that are otherwise governed by the Spring
+             These four properties override versions that are otherwise governed by the Spring
              Boot 3.2.12 parent BOM. Overriding the BOM's version *properties* (rather than adding
              explicit <version> tags on individual dependencies) is the Spring-Boot-sanctioned
              mechanism for consuming a patched maintenance release while keeping the rest of the
-             stack BOM-aligned. Spring Boot itself stays on 3.2.12, so Flyway remains on the 9.x
-             line (flyway-core only; the flyway-database-postgresql module is NOT required until
-             Flyway 10 / Boot 3.3+) - preserving the AAP 0.5 dependency mandate.
+             stack BOM-aligned. Spring Boot itself stays on 3.2.12 (AAP 0.5 / 0.7.2 mandate a
+             "Spring Boot 3.2.x" monolith), so Flyway remains on the 9.x line (flyway-core only;
+             the flyway-database-postgresql module is NOT required until Flyway 10 / Boot 3.3+,
+             which the AAP 0.5 note explicitly warns against adding). Bumping the Boot parent itself
+             is therefore deliberately avoided.
 
-             Each override is the latest OSS patch available on Maven Central for the line that is
-             compatible with Spring Boot 3.2.x (verified against repo1.maven.org):
+             The Spring Framework 6.1.x and Spring Security 6.3.x OSS lines reached end-of-OSS-life,
+             so the 2026 advisories below are NOT backported to them; clearing the advisories with
+             freely-available OSS artifacts requires moving onto the still-maintained 6.2.x
+             (framework) and 6.5.x (security) lines, which pair with each other (Spring Security
+             6.5.x targets Spring Framework 6.2.x). Each version is the latest OSS patch on Maven
+             Central (verified against repo1.maven.org) and the combination is validated end-to-end
+             by `mvn clean verify` (full test suite + JaCoCo gate) and a runtime boot/smoke check:
 
-               * spring-framework 6.1.15 -> 6.1.21
-                   Fixes CVE-2025-22233 (DataBinder disallowedFields bypass, fixed in 6.1.20) plus
-                   CVE-2025-41234. 6.1.21 is the LAST OSS release of the 6.1.x generation and is
-                   the maximum patch available for the Framework line Spring Boot 3.2.x builds on.
-               * spring-security 6.2.8 -> 6.3.10
-                   Fixes CVE-2025-22228 (BCryptPasswordEncoder did not cap password length, fixed
-                   in 6.3.8). The OSS 6.2.x line ends at the still-affected 6.2.8 (6.2.9+ are
-                   commercial-only), so the smallest OSS upgrade that clears the CVE is the 6.3.x
-                   line; 6.3.10 is its latest patch. Spring Security 6.3.x targets Spring Framework
-                   6.1.x, so it pairs correctly with the 6.1.21 override above. (6.4.x targets
-                   Framework 6.2.x and is therefore intentionally NOT used here.)
-               * tomcat 10.1.33 -> 10.1.55
+               * spring-framework 6.1.21 -> 6.2.19
+                   Clears the spring-webmvc advisories flagged at FINAL_ALT: CVE-2025-41242 (MVC
+                   path traversal), CVE-2026-22735 (SSE stream corruption), CVE-2026-22737 (script
+                   view template path disclosure), CVE-2026-22741 (static-resource cache poisoning)
+                   and CVE-2026-22745 (static-resource DoS). All are fixed on the 6.2.x line; 6.2.19
+                   is its latest patch. 6.2.x keeps the Servlet 6.0 / Jakarta EE 10 spec level used
+                   by Spring Boot 3.2.x and remains binary-compatible at the API surface this app
+                   relies on (verified by the green build + boot smoke).
+               * spring-security 6.3.10 -> 6.5.11
+                   Clears CVE-2026-22732 (security-web: response security headers not written under
+                   some conditions; fixed in 6.5.9) and CVE-2026-22746 (security-core:
+                   DaoAuthenticationProvider user-enumeration/timing; fixed in 6.5.10). No OSS patch
+                   on the 6.3.x/6.4.x lines clears CVE-2026-22746, so the 6.5.x line is required;
+                   6.5.11 is its latest patch and targets Spring Framework 6.2.x, pairing correctly
+                   with the 6.2.19 override above. The app supplies its own SecurityFilterChain, so
+                   the Boot 3.2.x security auto-config surface is minimal; the upgrade is validated
+                   by the full security test suite and a runtime auth/headers smoke check.
+               * tomcat 10.1.55 (retained)
                    Latest secure Apache Tomcat 10.1.x (10.1.54+ addresses the April 2026 advisories
                    CVE-2026-29146 / CVE-2026-34486 / CVE-2026-34500). Same Servlet 6.0 / Jakarta
-                   EE 10 spec level as the BOM default, so it is a drop-in patch bump.
+                   EE 10 spec level as Spring Framework 6.2.x, so it remains a clean drop-in.
+               * postgresql 42.6.2 -> 42.7.11
+                   Clears CVE-2026-42198 (SCRAM PBKDF2 unbounded-iterations DoS triggerable by a
+                   malicious PostgreSQL server). Fixed in 42.7.11. The driver is prod-profile only
+                   (dev/test use H2), but the dependency posture is remediated regardless. Spring
+                   Boot manages this artifact via the postgresql.version property, so the override
+                   below governs it.
              ==================================================================================== -->
-        <spring-framework.version>6.1.21</spring-framework.version>
-        <spring-security.version>6.3.10</spring-security.version>
+        <spring-framework.version>6.2.19</spring-framework.version>
+        <spring-security.version>6.5.11</spring-security.version>
         <tomcat.version>10.1.55</tomcat.version>
+        <postgresql.version>42.7.11</postgresql.version>
     </properties>
 
     <dependencies>

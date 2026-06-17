@@ -145,7 +145,65 @@ There is **no `usrsec.txt` fixture** in the repository (it is absent from `app/d
 
 ### API documentation
 
-When the application is running, interactive **OpenAPI / Swagger UI** documentation (provided by springdoc) is available for exploring the REST endpoints.
+When the application is running, interactive **OpenAPI / Swagger UI** documentation (provided by springdoc) is available for exploring the REST endpoints. The documentation endpoints are **public** (no token required):
+
+| Resource           | URL                                          |
+| :----------------- | :------------------------------------------- |
+| OpenAPI JSON spec  | `http://localhost:8080/v3/api-docs`          |
+| Swagger UI         | `http://localhost:8080/swagger-ui.html`      |
+
+This is a **monolithic JSON REST API** (the legacy 3270/BMS screens are retired — there is no web UI). All endpoints are served under the application root (there is **no `/api` prefix**). Authenticate first with `POST /auth/signon` to obtain a JWT, then send it as `Authorization: Bearer <token>` on every subsequent request.
+
+#### Endpoint inventory
+
+| Method(s)            | Path                                  | Auth required        | Description                                                                 |
+| :------------------- | :------------------------------------ | :------------------- | :------------------------------------------------------------------------- |
+| `POST`               | `/auth/signon`                        | Public               | Sign on; returns a JWT (`tokenType: Bearer`, ~1&nbsp;hour expiry).         |
+| `GET`                | `/menu`                               | Authenticated        | User menu options (re-expression of `COMEN01C`).                           |
+| `GET`                | `/admin/menu`                         | **ADMIN**            | Admin menu options (re-expression of `COADM01C`).                          |
+| `GET`, `PUT`         | `/accounts/{accountId}`               | Authenticated        | View / update an account. Update is optimistic-locked and returns the **incremented `version`**. |
+| `GET`, `POST`        | `/accounts/{accountId}/bill-payment`  | Authenticated        | Available-credit inquiry / full-balance payment.                          |
+| `GET`                | `/cards`                              | Authenticated        | List cards — **paginated, fixed page size 7**.                            |
+| `GET`, `PUT`         | `/cards/{cardNum}`                    | Authenticated        | View / update a card. `cardNum` and `cardAcctId` are **immutable**; the CVV is **never returned**. |
+| `GET`, `POST`        | `/transactions`                       | Authenticated        | List (page size 7, ordered by origination timestamp) / add a transaction (16-char zero-padded id). |
+| `GET`                | `/transactions/{tranId}`              | Authenticated        | View a single transaction.                                                 |
+| `POST`               | `/reports`                            | Authenticated        | Submit a transaction report for **asynchronous** batch processing (returns **202** + `jobExecutionId`). |
+| `GET`, `POST`        | `/users`                              | **ADMIN**            | List (page size 7) / create a user.                                        |
+| `GET`, `PUT`, `DELETE` | `/users/{userId}`                   | **ADMIN**            | View / update / delete a user.                                             |
+
+Operational probes `/actuator/health` and `/actuator/info` are public; `/actuator/metrics` requires authentication.
+
+#### Pagination
+
+Endpoints that re-express the legacy 3270 browse screens (`/cards`, `/transactions`, `/users`) return a **fixed page size of 7** rows, preserving the original screen geometry. Requesting a larger `size` (for example `?size=999`) is **capped at 7**.
+
+#### Key HTTP status codes
+
+| Status | Meaning in this API                                                                 |
+| :----- | :--------------------------------------------------------------------------------- |
+| `200`  | Successful `GET` / `PUT`.                                                          |
+| `202`  | Report request accepted for asynchronous processing (`POST /reports`).            |
+| `400`  | Validation failure (e.g. missing/invalid date, both-or-neither account/card key, oversize or malformed field, malformed JSON). |
+| `401`  | Missing, malformed, tampered, or expired JWT.                                      |
+| `403`  | Authenticated but lacking the required `ADMIN` role.                               |
+| `404`  | Resource not found.                                                                |
+| `405`  | HTTP method not allowed for the path.                                              |
+| `409`  | Optimistic-lock conflict — the submitted account `version` is stale (concurrent update). |
+| `415`  | Unsupported media type (a non-JSON `Content-Type` was sent).                       |
+
+Every error response uses one standardized JSON envelope (`timestamp`, `status`, `error`, `message`, and — for validation failures — `fieldErrors`); it never exposes a stack trace, SQL, exception class, or the request path.
+
+#### Batch transaction-posting reject codes
+
+The daily transaction-posting batch job (`TransactionPostingJob`, the re-expression of `CBTRN02C`) validates each input record through an ordered gauntlet and writes rejects to a fixed-width 430-byte reject record. The full reject-code superset is:
+
+| Code  | Reason                                                                  |
+| :---- | :--------------------------------------------------------------------- |
+| `100` | Invalid card number (no cross-reference record found).                  |
+| `101` | Account record not found for the cross-referenced account.             |
+| `102` | Over the credit limit (cycle-based balance check).                     |
+| `103` | Transaction expired (account expiry date precedes the transaction origination date). |
+| `109` | Account update failed (post-update rewrite failure).                   |
 
 ### Database migrations
 

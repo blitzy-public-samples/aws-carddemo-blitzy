@@ -600,8 +600,8 @@ class AccountServiceTest {
 
         // The account is persisted exactly once; capture it and assert the edits landed.
         ArgumentCaptor<Account> savedAccount = ArgumentCaptor.forClass(Account.class);
-        verify(accountRepository).save(savedAccount.capture());
-        verify(customerRepository).save(same(customer));
+        verify(accountRepository).saveAndFlush(savedAccount.capture());
+        verify(customerRepository).saveAndFlush(same(customer));
 
         Account persisted = savedAccount.getValue();
         assertThat(persisted.getActiveStatus()).isEqualTo(NEW_STATUS);
@@ -620,6 +620,46 @@ class AccountServiceTest {
         assertThat(resp.creditLimit()).isEqualByComparingTo(NEW_CREDIT_LIMIT);
         assertThat(resp.version()).isEqualTo(BASE_VERSION);
         assertThat(resp.ssnLastFour()).isEqualTo(SSN_LAST_FOUR);
+    }
+
+    /**
+     * QA FINAL_ALT Issue 1 (F-003): a successful update MUST return the <em>post-flush</em>
+     * (incremented) optimistic-lock version in the response body, so a client can reuse the returned
+     * token for its next update without an intervening GET. The defect mapped the response from the
+     * managed entity <em>before</em> Hibernate flushed, echoing the stale pre-flush version.
+     *
+     * <p>This unit test reproduces Hibernate's flush-time {@code @Version} bump by stubbing
+     * {@code saveAndFlush} to advance the managed entity's version, then asserts the mapped response
+     * echoes the incremented value. Because the service now calls {@code saveAndFlush} (forcing the
+     * versioned UPDATE) <em>before</em> {@code toAccountResponse}, the response reflects the bump.</p>
+     */
+    @Test
+    @DisplayName("updateAccount returns the post-flush incremented @Version in the response (QA Issue 1)")
+    void updateAccount_returnsPostFlushIncrementedVersion() {
+        account.setVersion(BASE_VERSION);
+        AccountUpdateRequest request = editRequest(BASE_VERSION); // version matches -> explicit guard passes
+
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(cardXrefRepository.findByXrefAcctId(eq(ACCT_ID), any(Pageable.class))).thenReturn(xrefPage());
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        doAnswer(inv -> {
+            applyUpdateLikeMapper(inv.getArgument(0), inv.getArgument(1), inv.getArgument(2));
+            return null;
+        }).when(accountMapper).applyUpdate(any(AccountUpdateRequest.class), any(Account.class), any(Customer.class));
+        // Simulate Hibernate incrementing @Version when the versioned UPDATE is flushed. Because the
+        // service maps the response AFTER saveAndFlush, the mapped version must reflect this increment.
+        when(accountRepository.saveAndFlush(same(account))).thenAnswer(inv -> {
+            account.setVersion(BASE_VERSION + 1);
+            return account;
+        });
+        when(customerRepository.saveAndFlush(same(customer))).thenReturn(customer);
+        when(accountMapper.toAccountResponse(same(account), same(customer)))
+                .thenAnswer(inv -> toResponseLikeMapper(inv.getArgument(0), inv.getArgument(1)));
+
+        AccountResponse resp = accountService.updateAccount(ACCT_ID, request);
+
+        // The response carries the FLUSHED (incremented) version, NOT the stale pre-flush value.
+        assertThat(resp.version()).isEqualTo(BASE_VERSION + 1);
     }
 
     // =============================================================================================
@@ -642,8 +682,8 @@ class AccountServiceTest {
                 .isInstanceOf(ConcurrentModificationException.class);
 
         verify(accountMapper, never()).applyUpdate(any(), any(), any());
-        verify(accountRepository, never()).save(any());
-        verify(customerRepository, never()).save(any());
+        verify(accountRepository, never()).saveAndFlush(any());
+        verify(customerRepository, never()).saveAndFlush(any());
     }
 
     @Test
@@ -655,7 +695,7 @@ class AccountServiceTest {
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(cardXrefRepository.findByXrefAcctId(eq(ACCT_ID), any(Pageable.class))).thenReturn(xrefPage());
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
-        when(accountRepository.save(any(Account.class)))
+        when(accountRepository.saveAndFlush(any(Account.class)))
                 .thenThrow(new ObjectOptimisticLockingFailureException(Account.class, ACCT_ID));
 
         // The service does not catch the flush-race failure; both the domain conflict exception and
@@ -665,7 +705,7 @@ class AccountServiceTest {
                         ObjectOptimisticLockingFailureException.class);
 
         // The flush race aborts the unit of work before the customer half is written.
-        verify(customerRepository, never()).save(any());
+        verify(customerRepository, never()).saveAndFlush(any());
     }
 
     // =============================================================================================
@@ -681,7 +721,7 @@ class AccountServiceTest {
         assertThatThrownBy(() -> accountService.updateAccount(404L, request))
                 .isInstanceOf(ResourceNotFoundException.class);
 
-        verify(accountRepository, never()).save(any());
-        verify(customerRepository, never()).save(any());
+        verify(accountRepository, never()).saveAndFlush(any());
+        verify(customerRepository, never()).saveAndFlush(any());
     }
 }
