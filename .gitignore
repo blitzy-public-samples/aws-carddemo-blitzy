@@ -1,57 +1,44 @@
 # ---------------------------------------------------------------------------
-# AWS CardDemo (Java/Spring Boot migration) — VCS ignore rules
-# Provisioned by the environment-setup agent.
+# AWS CardDemo — Java 25 / Spring Boot 3.x / Maven migration — VCS ignore rules
+#
+# Scope notes (see AAP §0.2.1, §0.3.1):
+#   * This file ONLY ignores generated build output, IDE/editor metadata, OS
+#     cruft, local secrets, and test/scan artifacts.
+#   * It MUST NOT ignore committed project assets: pom.xml, the Maven wrapper
+#     (mvnw, mvnw.cmd, .mvn/wrapper/*), src/**, docs/**, .github/**, Dockerfile,
+#     docker-compose.yml, README.md, LICENSE, NOTICE, diagrams/**, samples/**,
+#     the retained legacy COBOL tree (app/** / legacy/**), and the fixed-width
+#     parity fixtures under app/data/** (e.g. *.txt, *.PS). No broad *.txt,
+#     *.dat, or data/ patterns are used, by design.
 # ---------------------------------------------------------------------------
 
 # ===== Maven build output =====
 target/
-!.mvn/wrapper/maven-wrapper.jar
-.mvn/.develocity/
-release.properties
-dependency-reduced-pom.xml
 pom.xml.tag
 pom.xml.releaseBackup
 pom.xml.versionsBackup
 pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+.flattened-pom.xml
 buildNumber.properties
-
-# ===== Gradle (in case a module uses it) =====
-.gradle/
-build/
-!gradle/wrapper/gradle-wrapper.jar
-
-# ===== OWASP dependency-check local data cache =====
-**/dependency-check-data/
-**/dependency-check-report.*
-
-# ===== JaCoCo / test output =====
-*.exec
-**/jacoco.exec
-**/surefire-reports/
-**/failsafe-reports/
+# Develocity / Gradle-Enterprise build cache that some Maven setups drop under
+# .mvn — ignore only the cache, never the committed wrapper files in .mvn/.
+.mvn/.develocity/
+.mvn/timing.properties
 
 # ===== Java / JVM artifacts =====
 *.class
 *.jar
-!**/maven-wrapper.jar
+# Re-include the committed Maven wrapper jar (negation MUST follow *.jar so it
+# wins under git's last-match rule). .mvn/wrapper/ is never ignored above.
+!.mvn/wrapper/maven-wrapper.jar
 *.war
 *.ear
 *.nar
+*.ctxt
 hs_err_pid*
 replay_pid*
-
-# ===== IDE / editor =====
-.idea/
-*.iml
-*.ipr
-*.iws
-.vscode/
-.settings/
-.project
-.classpath
-.factorypath
-*.swp
-*~
 
 # ===== Logs & temp =====
 *.log
@@ -59,12 +46,62 @@ logs/
 *.tmp
 *.pid
 
+# ===== Test / coverage / dependency-scan artifacts =====
+# JaCoCo & Surefire/Failsafe output normally lands under target/ (already
+# ignored); these patterns make intent explicit and also catch output that a
+# plugin is configured to write elsewhere.
+**/target/site/jacoco/
+*.exec
+**/jacoco.exec
+**/surefire-reports/
+**/failsafe-reports/
+# OWASP dependency-check report + local NVD data cache.
+dependency-check-report.*
+dependency-check-data/
+
+# ===== IDE: IntelliJ IDEA =====
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# ===== IDE: Eclipse =====
+.classpath
+.project
+.settings/
+.factorypath
+bin/
+
+# ===== IDE: Visual Studio Code =====
+.vscode/
+
+# ===== IDE: NetBeans =====
+nbproject/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+# ===== Editor swap / backup files =====
+*.swp
+*.swo
+*~
+
+# ===== OS noise =====
+.DS_Store
+Thumbs.db
+
 # ===== Local environment / secrets (never commit) =====
+# Externalized datasource passwords & seed credentials (AAP §0.6.6) live here.
+# The committed application.yml / application-test.yml are NOT matched below.
 .env
 .env.*
 !.env.example
 *.local
+application-local.yml
+application-local.properties
 
-# ===== OS cruft =====
-.DS_Store
-Thumbs.db
+# ===== Docker local volumes =====
+# The shipped docker-compose.yml uses a Docker-managed named volume, but a
+# bind-mounted local PostgreSQL data dir (if introduced) must not be committed.
+pgdata/
