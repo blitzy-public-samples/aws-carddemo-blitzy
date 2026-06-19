@@ -28,11 +28,25 @@
         <relativePath/>
     </parent>
 
-    <groupId>com.aws</groupId>
+    <groupId>com.aws.carddemo</groupId>
     <artifactId>carddemo</artifactId>
     <version>0.0.1-SNAPSHOT</version>
+    <packaging>jar</packaging>
     <name>carddemo</name>
     <description>AWS CardDemo credit-card management system migrated from z/OS COBOL to Java/Spring Boot</description>
+
+    <!--
+      Licensing (Agent Action Plan §0.7.3): the project remains under the Apache
+      License 2.0, matching the repository LICENSE/NOTICE files. All newly
+      introduced dependencies must be Apache-2.0-compatible.
+    -->
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
 
     <properties>
         <!-- Java 25 compile + runtime target -->
@@ -51,6 +65,13 @@
         <!-- JaCoCo line-coverage gate (Agent Action Plan §0.7.3). Inactive until
              tests produce execution data; becomes enforced once sources+tests exist. -->
         <jacoco.line.coverage.min>0.80</jacoco.line.coverage.min>
+
+        <!-- OWASP dependency-check is bound to the `verify` phase (AAP §0.7.3 CVE
+             gate) and ENABLED by default, so a single `mvn verify` enforces every
+             quality gate exactly as CI and the README's `./mvnw clean verify` do.
+             Offline builds or those without an NVD API key may opt out of only this
+             gate with -Ddependency-check.skip=true. -->
+        <dependency-check.skip>false</dependency-check.skip>
     </properties>
 
     <dependencies>
@@ -169,6 +190,12 @@
                     <parameters>true</parameters>
                     <showWarnings>true</showWarnings>
                     <compilerArgs>
+                        <!-- Zero-warning build gate (Agent Action Plan §0.7.3):
+                             promote all compiler warnings to errors. The `-processing`
+                             lint category is excluded so the Lombok/MapStruct annotation
+                             processors do not emit "No processor claimed any of these
+                             annotations" warnings that would otherwise fail the build. -->
+                        <arg>-Werror</arg>
                         <arg>-Xlint:all,-processing</arg>
                     </compilerArgs>
                     <annotationProcessorPaths>
@@ -260,18 +287,34 @@
             </plugin>
 
             <!-- OWASP dependency-check (AAP §0.7.3: zero critical/high CVE gate).
-                 Intentionally NOT bound to a lifecycle phase: the NVD data download
-                 is heavy and may require an NVD API key. CI invokes it explicitly:
-                   mvn org.owasp:dependency-check-maven:check -DnvdApiKey=$NVD_API_KEY
-                 failBuildOnCVSS=7 enforces the zero critical/high posture. -->
+                 Bound to the `verify` phase so a single `mvn verify` enforces every
+                 quality gate (coverage + style + CVE) together — matching the README's
+                 documented `./mvnw clean verify` command and the CI workflow.
+                 failBuildOnCVSS=7 fails the build on any critical/high (CVSS >= 7)
+                 vulnerability.
+
+                 The NVD data feed is large and is rate-limited without an API key, so
+                 CI supplies one (mvn verify -DnvdApiKey=$NVD_API_KEY). Offline builds or
+                 those without a key may opt out of only this gate via
+                 -Ddependency-check.skip=true (the gate is enabled by default). -->
             <plugin>
                 <groupId>org.owasp</groupId>
                 <artifactId>dependency-check-maven</artifactId>
                 <version>${dependency-check.version}</version>
                 <configuration>
+                    <skip>${dependency-check.skip}</skip>
                     <failBuildOnCVSS>7</failBuildOnCVSS>
                     <nvdValidForHours>24</nvdValidForHours>
                 </configuration>
+                <executions>
+                    <execution>
+                        <id>owasp-dependency-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>
