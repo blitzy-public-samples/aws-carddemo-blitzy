@@ -1,0 +1,51 @@
+# CardDemo local PostgreSQL service (development + integration test support).
+#
+# Provisioned by the environment-setup agent. The Java application (added by
+# file-implementation agents under src/main/java/com/aws/carddemo/**) connects
+# to this database; Spring Batch/JPA/Flyway use it for local runs. Automated
+# tests use Testcontainers, which spin up their OWN ephemeral PostgreSQL and do
+# NOT depend on this compose service.
+#
+# ---------------------------------------------------------------------------
+# Parallel-agent safety (only when applicable)
+# ---------------------------------------------------------------------------
+# Subsequent file-implementation work may run in parallel across independent
+# local clones that share this warmed environment. When a parallel agent needs
+# its OWN database instance, it brings one up parameterized by CLONE_INDEX so
+# instances never collide on port, project name, volume, or database:
+#
+#   export CLONE_INDEX=1
+#   export COMPOSE_PROJECT_NAME="carddemo_${CLONE_INDEX}"
+#   export CARDDEMO_PG_PORT=$((5432 + CLONE_INDEX))   # host port; container stays 5432
+#   docker compose up -d
+#
+# With nested containers, reuse is possible — it is NOT necessary to run one
+# container per agent. A single shared instance (defaults below) is sufficient
+# unless an agent specifically needs isolation.
+# ---------------------------------------------------------------------------
+
+services:
+  postgres:
+    image: postgres:${POSTGRES_VERSION:-16}
+    container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-postgres
+    environment:
+      POSTGRES_DB: ${CARDDEMO_DB_NAME:-carddemo}
+      POSTGRES_USER: ${CARDDEMO_DB_USER:-carddemo}
+      # Local-dev default only; production/CI MUST override via env (no secrets in VCS).
+      POSTGRES_PASSWORD: ${CARDDEMO_DB_PASSWORD:-carddemo}
+      # Deterministic, locale-stable collation so key ordering matches VSAM semantics.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "${CARDDEMO_PG_PORT:-5432}:5432"
+    volumes:
+      - carddemo_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CARDDEMO_DB_USER:-carddemo} -d ${CARDDEMO_DB_NAME:-carddemo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  carddemo_pgdata:
+    name: ${COMPOSE_PROJECT_NAME:-carddemo}_pgdata

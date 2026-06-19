@@ -1,0 +1,70 @@
+# ---------------------------------------------------------------------------
+# AWS CardDemo (Java/Spring Boot migration) — VCS ignore rules
+# Provisioned by the environment-setup agent.
+# ---------------------------------------------------------------------------
+
+# ===== Maven build output =====
+target/
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/.develocity/
+release.properties
+dependency-reduced-pom.xml
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+buildNumber.properties
+
+# ===== Gradle (in case a module uses it) =====
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# ===== OWASP dependency-check local data cache =====
+**/dependency-check-data/
+**/dependency-check-report.*
+
+# ===== JaCoCo / test output =====
+*.exec
+**/jacoco.exec
+**/surefire-reports/
+**/failsafe-reports/
+
+# ===== Java / JVM artifacts =====
+*.class
+*.jar
+!**/maven-wrapper.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
+
+# ===== IDE / editor =====
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+*.swp
+*~
+
+# ===== Logs & temp =====
+*.log
+logs/
+*.tmp
+*.pid
+
+# ===== Local environment / secrets (never commit) =====
+.env
+.env.*
+!.env.example
+*.local
+
+# ===== OS cruft =====
+.DS_Store
+Thumbs.db
