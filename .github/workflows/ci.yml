@@ -1,0 +1,72 @@
+# .github/workflows/ci.yml
+# ---------------------------------------------------------------------------
+# Continuous Integration for the AWS CardDemo COBOL -> Java 25 / Spring Boot
+# migration.
+#
+# This single, portable Maven pipeline replaces the legacy 3-way z/OS mainframe
+# compile (batch COBOL via BATCMP.jcl/BUILDBAT.prc, BMS maps via
+# BMSCMP.jcl/BUILDBMS.prc, CICS online via CICCMP.jcl/BUILDONL.prc), which each
+# required distinct STEPLIBs (IGY COBOL compiler, CICS SDFHLOAD/SDFHCOB/SDFHMAC,
+# CEE runtime) plus manual NEWCOPY/INSTALL. Here, only JDK 25 + Docker on
+# ubuntu-latest are required.
+#
+# All quality / compliance gates are bound to the Maven `verify` phase in the
+# root pom.xml, so a single `./mvnw -B clean verify` enforces every gate:
+#   * zero-warning compilation (maven-compiler-plugin -Werror/-Xlint:all)
+#   * JUnit 5 + Testcontainers PostgreSQL integration tests (local-only)
+#   * JaCoCo >= 80% line-coverage gate
+#   * OWASP dependency-check (fails on critical/high CVEs)
+#   * Spotless format check
+# Therefore this workflow MUST NOT mask the Maven exit status: the build step's
+# non-zero exit code must propagate and fail the job.
+# ---------------------------------------------------------------------------
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Least-privilege: the build only needs to read repository contents.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build, Test & Quality Gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25 (Temurin) with Maven cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Ensure Maven wrapper is executable
+        run: chmod +x ./mvnw
+
+      - name: Build, test, and enforce all quality gates
+        run: ./mvnw -B clean verify
+
+      - name: Upload JaCoCo coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-coverage-report
+          path: target/site/jacoco/
+          if-no-files-found: warn
+
+      - name: Upload OWASP dependency-check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-dependency-check-report
+          path: target/dependency-check-report.html
+          if-no-files-found: warn
