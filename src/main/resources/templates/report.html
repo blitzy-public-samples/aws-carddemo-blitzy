@@ -148,15 +148,15 @@
              BMS COLOR=BLUE on the separators and format hint exactly. -->
         <div class="rpt-row rpt-daterange">
             <span class="bms-prompt rpt-date-label">Start Date :</span>
-            <input type="text" th:field="*{startMonth}" id="startMonth"
+            <input type="text" th:field="*{sdtMm}" id="sdtMm"
                    class="bms-input rpt-num2" maxlength="2" inputmode="numeric"
                    autocomplete="off" aria-label="Start date month (MM)" />
             <span class="bms-label rpt-sep">/</span>
-            <input type="text" th:field="*{startDay}" id="startDay"
+            <input type="text" th:field="*{sdtDd}" id="sdtDd"
                    class="bms-input rpt-num2" maxlength="2" inputmode="numeric"
                    autocomplete="off" aria-label="Start date day (DD)" />
             <span class="bms-label rpt-sep">/</span>
-            <input type="text" th:field="*{startYear}" id="startYear"
+            <input type="text" th:field="*{sdtYyyy}" id="sdtYyyy"
                    class="bms-input rpt-num4" maxlength="4" inputmode="numeric"
                    autocomplete="off" aria-label="Start date year (YYYY)" />
             <span class="bms-label rpt-hint">(MM/DD/YYYY)</span>
@@ -164,15 +164,15 @@
 
         <div class="rpt-row">
             <span class="bms-prompt rpt-date-label">End Date :</span>
-            <input type="text" th:field="*{endMonth}" id="endMonth"
+            <input type="text" th:field="*{edtMm}" id="edtMm"
                    class="bms-input rpt-num2" maxlength="2" inputmode="numeric"
                    autocomplete="off" aria-label="End date month (MM)" />
             <span class="bms-label rpt-sep">/</span>
-            <input type="text" th:field="*{endDay}" id="endDay"
+            <input type="text" th:field="*{edtDd}" id="edtDd"
                    class="bms-input rpt-num2" maxlength="2" inputmode="numeric"
                    autocomplete="off" aria-label="End date day (DD)" />
             <span class="bms-label rpt-sep">/</span>
-            <input type="text" th:field="*{endYear}" id="endYear"
+            <input type="text" th:field="*{edtYyyy}" id="edtYyyy"
                    class="bms-input rpt-num4" maxlength="4" inputmode="numeric"
                    autocomplete="off" aria-label="End date year (YYYY)" />
             <span class="bms-label rpt-hint">(MM/DD/YYYY)</span>
@@ -190,7 +190,7 @@
 
         <!-- BMS line 23: ERRMSG (red, bright). Optional info line is unused by
              this screen and renders nothing when the model attribute is absent. -->
-        <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+        <div th:replace="~{fragments/layout :: messages(${reportForm.errMsg}, ${infoMsg})}"></div>
 
         <!-- BMS line 24: PF-key legend rendered as real submit buttons so the
              keys are operable. The shared .bms-pfkey CSS styles them as the
