@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AWS CardDemo (modernized) — test-scope logging config. Apache-2.0.
+  Keeps test output clean for JUnit 5 + Testcontainers + golden-file parity tests.
+
+  Project : AWS CardDemo — z/OS COBOL / CICS / VSAM / JCL / BMS modernized to
+            Java 25 + Spring Boot 3.5.x (package com.aws.carddemo).
+  License : Apache License 2.0 (same posture as the repository LICENSE / NOTICE).
+
+  WHY THIS FILE EXISTS
+    Logback (and therefore Spring Boot) auto-detect a file named exactly
+    "logback-test.xml" on the TEST classpath root (src/test/resources/). It takes
+    precedence over logback-spring.xml / logback.xml during test execution and
+    affects the TEST runtime only; production logging is left untouched. Its job
+    is to keep the JUnit 5 + Testcontainers + golden-file parity suite
+    (AAP 0.6.7) readable so a failing parity assertion's diff / stacktrace is
+    easy to find, not buried under per-statement SQL or bind-parameter logging.
+    This supports the zero-warning, >=80% coverage delivery posture (AAP 0.7.3).
+
+  CONSOLE-ONLY BY DESIGN (no file appender, no host-specific paths)
+    We deliberately do NOT include Spring Boot's base.xml. base.xml pulls in
+    file-appender.xml and attaches a FILE appender (writing
+    ${java.io.tmpdir}/spring.log) to the root logger. Instead we include only
+    defaults.xml + console-appender.xml, which is exactly what base.xml provides
+    WITHOUT the file parts. That reuses Spring Boot's standard CONSOLE appender,
+    colour pattern, conversion rules (clr / wEx / esb / applicationName) and
+    charset, while emitting to the console only. Both resources ship inside the
+    spring-boot jar already on the test classpath via spring-boot-starter-test,
+    so NO new dependency is introduced. They rely on Logback "${name:-default}"
+    fallbacks, so this config is self-sufficient for BOTH plain unit tests
+    (where Logback initialises directly) and @SpringBootTest integration tests.
+
+    THIS FILE CONTAINS NO SECRETS and writes to NO absolute / host path.
+-->
+<configuration scan="false">
+
+    <!-- Spring Boot default logging properties + colour / exception conversion
+         rules (clr, wEx, esb, applicationName) and the standard
+         CONSOLE_LOG_PATTERN. Provided for import by the spring-boot jar. -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <!-- Spring Boot standard CONSOLE ConsoleAppender (uses the pattern above);
+         this is the ONLY appender wired to root below. No file appender. -->
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <!-- ===================================================================== -->
+    <!-- Application package: kept observable to aid golden-file failure        -->
+    <!-- diagnosis. DEBUG during tests is intentional; lower to INFO only if it -->
+    <!-- ever proves too chatty.                                                -->
+    <!-- ===================================================================== -->
+    <logger name="com.aws.carddemo" level="DEBUG"/>
+
+    <!-- ===================================================================== -->
+    <!-- Kept at INFO: low-volume, genuinely useful summaries during tests.     -->
+    <!-- ===================================================================== -->
+    <!-- Spring Batch job / step execution summaries help batch parity tests. -->
+    <logger name="org.springframework.batch" level="INFO"/>
+    <!-- Flyway migration summary (V1 schema + V2 reference seed) is useful. -->
+    <logger name="org.flywaydb" level="INFO"/>
+    <!-- Testcontainers container startup / mapped-port info aids CI diagnosis. -->
+    <logger name="org.testcontainers" level="INFO"/>
+
+    <!-- ===================================================================== -->
+    <!-- Quieted to WARN: routine, high-volume framework noise that would       -->
+    <!-- otherwise drown the test signal.                                       -->
+    <!-- ===================================================================== -->
+    <logger name="org.springframework" level="WARN"/>
+    <logger name="org.hibernate" level="WARN"/>
+    <!-- NEVER DEBUG / TRACE: parity is asserted on OUTPUTS, not on SQL logs
+         (application-test.yml also sets spring.jpa.show-sql=false). -->
+    <logger name="org.hibernate.SQL" level="WARN"/>
+    <!-- Suppress JDBC bind / extracted-parameter spam (Hibernate 6 name plus
+         the legacy name, set explicitly so intent survives any parent change). -->
+    <logger name="org.hibernate.orm.jdbc.bind" level="WARN"/>
+    <logger name="org.hibernate.type.descriptor.sql" level="WARN"/>
+    <!-- HikariCP connection-pool chatter. -->
+    <logger name="com.zaxxer.hikari" level="WARN"/>
+    <!-- docker-java client + Testcontainers image-pull logger are very chatty. -->
+    <logger name="com.github.dockerjava" level="WARN"/>
+    <logger name="tc" level="WARN"/>
+
+    <!-- Root: INFO to the inherited Spring Boot CONSOLE appender (console-only). -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+</configuration>

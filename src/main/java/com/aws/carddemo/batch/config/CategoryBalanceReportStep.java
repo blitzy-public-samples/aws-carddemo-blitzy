@@ -124,10 +124,19 @@ import org.springframework.transaction.PlatformTransactionManager;
  * legacy artifact is conceptually a single reporting step); the {@link Job} wraps it. The file name
  * {@code CategoryBalanceReportStep.java} is retained per Agent Action Plan &sect;0.4.1.
  *
+ * <p><strong>Configuration bean name.</strong> Because the file (and therefore the class) is
+ * retained as {@code CategoryBalanceReportStep}, the default component-bean name Spring would
+ * derive for this {@code @Configuration} class ({@code categoryBalanceReportStep}) would collide
+ * with the {@code @Bean} {@link Step} method of the same name and abort context startup with a
+ * {@code BeanDefinitionOverrideException}. The configuration class is therefore given an explicit,
+ * non-colliding bean name ({@code categoryBalanceReportStepConfig}) so the {@link Step}
+ * {@code @Bean} keeps its intended name {@code categoryBalanceReportStep} while the {@link Job}
+ * ({@code categoryBalanceReportJob}) and the runtime step name remain unchanged.
+ *
  * @see TransactionCategoryBalanceRepository
  * @see TransactionCategoryBalance
  */
-@Configuration
+@Configuration("categoryBalanceReportStepConfig")
 public class CategoryBalanceReportStep {
 
   /**
