@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ Update User screen - web equivalent of the legacy CICS/BMS map COUSR02 /
+  ~ COUSR2A (CICS transaction CU02, COBOL program COUSR02C). Fetch a user by id
+  ~ (ENTER) then update first/last name, password and user type (F5=Save,
+  ~ F3=Save&Exit). 100% UI parity with the 24x80 3270 field contract.
+  ~
+  ~ ADMIN-ONLY: the entire screen is gated to ROLE_ADMIN, which maps to the COBOL
+  ~ condition 88 CDEMO-USRTYP-ADMIN VALUE 'A' (AAP 0.6.5). UserUpdateController and
+  ~ SecurityConfig enforce the same rule server-side; the sec:authorize guard below
+  ~ is the view-layer line of defence (defence in depth).
+  ~
+  ~ Fidelity reference (read & mirror): legacy/app/bms/COUSR02.bms. The shared
+  ~ 24x80 terminal chrome (head/CSS, header band, message line) is reused from
+  ~ fragments/layout.html. Plain Thymeleaf only - no thymeleaf-layout-dialect, no
+  ~ component library, no external CSS/JS (AAP 0.3.1, 0.3.4, 0.4.1, 0.6.6).
+  ~
+  ~ FORM-BINDING CONTRACT (fulfilled by web.UserUpdateController +
+  ~ service.online.UserUpdateService): the controller exposes a model attribute
+  ~ "userUpdateForm" whose properties map 1:1 to the COUSR2A fields
+  ~ (BMS name -> property, BMS LENGTH in parentheses):
+  ~     USRIDIN -> userId(8)     FNAME -> firstName(20)   LNAME -> lastName(20)
+  ~     PASSWD  -> password(8)   USRTYPE -> userType(1)
+  ~ ERRMSG (row 23) is supplied via the separate model attribute errMsg; the header
+  ~ date/time via curDate / curTime / title2. The pressed AID key is submitted as
+  ~ the request parameter pfKey (ENTER | PF3 | PF4 | PF5 | PF12), on which the
+  ~ controller branches (ENTER=fetch, PF3=save&exit, PF4=clear, PF5=save,
+  ~ PF12=cancel).
+  ~
+  ~ CREDENTIAL HYGIENE (AAP 0.6.6): the password field is type=password and is
+  ~ never pre-populated - the controller leaves userUpdateForm.password blank when
+  ~ rendering, so the stored (BCrypt) hash is never sent to the browser. A blank
+  ~ submit means "leave the password unchanged"; a non-blank value is re-hashed by
+  ~ the service before persistence.
+-->
+<html xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6"
+      lang="en">
+
+<!-- Shared <head>: charset / viewport / title + the 3270 terminal palette and
+     the fixed 24x80 monospace grid CSS. Replaces this element wholesale; the
+     static children below are prototype-only (discarded when th:replace resolves). -->
+<head th:replace="~{fragments/layout :: head('Update User')}">
+    <meta charset="UTF-8" />
+    <title>Update User</title>
+</head>
+
+<body>
+
+<!-- Invisible-accessibility skip link: off-screen until focused, so it has zero
+     visual impact on the 3270 layout but lets keyboard / AT users jump straight
+     to the update form. -->
+<a class="skip-link" href="#user-update-main">Skip to update form</a>
+
+<!--
+  Screen-scoped STRUCTURAL styles only (skip-link, heading reset, single-row
+  field lines, separator rule, hint spacing, PF-key row). Every COLOUR comes from
+  the shared .bms-* classes defined once in fragments/layout.html; nothing here is
+  external or third-party. These rules live in the body because the shared head
+  fragment replaces this document's <head> wholesale, leaving no head slot for
+  page-specific styles.
+-->
+<style>
+    /* Skip link: visually hidden until it receives keyboard focus. */
+    .skip-link {
+        position: absolute;
+        inset-inline-start: -9999px;
+    }
+    .skip-link:focus-visible,
+    .skip-link:focus {
+        position: static;
+        inset-inline-start: auto;
+        color: #FFFF00;
+        background-color: #000000;
+    }
+    /* BMS line 4: "Update User", NEUTRAL bright (white / bold via .bms-heading),
+       centered (POS 4,35). Neutralise the user agent's enlarged <h1> sizing and
+       margins so the heading keeps the uniform 3270 cell size. */
+    .user-update__heading {
+        font-size: inherit;
+        line-height: inherit;
+        font-weight: bold;
+        text-align: center;
+        margin-block: 0.5em;
+    }
+    /* One BMS line: keep a prompt + its field(s) on a single 80-column row,
+       matching the 3270 layout (First Name + Last Name share BMS line 11). */
+    .bms-line {
+        margin-block: 0.4em;
+        white-space: nowrap;
+    }
+    .bms-line > label { margin-inline-end: 0.5ch; }
+    .bms-line > .bms-input { margin-inline-end: 2ch; }
+    /* BMS line 8: the 70-character separator rule. Colour is NEUTRAL (.bms-sep);
+       this rule only handles spacing / overflow. */
+    .bms-rule {
+        margin-block: 0.5em;
+        overflow: hidden;
+        white-space: nowrap;
+    }
+    /* Parenthetical entry hints ("(8 Char)", "(A=Admin, U=User)"): spacing only;
+       the colour comes from .bms-sep (NEUTRAL) per the screen colour directive. */
+    .bms-hint { margin-inline-start: 1ch; }
+    /* USRTYPE is a single character (BMS LENGTH=1); keep a small but visible
+       underline cell. */
+    .user-update__type {
+        inline-size: 3ch;
+        text-align: start;
+    }
+    /* PF-key controls (BMS line 24) as functional submit buttons rendered like
+       the yellow terminal legend (.bms-pfkey styling comes from the layout
+       fragment). A wrapping flex row with a 1ch gap plus the shared 0.5ch button
+       padding yields ~two character columns between entries, mirroring the BMS
+       legend literal (two spaces between keys). */
+    .user-update__pfkeys {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        column-gap: 1ch;
+    }
+</style>
+
+<!--
+  Fixed ~80-column monospace terminal container (preserves the 24x80 BMS grid).
+  ADMIN-ONLY: the whole screen (header band + update form) is gated to ROLE_ADMIN
+  <=> COBOL 88 CDEMO-USRTYP-ADMIN VALUE 'A'. Standard users never reach this view
+  (UserUpdateController + SecurityConfig redirect them); this guard is the
+  view-layer line of defence. A non-admin principal renders nothing.
+-->
+<div class="bms-screen" sec:authorize="hasRole('ADMIN')">
+
+    <!--
+      BMS lines 1-2 (header band), rendered by the shared layout header fragment:
+        Line 1: "Tran:" CU02       TITLE01 (centered, yellow)     "Date:" curDate
+        Line 2: "Prog:" COUSR02C   TITLE02 (centered, yellow)     "Time:" curTime
+      TITLE01 = "AWS Mainframe Modernization" (CCDA-TITLE01, per COUSR02C
+      POPULATE-HEADER-INFO). TITLE02 (title2) and the date / time come from model
+      attributes (curDate / curTime), defaulting to the current date / time.
+    -->
+    <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CU02', 'COUSR02C')}"></div>
+
+    <main id="user-update-main">
+
+        <!-- BMS line 4: screen heading (the page's single <h1>). -->
+        <h1 class="bms-heading user-update__heading">Update User</h1>
+
+        <!--
+          Update-user form. method=post; the service performs all validation
+          (server-side parity with COUSR02C), so the form is novalidate and the
+          pressed PF key drives the flow via the pfKey parameter.
+        -->
+        <form th:object="${userUpdateForm}"
+              method="post"
+              th:action="@{/user-update}"
+              autocomplete="off"
+              novalidate="novalidate">
+
+            <!--
+              BMS line 6: USRIDIN - the fetch key. ATTRB=(FSET,IC,NORM,UNPROT),
+              HILIGHT=UNDERLINE, LENGTH=8. autofocus mirrors IC (insert cursor).
+              NOTE: the BMS renders this prompt GREEN, but the screen colour
+              directive maps all field prompts to TURQUOISE (.bms-prompt); the
+              explicit directive wins (the editable input itself stays GREEN).
+            -->
+            <div class="bms-line">
+                <label class="bms-prompt" for="userId">Enter User ID:</label>
+                <input type="text" id="userId" th:field="*{userId}"
+                       class="bms-input" maxlength="8" size="8"
+                       autocomplete="off" autofocus="autofocus" />
+            </div>
+
+            <!--
+              BMS line 8: decorative 70-character separator. The BMS colour is
+              YELLOW, but the screen colour directive renders the separator
+              NEUTRAL (.bms-sep). Decorative only -> aria-hidden.
+            -->
+            <div class="bms-rule bms-sep" aria-hidden="true">**********************************************************************</div>
+
+            <!-- BMS line 11: First Name (FNAME) + Last Name (LNAME), both
+                 UNPROT / GREEN editable, sharing one 3270 row. -->
+            <div class="bms-line">
+                <label class="bms-prompt" for="firstName">First Name:</label>
+                <input type="text" id="firstName" th:field="*{firstName}"
+                       class="bms-input" maxlength="20" size="20" autocomplete="off" />
+                <label class="bms-prompt" for="lastName">Last Name:</label>
+                <input type="text" id="lastName" th:field="*{lastName}"
+                       class="bms-input" maxlength="20" size="20" autocomplete="off" />
+            </div>
+
+            <!--
+              BMS line 13: Password (PASSWD). The BMS ATTRB includes DRK (dark /
+              non-display) -> rendered as type=password. autocomplete=new-password
+              stops the browser pre-filling a saved credential; th:field binds the
+              value on submit, but the controller leaves it blank when rendering so
+              the stored hash is never emitted (AAP 0.6.6). The "(8 Char)" hint is
+              BLUE in the BMS but rendered NEUTRAL (.bms-sep) per the directive.
+            -->
+            <div class="bms-line">
+                <label class="bms-prompt" for="password">Password:</label>
+                <input type="password" id="password" th:field="*{password}"
+                       class="bms-input" maxlength="8" size="8"
+                       autocomplete="new-password" />
+                <span class="bms-sep bms-hint">(8 Char)</span>
+            </div>
+
+            <!--
+              BMS line 15: User Type (USRTYPE), 1 char. The "(A=Admin, U=User)"
+              hint is BLUE in the BMS but rendered NEUTRAL (.bms-sep) per the
+              directive.
+            -->
+            <div class="bms-line">
+                <label class="bms-prompt" for="userType">User Type:</label>
+                <input type="text" id="userType" th:field="*{userType}"
+                       class="bms-input user-update__type" maxlength="1" size="1"
+                       autocomplete="off" />
+                <span class="bms-sep bms-hint">(A=Admin, U=User)</span>
+            </div>
+
+            <!-- BMS line 23: ERRMSG (red, bright) + optional info line, via the
+                 shared messages fragment. -->
+            <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+
+            <!--
+              BMS line 24: PF-key legend rendered as the actual submit controls.
+              COUSR02C handles ENTER (fetch the user), PF3 (save & exit), PF4
+              (clear), PF5 (save) and PF12 (cancel). Each button submits the form
+              with its pfKey value; the shared .bms-pfkey styling makes them look
+              like the yellow terminal legend. ENTER is first so the browser's
+              default submit maps to 3270 ENTER. The form is novalidate, so every
+              key (including the non-saving PF3 / PF4 / PF12) can always submit.
+            -->
+            <div class="bms-footer bms-pfkey user-update__pfkeys">
+                <button type="submit" name="pfKey" value="ENTER">ENTER=Fetch</button>
+                <button type="submit" name="pfKey" value="PF3">F3=Save&amp;Exit</button>
+                <button type="submit" name="pfKey" value="PF4">F4=Clear</button>
+                <button type="submit" name="pfKey" value="PF5">F5=Save</button>
+                <button type="submit" name="pfKey" value="PF12">F12=Cancel</button>
+            </div>
+
+        </form>
+    </main>
+
+</div>
+
+</body>
+</html>

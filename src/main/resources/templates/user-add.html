@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ user-add.html - Web (Thymeleaf) equivalent of the legacy CICS BMS map
+  ~ COUSR01 / COUSR1A (CICS transaction CU01, program COUSR01C): the ADMIN-ONLY
+  ~ "Add User" screen. Rendered with 100% parity to the BMS field contract in
+  ~ legacy/app/bms/COUSR01.bms (field position, length, attribute, colour and
+  ~ initial value) per AAP 0.3.4. The shared 24x80 terminal chrome (header band,
+  ~ message line, PF-key footer) and the terminal-look CSS come from the shared
+  ~ fragment template fragments/layout.html. Plain Thymeleaf fragments only - no
+  ~ thymeleaf-layout-dialect, no component library, no external CSS/JS.
+  ~
+  ~ ROLE GATING (AAP 0.6.5 / 0.6.6): the entire screen body is gated to
+  ~ ROLE_ADMIN, which maps to the COBOL condition 88 CDEMO-USRTYP-ADMIN VALUE 'A'.
+  ~ UserAddController + SecurityConfig enforce the same rule server-side; the
+  ~ sec:authorize guard here is the view-layer line of defence (defence in depth).
+  ~ Standard users get the access-denied fallback and never see the form.
+  ~
+  ~ FORM-BINDING CONTRACT (fulfilled by web.UserAddController +
+  ~ service.online.UserAddService): the controller exposes a model attribute named
+  ~ "userAddForm" of type com.aws.carddemo.dto.screen.UserAddScreen whose
+  ~ properties map 1:1 to the COUSR1A input fields (BMS name -> property, BMS
+  ~ LENGTH in parentheses):
+  ~     FNAME   -> fName(20)     LNAME  -> lName(20)
+  ~     USERID  -> userId(8)     PASSWD -> passwd(8)
+  ~     USRTYPE -> usrType(1)
+  ~ (Property names mirror the COBOL field names exactly, as declared on
+  ~ UserAddScreen.) The ERRMSG (row 23) status text and the header date/time come
+  ~ from the separate model attributes errMsg / infoMsg and curDate / curTime /
+  ~ title2. Submitting any PF key posts the request parameter pfKey = ENTER | PF3 |
+  ~ PF4 | PF12, on which UserAddController branches (mirrors COUSR01C AID handling:
+  ~ ENTER = add user, PF3 = back to admin menu, PF4 = clear, PF12 = exit).
+  ~
+  ~ CREDENTIAL HYGIENE (AAP 0.6.6): the PASSWD field is dark/masked on the BMS map
+  ~ (ATTRB=(DRK,...)). Here it is an <input type="password"> with
+  ~ autocomplete="new-password". Thymeleaf's password-field processor never emits a
+  ~ value attribute, so the field is never pre-populated with a stored/clear-text
+  ~ value; UserAddService hashes the submitted password (BCrypt) before persistence
+  ~ and it is never logged.
+-->
+<html lang="en"
+      xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6">
+
+<!-- Shared <head>: charset/viewport/title + the 3270 terminal palette and the
+     fixed 24x80 monospace grid CSS (defines the .bms-* classes used below). -->
+<head th:replace="~{fragments/layout :: head('Add User')}">
+    <meta charset="UTF-8" />
+    <title>Add User</title>
+</head>
+
+<body>
+
+<!-- Visually-hidden skip link; revealed on keyboard focus (invisible a11y, no
+     visual impact on the 3270 layout). -->
+<a class="bms-skip" href="#main-content">Skip to main content</a>
+
+<!--
+  Screen-scoped STRUCTURAL helpers ONLY (skip-link, heading centering, single-row
+  field layout, PF-key row). All COLOURS come from the shared .bms-* classes
+  defined once in fragments/layout.html; nothing here is external or third-party.
+  These rules live in the body because the shared head fragment replaces this
+  document's <head> wholesale, leaving no head slot for page-specific styles.
+-->
+<style>
+    /* Skip link: off-screen until it receives keyboard focus. */
+    .bms-skip {
+        position: absolute;
+        inline-size: 1px;
+        block-size: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+    .bms-skip:focus-visible,
+    .bms-skip:focus {
+        position: static;
+        inline-size: auto;
+        block-size: auto;
+        clip-path: none;
+        color: #FFFF00;
+    }
+    /* BMS line 4 heading ("Add User", NEUTRAL bright; POS 4,35 ~ centered). Keep
+       the uniform 3270 cell size - neutralise the user agent's enlarged <h1>
+       sizing/margins. */
+    .bms-screen-title {
+        font-size: inherit;
+        line-height: inherit;
+        font-weight: bold;
+        text-align: center;
+        margin-block: 0.5em 0.9em;
+        margin-inline: 0;
+    }
+    /* One BMS line: keep the label(s) + field(s) on a single 80-col row, exactly
+       as COUSR1A lays them out (two fields per row on lines 8 and 11). */
+    .bms-line {
+        margin-block: 0.5em;
+        white-space: nowrap;
+    }
+    .bms-line > label { margin-inline-end: 0.5ch; }
+    .bms-line > .bms-input { margin-inline-end: 1ch; }
+    /* The blue "(8 Char)" entry hints sit immediately after their field; add a
+       wider trailing gap so the second column is separated like the BMS columns. */
+    .bms-line > .bms-hint { margin-inline-end: 2.5ch; }
+    .bms-hint { font-size: inherit; }
+    /* PF-key controls (BMS line 24): functional submit buttons rendered as the
+       yellow terminal legend (the .bms-pfkey button styling - background:none,
+       yellow text, inline padding - is provided by the shared layout fragment).
+       A flex row keeps them on one line with a deterministic separation that does
+       not depend on inter-element source whitespace. */
+    .bms-pfkeys {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        column-gap: 1ch;
+    }
+    /* Access-denied notice shown to non-admin users (view-layer fallback). */
+    .bms-denied { margin-block: 1em; }
+</style>
+
+<!-- Fixed ~80-column monospace terminal container (preserves the 24x80 BMS grid). -->
+<main id="main-content" class="bms-screen">
+
+    <!--
+      ADMIN-only screen body. ROLE_ADMIN <=> COBOL 88 CDEMO-USRTYP-ADMIN VALUE 'A'
+      (AAP 0.6.5). Standard users never reach this view (UserAddController +
+      SecurityConfig redirect them); this guard is the view-layer line of defence.
+      The WHOLE screen - header band, heading, form and footer - is gated so a
+      non-admin sees none of the admin function (only the fallback below renders).
+    -->
+    <div sec:authorize="hasRole('ADMIN')">
+
+        <!--
+          BMS lines 1-2 (header band), via the shared layout header fragment:
+            Line 1: "Tran:" CU01       TITLE01 (centered, yellow)   "Date:" curDate
+            Line 2: "Prog:" COUSR01C   TITLE02 (centered, yellow)   "Time:" curTime
+          TITLE01 = "AWS Mainframe Modernization" (CCDA-TITLE01, matching the parent
+          admin menu COADM01C). TITLE02 ("CardDemo") and the date/time come from
+          model attributes (title2 / curDate / curTime), defaulting to "now".
+        -->
+        <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CU01', 'COUSR01C')}"></div>
+
+        <!-- BMS line 4: screen heading (the page's single <h1>). -->
+        <h1 class="bms-heading bms-screen-title">Add User</h1>
+
+        <!--
+          Add-user form, bound to the UserAddScreen DTO ('userAddForm'). method=post;
+          UserAddService performs all validation (server-side parity with COUSR01C),
+          so no client-side constraints are declared (novalidate). autocomplete=off
+          keeps the browser from suggesting values for this admin data-entry form.
+        -->
+        <form th:object="${userAddForm}" method="post"
+              th:action="@{/user-add}" autocomplete="off" novalidate="novalidate">
+
+            <!-- BMS line 8: First Name (FNAME, ATTRB=IC initial-cursor -> autofocus)
+                 + Last Name (LNAME). Both UNPROT/GREEN length 20; turquoise prompts. -->
+            <div class="bms-line">
+                <label for="fName" class="bms-prompt">First Name:</label>
+                <input type="text" id="fName" th:field="*{fName}"
+                       class="bms-input" maxlength="20" size="20" autofocus="autofocus" />
+                <label for="lName" class="bms-prompt">Last Name:</label>
+                <input type="text" id="lName" th:field="*{lName}"
+                       class="bms-input" maxlength="20" size="20" />
+            </div>
+
+            <!-- BMS line 11: User ID (USERID) + "(8 Char)" hint (blue), then
+                 Password (PASSWD) + "(8 Char)" hint (blue). -->
+            <div class="bms-line">
+                <label for="userId" class="bms-prompt">User ID:</label>
+                <input type="text" id="userId" th:field="*{userId}"
+                       class="bms-input" maxlength="8" size="8" />
+                <span class="bms-hint bms-label">(8 Char)</span>
+                <label for="passwd" class="bms-prompt">Password:</label>
+                <!--
+                  PASSWD: BMS ATTRB=(DRK,...) => masked. Rendered type=password with
+                  autocomplete="new-password". Thymeleaf's password-field processor
+                  does not render a value attribute, so this field is never
+                  pre-populated with a stored/clear-text value (AAP 0.6.6).
+                -->
+                <input type="password" id="passwd" th:field="*{passwd}"
+                       class="bms-input" maxlength="8" size="8" autocomplete="new-password" />
+                <span class="bms-hint bms-label">(8 Char)</span>
+            </div>
+
+            <!--
+              BMS line 14: User Type (USRTYPE, 1 char) + literal hint.
+              BLITZY [COLOR]: the BMS COLOR for the "(A=Admin, U=User)" hint is BLUE,
+              but the agent prompt explicitly specifies a NEUTRAL hint; the explicit
+              directive wins (same precedence handling as transaction-add.html's
+              confirm prompt), so the hint uses the neutral class (bms-sep). The
+              USRTYPE input stays GREEN, length 1.
+            -->
+            <div class="bms-line">
+                <label for="usrType" class="bms-prompt">User Type:</label>
+                <input type="text" id="usrType" th:field="*{usrType}"
+                       class="bms-input" maxlength="1" size="1"
+                       aria-describedby="usrType-hint" />
+                <span id="usrType-hint" class="bms-sep">(A=Admin, U=User)</span>
+            </div>
+
+            <!-- BMS line 23: error / info message line (ERRMSG, red), via the shared
+                 messages fragment. Wrapped in a live region so assistive technology
+                 announces validation / status failures. -->
+            <div role="alert">
+                <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+            </div>
+
+            <!--
+              BMS line 24 actions: PF-key legend rendered as the actual submit
+              controls. COUSR01C handles DFHENTER (add the user), DFHPF3 (XCTL
+              COADM01C, i.e. back to the admin menu), DFHPF4 (clear the screen) and
+              DFHPF12 (exit). Each AID key submits the form with a distinct pfKey
+              value on which UserAddController branches. ENTER is first in document
+              order so the browser's default submit maps to 3270 ENTER. The shared
+              .bms-pfkey styling makes these submit buttons look like the yellow
+              terminal legend rather than OS buttons.
+            -->
+            <div class="bms-pfkey bms-pfkeys">
+                <button type="submit" name="pfKey" value="ENTER">ENTER=Add User</button>
+                <button type="submit" name="pfKey" value="PF3">F3=Back</button>
+                <button type="submit" name="pfKey" value="PF4">F4=Clear</button>
+                <button type="submit" name="pfKey" value="PF12">F12=Exit</button>
+            </div>
+        </form>
+
+        <!-- BMS line 24 legend text (yellow), reusing the shared footer fragment.
+             Mirrors the COUSR1A line-24 literal exactly; the submit buttons above
+             are the interactive equivalent of these AID keys. -->
+        <div th:replace="~{fragments/layout :: footer('ENTER=Add User  F3=Back  F4=Clear  F12=Exit')}"></div>
+    </div>
+
+    <!--
+      Non-admin fallback (view-layer defence in depth). A standard user who somehow
+      reaches this URL sees only this access-denied notice - never the Add User
+      form. The controller / SecurityConfig should already have blocked them; this
+      is belt-and-suspenders. The non-privileged header/footer chrome is shown for a
+      consistent terminal look. Exactly one of the two sec:authorize branches
+      renders, so the header never appears twice at runtime.
+    -->
+    <div sec:authorize="!hasRole('ADMIN')">
+        <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CU01', 'COUSR01C')}"></div>
+        <h1 class="bms-heading bms-screen-title">Add User</h1>
+        <p class="bms-error bms-denied" role="alert">
+            You are not authorized to use this function. ADMIN authority is required.
+        </p>
+        <div th:replace="~{fragments/layout :: footer('F3=Back  F12=Exit')}"></div>
+    </div>
+
+</main>
+
+</body>
+</html>

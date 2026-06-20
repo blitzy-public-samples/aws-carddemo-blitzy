@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ Delete User screen - web (Thymeleaf) equivalent of the legacy CICS/BMS map
+  ~ COUSR03 / COUSR3A (CICS transaction CU03, COBOL program COUSR03C). The
+  ~ administrator types a User ID and presses ENTER to FETCH the matching
+  ~ user_security record; the read-only First Name / Last Name / User Type are
+  ~ displayed back for confirmation, and F5 DELETEs the fetched user.
+  ~
+  ~ ADMIN-ONLY: the screen body is gated to ROLE_ADMIN, which maps to the COBOL
+  ~ condition 88 CDEMO-USRTYP-ADMIN VALUE 'A' (AAP 0.6.5). The UserDeleteController
+  ~ and SecurityConfig enforce the same rule server-side; the sec:authorize guard
+  ~ below is the view-layer line of defence (defence in depth). The header band is
+  ~ intentionally left outside the guard (it carries no privileged data).
+  ~
+  ~ Fidelity reference (read & mirror): legacy/app/bms/COUSR03.bms - the 24x80
+  ~ 3270 field contract (position, length, attribute, colour). Authority: AAP
+  ~ 0.3.1, 0.3.4, 0.4.1, 0.6.5.
+  ~
+  ~ Plain Thymeleaf fragments only - no thymeleaf-layout-dialect, no component
+  ~ library, no external CSS/JS. Shared chrome (head/CSS, header band, message
+  ~ line, PF-key styling) is reused from fragments/layout.html.
+  ~
+  ~ Model attributes (supplied by UserDeleteController):
+  ~   userDeleteForm - com.aws.carddemo.dto.screen.UserDeleteScreen, exposing the
+  ~                    lookup key {usrIdIn} (USRIDIN) plus the read-only confirmation
+  ~                    fields {fName} (FNAME), {lName} (LNAME) and {usrType} (USRTYPE),
+  ~                    and the {errMsg} (ERRMSG) status line.
+  ~   errMsg/infoMsg - optional top-level status overrides for the message band.
+  ~   curDate/curTime/title2 - header band values (consumed by the layout header
+  ~                    fragment; default to "now" / blank when unset).
+-->
+<html xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6"
+      lang="en">
+
+<!-- Shared <head>: charset/viewport/title + the 3270 terminal palette and the
+     fixed 24x80 monospace grid CSS. Replaces this element wholesale. -->
+<head th:replace="~{fragments/layout :: head('Delete User')}"></head>
+
+<body>
+
+<!-- Invisible-accessibility skip link: off-screen until focused, so it has no
+     visual impact on the 3270 layout but lets keyboard / AT users jump straight
+     to the delete form. -->
+<a class="skip-link" href="#user-delete-main">Skip to delete user form</a>
+
+<!--
+  Screen-scoped STRUCTURAL styles only (skip-link, heading sizing/centering, row
+  spacing, input sizing, separator, PF-key row). All COLOURS come from the shared
+  .bms-* classes defined once in fragments/layout.html; nothing here is external
+  or third-party. These rules live in the body because the shared head fragment
+  replaces this document's <head> wholesale, leaving no head slot for page styles.
+-->
+<style>
+    /* Skip link: visually hidden until it receives keyboard focus. */
+    .skip-link {
+        position: absolute;
+        inset-inline-start: -9999px;
+    }
+    .skip-link:focus,
+    .skip-link:focus-visible {
+        position: static;
+        inset-inline-start: auto;
+        color: #FFFF00;
+        background-color: #000000;
+    }
+    /* BMS line 4: "Delete User", NEUTRAL bright (white/bold via .bms-heading),
+       centered (POS 4,35). Keep the uniform 3270 cell size - neutralise the user
+       agent's enlarged <h1> sizing/margins. */
+    .user-delete__heading {
+        font-size: inherit;
+        line-height: inherit;
+        font-weight: bold;
+        text-align: center;
+        margin-block: 0.5em;
+    }
+    /* BMS lines 6 / 11 / 13 / 15: each label + value (or input) sits on a single
+       row, mirroring the single-line 3270 layout. */
+    .user-delete__row {
+        margin-block: 0.25em;
+    }
+    /* USRIDIN (BMS LENGTH=8, UNPROT): fixed eight-character entry width. The GREEN
+       colour + underline come from the shared .bms-input class. */
+    .user-delete__userid {
+        inline-size: 9ch;
+        margin-inline-start: 0.5ch;
+    }
+    /* BMS line 8: decorative 70-character asterisk separator, rendered NEUTRAL
+       (.bms-sep). Kept on a single line within the 80-column grid. */
+    .user-delete__sep {
+        white-space: nowrap;
+        overflow: hidden;
+        margin-block: 0.5em;
+    }
+    /* BMS line 24: PF-key legend rendered as the actual submit controls. A flex
+       row with a 1ch column-gap plus the shared .bms-pfkey 0.5ch per-side button
+       padding yields the two-character separation of the BMS legend literal. The
+       yellow colour + button reset come from the shared .bms-footer/.bms-pfkey. */
+    .user-delete__pfkeys {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        column-gap: 1ch;
+    }
+</style>
+
+<!-- Fixed ~80-column monospace terminal container (preserves the 24x80 BMS grid). -->
+<div class="bms-screen">
+
+    <!--
+      BMS lines 1-2 (header band), rendered by the shared layout header fragment:
+        Line 1: "Tran:" CU03            TITLE01 (centered, yellow)        "Date:" curDate
+        Line 2: "Prog:" COUSR03C        TITLE02 (centered, yellow)        "Time:" curTime
+      TITLE01 = CCDA-TITLE01 ("AWS Mainframe Modernization") per COUSR03C
+      POPULATE-HEADER-INFO. The date/time come from model attributes (curDate /
+      curTime), defaulting to the current date/time when unset. The header is
+      outside the admin guard because it carries no privileged data.
+    -->
+    <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CU03', 'COUSR03C')}"></div>
+
+    <!--
+      Admin-only screen body. ROLE_ADMIN <=> COBOL 88 CDEMO-USRTYP-ADMIN VALUE 'A'.
+      Standard users never reach this view (the controller + SecurityConfig redirect
+      them); this guard is the view-layer line of defence.
+    -->
+    <main id="user-delete-main" sec:authorize="hasRole('ADMIN')">
+
+        <!-- BMS line 4: screen heading (the page's single <h1>). -->
+        <h1 class="bms-heading user-delete__heading">Delete User</h1>
+
+        <!--
+          Pseudo-conversational post form bound to the UserDeleteScreen DTO
+          ('userDeleteForm'). ENTER fetches the user_security record for the typed
+          USRIDIN; F5 deletes the fetched user. The pressed AID key is submitted as
+          the "pfKey" request parameter and dispatched by UserDeleteController.
+        -->
+        <form th:object="${userDeleteForm}" method="post" th:action="@{/user-delete}">
+
+            <!--
+              BMS line 6: 'Enter User ID:' (label) + USRIDIN.
+              USRIDIN - BMS ATTRB=(FSET,IC,NORM,UNPROT), HILIGHT=UNDERLINE, LENGTH=8.
+              type=text preserves the fixed eight-character zoned key; autofocus
+              mirrors IC (initial cursor); the GREEN colour + underline come from
+              .bms-input. Bound to UserDeleteScreen.usrIdIn.
+            -->
+            <div class="user-delete__row">
+                <label class="bms-prompt" for="usrIdIn">Enter User ID:</label>
+                <input type="text"
+                       id="usrIdIn"
+                       th:field="*{usrIdIn}"
+                       class="bms-input user-delete__userid"
+                       maxlength="8"
+                       size="8"
+                       autocomplete="off"
+                       autofocus="autofocus" />
+            </div>
+
+            <!-- BMS line 8: decorative 70-asterisk separator (NEUTRAL, read-only). -->
+            <div class="bms-sep user-delete__sep"
+                 aria-hidden="true">**********************************************************************</div>
+
+            <!--
+              BMS lines 11 / 13 / 15: read-only confirmation fields populated after a
+              successful fetch (PROT/ASKIP, BLUE). Rendered as text spans (never
+              inputs) so they are display-only; bound to the form via *{...}. A null
+              value renders as an empty string (no literal "null").
+            -->
+            <div class="user-delete__row">
+                <span class="bms-prompt">First Name:</span>
+                <span class="bms-label" th:text="*{fName}"></span>
+            </div>
+
+            <div class="user-delete__row">
+                <span class="bms-prompt">Last Name:</span>
+                <span class="bms-label" th:text="*{lName}"></span>
+            </div>
+
+            <!--
+              BMS line 15: 'User Type:' + USRTYPE (1 char) + the constant legend
+              '(A=Admin, U=User)'. The legend mirrors the BMS BLUE annotation field.
+            -->
+            <div class="user-delete__row">
+                <span class="bms-prompt">User Type:</span>
+                <span class="bms-label" th:text="*{usrType}"></span>
+                <span class="bms-label">(A=Admin, U=User)</span>
+            </div>
+
+            <!--
+              BMS line 23: ERRMSG (red, bright) + optional info line, via the shared
+              messages fragment. The effective error prefers the form's errMsg (the
+              UserDeleteScreen carries it), falling back to a top-level ${errMsg}.
+              ${infoMsg} is a top-level attribute (the DTO has no info field).
+            -->
+            <div th:replace="~{fragments/layout :: messages(${userDeleteForm?.errMsg ?: errMsg}, ${infoMsg})}"></div>
+
+            <!--
+              BMS line 24: PF-key legend rendered as the actual submit controls.
+              COUSR03C handles DFHENTER (fetch), DFHPF3 (back / XCTL to the admin
+              menu), DFHPF4 (clear the screen) and DFHPF5 (delete the fetched user).
+              Each carries name="pfKey" so UserDeleteController can reproduce the
+              CCARD-AID-* routing. ENTER=Fetch is first in document order, so pressing
+              Enter in the field activates it. F3=Back / F4=Clear skip HTML5 field
+              validation (formnovalidate) so navigation/clear always work. The shared
+              .bms-footer/.bms-pfkey styling makes them the yellow terminal legend.
+            -->
+            <div class="bms-footer bms-pfkey user-delete__pfkeys">
+                <button type="submit" name="pfKey" value="ENTER">ENTER=Fetch</button>
+                <button type="submit" name="pfKey" value="PF3" formnovalidate>F3=Back</button>
+                <button type="submit" name="pfKey" value="PF4" formnovalidate>F4=Clear</button>
+                <button type="submit" name="pfKey" value="PF5">F5=Delete</button>
+            </div>
+        </form>
+    </main>
+
+</div>
+
+</body>
+</html>
