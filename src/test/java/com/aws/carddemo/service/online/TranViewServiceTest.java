@@ -19,7 +19,7 @@ package com.aws.carddemo.service.online;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -32,12 +32,16 @@ import com.aws.carddemo.repository.TransactionRepository;
 import com.aws.carddemo.util.Messages;
 import java.math.BigDecimal;
 import java.util.Optional;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.NullSource;
+import org.mockito.InOrder;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessResourceFailureException;
 
 /**
@@ -65,27 +69,22 @@ import org.springframework.dao.DataAccessResourceFailureException;
  * on-screen message and redisplay (return {@code null}) rather than throw, matching the legacy
  * {@code DFHRESP(NOTFND)} and {@code WHEN OTHER} branches which {@code SEND} rather than abend.
  */
+@ExtendWith(MockitoExtension.class)
 class TranViewServiceTest {
 
   /** A representative, fully populated 16-character transaction id used across the lookup tests. */
   private static final String SAMPLE_TRAN_ID = "0000000000000001";
 
   /** Mocked collaborator (the migrated {@code TRANSACT} read path). */
-  private TransactionRepository transactionRepository;
+  @Mock private TransactionRepository transactionRepository;
 
   /**
-   * Service under test. It is a stateless singleton, so a fresh instance per test is sufficient.
+   * Service under test. It is a stateless singleton; Mockito injects the mocked repository through
+   * the service's single constructor.
    */
-  private TranViewService service;
+  @InjectMocks private TranViewService service;
 
-  @BeforeEach
-  void setUp() {
-    transactionRepository = mock(TransactionRepository.class);
-    service = new TranViewService(transactionRepository);
-  }
-
-  // ===== Fixtures / helpers
-  // =======================================================================
+  // ===== Fixtures / helpers =====================================================================
 
   /** A brand-new screen contract with no fields populated. */
   private static TranViewScreen screen() {
@@ -225,7 +224,11 @@ class TranViewServiceTest {
     assertThat(screen.getTtypCd()).isEqualTo("01");
     assertThat(screen.getTcatCd()).isEqualTo("0005");
     assertThat(screen.getTrnSrc()).isEqualTo("ONLINEPOST");
+    // Decimal fidelity (AAP §0.6.1): TRAN-AMT is a fixed-point money field carried through the move
+    // unedited as a BigDecimal. Assert the value by comparison AND the preserved scale of 2; the
+    // amount is never compared as a binary floating-point (double) value.
     assertThat(screen.getTrnAmt()).isEqualByComparingTo("1234.56");
+    assertThat(screen.getTrnAmt().scale()).isEqualTo(2);
     // TRAN-DESC X(100) -> TDESCI X(60): truncated on the right to 60 characters.
     assertThat(screen.getTDesc()).hasSize(60).isEqualTo("D".repeat(60));
     // TRAN-ORIG-TS / TRAN-PROC-TS X(26) -> X(10): the leading yyyy-MM-dd date portion is kept.
@@ -237,7 +240,11 @@ class TranViewServiceTest {
     assertThat(screen.getMName()).hasSize(30).isEqualTo("N".repeat(30));
     assertThat(screen.getMCity()).hasSize(25).isEqualTo("C".repeat(25));
     assertThat(screen.getMZip()).isEqualTo("12345-6789");
-    verify(transactionRepository).findById(SAMPLE_TRAN_ID);
+    // Control-flow parity (AAP §0.7.1): the empty-id validation precedes the read, and exactly one
+    // keyed read of the TRANSACT store occurs (PROCESS-ENTER-KEY -> READ-TRANSACT-FILE order).
+    InOrder inOrder = inOrder(transactionRepository);
+    inOrder.verify(transactionRepository).findById(SAMPLE_TRAN_ID);
+    inOrder.verifyNoMoreInteractions();
   }
 
   @Test

@@ -18,7 +18,9 @@ package com.aws.carddemo.service.online;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.aws.carddemo.domain.Transaction;
@@ -32,46 +34,65 @@ import com.aws.carddemo.util.Messages;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessResourceFailureException;
 
 /**
- * Pure JUnit&nbsp;5 + AssertJ unit tests for {@link TranListService}, the online transaction-list /
- * browse service migrated from the legacy CICS COBOL program {@code COTRN00C} (CICS transaction
- * {@code CT00}; behavioral spec {@code legacy/app/cbl/COTRN00C.cbl}).
+ * Pure JUnit&nbsp;5 + Mockito + AssertJ unit tests for {@link TranListService}, the online
+ * transaction-list / browse service migrated from the legacy CICS COBOL program {@code COTRN00C}
+ * (CICS transaction {@code CT00}; behavioral spec {@code legacy/app/cbl/COTRN00C.cbl}).
  *
- * <p>The service's sole collaborator is {@link TransactionRepository}, which is mocked so the
- * ascending-by-transaction-id browse source is fully controlled and deterministic. Control-flow
- * parity (Agent Action Plan &sect;0.6.5, &sect;0.7.1) is asserted through the externally observable
- * effects of {@link TranListService#processTranList(TranListScreen, CardDemoCommarea,
- * CardWorkArea.Aid)}: its return value (the {@code XCTL} target program, or {@code null} to
- * redisplay), the mutations it makes to the {@link CardDemoCommarea} navigation state and the
- * {@link TranListScreen} (rows, page indicator, keyset cursors), and the byte-exact message
- * literals it writes. No Spring context or database is required.
+ * <p>The service's only collaborator, {@link TransactionRepository}, is mocked so that the
+ * ascending-by-transaction-id browse source is fully controlled and deterministic; no Spring
+ * context, database, or Testcontainers is required. Control-flow parity (Agent Action Plan
+ * &sect;0.6.5, &sect;0.7.1) is asserted three ways:
+ *
+ * <ul>
+ *   <li><b>Externally observable effects</b> of {@link TranListService#processTranList(
+ *       TranListScreen, CardDemoCommarea, CardWorkArea.Aid)}: its return value (the {@code XCTL}
+ *       target program, or {@code null} to redisplay), the mutations it makes to the {@link
+ *       CardDemoCommarea} navigation state and to the {@link TranListScreen} (rows, page indicator,
+ *       keyset cursors), and the byte-exact message literals it writes.
+ *   <li><b>Interaction ordering</b> via Mockito {@link InOrder}: the single VSAM-browse-equivalent
+ *       query is verified to occur in the expected sequence (validation precedes the browse, and a
+ *       forward page after a first page issues a second ordered browse).
+ *   <li><b>Interaction suppression</b> via {@link org.mockito.Mockito#verifyNoInteractions}: the
+ *       paths that the legacy program short-circuits <em>before</em> the browse (selection forward,
+ *       a non-numeric filter, a {@code PF3} return, an edge-of-list key, an unmapped key, and the
+ *       cold start) must never touch the repository &mdash; encoding the COBOL evaluate order.
+ * </ul>
+ *
+ * <p>Decimal fidelity (&sect;0.6.1) is asserted on the row amount: the transaction {@code tAmt} is
+ * a {@link BigDecimal} preserved at scale&nbsp;2 (value compared with {@code isEqualByComparingTo}
+ * and scale asserted explicitly), never a floating-point type.
  */
+@ExtendWith(MockitoExtension.class)
 class TranListServiceTest {
 
-  private TransactionRepository repository;
-  private TranListService service;
+  @Mock private TransactionRepository transactionRepository;
 
-  @BeforeEach
-  void setUp() {
-    repository = mock(TransactionRepository.class);
-    service = new TranListService(repository);
-  }
+  @InjectMocks private TranListService service;
 
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
   // Fixtures
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
 
-  /** Zero-pads an integer to the 16-character transaction-id width. */
+  /** Zero-pads an integer to the 16-character transaction-id key width ({@code TRAN-ID X(16)}). */
   private static String id(int n) {
     return String.format("%016d", n);
   }
 
-  /** Builds a transaction with a deterministic, parity-friendly layout. */
+  /**
+   * Builds a transaction with a deterministic, parity-friendly layout: a zero-padded id, a known
+   * origination timestamp ({@code 2022-07-18-...} &rarr; display date {@code 07/18/22}), a
+   * descriptive text, and a monetary amount fixed at scale&nbsp;2.
+   */
   private static Transaction tx(int n) {
     Transaction t = new Transaction();
     t.setTranId(id(n));
@@ -90,11 +111,12 @@ class TranListServiceTest {
     return list;
   }
 
+  /** Stubs the ascending browse source with {@code count} transactions. */
   private void givenTransactions(int count) {
-    when(repository.findAllByOrderByTranIdAsc()).thenReturn(txList(count));
+    when(transactionRepository.findAllByOrderByTranIdAsc()).thenReturn(txList(count));
   }
 
-  /** A commarea for a signed-on standard user that has already entered this program. */
+  /** A commarea for a signed-on standard user that has already entered this program (re-entry). */
   private static CardDemoCommarea reentered() {
     CardDemoCommarea c = new CardDemoCommarea();
     c.setUserId("USER0001");
@@ -115,7 +137,7 @@ class TranListServiceTest {
     return new TranListScreen();
   }
 
-  /** Convenience: a screen carrying a one-row selection (sel + trnId on row index 0). */
+  /** A screen pre-populated with ten blank rows, then a single row carrying a selection. */
   private static TranListScreen screenWithSelection(int rowIndex, String sel, String trnId) {
     TranListScreen s = screen();
     List<TranListRow> rows = new ArrayList<>();
@@ -128,30 +150,32 @@ class TranListServiceTest {
     return s;
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // Null-argument guards
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
+  // Null-argument guards (Objects.requireNonNull on screen and commarea)
+  // ===============================================================================================
 
   @Test
-  @DisplayName("null screen is rejected")
+  @DisplayName("null screen is rejected before any browse")
   void nullScreen_throws() {
     assertThatThrownBy(() -> service.processTranList(null, reentered(), CardWorkArea.Aid.ENTER))
         .isInstanceOf(NullPointerException.class);
+    verifyNoInteractions(transactionRepository);
   }
 
   @Test
-  @DisplayName("null commarea is rejected")
+  @DisplayName("null commarea is rejected before any browse")
   void nullCommarea_throws() {
     assertThatThrownBy(() -> service.processTranList(screen(), null, CardWorkArea.Aid.ENTER))
         .isInstanceOf(NullPointerException.class);
+    verifyNoInteractions(transactionRepository);
   }
 
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
   // MAIN-PARA: cold start and first entry
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
 
   @Test
-  @DisplayName("EIBCALEN=0 (no signed-on user) routes to sign-on")
+  @DisplayName("EIBCALEN=0 (no signed-on user) routes to sign-on without browsing")
   void coldStart_routesToSignon() {
     CardDemoCommarea commarea = new CardDemoCommarea(); // no userId
     commarea.setPgmReenter();
@@ -162,10 +186,11 @@ class TranListServiceTest {
     assertThat(commarea.getFromTranId()).isEqualTo("CT00");
     assertThat(commarea.getFromProgram()).isEqualTo("COTRN00C");
     assertThat(commarea.isPgmEnter()).isTrue();
+    verifyNoInteractions(transactionRepository);
   }
 
   @Test
-  @DisplayName("first entry marks re-entry and paints page one from the top")
+  @DisplayName("first entry marks re-entry and paints page one (full ten-row grid) from the top")
   void firstEntry_paintsFirstPage() {
     givenTransactions(25);
     CardDemoCommarea commarea = firstEntry();
@@ -183,14 +208,42 @@ class TranListServiceTest {
     assertThat(s.getPageNum()).isEqualTo("00000001");
     assertThat(s.isNextPageYes()).isTrue();
     assertThat(s.getErrMsg()).isEmpty();
+
+    // Decimal fidelity (AAP 0.6.1): the row amount is a BigDecimal preserved at scale 2.
+    BigDecimal amount = s.getRows().get(0).getTAmt();
+    assertThat(amount).isEqualByComparingTo(new BigDecimal("101.00"));
+    assertThat(amount.scale()).isEqualTo(2);
+
+    // Control-flow parity: exactly one VSAM-browse-equivalent query, and nothing else.
+    InOrder inOrder = inOrder(transactionRepository);
+    inOrder.verify(transactionRepository).findAllByOrderByTranIdAsc();
+    inOrder.verifyNoMoreInteractions();
   }
 
-  // ---------------------------------------------------------------------------------------------
+  @Test
+  @DisplayName("ENTER then PF8 issues two ordered browse queries (validation -> query each turn)")
+  void pagingSequence_entersThenForwards_queriesInOrder() {
+    givenTransactions(25);
+    TranListScreen s = screen();
+
+    service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER); // page 1 (browse #1)
+    service.processTranList(s, reentered(), CardWorkArea.Aid.PFK08); // page 2 (browse #2)
+
+    // The two interactions are the same method, so the in-order multiplicity form is used to
+    // verify exactly two ordered browses (one per turn), then no further interactions.
+    InOrder inOrder = inOrder(transactionRepository);
+    inOrder.verify(transactionRepository, times(2)).findAllByOrderByTranIdAsc();
+    inOrder.verifyNoMoreInteractions();
+    assertThat(s.getPageNum()).isEqualTo("00000002");
+    assertThat(s.getRows().get(0).getTrnId()).isEqualTo(id(11));
+  }
+
+  // ===============================================================================================
   // PROCESS-ENTER-KEY: transaction-id filter
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
 
   @Test
-  @DisplayName("ENTER with blank filter browses from the top")
+  @DisplayName("ENTER with a blank filter browses from the top of the file")
   void enter_blankFilter_browsesFromTop() {
     givenTransactions(25);
     TranListScreen s = screen();
@@ -204,7 +257,7 @@ class TranListServiceTest {
   }
 
   @Test
-  @DisplayName("ENTER with a full 16-digit numeric filter positions GTEQ")
+  @DisplayName("ENTER with a full 16-digit numeric filter positions the browse GTEQ")
   void enter_numericFilter_positionsGteq() {
     givenTransactions(25);
     TranListScreen s = screen();
@@ -215,11 +268,11 @@ class TranListServiceTest {
     assertThat(next).isNull();
     assertThat(s.getRows().get(0).getTrnId()).isEqualTo(id(15));
     assertThat(s.getTrnIdFirst()).isEqualTo(id(15));
-    assertThat(s.getPageNum()).isEqualTo("00000001"); // page counter reset, then incremented
+    assertThat(s.getPageNum()).isEqualTo("00000001"); // counter reset, then incremented
   }
 
   @Test
-  @DisplayName("ENTER with a short numeric filter is zero-padded before positioning")
+  @DisplayName("ENTER with a short numeric filter is zero-padded before GTEQ positioning")
   void enter_shortNumericFilter_isZeroPadded() {
     givenTransactions(25);
     TranListScreen s = screen();
@@ -231,9 +284,8 @@ class TranListServiceTest {
   }
 
   @Test
-  @DisplayName("ENTER with a non-numeric filter shows the byte-exact 'must be Numeric' message")
+  @DisplayName("ENTER with a non-numeric filter shows the byte-exact message and never browses")
   void enter_nonNumericFilter_showsMessage() {
-    givenTransactions(25);
     TranListScreen s = screen();
     s.setTrnIdIn("ABC123");
 
@@ -242,6 +294,7 @@ class TranListServiceTest {
     assertThat(next).isNull();
     assertThat(s.getErrMsg()).isEqualTo("Tran ID must be Numeric ...");
     assertThat(s.getRows()).isEmpty(); // not refreshed (legacy error flag suppresses the read)
+    verifyNoInteractions(transactionRepository); // validation precedes the browse
   }
 
   @Test
@@ -274,14 +327,13 @@ class TranListServiceTest {
     assertThat(s.isNextPageYes()).isFalse();
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // PROCESS-ENTER-KEY: row selection
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
+  // PROCESS-ENTER-KEY: row selection (navigation/state parity, AAP 0.6.5)
+  // ===============================================================================================
 
   @Test
-  @DisplayName("row selected with 'S' forwards to the transaction-view program")
+  @DisplayName("row selected with 'S' forwards to the transaction-view program without browsing")
   void selectS_forwardsToView() {
-    givenTransactions(25);
     TranListScreen s = screenWithSelection(2, "S", id(3));
     CardDemoCommarea commarea = reentered();
 
@@ -292,25 +344,26 @@ class TranListServiceTest {
     assertThat(commarea.getFromTranId()).isEqualTo("CT00");
     assertThat(commarea.getFromProgram()).isEqualTo("COTRN00C");
     assertThat(commarea.isPgmEnter()).isTrue();
-    assertThat(s.getTrnSelected()).isEqualTo(id(3));
+    assertThat(s.getTrnSelected()).isEqualTo(id(3)); // selected id carried to COTRN01C
+    verifyNoInteractions(transactionRepository); // selection short-circuits before the browse
   }
 
   @Test
   @DisplayName("row selected with lowercase 's' also forwards to the transaction-view program")
   void selectLowercaseS_forwardsToView() {
-    givenTransactions(25);
     TranListScreen s = screenWithSelection(0, "s", id(1));
 
     String next = service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER);
 
     assertThat(next).isEqualTo("COTRN01C");
     assertThat(s.getTrnSelected()).isEqualTo(id(1));
+    verifyNoInteractions(transactionRepository);
   }
 
   @Test
   @DisplayName("invalid selection flag sets the byte-exact message and still renders the list")
   void invalidSelection_showsMessageAndRendersList() {
-    givenTransactions(25); // multi-page so the message survives onto a normal page
+    givenTransactions(25); // multi-page so the message survives onto a normal (non-terminal) page
     TranListScreen s = screenWithSelection(0, "X", id(1));
 
     String next = service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER);
@@ -321,7 +374,7 @@ class TranListServiceTest {
   }
 
   @Test
-  @DisplayName("selection flag with a blank row id is ignored")
+  @DisplayName("a selection flag paired with a blank row id is ignored and falls through to browse")
   void selectionWithBlankId_isIgnored() {
     givenTransactions(25);
     TranListScreen s = screenWithSelection(0, "S", "   ");
@@ -332,12 +385,12 @@ class TranListServiceTest {
     assertThat(s.getRows().get(0).getTrnId()).isEqualTo(id(1));
   }
 
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
   // MAIN-PARA: PF-key dispatch
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
 
   @Test
-  @DisplayName("PF3 returns to the main menu")
+  @DisplayName("PF3 returns to the main menu without browsing")
   void pf3_returnsToMenu() {
     CardDemoCommarea commarea = reentered();
 
@@ -348,6 +401,7 @@ class TranListServiceTest {
     assertThat(commarea.getFromTranId()).isEqualTo("CT00");
     assertThat(commarea.getFromProgram()).isEqualTo("COTRN00C");
     assertThat(commarea.isPgmEnter()).isTrue();
+    verifyNoInteractions(transactionRepository);
   }
 
   @Test
@@ -359,19 +413,22 @@ class TranListServiceTest {
 
     assertThat(next).isNull();
     assertThat(s.getErrMsg()).isEqualTo(Messages.MSG_INVALID_KEY.trim());
+    verifyNoInteractions(transactionRepository);
   }
 
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
   // PROCESS-PF8-KEY: page forward
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
 
   @Test
-  @DisplayName("PF8 with a next page advances to the following page")
+  @DisplayName("PF8 with a forward keyset advances to the next page and refreshes the rows")
   void pf8_advancesPage() {
     givenTransactions(25);
     TranListScreen s = screen();
-    // Establish page one first.
-    service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER);
+    // Establish the keyset of a displayed page one directly (hidden round-tripped cursors).
+    s.setPageNumValue(1);
+    s.setTrnIdLast(id(10));
+    s.setNextPageYes(true);
 
     String next = service.processTranList(s, reentered(), CardWorkArea.Aid.PFK08);
 
@@ -389,11 +446,11 @@ class TranListServiceTest {
   void pf8_lastPartialPage_showsBottom() {
     givenTransactions(25);
     TranListScreen s = screen();
-    service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER); // page 1
-    service.processTranList(s, reentered(), CardWorkArea.Aid.PFK08); // page 2
+    s.setPageNumValue(2);
+    s.setTrnIdLast(id(20));
+    s.setNextPageYes(true);
 
-    String next =
-        service.processTranList(s, reentered(), CardWorkArea.Aid.PFK08); // page 3 (5 rows)
+    String next = service.processTranList(s, reentered(), CardWorkArea.Aid.PFK08);
 
     assertThat(next).isNull();
     assertThat(s.getPageNum()).isEqualTo("00000003");
@@ -407,14 +464,14 @@ class TranListServiceTest {
   @Test
   @DisplayName("PF8 with no further page shows the byte-exact 'already at the bottom' message")
   void pf8_noNextPage_showsAlreadyBottom() {
-    givenTransactions(10); // exactly one page
     TranListScreen s = screen();
-    service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER); // page 1; nextPage=false
+    s.setNextPageYes(false); // already on the last page
 
     String next = service.processTranList(s, reentered(), CardWorkArea.Aid.PFK08);
 
     assertThat(next).isNull();
     assertThat(s.getErrMsg()).isEqualTo("You are already at the bottom of the page...");
+    verifyNoInteractions(transactionRepository); // the boundary guard precedes any browse
   }
 
   @Test
@@ -432,33 +489,32 @@ class TranListServiceTest {
     assertThat(s.isNextPageYes()).isFalse();
   }
 
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
   // PROCESS-PF7-KEY: page backward
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
 
   @Test
   @DisplayName("PF7 on page one shows the byte-exact 'already at the top' message")
   void pf7_pageOne_showsAlreadyTop() {
-    givenTransactions(25);
     TranListScreen s = screen();
-    service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER); // page 1
+    s.setPageNumValue(1); // already on the first page
 
     String next = service.processTranList(s, reentered(), CardWorkArea.Aid.PFK07);
 
     assertThat(next).isNull();
     assertThat(s.getErrMsg()).isEqualTo("You are already at the top of the page...");
+    verifyNoInteractions(transactionRepository); // the boundary guard precedes any browse
   }
 
   @Test
-  @DisplayName("PF7 from a middle page steps back one page")
+  @DisplayName("PF7 from a middle page steps back exactly one page")
   void pf7_fromMiddlePage_stepsBack() {
     givenTransactions(25);
     TranListScreen s = screen();
-    service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER); // page 1
-    service.processTranList(s, reentered(), CardWorkArea.Aid.PFK08); // page 2
-    service.processTranList(s, reentered(), CardWorkArea.Aid.PFK08); // page 3
+    s.setPageNumValue(3);
+    s.setTrnIdFirst(id(21)); // first id of page three
 
-    String next = service.processTranList(s, reentered(), CardWorkArea.Aid.PFK07); // back to page 2
+    String next = service.processTranList(s, reentered(), CardWorkArea.Aid.PFK07);
 
     assertThat(next).isNull();
     assertThat(s.getPageNum()).isEqualTo("00000002");
@@ -473,10 +529,10 @@ class TranListServiceTest {
   void pf7_backToFirstPage_showsReachedTop() {
     givenTransactions(25);
     TranListScreen s = screen();
-    service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER); // page 1
-    service.processTranList(s, reentered(), CardWorkArea.Aid.PFK08); // page 2
+    s.setPageNumValue(2);
+    s.setTrnIdFirst(id(11)); // first id of page two
 
-    String next = service.processTranList(s, reentered(), CardWorkArea.Aid.PFK07); // back to page 1
+    String next = service.processTranList(s, reentered(), CardWorkArea.Aid.PFK07);
 
     assertThat(next).isNull();
     assertThat(s.getPageNum()).isEqualTo("00000001");
@@ -485,12 +541,12 @@ class TranListServiceTest {
     assertThat(s.getErrMsg()).isEqualTo("You have reached the top of the page...");
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // POPULATE-TRAN-DATA: field rendering
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
+  // POPULATE-TRAN-DATA: field rendering (date derivation, truncation, decimal fidelity)
+  // ===============================================================================================
 
   @Test
-  @DisplayName("row fields render the id, MM/DD/YY date, truncated description and amount")
+  @DisplayName("row fields render id, MM/DD/YY date, truncated description and scale-2 amount")
   void populate_rendersFields() {
     givenTransactions(3);
     TranListScreen s = screen();
@@ -501,8 +557,9 @@ class TranListServiceTest {
     assertThat(row.getTrnId()).isEqualTo(id(1));
     assertThat(row.getTDate()).isEqualTo("07/18/22"); // from 2022-07-18-...
     assertThat(row.getTDesc()).isEqualTo("Purchase number 1");
-    assertThat(row.getTAmt()).isEqualByComparingTo(new BigDecimal("101.00"));
     assertThat(row.getSel()).isEmpty();
+    assertThat(row.getTAmt()).isEqualByComparingTo(new BigDecimal("101.00"));
+    assertThat(row.getTAmt().scale()).isEqualTo(2); // decimal fidelity (AAP 0.6.1)
   }
 
   @Test
@@ -510,7 +567,7 @@ class TranListServiceTest {
   void populate_truncatesDescription() {
     Transaction t = tx(1);
     t.setTranDesc("This description is definitely longer than twenty-six characters");
-    when(repository.findAllByOrderByTranIdAsc()).thenReturn(List.of(t));
+    when(transactionRepository.findAllByOrderByTranIdAsc()).thenReturn(List.of(t));
     TranListScreen s = screen();
 
     service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER);
@@ -523,7 +580,7 @@ class TranListServiceTest {
   void populate_handlesUnusableTimestamp() {
     Transaction t = tx(1);
     t.setTranOrigTs(null);
-    when(repository.findAllByOrderByTranIdAsc()).thenReturn(List.of(t));
+    when(transactionRepository.findAllByOrderByTranIdAsc()).thenReturn(List.of(t));
     TranListScreen s = screen();
 
     service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER);
@@ -534,12 +591,9 @@ class TranListServiceTest {
   @Test
   @DisplayName("a null description renders as an empty list cell")
   void populate_handlesNullDescription() {
-    // TRAN-DESC is a nullable column in the migrated schema; the list-view formatter must render a
-    // missing description as SPACES (an empty cell) rather than propagating a null, mirroring the
-    // COBOL MOVE of a low-values/space description into the X(26) display field.
     Transaction t = tx(1);
     t.setTranDesc(null);
-    when(repository.findAllByOrderByTranIdAsc()).thenReturn(List.of(t));
+    when(transactionRepository.findAllByOrderByTranIdAsc()).thenReturn(List.of(t));
     TranListScreen s = screen();
 
     service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER);
@@ -547,14 +601,14 @@ class TranListServiceTest {
     assertThat(s.getRows().get(0).getTDesc()).isEmpty();
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // FILE STATUS OTHER -> IoStatusException
-  // ---------------------------------------------------------------------------------------------
+  // ===============================================================================================
+  // FILE STATUS OTHER -> IoStatusException (AAP 0.6.4)
+  // ===============================================================================================
 
   @Test
   @DisplayName("an unexpected data-access failure is escalated as IoStatusException")
   void dataAccessFailure_escalatesAsIoStatusException() {
-    when(repository.findAllByOrderByTranIdAsc())
+    when(transactionRepository.findAllByOrderByTranIdAsc())
         .thenThrow(new DataAccessResourceFailureException("simulated outage"));
 
     assertThatThrownBy(() -> service.processTranList(screen(), reentered(), CardWorkArea.Aid.ENTER))
@@ -562,8 +616,12 @@ class TranListServiceTest {
         .hasMessageContaining("TRANSACT");
   }
 
+  // ===============================================================================================
+  // MAIN-PARA: a null AID on re-entry is treated as ENTER
+  // ===============================================================================================
+
   @Test
-  @DisplayName("a null aid on re-entry is treated as ENTER")
+  @DisplayName("a null aid on re-entry is treated as ENTER and paints the current page")
   void nullAid_treatedAsEnter() {
     givenTransactions(25);
     TranListScreen s = screen();
