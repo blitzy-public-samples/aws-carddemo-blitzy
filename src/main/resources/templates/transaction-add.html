@@ -28,11 +28,11 @@
   ~ in parentheses):
   ~     ACTIDIN -> actIdIn(11)         CARDNIN -> cardNin(16)
   ~     TTYPCD  -> ttypCd(2)           TCATCD  -> tcatCd(4)
-  ~     TRNSRC  -> trnSrc(10)          TDESC   -> tDesc(60)
-  ~     TRNAMT  -> trnAmt(12)          TORIGDT -> tOrigDt(10)
-  ~     TPROCDT -> tProcDt(10)         MID     -> mid(9)
-  ~     MNAME   -> mName(30)           MCITY   -> mCity(25)
-  ~     MZIP    -> mZip(10)            CONFIRM -> confirm(1)
+  ~     TRNSRC  -> trnSrc(10)          TDESC   -> TDesc(60)
+  ~     TRNAMT  -> trnAmt(12)          TORIGDT -> TOrigDt(10)
+  ~     TPROCDT -> TProcDt(10)         MID     -> mid(9)
+  ~     MNAME   -> MName(30)           MCITY   -> MCity(25)
+  ~     MZIP    -> MZip(10)            CONFIRM -> confirm(1)
   ~ The amount field is captured as raw text here (no template arithmetic);
   ~ the service parses it to a java.math.BigDecimal at scale 2 with truncation
   ~ (RoundingMode.DOWN) per AAP 0.6.1. The message line (ERRMSG) and the header
@@ -158,8 +158,8 @@
 
         <!-- BMS line 12: description. -->
         <div class="bms-line">
-            <label for="tDesc" class="bms-prompt">Description:</label>
-            <input type="text" id="tDesc" th:field="*{tDesc}"
+            <label for="TDesc" class="bms-prompt">Description:</label>
+            <input type="text" id="TDesc" th:field="*{TDesc}"
                    class="bms-input" maxlength="60" size="60" />
         </div>
 
@@ -177,8 +177,8 @@
             </span>
             <span class="bms-field">
                 <span class="bms-field-line">
-                    <label for="tOrigDt" class="bms-prompt">Orig Date:</label>
-                    <input type="text" id="tOrigDt" th:field="*{tOrigDt}"
+                    <label for="TOrigDt" class="bms-prompt">Orig Date:</label>
+                    <input type="text" id="TOrigDt" th:field="*{TOrigDt}"
                            class="bms-input" maxlength="10" size="10"
                            aria-describedby="originDate-hint" />
                 </span>
@@ -186,8 +186,8 @@
             </span>
             <span class="bms-field">
                 <span class="bms-field-line">
-                    <label for="tProcDt" class="bms-prompt">Proc Date:</label>
-                    <input type="text" id="tProcDt" th:field="*{tProcDt}"
+                    <label for="TProcDt" class="bms-prompt">Proc Date:</label>
+                    <input type="text" id="TProcDt" th:field="*{TProcDt}"
                            class="bms-input" maxlength="10" size="10"
                            aria-describedby="processingDate-hint" />
                 </span>
@@ -200,18 +200,18 @@
             <label for="mid" class="bms-prompt">Merchant ID:</label>
             <input type="text" id="mid" th:field="*{mid}"
                    class="bms-input" maxlength="9" size="9" />
-            <label for="mName" class="bms-prompt">Merchant Name:</label>
-            <input type="text" id="mName" th:field="*{mName}"
+            <label for="MName" class="bms-prompt">Merchant Name:</label>
+            <input type="text" id="MName" th:field="*{MName}"
                    class="bms-input" maxlength="30" size="30" />
         </div>
 
         <!-- BMS line 18: merchant city / merchant zip. -->
         <div class="bms-line">
-            <label for="mCity" class="bms-prompt">Merchant City:</label>
-            <input type="text" id="mCity" th:field="*{mCity}"
+            <label for="MCity" class="bms-prompt">Merchant City:</label>
+            <input type="text" id="MCity" th:field="*{MCity}"
                    class="bms-input" maxlength="25" size="25" />
-            <label for="mZip" class="bms-prompt">Merchant Zip:</label>
-            <input type="text" id="mZip" th:field="*{mZip}"
+            <label for="MZip" class="bms-prompt">Merchant Zip:</label>
+            <input type="text" id="MZip" th:field="*{MZip}"
                    class="bms-input" maxlength="10" size="10" />
         </div>
 
