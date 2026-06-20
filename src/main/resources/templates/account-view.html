@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ Account View screen — web equivalent of the legacy CICS/BMS map COACTVW
+  ~ (mapset COACTVW, map CACTVWA, transaction CAVW, program COACTVWC). It is a
+  ~ READ-ONLY view: the operator enters an account number (the only enterable
+  ~ field) and presses ENTER to fetch; every other field is display/protected.
+  ~ Fidelity reference: legacy/app/bms/COACTVW.bms (field POS / LENGTH / COLOR /
+  ~ ATTRB / PICOUT). Shared 24x80 terminal chrome + CSS come from
+  ~ fragments/layout.html. Plain Thymeleaf only — no component library, no
+  ~ external CSS/JS.
+  ~
+  ~ View contract — the controller (AccountViewController) supplies a form-backing
+  ~ bean under the model attribute name "accountViewForm" exposing these String
+  ~ properties (one per BMS data field; BMS field name -> property):
+  ~   ACCTSID -> acctId            (ENTERABLE search key; PIC 9(11), maxlength 11)
+  ~   ACSTTUS -> accountStatus     ADTOPEN -> openDate        AEXPDT  -> expiryDate
+  ~   AREISDT -> reissueDate       AADDGRP -> accountGroup
+  ~   ACRDLIM -> creditLimit       ACSHLIM -> cashCreditLimit ACURBAL -> currentBalance
+  ~   ACRCYCR -> currentCycleCredit                           ACRCYDB -> currentCycleDebit
+  ~   ACSTNUM -> customerId        ACSTSSN -> ssn             ACSTDOB -> dateOfBirth
+  ~   ACSTFCO -> ficoScore         ACSFNAM -> firstName       ACSMNAM -> middleName
+  ~   ACSLNAM -> lastName          ACSADL1 -> addressLine1    ACSSTTE -> state
+  ~   ACSADL2 -> addressLine2      ACSZIPC -> zip             ACSCITY -> city
+  ~   ACSCTRY -> country           ACSPHN1 -> phone1          ACSGOVT -> govtId
+  ~   ACSPHN2 -> phone2            ACSEFTC -> eftAccountId    ACSPFLG -> primaryCardHolder
+  ~   INFOMSG -> infoMsg           ERRMSG  -> errMsg
+  ~ The five monetary properties (creditLimit, cashCreditLimit, currentBalance,
+  ~ currentCycleCredit, currentCycleDebit) arrive ALREADY edited/formatted by the
+  ~ service layer (BigDecimal scale 2 rendered to the BMS PICOUT '+ZZZ,ZZZ,ZZZ.99'
+  ~ mask). This template performs NO arithmetic and NO reformatting — it only
+  ~ displays the pre-formatted strings (AAP 0.6.1). Optional header model
+  ~ attributes (consumed by fragments/layout): title, title2, curDate, curTime.
+-->
+<html lang="en"
+      xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6">
+
+<head th:replace="~{fragments/layout :: head('View Account')}"></head>
+
+<body>
+<div class="bms-screen">
+
+    <!-- Screen-scoped styles. The shared terminal palette/grid (.bms-* classes)
+         is provided once by fragments/layout.html; these .av-* rules add only
+         what this screen needs and reuse the same colour vocabulary: read-only
+         display-value fields (GREEN data + HILIGHT=UNDERLINE), right-justified
+         edited money (BMS JUSTIFY=(RIGHT)), neutral centred section headings,
+         the two-/three-column field grids, and a keyboard skip link. -->
+    <style>
+        /* Skip link: off-screen until focused (keyboard users only; no visual
+           impact in the default state). */
+        .av-skip { position: absolute; inset-block-start: 0; inset-inline-start: -9999px; }
+        .av-skip:focus {
+            inset-inline-start: 1ch;
+            z-index: 1;
+            color: #00FFFF;
+            background-color: #000000;
+        }
+
+        /* Section headings — BMS COLOR=NEUTRAL, normal intensity, centred. Kept
+           at body font-size because terminal text is uniform height. */
+        .av-heading {
+            margin-block: 0.4em;
+            color: #C0C0C0;
+            font-size: 1rem;
+            font-weight: normal;
+            text-align: center;
+        }
+
+        .av-section { margin-block: 0.2em; }
+
+        /* A logical BMS line: label/value groups in two columns that reflow on
+           narrow viewports (the fixed 80ch .bms-screen keeps grid alignment). */
+        .av-line {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.15em 2ch;
+            align-items: baseline;
+        }
+        .av-cell {
+            flex: 1 1 calc(50% - 1ch);
+            min-width: 0;
+            display: flex;
+            gap: 1ch;
+            align-items: baseline;
+        }
+        /* Right-hand money cells: label to the inline-start, value pushed to the
+           inline-end edge to mirror BMS JUSTIFY=(RIGHT) edited amounts. */
+        .av-cell--money { justify-content: space-between; }
+
+        /* A read-only display value: mirrors a protected BMS field — default
+           GREEN data colour with the HILIGHT=UNDERLINE rule. Always rendered as
+           text via th:text; never an editable control. */
+        .av-data {
+            display: inline-block;
+            min-width: 8ch;
+            min-height: 1.2em;
+            color: #00FF00;
+            border-block-end: 1px solid #00AA00;
+            overflow-wrap: anywhere;
+        }
+        .av-data--xs { min-width: 2ch; }   /* single-character fields (status, flag) */
+
+        /* Fixed inline-size for the "Address:" label so the second (unlabelled)
+           address line's value aligns directly beneath the first. */
+        .av-addrpad { display: inline-block; min-width: 8ch; }
+
+        /* Right-justified, tabular money value (PICOUT '+ZZZ,ZZZ,ZZZ.99').
+           The value is pre-formatted by the service/controller; no formatting
+           happens here. */
+        .av-money {
+            min-width: 15ch;               /* BMS LENGTH=15 */
+            text-align: end;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* The single enterable field (ACCTSID): GREEN underline input fixed to
+           its 11-character account-number width. */
+        .av-acctid { width: 12ch; }
+
+        /* Inline ENTER (fetch) action — rendered as a terminal-style yellow
+           legend control rather than an OS button. It is the first submit in
+           document order so that pressing Enter in the account field fetches. */
+        .av-pfkey-inline {
+            padding-inline: 0.5ch;
+            border: none;
+            background: none;
+            color: #FFFF00;
+            font-family: inherit;
+            font-size: inherit;
+            cursor: pointer;
+        }
+        @media (hover: hover) {
+            .av-pfkey-inline:hover { text-decoration: underline; }
+        }
+        .av-pfkey-inline:focus-visible { outline: 1px solid #FFFF00; }
+
+        /* Customer name block — three aligned columns: a labels row then a
+           values row. */
+        .av-names {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.15em 2ch;
+            align-items: baseline;
+        }
+    </style>
+
+    <a class="av-skip" href="#av-main">Skip to main content</a>
+
+    <!-- BMS header band (lines 1-2): Tran CAVW / Prog COACTVWC, centred title. -->
+    <div th:with="title2=${title2} ?: 'CardDemo'">
+        <div th:replace="~{fragments/layout :: header(${title} ?: 'AWS Mainframe Modernization', 'CAVW', 'COACTVWC')}">
+            Account View header
+        </div>
+    </div>
+
+    <!-- Single pseudo-conversational form. ENTER fetches by account id (pfKey
+         ENTER); F3 exits to the previous menu (pfKey PF3). -->
+    <form th:object="${accountViewForm}" method="post" th:action="@{/account-view}">
+
+        <main id="av-main">
+
+            <!-- Line 4: screen heading (NEUTRAL). -->
+            <h1 class="av-heading">View Account</h1>
+
+            <!-- Lines 5-10: account details. Left column = identity/dates/group;
+                 right column = edited monetary amounts (right-justified). -->
+            <section class="av-section" aria-label="Account details">
+
+                <!-- Line 5: account number (the only enterable field) + status. -->
+                <div class="av-line">
+                    <div class="av-cell">
+                        <label class="bms-prompt" for="acctId">Account Number :</label>
+                        <input class="bms-input av-acctid"
+                               type="text"
+                               th:field="*{acctId}"
+                               maxlength="11"
+                               inputmode="numeric"
+                               pattern="[0-9]*"
+                               autocomplete="off" />
+                        <button class="av-pfkey-inline" type="submit" name="pfKey" value="ENTER">ENTER=Fetch</button>
+                    </div>
+                    <div class="av-cell">
+                        <span class="bms-prompt">Active Y/N:</span>
+                        <span class="av-data av-data--xs" th:text="*{accountStatus}"></span>
+                    </div>
+                </div>
+
+                <!-- Line 6: opened date / credit limit. -->
+                <div class="av-line">
+                    <div class="av-cell">
+                        <span class="bms-prompt">Opened:</span>
+                        <span class="av-data" th:text="*{openDate}"></span>
+                    </div>
+                    <div class="av-cell av-cell--money">
+                        <span class="bms-prompt">Credit Limit :</span>
+                        <span class="av-data av-money" th:text="*{creditLimit}"></span>
+                    </div>
+                </div>
+
+                <!-- Line 7: expiry date / cash credit limit. -->
+                <div class="av-line">
+                    <div class="av-cell">
+                        <span class="bms-prompt">Expiry:</span>
+                        <span class="av-data" th:text="*{expiryDate}"></span>
+                    </div>
+                    <div class="av-cell av-cell--money">
+                        <span class="bms-prompt">Cash credit Limit :</span>
+                        <span class="av-data av-money" th:text="*{cashCreditLimit}"></span>
+                    </div>
+                </div>
+
+                <!-- Line 8: reissue date / current balance. -->
+                <div class="av-line">
+                    <div class="av-cell">
+                        <span class="bms-prompt">Reissue:</span>
+                        <span class="av-data" th:text="*{reissueDate}"></span>
+                    </div>
+                    <div class="av-cell av-cell--money">
+                        <span class="bms-prompt">Current Balance :</span>
+                        <span class="av-data av-money" th:text="*{currentBalance}"></span>
+                    </div>
+                </div>
+
+                <!-- Line 9: (left blank) / current cycle credit. -->
+                <div class="av-line">
+                    <div class="av-cell" aria-hidden="true"></div>
+                    <div class="av-cell av-cell--money">
+                        <span class="bms-prompt">Current Cycle Credit:</span>
+                        <span class="av-data av-money" th:text="*{currentCycleCredit}"></span>
+                    </div>
+                </div>
+
+                <!-- Line 10: account group / current cycle debit. -->
+                <div class="av-line">
+                    <div class="av-cell">
+                        <span class="bms-prompt">Account Group:</span>
+                        <span class="av-data" th:text="*{accountGroup}"></span>
+                    </div>
+                    <div class="av-cell av-cell--money">
+                        <span class="bms-prompt">Current Cycle Debit :</span>
+                        <span class="av-data av-money" th:text="*{currentCycleDebit}"></span>
+                    </div>
+                </div>
+
+            </section>
+
+            <!-- Line 11: customer-details heading (NEUTRAL). -->
+            <h2 class="av-heading">Customer Details</h2>
+
+            <!-- Lines 12-20: customer details (all display/protected). -->
+            <section class="av-section" aria-label="Customer details">
+
+                <!-- Line 12: customer id / SSN. -->
+                <div class="av-line">
+                    <div class="av-cell">
+                        <span class="bms-prompt">Customer id :</span>
+                        <span class="av-data" th:text="*{customerId}"></span>
+                    </div>
+                    <div class="av-cell">
+                        <span class="bms-prompt">SSN:</span>
+                        <span class="av-data" th:text="*{ssn}"></span>
+                    </div>
+                </div>
+
+                <!-- Line 13: date of birth / FICO score. -->
+                <div class="av-line">
+                    <div class="av-cell">
+                        <span class="bms-prompt">Date of birth:</span>
+                        <span class="av-data" th:text="*{dateOfBirth}"></span>
+                    </div>
+                    <div class="av-cell">
+                        <span class="bms-prompt">FICO Score:</span>
+                        <span class="av-data av-data--xs" th:text="*{ficoScore}"></span>
+                    </div>
+                </div>
+
+                <!-- Lines 14-15: first / middle / last name (labels row, then values row). -->
+                <div class="av-names">
+                    <span class="bms-prompt">First Name</span>
+                    <span class="bms-prompt">Middle Name:</span>
+                    <span class="bms-prompt">Last Name :</span>
+                    <span class="av-data" th:text="*{firstName}"></span>
+                    <span class="av-data" th:text="*{middleName}"></span>
+                    <span class="av-data" th:text="*{lastName}"></span>
+                </div>
+
+                <!-- Line 16: address line 1 / state. -->
+                <div class="av-line">
+                    <div class="av-cell">
+                        <span class="bms-prompt av-addrpad">Address:</span>
+                        <span class="av-data" th:text="*{addressLine1}"></span>
+                    </div>
+                    <div class="av-cell">
+                        <span class="bms-prompt">State</span>
+                        <span class="av-data av-data--xs" th:text="*{state}"></span>
+                    </div>
+                </div>
+
+                <!-- Line 17: address line 2 / zip. -->
+                <div class="av-line">
+                    <div class="av-cell">
+                        <span class="bms-prompt av-addrpad" aria-hidden="true"></span>
+                        <span class="av-data" th:text="*{addressLine2}" aria-label="Address line 2"></span>
+                    </div>
+                    <div class="av-cell">
+                        <span class="bms-prompt">Zip</span>
+                        <span class="av-data av-data--xs" th:text="*{zip}"></span>
+                    </div>
+                </div>
+
+                <!-- Line 18: city / country. -->
+                <div class="av-line">
+                    <div class="av-cell">
+                        <span class="bms-prompt">City</span>
+                        <span class="av-data" th:text="*{city}"></span>
+                    </div>
+                    <div class="av-cell">
+                        <span class="bms-prompt">Country</span>
+                        <span class="av-data av-data--xs" th:text="*{country}"></span>
+                    </div>
+                </div>
+
+                <!-- Line 19: phone 1 / government-issued id reference. -->
+                <div class="av-line">
+                    <div class="av-cell">
+                        <span class="bms-prompt">Phone 1:</span>
+                        <span class="av-data" th:text="*{phone1}"></span>
+                    </div>
+                    <div class="av-cell">
+                        <span class="bms-prompt">Government Issued Id Ref :</span>
+                        <span class="av-data" th:text="*{govtId}"></span>
+                    </div>
+                </div>
+
+                <!-- Line 20: phone 2 / EFT account id / primary cardholder flag. -->
+                <div class="av-line">
+                    <div class="av-cell">
+                        <span class="bms-prompt">Phone 2:</span>
+                        <span class="av-data" th:text="*{phone2}"></span>
+                    </div>
+                    <div class="av-cell">
+                        <span class="bms-prompt">EFT Account Id:</span>
+                        <span class="av-data" th:text="*{eftAccountId}"></span>
+                    </div>
+                    <div class="av-cell">
+                        <span class="bms-prompt">Primary Card Holder Y/N:</span>
+                        <span class="av-data av-data--xs" th:text="*{primaryCardHolder}"></span>
+                    </div>
+                </div>
+
+            </section>
+
+        </main>
+
+        <!-- Lines 22-23: INFOMSG (neutral) + ERRMSG (red). -->
+        <div th:replace="~{fragments/layout :: messages(${accountViewForm.errMsg}, ${accountViewForm.infoMsg})}">
+            messages
+        </div>
+
+        <!-- Line 24: PF-key legend / action. F3 exits to the previous menu. ENTER
+             (the fetch action) is rendered with the account field above and is the
+             first submit in document order. -->
+        <div class="bms-footer bms-pfkey">
+            <button type="submit" name="pfKey" value="PF3">F3=Exit</button>
+        </div>
+
+    </form>
+
+</div>
+</body>
+</html>

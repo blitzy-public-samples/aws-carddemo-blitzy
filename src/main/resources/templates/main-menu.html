@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ AWS CardDemo - Main Menu screen.
+  ~ Web equivalent of the legacy CICS BMS map COMEN01 / COMEN1A
+  ~ (transaction CM00, program COMEN01C): the STANDARD-user main menu.
+  ~ Fidelity reference (24x80 3270 field contract): legacy/app/bms/COMEN01.bms.
+  ~
+  ~ Rendered by MainMenuController (GET/POST /main-menu) backed by MainMenuService,
+  ~ which mirrors the COMEN01C / COMEN02Y option list. Plain Thymeleaf only — no
+  ~ thymeleaf-layout-dialect, no component library, no external CSS/JS. All colours
+  ~ come from the shared 3270 palette in fragments/layout.html; this template adds
+  ~ only LAYOUT (column geometry) styling.
+  ~
+  ~ BMS field -> model attribute mapping (BMS name -> camelCase):
+  ~   TRNNAME 'CM00'   -> header tranId          PGMNAME 'COMEN01C' -> header programId
+  ~   TITLE01 (yellow) -> title01 (line 1)       TITLE02 (yellow)   -> title02 / title2 (line 2)
+  ~   CURDATE/CURTIME  -> curDate / curTime      OPTN001..012       -> menuOptions[] (list)
+  ~   OPTION (NUM,2)   -> mainMenuForm.option    ERRMSG (red)       -> errMsg
+-->
+<html xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6"
+      lang="en">
+
+<!-- Shared <head> + 3270 terminal CSS (palette + fixed 24x80 monospace grid). -->
+<head th:replace="~{fragments/layout :: head('Main Menu')}">
+    <meta charset="UTF-8" />
+    <title>Main Menu - AWS CardDemo</title>
+</head>
+
+<!--
+  title2 bridge: the shared header fragment renders the BMS line-2 centred title
+  from the in-scope variable ${title2}. The controller supplies TITLE02 as the
+  'title02' model attribute (BMS->camelCase mapping), so bridge it here to the
+  name the fragment expects, defaulting to 'CardDemo' (the legacy CCDA-TITLE02
+  value). This keeps line 2 faithful to the BMS map regardless of which attribute
+  name the controller populates, while still honouring an explicit title2 if set.
+-->
+<body class="bms-screen"
+      th:with="title2=${title2 != null ? title2 : (title02 != null ? title02 : 'CardDemo')}">
+
+<!-- Keyboard / screen-reader convenience: skip past the 2-line header band. -->
+<a class="skip-link" href="#main-content">Skip to main content</a>
+
+<!--
+  Page-specific LAYOUT only: positions content to mirror the BMS column geometry
+  (options at column 20, prompt at column 15, etc.). Colours are inherited from
+  the shared palette classes defined in fragments/layout.html. The shared <head>
+  is replaced wholesale by the layout fragment, so these screen-scoped rules live
+  here; they use CSS logical properties and add no new colours.
+-->
+<style>
+    /* Off-screen skip link, revealed on keyboard focus only. */
+    .skip-link {
+        position: absolute;
+        inset-block-start: -3em;
+        inset-inline-start: 0;
+        color: #ffff00;
+        background-color: #000000;
+        padding: 0.25em 1ch;
+        z-index: 1;
+    }
+    .skip-link:focus { inset-block-start: 0; }
+
+    /* BMS line 4: 'Main Menu' heading — centred (map POS 4,35). */
+    .menu-heading {
+        text-align: center;
+        margin-block: 0.5em 0.75em;
+    }
+
+    /* BMS lines 6-17: option labels begin at column 20. */
+    .menu-options {
+        list-style: none;
+        margin-block: 0;
+        margin-inline: 0;
+        padding-inline-start: 19ch;   /* column 20 (19 columns of indent) */
+    }
+    .menu-option {
+        min-height: 1.25em;           /* blank option slots still occupy a line */
+    }
+
+    /* BMS line 20: prompt at column 15, OPTION input following at column 41. */
+    .prompt-row {
+        display: flex;
+        align-items: baseline;
+        gap: 1ch;
+        padding-inline-start: 14ch;   /* column 15 (14 columns of indent) */
+        margin-block-start: 1.5em;
+    }
+    /* OPTION field: numeric, length 2, right-justified zero-fill (BMS
+       JUSTIFY=(RIGHT,ZERO)). Green colour + underline come from .bms-input. */
+    .option-input {
+        inline-size: 3ch;
+        text-align: end;
+    }
+
+    /* Visible keyboard focus ring for the PF-key buttons (mouse users unaffected). */
+    .bms-pfkey button:focus-visible {
+        outline: 1px solid #ffff00;
+        outline-offset: 1px;
+    }
+</style>
+
+<!-- ============================ BMS lines 1-2 ============================ -->
+<!-- Header band: Tran: CM00 + TITLE01 + Date  |  Prog: COMEN01C + TITLE02 + Time. -->
+<div th:replace="~{fragments/layout :: header(${title01 != null ? title01 : 'AWS Mainframe Modernization'}, 'CM00', 'COMEN01C')}">
+</div>
+
+<main id="main-content">
+
+    <!-- =========================== BMS line 4 =========================== -->
+    <div class="menu-heading">
+        <span class="bms-heading">Main Menu</span>
+    </div>
+
+    <!-- ========================= BMS lines 6-17 ========================= -->
+    <!--
+      OPTN001..OPTN012: dynamic option labels, one line per option in order.
+      Mirrors COMEN01C BUILD-MENU-OPTIONS, which formats each line as the
+      zero-padded option number + '. ' + the option name (e.g. '01. Account
+      View'). Driven by ${menuOptions} (the MainMenuService option list). Blank
+      / unused slots render as an empty line, matching the BMS INITIAL=' '.
+    -->
+    <ul class="menu-options" th:if="${menuOptions != null}">
+        <li class="bms-label menu-option"
+            th:each="opt : ${menuOptions}"
+            th:with="optNum=${opt.number == null ? '' : ('' + opt.number)},
+                     optLabel=${opt.label == null ? '' : opt.label}"
+            th:text="${#strings.isEmpty(optLabel)
+                        ? ''
+                        : ((#strings.length(optNum) == 1 ? ('0' + optNum) : optNum) + '. ' + optLabel)}">01. Account View</li>
+    </ul>
+
+    <!-- ===================== BMS lines 20, 23 and 24 ==================== -->
+    <!--
+      Selection form. OPTION carries the typed menu number; pfKey carries the AID
+      (ENTER / PF3) so MainMenuController can branch exactly like COMEN01C. ENTER
+      is the form's default submit (pressing Enter in the field continues); F3
+      exits to the sign-on screen.
+    -->
+    <form th:object="${mainMenuForm}" method="post" th:action="@{/main-menu}">
+
+        <!-- BMS line 20: 'Please select an option :' (turquoise) + OPTION (green). -->
+        <div class="prompt-row">
+            <label class="bms-prompt" for="option">Please select an option :</label>
+            <input type="text"
+                   id="option"
+                   th:field="*{option}"
+                   class="bms-input option-input"
+                   inputmode="numeric"
+                   pattern="[0-9]*"
+                   maxlength="2"
+                   autocomplete="off"
+                   autofocus="autofocus" />
+        </div>
+
+        <!-- BMS line 23: ERRMSG (red, bright); optional INFOMSG (neutral). -->
+        <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+
+        <!--
+          BMS line 24: PF-key legend rendered as this screen's own submit controls.
+          The shared .bms-pfkey styling makes them look like the yellow 3270 legend
+          rather than OS buttons (per the layout convention). Text matches the BMS
+          INITIAL 'ENTER=Continue  F3=Exit'. ENTER is listed first so it is the
+          default submit; F3 uses formnovalidate so Exit never blocks on the field.
+        -->
+        <div class="bms-footer bms-pfkey">
+            <button type="submit" name="pfKey" value="ENTER">ENTER=Continue</button>
+            <button type="submit" name="pfKey" value="PF3" formnovalidate="formnovalidate">F3=Exit</button>
+        </div>
+    </form>
+
+</main>
+
+</body>
+</html>

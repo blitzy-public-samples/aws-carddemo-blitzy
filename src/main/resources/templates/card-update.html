@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ Card Update screen - CICS transaction CCUP, program COCRDUPC. Web equivalent
+  ~ of the legacy CICS/BMS map COCRDUP / CCRDUPA ("Update Credit Card Details").
+  ~ The 24x80 field contract is mirrored from legacy/app/bms/COCRDUP.bms and the
+  ~ shared terminal chrome (head/CSS, header band, message line, PF-key footer)
+  ~ is reused from fragments/layout.html. Plain Thymeleaf only - no component
+  ~ library and no external CSS/JS (AAP 0.3.4, 0.6.6; 100% UI parity).
+-->
+<html lang="en"
+      xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6">
+
+<!-- Shared <head> + terminal CSS pulled from the layout fragment; the browser
+     tab title is the screen heading. The static children below are prototype
+     content only (discarded when Thymeleaf resolves th:replace). -->
+<head th:replace="~{fragments/layout :: head('Update Credit Card Details')}">
+    <meta charset="UTF-8" />
+    <title>Update Credit Card Details</title>
+</head>
+
+<body>
+<main class="bms-screen">
+
+    <!-- BMS lines 1-2: header band. Tran=CCUP, Prog=COCRDUPC, centered title
+         (TITLE01); date/time + secondary title (TITLE02) are supplied by the
+         controller as curDate/curTime/title2 model attributes (the fragment
+         falls back to the current date/time when they are absent). -->
+    <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CCUP', 'COCRDUPC')}"></div>
+
+    <!-- BMS line 4: screen heading (NEUTRAL, centered). -->
+    <h1 class="bms-heading" style="text-align: center;">Update Credit Card Details</h1>
+
+    <!--
+      Card-update form. Submits back to the Card Update controller (txn CCUP).
+      th:object binds the editable form-backing bean `cardUpdateForm`.
+
+      Protected key fields (ACCTSID / CARDSID, PROT on the 3270) are presented
+      read-only and carried as hidden inputs so the post preserves the record
+      identity for the optimistic update performed by the service. The DRK/PROT
+      expiry-day (EXPDAY) is likewise carried as a hidden input to preserve the
+      RECEIVE/SEND round-trip without being shown (AAP 0.6.6 REDEFINES note).
+    -->
+    <form th:object="${cardUpdateForm}" method="post" th:action="@{/card-update}">
+
+        <!-- EXPDAY (DRK/PROT in BMS): hidden, preserved for round-trip. -->
+        <input type="hidden" th:field="*{expiryDay}" />
+
+        <!-- ACCTSID (PROT/ASKIP): account number - read-only key (blue) + round-trip. -->
+        <div class="bms-field-row">
+            <span class="bms-prompt">Account Number:</span>
+            <span class="bms-label" th:text="*{acctId}">00000000000</span>
+            <input type="hidden" th:field="*{acctId}" />
+        </div>
+
+        <!-- CARDSID: card number - read-only key (blue) + round-trip. -->
+        <div class="bms-field-row">
+            <span class="bms-prompt">Card Number:</span>
+            <span class="bms-label" th:text="*{cardNumber}">0000000000000000</span>
+            <input type="hidden" th:field="*{cardNumber}" />
+        </div>
+
+        <!-- CRDNAME (UNPROT, green): name on card - editable, 50 chars. -->
+        <div class="bms-field-row">
+            <label class="bms-prompt" for="nameOnCard">Name on Card:</label>
+            <input type="text" id="nameOnCard" class="bms-input"
+                   th:field="*{nameOnCard}" maxlength="50" size="50" autocomplete="off" />
+        </div>
+
+        <!-- CRDSTCD (UNPROT, green): card active status Y/N - editable, 1 char. -->
+        <div class="bms-field-row">
+            <label class="bms-prompt" for="activeStatus">Card Active Y/N:</label>
+            <input type="text" id="activeStatus" class="bms-input"
+                   th:field="*{activeStatus}" maxlength="1" size="1" autocomplete="off" />
+        </div>
+
+        <!-- EXPMON / EXPYEAR (UNPROT, green, JUS=RIGHT): expiry month / year -
+             editable, right-aligned numeric. BMS renders a single "Expiry Date"
+             prompt with the month and year inline, separated by '/'. -->
+        <div class="bms-field-row">
+            <span class="bms-prompt">Expiry Date:</span>
+            <input type="text" id="expiryMonth" class="bms-input"
+                   th:field="*{expiryMonth}" maxlength="2" size="2"
+                   inputmode="numeric" aria-label="Expiry month (MM)"
+                   style="text-align: right;" autocomplete="off" />
+            <span class="bms-sep">/</span>
+            <input type="text" id="expiryYear" class="bms-input"
+                   th:field="*{expiryYear}" maxlength="4" size="4"
+                   inputmode="numeric" aria-label="Expiry year (YYYY)"
+                   style="text-align: right;" autocomplete="off" />
+        </div>
+
+        <!-- BMS INFOMSG (row 20, neutral) + ERRMSG (row 23, red) via the shared
+             message fragment. Both are optional controller model attributes. -->
+        <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+
+        <!-- BMS line 24 PF keys (FKEYS + FKEYSC) as real submit buttons. The
+             controller dispatches on the pfKey parameter: ENTER=process,
+             F3=exit, F5=save, F12=cancel. Rendered to look like the terminal
+             legend by the layout .bms-pfkey CSS. -->
+        <div class="bms-footer bms-pfkey">
+            <button type="submit" name="pfKey" value="ENTER">ENTER=Process</button>
+            <button type="submit" name="pfKey" value="PF3">F3=Exit</button>
+            <button type="submit" name="pfKey" value="PF5">F5=Save</button>
+            <button type="submit" name="pfKey" value="PF12">F12=Cancel</button>
+        </div>
+
+    </form>
+</main>
+</body>
+</html>

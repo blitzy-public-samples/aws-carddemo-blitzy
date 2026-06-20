@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ Admin Menu screen — web equivalent of the legacy CICS/BMS map COADM01 / COADM1A
+  ~ (CICS transaction CA00, COBOL program COADM01C).
+  ~
+  ~ ADMIN-ONLY: the menu body is gated to ROLE_ADMIN, which maps to the COBOL
+  ~ condition 88 CDEMO-USRTYP-ADMIN VALUE 'A' (AAP 0.6.5). The AdminMenuController
+  ~ and SecurityConfig enforce the same rule server-side; the sec:authorize guard
+  ~ below is the view-layer line of defence (defence in depth).
+  ~
+  ~ Fidelity reference (read & mirror): legacy/app/bms/COADM01.bms — the 24x80 3270
+  ~ field contract. This screen is structurally identical to the standard Main Menu
+  ~ (COMEN01) and differs only in its heading text and (admin) option list.
+  ~
+  ~ Plain Thymeleaf fragments only — no thymeleaf-layout-dialect, no component
+  ~ library, no external CSS/JS. Shared chrome (head/CSS, header band, message line,
+  ~ PF-key styling) is reused from fragments/layout.html. Authority: AAP 0.3.1,
+  ~ 0.3.4, 0.4.1, 0.6.5.
+  ~
+  ~ Model attributes (supplied by AdminMenuController):
+  ~   adminMenuForm    — form-backing object exposing the OPTION field ({option}).
+  ~   adminMenuOptions — List<String> of already-rendered option text lines
+  ~                      (OPTN001..OPTN012), each formatted "NN. label" by the
+  ~                      service layer, mirroring COADM01C BUILD-MENU-OPTIONS.
+  ~   errMsg / infoMsg — ERRMSG (row 23) status text (optional).
+  ~   curDate / curTime / title2 — header band values (consumed by the layout
+  ~                      header fragment; default to "now" / blank when unset).
+-->
+<html xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6"
+      lang="en">
+
+<!-- Shared <head>: charset/viewport/title + the 3270 terminal palette and the
+     fixed 24x80 monospace grid CSS. Replaces this element wholesale. -->
+<head th:replace="~{fragments/layout :: head('Admin Menu')}"></head>
+
+<body>
+
+<!-- Invisible-accessibility skip link: off-screen until focused, so it has no
+     visual impact on the 3270 layout but lets keyboard/AT users jump straight to
+     the menu. -->
+<a class="skip-link" href="#admin-menu-main">Skip to menu selection</a>
+
+<!--
+  Screen-scoped STRUCTURAL styles only (centering, list reset, input sizing,
+  skip-link). All COLOURS come from the shared .bms-* classes defined once in
+  fragments/layout.html; nothing here is external or third-party. These rules live
+  in the body because the shared head fragment replaces this document's <head>
+  wholesale, leaving no head slot for page-specific styles.
+-->
+<style>
+    /* Skip link: visually hidden until it receives keyboard focus. */
+    .skip-link {
+        position: absolute;
+        inset-inline-start: -9999px;
+    }
+    .skip-link:focus-visible,
+    .skip-link:focus {
+        position: static;
+        inset-inline-start: auto;
+        color: #FFFF00;
+        background-color: #000000;
+    }
+    /* BMS line 4: "Admin Menu", NEUTRAL bright (white/bold via .bms-heading),
+       centered (POS 4,35). Keep the uniform 3270 cell size — neutralise the user
+       agent's enlarged <h1> sizing/margins. */
+    .admin-menu__heading {
+        font-size: inherit;
+        line-height: inherit;
+        font-weight: bold;
+        text-align: center;
+        margin-block: 0.5em;
+    }
+    /* BMS lines 6-17: OPTN001..OPTN012 option labels (BLUE via .bms-label),
+       indented to mirror POS (row,20). The option number is part of the text, so
+       suppress list markers to avoid double numbering. */
+    .admin-menu__options {
+        list-style: none;
+        margin-block: 0 0.75em;
+        margin-inline: 0;
+        padding-inline-start: 2ch;
+    }
+    .admin-menu__options li {
+        margin: 0;
+    }
+    /* BMS line 20: prompt (TURQUOISE via .bms-prompt) followed by the OPTION input.
+       Label and input flow inline, matching the single-row 3270 layout. */
+    .admin-menu__prompt-row {
+        margin-block: 0.5em;
+    }
+    /* OPTION input: BMS LENGTH=2, JUSTIFY=(RIGHT,ZERO). Two-character width and
+       right alignment; the GREEN colour + underline come from .bms-input. */
+    .admin-menu__option {
+        inline-size: 3ch;
+        text-align: end;
+        margin-inline-start: 0.5ch;
+    }
+    /* PF-key controls (BMS line 24): functional submit buttons rendered as the
+       yellow terminal legend (the .bms-pfkey button styling — including the 0.5ch
+       inline padding on each side of every button — is provided by the shared
+       layout fragment). A flex row with a 1ch column-gap, combined with that
+       shared 0.5ch padding on each adjacent edge, yields exactly two character
+       columns of separation between "Continue" and "F3", mirroring the BMS legend
+       literal 'ENTER=Continue  F3=Exit' (two spaces). Flexbox also discards the
+       inter-element source whitespace, so the separation is deterministic and not
+       dependent on HTML formatting. The 0.5em block-start margin is already
+       supplied by the shared .bms-pfkey rule, so it is not repeated here. */
+    .admin-menu__pfkeys {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        column-gap: 1ch;
+    }
+</style>
+
+<!-- Fixed ~80-column monospace terminal container (preserves the 24x80 BMS grid). -->
+<div class="bms-screen">
+
+    <!--
+      BMS lines 1-2 (header band), rendered by the shared layout header fragment:
+        Line 1: "Tran:" CA00            TITLE01 (centered, yellow)        "Date:" curDate
+        Line 2: "Prog:" COADM01C        TITLE02 (centered, yellow)        "Time:" curTime
+      TITLE01 = CCDA-TITLE01 ("AWS Mainframe Modernization") per COADM01C
+      POPULATE-HEADER-INFO. TITLE02 ("CardDemo") and the date/time come from model
+      attributes (title2 / curDate / curTime), defaulting to the current time.
+    -->
+    <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CA00', 'COADM01C')}"></div>
+
+    <!--
+      Admin-only menu body. ROLE_ADMIN <=> COBOL 88 CDEMO-USRTYP-ADMIN VALUE 'A'.
+      Standard users never reach this view (the controller + SecurityConfig redirect
+      them); this guard is the view-layer line of defence. The header band above is
+      intentionally outside the guard (it carries no privileged data).
+    -->
+    <main id="admin-menu-main" sec:authorize="hasRole('ADMIN')">
+
+        <!-- BMS line 4: screen heading (the page's single <h1>). -->
+        <h1 class="bms-heading admin-menu__heading">Admin Menu</h1>
+
+        <!--
+          BMS lines 6-17: OPTN001..OPTN012, rendered in COBOL table order. Each
+          entry is the already-formatted "NN. label" text produced by the service
+          layer (mirrors COADM01C BUILD-MENU-OPTIONS:
+            STRING CDEMO-ADMIN-OPT-NUM '. ' CDEMO-ADMIN-OPT-NAME INTO OPTNnnnO).
+          The BMS map carries up to twelve option fields; the admin menu populates
+          four (User List / Add / Update / Delete). th:each renders 0..12 entries and
+          is null-safe (an empty list simply renders no rows).
+        -->
+        <ul class="admin-menu__options">
+            <li class="bms-label"
+                th:each="opt : ${adminMenuOptions}"
+                th:text="${opt}">01. User List (Security)</li>
+        </ul>
+
+        <!--
+          BMS line 20 + the OPTION input, inside the pseudo-conversational post form.
+          OPTION binds to adminMenuForm.option; the pressed AID key is submitted as
+          the "pfKey" request parameter and dispatched by AdminMenuController.
+        -->
+        <form th:object="${adminMenuForm}"
+              method="post"
+              th:action="@{/admin-menu}"
+              class="admin-menu__form">
+
+            <p class="admin-menu__prompt-row">
+                <!-- TURQUOISE prompt; doubles as the accessible label for OPTION. -->
+                <label class="bms-prompt" for="option">Please select an option :</label>
+                <!--
+                  OPTION: BMS ATTRB=(FSET,IC,NORM,NUM,UNPROT), HILIGHT=UNDERLINE,
+                  JUSTIFY=(RIGHT,ZERO), LENGTH=2. type=text (not number) preserves the
+                  fixed two-character zoned field with no spinner; inputmode/pattern
+                  keep entry numeric; autofocus mirrors IC (insert cursor). The GREEN
+                  colour + underline come from .bms-input.
+                -->
+                <input type="text"
+                       id="option"
+                       th:field="*{option}"
+                       class="bms-input admin-menu__option"
+                       maxlength="2"
+                       size="2"
+                       inputmode="numeric"
+                       pattern="[0-9]{0,2}"
+                       autocomplete="off"
+                       autofocus />
+            </p>
+
+            <!-- BMS line 23: ERRMSG (red, bright) + optional info line, via the
+                 shared messages fragment. -->
+            <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+
+            <!--
+              BMS line 24: PF-key legend rendered as the actual submit controls.
+              COADM01C handles DFHENTER (process the selection) and DFHPF3 (XCTL
+              COSGN00C, i.e. return to sign-on). The shared .bms-pfkey styling makes
+              these submit buttons look like the yellow terminal legend rather than
+              OS buttons, so a single row is both the legend and the working control
+              (the layout fragment documents this pattern for form screens). ENTER is
+              the default submit (pressing Enter in the field activates it); F3=Exit
+              skips field validation so the user can always leave.
+            -->
+            <div class="bms-footer bms-pfkey admin-menu__pfkeys">
+                <button type="submit" name="pfKey" value="ENTER">ENTER=Continue</button>
+                <button type="submit" name="pfKey" value="PF3" formnovalidate>F3=Exit</button>
+            </div>
+        </form>
+    </main>
+
+</div>
+
+</body>
+</html>
