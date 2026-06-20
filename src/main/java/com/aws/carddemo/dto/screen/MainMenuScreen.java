@@ -79,7 +79,8 @@ public class MainMenuScreen {
    * most 40 characters long. Initialized to an empty mutable list so callers can populate it
    * incrementally without risking a {@link NullPointerException}.
    */
-  private List<String> options;
+  @Size(max = 12)
+  private List<@Size(max = 40) String> options = new ArrayList<>();
 
   @Size(max = 2)
   private String option; // OPTION PIC X(2) - operator's raw menu selection input
@@ -91,7 +92,7 @@ public class MainMenuScreen {
    * Creates an empty main-menu screen contract with an initialized, mutable {@link #options} list.
    */
   public MainMenuScreen() {
-    this.options = new ArrayList<>();
+    // No-args constructor for framework instantiation and HTTP form binding.
   }
 
   /**

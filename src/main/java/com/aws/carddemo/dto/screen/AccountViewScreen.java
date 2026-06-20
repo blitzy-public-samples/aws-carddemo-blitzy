@@ -57,21 +57,27 @@ public class AccountViewScreen {
   // ----- Screen header: transaction/program identity, titles, date and time -----
 
   /** TRNNAME PIC X(4) - CICS transaction name shown in the screen header. */
+  @Size(max = 4)
   private String trnName;
 
   /** TITLE01 PIC X(40) - first title line. */
+  @Size(max = 40)
   private String title01;
 
   /** CURDATE PIC X(8) - current date (mm/dd/yy). */
+  @Size(max = 8)
   private String curDate;
 
   /** PGMNAME PIC X(8) - current program name. */
+  @Size(max = 8)
   private String pgmName;
 
   /** TITLE02 PIC X(40) - second title line. */
+  @Size(max = 40)
   private String title02;
 
   /** CURTIME PIC X(8) - current time (hh:mm:ss). */
+  @Size(max = 8)
   private String curTime;
 
   // ----- Account identifier: the sole input (UNPROT) field on the screen -----
@@ -90,21 +96,25 @@ public class AccountViewScreen {
   // ----- Account detail fields -----
 
   /** ACSTTUS PIC X(1) - account active status (Y/N). */
+  @Size(max = 1)
   private String acstTus;
 
   /** ADTOPEN PIC X(10) - account open date. */
+  @Size(max = 10)
   private String adtOpen;
 
   /** ACRDLIM - credit limit. Monetary; BMS PICOUT '+ZZZ,ZZZ,ZZZ.99'. {@link BigDecimal} scale 2. */
   private BigDecimal acrdLim;
 
   /** AEXPDT PIC X(10) - card expiration date. */
+  @Size(max = 10)
   private String aexpDt;
 
   /** ACSHLIM - cash credit limit. Monetary; {@link BigDecimal} scale 2. */
   private BigDecimal acshLim;
 
   /** AREISDT PIC X(10) - card reissue date. */
+  @Size(max = 10)
   private String areisDt;
 
   /** ACURBAL - current account balance. Monetary; {@link BigDecimal} scale 2. */
@@ -114,6 +124,7 @@ public class AccountViewScreen {
   private BigDecimal acrCycr;
 
   /** AADDGRP PIC X(10) - account group identifier. */
+  @Size(max = 10)
   private String aaddGrp;
 
   /** ACRCYDB - current cycle debit. Monetary; {@link BigDecimal} scale 2. */
@@ -122,65 +133,85 @@ public class AccountViewScreen {
   // ----- Customer detail fields (owning customer of the account) -----
 
   /** ACSTNUM PIC X(9) - customer number. */
+  @Size(max = 9)
   private String acstNum;
 
   /** ACSTSSN PIC X(12) - social security number (PII; masked in {@link #toString()}). */
+  @Size(max = 12)
   private String acstSsn;
 
   /** ACSTDOB PIC X(10) - customer date of birth. */
+  @Size(max = 10)
   private String acstDob;
 
   /** ACSTFCO PIC X(3) - customer FICO credit score. */
+  @Size(max = 3)
   private String acstFco;
 
   /** ACSFNAM PIC X(25) - customer first name. */
+  @Size(max = 25)
   private String acsFnam;
 
   /** ACSMNAM PIC X(25) - customer middle name. */
+  @Size(max = 25)
   private String acsMnam;
 
   /** ACSLNAM PIC X(25) - customer last name. */
+  @Size(max = 25)
   private String acsLnam;
 
   /** ACSADL1 PIC X(50) - customer address line 1. */
+  @Size(max = 50)
   private String acsAdl1;
 
   /** ACSSTTE PIC X(2) - customer state code. */
+  @Size(max = 2)
   private String acsStte;
 
   /** ACSADL2 PIC X(50) - customer address line 2. */
+  @Size(max = 50)
   private String acsAdl2;
 
   /** ACSZIPC PIC X(5) - customer zip code. */
+  @Size(max = 5)
   private String acsZipc;
 
   /** ACSCITY PIC X(50) - customer city. */
+  @Size(max = 50)
   private String acsCity;
 
   /** ACSCTRY PIC X(3) - customer country code. */
+  @Size(max = 3)
   private String acsCtry;
 
   /** ACSPHN1 PIC X(13) - customer phone number 1. */
+  @Size(max = 13)
   private String acsPhn1;
 
   /** ACSGOVT PIC X(20) - government-issued identification reference. */
+  @Size(max = 20)
   private String acsGovt;
 
   /** ACSPHN2 PIC X(13) - customer phone number 2. */
+  @Size(max = 13)
   private String acsPhn2;
 
   /** ACSEFTC PIC X(10) - EFT (electronic funds transfer) account code. */
+  @Size(max = 10)
   private String acsEftc;
 
   /** ACSPFLG PIC X(1) - primary cardholder flag (Y/N). */
+  @Size(max = 1)
   private String acsPflg;
 
   // ----- Screen message fields -----
 
   /** INFOMSG PIC X(45) - informational message line. */
+  @Size(max = 45)
   private String infoMsg;
 
   /** ERRMSG PIC X(78) - error message line. */
+  @Size(max = 78)
   private String errMsg;
 
   /** Creates an empty screen DTO. Required for framework instantiation and data binding. */

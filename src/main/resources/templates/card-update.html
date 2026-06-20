@@ -34,6 +34,21 @@
 </head>
 
 <body>
+
+<!--
+  Screen-scoped layout helpers ONLY (classes, never inline styles). The shared
+  colour vocabulary and 24x80 monospace grid live once in fragments/layout.html;
+  the rules below only center the BMS line-4 heading and right-align the
+  JUS=RIGHT expiry month/year fields, mirroring the class-based pattern used by
+  the sibling screen templates (e.g. transaction-add/transaction-view).
+-->
+<style>
+    /* BMS line 4 heading ("Update Credit Card Details", NEUTRAL bright): centered. */
+    .card-update-heading { text-align: center; }
+    /* EXPMON / EXPYEAR are JUS=RIGHT on the 3270 map: right-aligned numeric entry. */
+    .card-update-num { text-align: right; }
+</style>
+
 <main class="bms-screen">
 
     <!-- BMS lines 1-2: header band. Tran=CCUP, Prog=COCRDUPC, centered title
@@ -43,7 +58,7 @@
     <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CCUP', 'COCRDUPC')}"></div>
 
     <!-- BMS line 4: screen heading (NEUTRAL, centered). -->
-    <h1 class="bms-heading" style="text-align: center;">Update Credit Card Details</h1>
+    <h1 class="bms-heading card-update-heading">Update Credit Card Details</h1>
 
     <!--
       Card-update form. Submits back to the Card Update controller (txn CCUP).
@@ -93,15 +108,15 @@
              prompt with the month and year inline, separated by '/'. -->
         <div class="bms-field-row">
             <span class="bms-prompt">Expiry Date:</span>
-            <input type="text" id="expiryMonth" class="bms-input"
+            <input type="text" id="expiryMonth" class="bms-input card-update-num"
                    th:field="*{expiryMonth}" maxlength="2" size="2"
                    inputmode="numeric" aria-label="Expiry month (MM)"
-                   style="text-align: right;" autocomplete="off" />
+                   autocomplete="off" />
             <span class="bms-sep">/</span>
-            <input type="text" id="expiryYear" class="bms-input"
+            <input type="text" id="expiryYear" class="bms-input card-update-num"
                    th:field="*{expiryYear}" maxlength="4" size="4"
                    inputmode="numeric" aria-label="Expiry year (YYYY)"
-                   style="text-align: right;" autocomplete="off" />
+                   autocomplete="off" />
         </div>
 
         <!-- BMS INFOMSG (row 20, neutral) + ERRMSG (row 23, red) via the shared

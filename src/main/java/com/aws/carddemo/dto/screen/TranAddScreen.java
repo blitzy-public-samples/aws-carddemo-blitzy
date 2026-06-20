@@ -16,6 +16,7 @@
  */
 package com.aws.carddemo.dto.screen;
 
+import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 
 /**
@@ -53,39 +54,51 @@ import java.math.BigDecimal;
 public class TranAddScreen {
 
   /** Transaction/screen name label; legacy {@code TRNNAMEI}, {@code PIC X(4)}. */
+  @Size(max = 4)
   private String trnName;
 
   /** Primary title line (application title); legacy {@code TITLE01I}, {@code PIC X(40)}. */
+  @Size(max = 40)
   private String title01;
 
   /** Current date label as rendered on the screen; legacy {@code CURDATEI}, {@code PIC X(8)}. */
+  @Size(max = 8)
   private String curDate;
 
   /** Current program name label; legacy {@code PGMNAMEI}, {@code PIC X(8)}. */
+  @Size(max = 8)
   private String pgmName;
 
   /** Secondary title line (screen title); legacy {@code TITLE02I}, {@code PIC X(40)}. */
+  @Size(max = 40)
   private String title02;
 
   /** Current time label as rendered on the screen; legacy {@code CURTIMEI}, {@code PIC X(8)}. */
+  @Size(max = 8)
   private String curTime;
 
   /** Account id the new transaction is attached to; legacy {@code ACTIDINI}, {@code PIC X(11)}. */
+  @Size(max = 11)
   private String actIdIn;
 
   /** Card number the new transaction is attached to; legacy {@code CARDNINI}, {@code PIC X(16)}. */
+  @Size(max = 16)
   private String cardNin;
 
   /** Transaction type code; legacy {@code TTYPCDI}, {@code PIC X(2)}. */
+  @Size(max = 2)
   private String ttypCd;
 
   /** Transaction category code; legacy {@code TCATCDI}, {@code PIC X(4)}. */
+  @Size(max = 4)
   private String tcatCd;
 
   /** Transaction source; legacy {@code TRNSRCI}, {@code PIC X(10)}. */
+  @Size(max = 10)
   private String trnSrc;
 
   /** Transaction description; legacy {@code TDESCI}, {@code PIC X(60)}. */
+  @Size(max = 60)
   private String tDesc;
 
   /**
@@ -102,27 +115,35 @@ public class TranAddScreen {
    * Original transaction date, hint {@code (YYYY-MM-DD)}; legacy {@code TORIGDTI}, {@code PIC
    * X(10)}.
    */
+  @Size(max = 10)
   private String tOrigDt;
 
   /** Processing date, hint {@code (YYYY-MM-DD)}; legacy {@code TPROCDTI}, {@code PIC X(10)}. */
+  @Size(max = 10)
   private String tProcDt;
 
   /** Merchant id; legacy {@code MIDI}, {@code PIC X(9)}. */
+  @Size(max = 9)
   private String mid;
 
   /** Merchant name; legacy {@code MNAMEI}, {@code PIC X(30)}. */
+  @Size(max = 30)
   private String mName;
 
   /** Merchant city; legacy {@code MCITYI}, {@code PIC X(25)}. */
+  @Size(max = 25)
   private String mCity;
 
   /** Merchant zip; legacy {@code MZIPI}, {@code PIC X(10)}. */
+  @Size(max = 10)
   private String mZip;
 
   /** Add-confirmation flag (Y/N); legacy {@code CONFIRMI}, {@code PIC X(1)}. */
+  @Size(max = 1)
   private String confirm;
 
   /** Error/feedback message line; legacy {@code ERRMSGI}, {@code PIC X(78)}. */
+  @Size(max = 78)
   private String errMsg;
 
   /** Creates an empty screen DTO; all fields default to {@code null} until populated. */
