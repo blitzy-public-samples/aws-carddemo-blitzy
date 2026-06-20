@@ -676,11 +676,29 @@ public class UserListService {
    * #MSG_UNABLE_LOOKUP_USER} redisplay message (the legacy {@code WHEN OTHER} status branch),
    * without throwing (AAP §0.6.4 service-usage rule).
    *
+   * <p><strong>Bounded-result / VSAM-browse parity exception (intentional).</strong> The code
+   * review performance checklist flags this {@code findAll(Sort)} read as an unbounded full-table
+   * load. It is a deliberate, AAP-sanctioned parity decision, not an oversight. Legacy {@code
+   * COUSR00C} browses {@code USRSEC} with VSAM {@code STARTBR GTEQ} / {@code READNEXT} / {@code
+   * READPREV}, and the 10-row keyset paging &mdash; in particular {@code PROCESS-PAGE-BACKWARD}
+   * (PF7), which locates the current first user id and walks the preceding rows, plus the next-page
+   * "peek" and the byte-exact top/bottom edge messages &mdash; is reproduced by slicing one stable
+   * ascending snapshot in service; a forward-only bounded query cannot reproduce the page-up
+   * direction over identical ordering. Under AAP precedence D1, 100% behavioral parity (AAP
+   * &sect;0.7.1 R1 / &sect;0.6.5) outranks the generic performance heuristic, and the migration's
+   * local-only validation runs against the small legacy fixtures (AAP &sect;0.6.7). A
+   * repository-level cursor/range query may replace this only if it preserves identical PF7/PF8
+   * ordering and edge-message behavior.
+   *
    * @param screen the screen whose message line receives the failure text
    * @return the ascending snapshot, or {@code null} if the load failed (message already set)
    */
   private List<UserSecurity> loadAllUsersSafe(UserListScreen screen) {
     try {
+      // Single ascending snapshot for in-service keyset paging — intentional VSAM-browse parity
+      // exception (PF7 READPREV page-up + next-page peek need the full ordered key set); see the
+      // method Javadoc. AAP D1: parity (§0.7.1/§0.6.5) over the perf heuristic; local validation
+      // uses small fixtures.
       return userSecurityRepository.findAll(SORT_BY_USR_ID);
     } catch (DataAccessException ex) {
       screen.setErrMsg(MSG_UNABLE_LOOKUP_USER);

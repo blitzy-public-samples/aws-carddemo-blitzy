@@ -36,6 +36,7 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.web.util.HtmlUtils;
 
 /**
  * Account-statement generation batch service — the Java/Spring translation of the COBOL program
@@ -581,7 +582,7 @@ public class StatementGenerationService {
     // HTML-L11: '<h3>Statement for Account Number: ' + L11-ACCT (ACCT-ID in X(20)) + '</h3>'.
     String acctId20 =
         CobolStringUtils.padRight(CobolStringUtils.padLeftZeros(account.getAcctId(), 11), 20);
-    emitHtml(HTML_L11_PREFIX + acctId20 + HTML_H3_CLOSE);
+    emitHtml(HTML_L11_PREFIX + escapeHtml(acctId20) + HTML_H3_CLOSE);
     emitHtml(HTML_LTDE);
     emitHtml(HTML_LTRE);
     emitHtml(HTML_LTRS);
@@ -609,11 +610,18 @@ public class StatementGenerationService {
   private void writeHtmlNmadbs() {
     // Name: MOVE ST-NAME (75) TO L23-NAME (50) then STRING with the name-prefix.
     String l23Name = CobolStringUtils.truncate(stName, 50);
-    emitHtml(HTML_NAME_PREFIX + delimitedBy(l23Name, DOUBLE_SPACE) + DOUBLE_SPACE + HTML_P_CLOSE);
+    emitHtml(
+        HTML_NAME_PREFIX
+            + escapeHtml(delimitedBy(l23Name, DOUBLE_SPACE))
+            + DOUBLE_SPACE
+            + HTML_P_CLOSE);
     // Three address paragraphs.
-    emitHtml(HTML_P_OPEN + delimitedBy(stAdd1, DOUBLE_SPACE) + DOUBLE_SPACE + HTML_P_CLOSE);
-    emitHtml(HTML_P_OPEN + delimitedBy(stAdd2, DOUBLE_SPACE) + DOUBLE_SPACE + HTML_P_CLOSE);
-    emitHtml(HTML_P_OPEN + delimitedBy(stAdd3, DOUBLE_SPACE) + DOUBLE_SPACE + HTML_P_CLOSE);
+    emitHtml(
+        HTML_P_OPEN + escapeHtml(delimitedBy(stAdd1, DOUBLE_SPACE)) + DOUBLE_SPACE + HTML_P_CLOSE);
+    emitHtml(
+        HTML_P_OPEN + escapeHtml(delimitedBy(stAdd2, DOUBLE_SPACE)) + DOUBLE_SPACE + HTML_P_CLOSE);
+    emitHtml(
+        HTML_P_OPEN + escapeHtml(delimitedBy(stAdd3, DOUBLE_SPACE)) + DOUBLE_SPACE + HTML_P_CLOSE);
 
     emitHtml(HTML_LTDE);
     emitHtml(HTML_LTRE);
@@ -626,9 +634,9 @@ public class StatementGenerationService {
     emitHtml(HTML_L22_35);
 
     // Basic details (whole-field values).
-    emitHtml(BASIC_ACCT_PREFIX + stAcctId + HTML_P_CLOSE);
-    emitHtml(BASIC_BAL_PREFIX + stCurrBal + HTML_P_CLOSE);
-    emitHtml(BASIC_FICO_PREFIX + stFico + HTML_P_CLOSE);
+    emitHtml(BASIC_ACCT_PREFIX + escapeHtml(stAcctId) + HTML_P_CLOSE);
+    emitHtml(BASIC_BAL_PREFIX + escapeHtml(stCurrBal) + HTML_P_CLOSE);
+    emitHtml(BASIC_FICO_PREFIX + escapeHtml(stFico) + HTML_P_CLOSE);
 
     emitHtml(HTML_LTDE);
     emitHtml(HTML_LTRE);
@@ -707,13 +715,13 @@ public class StatementGenerationService {
 
     emitHtml(HTML_LTRS);
     emitHtml(HTML_L58);
-    emitHtml(HTML_P_OPEN + stTranId + HTML_P_CLOSE);
+    emitHtml(HTML_P_OPEN + escapeHtml(stTranId) + HTML_P_CLOSE);
     emitHtml(HTML_LTDE);
     emitHtml(HTML_L61);
-    emitHtml(HTML_P_OPEN + stTranDt + HTML_P_CLOSE);
+    emitHtml(HTML_P_OPEN + escapeHtml(stTranDt) + HTML_P_CLOSE);
     emitHtml(HTML_LTDE);
     emitHtml(HTML_L64);
-    emitHtml(HTML_P_OPEN + stTranAmt + HTML_P_CLOSE);
+    emitHtml(HTML_P_OPEN + escapeHtml(stTranAmt) + HTML_P_CLOSE);
     emitHtml(HTML_LTDE);
     emitHtml(HTML_LTRE);
   }
@@ -807,6 +815,32 @@ public class StatementGenerationService {
    */
   private void emitHtml(String line) {
     htmlSink.accept(CobolStringUtils.fixedWidth(line, 100));
+  }
+
+  /**
+   * HTML-escapes a dynamic, data-derived value before it is concatenated into an HTML statement
+   * line, neutralizing stored/raw HTML injection (CWE-79). Only the <em>dynamic</em> fragments
+   * (customer name, address lines, account id, balance, FICO, and the per-transaction id /
+   * description / amount) are passed through this method; the static HTML scaffolding constants
+   * (tags copied verbatim from {@code CBSTM03A}) are emitted unescaped so the document markup is
+   * preserved.
+   *
+   * <p>The plain-text statement path ({@link #emitStmt(String)}) deliberately does
+   * <strong>not</strong> escape these same values: that output is a fixed-width {@code LRECL=80}
+   * text file (not browser rendered), and escaping would corrupt the byte-for-byte COBOL parity
+   * required by the golden-file tests (AAP §0.6.7). The split keeps the HTML output safe while the
+   * text output stays faithful.
+   *
+   * <p>Escaping is a no-op for the clean ASCII fixture data (no HTML metacharacters), so existing
+   * golden HTML parity is unaffected; it only transforms operator-influenced characters such as
+   * {@code <}, {@code >}, {@code &}, and {@code "} when present (e.g., a malicious transaction
+   * description entered through the online transaction-add screen).
+   *
+   * @param value the dynamic field value to escape; {@code null} is treated as an empty string
+   * @return the HTML-escaped value, never {@code null}
+   */
+  private static String escapeHtml(String value) {
+    return HtmlUtils.htmlEscape(value == null ? "" : value);
   }
 
   /**

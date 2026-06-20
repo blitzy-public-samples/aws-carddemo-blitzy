@@ -68,12 +68,15 @@ import org.springframework.security.web.SecurityFilterChain;
  * SecurityConfig} directly and exercises the {@code passwordEncoder} and {@code userDetailsService}
  * beans against a plain Mockito mock of {@link UserSecurityRepository}. It does <em>not</em> start
  * a Spring context, a servlet environment, or Testcontainers. Building a real {@link HttpSecurity}
- * to exercise the {@code securityFilterChain} body requires a full {@code ApplicationContext}, so
- * the filter-chain bean is verified here only at the contract level (declared method, {@link Bean}
+ * to exercise the {@code securityFilterChain} body requires a Spring web context, so the
+ * filter-chain bean is verified here only at the contract level (declared method, {@link Bean}
  * annotation, and return type) via reflection; the end-to-end HTTP access-rule behaviour (the
- * public {@code POST /signon}, the {@code /admin/**} and user-management gates, and the form-login
- * role routing) is covered by the sibling MockMvc web-layer tests and the full-context application
- * test.
+ * public {@code POST /signon} permitAll plus CSRF, the {@code /admin/**} and user-management {@code
+ * hasRole('ADMIN')} gates, and the {@code anyRequest().authenticated()} form-login routing) is
+ * covered by the sibling {@link SecurityFilterChainTest} ({@code @WebMvcTest} driving real requests
+ * through the imported {@link SecurityConfig} filter chain) and by the per-controller
+ * {@code @WebMvcTest} web-layer tests under {@code com.aws.carddemo.web} (each asserting its
+ * route's CSRF and role gating).
  *
  * <p><strong>Credential hygiene in the test itself.</strong> Every raw secret used here is a
  * freshly generated {@link UUID}; no password value is ever hardcoded or logged (Agent Action Plan

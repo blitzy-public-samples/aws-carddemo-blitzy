@@ -654,11 +654,29 @@ public class TranListService {
    * {@code STARTBR}/{@code READNEXT} {@code OTHER} status branch ({@code "Unable to lookup
    * transaction..."}).
    *
+   * <p><strong>Bounded-result / VSAM-browse parity exception (intentional).</strong> The code
+   * review performance checklist flags this {@code findAllByOrderByTranIdAsc()} read as an
+   * unbounded full-table load. It is a deliberate, AAP-sanctioned parity decision, not an
+   * oversight. Legacy {@code COTRN00C} browses {@code TRANSACT} with VSAM {@code STARTBR GTEQ} /
+   * {@code READNEXT} / {@code READPREV}, and reproducing the 10-row keyset paging with exact parity
+   * &mdash; especially {@code PROCESS-PAGE-BACKWARD} (PF7), which indexes to the current first id
+   * and walks the preceding rows, plus the next-page "peek" and the byte-exact top/bottom edge
+   * messages &mdash; requires one stable ascending projection to slice by index in service; a
+   * forward-only bounded query cannot reproduce the page-up direction over identical ordering.
+   * Under AAP precedence D1, 100% behavioral parity (AAP &sect;0.7.1 R1 / &sect;0.6.5) outranks the
+   * generic performance heuristic, and the migration's local-only validation runs against the small
+   * legacy fixtures (AAP &sect;0.6.7). A repository-level cursor/range query may replace this only
+   * if it preserves identical PF7/PF8 ordering and edge-message behavior.
+   *
    * @return all transactions ordered by ascending transaction id (never {@code null})
    * @throws IoStatusException if the underlying query fails
    */
   private List<Transaction> loadAllTransactions() {
     try {
+      // Single ascending browse source for in-service keyset paging — intentional VSAM-browse
+      // parity exception (PF7 READPREV page-up + next-page peek need the full ordered key set); see
+      // the method Javadoc. AAP D1: parity (§0.7.1/§0.6.5) over the perf heuristic; local
+      // validation uses small fixtures.
       List<Transaction> all = transactionRepository.findAllByOrderByTranIdAsc();
       return (all == null) ? new ArrayList<>() : all;
     } catch (DataAccessException ex) {

@@ -23,15 +23,16 @@
   ~
   ~ FORM-BINDING CONTRACT (fulfilled by web.TranAddController +
   ~ service.online.TranAddService): the controller exposes a model attribute
-  ~ named "transactionAddForm" whose properties map 1:1 to the COTRN2A input
-  ~ fields (BMS name -> property, BMS LENGTH in parentheses):
-  ~     ACTIDIN -> acctId(11)          CARDNIN -> cardNumber(16)
-  ~     TTYPCD  -> typeCode(2)         TCATCD  -> categoryCode(4)
-  ~     TRNSRC  -> source(10)          TDESC   -> description(60)
-  ~     TRNAMT  -> amount(12)          TORIGDT -> originDate(10)
-  ~     TPROCDT -> processingDate(10)  MID     -> merchantId(9)
-  ~     MNAME   -> merchantName(30)    MCITY   -> merchantCity(25)
-  ~     MZIP    -> merchantZip(10)     CONFIRM -> confirm(1)
+  ~ named "transactionAddForm" (the TranAddScreen DTO) whose canonical COBOL-derived
+  ~ properties map 1:1 to the COTRN2A input fields (BMS name -> property, BMS LENGTH
+  ~ in parentheses):
+  ~     ACTIDIN -> actIdIn(11)         CARDNIN -> cardNin(16)
+  ~     TTYPCD  -> ttypCd(2)           TCATCD  -> tcatCd(4)
+  ~     TRNSRC  -> trnSrc(10)          TDESC   -> tDesc(60)
+  ~     TRNAMT  -> trnAmt(12)          TORIGDT -> tOrigDt(10)
+  ~     TPROCDT -> tProcDt(10)         MID     -> mid(9)
+  ~     MNAME   -> mName(30)           MCITY   -> mCity(25)
+  ~     MZIP    -> mZip(10)            CONFIRM -> confirm(1)
   ~ The amount field is captured as raw text here (no template arithmetic);
   ~ the service parses it to a java.math.BigDecimal at scale 2 with truncation
   ~ (RoundingMode.DOWN) per AAP 0.6.1. The message line (ERRMSG) and the header
@@ -130,12 +131,12 @@
 
         <!-- BMS line 6: key input - account number (or) card number. -->
         <div class="bms-line">
-            <label for="acctId" class="bms-prompt">Enter Acct #:</label>
-            <input type="text" id="acctId" th:field="*{acctId}"
+            <label for="actIdIn" class="bms-prompt">Enter Acct #:</label>
+            <input type="text" id="actIdIn" th:field="*{actIdIn}"
                    class="bms-input" maxlength="11" size="11" />
             <span class="bms-sep">(or)</span>
-            <label for="cardNumber" class="bms-prompt">Card #:</label>
-            <input type="text" id="cardNumber" th:field="*{cardNumber}"
+            <label for="cardNin" class="bms-prompt">Card #:</label>
+            <input type="text" id="cardNin" th:field="*{cardNin}"
                    class="bms-input" maxlength="16" size="16" />
         </div>
 
@@ -144,21 +145,21 @@
 
         <!-- BMS line 10: type code / category code / source. -->
         <div class="bms-line">
-            <label for="typeCode" class="bms-prompt">Type CD:</label>
-            <input type="text" id="typeCode" th:field="*{typeCode}"
+            <label for="ttypCd" class="bms-prompt">Type CD:</label>
+            <input type="text" id="ttypCd" th:field="*{ttypCd}"
                    class="bms-input" maxlength="2" size="2" />
-            <label for="categoryCode" class="bms-prompt">Category CD:</label>
-            <input type="text" id="categoryCode" th:field="*{categoryCode}"
+            <label for="tcatCd" class="bms-prompt">Category CD:</label>
+            <input type="text" id="tcatCd" th:field="*{tcatCd}"
                    class="bms-input" maxlength="4" size="4" />
-            <label for="source" class="bms-prompt">Source:</label>
-            <input type="text" id="source" th:field="*{source}"
+            <label for="trnSrc" class="bms-prompt">Source:</label>
+            <input type="text" id="trnSrc" th:field="*{trnSrc}"
                    class="bms-input" maxlength="10" size="10" />
         </div>
 
         <!-- BMS line 12: description. -->
         <div class="bms-line">
-            <label for="description" class="bms-prompt">Description:</label>
-            <input type="text" id="description" th:field="*{description}"
+            <label for="tDesc" class="bms-prompt">Description:</label>
+            <input type="text" id="tDesc" th:field="*{tDesc}"
                    class="bms-input" maxlength="60" size="60" />
         </div>
 
@@ -167,8 +168,8 @@
         <div class="bms-line">
             <span class="bms-field">
                 <span class="bms-field-line">
-                    <label for="amount" class="bms-prompt">Amount:</label>
-                    <input type="text" id="amount" th:field="*{amount}"
+                    <label for="trnAmt" class="bms-prompt">Amount:</label>
+                    <input type="text" id="trnAmt" th:field="*{trnAmt}"
                            class="bms-input bms-amount" maxlength="12" size="12"
                            inputmode="decimal" aria-describedby="amount-hint" />
                 </span>
@@ -176,8 +177,8 @@
             </span>
             <span class="bms-field">
                 <span class="bms-field-line">
-                    <label for="originDate" class="bms-prompt">Orig Date:</label>
-                    <input type="text" id="originDate" th:field="*{originDate}"
+                    <label for="tOrigDt" class="bms-prompt">Orig Date:</label>
+                    <input type="text" id="tOrigDt" th:field="*{tOrigDt}"
                            class="bms-input" maxlength="10" size="10"
                            aria-describedby="originDate-hint" />
                 </span>
@@ -185,8 +186,8 @@
             </span>
             <span class="bms-field">
                 <span class="bms-field-line">
-                    <label for="processingDate" class="bms-prompt">Proc Date:</label>
-                    <input type="text" id="processingDate" th:field="*{processingDate}"
+                    <label for="tProcDt" class="bms-prompt">Proc Date:</label>
+                    <input type="text" id="tProcDt" th:field="*{tProcDt}"
                            class="bms-input" maxlength="10" size="10"
                            aria-describedby="processingDate-hint" />
                 </span>
@@ -196,21 +197,21 @@
 
         <!-- BMS line 16: merchant id / merchant name. -->
         <div class="bms-line">
-            <label for="merchantId" class="bms-prompt">Merchant ID:</label>
-            <input type="text" id="merchantId" th:field="*{merchantId}"
+            <label for="mid" class="bms-prompt">Merchant ID:</label>
+            <input type="text" id="mid" th:field="*{mid}"
                    class="bms-input" maxlength="9" size="9" />
-            <label for="merchantName" class="bms-prompt">Merchant Name:</label>
-            <input type="text" id="merchantName" th:field="*{merchantName}"
+            <label for="mName" class="bms-prompt">Merchant Name:</label>
+            <input type="text" id="mName" th:field="*{mName}"
                    class="bms-input" maxlength="30" size="30" />
         </div>
 
         <!-- BMS line 18: merchant city / merchant zip. -->
         <div class="bms-line">
-            <label for="merchantCity" class="bms-prompt">Merchant City:</label>
-            <input type="text" id="merchantCity" th:field="*{merchantCity}"
+            <label for="mCity" class="bms-prompt">Merchant City:</label>
+            <input type="text" id="mCity" th:field="*{mCity}"
                    class="bms-input" maxlength="25" size="25" />
-            <label for="merchantZip" class="bms-prompt">Merchant Zip:</label>
-            <input type="text" id="merchantZip" th:field="*{merchantZip}"
+            <label for="mZip" class="bms-prompt">Merchant Zip:</label>
+            <input type="text" id="mZip" th:field="*{mZip}"
                    class="bms-input" maxlength="10" size="10" />
         </div>
 

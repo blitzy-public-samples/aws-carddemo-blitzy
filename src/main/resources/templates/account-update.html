@@ -91,17 +91,17 @@
         <!-- BMS line 5: Account Number (IC = initial cursor -> autofocus) + Active Y/N. -->
         <div class="acctupd-row">
             <span class="acctupd-left">
-                <label class="bms-prompt acctupd-prompt" for="acctId">Account Number :</label>
+                <label class="bms-prompt acctupd-prompt" for="acctSid">Account Number :</label>
                 <!-- REDEFINES dual view (AAP 0.6.6): COBOL CC-ACCT-ID X(11) REDEFINES
                      9(11) exposes SPACES-vs-numeric views. The DTO provides paired
                      string/numeric accessors; this input binds to the STRING accessor
                      (acctId) and the service performs the numeric conversion. -->
-                <input th:field="*{acctId}" type="text" class="bms-input"
+                <input th:field="*{acctSid}" type="text" class="bms-input"
                        maxlength="11" size="11" inputmode="numeric" autofocus="autofocus" />
             </span>
             <span class="acctupd-right">
-                <label class="bms-prompt acctupd-prompt" for="accountStatus">Active Y/N: </label>
-                <input th:field="*{accountStatus}" type="text" class="bms-input"
+                <label class="bms-prompt acctupd-prompt" for="acstTus">Active Y/N: </label>
+                <input th:field="*{acstTus}" type="text" class="bms-input"
                        maxlength="1" size="1" />
             </span>
         </div>
@@ -109,23 +109,23 @@
         <!-- BMS line 6: Opened date (yyyy-mm-dd, right-justified) + Credit Limit (money). -->
         <div class="acctupd-row">
             <span class="acctupd-left">
-                <label class="bms-prompt acctupd-prompt" for="openYear">Opened :</label>
+                <label class="bms-prompt acctupd-prompt" for="opnYear">Opened :</label>
                 <span class="acctupd-seg" role="group" aria-label="Opened date (year, month, day)">
-                    <input th:field="*{openYear}" type="text" class="bms-input acctupd-num"
+                    <input th:field="*{opnYear}" type="text" class="bms-input acctupd-num"
                            maxlength="4" size="4" inputmode="numeric" aria-label="Opened year" />
                     <span class="bms-sep">-</span>
-                    <input th:field="*{openMonth}" type="text" class="bms-input acctupd-num"
+                    <input th:field="*{opnMon}" type="text" class="bms-input acctupd-num"
                            maxlength="2" size="2" inputmode="numeric" aria-label="Opened month" />
                     <span class="bms-sep">-</span>
-                    <input th:field="*{openDay}" type="text" class="bms-input acctupd-num"
+                    <input th:field="*{opnDay}" type="text" class="bms-input acctupd-num"
                            maxlength="2" size="2" inputmode="numeric" aria-label="Opened day" />
                 </span>
             </span>
             <span class="acctupd-right">
-                <label class="bms-prompt acctupd-prompt" for="creditLimit">Credit Limit :</label>
+                <label class="bms-prompt acctupd-prompt" for="acrdLim">Credit Limit :</label>
                 <!-- Money field (AAP 0.6.1): edited text only; service parses to
                      BigDecimal scale 2 with COBOL truncation. No template arithmetic. -->
-                <input th:field="*{creditLimit}" type="text" class="bms-input acctupd-money"
+                <input th:field="*{acrdLim}" type="text" class="bms-input acctupd-money"
                        maxlength="15" size="15" />
             </span>
         </div>
@@ -133,21 +133,21 @@
         <!-- BMS line 7: Expiry date (yyyy-mm-dd, right-justified) + Cash credit Limit (money). -->
         <div class="acctupd-row">
             <span class="acctupd-left">
-                <label class="bms-prompt acctupd-prompt" for="expiryYear">Expiry :</label>
+                <label class="bms-prompt acctupd-prompt" for="expYear">Expiry :</label>
                 <span class="acctupd-seg" role="group" aria-label="Expiry date (year, month, day)">
-                    <input th:field="*{expiryYear}" type="text" class="bms-input acctupd-num"
+                    <input th:field="*{expYear}" type="text" class="bms-input acctupd-num"
                            maxlength="4" size="4" inputmode="numeric" aria-label="Expiry year" />
                     <span class="bms-sep">-</span>
-                    <input th:field="*{expiryMonth}" type="text" class="bms-input acctupd-num"
+                    <input th:field="*{expMon}" type="text" class="bms-input acctupd-num"
                            maxlength="2" size="2" inputmode="numeric" aria-label="Expiry month" />
                     <span class="bms-sep">-</span>
-                    <input th:field="*{expiryDay}" type="text" class="bms-input acctupd-num"
+                    <input th:field="*{expDay}" type="text" class="bms-input acctupd-num"
                            maxlength="2" size="2" inputmode="numeric" aria-label="Expiry day" />
                 </span>
             </span>
             <span class="acctupd-right">
-                <label class="bms-prompt acctupd-prompt" for="cashCreditLimit">Cash credit Limit :</label>
-                <input th:field="*{cashCreditLimit}" type="text" class="bms-input acctupd-money"
+                <label class="bms-prompt acctupd-prompt" for="acshLim">Cash credit Limit :</label>
+                <input th:field="*{acshLim}" type="text" class="bms-input acctupd-money"
                        maxlength="15" size="15" />
             </span>
         </div>
@@ -155,21 +155,21 @@
         <!-- BMS line 8: Reissue date (yyyy-mm-dd, right-justified) + Current Balance (money). -->
         <div class="acctupd-row">
             <span class="acctupd-left">
-                <label class="bms-prompt acctupd-prompt" for="reissueYear">Reissue:</label>
+                <label class="bms-prompt acctupd-prompt" for="risYear">Reissue:</label>
                 <span class="acctupd-seg" role="group" aria-label="Reissue date (year, month, day)">
-                    <input th:field="*{reissueYear}" type="text" class="bms-input acctupd-num"
+                    <input th:field="*{risYear}" type="text" class="bms-input acctupd-num"
                            maxlength="4" size="4" inputmode="numeric" aria-label="Reissue year" />
                     <span class="bms-sep">-</span>
-                    <input th:field="*{reissueMonth}" type="text" class="bms-input acctupd-num"
+                    <input th:field="*{risMon}" type="text" class="bms-input acctupd-num"
                            maxlength="2" size="2" inputmode="numeric" aria-label="Reissue month" />
                     <span class="bms-sep">-</span>
-                    <input th:field="*{reissueDay}" type="text" class="bms-input acctupd-num"
+                    <input th:field="*{risDay}" type="text" class="bms-input acctupd-num"
                            maxlength="2" size="2" inputmode="numeric" aria-label="Reissue day" />
                 </span>
             </span>
             <span class="acctupd-right">
-                <label class="bms-prompt acctupd-prompt" for="currentBalance">Current Balance :</label>
-                <input th:field="*{currentBalance}" type="text" class="bms-input acctupd-money"
+                <label class="bms-prompt acctupd-prompt" for="acurBal">Current Balance :</label>
+                <input th:field="*{acurBal}" type="text" class="bms-input acctupd-money"
                        maxlength="15" size="15" />
             </span>
         </div>
@@ -178,8 +178,8 @@
         <div class="acctupd-row">
             <span class="acctupd-left"></span>
             <span class="acctupd-right">
-                <label class="bms-prompt acctupd-prompt" for="currentCycleCredit">Current Cycle Credit:</label>
-                <input th:field="*{currentCycleCredit}" type="text" class="bms-input acctupd-money"
+                <label class="bms-prompt acctupd-prompt" for="acrCycr">Current Cycle Credit:</label>
+                <input th:field="*{acrCycr}" type="text" class="bms-input acctupd-money"
                        maxlength="15" size="15" />
             </span>
         </div>
@@ -187,13 +187,13 @@
         <!-- BMS line 10: Account Group + Current Cycle Debit (money). -->
         <div class="acctupd-row">
             <span class="acctupd-left">
-                <label class="bms-prompt acctupd-prompt" for="accountGroup">Account Group:</label>
-                <input th:field="*{accountGroup}" type="text" class="bms-input"
+                <label class="bms-prompt acctupd-prompt" for="aaddGrp">Account Group:</label>
+                <input th:field="*{aaddGrp}" type="text" class="bms-input"
                        maxlength="10" size="10" />
             </span>
             <span class="acctupd-right">
-                <label class="bms-prompt acctupd-prompt" for="currentCycleDebit">Current Cycle Debit :</label>
-                <input th:field="*{currentCycleDebit}" type="text" class="bms-input acctupd-money"
+                <label class="bms-prompt acctupd-prompt" for="acrCydb">Current Cycle Debit :</label>
+                <input th:field="*{acrCydb}" type="text" class="bms-input acctupd-money"
                        maxlength="15" size="15" />
             </span>
         </div>
@@ -206,22 +206,22 @@
         <!-- BMS line 12: Customer id + SSN (3-2-4 split). -->
         <div class="acctupd-row">
             <span class="acctupd-left">
-                <label class="bms-prompt acctupd-prompt" for="customerId">Customer id :</label>
-                <input th:field="*{customerId}" type="text" class="bms-input"
+                <label class="bms-prompt acctupd-prompt" for="acstNum">Customer id :</label>
+                <input th:field="*{acstNum}" type="text" class="bms-input"
                        maxlength="9" size="9" inputmode="numeric" />
             </span>
             <span class="acctupd-right">
-                <label class="bms-prompt acctupd-prompt" for="ssnPart1">SSN:</label>
+                <label class="bms-prompt acctupd-prompt" for="actSsn1">SSN:</label>
                 <span class="acctupd-seg" role="group" aria-label="Social Security Number (3-2-4 digits)">
-                    <input th:field="*{ssnPart1}" type="text" class="bms-input"
+                    <input th:field="*{actSsn1}" type="text" class="bms-input"
                            maxlength="3" size="3" inputmode="numeric"
                            placeholder="999" aria-label="SSN area number" />
                     <span class="bms-sep">-</span>
-                    <input th:field="*{ssnPart2}" type="text" class="bms-input"
+                    <input th:field="*{actSsn2}" type="text" class="bms-input"
                            maxlength="2" size="2" inputmode="numeric"
                            placeholder="99" aria-label="SSN group number" />
                     <span class="bms-sep">-</span>
-                    <input th:field="*{ssnPart3}" type="text" class="bms-input"
+                    <input th:field="*{actSsn3}" type="text" class="bms-input"
                            maxlength="4" size="4" inputmode="numeric"
                            placeholder="9999" aria-label="SSN serial number" />
                 </span>
@@ -236,7 +236,7 @@
                     <input th:field="*{dobYear}" type="text" class="bms-input acctupd-num"
                            maxlength="4" size="4" inputmode="numeric" aria-label="Birth year" />
                     <span class="bms-sep">-</span>
-                    <input th:field="*{dobMonth}" type="text" class="bms-input acctupd-num"
+                    <input th:field="*{dobMon}" type="text" class="bms-input acctupd-num"
                            maxlength="2" size="2" inputmode="numeric" aria-label="Birth month" />
                     <span class="bms-sep">-</span>
                     <input th:field="*{dobDay}" type="text" class="bms-input acctupd-num"
@@ -244,8 +244,8 @@
                 </span>
             </span>
             <span class="acctupd-right">
-                <label class="bms-prompt acctupd-prompt" for="ficoScore">FICO Score:</label>
-                <input th:field="*{ficoScore}" type="text" class="bms-input"
+                <label class="bms-prompt acctupd-prompt" for="acstFco">FICO Score:</label>
+                <input th:field="*{acstFco}" type="text" class="bms-input"
                        maxlength="3" size="3" inputmode="numeric" />
             </span>
         </div>
@@ -253,18 +253,18 @@
         <!-- BMS line 14 (labels) + line 15 (inputs): First / Middle / Last name. -->
         <div class="acctupd-names">
             <span class="acctupd-namecol">
-                <label class="bms-prompt acctupd-prompt" for="firstName">First Name</label>
-                <input th:field="*{firstName}" type="text" class="bms-input"
+                <label class="bms-prompt acctupd-prompt" for="acsFnam">First Name</label>
+                <input th:field="*{acsFnam}" type="text" class="bms-input"
                        maxlength="25" size="25" />
             </span>
             <span class="acctupd-namecol">
-                <label class="bms-prompt acctupd-prompt" for="middleName">Middle Name:</label>
-                <input th:field="*{middleName}" type="text" class="bms-input"
+                <label class="bms-prompt acctupd-prompt" for="acsMnam">Middle Name:</label>
+                <input th:field="*{acsMnam}" type="text" class="bms-input"
                        maxlength="25" size="25" />
             </span>
             <span class="acctupd-namecol">
-                <label class="bms-prompt acctupd-prompt" for="lastName">Last Name :</label>
-                <input th:field="*{lastName}" type="text" class="bms-input"
+                <label class="bms-prompt acctupd-prompt" for="acsLnam">Last Name :</label>
+                <input th:field="*{acsLnam}" type="text" class="bms-input"
                        maxlength="25" size="25" />
             </span>
         </div>
@@ -272,68 +272,68 @@
         <!-- BMS line 16: Address line 1 (50) + State (2). The 9ch lead-in label
              keeps the three address inputs (lines 16-18) left-aligned at BMS col 10. -->
         <div class="acctupd-row">
-            <label class="bms-prompt acctupd-fixed" for="addressLine1">Address:</label>
-            <input th:field="*{addressLine1}" type="text" class="bms-input"
+            <label class="bms-prompt acctupd-fixed" for="acsAdl1">Address:</label>
+            <input th:field="*{acsAdl1}" type="text" class="bms-input"
                    maxlength="50" size="50" />
-            <label class="bms-prompt acctupd-prompt" for="state">State</label>
-            <input th:field="*{state}" type="text" class="bms-input"
+            <label class="bms-prompt acctupd-prompt" for="acsStte">State</label>
+            <input th:field="*{acsStte}" type="text" class="bms-input"
                    maxlength="2" size="2" />
         </div>
 
         <!-- BMS line 17: Address line 2 (50, no label) + Zip (5). -->
         <div class="acctupd-row">
             <span class="acctupd-fixed" aria-hidden="true"></span>
-            <input th:field="*{addressLine2}" type="text" class="bms-input"
+            <input th:field="*{acsAdl2}" type="text" class="bms-input"
                    maxlength="50" size="50" aria-label="Address line 2" />
-            <label class="bms-prompt acctupd-prompt" for="zip">Zip</label>
-            <input th:field="*{zip}" type="text" class="bms-input"
+            <label class="bms-prompt acctupd-prompt" for="acsZipc">Zip</label>
+            <input th:field="*{acsZipc}" type="text" class="bms-input"
                    maxlength="5" size="5" inputmode="numeric" />
         </div>
 
         <!-- BMS line 18: City (50) + Country (3). -->
         <div class="acctupd-row">
-            <label class="bms-prompt acctupd-fixed" for="city">City</label>
-            <input th:field="*{city}" type="text" class="bms-input"
+            <label class="bms-prompt acctupd-fixed" for="acsCity">City</label>
+            <input th:field="*{acsCity}" type="text" class="bms-input"
                    maxlength="50" size="50" />
-            <label class="bms-prompt acctupd-prompt" for="country">Country</label>
-            <input th:field="*{country}" type="text" class="bms-input"
+            <label class="bms-prompt acctupd-prompt" for="acsCtry">Country</label>
+            <input th:field="*{acsCtry}" type="text" class="bms-input"
                    maxlength="3" size="3" />
         </div>
 
         <!-- BMS line 19: Phone 1 (area/prefix/line, right-justified, adjacent - no
              separators in BMS) + Government Issued Id Ref (20). -->
         <div class="acctupd-row">
-            <label class="bms-prompt acctupd-prompt" for="phone1Area">Phone 1:</label>
+            <label class="bms-prompt acctupd-prompt" for="acsPh1a">Phone 1:</label>
             <span class="acctupd-seg" role="group" aria-label="Phone 1 (area, prefix, line)">
-                <input th:field="*{phone1Area}" type="text" class="bms-input acctupd-num"
+                <input th:field="*{acsPh1a}" type="text" class="bms-input acctupd-num"
                        maxlength="3" size="3" inputmode="numeric" aria-label="Phone 1 area code" />
-                <input th:field="*{phone1Prefix}" type="text" class="bms-input acctupd-num"
+                <input th:field="*{acsPh1b}" type="text" class="bms-input acctupd-num"
                        maxlength="3" size="3" inputmode="numeric" aria-label="Phone 1 prefix" />
-                <input th:field="*{phone1Line}" type="text" class="bms-input acctupd-num"
+                <input th:field="*{acsPh1c}" type="text" class="bms-input acctupd-num"
                        maxlength="4" size="4" inputmode="numeric" aria-label="Phone 1 line number" />
             </span>
-            <label class="bms-prompt acctupd-prompt" for="govtId">Government Issued Id Ref :</label>
-            <input th:field="*{govtId}" type="text" class="bms-input"
+            <label class="bms-prompt acctupd-prompt" for="acsGovt">Government Issued Id Ref :</label>
+            <input th:field="*{acsGovt}" type="text" class="bms-input"
                    maxlength="20" size="20" />
         </div>
 
         <!-- BMS line 20: Phone 2 (area/prefix/line) + EFT Account Id (10) +
              Primary Card Holder Y/N (1). -->
         <div class="acctupd-row">
-            <label class="bms-prompt acctupd-prompt" for="phone2Area">Phone 2:</label>
+            <label class="bms-prompt acctupd-prompt" for="acsPh2a">Phone 2:</label>
             <span class="acctupd-seg" role="group" aria-label="Phone 2 (area, prefix, line)">
-                <input th:field="*{phone2Area}" type="text" class="bms-input acctupd-num"
+                <input th:field="*{acsPh2a}" type="text" class="bms-input acctupd-num"
                        maxlength="3" size="3" inputmode="numeric" aria-label="Phone 2 area code" />
-                <input th:field="*{phone2Prefix}" type="text" class="bms-input acctupd-num"
+                <input th:field="*{acsPh2b}" type="text" class="bms-input acctupd-num"
                        maxlength="3" size="3" inputmode="numeric" aria-label="Phone 2 prefix" />
-                <input th:field="*{phone2Line}" type="text" class="bms-input acctupd-num"
+                <input th:field="*{acsPh2c}" type="text" class="bms-input acctupd-num"
                        maxlength="4" size="4" inputmode="numeric" aria-label="Phone 2 line number" />
             </span>
-            <label class="bms-prompt acctupd-prompt" for="eftAccountId">EFT Account Id:</label>
-            <input th:field="*{eftAccountId}" type="text" class="bms-input"
+            <label class="bms-prompt acctupd-prompt" for="acsEftc">EFT Account Id:</label>
+            <input th:field="*{acsEftc}" type="text" class="bms-input"
                    maxlength="10" size="10" />
-            <label class="bms-prompt acctupd-prompt" for="primaryCardHolder">Primary Card Holder Y/N:</label>
-            <input th:field="*{primaryCardHolder}" type="text" class="bms-input"
+            <label class="bms-prompt acctupd-prompt" for="acsPflg">Primary Card Holder Y/N:</label>
+            <input th:field="*{acsPflg}" type="text" class="bms-input"
                    maxlength="1" size="1" />
         </div>
 

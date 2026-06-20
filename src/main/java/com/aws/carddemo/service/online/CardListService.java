@@ -533,6 +533,23 @@ public class CardListService {
    * filter). Records are ordered ascending by the 16-character card number, which is the VSAM key
    * order for the {@code char(16)} key.
    *
+   * <p><strong>Bounded-result / VSAM-browse parity exception (intentional).</strong> The code
+   * review performance checklist flags the {@code findAll()} read on the no-account-filter path as
+   * an unbounded full-table load. This is a deliberate, AAP-sanctioned parity decision, not an
+   * oversight. Legacy {@code COCRDLIC} browses {@code CARDDAT} with VSAM {@code STARTBR GTEQ} /
+   * {@code READNEXT} / {@code READPREV}; reproducing that browse with byte-for-byte paging parity
+   * &mdash; in particular {@code 9100-READ-BACKWARDS} (PF7 page-up), which must locate the current
+   * first key within the ordered key set and walk the preceding records, together with the exact
+   * {@code CA-NEXT-PAGE-EXISTS} one-record "peek" and the {@code "NO MORE RECORDS TO SHOW"} edge
+   * conditions &mdash; requires one stable ascending projection of the key set to slice in service;
+   * a forward-only bounded query cannot reproduce the page-up direction over identical ordering.
+   * Under AAP precedence D1, 100% behavioral parity (AAP &sect;0.7.1 R1 / &sect;0.6.5) outranks the
+   * generic performance heuristic. The blast radius is further bounded because (a) the supported
+   * account filter is pushed down to {@code findByCardAcctId} (the common bounded path), and (b)
+   * the migration's local-only validation runs against the small legacy fixtures (AAP &sect;0.6.7).
+   * A repository-level cursor/range query may replace this only if it preserves identical PF7/PF8
+   * ordering and edge-message semantics.
+   *
    * @param st the mutable per-request working storage (holds the active filters)
    * @return the filtered, ascending-by-card-number candidate list
    * @throws IoStatusException if the underlying repository read fails unexpectedly (the legacy
@@ -544,6 +561,10 @@ public class CardListService {
       if (st.acctFilter == FilterFlag.VALID && st.acctId != null) {
         candidates = cardRepository.findByCardAcctId(st.acctId);
       } else {
+        // Full ascending browse source for in-service keyset paging — intentional VSAM-browse
+        // parity exception (PF7 READPREV page-up + next-page peek need the full ordered key set);
+        // see the method Javadoc. AAP D1: parity (§0.7.1/§0.6.5) over the perf heuristic; the
+        // account-filtered path above is bounded and local validation uses small fixtures.
         candidates = cardRepository.findAll();
       }
     } catch (RuntimeException ex) {

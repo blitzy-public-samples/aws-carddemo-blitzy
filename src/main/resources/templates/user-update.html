@@ -31,10 +31,11 @@
   ~
   ~ FORM-BINDING CONTRACT (fulfilled by web.UserUpdateController +
   ~ service.online.UserUpdateService): the controller exposes a model attribute
-  ~ "userUpdateForm" whose properties map 1:1 to the COUSR2A fields
-  ~ (BMS name -> property, BMS LENGTH in parentheses):
-  ~     USRIDIN -> userId(8)     FNAME -> firstName(20)   LNAME -> lastName(20)
-  ~     PASSWD  -> password(8)   USRTYPE -> userType(1)
+  ~ "userUpdateForm" (the UserUpdateScreen DTO) whose canonical COBOL-derived
+  ~ properties map 1:1 to the COUSR2A fields (BMS name -> property, BMS LENGTH in
+  ~ parentheses):
+  ~     USRIDIN -> usrIdIn(8)    FNAME -> fName(20)       LNAME -> lName(20)
+  ~     PASSWD  -> passwd(8)     USRTYPE -> usrType(1)
   ~ ERRMSG (row 23) is supplied via the separate model attribute errMsg; the header
   ~ date/time via curDate / curTime / title2. The pressed AID key is submitted as
   ~ the request parameter pfKey (ENTER | PF3 | PF4 | PF5 | PF12), on which the
@@ -42,7 +43,7 @@
   ~ PF12=cancel).
   ~
   ~ CREDENTIAL HYGIENE (AAP 0.6.6): the password field is type=password and is
-  ~ never pre-populated - the controller leaves userUpdateForm.password blank when
+  ~ never pre-populated - the controller leaves userUpdateForm.passwd blank when
   ~ rendering, so the stored (BCrypt) hash is never sent to the browser. A blank
   ~ submit means "leave the password unchanged"; a non-blank value is re-hashed by
   ~ the service before persistence.
@@ -177,8 +178,8 @@
               explicit directive wins (the editable input itself stays GREEN).
             -->
             <div class="bms-line">
-                <label class="bms-prompt" for="userId">Enter User ID:</label>
-                <input type="text" id="userId" th:field="*{userId}"
+                <label class="bms-prompt" for="usrIdIn">Enter User ID:</label>
+                <input type="text" id="usrIdIn" th:field="*{usrIdIn}"
                        class="bms-input" maxlength="8" size="8"
                        autocomplete="off" autofocus="autofocus" />
             </div>
@@ -193,11 +194,11 @@
             <!-- BMS line 11: First Name (FNAME) + Last Name (LNAME), both
                  UNPROT / GREEN editable, sharing one 3270 row. -->
             <div class="bms-line">
-                <label class="bms-prompt" for="firstName">First Name:</label>
-                <input type="text" id="firstName" th:field="*{firstName}"
+                <label class="bms-prompt" for="fName">First Name:</label>
+                <input type="text" id="fName" th:field="*{fName}"
                        class="bms-input" maxlength="20" size="20" autocomplete="off" />
-                <label class="bms-prompt" for="lastName">Last Name:</label>
-                <input type="text" id="lastName" th:field="*{lastName}"
+                <label class="bms-prompt" for="lName">Last Name:</label>
+                <input type="text" id="lName" th:field="*{lName}"
                        class="bms-input" maxlength="20" size="20" autocomplete="off" />
             </div>
 
@@ -210,8 +211,8 @@
               BLUE in the BMS but rendered NEUTRAL (.bms-sep) per the directive.
             -->
             <div class="bms-line">
-                <label class="bms-prompt" for="password">Password:</label>
-                <input type="password" id="password" th:field="*{password}"
+                <label class="bms-prompt" for="passwd">Password:</label>
+                <input type="password" id="passwd" th:field="*{passwd}"
                        class="bms-input" maxlength="8" size="8"
                        autocomplete="new-password" />
                 <span class="bms-sep bms-hint">(8 Char)</span>
@@ -223,8 +224,8 @@
               directive.
             -->
             <div class="bms-line">
-                <label class="bms-prompt" for="userType">User Type:</label>
-                <input type="text" id="userType" th:field="*{userType}"
+                <label class="bms-prompt" for="usrType">User Type:</label>
+                <input type="text" id="usrType" th:field="*{usrType}"
                        class="bms-input user-update__type" maxlength="1" size="1"
                        autocomplete="off" />
                 <span class="bms-sep bms-hint">(A=Admin, U=User)</span>

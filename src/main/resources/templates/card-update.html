@@ -73,34 +73,34 @@
     <form th:object="${cardUpdateForm}" method="post" th:action="@{/card-update}">
 
         <!-- EXPDAY (DRK/PROT in BMS): hidden, preserved for round-trip. -->
-        <input type="hidden" th:field="*{expiryDay}" />
+        <input type="hidden" th:field="*{expDay}" />
 
         <!-- ACCTSID (PROT/ASKIP): account number - read-only key (blue) + round-trip. -->
         <div class="bms-field-row">
             <span class="bms-prompt">Account Number:</span>
-            <span class="bms-label" th:text="*{acctId}">00000000000</span>
-            <input type="hidden" th:field="*{acctId}" />
+            <span class="bms-label" th:text="*{acctSid}">00000000000</span>
+            <input type="hidden" th:field="*{acctSid}" />
         </div>
 
         <!-- CARDSID: card number - read-only key (blue) + round-trip. -->
         <div class="bms-field-row">
             <span class="bms-prompt">Card Number:</span>
-            <span class="bms-label" th:text="*{cardNumber}">0000000000000000</span>
-            <input type="hidden" th:field="*{cardNumber}" />
+            <span class="bms-label" th:text="*{cardSid}">0000000000000000</span>
+            <input type="hidden" th:field="*{cardSid}" />
         </div>
 
         <!-- CRDNAME (UNPROT, green): name on card - editable, 50 chars. -->
         <div class="bms-field-row">
-            <label class="bms-prompt" for="nameOnCard">Name on Card:</label>
-            <input type="text" id="nameOnCard" class="bms-input"
-                   th:field="*{nameOnCard}" maxlength="50" size="50" autocomplete="off" />
+            <label class="bms-prompt" for="crdName">Name on Card:</label>
+            <input type="text" id="crdName" class="bms-input"
+                   th:field="*{crdName}" maxlength="50" size="50" autocomplete="off" />
         </div>
 
         <!-- CRDSTCD (UNPROT, green): card active status Y/N - editable, 1 char. -->
         <div class="bms-field-row">
-            <label class="bms-prompt" for="activeStatus">Card Active Y/N:</label>
-            <input type="text" id="activeStatus" class="bms-input"
-                   th:field="*{activeStatus}" maxlength="1" size="1" autocomplete="off" />
+            <label class="bms-prompt" for="crdStcd">Card Active Y/N:</label>
+            <input type="text" id="crdStcd" class="bms-input"
+                   th:field="*{crdStcd}" maxlength="1" size="1" autocomplete="off" />
         </div>
 
         <!-- EXPMON / EXPYEAR (UNPROT, green, JUS=RIGHT): expiry month / year -
@@ -108,13 +108,13 @@
              prompt with the month and year inline, separated by '/'. -->
         <div class="bms-field-row">
             <span class="bms-prompt">Expiry Date:</span>
-            <input type="text" id="expiryMonth" class="bms-input card-update-num"
-                   th:field="*{expiryMonth}" maxlength="2" size="2"
+            <input type="text" id="expMon" class="bms-input card-update-num"
+                   th:field="*{expMon}" maxlength="2" size="2"
                    inputmode="numeric" aria-label="Expiry month (MM)"
                    autocomplete="off" />
             <span class="bms-sep">/</span>
-            <input type="text" id="expiryYear" class="bms-input card-update-num"
-                   th:field="*{expiryYear}" maxlength="4" size="4"
+            <input type="text" id="expYear" class="bms-input card-update-num"
+                   th:field="*{expYear}" maxlength="4" size="4"
                    inputmode="numeric" aria-label="Expiry year (YYYY)"
                    autocomplete="off" />
         </div>

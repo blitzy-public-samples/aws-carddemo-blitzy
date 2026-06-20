@@ -184,10 +184,10 @@
                 <!-- Line 5: account number (the only enterable field) + status. -->
                 <div class="av-line">
                     <div class="av-cell">
-                        <label class="bms-prompt" for="acctId">Account Number :</label>
+                        <label class="bms-prompt" for="acctSid">Account Number :</label>
                         <input class="bms-input av-acctid"
                                type="text"
-                               th:field="*{acctId}"
+                               th:field="*{acctSid}"
                                maxlength="11"
                                inputmode="numeric"
                                pattern="[0-9]*"
@@ -196,7 +196,7 @@
                     </div>
                     <div class="av-cell">
                         <span class="bms-prompt">Active Y/N:</span>
-                        <span class="av-data av-data--xs" th:text="*{accountStatus}"></span>
+                        <span class="av-data av-data--xs" th:text="*{acstTus}"></span>
                     </div>
                 </div>
 
@@ -204,11 +204,11 @@
                 <div class="av-line">
                     <div class="av-cell">
                         <span class="bms-prompt">Opened:</span>
-                        <span class="av-data" th:text="*{openDate}"></span>
+                        <span class="av-data" th:text="*{adtOpen}"></span>
                     </div>
                     <div class="av-cell av-cell--money">
                         <span class="bms-prompt">Credit Limit :</span>
-                        <span class="av-data av-money" th:text="*{creditLimit}"></span>
+                        <span class="av-data av-money" th:text="*{acrdLim}"></span>
                     </div>
                 </div>
 
@@ -216,11 +216,11 @@
                 <div class="av-line">
                     <div class="av-cell">
                         <span class="bms-prompt">Expiry:</span>
-                        <span class="av-data" th:text="*{expiryDate}"></span>
+                        <span class="av-data" th:text="*{aexpDt}"></span>
                     </div>
                     <div class="av-cell av-cell--money">
                         <span class="bms-prompt">Cash credit Limit :</span>
-                        <span class="av-data av-money" th:text="*{cashCreditLimit}"></span>
+                        <span class="av-data av-money" th:text="*{acshLim}"></span>
                     </div>
                 </div>
 
@@ -228,11 +228,11 @@
                 <div class="av-line">
                     <div class="av-cell">
                         <span class="bms-prompt">Reissue:</span>
-                        <span class="av-data" th:text="*{reissueDate}"></span>
+                        <span class="av-data" th:text="*{areisDt}"></span>
                     </div>
                     <div class="av-cell av-cell--money">
                         <span class="bms-prompt">Current Balance :</span>
-                        <span class="av-data av-money" th:text="*{currentBalance}"></span>
+                        <span class="av-data av-money" th:text="*{acurBal}"></span>
                     </div>
                 </div>
 
@@ -241,7 +241,7 @@
                     <div class="av-cell" aria-hidden="true"></div>
                     <div class="av-cell av-cell--money">
                         <span class="bms-prompt">Current Cycle Credit:</span>
-                        <span class="av-data av-money" th:text="*{currentCycleCredit}"></span>
+                        <span class="av-data av-money" th:text="*{acrCycr}"></span>
                     </div>
                 </div>
 
@@ -249,11 +249,11 @@
                 <div class="av-line">
                     <div class="av-cell">
                         <span class="bms-prompt">Account Group:</span>
-                        <span class="av-data" th:text="*{accountGroup}"></span>
+                        <span class="av-data" th:text="*{aaddGrp}"></span>
                     </div>
                     <div class="av-cell av-cell--money">
                         <span class="bms-prompt">Current Cycle Debit :</span>
-                        <span class="av-data av-money" th:text="*{currentCycleDebit}"></span>
+                        <span class="av-data av-money" th:text="*{acrCydb}"></span>
                     </div>
                 </div>
 
@@ -269,11 +269,11 @@
                 <div class="av-line">
                     <div class="av-cell">
                         <span class="bms-prompt">Customer id :</span>
-                        <span class="av-data" th:text="*{customerId}"></span>
+                        <span class="av-data" th:text="*{acstNum}"></span>
                     </div>
                     <div class="av-cell">
                         <span class="bms-prompt">SSN:</span>
-                        <span class="av-data" th:text="*{ssn}"></span>
+                        <span class="av-data" th:text="*{acstSsn}"></span>
                     </div>
                 </div>
 
@@ -281,11 +281,11 @@
                 <div class="av-line">
                     <div class="av-cell">
                         <span class="bms-prompt">Date of birth:</span>
-                        <span class="av-data" th:text="*{dateOfBirth}"></span>
+                        <span class="av-data" th:text="*{acstDob}"></span>
                     </div>
                     <div class="av-cell">
                         <span class="bms-prompt">FICO Score:</span>
-                        <span class="av-data av-data--xs" th:text="*{ficoScore}"></span>
+                        <span class="av-data av-data--xs" th:text="*{acstFco}"></span>
                     </div>
                 </div>
 
@@ -294,20 +294,20 @@
                     <span class="bms-prompt">First Name</span>
                     <span class="bms-prompt">Middle Name:</span>
                     <span class="bms-prompt">Last Name :</span>
-                    <span class="av-data" th:text="*{firstName}"></span>
-                    <span class="av-data" th:text="*{middleName}"></span>
-                    <span class="av-data" th:text="*{lastName}"></span>
+                    <span class="av-data" th:text="*{acsFnam}"></span>
+                    <span class="av-data" th:text="*{acsMnam}"></span>
+                    <span class="av-data" th:text="*{acsLnam}"></span>
                 </div>
 
                 <!-- Line 16: address line 1 / state. -->
                 <div class="av-line">
                     <div class="av-cell">
                         <span class="bms-prompt av-addrpad">Address:</span>
-                        <span class="av-data" th:text="*{addressLine1}"></span>
+                        <span class="av-data" th:text="*{acsAdl1}"></span>
                     </div>
                     <div class="av-cell">
                         <span class="bms-prompt">State</span>
-                        <span class="av-data av-data--xs" th:text="*{state}"></span>
+                        <span class="av-data av-data--xs" th:text="*{acsStte}"></span>
                     </div>
                 </div>
 
@@ -315,11 +315,11 @@
                 <div class="av-line">
                     <div class="av-cell">
                         <span class="bms-prompt av-addrpad" aria-hidden="true"></span>
-                        <span class="av-data" th:text="*{addressLine2}" aria-label="Address line 2"></span>
+                        <span class="av-data" th:text="*{acsAdl2}" aria-label="Address line 2"></span>
                     </div>
                     <div class="av-cell">
                         <span class="bms-prompt">Zip</span>
-                        <span class="av-data av-data--xs" th:text="*{zip}"></span>
+                        <span class="av-data av-data--xs" th:text="*{acsZipc}"></span>
                     </div>
                 </div>
 
@@ -327,11 +327,11 @@
                 <div class="av-line">
                     <div class="av-cell">
                         <span class="bms-prompt">City</span>
-                        <span class="av-data" th:text="*{city}"></span>
+                        <span class="av-data" th:text="*{acsCity}"></span>
                     </div>
                     <div class="av-cell">
                         <span class="bms-prompt">Country</span>
-                        <span class="av-data av-data--xs" th:text="*{country}"></span>
+                        <span class="av-data av-data--xs" th:text="*{acsCtry}"></span>
                     </div>
                 </div>
 
@@ -339,11 +339,11 @@
                 <div class="av-line">
                     <div class="av-cell">
                         <span class="bms-prompt">Phone 1:</span>
-                        <span class="av-data" th:text="*{phone1}"></span>
+                        <span class="av-data" th:text="*{acsPhn1}"></span>
                     </div>
                     <div class="av-cell">
                         <span class="bms-prompt">Government Issued Id Ref :</span>
-                        <span class="av-data" th:text="*{govtId}"></span>
+                        <span class="av-data" th:text="*{acsGovt}"></span>
                     </div>
                 </div>
 
@@ -351,15 +351,15 @@
                 <div class="av-line">
                     <div class="av-cell">
                         <span class="bms-prompt">Phone 2:</span>
-                        <span class="av-data" th:text="*{phone2}"></span>
+                        <span class="av-data" th:text="*{acsPhn2}"></span>
                     </div>
                     <div class="av-cell">
                         <span class="bms-prompt">EFT Account Id:</span>
-                        <span class="av-data" th:text="*{eftAccountId}"></span>
+                        <span class="av-data" th:text="*{acsEftc}"></span>
                     </div>
                     <div class="av-cell">
                         <span class="bms-prompt">Primary Card Holder Y/N:</span>
-                        <span class="av-data av-data--xs" th:text="*{primaryCardHolder}"></span>
+                        <span class="av-data av-data--xs" th:text="*{acsPflg}"></span>
                     </div>
                 </div>
 
