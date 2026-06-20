@@ -131,6 +131,53 @@ public class CardUpdateScreen {
   @Size(max = 18)
   private String fkeysc; // FKEYSCI PIC X(18) - PF-key legend line 2 (BMS field FKEYSC)
 
+  // ===== Server-managed pseudo-conversational carriers (NOT rendered BMS fields) ================
+  //
+  // The legacy COCRDUPC program is pseudo-conversational: it carries its working state across the
+  // CICS RECEIVE/SEND turns inside WS-THIS-PROGCOMMAREA (a non-screen extension of the COMMAREA).
+  // In the modernized service that state cannot live on the singleton service (it must be
+  // stateless / thread-safe), and the shared {@link com.aws.carddemo.dto.CardDemoCommarea} is
+  // deliberately not extended with screen-specific state. These carrier fields therefore reproduce
+  // the {@code CCUP-CHANGE-ACTION} state flag and the {@code CCUP-OLD-DETAILS} snapshot
+  // (legacy/app/cbl/COCRDUPC.cbl L274-L304) so that
+  // {@code com.aws.carddemo.service.online.CardUpdateService} can drive the confirm-then-save
+  // state machine and perform service-layer optimistic concurrency (read-for-update → re-read →
+  // compare-to-OLD → REWRITE) with byte-faithful behavior. They are populated and consumed by the
+  // service only; they are never bound from operator input and carry no {@link Size} screen
+  // constraint. The editable "NEW" values are the live screen fields above (crdName, crdStcd,
+  // expMon, expYear); expDay is display-only/preserved and always reflects the OLD value.
+
+  /**
+   * State-machine flag carrying the {@code CCUP-CHANGE-ACTION} value across pseudo-conversational
+   * turns (legacy {@code CCUP-DETAILS-NOT-FETCHED}/{@code -SHOW-DETAILS}/{@code -CHANGES-NOT-OK}/
+   * {@code -CHANGES-OK-NOT-CONFIRMED}/{@code -CHANGES-OKAYED-AND-DONE}/{@code
+   * -CHANGES-OKAYED-LOCK-ERROR}/{@code -CHANGES-OKAYED-BUT-FAILED}). The canonical string values
+   * are the {@code CardUpdateService.STATE_*} constants. A {@code null}/blank value denotes the
+   * initial {@code DETAILS-NOT-FETCHED} state (the COBOL {@code LOW-VALUES}/{@code SPACES}
+   * condition).
+   */
+  private String updateState; // CCUP-CHANGE-ACTION PIC X(1)
+
+  /** OLD snapshot of the card CVV ({@code CCUP-OLD-CVV-CD PIC X(3)}), captured on read. */
+  private String oldCardCvvCd; // CCUP-OLD-CVV-CD PIC X(3)
+
+  /**
+   * OLD snapshot of the embossed name ({@code CCUP-OLD-CRDNAME PIC X(50)}), upper-cased on read.
+   */
+  private String oldCrdName; // CCUP-OLD-CRDNAME PIC X(50)
+
+  /** OLD snapshot of the active-status flag ({@code CCUP-OLD-CRDSTCD PIC X(1)}). */
+  private String oldCrdStcd; // CCUP-OLD-CRDSTCD PIC X(1)
+
+  /** OLD snapshot of the expiry month ({@code CCUP-OLD-EXPMON PIC X(2)}), date positions 6-7. */
+  private String oldExpMon; // CCUP-OLD-EXPMON PIC X(2)
+
+  /** OLD snapshot of the expiry year ({@code CCUP-OLD-EXPYEAR PIC X(4)}), date positions 1-4. */
+  private String oldExpYear; // CCUP-OLD-EXPYEAR PIC X(4)
+
+  /** OLD snapshot of the expiry day ({@code CCUP-OLD-EXPDAY PIC X(2)}), date positions 9-10. */
+  private String oldExpDay; // CCUP-OLD-EXPDAY PIC X(2)
+
   /**
    * Creates an empty card-update screen contract for framework instantiation or manual population.
    */
@@ -274,5 +321,63 @@ public class CardUpdateScreen {
 
   public void setFkeysc(String fkeysc) {
     this.fkeysc = fkeysc;
+  }
+
+  // ===== Server-managed carrier accessors =======================================================
+
+  public String getUpdateState() {
+    return updateState;
+  }
+
+  public void setUpdateState(String updateState) {
+    this.updateState = updateState;
+  }
+
+  public String getOldCardCvvCd() {
+    return oldCardCvvCd;
+  }
+
+  public void setOldCardCvvCd(String oldCardCvvCd) {
+    this.oldCardCvvCd = oldCardCvvCd;
+  }
+
+  public String getOldCrdName() {
+    return oldCrdName;
+  }
+
+  public void setOldCrdName(String oldCrdName) {
+    this.oldCrdName = oldCrdName;
+  }
+
+  public String getOldCrdStcd() {
+    return oldCrdStcd;
+  }
+
+  public void setOldCrdStcd(String oldCrdStcd) {
+    this.oldCrdStcd = oldCrdStcd;
+  }
+
+  public String getOldExpMon() {
+    return oldExpMon;
+  }
+
+  public void setOldExpMon(String oldExpMon) {
+    this.oldExpMon = oldExpMon;
+  }
+
+  public String getOldExpYear() {
+    return oldExpYear;
+  }
+
+  public void setOldExpYear(String oldExpYear) {
+    this.oldExpYear = oldExpYear;
+  }
+
+  public String getOldExpDay() {
+    return oldExpDay;
+  }
+
+  public void setOldExpDay(String oldExpDay) {
+    this.oldExpDay = oldExpDay;
   }
 }

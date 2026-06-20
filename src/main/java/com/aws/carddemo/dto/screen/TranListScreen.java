@@ -101,6 +101,62 @@ public class TranListScreen {
   @Size(max = 78)
   private String errMsg;
 
+  // ---------------------------------------------------------------------------------------------
+  // Hidden paging/selection cursors (not rendered BMS fields).
+  //
+  // The legacy program COTRN00C extends the shared COMMAREA copybook COCOM01Y with a private
+  // CDEMO-CT00-INFO group that carries the keyset-paging cursors and the row-selection state
+  // across pseudo-conversational RECEIVE/SEND cycles:
+  //
+  //     05 CDEMO-CT00-INFO.
+  //        10 CDEMO-CT00-TRNID-FIRST    PIC X(16).
+  //        10 CDEMO-CT00-TRNID-LAST     PIC X(16).
+  //        10 CDEMO-CT00-PAGE-NUM       PIC 9(08).
+  //        10 CDEMO-CT00-NEXT-PAGE-FLG  PIC X(01).   88 NEXT-PAGE-YES VALUE 'Y'.
+  //        10 CDEMO-CT00-TRN-SEL-FLG    PIC X(01).
+  //        10 CDEMO-CT00-TRN-SELECTED   PIC X(16).
+  //
+  // Because these are screen-specific to CT00 (not part of the shared CardDemoCommarea contract),
+  // they are carried here as hidden round-tripped fields per the agent specification. The transient
+  // CDEMO-CT00-TRN-SEL-FLG is NOT carried — it is recomputed locally within the service's
+  // enter-key scan each interaction — so only the five persistent cursors are modeled here.
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * First transaction id displayed on the current page (keyset upper boundary used by page-up).
+   * COBOL field {@code CDEMO-CT00-TRNID-FIRST PIC X(16)}.
+   */
+  @Size(max = 16)
+  private String trnIdFirst;
+
+  /**
+   * Last transaction id displayed on the current page (keyset lower boundary used by page-down).
+   * COBOL field {@code CDEMO-CT00-TRNID-LAST PIC X(16)}.
+   */
+  @Size(max = 16)
+  private String trnIdLast;
+
+  /**
+   * Numeric current-page counter that backs the displayed {@link #getPageNum() page indicator}.
+   * COBOL field {@code CDEMO-CT00-PAGE-NUM PIC 9(08)}.
+   */
+  private int pageNumValue;
+
+  /**
+   * Whether a further page of transactions exists after the current page (the {@code STARTBR}
+   * read-ahead peek result). COBOL 88-level {@code NEXT-PAGE-YES} on field {@code
+   * CDEMO-CT00-NEXT-PAGE-FLG PIC X(01)}.
+   */
+  private boolean nextPageYes;
+
+  /**
+   * Transaction id of the row the operator selected with {@code S}; carried to the transaction-view
+   * screen ({@code COTRN01C}) when a selection forwards. COBOL field {@code CDEMO-CT00-TRN-SELECTED
+   * PIC X(16)}.
+   */
+  @Size(max = 16)
+  private String trnSelected;
+
   /**
    * Creates an empty transaction-list screen.
    *
@@ -189,6 +245,46 @@ public class TranListScreen {
 
   public void setErrMsg(String errMsg) {
     this.errMsg = errMsg;
+  }
+
+  public String getTrnIdFirst() {
+    return trnIdFirst;
+  }
+
+  public void setTrnIdFirst(String trnIdFirst) {
+    this.trnIdFirst = trnIdFirst;
+  }
+
+  public String getTrnIdLast() {
+    return trnIdLast;
+  }
+
+  public void setTrnIdLast(String trnIdLast) {
+    this.trnIdLast = trnIdLast;
+  }
+
+  public int getPageNumValue() {
+    return pageNumValue;
+  }
+
+  public void setPageNumValue(int pageNumValue) {
+    this.pageNumValue = pageNumValue;
+  }
+
+  public boolean isNextPageYes() {
+    return nextPageYes;
+  }
+
+  public void setNextPageYes(boolean nextPageYes) {
+    this.nextPageYes = nextPageYes;
+  }
+
+  public String getTrnSelected() {
+    return trnSelected;
+  }
+
+  public void setTrnSelected(String trnSelected) {
+    this.trnSelected = trnSelected;
   }
 
   /**
