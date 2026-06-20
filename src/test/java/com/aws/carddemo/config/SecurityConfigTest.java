@@ -17,177 +17,150 @@
 package com.aws.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
+import com.aws.carddemo.domain.UserSecurity;
 import com.aws.carddemo.repository.UserSecurityRepository;
-import com.aws.carddemo.service.online.MainMenuService;
-import com.aws.carddemo.web.MainMenuController;
-import org.junit.jupiter.api.DisplayName;
+import java.lang.reflect.Method;
+import java.util.Optional;
+import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayNameGeneration;
+import org.junit.jupiter.api.DisplayNameGenerator;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.security.test.context.support.WithMockUser;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.RequestBuilder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
 
 /**
- * Web-security slice test for {@link SecurityConfig}, verifying the HTTP authorization model that
- * gates the migrated CardDemo online transactions. It locks in the two access-control rules that
- * the rest of the application (and the still-incoming sign-on / user-management controllers) depend
- * on, reproducing the legacy CICS/RACF online gating with Spring Security (Agent Action Plan
- * &sect;0.3.4, &sect;0.6.5).
- *
- * <p>Two behaviours are asserted:
+ * Pure unit test for {@link SecurityConfig}, the central Spring Security configuration of the
+ * migrated AWS CardDemo application. This test pins the two parity-critical contracts that the
+ * legacy z/OS sign-on model is translated into (Agent Action Plan &sect;0.6.5, &sect;0.6.6,
+ * &sect;0.7.2):
  *
  * <ol>
- *   <li><b>Public sign-on submit.</b> {@code POST /signon} &mdash; the modernized {@code COSGN00C}
- *       (transaction {@code CC00}) sign-on submit &mdash; must be reachable by an unauthenticated
- *       caller so the sign-on service can validate the credentials; if the security layer blocked
- *       it, sign-in would be impossible before the controller/service ever ran.
- *   <li><b>Admin-gated user management.</b> The user-management screens {@code
- *       COUSR00C}&ndash;{@code COUSR03C} ({@code CU00}&ndash;{@code CU03}) are routed to {@code
- *       /user-list}, {@code /user-add}, {@code /user-update}, {@code /user-delete} &mdash; outside
- *       {@code /admin/**} &mdash; and must be reachable only by {@code ROLE_ADMIN}. The existing
- *       {@code /admin/**} gate (the {@code COADM01C} admin menu) is asserted unchanged as a
- *       regression guard.
+ *   <li><b>BCrypt credential hygiene.</b> The legacy clear-text {@code SEC-USR-PWD PIC X(08)}
+ *       comparison ({@code legacy/app/cbl/COSGN00C.cbl}: {@code IF SEC-USR-PWD = WS-USER-PWD}) is
+ *       replaced by a one-way {@link BCryptPasswordEncoder} hash check. The {@link
+ *       SecurityConfig#passwordEncoder()} bean must therefore be a BCrypt encoder whose hashes
+ *       round-trip and never equal the raw secret.
+ *   <li><b>Role-gating parity.</b> On a successful sign-on {@code COSGN00C} performs {@code MOVE
+ *       SEC-USR-TYPE TO CDEMO-USER-TYPE} and branches {@code IF CDEMO-USRTYP-ADMIN} ({@code 'A'},
+ *       copybook {@code COCOM01Y}) to the admin menu {@code COADM01C}, otherwise to the main menu
+ *       {@code COMEN01C}. The {@link SecurityConfig#userDetailsService(UserSecurityRepository)}
+ *       bean must reproduce this mapping: type {@code 'A'} yields authority {@code ROLE_ADMIN}; any
+ *       other type yields {@code ROLE_USER}; a missing record raises {@link
+ *       UsernameNotFoundException} (the legacy "user not found" path).
  * </ol>
  *
- * <p><strong>Slice design.</strong> This is a {@link WebMvcTest} limited to a single concrete
- * controller so the real {@link SecurityConfig} filter chain (imported explicitly) is exercised
- * without bootstrapping the persistence, batch, or full service layers. The two collaborators the
- * imported configuration and the loaded controller require &mdash; the {@link
- * UserSecurityRepository} behind {@code SecurityConfig.userDetailsService} and the {@link
- * MainMenuService} behind {@link MainMenuController} &mdash; are replaced with Mockito beans;
- * neither is invoked because the authorization decisions are reached by the security filter chain
- * before any handler runs.
+ * <p><strong>Scope.</strong> This is a deliberately pure unit test: it instantiates {@link
+ * SecurityConfig} directly and exercises the {@code passwordEncoder} and {@code userDetailsService}
+ * beans against a plain Mockito mock of {@link UserSecurityRepository}. It does <em>not</em> start
+ * a Spring context, a servlet environment, or Testcontainers. Building a real {@link HttpSecurity}
+ * to exercise the {@code securityFilterChain} body requires a full {@code ApplicationContext}, so
+ * the filter-chain bean is verified here only at the contract level (declared method, {@link Bean}
+ * annotation, and return type) via reflection; the end-to-end HTTP access-rule behaviour (the
+ * public {@code POST /signon}, the {@code /admin/**} and user-management gates, and the form-login
+ * role routing) is covered by the sibling MockMvc web-layer tests and the full-context application
+ * test.
  *
- * <p><strong>Assertion strategy.</strong> A denied <em>authenticated</em> request is rejected by
- * the security filter with a deterministic {@code 403 Forbidden} before Spring MVC dispatching, so
- * those cases assert {@code 403} exactly. A request that <em>passes</em> authorization continues
- * into the MVC layer where no handler is mapped in this slice; the resulting status is therefore
- * irrelevant to authorization, so those cases assert only that the response is neither {@code 401}
- * nor {@code 403} &mdash; i.e. the security filter let the request through.
+ * <p><strong>Credential hygiene in the test itself.</strong> Every raw secret used here is a
+ * freshly generated {@link UUID}; no password value is ever hardcoded or logged (Agent Action Plan
+ * &sect;0.7.2). A plain Mockito mock (not the strict {@code MockitoExtension}) is used so that the
+ * per-test stubbing of {@link UserSecurityRepository#findById(Object)} does not trigger
+ * unnecessary-stubbing failures.
  */
-@WebMvcTest(controllers = MainMenuController.class)
-@Import(SecurityConfig.class)
-@DisplayName("SecurityConfig — public POST /signon + admin-gated user management")
+@DisplayNameGeneration(DisplayNameGenerator.ReplaceUnderscores.class)
 class SecurityConfigTest {
 
-  /** HTTP 401 Unauthorized status code (no/failed authentication). */
-  private static final int HTTP_UNAUTHORIZED = 401;
+  private SecurityConfig securityConfig;
+  private UserSecurityRepository userSecurityRepository;
 
-  /** HTTP 403 Forbidden status code (authenticated but not authorized). */
-  private static final int HTTP_FORBIDDEN = 403;
-
-  @Autowired private MockMvc mockMvc;
-
-  /**
-   * Mockito stand-in for the {@link MainMenuController} collaborator. The controller is loaded only
-   * so the web slice has a concrete handler bean; the service is never invoked by these
-   * authorization assertions.
-   */
-  @MockitoBean private MainMenuService mainMenuService;
-
-  /**
-   * Mockito stand-in for the repository behind {@code SecurityConfig.userDetailsService}. It is
-   * required for the imported configuration to instantiate but is never invoked, because {@link
-   * WithMockUser} supplies the authenticated principal directly.
-   */
-  @MockitoBean private UserSecurityRepository userSecurityRepository;
-
-  // ===== Finding #1 (CRITICAL): the sign-on submit POST /signon must be public ==================
-
-  @Test
-  @DisplayName("POST /signon is permitted for an unauthenticated caller")
-  void postSignonIsPubliclyPermitted() throws Exception {
-    // Anonymous submit carrying a valid CSRF token (CSRF stays enabled): the security filter must
-    // let it through to the (later) SignonController, so the response must not be 401/403.
-    assertAuthorizationPassed(post("/signon").with(csrf()));
-  }
-
-  // ===== Finding #2 (MAJOR): user-management screens are admin-only =============================
-
-  @Test
-  @WithMockUser(roles = "USER")
-  @DisplayName("GET user-management routes are forbidden for a standard USER")
-  void userManagementGetForbiddenForStandardUser() throws Exception {
-    assertForbidden(get("/user-list"));
-    assertForbidden(get("/user-add"));
-    assertForbidden(get("/user-update"));
-    assertForbidden(get("/user-delete"));
+  @BeforeEach
+  void setUp() {
+    this.securityConfig = new SecurityConfig();
+    this.userSecurityRepository = mock(UserSecurityRepository.class);
   }
 
   @Test
-  @WithMockUser(roles = "USER")
-  @DisplayName("POST user-management routes (the form submits) are forbidden for a standard USER")
-  void userManagementPostForbiddenForStandardUser() throws Exception {
-    assertForbidden(post("/user-list").with(csrf()));
-    assertForbidden(post("/user-add").with(csrf()));
-    assertForbidden(post("/user-update").with(csrf()));
-    assertForbidden(post("/user-delete").with(csrf()));
+  void password_encoder_is_bcrypt_and_round_trips() {
+    PasswordEncoder encoder = securityConfig.passwordEncoder();
+    assertThat(encoder).isInstanceOf(BCryptPasswordEncoder.class);
+
+    String rawSecret = UUID.randomUUID().toString(); // never a hardcoded credential
+    String encoded = encoder.encode(rawSecret);
+    assertThat(encoded).startsWith("$2").isNotEqualTo(rawSecret);
+    assertThat(encoder.matches(rawSecret, encoded)).isTrue();
   }
 
   @Test
-  @WithMockUser(roles = "ADMIN")
-  @DisplayName("user-management routes pass the security gate for an ADMIN")
-  void userManagementAllowedForAdmin() throws Exception {
-    assertAuthorizationPassed(get("/user-list"));
-    assertAuthorizationPassed(get("/user-add"));
-    assertAuthorizationPassed(get("/user-update"));
-    assertAuthorizationPassed(get("/user-delete"));
-  }
+  void user_details_service_maps_type_A_to_role_admin() {
+    UserSecurity admin = new UserSecurity();
+    admin.setSecUsrId("ADMIN001");
+    admin.setSecUsrPwd(new BCryptPasswordEncoder().encode(UUID.randomUUID().toString()));
+    admin.setSecUsrType("A");
+    when(userSecurityRepository.findById("ADMIN001")).thenReturn(Optional.of(admin));
 
-  // ===== Regression: the existing /admin/** gate (COADM01C admin menu) is preserved =============
+    UserDetailsService uds = securityConfig.userDetailsService(userSecurityRepository);
+    UserDetails details = uds.loadUserByUsername("ADMIN001");
+
+    assertThat(details.getUsername()).isEqualTo("ADMIN001");
+    assertThat(details.getPassword()).isEqualTo(admin.getSecUsrPwd());
+    assertThat(details.getAuthorities())
+        .extracting(GrantedAuthority::getAuthority)
+        .containsExactly("ROLE_ADMIN");
+  }
 
   @Test
-  @WithMockUser(roles = "USER")
-  @DisplayName("GET /admin/** remains forbidden for a standard USER")
-  void adminSpaceForbiddenForStandardUser() throws Exception {
-    assertForbidden(get("/admin/menu"));
+  void user_details_service_maps_type_U_to_role_user() {
+    UserSecurity user = new UserSecurity();
+    user.setSecUsrId("USER0001");
+    user.setSecUsrPwd(new BCryptPasswordEncoder().encode(UUID.randomUUID().toString()));
+    user.setSecUsrType("U");
+    when(userSecurityRepository.findById("USER0001")).thenReturn(Optional.of(user));
+
+    UserDetailsService uds = securityConfig.userDetailsService(userSecurityRepository);
+    UserDetails details = uds.loadUserByUsername("USER0001");
+
+    assertThat(details.getAuthorities())
+        .extracting(GrantedAuthority::getAuthority)
+        .containsExactly("ROLE_USER");
   }
 
   @Test
-  @WithMockUser(roles = "ADMIN")
-  @DisplayName("GET /admin/** passes the security gate for an ADMIN")
-  void adminSpaceAllowedForAdmin() throws Exception {
-    assertAuthorizationPassed(get("/admin/menu"));
+  void user_details_service_throws_when_user_is_not_found() {
+    when(userSecurityRepository.findById("MISSING01")).thenReturn(Optional.empty());
+    UserDetailsService uds = securityConfig.userDetailsService(userSecurityRepository);
+
+    assertThatThrownBy(() -> uds.loadUserByUsername("MISSING01"))
+        .isInstanceOf(UsernameNotFoundException.class);
   }
 
-  // ===== Helpers ================================================================================
-
-  /**
-   * Asserts the request is rejected by the security filter with a deterministic {@code 403
-   * Forbidden}. Applies to an authenticated principal that lacks the required authority: the
-   * rejection happens in the security filter chain before MVC dispatching, independent of any
-   * handler or {@code @ControllerAdvice}.
-   *
-   * @param request the request to perform
-   * @throws Exception if the request cannot be performed
-   */
-  private void assertForbidden(RequestBuilder request) throws Exception {
-    int status = mockMvc.perform(request).andReturn().getResponse().getStatus();
-    assertThat(status)
-        .as("request should be rejected with 403 Forbidden but was %d", status)
-        .isEqualTo(HTTP_FORBIDDEN);
+  @Test
+  void is_annotated_for_web_and_method_security() {
+    assertThat(SecurityConfig.class.isAnnotationPresent(Configuration.class)).isTrue();
+    assertThat(SecurityConfig.class.isAnnotationPresent(EnableWebSecurity.class)).isTrue();
+    assertThat(SecurityConfig.class.isAnnotationPresent(EnableMethodSecurity.class)).isTrue();
+    assertThat(SecurityConfig.class.getAnnotation(EnableMethodSecurity.class).prePostEnabled())
+        .isTrue();
   }
 
-  /**
-   * Asserts the request passes the security filter, i.e. the response is neither {@code 401
-   * Unauthorized} nor {@code 403 Forbidden}. The request then enters the MVC layer where no handler
-   * is mapped in this slice, so the concrete downstream status is intentionally not asserted.
-   *
-   * @param request the request to perform
-   * @throws Exception if the request cannot be performed
-   */
-  private void assertAuthorizationPassed(RequestBuilder request) throws Exception {
-    int status = mockMvc.perform(request).andReturn().getResponse().getStatus();
-    assertThat(status)
-        .as("request should pass the security filter (not 401/403) but was %d", status)
-        .isNotEqualTo(HTTP_UNAUTHORIZED)
-        .isNotEqualTo(HTTP_FORBIDDEN);
+  @Test
+  void exposes_a_security_filter_chain_bean() throws Exception {
+    Method method =
+        SecurityConfig.class.getDeclaredMethod("securityFilterChain", HttpSecurity.class);
+    assertThat(method.isAnnotationPresent(Bean.class)).isTrue();
+    assertThat(method.getReturnType()).isEqualTo(SecurityFilterChain.class);
   }
 }
