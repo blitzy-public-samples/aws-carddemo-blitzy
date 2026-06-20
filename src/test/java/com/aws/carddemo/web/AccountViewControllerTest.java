@@ -39,56 +39,82 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 /**
- * {@link WebMvcTest} slice test for {@link AccountViewController} &mdash; the modernized web
- * equivalent of the legacy CICS account-view transaction {@code CAVW} ({@code
- * legacy/app/cbl/COACTVWC.cbl}, BMS mapset {@code COACTVW}). It pins the controller's
+ * {@link org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest WebMvcTest} slice test
+ * for {@link AccountViewController} &mdash; the modernized web equivalent of the legacy CICS
+ * account-view transaction {@code CAVW} ({@code legacy/app/cbl/COACTVWC.cbl}, BMS mapset {@code
+ * COACTVW}). Account view is a <strong>read-only</strong> screen reachable by any authenticated
+ * user, so the controller deliberately carries no {@code @PreAuthorize}; this test pins down its
  * HTTP-to-view/routing contract (Agent Action Plan &sect;0.4.1 {@code AccountViewController <-
  * COACTVWC}; &sect;0.6.5 COMMAREA navigation).
  *
- * <p><strong>Why this test renders the view.</strong> A {@code @WebMvcTest} auto-configures
- * Thymeleaf, so {@code mockMvc.perform(get(...)).andExpect(status().isOk())} actually
- * <em>renders</em> the {@code account-view} template through the real view resolver. A render-time
- * binding mismatch &mdash; a {@code th:field}/{@code th:text} selection expression referencing a
- * property absent from {@link com.aws.carddemo.dto.screen.AccountViewScreen} &mdash; raises a
- * Spring EL / binding exception during rendering and fails the request. This is exactly the
- * regression that motivated the test (the template previously bound friendly names such as {@code
- * acctId}/{@code accountStatus} that the COBOL-derived DTO does not expose); the GET and POST
- * redisplay assertions therefore double as a Thymeleaf template-evaluation guard.
+ * <p><strong>Slice boundary.</strong> The {@link AccountViewService} collaborator is replaced with
+ * a Mockito bean, so these tests assert only what the controller owns &mdash; the request mappings
+ * ({@code GET /account-view}, {@code POST /account-view}), the resolved view name ({@code
+ * account-view}), the model attribute name ({@code accountViewForm}), and the program-name&rarr;
+ * redirect routing inherited from {@link BaseScreenController}. The account-view business rules
+ * &mdash; the account-filter validation and the keyed card-cross-reference &rarr; account-master
+ * &rarr; customer-master read chain, with its {@link java.math.BigDecimal} monetary rendering
+ * &mdash; live in {@link AccountViewService} and are verified by its own unit test, not here. The
+ * not-found / validation messages painted into {@code errMsg} are likewise a service concern (they
+ * surface as a {@code null} return that redisplays the screen), so they are intentionally out of
+ * scope for this controller slice.
  *
- * <p><strong>Slice boundary.</strong> {@link AccountViewService} (the migrated {@code COACTVWC}
- * business logic) is replaced with a Mockito bean, so these tests assert only what the controller
- * owns: the {@code GET}/{@code POST /account-view} mappings, the resolved view name, the {@code
- * accountViewForm} model attribute, and the program-name&rarr;redirect routing inherited from
- * {@link BaseScreenController}. The read-chain/validation rules live in {@code AccountViewService}
- * and are covered by its own unit test.
+ * <p><strong>Pseudo-conversational mapping.</strong> The single COBOL {@code 0000-MAIN} transaction
+ * (the {@code COACTVWC} paint-vs-process split) is exercised across the two HTTP verbs the {@code
+ * account-view} screen submits: {@code GET /account-view} is the first-entry paint (the {@code WHEN
+ * CDEMO-PGM-ENTER} branch), and {@code POST /account-view} is the re-entry process (the {@code WHEN
+ * CDEMO-PGM-REENTER} branch plus the PF3 exit {@code WHEN CCARD-AID-PFK03}, which the legacy
+ * program routes to the main-menu program {@code COMEN01C} via {@code EXEC CICS XCTL}).
  *
  * <p><strong>Security wiring.</strong> The real {@link SecurityConfig} filter chain is imported so
- * CSRF and authentication match production. Importing it instantiates {@code
- * userDetailsService(UserSecurityRepository)}, whose repository dependency is supplied as a Mockito
- * bean (never invoked &mdash; {@link WithMockUser} provides the principal). CSRF stays enabled, so
- * GETs need no token and state-changing POSTs that must succeed carry one via {@code with(csrf())}.
+ * the test exercises the production authentication/CSRF posture rather than a relaxed test default.
+ * Importing {@code SecurityConfig} instantiates its {@code
+ * userDetailsService(UserSecurityRepository)} bean, which requires a {@link UserSecurityRepository}
+ * bean that does not exist inside a {@code @WebMvcTest} slice; it is therefore supplied as a
+ * Mockito bean. Because {@code SecurityConfig} leaves CSRF protection enabled and gates {@code
+ * anyRequest().authenticated()}, every test method authenticates with {@link WithMockUser} (default
+ * {@code ROLE_USER}, matching a standard account-view operator), GET requests need no CSRF token,
+ * and every state-changing POST that must succeed carries one via {@code with(csrf())}.
  */
 @WebMvcTest(AccountViewController.class)
 @Import(SecurityConfig.class)
 @ActiveProfiles("test")
 class AccountViewControllerTest {
 
+  /** Auto-configured {@link MockMvc} entry point for driving the controller without a servlet. */
   @Autowired private MockMvc mockMvc;
 
+  /**
+   * Mockito stand-in for the migrated {@code COACTVWC} business logic. Stubbing its {@code
+   * processAccountView(...)} return value lets each test isolate a single controller routing branch
+   * (PF3 exit vs. redisplay) without exercising the real read chain or filter validation.
+   */
   @MockitoBean private AccountViewService accountViewService;
 
+  /**
+   * Mockito stand-in required because {@link Import @Import(SecurityConfig.class)} defines the
+   * {@code userDetailsService(UserSecurityRepository)} bean; the repository it depends on is not
+   * present in a {@code @WebMvcTest} slice and must be provided as a mock. It is never invoked here
+   * because {@link WithMockUser} supplies the authenticated principal directly.
+   */
   @MockitoBean private UserSecurityRepository userSecurityRepository;
 
   /**
-   * {@code GET /account-view} (first-entry paint) renders the {@code account-view} view and places
-   * the {@code accountViewForm} backing object on the model. Rendering the template here verifies
-   * every {@code account-view} field binding resolves against {@code AccountViewScreen}.
+   * {@code GET /account-view} (the first-entry paint, {@code COACTVWC} {@code WHEN
+   * CDEMO-PGM-ENTER}, L353-360) renders the {@code account-view} view and places the form-backing
+   * object ({@code accountViewForm}) on the model.
+   *
+   * <p>The handler always binds a fresh, non-null {@code AccountViewScreen} as {@code
+   * accountViewForm} before delegating to the service; with the mocked service returning its
+   * default ({@code null}), the controller paints the blank filter screen rather than navigating,
+   * so both the {@code 200 OK} status and the {@code accountViewForm} attribute are present
+   * regardless of the service.
    *
    * @throws Exception if the simulated request cannot be performed
    */
   @Test
   @WithMockUser
-  void get_rendersAccountViewAndBindsTemplate() throws Exception {
+  void get_rendersView() throws Exception {
     mockMvc
         .perform(get("/account-view"))
         .andExpect(status().isOk())
@@ -97,15 +123,17 @@ class AccountViewControllerTest {
   }
 
   /**
-   * {@code POST /account-view} with PF3 routes to the next program: the service returns {@code
-   * "COMEN01C"} (main menu) and the controller issues the {@code EXEC CICS XCTL} equivalent &mdash;
-   * a redirect to {@code /menu} via {@link BaseScreenController#redirectFor(String)}.
+   * {@code POST /account-view} with PF3 exits to the main menu: when the service returns the
+   * program name {@code "COMEN01C"} (the {@code COACTVWC WHEN CCARD-AID-PFK03} exit that moves
+   * {@code LIT-MENUPGM} to {@code CDEMO-TO-PROGRAM} and issues {@code EXEC CICS XCTL}), the
+   * controller issues the modern equivalent &mdash; a Spring redirect to that screen's GET endpoint
+   * ({@code /menu}) via {@link BaseScreenController#redirectFor(String)}.
    *
    * @throws Exception if the simulated request cannot be performed
    */
   @Test
   @WithMockUser
-  void post_serviceReturnsProgram_redirects() throws Exception {
+  void post_pf3_redirectsToMenu() throws Exception {
     given(accountViewService.processAccountView(any(), any(), any())).willReturn("COMEN01C");
 
     mockMvc
@@ -116,33 +144,34 @@ class AccountViewControllerTest {
 
   /**
    * {@code POST /account-view} redisplays the screen when the service returns {@code null}
-   * (validation/not-found redisplay path). The controller re-renders the {@code account-view}
-   * template with the bound form &mdash; a second template-evaluation guard over the POST redisplay
-   * path.
+   * (first-entry paint, a valid read painted into the detail fields, or a validation / not-found
+   * message in {@code errMsg}). The controller re-renders the {@code account-view} view with the
+   * form-backing object instead of redirecting (the {@code COACTVWC 1000-SEND-MAP} redisplay path).
    *
    * @throws Exception if the simulated request cannot be performed
    */
   @Test
   @WithMockUser
-  void post_serviceReturnsNull_redisplaysAndBindsTemplate() throws Exception {
+  void post_serviceReturnsNull_redisplays() throws Exception {
     given(accountViewService.processAccountView(any(), any(), any())).willReturn(null);
 
     mockMvc
-        .perform(post("/account-view").param("pfKey", "ENTER").with(csrf()))
+        .perform(post("/account-view").with(csrf()))
         .andExpect(status().isOk())
         .andExpect(view().name("account-view"))
         .andExpect(model().attributeExists("accountViewForm"));
   }
 
   /**
-   * {@link SecurityConfig} keeps CSRF protection enabled: an authenticated {@code POST
-   * /account-view} without a token is rejected with {@code 403 Forbidden} before the handler runs.
+   * Documents that {@link SecurityConfig} keeps CSRF protection enabled: an authenticated {@code
+   * POST /account-view} that omits the CSRF token is rejected by the security filter with {@code
+   * 403 Forbidden} before the controller handler ever runs.
    *
    * @throws Exception if the simulated request cannot be performed
    */
   @Test
   @WithMockUser
-  void post_withoutCsrf_isForbidden() throws Exception {
+  void post_withoutCsrf_forbidden() throws Exception {
     mockMvc.perform(post("/account-view")).andExpect(status().isForbidden());
   }
 }

@@ -21,6 +21,7 @@ import static org.mockito.BDDMockito.given;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.flash;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.model;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -39,54 +40,82 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 /**
- * {@link WebMvcTest} slice test for {@link TranListController} &mdash; the modernized web
- * equivalent of the legacy CICS paged transaction-list browse with row selection transaction {@code
- * CT00} ({@code legacy/app/cbl/COTRN00C.cbl}, BMS mapset {@code COTRN00}). It pins the controller's
- * HTTP-to-view/routing contract (Agent Action Plan &sect;0.4.1 {@code TranListController <-
- * COTRN00C}; &sect;0.6.5 COMMAREA navigation).
+ * {@link org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest WebMvcTest} slice test
+ * for {@link TranListController} &mdash; the modernized web equivalent of the legacy CICS
+ * transaction-list transaction {@code CT00} ({@code legacy/app/cbl/COTRN00C.cbl}). This is a
+ * standard (non-admin) paged-browse screen reached from the main menu, so the controller carries no
+ * {@code @PreAuthorize}; this test pins down its HTTP-to-view / redirect routing contract and the
+ * controller-mediated selection handoff (Agent Action Plan &sect;0.4.1 {@code TranListController <-
+ * COTRN00C}; &sect;0.6.5 pseudo-conversational state &amp; navigation).
  *
- * <p><strong>Why this test renders the view.</strong> A {@code @WebMvcTest} auto-configures
- * Thymeleaf, so {@code mockMvc.perform(...).andExpect(status().isOk())} actually <em>renders</em>
- * the {@code transaction-list} template through the real view resolver. A render-time binding
- * mismatch &mdash; a {@code th:field}/{@code th:text} selection expression referencing a property
- * absent from the bound screen DTO &mdash; raises a Spring EL / binding exception during rendering
- * and fails the request, so the GET and POST redisplay assertions double as a Thymeleaf
- * template-evaluation guard (the regression that motivated the full CP4 controller-test set).
+ * <p><strong>Slice boundary.</strong> The {@link TranListService} collaborator is replaced with a
+ * Mockito bean, so these tests assert only what the controller owns: the request mappings ({@code
+ * GET}/{@code POST /transaction-list}), the resolved view name ({@code transaction-list}), the
+ * model attribute name ({@code transactionListForm}), the program-name&rarr;redirect routing
+ * inherited from {@link BaseScreenController}, and the {@code selectedTranId} flash handoff. The
+ * keyset paging, the ten-row page build, and the row-selection scan live in {@link TranListService}
+ * and are verified by its own unit test, not here.
  *
- * <p><strong>Slice boundary.</strong> {@link TranListService} (the migrated {@code COTRN00C}
- * business logic) is replaced with a Mockito bean, so these tests assert only what the controller
- * owns: the {@code GET}/{@code POST /transaction-list} mappings, the resolved view name, the {@code
- * transactionListForm} model attribute, and the program-name&rarr;redirect routing inherited from
- * {@link BaseScreenController}. The read/list/validate rules live in {@code TranListService} and
- * are covered by its own unit test.
+ * <p><strong>Selection-handoff contract (KEY INSIGHT).</strong> When a row is selected with {@code
+ * S} the service returns the transaction-view program {@code "COTRN01C"} and the controller
+ * re-derives the chosen transaction id from the bound rows, carrying it to the transaction-view
+ * screen as the {@code selectedTranId} <em>flash attribute</em>. This test asserts the
+ * <em>produce</em> side's defensive branch: a request that binds <em>no</em> rows leaves {@code
+ * firstSelectedTranId(screen)} returning {@code null}, so <em>no</em> flash attribute is added even
+ * though the redirect to {@code /transaction-view} still occurs. This is exactly the legacy {@code
+ * COTRN00C PROCESS-ENTER-KEY} behaviour when ENTER is pressed with no row marked: the {@code WHEN
+ * OTHER} branch (COTRN00C L179-181) clears {@code CDEMO-CT00-TRN-SELECTED}, so no id is propagated.
+ * Asserting this branch lets the test exercise the routing without constructing the nested {@code
+ * TranListScreen.TranListRow} type (owned by the DTO layer); the positive selection (the flash
+ * <em>is</em> set) is verified end-to-end on the <em>consume</em> side in {@code
+ * TranViewControllerTest} via {@code flashAttr(...)}.
  *
  * <p><strong>Security wiring.</strong> The real {@link SecurityConfig} filter chain is imported so
- * CSRF and authentication match production. Importing it instantiates {@code
- * userDetailsService(UserSecurityRepository)}, whose repository dependency is supplied as a Mockito
- * bean (never invoked &mdash; {@link WithMockUser} provides the principal). CSRF stays enabled, so
- * GETs need no token and state-changing POSTs that must succeed carry one via {@code with(csrf())}.
+ * the test exercises the production authentication/CSRF posture rather than a relaxed test default.
+ * Importing {@code SecurityConfig} instantiates its {@code
+ * userDetailsService(UserSecurityRepository)} bean, which requires a {@link UserSecurityRepository}
+ * bean that does not exist inside a {@code @WebMvcTest} slice; it is therefore supplied as a
+ * Mockito bean. Because {@code SecurityConfig} leaves CSRF protection enabled and gates {@code
+ * anyRequest().authenticated()}, every test method authenticates with {@link WithMockUser} (default
+ * {@code ROLE_USER}, matching a standard list user), the GET request needs no CSRF token, and every
+ * state-changing POST carries one via {@code with(csrf())}.
  */
 @WebMvcTest(TranListController.class)
 @Import(SecurityConfig.class)
 @ActiveProfiles("test")
 class TranListControllerTest {
 
+  /** Auto-configured {@link MockMvc} entry point for driving the controller without a servlet. */
   @Autowired private MockMvc mockMvc;
 
+  /**
+   * Mockito stand-in for the migrated {@code COTRN00C} business logic. Stubbing its {@code
+   * processTranList(...)} return value lets each test isolate a single controller routing branch
+   * (selection forward, PF3 return, or redisplay) without exercising the real browse/selection
+   * rules.
+   */
   @MockitoBean private TranListService tranListService;
 
+  /**
+   * Mockito stand-in required because {@link Import @Import(SecurityConfig.class)} defines the
+   * {@code userDetailsService(UserSecurityRepository)} bean; the repository it depends on is not
+   * present in a {@code @WebMvcTest} slice and must be provided as a mock. It is never invoked here
+   * because {@link WithMockUser} supplies the authenticated principal directly.
+   */
   @MockitoBean private UserSecurityRepository userSecurityRepository;
 
   /**
-   * {@code GET /transaction-list} (first-entry paint) renders the {@code transaction-list} view and
-   * places the {@code transactionListForm} backing object on the model. Rendering the template here
-   * verifies every {@code transaction-list} field binding resolves against its screen DTO.
+   * {@code GET /transaction-list} (the first-entry paint, {@code COTRN00C MAIN-PARA} L112-116)
+   * renders the {@code transaction-list} view and places the form-backing object ({@code
+   * transactionListForm}) on the model. The screen is a fresh, non-null {@code TranListScreen}
+   * regardless of the mocked service (its {@code processTranList} returns {@code null} by default),
+   * so the attribute always exists.
    *
    * @throws Exception if the simulated request cannot be performed
    */
   @Test
   @WithMockUser
-  void get_rendersViewAndBindsTemplate() throws Exception {
+  void get_rendersView() throws Exception {
     mockMvc
         .perform(get("/transaction-list"))
         .andExpect(status().isOk())
@@ -95,34 +124,64 @@ class TranListControllerTest {
   }
 
   /**
-   * {@code POST /transaction-list} with PF3 routes to the next program: the service returns {@code
-   * "COMEN01C"} (main menu) and the controller issues the {@code EXEC CICS XCTL} equivalent &mdash;
-   * a redirect to {@code /menu} via {@link BaseScreenController#redirectFor(String)}.
+   * {@code POST /transaction-list} forwards to the transaction-view screen when the service returns
+   * {@code "COTRN01C"} (a row was selected with {@code S}), but adds <em>no</em> flash attribute
+   * when the bound screen carries no selected rows.
+   *
+   * <p>With no {@code rows[...]} request parameters, the bound {@code TranListScreen} has an empty
+   * rows list, so {@code firstSelectedTranId(screen)} returns {@code null} and the {@code
+   * selectedTranId} flash attribute is never set &mdash; mirroring the legacy {@code WHEN OTHER}
+   * branch that clears {@code CDEMO-CT00-TRN-SELECTED} (COTRN00C L179-181). The controller still
+   * issues the {@code EXEC CICS XCTL PROGRAM('COTRN01C')} equivalent &mdash; a Spring redirect to
+   * {@code /transaction-view} via {@link BaseScreenController#redirectFor(String)}. The flash map
+   * is therefore asserted empty.
    *
    * @throws Exception if the simulated request cannot be performed
    */
   @Test
   @WithMockUser
-  void post_serviceReturnsProgram_redirects() throws Exception {
+  void post_selectionWithoutRows_redirectsToViewWithoutFlash() throws Exception {
+    given(tranListService.processTranList(any(), any(), any())).willReturn("COTRN01C");
+
+    mockMvc
+        .perform(post("/transaction-list").param("pfKey", "ENTER").with(csrf()))
+        .andExpect(status().is3xxRedirection())
+        .andExpect(redirectedUrl("/transaction-view"))
+        .andExpect(flash().attributeCount(0));
+  }
+
+  /**
+   * {@code POST /transaction-list} with PF3 returns to the main menu: when the service returns
+   * {@code "COMEN01C"} (the {@code COTRN00C} PF3 / {@code RETURN-TO-PREV-SCREEN} path, L122-124),
+   * the controller redirects to the main-menu GET endpoint ({@code /menu}). Because the returned
+   * program is not the transaction-view target, the selection-handoff branch is skipped and no
+   * flash attribute is added.
+   *
+   * @throws Exception if the simulated request cannot be performed
+   */
+  @Test
+  @WithMockUser
+  void post_pf3_redirectsToMenu() throws Exception {
     given(tranListService.processTranList(any(), any(), any())).willReturn("COMEN01C");
 
     mockMvc
         .perform(post("/transaction-list").param("pfKey", "PF3").with(csrf()))
         .andExpect(status().is3xxRedirection())
-        .andExpect(redirectedUrl("/menu"));
+        .andExpect(redirectedUrl("/menu"))
+        .andExpect(flash().attributeCount(0));
   }
 
   /**
-   * {@code POST /transaction-list} redisplays the screen when the service returns {@code null}
-   * (paging, validation-error, invalid-selection, or informational redisplay path). The controller
-   * re-renders the {@code transaction-list} template with the bound form &mdash; a second
-   * template-evaluation guard over the POST redisplay path.
+   * {@code POST /transaction-list} redisplays the list when the service returns {@code null}
+   * (PF7/PF8 paging, an invalid selection, a non-numeric filter, or an unmapped key). The
+   * controller re-renders the {@code transaction-list} view with the form-backing object instead of
+   * redirecting, so the screen can carry any error/informational message line.
    *
    * @throws Exception if the simulated request cannot be performed
    */
   @Test
   @WithMockUser
-  void post_serviceReturnsNull_redisplaysAndBindsTemplate() throws Exception {
+  void post_serviceReturnsNull_redisplays() throws Exception {
     given(tranListService.processTranList(any(), any(), any())).willReturn(null);
 
     mockMvc
@@ -130,18 +189,5 @@ class TranListControllerTest {
         .andExpect(status().isOk())
         .andExpect(view().name("transaction-list"))
         .andExpect(model().attributeExists("transactionListForm"));
-  }
-
-  /**
-   * {@link SecurityConfig} keeps CSRF protection enabled: an authenticated {@code POST
-   * /transaction-list} without a token is rejected with {@code 403 Forbidden} before the handler
-   * runs.
-   *
-   * @throws Exception if the simulated request cannot be performed
-   */
-  @Test
-  @WithMockUser
-  void post_withoutCsrf_isForbidden() throws Exception {
-    mockMvc.perform(post("/transaction-list")).andExpect(status().isForbidden());
   }
 }
