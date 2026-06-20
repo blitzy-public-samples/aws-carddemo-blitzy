@@ -20,6 +20,7 @@ import com.aws.carddemo.domain.UserSecurity;
 import com.aws.carddemo.repository.UserSecurityRepository;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -74,10 +75,14 @@ import org.springframework.security.web.authentication.AuthenticationSuccessHand
  * 10 CDEMO-USER-TYPE PIC X(01)} with {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'} and {@code 88
  * CDEMO-USRTYP-USER VALUE 'U'}. This maps directly to two Spring roles &mdash; {@code ADMIN} for
  * stored type {@code 'A'} and {@code USER} for type {@code 'U'} (or any non-admin value, matching
- * the legacy {@code ELSE} branch). Administrator-only functions ({@code CA00} admin menu and the
- * user-management screens {@code CU00}&ndash;{@code CU03}) are gated behind {@code /admin/**};
- * web-layer controllers for those functions must therefore be mapped under {@code /admin/**} (for
- * example user management under {@code /admin/users/**}) so this single rule gates them.
+ * the legacy {@code ELSE} branch). Administrator-only functions are URL-gated to {@link
+ * #ROLE_ADMIN}: the admin menu ({@code COADM01C}, transaction {@code CA00}) is gated by the {@code
+ * /admin/**} space, and the user-management screens ({@code COUSR00C}&ndash;{@code COUSR03C},
+ * {@code CU00}&ndash;{@code CU03}) are gated by explicit matchers on their web routes ({@code
+ * /user-list}, {@code /user-add}, {@code /user-update}, {@code /user-delete}), which the web layer
+ * maps outside {@code /admin/**}. Those user-management services additionally carry
+ * {@code @PreAuthorize("hasRole('ADMIN')")} as defense-in-depth, so admin gating holds at both the
+ * URL and the service layer.
  *
  * <h2>Security hardening</h2>
  *
@@ -215,12 +220,18 @@ public class SecurityConfig {
    * Defines the HTTP authorization policy, authentication entry points, and post-sign-on routing
    * that together reproduce the legacy CICS/RACF online security behaviour.
    *
-   * <p><strong>Authorization.</strong> Public entry points &mdash; the root, the sign-on/sign-off
-   * endpoints, the framework error page, and static assets &mdash; are open to everyone so the
-   * sign-on screen and its resources can render. The {@code /admin/**} space requires the {@link
-   * #ROLE_ADMIN} role, gating the admin menu ({@code CA00}) and the user-management screens ({@code
-   * CU00}&ndash;{@code CU03}) so standard users can never reach them (matching {@code COADM01C}).
-   * Every other request requires authentication.
+   * <p><strong>Authorization.</strong> Public entry points &mdash; the root, the sign-on screen
+   * ({@code /login}), the sign-on submit ({@code POST /signon}), the sign-off endpoint, the
+   * framework error page, and static assets &mdash; are open to everyone so the sign-on screen can
+   * render and the credentials can be submitted before any authentication exists. {@code POST
+   * /signon} is permitted as an explicit method-specific matcher: the migrated {@code COSGN00C}
+   * sign-on is handled by the web/service layer, which must run for an unauthenticated caller. The
+   * {@code /admin/**} space requires the {@link #ROLE_ADMIN} role (the admin menu {@code COADM01C},
+   * transaction {@code CA00}). The user-management screens ({@code COUSR00C}&ndash;{@code
+   * COUSR03C}, {@code CU00}&ndash;{@code CU03}) are admin-gated by explicit matchers on {@code
+   * /user-list}, {@code /user-add}, {@code /user-update}, and {@code /user-delete}; because each
+   * screen's GET display and POST submit share its path, these method-agnostic matchers gate both,
+   * so standard users can never reach them. Every other request requires authentication.
    *
    * <p><strong>Form login.</strong> A custom login page at {@code /login} is used, and a
    * {@linkplain #roleBasedSuccessHandler() role-based success handler} reproduces the legacy
@@ -245,6 +256,14 @@ public class SecurityConfig {
     http.authorizeHttpRequests(
             registry ->
                 registry
+                    // Public sign-on SUBMIT (migrated COSGN00C, transaction CC00). The
+                    // later SignonController POST /signon must reach the web/service layer
+                    // for an unauthenticated caller so SignonService can validate the
+                    // credentials; otherwise sign-in is blocked before it ever runs (AAP
+                    // §0.6.5). The explicit POST matcher opens only the submit, and CSRF
+                    // stays enabled: the Thymeleaf sign-on form injects the token.
+                    .requestMatchers(HttpMethod.POST, "/signon")
+                    .permitAll()
                     .requestMatchers(
                         "/",
                         "/login",
@@ -255,7 +274,16 @@ public class SecurityConfig {
                         "/images/**",
                         "/webjars/**")
                     .permitAll()
+                    // Admin menu (COADM01C, transaction CA00) and any future admin-only space.
                     .requestMatchers("/admin/**")
+                    .hasRole(ROLE_ADMIN)
+                    // User-management screens (COUSR00C-COUSR03C, transactions CU00-CU03)
+                    // are admin-only. The web layer maps them outside /admin/**
+                    // (BaseScreenController PROGRAM_TO_URL), and each screen's GET display
+                    // and POST submit share its path, so this method-agnostic matcher gates
+                    // both current and future routes to ROLE_ADMIN. The services keep
+                    // @PreAuthorize("hasRole('ADMIN')") as defense-in-depth (AAP §0.3.4).
+                    .requestMatchers("/user-list", "/user-add", "/user-update", "/user-delete")
                     .hasRole(ROLE_ADMIN)
                     .anyRequest()
                     .authenticated())
