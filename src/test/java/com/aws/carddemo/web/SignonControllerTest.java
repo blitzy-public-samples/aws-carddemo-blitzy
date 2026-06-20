@@ -55,16 +55,19 @@ import org.springframework.test.web.servlet.MockMvc;
  * are verified by its own unit test, not here.
  *
  * <p><strong>Security posture (DESIGN DECISION: {@code addFilters = false}).</strong> The
- * production {@code SecurityConfig} permits {@code "/"} and {@code "/login"} but does <em>not</em>
- * {@code permitAll()} the {@code POST /signon} endpoint, and it keeps CSRF protection enabled.
- * Driving this controller's routing logic through the full security filter chain would therefore
- * require the caller to be authenticated <em>before</em> signing on &mdash; a contradiction. {@link
- * AutoConfigureMockMvc @AutoConfigureMockMvc(addFilters = false)} disables the Spring Security
- * filter chain so the controller's RECEIVE/SEND routing logic is exercised directly. Consequently
- * this test imports no {@code SecurityConfig}, declares no {@code @WithMockUser}, sends no CSRF
- * token, and mocks no {@code UserSecurityRepository}; end-to-end security (CSRF, URL gating, the
- * {@code userDetailsService}) is covered by the Testcontainers {@code CardDemoApplicationTests} and
- * the admin-gating controller slices, not here.
+ * production {@code SecurityConfig} explicitly {@code permitAll()}s the sign-on submit &mdash; it
+ * registers a method-specific matcher {@code requestMatchers(HttpMethod.POST, "/signon")} so an
+ * unauthenticated user can post the sign-on form &mdash; while CSRF protection is left at its
+ * enabled default. This slice test is therefore <em>not</em> reproducing that production rule:
+ * {@link AutoConfigureMockMvc @AutoConfigureMockMvc(addFilters = false)} disables the Spring
+ * Security filter chain purely to isolate the controller's RECEIVE/SEND routing logic from CSRF and
+ * URL gating, so the routing branches can be exercised directly without seeding a CSRF token. The
+ * end-to-end security contract for {@code POST /signon} &mdash; that it is permitted yet still
+ * CSRF-protected (a token-less post is rejected with {@code 403}) &mdash; is verified separately by
+ * {@code SecurityFilterChainTest} and the full-context Testcontainers {@code
+ * CardDemoApplicationTests}, not here. Consequently this test imports no {@code SecurityConfig},
+ * declares no {@code @WithMockUser}, sends no CSRF token, and mocks no {@code
+ * UserSecurityRepository}.
  */
 @WebMvcTest(SignonController.class)
 @AutoConfigureMockMvc(addFilters = false)

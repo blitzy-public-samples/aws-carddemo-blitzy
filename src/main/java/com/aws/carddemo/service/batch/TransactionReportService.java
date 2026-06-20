@@ -414,7 +414,14 @@ public class TransactionReportService {
       }
 
       if (!endOfFile) { // IF END-OF-FILE = 'N'
-        LOG.info("{}", formatTranRecord(currentTransaction)); // DISPLAY TRAN-RECORD
+        // COBOL parity (CBTRN03C L180): DISPLAY TRAN-RECORD, reproduced ONLY as a
+        // REDACTED, DEBUG-level (off by default) diagnostic. The card number is masked
+        // to its last four digits and the merchant/location fields are redacted, so no
+        // cardholder/merchant PII reaches application or test logs. Byte-faithful report
+        // output (from the report sink) is unaffected; see formatRedactedTranRecord.
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("{}", formatRedactedTranRecord(currentTransaction)); // DISPLAY TRAN-RECORD
+        }
         // COBOL parity: the control break is on TRAN-CARD-NUM (card number), not the account id.
         if (!currentTransaction.getTranCardNum().equals(wsCurrCardNum)) {
           if (!wsFirstTime) { // IF WS-FIRST-TIME = 'N'
@@ -974,34 +981,72 @@ public class TransactionReportService {
   }
 
   /**
-   * Renders the whole-record image emitted by the main-loop {@code DISPLAY TRAN-RECORD} (CBTRN03C
-   * L180).
+   * Renders a <strong>redacted</strong> diagnostic image of the record processed by the main loop,
+   * mirroring the intent of the COBOL {@code DISPLAY TRAN-RECORD} (CBTRN03C L180) without leaking
+   * sensitive data.
    *
-   * <p>The COBOL statement displays the contiguous {@code TRAN-RECORD} group (copybook {@code
-   * CVTRA05Y}) as one diagnostic line. This method reproduces that image by concatenating every
-   * business field in copybook declaration order (excluding only the trailing {@code FILLER}). The
-   * {@link BigDecimal} amount is rendered verbatim and never converted to {@code float}/{@code
-   * double} (AAP &sect;0.6.1). This output is a diagnostic log only; the report sink is unaffected.
+   * <p>The legacy COBOL displayed the contiguous {@code TRAN-RECORD} group (copybook {@code
+   * CVTRA05Y}) verbatim to SYSOUT. Reproducing that image faithfully would emit the full card
+   * number and the merchant/location fields into application and test logs, violating the project's
+   * security and PII-hygiene posture (AAP &sect;0.1.1 security hardening, &sect;0.7.3). This method
+   * therefore masks the card number to its last four digits (matching the project-wide convention
+   * used by {@code CardDemoCommarea}, AAP &sect;0.6.6) and redacts the merchant identifier, name,
+   * city, and ZIP. The non-sensitive reference fields (transaction id, type/category codes, source,
+   * description, amount, and timestamps) are retained for diagnostic value. The {@link BigDecimal}
+   * amount is rendered verbatim and never converted to {@code float}/{@code double} (AAP
+   * &sect;0.6.1). This output is a redacted diagnostic only; the byte-faithful report image is
+   * produced solely by the report sink and is unaffected.
    *
    * @param tx the record to render; never {@code null} on the normal {@code '00'} path
-   * @return the concatenated whole-record image, in copybook field order
+   * @return a redacted, single-line diagnostic image of the record
    */
-  private String formatTranRecord(Transaction tx) {
-    // <- CBTRN03C main-loop DISPLAY TRAN-RECORD (CVTRA05Y field order)
+  private String formatRedactedTranRecord(Transaction tx) {
+    // <- CBTRN03C main-loop DISPLAY TRAN-RECORD, redacted for PII hygiene (CVTRA05Y field order)
     return new StringBuilder()
+        .append("tranId=")
         .append(tx.getTranId())
+        .append(" typeCd=")
         .append(tx.getTranTypeCd())
+        .append(" catCd=")
         .append(tx.getTranCatCd())
+        .append(" source=")
         .append(tx.getTranSource())
+        .append(" desc=")
         .append(tx.getTranDesc())
+        .append(" amt=")
         .append(tx.getTranAmt())
-        .append(tx.getTranMerchantId())
-        .append(tx.getTranMerchantName())
-        .append(tx.getTranMerchantCity())
-        .append(tx.getTranMerchantZip())
-        .append(tx.getTranCardNum())
+        .append(" merchant=[REDACTED]")
+        .append(" cardNum=")
+        .append(maskCardNumber(tx.getTranCardNum()))
+        .append(" origTs=")
         .append(tx.getTranOrigTs())
+        .append(" procTs=")
         .append(tx.getTranProcTs())
         .toString();
+  }
+
+  /**
+   * Masks a card number for safe inclusion in diagnostic logs, revealing at most the last four
+   * digits and replacing every preceding character with {@code '*'} (matching the {@code
+   * CardDemoCommarea} masking convention, AAP &sect;0.6.6).
+   *
+   * <p>A {@code null} value renders as {@code "null"}; a value of four characters or fewer (after
+   * trimming the fixed-width {@code PIC X(16)} padding) is fully masked so that no digits are
+   * exposed.
+   *
+   * @param cardNum the raw card number ({@code TRAN-CARD-NUM}, {@code PIC X(16)}); may be {@code
+   *     null}
+   * @return the masked card number, never exposing more than the final four digits
+   */
+  private static String maskCardNumber(String cardNum) {
+    if (cardNum == null) {
+      return "null";
+    }
+    String trimmed = cardNum.trim();
+    if (trimmed.length() <= 4) {
+      return "*".repeat(trimmed.length());
+    }
+    int maskLength = trimmed.length() - 4;
+    return "*".repeat(maskLength) + trimmed.substring(maskLength);
   }
 }
