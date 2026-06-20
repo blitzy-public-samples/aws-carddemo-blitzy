@@ -16,334 +16,374 @@
  */
 package com.aws.carddemo.batch.writer;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.aws.carddemo.exception.IoStatusException;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.io.Writer;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Pure JUnit&nbsp;5 + AssertJ unit tests for {@link ReportFileWriter}, the physical {@code
- * TRANREPT} output sink migrated from the report side of {@code legacy/app/cbl/CBTRN03C.cbl}
- * (paragraphs {@code 0100-REPTFILE-OPEN}, {@code 1111-WRITE-REPORT-REC}, {@code
- * 9100-REPTFILE-CLOSE}).
+ * Pure-POJO JUnit&nbsp;5 unit tests for {@link ReportFileWriter}, the physical {@code TRANREPT}
+ * report sink migrated from the report side of {@code legacy/app/cbl/CBTRN03C.cbl} (paragraphs
+ * {@code 0100-REPTFILE-OPEN}, {@code 1111-WRITE-REPORT-REC}, {@code 9100-REPTFILE-CLOSE}).
  *
- * <p>The tests pin the parity invariants the report job depends on:
+ * <p>The legacy record is a fixed {@code 01 FD-REPTFILE-REC PIC X(133)} written to {@code SELECT
+ * REPORT-FILE ASSIGN TO TRANREPT}, whose DD is {@code DCB=(LRECL=133,RECFM=FB,BLKSIZE=0)} in both
+ * {@code legacy/app/jcl/TRANREPT.jcl} and {@code legacy/app/proc/TRANREPT.prc}. These tests pin the
+ * parity invariants the report job depends on (Agent Action Plan &sect;0.4.1, &sect;0.6.4,
+ * &sect;0.7.3):
  *
  * <ul>
- *   <li>every accepted line is normalized to exactly {@value ReportFileWriter#LRECL} characters
- *       (right space-padded when shorter, right-truncated when longer, blank when {@code null}),
- *       reproducing the {@code PIC X(133)} print record on a {@code RECFM=FB} dataset;
- *   <li>the record separator defaults to a fixed {@code "\n"} for deterministic golden-file parity;
- *   <li>any physical open/write/close {@link IOException} is re-thrown as an {@link
- *       IoStatusException} (never swallowed), mirroring the COBOL "unexpected status &rarr; abend"
- *       path; and
+ *   <li>every accepted line is defensively normalized to exactly {@code 133} characters — right
+ *       space-padded when shorter, right-truncated when longer, and {@code 133} spaces when {@code
+ *       null} — reproducing a COBOL {@code MOVE} into the {@code PIC X(133)} print record;
+ *   <li>the record separator is the fixed literal {@code "\n"} (never {@link
+ *       System#lineSeparator()}) so golden-file output is byte-identical across platforms;
+ *   <li>any physical open/write {@link IOException} is re-thrown as an {@link IoStatusException}
+ *       (operation {@code OPEN}/{@code WRITE}, status {@code "30"}), mirroring the COBOL
+ *       "unexpected status &rarr; abend" path; and
  *   <li>{@link ReportFileWriter#close()} is idempotent.
  * </ul>
+ *
+ * <p>Expected padded/truncated values are re-derived independently here (via {@code " ".repeat(n)}
+ * and exact substrings) rather than by importing {@code com.aws.carddemo.util.CobolStringUtils}, so
+ * the normalization contract is verified against a second, hand-derived source of truth. The suite
+ * uses no Spring context, Spring Batch, Testcontainers, Mockito, or AssertJ.
  */
 class ReportFileWriterTest {
 
-  /** A line that is shorter than the fixed record length and must be right space-padded. */
-  private static final String SHORT_LINE = "ABCDEFGHIJ";
+  /** The fixed COBOL report record length ({@code FD-REPTFILE-REC PIC X(133)}). */
+  private static final int LRECL = 133;
+
+  /**
+   * Returns a string of exactly {@code n} ASCII spaces, used to re-derive the expected
+   * right-padding independently of the production normalization helper.
+   *
+   * @param n the number of spaces
+   * @return {@code n} space characters
+   */
+  private static String spaces(int n) {
+    return " ".repeat(n);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Defensive normalization (the core parity contract)
+  // ---------------------------------------------------------------------------------------------
 
   @Test
-  void constantsMatchTranreptContract() {
-    assertThat(ReportFileWriter.DD_NAME).isEqualTo("TRANREPT");
-    assertThat(ReportFileWriter.LRECL).isEqualTo(133);
+  void constants_match_tranrept_contract() {
+    assertEquals("TRANREPT", ReportFileWriter.DD_NAME);
+    assertEquals(133, ReportFileWriter.LRECL);
   }
 
   @Test
-  void acceptShortLineIsRightPaddedTo133PlusNewline() {
+  void accept_pads_short_line_to_133() {
+    ReportFileWriter w = new ReportFileWriter();
     StringWriter sw = new StringWriter();
-    ReportFileWriter writer = new ReportFileWriter();
-    writer.open(sw);
+    w.open(sw);
 
-    writer.accept(SHORT_LINE);
+    String line = "HELLO";
+    w.accept(line);
 
-    String content = sw.toString();
-    assertThat(content).hasSize(ReportFileWriter.LRECL + 1).endsWith("\n");
-    String record = content.substring(0, ReportFileWriter.LRECL);
-    assertThat(record).hasSize(133).startsWith(SHORT_LINE);
-    assertThat(record).isEqualTo(SHORT_LINE + " ".repeat(133 - SHORT_LINE.length()));
+    String expected = line + spaces(LRECL - line.length()) + "\n";
+    assertEquals(expected, sw.toString());
+    assertEquals(134, sw.toString().length());
+    assertEquals(133, sw.toString().substring(0, LRECL).length());
+    w.close();
   }
 
   @Test
-  void acceptLongerThan133IsTruncatedTo133PlusNewline() {
+  void accept_truncates_long_line_to_133() {
+    ReportFileWriter w = new ReportFileWriter();
     StringWriter sw = new StringWriter();
-    ReportFileWriter writer = new ReportFileWriter();
-    writer.open(sw);
-    String longLine = "X".repeat(200);
+    w.open(sw);
 
-    writer.accept(longLine);
+    String longLine = "A".repeat(200);
+    w.accept(longLine);
 
-    String content = sw.toString();
-    assertThat(content).hasSize(ReportFileWriter.LRECL + 1).endsWith("\n");
-    assertThat(content.substring(0, ReportFileWriter.LRECL)).isEqualTo("X".repeat(133));
+    String expected = "A".repeat(LRECL) + "\n";
+    assertEquals(expected, sw.toString());
+    assertEquals(134, sw.toString().length());
+    w.close();
   }
 
   @Test
-  void acceptExactly133IsUnchangedPlusNewline() {
+  void accept_keeps_exact_133_line_unchanged() {
+    ReportFileWriter w = new ReportFileWriter();
     StringWriter sw = new StringWriter();
-    ReportFileWriter writer = new ReportFileWriter();
-    writer.open(sw);
-    String exact = "E".repeat(133);
+    w.open(sw);
 
-    writer.accept(exact);
+    String exact = "B".repeat(LRECL);
+    w.accept(exact);
 
-    assertThat(sw.toString()).isEqualTo(exact + "\n");
+    assertEquals(exact + "\n", sw.toString());
+    w.close();
   }
 
   @Test
-  void acceptNullProduces133SpacesPlusNewline() {
+  void accept_null_line_becomes_133_spaces() {
+    ReportFileWriter w = new ReportFileWriter();
     StringWriter sw = new StringWriter();
-    ReportFileWriter writer = new ReportFileWriter();
-    writer.open(sw);
+    w.open(sw);
 
-    writer.accept(null);
+    w.accept(null);
 
-    assertThat(sw.toString()).isEqualTo(" ".repeat(133) + "\n");
+    assertEquals(spaces(LRECL) + "\n", sw.toString());
+    w.close();
   }
 
   @Test
-  void getRecordsWrittenIncrementsPerAcceptAndResetsOnOpen() {
-    ReportFileWriter writer = new ReportFileWriter();
-    writer.open(new StringWriter());
-    assertThat(writer.getRecordsWritten()).isZero();
+  void getRecordsWritten_is_zero_on_fresh_open() {
+    ReportFileWriter w = new ReportFileWriter();
+    w.open(new StringWriter());
 
-    writer.accept("a");
-    writer.accept("b");
-    writer.accept("c");
-    assertThat(writer.getRecordsWritten()).isEqualTo(3);
-
-    // Re-opening onto a new stream resets the counter.
-    writer.open(new StringWriter());
-    assertThat(writer.getRecordsWritten()).isZero();
+    assertEquals(0L, w.getRecordsWritten());
   }
 
   @Test
-  void nullConstructorArgumentsCoalesceToUtf8AndNewline() {
-    ReportFileWriter writer = new ReportFileWriter(null, null);
+  void getRecordsWritten_increments_per_accept() {
+    ReportFileWriter w = new ReportFileWriter();
+    w.open(new StringWriter());
+
+    w.accept("a");
+    w.accept("b");
+    w.accept("c");
+
+    assertEquals(3L, w.getRecordsWritten());
+  }
+
+  @Test
+  void getRecordsWritten_resets_on_reopen() {
+    ReportFileWriter w = new ReportFileWriter();
+    w.open(new StringWriter());
+    w.accept("a");
+    w.accept("b");
+    assertEquals(2L, w.getRecordsWritten());
+
+    // Re-opening onto a new stream resets the running counter to zero.
+    w.open(new StringWriter());
+    assertEquals(0L, w.getRecordsWritten());
+  }
+
+  @Test
+  void null_constructor_arguments_coalesce_to_utf8_and_newline() {
+    ReportFileWriter w = new ReportFileWriter(null, null);
     StringWriter sw = new StringWriter();
-    writer.open(sw);
+    w.open(sw);
 
-    writer.accept("Z");
+    w.accept("Z");
 
-    assertThat(sw.toString()).hasSize(ReportFileWriter.LRECL + 1).endsWith("\n");
+    assertEquals("Z" + spaces(LRECL - 1) + "\n", sw.toString());
+    assertEquals(134, sw.toString().length());
   }
 
   @Test
-  void customLineSeparatorIsAppendedAfterEachRecord() {
-    ReportFileWriter writer = new ReportFileWriter(StandardCharsets.UTF_8, "\r\n");
+  void custom_line_separator_is_appended_after_each_record() {
+    ReportFileWriter w = new ReportFileWriter(StandardCharsets.UTF_8, "\r\n");
     StringWriter sw = new StringWriter();
-    writer.open(sw);
+    w.open(sw);
 
-    writer.accept("Q");
+    w.accept("Q");
 
-    // 133 record characters + the two-character CRLF separator.
-    assertThat(sw.toString()).hasSize(135).endsWith("\r\n");
+    // 133 normalized record characters followed by the two-character CRLF separator.
+    assertEquals("Q" + spaces(LRECL - 1) + "\r\n", sw.toString());
+    assertEquals(135, sw.toString().length());
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Guard + abend parity
+  // ---------------------------------------------------------------------------------------------
+
+  @Test
+  void accept_before_open_throws() {
+    ReportFileWriter w = new ReportFileWriter();
+
+    IoStatusException ex = assertThrows(IoStatusException.class, () -> w.accept("x"));
+
+    assertEquals("TRANREPT", ex.getFileName());
+    assertEquals("WRITE", ex.getOperation());
+    assertEquals("30", ex.getFileStatus());
   }
 
   @Test
-  void openWriterWithNullThrowsIoStatusExceptionForOpen() {
-    ReportFileWriter writer = new ReportFileWriter();
+  void accept_wraps_io_exception_with_cause() {
+    ReportFileWriter w = new ReportFileWriter();
+    w.open(new FailingWriter());
 
-    assertThatThrownBy(() -> writer.open((Writer) null))
-        .isInstanceOfSatisfying(
-            IoStatusException.class,
-            ex -> {
-              assertThat(ex.getFileName()).isEqualTo("TRANREPT");
-              assertThat(ex.getOperation()).isEqualTo("OPEN");
-              assertThat(ex.getFileStatus()).isEqualTo("30");
-            });
+    IoStatusException ex = assertThrows(IoStatusException.class, () -> w.accept("anything"));
+
+    assertEquals("TRANREPT", ex.getFileName());
+    assertEquals("WRITE", ex.getOperation());
+    assertEquals("30", ex.getFileStatus());
+    // FailingWriter throws a plain IOException("boom"); the abend wrapper chains it verbatim.
+    assertEquals(IOException.class, ex.getCause().getClass());
+    assertEquals("boom", ex.getCause().getMessage());
   }
 
   @Test
-  void acceptWhenNotOpenThrowsIoStatusExceptionForWrite() {
-    ReportFileWriter writer = new ReportFileWriter();
+  void open_null_writer_throws() {
+    ReportFileWriter w = new ReportFileWriter();
 
-    assertThatThrownBy(() -> writer.accept("anything"))
-        .isInstanceOfSatisfying(
-            IoStatusException.class,
-            ex -> {
-              assertThat(ex.getFileName()).isEqualTo("TRANREPT");
-              assertThat(ex.getOperation()).isEqualTo("WRITE");
-            });
+    IoStatusException ex = assertThrows(IoStatusException.class, () -> w.open((Writer) null));
+
+    assertEquals("TRANREPT", ex.getFileName());
+    assertEquals("OPEN", ex.getOperation());
+    assertEquals("30", ex.getFileStatus());
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // close() idempotency
+  // ---------------------------------------------------------------------------------------------
+
+  @Test
+  void close_is_idempotent_without_open() {
+    assertDoesNotThrow(new ReportFileWriter()::close);
   }
 
   @Test
-  void acceptRethrowsUnderlyingWriteFailureAsIoStatusExceptionWithCause() {
-    ReportFileWriter writer = new ReportFileWriter();
-    writer.open(new FailingWriter(true, false));
+  void close_is_idempotent_when_called_twice() {
+    ReportFileWriter w = new ReportFileWriter();
+    w.open(new StringWriter());
+    w.accept("x");
 
-    assertThatThrownBy(() -> writer.accept("data"))
-        .isInstanceOfSatisfying(
-            IoStatusException.class,
-            ex -> {
-              assertThat(ex.getFileName()).isEqualTo("TRANREPT");
-              assertThat(ex.getOperation()).isEqualTo("WRITE");
-              assertThat(ex.getCause()).isInstanceOf(IOException.class);
-            });
+    w.close();
+
+    assertDoesNotThrow(w::close);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // open(Path) byte-level fidelity (@TempDir)
+  // ---------------------------------------------------------------------------------------------
+
+  @Test
+  void open_path_writes_padded_bytes(@TempDir Path dir) throws IOException {
+    Path f = dir.resolve("tranrept.txt");
+    ReportFileWriter w = new ReportFileWriter();
+
+    w.open(f);
+    w.accept("LINE");
+    w.close();
+
+    byte[] actual = Files.readAllBytes(f);
+    byte[] expected = ("LINE" + spaces(LRECL - 4) + "\n").getBytes(StandardCharsets.UTF_8);
+    assertArrayEquals(expected, actual);
+    assertEquals(134, actual.length);
   }
 
   @Test
-  void closeRethrowsUnderlyingCloseFailureAsIoStatusExceptionWithCauseThenIsIdempotent() {
-    ReportFileWriter writer = new ReportFileWriter();
-    writer.open(new FailingWriter(false, true));
-    writer.accept("ok"); // write succeeds; only close() fails
+  void open_path_with_explicit_charset_writes_record(@TempDir Path dir) throws IOException {
+    Path f = dir.resolve("ascii.txt");
+    // The constructor charset differs from the explicit open charset, proving the
+    // open(Path, Charset) argument wins.
+    ReportFileWriter w = new ReportFileWriter(StandardCharsets.ISO_8859_1, "\n");
 
-    assertThatThrownBy(writer::close)
-        .isInstanceOfSatisfying(
-            IoStatusException.class,
-            ex -> {
-              assertThat(ex.getFileName()).isEqualTo("TRANREPT");
-              assertThat(ex.getOperation()).isEqualTo("CLOSE");
-              assertThat(ex.getCause()).isInstanceOf(IOException.class);
-            });
+    w.open(f, StandardCharsets.US_ASCII);
+    w.accept("ASCII");
+    w.close();
 
-    // After a failed close the stream reference is cleared, so a second close is a no-op.
-    assertThatCode(writer::close).doesNotThrowAnyException();
+    byte[] actual = Files.readAllBytes(f);
+    byte[] expected = ("ASCII" + spaces(LRECL - 5) + "\n").getBytes(StandardCharsets.US_ASCII);
+    assertArrayEquals(expected, actual);
   }
 
   @Test
-  void closeIsIdempotentBeforeOpenAndAfterClose() {
-    ReportFileWriter writer = new ReportFileWriter();
+  void open_path_with_null_charset_falls_back_to_configured(@TempDir Path dir) throws IOException {
+    Path f = dir.resolve("fallback.txt");
+    ReportFileWriter w = new ReportFileWriter(StandardCharsets.UTF_8, "\n");
 
-    // close() before any open() is a no-op.
-    assertThatCode(writer::close).doesNotThrowAnyException();
+    w.open(f, null); // null charset -> configured UTF-8
+    w.accept("FALLBACK");
+    w.close();
 
-    writer.open(new StringWriter());
-    writer.accept("x");
-    writer.close();
-
-    // A second close() after a successful close() is also a no-op.
-    assertThatCode(writer::close).doesNotThrowAnyException();
+    byte[] actual = Files.readAllBytes(f);
+    byte[] expected = ("FALLBACK" + spaces(LRECL - 8) + "\n").getBytes(StandardCharsets.UTF_8);
+    assertArrayEquals(expected, actual);
   }
 
   @Test
-  void openPathWritesFixedWidthRecordsAndRoundTrips(@TempDir Path dir) throws IOException {
-    Path output = dir.resolve("tranrept.txt");
+  void open_path_truncates_existing_file_on_reopen(@TempDir Path dir) throws IOException {
+    Path f = dir.resolve("reused.txt");
 
-    try (ReportFileWriter writer = new ReportFileWriter()) {
-      writer.open(output);
-      writer.accept("HEADER");
-      writer.accept("D".repeat(200)); // overlong -> truncated to 133
-      writer.accept(null); // blank line -> 133 spaces
-      assertThat(writer.getRecordsWritten()).isEqualTo(3);
-    }
-
-    List<String> lines = Files.readAllLines(output, StandardCharsets.UTF_8);
-    assertThat(lines).hasSize(3).allSatisfy(line -> assertThat(line).hasSize(133));
-    assertThat(lines.get(0)).startsWith("HEADER");
-    assertThat(lines.get(1)).isEqualTo("D".repeat(133));
-    assertThat(lines.get(2)).isEqualTo(" ".repeat(133));
-
-    String raw = Files.readString(output, StandardCharsets.UTF_8);
-    assertThat(raw).hasSize(3 * (ReportFileWriter.LRECL + 1)).endsWith("\n");
-  }
-
-  @Test
-  void openPathTruncatesExistingFileOnReopen(@TempDir Path dir) throws IOException {
-    Path output = dir.resolve("reused.txt");
-
-    try (ReportFileWriter writer = new ReportFileWriter()) {
-      writer.open(output);
-      writer.accept("first-run-1");
-      writer.accept("first-run-2");
-    }
-    assertThat(Files.readAllLines(output)).hasSize(2);
+    ReportFileWriter first = new ReportFileWriter();
+    first.open(f);
+    first.accept("first-run-1");
+    first.accept("first-run-2");
+    first.close();
+    assertEquals(2 * (LRECL + 1), Files.readAllBytes(f).length);
 
     // A fresh open of the same path must TRUNCATE_EXISTING, not append.
-    try (ReportFileWriter writer = new ReportFileWriter()) {
-      writer.open(output);
-      writer.accept("second-run-1");
-    }
-    assertThat(Files.readAllLines(output)).hasSize(1);
+    ReportFileWriter second = new ReportFileWriter();
+    second.open(f);
+    second.accept("second-run-1");
+    second.close();
+    assertEquals(LRECL + 1, Files.readAllBytes(f).length);
   }
 
   @Test
-  void openPathWithExplicitCharsetWritesRecord(@TempDir Path dir) throws IOException {
-    Path output = dir.resolve("ascii.txt");
-    ReportFileWriter writer = new ReportFileWriter(StandardCharsets.ISO_8859_1, "\n");
-
-    writer.open(output, StandardCharsets.US_ASCII);
-    writer.accept("ASCII");
-    writer.close();
-
-    List<String> lines = Files.readAllLines(output, StandardCharsets.US_ASCII);
-    assertThat(lines).hasSize(1);
-    assertThat(lines.get(0)).hasSize(133).startsWith("ASCII");
-  }
-
-  @Test
-  void openPathWithNullCharsetFallsBackToConfiguredCharset(@TempDir Path dir) throws IOException {
-    Path output = dir.resolve("fallback.txt");
-    ReportFileWriter writer = new ReportFileWriter(StandardCharsets.UTF_8, "\n");
-
-    writer.open(output, null); // null charset -> configured UTF-8
-    writer.accept("FALLBACK");
-    writer.close();
-
-    List<String> lines = Files.readAllLines(output, StandardCharsets.UTF_8);
-    assertThat(lines).hasSize(1);
-    assertThat(lines.get(0)).hasSize(133).startsWith("FALLBACK");
-  }
-
-  @Test
-  void openPathThatCannotBeCreatedThrowsIoStatusExceptionForOpenWithCause(@TempDir Path dir) {
-    // The parent directory does not exist, so newBufferedWriter raises an IOException.
+  void open_path_that_cannot_be_created_throws_open(@TempDir Path dir) {
+    // The parent directory does not exist, so newBufferedWriter raises an IOException that the
+    // writer must translate into an OPEN/"30" abend.
     Path badPath = dir.resolve("missing-subdir").resolve("report.txt");
-    ReportFileWriter writer = new ReportFileWriter();
+    ReportFileWriter w = new ReportFileWriter();
 
-    assertThatThrownBy(() -> writer.open(badPath))
-        .isInstanceOfSatisfying(
-            IoStatusException.class,
-            ex -> {
-              assertThat(ex.getFileName()).isEqualTo("TRANREPT");
-              assertThat(ex.getOperation()).isEqualTo("OPEN");
-              assertThat(ex.getCause()).isInstanceOf(IOException.class);
-            });
+    IoStatusException ex = assertThrows(IoStatusException.class, () -> w.open(badPath));
+
+    assertEquals("TRANREPT", ex.getFileName());
+    assertEquals("OPEN", ex.getOperation());
+    assertEquals("30", ex.getFileStatus());
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Resilient golden-file parity (skips automatically when the fixture is absent)
+  // ---------------------------------------------------------------------------------------------
+
+  @Test
+  void golden_report_matches_when_present() throws Exception {
+    URL url = getClass().getResource("/golden/reports/daily-transaction-report-basic.txt");
+    assumeTrue(url != null, "golden report fixture not present; skipping");
+
+    byte[] golden = Files.readAllBytes(Path.of(url.toURI()));
+    // Every record is exactly LRECL characters plus the one-byte "\n" separator.
+    assertEquals(0, golden.length % (LRECL + 1));
+    int records = golden.length / (LRECL + 1);
+    for (int i = 0; i < records; i++) {
+      assertEquals('\n', golden[i * (LRECL + 1) + LRECL]);
+    }
   }
 
   /**
-   * A {@link Writer} that can be configured to fail on {@code write} and/or {@code close}, used to
-   * drive the {@link IoStatusException} re-throw paths without touching the file system.
+   * A {@link Writer} whose {@code write(char[], int, int)} always fails, used to drive the {@link
+   * IoStatusException} re-throw path in {@link ReportFileWriter#accept(String)} without touching
+   * the file system. {@code ReportFileWriter} writes via {@code Writer.write(String)}, which
+   * delegates to {@code write(char[], int, int)}, so overriding only that method is sufficient;
+   * {@code flush()} and {@code close()} are no-ops.
    */
   private static final class FailingWriter extends Writer {
 
-    private final boolean failOnWrite;
-    private final boolean failOnClose;
-
-    FailingWriter(boolean failOnWrite, boolean failOnClose) {
-      this.failOnWrite = failOnWrite;
-      this.failOnClose = failOnClose;
-    }
-
     @Override
     public void write(char[] cbuf, int off, int len) throws IOException {
-      if (failOnWrite) {
-        throw new IOException("simulated write failure");
-      }
+      throw new IOException("boom");
     }
 
     @Override
     public void flush() {
-      // no-op: the close-failure path is driven solely by close()
+      // no-op
     }
 
     @Override
-    public void close() throws IOException {
-      if (failOnClose) {
-        throw new IOException("simulated close failure");
-      }
+    public void close() {
+      // no-op
     }
   }
 }
