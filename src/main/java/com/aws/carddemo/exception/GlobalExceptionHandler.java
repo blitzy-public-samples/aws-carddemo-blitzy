@@ -111,6 +111,18 @@ public class GlobalExceptionHandler {
    */
   private static final String DEFAULT_ABEND_MSG = "UNEXPECTED ABEND OCCURRED.";
 
+  /**
+   * The generic, key-free client-facing {@code detail} returned for every {@link
+   * RecordNotFoundException} (online FILE STATUS {@code '23'}). It deliberately carries <em>no</em>
+   * lookup key — which {@link RecordNotFoundException} documents may be an account id, card number,
+   * or user id — so a missing-record response never discloses a sensitive identifier (AAP
+   * &sect;0.7.2 security hygiene; CWE-532 / information disclosure). This also matches the legacy
+   * COBOL parity: the sign-on program {@code legacy/app/cbl/COSGN00C.cbl} [L249] set the generic
+   * screen message {@code 'User not found. Try again ...'} on {@code RESP = NOTFND} rather than
+   * echoing the looked-up key.
+   */
+  private static final String RECORD_NOT_FOUND_DETAIL = "Record not found";
+
   /** {@link ProblemDetail} property name carrying the response-composition timestamp. */
   private static final String PROP_TIMESTAMP = "timestamp";
 
@@ -122,9 +134,6 @@ public class GlobalExceptionHandler {
 
   /** {@link ProblemDetail} property name carrying the searched logical entity, when known. */
   private static final String PROP_ENTITY = "entity";
-
-  /** {@link ProblemDetail} property name carrying the lookup key that produced no match. */
-  private static final String PROP_KEY = "key";
 
   /** {@link ProblemDetail} property name carrying the four-character formatted FILE STATUS. */
   private static final String PROP_FILE_STATUS = "fileStatus";
@@ -188,28 +197,43 @@ public class GlobalExceptionHandler {
    * Handles a {@link RecordNotFoundException} (the online FILE STATUS {@code '23'} record-not-found
    * branch) by returning <strong>HTTP&nbsp;404 (Not Found)</strong>.
    *
-   * <p>The {@code detail} is the exception message (for example {@code "Account not found for key:
-   * 00000000123"}); when the structured context is present it is surfaced as the {@code "entity"}
-   * and {@code "key"} properties. Logged at {@code WARN}: a missing record on a required online
-   * read is user-visible but recoverable, never an abend.
+   * <p><strong>Security hygiene (AAP &sect;0.7.2; CWE-532 — information disclosure).</strong> The
+   * lookup key carried by {@link RecordNotFoundException} may be a sensitive identifier (an account
+   * id, a full card number, or a user id). It is therefore <em>never</em> disclosed to the caller
+   * or written to the log:
+   *
+   * <ul>
+   *   <li>the client-facing {@code detail} is the fixed, key-free message {@link
+   *       #RECORD_NOT_FOUND_DETAIL} — the exception's own message ({@code "Account not found for
+   *       key: …"}) is deliberately <em>not</em> propagated, mirroring the generic legacy screen
+   *       message {@code 'User not found. Try again ...'} ({@code legacy/app/cbl/COSGN00C.cbl}
+   *       [L249]);
+   *   <li>the response body surfaces only the non-sensitive logical {@code "entity"} (for example
+   *       {@code "Account"}) for diagnostics; the raw {@code key} is <em>omitted</em> entirely;
+   *   <li>the {@code WARN} log records the entity together with a {@linkplain #maskKey(String)
+   *       masked} key (for example {@code ************1111}) so operators retain correlation value
+   *       without the raw identifier ever reaching the joblog.
+   * </ul>
+   *
+   * <p>The full structured context ({@link RecordNotFoundException#getKey()} / {@link
+   * RecordNotFoundException#getMessage()}) remains available on the exception object itself for
+   * controlled, in-process inspection — it is simply never emitted through these external channels.
+   * Logged at {@code WARN}: a missing record on a required online read is user-visible but
+   * recoverable, never an abend.
    *
    * @param ex the not-found condition raised by the online layer
    * @return a 404 response whose body is a {@link ProblemDetail} describing the missing record
+   *     without exposing the raw lookup key
    */
   @ExceptionHandler(RecordNotFoundException.class)
   public ResponseEntity<ProblemDetail> handleRecordNotFound(RecordNotFoundException ex) {
-    String message = ex.getMessage();
-    String detail = isBlank(message) ? "Record not found" : message;
-    ProblemDetail body = problemDetail(HttpStatus.NOT_FOUND, detail, "Record Not Found");
+    ProblemDetail body =
+        problemDetail(HttpStatus.NOT_FOUND, RECORD_NOT_FOUND_DETAIL, "Record Not Found");
     String entityName = ex.getEntityName();
-    String key = ex.getKey();
     if (!isBlank(entityName)) {
       body.setProperty(PROP_ENTITY, entityName);
     }
-    if (!isBlank(key)) {
-      body.setProperty(PROP_KEY, key);
-    }
-    log.warn("Record not found (entity={}, key={}): {}", entityName, key, detail);
+    log.warn("Record not found (entity={}, maskedKey={})", entityName, maskKey(ex.getKey()));
     return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
   }
 
@@ -317,5 +341,46 @@ public class GlobalExceptionHandler {
    */
   private static boolean isBlank(String value) {
     return value == null || value.isBlank();
+  }
+
+  /**
+   * Produces a log-safe, masked rendering of a not-found lookup key so a sensitive identifier (an
+   * account id, a full card number, or a user id) is never written to the log in the clear (AAP
+   * &sect;0.7.2 security hygiene; CWE-532 — information disclosure).
+   *
+   * <p>The masking is PCI-style "reveal the last four": every character except the final four is
+   * replaced with {@code '*'}. A key of four characters or fewer is masked in full so a short
+   * identifier is never echoed verbatim, and a {@code null}, empty, or whitespace-only key yields
+   * the empty string. The key is {@linkplain String#strip() stripped} first so trailing padding
+   * from a fixed-width COBOL field does not skew the masked suffix.
+   *
+   * <table border="1">
+   *   <caption>Masking examples</caption>
+   *   <tr><th>Raw key</th><th>Masked</th></tr>
+   *   <tr><td>{@code 4111111111111111}</td><td>{@code ************1111}</td></tr>
+   *   <tr><td>{@code 00000000123}</td><td>{@code *******0123}</td></tr>
+   *   <tr><td>{@code USER0001}</td><td>{@code ****0001}</td></tr>
+   *   <tr><td>{@code 01}</td><td>{@code **}</td></tr>
+   *   <tr><td>{@code ""} / {@code null}</td><td>{@code ""}</td></tr>
+   * </table>
+   *
+   * @param key the raw lookup key to mask; may be {@code null}
+   * @return the masked key, never {@code null}; the empty string when {@code key} is {@code null},
+   *     empty, or whitespace-only
+   */
+  private static String maskKey(String key) {
+    if (key == null) {
+      return "";
+    }
+    String stripped = key.strip();
+    int length = stripped.length();
+    if (length == 0) {
+      return "";
+    }
+    int visible = 4;
+    if (length <= visible) {
+      return "*".repeat(length);
+    }
+    return "*".repeat(length - visible) + stripped.substring(length - visible);
   }
 }
