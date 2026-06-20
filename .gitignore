@@ -82,6 +82,15 @@ nbbuild/
 nbdist/
 .nb-gradle/
 
+# ===== IDE: Spring Tool Suite (STS) / Spring Boot annotation processing =====
+# Part of the canonical Spring Initializr ignore set for the Spring Boot stack
+# used here. These never match committed sources under src/**, legacy/**,
+# samples/**, docs/**, or pom.xml — they are IDE/APT scratch output only.
+.apt_generated/
+.apt_generated_test/
+.sts4-cache/
+.springBeans
+
 # ===== Editor swap / backup files =====
 *.swp
 *.swo
