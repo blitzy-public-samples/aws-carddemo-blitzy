@@ -23,6 +23,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 
@@ -71,7 +72,8 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
  *   <caption>Exception &rarr; HTTP status mapping</caption>
  *   <tr><th>Exception</th><th>HTTP status</th><th>Legacy parity</th></tr>
  *   <tr><td>{@link ValidationException}</td><td>400 Bad Request</td><td>field-edit soft error</td></tr>
- *   <tr><td>{@link AuthorizationException}</td><td>403 Forbidden</td><td>{@code CDEMO-USRTYP} gate</td></tr>
+ *   <tr><td>{@link AuthorizationException}</td><td>403 Forbidden</td><td>{@code CDEMO-USRTYP} gate (service entry guard)</td></tr>
+ *   <tr><td>{@link AccessDeniedException}</td><td>403 Forbidden</td><td>{@code CDEMO-USRTYP} gate ({@code @PreAuthorize} method security)</td></tr>
  *   <tr><td>{@link RecordNotFoundException}</td><td>404 Not Found</td><td>FILE STATUS {@code '23'}</td></tr>
  *   <tr><td>{@link IoStatusException}</td><td>500 Internal Server Error</td><td>I/O abend</td></tr>
  *   <tr><td>{@link CardDemoException}</td><td>500 Internal Server Error</td><td>generic abend (catch-all)</td></tr>
@@ -190,6 +192,45 @@ public class GlobalExceptionHandler {
     String detail = isBlank(message) ? AuthorizationException.ADMIN_ONLY_MESSAGE : message;
     ProblemDetail body = problemDetail(HttpStatus.FORBIDDEN, detail, "Authorization Denied");
     log.warn("Authorization denied: {}", detail);
+    return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
+  }
+
+  /**
+   * Handles Spring Security's framework {@link AccessDeniedException} — raised when method security
+   * ({@code @EnableMethodSecurity(prePostEnabled = true)} in {@code
+   * legacy/../config/SecurityConfig}) denies a {@code @PreAuthorize("hasRole('ADMIN')")} gate — by
+   * returning <strong>HTTP&nbsp;403 (Forbidden)</strong>, the <em>same</em> status and screen
+   * message as the service-layer {@link AuthorizationException} path.
+   *
+   * <p><strong>Why this handler exists (defense-in-depth parity).</strong> The legacy {@code
+   * CDEMO-USRTYP} admin-only gate is reproduced in two complementary layers: the service entry
+   * guard raises {@link AuthorizationException} (handled above), while the controller class-level
+   * {@code @PreAuthorize} causes the framework to throw this {@link AccessDeniedException}
+   * <em>before</em> the service is ever invoked. Without this handler the framework denial would
+   * fall through to the unexpected-error catch-all {@link #handleUnexpected(Exception)} and surface
+   * as a misleading HTTP&nbsp;500 abend rather than the correct 403. Mapping it here guarantees
+   * that — regardless of which layer trips first — a non-admin navigation attempt yields an
+   * identical 403 response.
+   *
+   * <p><strong>Message parity.</strong> Every method-security gate in the migrated application is
+   * an {@code hasRole('ADMIN')} gate (the admin menu controller and the four admin user-management
+   * services), so the denial is always the admin-only condition. The client-facing {@code detail}
+   * is therefore the preserved legacy text {@link AuthorizationException#ADMIN_ONLY_MESSAGE}
+   * ({@code "No access - Admin Only option..."}), unifying this path with {@link
+   * #handleAuthorization(AuthorizationException)}. Spring's generic framework message is
+   * deliberately <em>not</em> propagated to the caller. Logged at {@code WARN} because a denied
+   * navigation attempt is a recoverable, user-visible condition rather than an abend.
+   *
+   * @param ex the framework method-security denial raised by a {@code @PreAuthorize} gate
+   * @return a 403 response whose body is a {@link ProblemDetail} describing the denial
+   */
+  @ExceptionHandler(AccessDeniedException.class)
+  public ResponseEntity<ProblemDetail> handleAccessDenied(AccessDeniedException ex) {
+    String detail = AuthorizationException.ADMIN_ONLY_MESSAGE;
+    ProblemDetail body = problemDetail(HttpStatus.FORBIDDEN, detail, "Authorization Denied");
+    // Log the framework cause (safe boilerplate, no credentials or stack) for operator correlation;
+    // the client-facing detail remains the preserved legacy admin-only message.
+    log.warn("Access denied by method security ({}): {}", ex.getClass().getSimpleName(), detail);
     return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
   }
 
