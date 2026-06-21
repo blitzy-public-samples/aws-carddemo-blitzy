@@ -22,12 +22,14 @@ import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.AccountRepository;
 import com.aws.carddemo.repository.CardXrefRepository;
 import com.aws.carddemo.repository.DailyTransactionRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.util.Iterator;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 /**
@@ -144,6 +146,20 @@ public class DailyTransactionPostService {
   // entry;
   // not safe for concurrent invocation (one run() call == one COBOL run unit), as documented above.
   // ---------------------------------------------------------------------------------------------
+
+  /**
+   * JPA persistence context used to detach each streamed {@code DALYTRAN-RECORD} immediately after
+   * it is read, bounding heap to the JDBC fetch window rather than the whole table (AAP batch
+   * modernization; QA F-2). {@code CBTRN01C} is a verify-only pass that performs no writes, so
+   * detaching the just-read record can never discard a pending mutation.
+   */
+  @PersistenceContext private EntityManager entityManager;
+
+  /**
+   * Streaming handle backing {@link #dalytranCursor}; opened in {@link #openDalytran()} and closed
+   * in {@link #closeDalytran()} to release the underlying JDBC cursor.
+   */
+  private Stream<DailyTransaction> dalytranStream;
 
   /** Sequential cursor over the daily-transaction store (the {@code DALYTRAN-FILE} read order). */
   private Iterator<DailyTransaction> dalytranCursor;
@@ -289,6 +305,9 @@ public class DailyTransactionPostService {
     try {
       if (dalytranCursor.hasNext()) {
         dalytranRecord = dalytranCursor.next(); // FILE STATUS '00'
+        // Detach the just-read record so the streaming persistence context does not retain every
+        // row; CBTRN01C performs no writes, so this can never discard a pending mutation (QA F-2).
+        entityManager.detach(dalytranRecord);
       } else {
         endOfDailyTransFile = true; // FILE STATUS '10' -- end of file, not an error
       }
@@ -354,19 +373,23 @@ public class DailyTransactionPostService {
   /**
    * Opens the daily-transaction file, reproducing {@code 0000-DALYTRAN-OPEN} (L252-L268).
    *
-   * <p>In the JPA model "opening" the sequential file means materializing its records in
-   * primary-key order and establishing a cursor over them. The ordering uses a {@link Sort} on the
-   * {@code dalytranId} property (ascending by the primary key) rather than a bespoke repository
-   * query, preserving the legacy sequential read order. The working state is reset here so the bean
-   * can be reused across runs; the current record is initialized to a blank instance so the
-   * degenerate empty-file case performs exactly one verification pass over a blank record &mdash;
-   * mirroring the COBOL space-initialized {@code WORKING-STORAGE} record and the read-ahead loop
-   * &mdash; without a {@link NullPointerException}. A failure to open maps to an abend.
+   * <p>In the JPA model "opening" the sequential file means establishing a streaming cursor over
+   * its records in primary-key order. The reader is {@link
+   * com.aws.carddemo.repository.DailyTransactionRepository#streamAllByOrderByDalytranIdAsc()
+   * streamAllByOrderByDalytranIdAsc()} &mdash; a JDBC-cursor-backed stream (ascending by {@code
+   * dalytranId}, the primary key) that fetches in bounded windows instead of materializing the
+   * whole table into a {@code List}, preserving the legacy sequential read order while bounding
+   * heap (QA F-2). The working state is reset here so the bean can be reused across runs; the
+   * current record is initialized to a blank instance so the degenerate empty-file case performs
+   * exactly one verification pass over a blank record &mdash; mirroring the COBOL space-initialized
+   * {@code WORKING-STORAGE} record and the read-ahead loop &mdash; without a {@link
+   * NullPointerException}. A failure to open maps to an abend.
    */
   private void openDalytran() {
     // <- CBTRN01C 0000-DALYTRAN-OPEN
     try {
-      dalytranCursor = dailyTransactionRepository.findAll(Sort.by("dalytranId")).iterator();
+      dalytranStream = dailyTransactionRepository.streamAllByOrderByDalytranIdAsc();
+      dalytranCursor = dalytranStream.iterator();
     } catch (DataAccessException ex) {
       LOG.error("ERROR OPENING DAILY TRANSACTION FILE");
       throw abend("DALYTRAN", "OPEN", ex);
@@ -433,11 +456,16 @@ public class DailyTransactionPostService {
 
   /**
    * Closes the daily-transaction file, reproducing {@code 9000-DALYTRAN-CLOSE} (L361-L377) by
-   * releasing the sequential cursor. Closing an in-memory cursor cannot raise an I/O error, so
-   * unlike the open and read paragraphs there is no abend branch here.
+   * closing the streaming cursor and releasing its iterator. {@link Stream#close()} releases the
+   * underlying JDBC cursor; the guard makes a close after a failed or skipped open harmless, and as
+   * in the legacy close paragraph there is no abend branch here.
    */
   private void closeDalytran() {
     // <- CBTRN01C 9000-DALYTRAN-CLOSE
+    if (dalytranStream != null) {
+      dalytranStream.close(); // release the underlying JDBC cursor
+      dalytranStream = null;
+    }
     dalytranCursor = null; // release the sequential cursor
   }
 

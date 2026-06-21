@@ -34,17 +34,18 @@ import com.aws.carddemo.repository.TransactionCategoryRepository;
 import com.aws.carddemo.repository.TransactionRepository;
 import com.aws.carddemo.repository.TransactionTypeRepository;
 import com.aws.carddemo.util.NumberFormatter;
+import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.domain.Sort;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Pure JUnit&nbsp;5 + Mockito + AssertJ unit tests for {@link TransactionReportService}, the batch
@@ -74,8 +75,8 @@ import org.springframework.data.domain.Sort;
  *   <li><b>133-character records</b> &mdash; every emitted line is exactly 133 characters ({@code
  *       CVTRA07Y REPTFILE}, LRECL 133);
  *   <li><b>ascending card-number order</b> &mdash; the working set is read via {@code
- *       findAll(Sort.by(Sort.Direction.ASC, "tranCardNum"))} then date-filtered inclusively on
- *       {@code tranProcTs[0:10]};
+ *       streamAllByOrderByTranCardNumAsc()} (a bounded-memory cursor, QA F-2) then date-filtered
+ *       inclusively on {@code tranProcTs[0:10]};
  *   <li><b>three FATAL lookups</b> &mdash; a missing card-xref, transaction-type, or
  *       transaction-category record abends with an {@link IoStatusException} naming {@code
  *       CARDXREF}, {@code TRANTYPE}, or {@code TRANCATG} respectively; and
@@ -88,9 +89,9 @@ import org.springframework.data.domain.Sort;
  * the assertions stay in lock-step with the production formatter. All monetary values are {@link
  * BigDecimal}; no {@code float}/{@code double} is used anywhere (AAP &sect;0.6.1).
  *
- * <p>Because the Mockito mock returns the stubbed list verbatim and the production deliberately
- * does <em>not</em> re-sort in memory (it trusts the repository's {@code Sort}), every multi-record
- * fixture below is supplied already ordered ascending by {@code tranCardNum}.
+ * <p>Because the Mockito mock returns the stubbed stream verbatim and the production deliberately
+ * does <em>not</em> re-sort in memory (it trusts the repository's ascending-key query ordering),
+ * every multi-record fixture below is supplied already ordered ascending by {@code tranCardNum}.
  */
 @ExtendWith(MockitoExtension.class)
 class TransactionReportServiceTest {
@@ -143,6 +144,14 @@ class TransactionReportServiceTest {
   /** Transaction-category store ({@code TRANCATG}); the {@code 1500-C} lookup. */
   @Mock private TransactionCategoryRepository transactionCategoryRepository;
 
+  /**
+   * Stand-in for the field-injected {@code @PersistenceContext EntityManager} the streaming working
+   * set detaches each read row through ({@code .peek(entityManager::detach)}); under the manual
+   * constructor wiring the per-row detach is a no-op (QA F-2 batch streaming). The report performs
+   * no writes, so the detach can never discard a pending mutation.
+   */
+  @Mock private EntityManager entityManager;
+
   /** System under test, rebuilt per test in {@link #setUp()} with the four mocked repositories. */
   private TransactionReportService service;
 
@@ -154,6 +163,11 @@ class TransactionReportServiceTest {
             cardXrefRepository,
             transactionTypeRepository,
             transactionCategoryRepository);
+
+    // The streaming working set detaches each read row through the field-injected EntityManager;
+    // inject the mock so the .peek(entityManager::detach) stage is exercised harmlessly under the
+    // manual constructor wiring (QA F-2).
+    ReflectionTestUtils.setField(service, "entityManager", entityManager);
   }
 
   // --- Phase A: 133-character line width ------------------------------------------------------
@@ -375,16 +389,14 @@ class TransactionReportServiceTest {
   @Test
   void working_set_is_read_ascending_by_card_number() {
     stubWorkingSet();
-    ArgumentCaptor<Sort> sortCaptor = ArgumentCaptor.forClass(Sort.class);
 
     service.run(START_DATE, END_DATE, line -> {});
 
-    // The working set is built via findAll(Sort.by(Sort.Direction.ASC, "tranCardNum")), the Java
-    // counterpart of the TRANREPT.jcl SORT FIELDS=(TRAN-CARD-NUM,A).
-    verify(transactionRepository).findAll(sortCaptor.capture());
-    Sort captured = sortCaptor.getValue();
-    assertThat(captured).isEqualTo(Sort.by(Sort.Direction.ASC, "tranCardNum"));
-    assertThat(captured.getOrderFor("tranCardNum").getDirection()).isEqualTo(Sort.Direction.ASC);
+    // The working set is built via streamAllByOrderByTranCardNumAsc() — a bounded-memory cursor (QA
+    // F-2) whose derived query name encodes ORDER BY tran_card_num ASC, the Java counterpart of the
+    // TRANREPT.jcl SORT FIELDS=(TRAN-CARD-NUM,A). The ascending card-number ordering is asserted
+    // end-to-end against real PostgreSQL in TransactionRepositoryIntegrationTest.
+    verify(transactionRepository).streamAllByOrderByTranCardNumAsc();
   }
 
   // --- helpers --------------------------------------------------------------------------------
@@ -398,7 +410,8 @@ class TransactionReportServiceTest {
 
   /** Stubs the date-filtered, card-ordered working set returned by {@code 0000-TRANFILE-OPEN}. */
   private void stubWorkingSet(Transaction... transactions) {
-    when(transactionRepository.findAll(any(Sort.class))).thenReturn(List.of(transactions));
+    when(transactionRepository.streamAllByOrderByTranCardNumAsc())
+        .thenReturn(Stream.of(transactions));
   }
 
   /** Stubs all three lookups ({@code 1500-A/B/C}) to return present records (the happy path). */

@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import org.springframework.dao.DataAccessException;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
 /**
@@ -45,11 +46,17 @@ import org.springframework.stereotype.Service;
  * <h2>VSAM browse &rarr; keyset paging</h2>
  *
  * <p>The legacy program drives a VSAM browse ({@code STARTBR}/{@code READNEXT}/{@code READPREV})
- * over {@code TRANSACT}. The modernized equivalent reads the ascending-by-transaction-id projection
- * from {@link TransactionRepository#findAllByOrderByTranIdAsc()} and paginates by index in-service,
- * preserving the {@code GTEQ} positioning, the ten-row page size, the read-ahead "next page exists"
- * peek, and the first/last keyset boundaries that the program carries across interactions. Those
- * cursors live on {@link TranListScreen} hidden fields (see below), never on this singleton bean.
+ * over {@code TRANSACT}. The modernized equivalent issues <strong>bounded keyset (range)
+ * queries</strong> on {@link TransactionRepository} anchored at the round-tripped boundary key:
+ * each page turn fetches only {@code ROWS_PER_PAGE + 1} rows (the ten-row page plus a single
+ * read-ahead "next page exists" peek) instead of materialising the whole {@code transaction} table.
+ * This preserves the {@code GTEQ} positioning ({@code findByTranIdGreaterThanEqual...}), the {@code
+ * READNEXT} step past the previous page's last id ({@code findByTranIdGreaterThan...}, PF8), the
+ * {@code READPREV} page-up ({@code findByTranIdLessThan...Desc}, PF7, reversed to ascending), the
+ * ten-row page size, the read-ahead peek, and the first/last keyset boundaries that the program
+ * carries across interactions &mdash; while bounding result memory to O(page) rather than O(table)
+ * (closing the unbounded-read finding that exhausted the heap under concurrency). Those cursors
+ * live on {@link TranListScreen} hidden fields (see below), never on this singleton bean.
  *
  * <h2>No mutable instance state</h2>
  *
@@ -445,14 +452,25 @@ public class TranListService {
    * @throws IoStatusException if browsing {@code TRANSACT} fails unexpectedly
    */
   private String processPageForward(TranListScreen screen, String startKey, boolean skipFirst) {
-    List<Transaction> all = loadAllTransactions();
-    int size = all.size();
-    int pos = (startKey == null) ? 0 : firstIndexGreaterOrEqual(all, startKey);
+    // STARTBR GTEQ positioning. A null start key (LOW-VALUES) browses from the top, modelled as the
+    // empty string (every fixed-width digit key sorts at or after ""). The keyset query fetches a
+    // single inclusive (GTEQ) slice -- the boundary record consumed on a PF8 skip, the ten-row
+    // page, and one read-ahead row for the "next page exists" peek -- bounding memory to one page
+    // instead of the whole table. The legacy index model is from = pos + (skipFirst ? 1 : 0) over
+    // the GTEQ position, so the skip is applied in memory against this inclusive slice rather than
+    // with a separate exclusive query; this keeps the NOTFND ("top of page") test on the GTEQ
+    // position itself, independent of skipFirst.
+    String key = (startKey == null) ? "" : startKey;
+    int skipOffset = skipFirst ? 1 : 0;
+    List<Transaction> fetched = browseForwardInclusive(key, ROWS_PER_PAGE + 1 + skipOffset);
 
     List<TranListRow> page = buildBlankPage();
 
-    // L605-L611: STARTBR NOTFND -> empty page, no next page, "top of page" message.
-    if (pos >= size) {
+    // L605-L611: STARTBR NOTFND -> empty page, no next page, "top of page" message, page counter
+    // unchanged. The NOTFND test is the GTEQ positioning (pos >= size) and is independent of
+    // skipFirst, so a blank PF8 cursor (HIGH-VALUES start key) that positions past the end of file
+    // lands here and shows "top of page" exactly as the legacy STARTBR NOTFND does.
+    if (fetched.isEmpty()) {
       screen.setNextPageYes(false);
       screen.setRows(page);
       screen.setPageNum(formatPageNum(screen.getPageNumValue()));
@@ -461,16 +479,18 @@ public class TranListService {
       return null;
     }
 
-    // L285-L303: optionally skip the boundary record (PF8), then fill up to ten rows ascending.
-    int from = pos + (skipFirst ? 1 : 0);
+    // L285-L303: optionally consume the boundary record (PF8) in memory, then fill up to ten rows
+    // ascending from the GTEQ slice (the legacy from = pos + (skipFirst ? 1 : 0)).
     int rowsRead = 0;
-    for (int i = 0; i < ROWS_PER_PAGE && (from + i) < size; i++) {
-      populateTranData(screen, page, i, all.get(from + i));
+    for (int i = skipOffset; i < fetched.size() && rowsRead < ROWS_PER_PAGE; i++) {
+      populateTranData(screen, page, rowsRead, fetched.get(i));
       rowsRead++;
     }
 
-    // L305-L320: advance the page counter when any row was read; the next-page flag is the peek.
-    boolean nextPage = (from + ROWS_PER_PAGE) < size;
+    // L305-L320: advance the page counter when any row was read; the next-page flag is the
+    // read-ahead peek -- a fetched row beyond the boundary plus the page (index skipOffset +
+    // ROWS_PER_PAGE present) reproduces the legacy (from + ROWS_PER_PAGE) < size test.
+    boolean nextPage = fetched.size() > (skipOffset + ROWS_PER_PAGE);
     screen.setNextPageYes(nextPage);
     if (rowsRead > 0) {
       screen.setPageNumValue(screen.getPageNumValue() + 1);
@@ -514,29 +534,33 @@ public class TranListService {
    * @throws IoStatusException if browsing {@code TRANSACT} fails unexpectedly
    */
   private String processPageBackward(TranListScreen screen, String startKey) {
-    List<Transaction> all = loadAllTransactions();
-    int size = all.size();
+    // READPREV walk: fetch up to ROWS_PER_PAGE + 1 records strictly below the current page's first
+    // id, in descending order. The closest-below record is fetched.get(0). A null cursor
+    // (LOW-VALUES)
+    // means the current page started at the top of the file, so there is nothing above it. The
+    // extra
+    // (eleventh) row is the read-ahead peek that reproduces the legacy "start of file" detection
+    // (from == 0): when ten or fewer records exist below the cursor, the top of file has been
+    // reached. Memory is bounded to one page plus the peek.
+    List<Transaction> fetched =
+        (startKey == null) ? List.of() : browseBackward(startKey, ROWS_PER_PAGE + 1);
 
-    // Index of the current page's first record (GTEQ; exact since it was just displayed). When the
-    // cursor is LOW-VALUES the current page started at the top of the file.
-    int current = (startKey == null) ? 0 : firstIndexGreaterOrEqual(all, startKey);
-    if (current > size) {
-      current = size;
-    }
+    int rowsRead = Math.min(ROWS_PER_PAGE, fetched.size());
+    boolean reachedTop = fetched.size() <= ROWS_PER_PAGE; // <=> legacy from == 0
 
-    // L339-L357: the previous page is the ten records ending just before the current first record.
-    int from = Math.max(0, current - ROWS_PER_PAGE);
+    // L339-L357: present the previous page ascending. The fetched slice is descending
+    // (closest-below
+    // first), so the farthest-below record fills row 0 and the record immediately before the cursor
+    // fills the last populated row.
     List<TranListRow> page = buildBlankPage();
-    int rowsRead = 0;
-    for (int i = 0; (from + i) < current && i < ROWS_PER_PAGE; i++) {
-      populateTranData(screen, page, i, all.get(from + i));
-      rowsRead++;
+    for (int i = 0; i < rowsRead; i++) {
+      populateTranData(screen, page, i, fetched.get(rowsRead - 1 - i));
     }
 
     // L359-L369: a backward page that reaches the top of the file pins the counter to one and emits
     // the "reached the top of the page" message (the ENDFILE peek); otherwise the counter
     // decrements.
-    if (from == 0) {
+    if (reachedTop) {
       screen.setPageNumValue(1);
       if (rowsRead > 0) {
         screen.setErrMsg(MSG_REACHED_TOP);
@@ -649,59 +673,42 @@ public class TranListService {
   // ===============================================================================================
 
   /**
-   * Loads the {@code TRANSACT} store as the ascending-by-transaction-id browse source, translating
-   * an unexpected data-access failure into the {@link IoStatusException} that mirrors the legacy
-   * {@code STARTBR}/{@code READNEXT} {@code OTHER} status branch ({@code "Unable to lookup
-   * transaction..."}).
+   * Bounded forward keyset browse, inclusive of {@code key} (VSAM {@code STARTBR} GTEQ). Fetches at
+   * most {@code limit} transactions with {@code tran_id >= key} ascending. An unexpected
+   * data-access failure is translated to {@link IoStatusException}, mirroring the legacy {@code
+   * STARTBR} abnormal-response abend.
    *
-   * <p><strong>Bounded-result / VSAM-browse parity exception (intentional).</strong> The code
-   * review performance checklist flags this {@code findAllByOrderByTranIdAsc()} read as an
-   * unbounded full-table load. It is a deliberate, AAP-sanctioned parity decision, not an
-   * oversight. Legacy {@code COTRN00C} browses {@code TRANSACT} with VSAM {@code STARTBR GTEQ} /
-   * {@code READNEXT} / {@code READPREV}, and reproducing the 10-row keyset paging with exact parity
-   * &mdash; especially {@code PROCESS-PAGE-BACKWARD} (PF7), which indexes to the current first id
-   * and walks the preceding rows, plus the next-page "peek" and the byte-exact top/bottom edge
-   * messages &mdash; requires one stable ascending projection to slice by index in service; a
-   * forward-only bounded query cannot reproduce the page-up direction over identical ordering.
-   * Under AAP precedence D1, 100% behavioral parity (AAP &sect;0.7.1 R1 / &sect;0.6.5) outranks the
-   * generic performance heuristic, and the migration's local-only validation runs against the small
-   * legacy fixtures (AAP &sect;0.6.7). A repository-level cursor/range query may replace this only
-   * if it preserves identical PF7/PF8 ordering and edge-message behavior.
-   *
-   * @return all transactions ordered by ascending transaction id (never {@code null})
+   * @param key the inclusive lower-bound transaction id (empty string browses from the top)
+   * @param limit the maximum rows to fetch (page size plus the read-ahead peek)
+   * @return the bounded ascending slice (never {@code null})
    * @throws IoStatusException if the underlying query fails
    */
-  private List<Transaction> loadAllTransactions() {
+  private List<Transaction> browseForwardInclusive(String key, int limit) {
     try {
-      // Single ascending browse source for in-service keyset paging — intentional VSAM-browse
-      // parity exception (PF7 READPREV page-up + next-page peek need the full ordered key set); see
-      // the method Javadoc. AAP D1: parity (§0.7.1/§0.6.5) over the perf heuristic; local
-      // validation uses small fixtures.
-      List<Transaction> all = transactionRepository.findAllByOrderByTranIdAsc();
-      return (all == null) ? new ArrayList<>() : all;
+      return transactionRepository.findByTranIdGreaterThanEqualOrderByTranIdAsc(
+          key, PageRequest.of(0, limit));
     } catch (DataAccessException ex) {
       throw new IoStatusException(LIT_TRANSACT_FILE, "STARTBR", "??", ex);
     }
   }
 
   /**
-   * Returns the index of the first transaction whose id is greater than or equal to {@code key},
-   * reproducing VSAM {@code GTEQ} positioning over the ascending-by-id projection. When no such
-   * record exists the list size is returned (the NOTFND / end-of-file position). The source list is
-   * pre-sorted, so a single forward scan suffices.
+   * Bounded backward keyset browse strictly below {@code key}, descending (VSAM {@code READPREV};
+   * PF7). Fetches at most {@code limit} transactions with {@code tran_id < key} in descending order
+   * (closest-below first); the caller reverses the slice to present it ascending.
    *
-   * @param all the ascending-by-transaction-id list
-   * @param key the start key (already normalized to the key width); must not be {@code null}
-   * @return the GTEQ index, in {@code [0, all.size()]}
+   * @param key the exclusive upper-bound transaction id (the current page's first id)
+   * @param limit the maximum rows to fetch (page size plus the read-ahead peek)
+   * @return the bounded descending slice (never {@code null})
+   * @throws IoStatusException if the underlying query fails
    */
-  private int firstIndexGreaterOrEqual(List<Transaction> all, String key) {
-    for (int i = 0; i < all.size(); i++) {
-      String tranId = all.get(i).getTranId();
-      if (tranId != null && tranId.compareTo(key) >= 0) {
-        return i;
-      }
+  private List<Transaction> browseBackward(String key, int limit) {
+    try {
+      return transactionRepository.findByTranIdLessThanOrderByTranIdDesc(
+          key, PageRequest.of(0, limit));
+    } catch (DataAccessException ex) {
+      throw new IoStatusException(LIT_TRANSACT_FILE, "STARTBR", "??", ex);
     }
-    return all.size();
   }
 
   /**

@@ -30,6 +30,8 @@ import com.aws.carddemo.repository.DisclosureGroupRepository;
 import com.aws.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.aws.carddemo.repository.TransactionRepository;
 import com.aws.carddemo.util.CobolStringUtils;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
@@ -38,10 +40,10 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 /**
@@ -289,6 +291,21 @@ public class InterestCalculationService {
   private Clock clock = Clock.systemDefaultZone();
 
   /**
+   * JPA persistence context used to detach each streamed {@code TRAN-CAT-BAL-RECORD} immediately
+   * after it is read, so the read side adds no per-row heap. Only the just-read category-balance
+   * record is detached &mdash; never {@code clear()} &mdash; so the pending {@code ACCOUNT} {@code
+   * REWRITE} and {@code TRANSACTION} {@code WRITE} mutations stay managed and flush at commit (QA
+   * F-2; this is a read+write job, unlike the verify-only/extract passes).
+   */
+  @PersistenceContext private EntityManager entityManager;
+
+  /**
+   * Streaming handle backing {@link #cursor}; opened in {@link #openTcatbalf()} and closed in
+   * {@link #closeTcatbalf()} to release the underlying JDBC cursor.
+   */
+  private Stream<TransactionCategoryBalance> tcatbalfStream;
+
+  /**
    * Ascending composite-key cursor over {@code TCATBALF}, established by {@link #openTcatbalf()}
    * and released by {@link #closeTcatbalf()}. Models the open VSAM sequential file handle; {@code
    * null} when the file is not open.
@@ -482,17 +499,19 @@ public class InterestCalculationService {
    * <p>The legacy {@code OPEN INPUT} on an {@code INDEXED} file with {@code ACCESS MODE IS
    * SEQUENTIAL} reads in ascending {@code RECORD KEY (FD-TRAN-CAT-KEY)} order. The control break in
    * {@link #run(String)} depends on records being grouped by account, which that key order
-   * guarantees, so the Java cursor sorts by the embedded-id property paths with the account id
-   * <strong>first</strong>: {@code id.trancatAcctId}, then {@code id.trancatTypeCd}, then {@code
-   * id.trancatCd}. A {@link Sort} is used directly rather than adding a bespoke repository method.
+   * guarantees, so the reader is {@link
+   * com.aws.carddemo.repository.TransactionCategoryBalanceRepository#streamAllByOrderByIdAsc()
+   * streamAllByOrderByIdAsc()} &mdash; a JDBC-cursor-backed stream whose JPQL {@code ORDER BY}
+   * sorts by the embedded-id property paths with the account id <strong>first</strong>: {@code
+   * id.trancatAcctId}, then {@code id.trancatTypeCd}, then {@code id.trancatCd}. Streaming fetches
+   * in bounded windows instead of materializing the whole file into a {@code List}, bounding heap
+   * (QA F-2) while preserving the legacy sequential read order.
    */
   private void openTcatbalf() {
     // <- CBACT04C 0000-TCATBALF-OPEN
     try {
-      cursor =
-          transactionCategoryBalanceRepository
-              .findAll(Sort.by("id.trancatAcctId", "id.trancatTypeCd", "id.trancatCd"))
-              .iterator();
+      tcatbalfStream = transactionCategoryBalanceRepository.streamAllByOrderByIdAsc();
+      cursor = tcatbalfStream.iterator();
       endOfFile = false; // initial END-OF-FILE = 'N'
     } catch (DataAccessException ex) {
       throw abend(TCATBALF_DDNAME, "OPEN", ABEND_FILE_STATUS, TCATBALF_OPEN_ERROR, ex);
@@ -551,6 +570,11 @@ public class InterestCalculationService {
     try {
       if (cursor.hasNext()) {
         currentTcb = cursor.next(); // TCATBALF-STATUS = '00'
+        // Detach ONLY this just-read category-balance record so the streaming persistence context
+        // does not retain every row. The record is read-only here (interest is accumulated from it,
+        // never written back), and detaching it leaves the separately-loaded ACCOUNT and the new
+        // TRANSACTION writes managed so they still flush at commit -- never clear() (QA F-2).
+        entityManager.detach(currentTcb);
       } else {
         endOfFile = true; // TCATBALF-STATUS = '10' (APPL-EOF): MOVE 'Y' TO END-OF-FILE
       }
@@ -840,10 +864,15 @@ public class InterestCalculationService {
 
   /**
    * Releases the category-balance cursor, reproducing {@code 9000-TCATBALF-CLOSE} (CBACT04C
-   * L522-538). Dropping the in-memory cursor is the Java counterpart of the VSAM {@code CLOSE}.
+   * L522-538). Closing the stream releases the underlying JDBC cursor &mdash; the Java counterpart
+   * of the VSAM {@code CLOSE}; the guard makes a close after a failed or skipped open harmless.
    */
   private void closeTcatbalf() {
     // <- CBACT04C 9000-TCATBALF-CLOSE
+    if (tcatbalfStream != null) {
+      tcatbalfStream.close(); // release the underlying JDBC cursor
+      tcatbalfStream = null;
+    }
     cursor = null; // CLOSE TCATBAL-FILE: release the file handle
   }
 

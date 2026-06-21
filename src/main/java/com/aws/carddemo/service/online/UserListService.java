@@ -16,19 +16,19 @@
  */
 package com.aws.carddemo.service.online;
 
-import com.aws.carddemo.domain.UserSecurity;
 import com.aws.carddemo.dto.CardDemoCommarea;
 import com.aws.carddemo.dto.CardWorkArea;
 import com.aws.carddemo.dto.screen.UserListScreen;
 import com.aws.carddemo.dto.screen.UserListScreen.UserListRow;
 import com.aws.carddemo.exception.AuthorizationException;
+import com.aws.carddemo.repository.UserListProjection;
 import com.aws.carddemo.repository.UserSecurityRepository;
 import com.aws.carddemo.util.Messages;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 
@@ -51,12 +51,21 @@ import org.springframework.stereotype.Service;
  * <h2>VSAM browse &rarr; keyset paging</h2>
  *
  * <p>The legacy program drives a VSAM browse ({@code STARTBR}/{@code READNEXT}/{@code READPREV})
- * over {@code USRSEC}. The {@link UserSecurityRepository} exposes no custom paging query, so the
- * modernized equivalent loads the full ascending-by-user-id projection from {@link
- * UserSecurityRepository#findAll(Sort)} <em>once per interaction</em> and paginates by index
- * in-service. This reproduces the {@code GTEQ} positioning, the ten-row page size, the read-ahead
- * "next page exists" peek, and the first/last keyset boundaries that the program carries across
- * interactions.
+ * over {@code USRSEC}. The modernized equivalent issues <strong>bounded keyset (range)
+ * queries</strong> on {@link UserSecurityRepository} anchored at the round-tripped boundary user
+ * id: each page turn fetches only {@code PAGE_SIZE + 1} rows (the ten-row page plus a single
+ * read-ahead "next page exists" peek) instead of loading the whole {@code user_security} table.
+ * {@code findBySecUsrIdGreaterThanEqual...} reproduces {@code STARTBR} GTEQ (refresh / browse from
+ * the top); {@code findBySecUsrIdGreaterThan...} the {@code READNEXT} step past the previous page's
+ * last id (PF8); {@code findBySecUsrIdLessThan...Desc} the {@code READPREV} page-up (PF7, reversed
+ * to ascending); and {@code existsBySecUsrIdGreaterThan} the next-page recomputation. This
+ * preserves the {@code GTEQ} positioning, the ten-row page size, the read-ahead peek, and the
+ * first/last keyset boundaries the program carries across interactions &mdash; while bounding
+ * result memory to O(page) rather than O(table) (closing the unbounded-read finding).
+ *
+ * <p>The browse queries return the {@link UserListProjection} closed projection (user id, first
+ * name, last name, type), so the {@code sec_usr_pwd} BCrypt hash &mdash; which the list screen
+ * never displays &mdash; is never selected for a list view.
  *
  * <h2>No mutable instance state</h2>
  *
@@ -161,21 +170,10 @@ public class UserListService {
   static final int PAGE_SIZE = 10;
 
   /**
-   * Width of the user-id key. COBOL {@code SEC-USR-ID PIC X(08)}; the {@code USRSEC} KSDS KEYLEN.
-   */
-  private static final int KEY_LENGTH = 8;
-
-  /**
-   * Ascending-by-user-id sort, the modernized equivalent of the {@code USRSEC} VSAM browse over the
-   * KSDS primary key. Sorting on the {@link UserSecurity#getSecUsrId() secUsrId} property mirrors
-   * the key-ordered {@code STARTBR}/{@code READNEXT} sequence the legacy program relies on.
-   */
-  private static final Sort SORT_BY_USR_ID = Sort.by(Sort.Direction.ASC, "secUsrId");
-
-  /**
    * Repository projecting the {@code USRSEC} store &mdash; the modernized equivalent of the VSAM
-   * browse over the KSDS primary key. Reads are issued through {@link
-   * #loadAllUsersSafe(UserListScreen)}.
+   * browse over the KSDS primary key. The list screen reads through the bounded keyset browse
+   * methods ({@code findBySecUsrId...}) returning the {@link UserListProjection} (the displayed
+   * columns only), and the read-ahead probe ({@code existsBySecUsrIdGreaterThan}).
    */
   private final UserSecurityRepository userSecurityRepository;
 
@@ -344,11 +342,7 @@ public class UserListService {
     // L219: MOVE 0 TO CDEMO-CU00-PAGE-NUM. PROCESS-PAGE-FORWARD then advances it to 1.
     screen.setPageNum(formatPageNum(0));
 
-    List<UserSecurity> all = loadAllUsersSafe(screen);
-    if (all == null) {
-      return null;
-    }
-    return processPageForward(screen, all, startKey, false);
+    return processPageForward(screen, startKey, false);
   }
 
   // ===============================================================================================
@@ -369,11 +363,7 @@ public class UserListService {
   private String processPf7Key(UserListScreen screen) {
     if (currentPageNum(screen) > 1) {
       String firstUsrId = firstPopulatedUsrId(screen);
-      List<UserSecurity> all = loadAllUsersSafe(screen);
-      if (all == null) {
-        return null;
-      }
-      return processPageBackward(screen, all, firstUsrId);
+      return processPageBackward(screen, firstUsrId);
     }
     // L251-253: already on the first page.
     screen.setErrMsg(MSG_TOP_OF_PAGE);
@@ -399,19 +389,19 @@ public class UserListService {
    */
   private String processPf8Key(UserListScreen screen) {
     String lastUsrId = lastPopulatedUsrId(screen);
-    List<UserSecurity> all = loadAllUsersSafe(screen);
-    if (all == null) {
-      return null;
-    }
     if (!isPresent(lastUsrId)) {
       // No populated row to page beyond (e.g., an empty list): already at the bottom.
       screen.setErrMsg(MSG_BOTTOM_OF_PAGE);
       return null;
     }
-    int pos = firstIndexGreaterOrEqual(all, lastUsrId);
-    boolean nextPageExists = (pos + 1) < all.size();
+    // L264-271: recompute the NEXT-PAGE flag with a bounded read-ahead probe (does any user sort
+    // strictly after the last one shown?) rather than scanning a full in-memory snapshot.
+    Boolean nextPageExists = existsAfter(screen, lastUsrId);
+    if (nextPageExists == null) {
+      return null; // data-access failure; MSG_UNABLE_LOOKUP_USER already set
+    }
     if (nextPageExists) {
-      return processPageForward(screen, all, lastUsrId, true);
+      return processPageForward(screen, lastUsrId, true);
     }
     // L273-275: NEXT-PAGE-NO -> already at the bottom.
     screen.setErrMsg(MSG_BOTTOM_OF_PAGE);
@@ -453,17 +443,24 @@ public class UserListService {
    * @param skipFirst {@code true} to consume the boundary record first (PF8 forward)
    * @return always {@code null}; paging never transfers to another program
    */
-  private String processPageForward(
-      UserListScreen screen, List<UserSecurity> all, String startKey, boolean skipFirst) {
-    int size = all.size();
-    // STARTBR GTEQ positioning: a null start key positions at the lowest key (index 0).
-    int startPos = (startKey == null) ? 0 : firstIndexGreaterOrEqual(all, startKey);
+  private String processPageForward(UserListScreen screen, String startKey, boolean skipFirst) {
+    // STARTBR GTEQ positioning: a null start key (LOW-VALUES) browses from the lowest key, modelled
+    // as the empty string. The keyset query fetches only PAGE_SIZE + 1 rows: the ten-row page plus
+    // one read-ahead row reproducing the legacy "next page exists" peek, projected to the four
+    // displayed columns (the password hash is never selected).
+    String key = (startKey == null) ? "" : startKey;
+    List<UserListProjection> fetched = browseForward(screen, key, skipFirst, PAGE_SIZE + 1);
+    if (fetched == null) {
+      return null; // data-access failure; MSG_UNABLE_LOOKUP_USER already set
+    }
 
     List<UserListRow> page = buildBlankPage();
 
     // L601-606: STARTBR NOTFND. No record at or after the start key (empty browse or a filter past
-    // the end of file). Blank page, "top of page" message, page counter unchanged.
-    if (startPos >= size) {
+    // the end of file). Blank page, "top of page" message, page counter unchanged. (A PF8 skip
+    // browse is only entered after the next-page probe confirms a following record, so its empty
+    // result is unreachable in normal flow.)
+    if (!skipFirst && fetched.isEmpty()) {
       screen.setRows(page);
       screen.setErrMsg(MSG_AT_TOP);
       screen.setUsrIdIn("");
@@ -471,18 +468,16 @@ public class UserListService {
       return null;
     }
 
-    // L289-291: a non-ENTER AID (PF8) consumes one record to step past the previous page boundary.
-    int from = startPos + (skipFirst ? 1 : 0);
-
-    int rowsRead = 0;
-    for (int i = 0; i < PAGE_SIZE && (from + i) < size; i++) {
-      populateUserData(page, i, all.get(from + i));
-      rowsRead++;
+    // L289-307: fill up to ten rows ascending from the fetched page slice.
+    int rowsRead = Math.min(PAGE_SIZE, fetched.size());
+    for (int i = 0; i < rowsRead; i++) {
+      populateUserData(page, i, fetched.get(i));
     }
 
-    // L312-318: read-ahead peek. A record beyond the page means a next page exists; reaching end of
-    // file means this is the last page.
-    boolean nextPageExists = (from + PAGE_SIZE) < size;
+    // L312-318: read-ahead peek. A fetched row beyond the page (size == PAGE_SIZE + 1) means a next
+    // page exists, exactly reproducing the legacy (from + PAGE_SIZE) < size test; otherwise the end
+    // of file has been reached.
+    boolean nextPageExists = fetched.size() > PAGE_SIZE;
 
     if (rowsRead > 0) {
       // L310-311 / L320-323: advance the page counter once a page has been materialized.
@@ -529,33 +524,32 @@ public class UserListService {
    * @param startKey the first user id of the current page (the backward cursor), or {@code null}
    * @return always {@code null}; paging never transfers to another program
    */
-  private String processPageBackward(
-      UserListScreen screen, List<UserSecurity> all, String startKey) {
-    int size = all.size();
-    // STARTBR positioning at the current page's first user id; a null cursor positions at the top.
-    int cursor = (startKey == null) ? 0 : firstIndexGreaterOrEqual(all, startKey);
-    if (cursor > size) {
-      cursor = size;
+  private String processPageBackward(UserListScreen screen, String startKey) {
+    // READPREV walk: fetch up to PAGE_SIZE + 1 users strictly below the current page's first id, in
+    // descending order (closest-below first), projected to the four displayed columns. A null
+    // cursor
+    // (LOW-VALUES) means the current page started at the top of file, so there is nothing above it.
+    // The extra (eleventh) row is the read-ahead peek that reproduces the legacy start-of-file
+    // detection (from == 0): ten or fewer records below the cursor means the top has been reached.
+    List<UserListProjection> fetched =
+        (startKey == null) ? List.of() : browseBackward(screen, startKey, PAGE_SIZE + 1);
+    if (fetched == null) {
+      return null; // data-access failure; MSG_UNABLE_LOOKUP_USER already set
     }
+
+    int rowsRead = Math.min(PAGE_SIZE, fetched.size());
+    boolean reachedTop = fetched.size() <= PAGE_SIZE; // <=> legacy from == 0
 
     List<UserListRow> page = buildBlankPage();
 
-    // L353-359: READPREV bottom-up fill. The record immediately before the cursor goes into the
-    // last
-    // row; each earlier record fills the row above. This yields the previous page in ascending
-    // order.
-    int rowsRead = 0;
-    for (int i = 0; i < PAGE_SIZE; i++) {
-      int src = cursor - 1 - i;
-      if (src < 0) {
-        break;
-      }
-      populateUserData(page, (PAGE_SIZE - 1) - i, all.get(src));
-      rowsRead++;
+    // L353-359: READPREV bottom-up fill. The fetched slice is descending (closest-below first), so
+    // the record immediately before the cursor lands in the last row and each earlier record fills
+    // the row above, yielding the previous page in ascending order.
+    for (int i = 0; i < rowsRead; i++) {
+      populateUserData(page, (PAGE_SIZE - 1) - i, fetched.get(i));
     }
 
-    int from = Math.max(0, cursor - PAGE_SIZE);
-    if (from == 0) {
+    if (reachedTop) {
       // L666-673: the backward peek reached the start of file. Pin to page one and surface the
       // "top of page" message when a page was actually shown.
       screen.setPageNum(formatPageNum(1));
@@ -576,8 +570,8 @@ public class UserListService {
   // ===============================================================================================
 
   /**
-   * Reproduces {@code POPULATE-USER-DATA}: copy one {@link UserSecurity} record into one display
-   * row.
+   * Reproduces {@code POPULATE-USER-DATA}: copy one {@link UserListProjection} record into one
+   * display row.
    *
    * <p>The legacy paragraph moves the security fields onto the indexed map row &mdash; user id,
    * first name, last name, and the user type ({@code 'A'} admin / {@code 'U'} standard, displayed
@@ -590,7 +584,7 @@ public class UserListService {
    * @param index the zero-based row index to populate
    * @param user the security record to render
    */
-  private void populateUserData(List<UserListRow> page, int index, UserSecurity user) {
+  private void populateUserData(List<UserListRow> page, int index, UserListProjection user) {
     UserListRow row = page.get(index);
     row.setSel("");
     row.setUsrId(user.getSecUsrId());
@@ -669,37 +663,31 @@ public class UserListService {
   // ===============================================================================================
 
   /**
-   * Loads the full {@code user_security} table ascending by user id &mdash; the modernized
-   * equivalent of opening the {@code USRSEC} browse. Ordinary "not found / end of file" outcomes
-   * are handled by the callers as on-screen messages (the list never throws for those); only a
-   * genuinely unexpected datastore failure is caught here and surfaced as the {@link
-   * #MSG_UNABLE_LOOKUP_USER} redisplay message (the legacy {@code WHEN OTHER} status branch),
-   * without throwing (AAP §0.6.4 service-usage rule).
-   *
-   * <p><strong>Bounded-result / VSAM-browse parity exception (intentional).</strong> The code
-   * review performance checklist flags this {@code findAll(Sort)} read as an unbounded full-table
-   * load. It is a deliberate, AAP-sanctioned parity decision, not an oversight. Legacy {@code
-   * COUSR00C} browses {@code USRSEC} with VSAM {@code STARTBR GTEQ} / {@code READNEXT} / {@code
-   * READPREV}, and the 10-row keyset paging &mdash; in particular {@code PROCESS-PAGE-BACKWARD}
-   * (PF7), which locates the current first user id and walks the preceding rows, plus the next-page
-   * "peek" and the byte-exact top/bottom edge messages &mdash; is reproduced by slicing one stable
-   * ascending snapshot in service; a forward-only bounded query cannot reproduce the page-up
-   * direction over identical ordering. Under AAP precedence D1, 100% behavioral parity (AAP
-   * &sect;0.7.1 R1 / &sect;0.6.5) outranks the generic performance heuristic, and the migration's
-   * local-only validation runs against the small legacy fixtures (AAP &sect;0.6.7). A
-   * repository-level cursor/range query may replace this only if it preserves identical PF7/PF8
-   * ordering and edge-message behavior.
+   * Bounded forward keyset browse (VSAM {@code STARTBR} GTEQ / {@code READNEXT}). Fetches at most
+   * {@code limit} users at or after (or, when {@code exclusive}, strictly after) {@code key},
+   * ascending by user id, projected to the four displayed columns only (the {@code sec_usr_pwd}
+   * BCrypt hash is never selected for the list view). Ordinary "end of file" is an empty list, not
+   * an error; only a genuinely unexpected datastore failure is caught here and surfaced as the
+   * {@link #MSG_UNABLE_LOOKUP_USER} redisplay message (the legacy {@code WHEN OTHER} status
+   * branch), without throwing (AAP §0.6.4 service-usage rule), returning {@code null} to signal the
+   * failure.
    *
    * @param screen the screen whose message line receives the failure text
-   * @return the ascending snapshot, or {@code null} if the load failed (message already set)
+   * @param key the inclusive (or, when {@code exclusive}, exclusive) lower-bound user id; the empty
+   *     string browses from the lowest key
+   * @param exclusive {@code true} to step past the boundary record ({@code READNEXT}; PF8
+   *     page-down)
+   * @param limit the maximum rows to fetch (page size plus the read-ahead peek)
+   * @return the bounded ascending page of projections, or {@code null} if the read failed (message
+   *     already set)
    */
-  private List<UserSecurity> loadAllUsersSafe(UserListScreen screen) {
+  private List<UserListProjection> browseForward(
+      UserListScreen screen, String key, boolean exclusive, int limit) {
     try {
-      // Single ascending snapshot for in-service keyset paging — intentional VSAM-browse parity
-      // exception (PF7 READPREV page-up + next-page peek need the full ordered key set); see the
-      // method Javadoc. AAP D1: parity (§0.7.1/§0.6.5) over the perf heuristic; local validation
-      // uses small fixtures.
-      return userSecurityRepository.findAll(SORT_BY_USR_ID);
+      PageRequest pageable = PageRequest.of(0, limit);
+      return exclusive
+          ? userSecurityRepository.findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(key, pageable)
+          : userSecurityRepository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(key, pageable);
     } catch (DataAccessException ex) {
       screen.setErrMsg(MSG_UNABLE_LOOKUP_USER);
       return null;
@@ -707,23 +695,45 @@ public class UserListService {
   }
 
   /**
-   * Returns the index of the first user whose id is greater than or equal to the given key under
-   * fixed-width, space-padded comparison &mdash; the modernized equivalent of VSAM {@code STARTBR}
-   * GTEQ positioning. When no user sorts at or after the key, the list size is returned (the
-   * "insertion point", i.e. the {@code STARTBR} NOTFND condition).
+   * Bounded backward keyset browse (VSAM {@code READPREV}; PF7 page-up). Fetches at most {@code
+   * limit} users strictly below {@code key}, in descending order (closest-below first), projected
+   * to the four displayed columns only; the caller reverses the slice to present it ascending. A
+   * datastore failure is surfaced as {@link #MSG_UNABLE_LOOKUP_USER} and signalled by a {@code
+   * null} return, matching the legacy graceful "unable to lookup" branch.
    *
-   * @param all the ascending-by-user-id snapshot
-   * @param key the GTEQ search key
-   * @return the index in {@code [0, all.size()]} of the first id {@code >=} the key
+   * @param screen the screen whose message line receives the failure text
+   * @param key the exclusive upper-bound user id (the current page's first id)
+   * @param limit the maximum rows to fetch (page size plus the read-ahead peek)
+   * @return the bounded descending slice of projections, or {@code null} if the read failed
+   *     (message already set)
    */
-  private int firstIndexGreaterOrEqual(List<UserSecurity> all, String key) {
-    String normalizedKey = normalizeKey(key);
-    for (int i = 0; i < all.size(); i++) {
-      if (normalizeKey(all.get(i).getSecUsrId()).compareTo(normalizedKey) >= 0) {
-        return i;
-      }
+  private List<UserListProjection> browseBackward(UserListScreen screen, String key, int limit) {
+    try {
+      return userSecurityRepository.findBySecUsrIdLessThanOrderBySecUsrIdDesc(
+          key, PageRequest.of(0, limit));
+    } catch (DataAccessException ex) {
+      screen.setErrMsg(MSG_UNABLE_LOOKUP_USER);
+      return null;
     }
-    return all.size();
+  }
+
+  /**
+   * Bounded read-ahead probe (the legacy {@code NEXT-PAGE} recomputation): whether any user sorts
+   * strictly after {@code key}. A datastore failure is surfaced as {@link #MSG_UNABLE_LOOKUP_USER}
+   * and signalled by a {@code null} return, matching the legacy graceful "unable to lookup" branch.
+   *
+   * @param screen the screen whose message line receives the failure text
+   * @param key the current page's last user id
+   * @return {@code Boolean.TRUE}/{@code FALSE} for the existence outcome, or {@code null} if the
+   *     probe failed (message already set)
+   */
+  private Boolean existsAfter(UserListScreen screen, String key) {
+    try {
+      return userSecurityRepository.existsBySecUsrIdGreaterThan(key);
+    } catch (DataAccessException ex) {
+      screen.setErrMsg(MSG_UNABLE_LOOKUP_USER);
+      return null;
+    }
   }
 
   /**
@@ -796,26 +806,6 @@ public class UserListService {
    */
   private String formatPageNum(int pageNum) {
     return String.format("%08d", pageNum);
-  }
-
-  /**
-   * Normalizes a key to the fixed eight-character, space-padded form of {@code SEC-USR-ID PIC
-   * X(08)} so that comparisons match VSAM key ordering regardless of whether the value arrived
-   * trimmed or already padded. Values longer than the key length are truncated.
-   *
-   * @param key the raw key (may be {@code null}, treated as all spaces)
-   * @return the eight-character normalized key
-   */
-  private String normalizeKey(String key) {
-    String value = (key == null) ? "" : key;
-    if (value.length() > KEY_LENGTH) {
-      value = value.substring(0, KEY_LENGTH);
-    }
-    StringBuilder padded = new StringBuilder(value);
-    while (padded.length() < KEY_LENGTH) {
-      padded.append(' ');
-    }
-    return padded.toString();
   }
 
   /**

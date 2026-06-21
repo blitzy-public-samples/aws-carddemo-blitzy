@@ -19,11 +19,13 @@ package com.aws.carddemo.service.batch;
 import com.aws.carddemo.domain.Account;
 import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.AccountRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.util.Iterator;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 /**
@@ -38,11 +40,11 @@ import org.springframework.stereotype.Service;
  * ORGANIZATION IS INDEXED, ACCESS MODE IS SEQUENTIAL, RECORD KEY IS FD-ACCT-ID}), reads every
  * record in ascending key order, and {@code DISPLAY}s each one to the job log, then closes the
  * file. Here the VSAM file becomes the {@link AccountRepository} JPA store and the sequential read
- * becomes an iteration over {@code findAll(Sort.by("acctId"))}, so records are visited in ascending
- * {@code acctId} order exactly as the {@code FD-ACCT-ID} record-key sequence dictated (AAP
- * &sect;0.6.2). Every COBOL {@code DISPLAY} is mapped to an SLF4J log statement; the COBOL {@code
- * FILE STATUS}-to-abend handling is mapped to {@link IoStatusException} (AAP &sect;0.6.4,
- * &sect;0.6.6).
+ * becomes a bounded-memory iteration over {@code streamAllByOrderByAcctIdAsc()}, so records are
+ * visited in ascending {@code acctId} order exactly as the {@code FD-ACCT-ID} record-key sequence
+ * dictated (AAP &sect;0.6.2) without materialising the whole table. Every COBOL {@code DISPLAY} is
+ * mapped to an SLF4J log statement; the COBOL {@code FILE STATUS}-to-abend handling is mapped to
+ * {@link IoStatusException} (AAP &sect;0.6.4, &sect;0.6.6).
  *
  * <p>Per migration convention this service contains <strong>no Spring Batch types</strong>: {@link
  * #run()} is a plain method that the batch tier ({@code AccountExtractJobConfig} in {@code
@@ -124,6 +126,21 @@ public class AccountExtractService {
   private final AccountRepository accountRepository;
 
   /**
+   * Transaction-scoped entity manager used to {@code detach} each streamed record immediately after
+   * it is read, so the persistence context does not accumulate the whole table (the bounded-memory
+   * complement to the streaming cursor). Injected by the container; bound to the tasklet
+   * transaction that brackets {@link #run()}.
+   */
+  @PersistenceContext private EntityManager entityManager;
+
+  /**
+   * Open streaming cursor over the account master (ascending {@code acctId}), held so it can be
+   * closed in {@link #closeAcctfile()} to release the underlying JDBC cursor. {@code null} when no
+   * scan is in progress.
+   */
+  private Stream<Account> accountStream;
+
+  /**
    * Ascending-key cursor over the account master, established by {@link #openAcctfile()} and
    * released by {@link #closeAcctfile()}. Models the open VSAM file handle; {@code null} when the
    * file is not open.
@@ -201,15 +218,20 @@ public class AccountExtractService {
    *
    * <p>The VSAM {@code OPEN INPUT} on an {@code INDEXED} file with {@code ACCESS MODE IS
    * SEQUENTIAL} reads in ascending {@code RECORD KEY (FD-ACCT-ID)} order, so the Java equivalent
-   * establishes an ascending-{@code acctId} cursor via {@code findAll(Sort.by("acctId"))} (the
-   * {@link Sort} is used directly rather than adding a bespoke repository method). The end-of-file
-   * switch is (re)armed to {@code 'N'}. A {@link DataAccessException} is the realistic counterpart
-   * of the COBOL "{@code FILE STATUS} not {@code '00'}" open failure and triggers the abend path.
+   * opens a bounded-memory streaming cursor via {@code streamAllByOrderByAcctIdAsc()} (a
+   * forward-only JDBC cursor that fetches rows in small windows rather than materialising the whole
+   * table). The end-of-file switch is (re)armed to {@code 'N'}. A {@link DataAccessException} is
+   * the realistic counterpart of the COBOL "{@code FILE STATUS} not {@code '00'}" open failure and
+   * triggers the abend path.
    */
   private void openAcctfile() {
     // <- CBACT01C 0000-ACCTFILE-OPEN
     try {
-      this.cursor = accountRepository.findAll(Sort.by("acctId")).iterator();
+      // Bounded-memory streaming cursor (HINT_FETCH_SIZE / HINT_READ_ONLY) ascending by acctId,
+      // replacing the findAll(Sort) full-table materialization. The stream is consumed inside the
+      // tasklet transaction and closed in closeAcctfile() to release the JDBC cursor.
+      this.accountStream = accountRepository.streamAllByOrderByAcctIdAsc();
+      this.cursor = accountStream.iterator();
       this.endOfFile = false; // MOVE 'N' is the initial END-OF-FILE state.
     } catch (DataAccessException ex) {
       // ELSE branch (L143-148): DISPLAY 'ERROR OPENING ACCTFILE' + 9910 + 9999-ABEND.
@@ -239,6 +261,10 @@ public class AccountExtractService {
       if (cursor.hasNext()) {
         // ACCTFILE-STATUS = '00': record read; PERFORM 1100-DISPLAY-ACCT-RECORD.
         this.currentAccount = cursor.next();
+        // Detach immediately so the streamed scan does not accumulate the whole table in the
+        // persistence context. Account has no JPA associations, so the detached record stays fully
+        // readable for both the field-by-field 1100 display and the main-loop whole-record DISPLAY.
+        entityManager.detach(this.currentAccount);
         displayAcctRecord(currentAccount);
       } else {
         // ACCTFILE-STATUS = '10' (APPL-EOF): end of file -> MOVE 'Y' TO END-OF-FILE. Not an error.
@@ -319,16 +345,22 @@ public class AccountExtractService {
   /**
    * Closes the account store, reproducing {@code 9000-ACCTFILE-CLOSE} (CBACT01C L151-167).
    *
-   * <p>Releasing the in-memory cursor is the Java counterpart of the VSAM {@code CLOSE}. The COBOL
-   * paragraph still guards the close with its own {@code FILE STATUS} check and abend branch, so
-   * the release is wrapped to translate any unexpected {@link DataAccessException} into the same
-   * abend path ({@code DISPLAY 'ERROR CLOSING ACCOUNT FILE'} + {@code 9910} + {@code 9999}),
-   * preserving full paragraph parity.
+   * <p>Closing the streaming cursor (releasing the underlying JDBC cursor) is the Java counterpart
+   * of the VSAM {@code CLOSE}. The COBOL paragraph still guards the close with its own {@code FILE
+   * STATUS} check and abend branch, so the release is wrapped to translate any unexpected {@link
+   * DataAccessException} into the same abend path ({@code DISPLAY 'ERROR CLOSING ACCOUNT FILE'} +
+   * {@code 9910} + {@code 9999}), preserving full paragraph parity. Closing the stream is null-safe
+   * and idempotent.
    */
   private void closeAcctfile() {
     // <- CBACT01C 9000-ACCTFILE-CLOSE
     try {
-      this.cursor = null; // CLOSE ACCTFILE-FILE: release the file handle.
+      // CLOSE ACCTFILE-FILE: release the streaming JDBC cursor, then drop the in-memory references.
+      if (this.accountStream != null) {
+        this.accountStream.close();
+        this.accountStream = null;
+      }
+      this.cursor = null;
     } catch (DataAccessException ex) {
       // ELSE branch (L161-166): DISPLAY 'ERROR CLOSING ACCOUNT FILE' + 9910 + 9999-ABEND.
       throw abend("CLOSE", CLOSE_ERROR_MESSAGE, ex);

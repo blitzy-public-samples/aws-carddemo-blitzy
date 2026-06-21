@@ -19,11 +19,13 @@ package com.aws.carddemo.service.batch;
 import com.aws.carddemo.domain.CardXref;
 import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.CardXrefRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.util.Iterator;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 /**
@@ -47,18 +49,17 @@ import org.springframework.stereotype.Service;
  * lines and the duplication is <em>not</em> "optimized" away.
  *
  * <p><strong>I/O model.</strong> Mirroring the {@code 0000-XREFFILE-OPEN} / {@code
- * 1000-XREFFILE-GET-NEXT} / {@code 9000-XREFFILE-CLOSE} paragraphs, {@link #openXreffile()}
- * materializes the ordered result set once (the "open"), {@link #xreffileGetNext()} advances an
- * in-memory cursor (the sequential "read"), and {@link #closeXreffile()} releases the cursor (the
- * "close"). Because the rows are fetched eagerly at open time, any repository {@link
- * DataAccessException} surfaces during open and is mapped to an {@link IoStatusException}
- * (operation {@code "OPEN"}), reproducing the COBOL {@code 9999-ABEND-PROGRAM} + {@code
- * 9910-DISPLAY-IO-STATUS} path (&sect;0.6.4, &sect;0.6.6). The unchecked exception propagates so
- * the invoking Spring Batch step (the {@code com.aws.carddemo.batch.XrefExtractJobConfig} added
- * later) fails with an abend-equivalent exit status. FILE STATUS {@code '00'} is a normal read and
- * {@code '10'} is a benign end-of-file (loop end, never an error); a missing record is never
- * modeled here, so this service never throws {@code RecordNotFoundException} and never swallows an
- * I/O failure.
+ * 1000-XREFFILE-GET-NEXT} / {@code 9000-XREFFILE-CLOSE} paragraphs, {@link #openXreffile()} opens a
+ * bounded-memory streaming cursor (the "open"), {@link #xreffileGetNext()} advances it record by
+ * record (the sequential "read"), and {@link #closeXreffile()} closes the stream (the "close").
+ * Because the cursor is opened lazily, a repository {@link DataAccessException} may surface during
+ * open or read and is mapped to an {@link IoStatusException} (operation {@code "OPEN"} or {@code
+ * "READ"}), reproducing the COBOL {@code 9999-ABEND-PROGRAM} + {@code 9910-DISPLAY-IO-STATUS} path
+ * (&sect;0.6.4, &sect;0.6.6). The unchecked exception propagates so the invoking Spring Batch step
+ * (the {@code com.aws.carddemo.batch.XrefExtractJobConfig} added later) fails with an
+ * abend-equivalent exit status. FILE STATUS {@code '00'} is a normal read and {@code '10'} is a
+ * benign end-of-file (loop end, never an error); a missing record is never modeled here, so this
+ * service never throws {@code RecordNotFoundException} and never swallows an I/O failure.
  *
  * <p><strong>COBOL paragraph &rarr; Java method traceability</strong> (&sect;0.6.7):
  *
@@ -135,6 +136,21 @@ public class XrefExtractService {
   private final CardXrefRepository cardXrefRepository;
 
   /**
+   * Transaction-scoped entity manager used to {@code detach} each streamed record immediately after
+   * it is read, so the persistence context does not accumulate the whole table (the bounded-memory
+   * complement to the streaming cursor). Injected by the container; bound to the tasklet
+   * transaction that brackets {@link #run()}.
+   */
+  @PersistenceContext private EntityManager entityManager;
+
+  /**
+   * Open streaming cursor over the cross-reference store (ascending {@code xrefCardNum}), held so
+   * it can be closed in {@link #closeXreffile()} to release the underlying JDBC cursor. {@code
+   * null} when no scan is in progress.
+   */
+  private Stream<CardXref> xrefStream;
+
+  /**
    * In-memory cursor over the cross-reference rows ascending by {@code xrefCardNum}, established by
    * {@link #openXreffile()} and released ({@code null}) by {@link #closeXreffile()}. Stands in for
    * the open COBOL {@code XREFFILE-FILE} sequential read position.
@@ -200,10 +216,10 @@ public class XrefExtractService {
 
   /**
    * Opens the cross-reference store for sequential, ascending-by-key reading, mirroring {@code
-   * 0000-XREFFILE-OPEN}. The ordered result set is fetched eagerly here (the "open"), so this is
-   * the single point at which a repository {@link DataAccessException} can arise; it is translated
-   * to an {@link IoStatusException} on the abend path. On success the end-of-file switch is reset
-   * so the service is re-runnable.
+   * 0000-XREFFILE-OPEN}. A bounded-memory streaming cursor is opened here (the "open") via {@code
+   * streamAllByOrderByXrefCardNumAsc()}; a repository {@link DataAccessException} raised while
+   * opening is translated to an {@link IoStatusException} on the abend path. On success the
+   * end-of-file switch is reset so the service is re-runnable.
    *
    * @throws IoStatusException if the repository read fails (operation {@code "OPEN"}, FILE STATUS
    *     {@value #UNEXPECTED_STATUS})
@@ -211,7 +227,11 @@ public class XrefExtractService {
   private void openXreffile() {
     // <- CBACT03C 0000-XREFFILE-OPEN
     try {
-      this.cursor = cardXrefRepository.findAll(Sort.by("xrefCardNum")).iterator();
+      // Bounded-memory streaming cursor (HINT_FETCH_SIZE / HINT_READ_ONLY) ascending by
+      // xrefCardNum, replacing the findAll(Sort) full-table materialization. The stream is consumed
+      // inside the tasklet transaction and closed in closeXreffile() to release the JDBC cursor.
+      this.xrefStream = cardXrefRepository.streamAllByOrderByXrefCardNumAsc();
+      this.cursor = xrefStream.iterator();
       this.endOfFile = false;
     } catch (DataAccessException ex) {
       // DISPLAY 'ERROR OPENING XREFFILE'
@@ -226,32 +246,46 @@ public class XrefExtractService {
    * emitted here (the first of the two displays); when the cursor is exhausted (FILE STATUS {@code
    * '10'}) the {@link #endOfFile} switch is raised and no record is emitted.
    *
-   * <p>This step performs no repository call: the rows were materialized in {@link
-   * #openXreffile()}, so advancing the in-memory cursor cannot raise a {@link DataAccessException}.
-   * The legacy per-read error branch therefore collapses into the open-time mapping, keeping the
-   * translation free of unreachable error handling.
+   * <p>Because the cursor now streams, advancing it issues a real fetch against the database, so an
+   * unexpected {@link DataAccessException} can surface here. That reproduces the COBOL read-error
+   * branch (L110): {@code DISPLAY 'ERROR READING XREFFILE'} + {@code 9910-DISPLAY-IO-STATUS} +
+   * {@code 9999-ABEND-PROGRAM}, mapped to an {@link IoStatusException} (operation {@code "READ"}).
    */
   private void xreffileGetNext() {
     // <- CBACT03C 1000-XREFFILE-GET-NEXT
-    if (cursor.hasNext()) {
-      // FILE STATUS '00': record read -> DISPLAY CARD-XREF-RECORD (the first emission)
-      this.cardXrefRecord = cursor.next();
-      LOG.info(formatRecord(cardXrefRecord));
-    } else {
-      // FILE STATUS '10': end of file (loop end, not an error)
-      this.endOfFile = true;
+    try {
+      if (cursor.hasNext()) {
+        // FILE STATUS '00': record read -> DISPLAY CARD-XREF-RECORD (the first emission)
+        this.cardXrefRecord = cursor.next();
+        // Detach immediately so the streamed scan does not accumulate the whole table in the
+        // persistence context. CardXref has no JPA associations, so the detached record stays fully
+        // readable for both emissions (here and the main-loop DISPLAY).
+        entityManager.detach(this.cardXrefRecord);
+        LOG.info(formatRecord(cardXrefRecord));
+      } else {
+        // FILE STATUS '10': end of file (loop end, not an error)
+        this.endOfFile = true;
+      }
+    } catch (DataAccessException ex) {
+      // L110: DISPLAY 'ERROR READING XREFFILE' then 9910 + 9999-ABEND.
+      LOG.error("ERROR READING XREFFILE");
+      throw abendProgram("READ", ex);
     }
   }
 
   /**
-   * Closes the cross-reference store, mirroring {@code 9000-XREFFILE-CLOSE}, by releasing the
-   * cursor. No repository call is involved (the result set was materialized at open time), so
-   * &mdash; unlike the COBOL {@code CLOSE} which inspected FILE STATUS &mdash; this release cannot
-   * fail. Clearing the reference lets the underlying list be garbage-collected and leaves the
-   * service in a defined, re-runnable state.
+   * Closes the cross-reference store, mirroring {@code 9000-XREFFILE-CLOSE}, by closing the
+   * streaming cursor opened in {@link #openXreffile()} (releasing the underlying JDBC cursor) and
+   * then clearing the in-memory references. Unlike the COBOL {@code CLOSE} which inspected FILE
+   * STATUS, the stream close is null-safe and idempotent and leaves the service in a defined,
+   * re-runnable state.
    */
   private void closeXreffile() {
     // <- CBACT03C 9000-XREFFILE-CLOSE
+    if (this.xrefStream != null) {
+      this.xrefStream.close();
+      this.xrefStream = null;
+    }
     this.cursor = null;
   }
 

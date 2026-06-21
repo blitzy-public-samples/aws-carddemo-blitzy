@@ -18,7 +18,11 @@ package com.aws.carddemo.service.online;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -30,6 +34,7 @@ import com.aws.carddemo.dto.screen.CardListScreen.CardListRow;
 import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.CardRepository;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -39,6 +44,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.data.domain.Pageable;
 
 /**
  * Pure JUnit&nbsp;5 + Mockito + AssertJ unit tests for {@link CardListService}, the online
@@ -111,6 +117,90 @@ class CardListServiceTest {
     return list;
   }
 
+  /**
+   * Right-pads to the 16-character card-number key width, mirroring the service's {@code pad16}.
+   */
+  private static String pad16(String value) {
+    return String.format("%-16s", value == null ? "" : value);
+  }
+
+  /**
+   * Installs keyset-query stubs on the mocked repository that faithfully simulate the bounded
+   * PostgreSQL keyset/range browse the service now issues, over an in-memory, ascending-by-card
+   * list. This replaces the legacy {@code findAll()} full-table stub: each paging turn fetches only
+   * one screen page (plus the read-ahead "peek" row), exactly as the {@code FETCH FIRST :n ROWS
+   * ONLY} repository queries behave at runtime, so the page-content / navigation / boundary-message
+   * parity assertions hold without a database.
+   *
+   * <p>The stubs are {@code lenient} because no single test exercises every browse direction (e.g.
+   * a forward-paging test never issues the backward {@code READPREV} query), and the strict {@link
+   * MockitoExtension} would otherwise reject the unused directions as unnecessary stubbing.
+   *
+   * @param all the deterministic card set the browse reads over (any order; sorted here ascending)
+   */
+  private void stubKeyset(List<Card> all) {
+    List<Card> sorted = new ArrayList<>(all);
+    sorted.sort(Comparator.comparing(c -> pad16(c.getCardNum())));
+    // STARTBR GTEQ + READNEXT (refresh / page-up boundary): card_num >= key, ascending, limited.
+    lenient()
+        .when(
+            cardRepository.findByCardNumGreaterThanEqualOrderByCardNumAsc(
+                anyString(), any(Pageable.class)))
+        .thenAnswer(inv -> forwardSlice(sorted, inv.getArgument(0), true, inv.getArgument(1)));
+    // READNEXT past the previous page's last key (PF8 page-down): card_num > key, ascending.
+    lenient()
+        .when(
+            cardRepository.findByCardNumGreaterThanOrderByCardNumAsc(
+                anyString(), any(Pageable.class)))
+        .thenAnswer(inv -> forwardSlice(sorted, inv.getArgument(0), false, inv.getArgument(1)));
+    // READPREV page-up (PF7): card_num < key, descending (closest-below first), limited.
+    lenient()
+        .when(
+            cardRepository.findByCardNumLessThanOrderByCardNumDesc(
+                anyString(), any(Pageable.class)))
+        .thenAnswer(inv -> backwardSlice(sorted, inv.getArgument(0), inv.getArgument(1)));
+    // CA-NEXT-PAGE-EXISTS recomputation (PF8 guard): does any card_num > key exist?
+    lenient()
+        .when(cardRepository.existsByCardNumGreaterThan(anyString()))
+        .thenAnswer(
+            inv ->
+                sorted.stream()
+                    .anyMatch(c -> pad16(c.getCardNum()).compareTo(inv.getArgument(0)) > 0));
+  }
+
+  /** Ascending slice with {@code card_num >= key} (inclusive) or {@code > key} (exclusive). */
+  private static List<Card> forwardSlice(
+      List<Card> sorted, String key, boolean inclusive, Pageable page) {
+    List<Card> out = new ArrayList<>();
+    for (Card c : sorted) {
+      int cmp = pad16(c.getCardNum()).compareTo(key);
+      if (inclusive ? cmp >= 0 : cmp > 0) {
+        out.add(c);
+        if (out.size() >= page.getPageSize()) {
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Descending slice (closest-below first) with {@code card_num < key}, limited to the page size.
+   */
+  private static List<Card> backwardSlice(List<Card> sorted, String key, Pageable page) {
+    List<Card> out = new ArrayList<>();
+    for (int i = sorted.size() - 1; i >= 0; i--) {
+      Card c = sorted.get(i);
+      if (pad16(c.getCardNum()).compareTo(key) < 0) {
+        out.add(c);
+        if (out.size() >= page.getPageSize()) {
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
   /** A fresh, empty Card List screen (the seven-row list is initialized empty). */
   private static CardListScreen screen() {
     return new CardListScreen();
@@ -160,7 +250,7 @@ class CardListServiceTest {
   @Test
   @DisplayName("first entry paints a full seven-row page mapped in card-number order")
   void firstPage_full7Rows_populatesGrid() {
-    when(cardRepository.findAll()).thenReturn(cards(7));
+    stubKeyset(cards(7));
     CardListScreen s = screen();
 
     String next = service.processCardList(s, firstEntry(), CardWorkArea.Aid.ENTER);
@@ -178,9 +268,12 @@ class CardListServiceTest {
     }
     assertThat(s.getPageNo()).isEqualTo("1");
 
-    // Control-flow parity: the browse query is invoked exactly once, and nothing else.
+    // Control-flow parity: the first page issues exactly one bounded forward keyset read (STARTBR
+    // GTEQ from the top, key = ""), and nothing else — no full-table scan, no extra probe.
     InOrder inOrder = inOrder(cardRepository);
-    inOrder.verify(cardRepository).findAll();
+    inOrder
+        .verify(cardRepository)
+        .findByCardNumGreaterThanEqualOrderByCardNumAsc(eq(""), any(Pageable.class));
     inOrder.verifyNoMoreInteractions();
   }
 
@@ -191,7 +284,7 @@ class CardListServiceTest {
   @Test
   @DisplayName("PF8 advances to the next page using the forward keyset")
   void forwardPaging_pf8_advancesPage() {
-    when(cardRepository.findAll()).thenReturn(cards(16));
+    stubKeyset(cards(16));
     CardListScreen s = screen();
     CardDemoCommarea commarea = firstEntry();
 
@@ -209,7 +302,7 @@ class CardListServiceTest {
   @Test
   @DisplayName("PF8 again at the last page shows the byte-exact 'no more pages' boundary message")
   void forwardPaging_pf8_atLastPage_showsBottomMessage() {
-    when(cardRepository.findAll()).thenReturn(cards(7)); // exactly one page
+    stubKeyset(cards(7)); // exactly one page
     CardListScreen s = screen();
     CardDemoCommarea commarea = firstEntry();
 
@@ -232,7 +325,7 @@ class CardListServiceTest {
   @Test
   @DisplayName("PF7 on the first page shows the byte-exact 'no previous pages' boundary message")
   void backwardPaging_pf7_atFirstPage_showsTopMessage() {
-    when(cardRepository.findAll()).thenReturn(cards(16));
+    stubKeyset(cards(16));
     CardListScreen s = screen();
     CardDemoCommarea commarea = firstEntry();
 
@@ -244,6 +337,31 @@ class CardListServiceTest {
     assertThat(next).isNull();
     assertThat(s.getErrMsg()).isEqualTo("NO PREVIOUS PAGES TO DISPLAY");
     assertThat(s.getPageNo()).isEqualTo("1");
+  }
+
+  @Test
+  @DisplayName("PF7 after PF8 walks back to the prior page via the backward (READPREV) keyset")
+  void backwardPaging_pf7_afterPf8_returnsToPriorPage() {
+    stubKeyset(cards(16));
+    CardListScreen s = screen();
+    CardDemoCommarea commarea = firstEntry();
+
+    // Turn 1: page one (cards 1..7).
+    service.processCardList(s, commarea, CardWorkArea.Aid.ENTER);
+    // Turn 2: PF8 forward to page two (cards 8..14).
+    service.processCardList(s, commarea, CardWorkArea.Aid.PFK08);
+    assertThat(s.getPageNo()).isEqualTo("2");
+    assertThat(s.getRows().get(0).getCrdNum()).isEqualTo(num(8));
+
+    // Turn 3: PF7 page-up. The READPREV keyset returns the seven keys immediately below the
+    // current first key (8) in descending order; the service reverses them to ascending so page
+    // one (cards 1..7) is reconstructed byte-faithfully.
+    String next = service.processCardList(s, commarea, CardWorkArea.Aid.PFK07);
+
+    assertThat(next).isNull();
+    assertThat(s.getPageNo()).isEqualTo("1");
+    assertThat(s.getRows().get(0).getCrdNum()).isEqualTo(num(1));
+    assertThat(s.getRows().get(6).getCrdNum()).isEqualTo(num(7));
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -292,7 +410,7 @@ class CardListServiceTest {
   @Test
   @DisplayName("an invalid selection code redisplays the list with the 'invalid action' message")
   void invalidSelectionCode_redisplaysInvalidSelection() {
-    when(cardRepository.findAll()).thenReturn(cards(7));
+    stubKeyset(cards(7));
     CardListScreen s = screenWithSelection(0, "X", acctStr(1), num(1));
 
     String next = service.processCardList(s, reentered(), CardWorkArea.Aid.ENTER);
@@ -341,7 +459,8 @@ class CardListServiceTest {
   @Test
   @DisplayName("an unexpected data-access failure is escalated as IoStatusException (CARDDAT)")
   void repositoryThrows_mapsToIoStatusException() {
-    when(cardRepository.findAll())
+    when(cardRepository.findByCardNumGreaterThanEqualOrderByCardNumAsc(
+            anyString(), any(Pageable.class)))
         .thenThrow(new DataAccessResourceFailureException("simulated outage"));
 
     assertThatThrownBy(() -> service.processCardList(screen(), reentered(), CardWorkArea.Aid.ENTER))

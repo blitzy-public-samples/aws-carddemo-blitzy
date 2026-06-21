@@ -21,6 +21,8 @@ import com.aws.carddemo.domain.id.TransactionCategoryBalanceId;
 import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.aws.carddemo.util.CobolStringUtils;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -29,7 +31,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.List;
+import java.util.Iterator;
+import java.util.stream.Stream;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.configuration.annotation.StepScope;
@@ -41,7 +44,6 @@ import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /**
@@ -80,9 +82,11 @@ import org.springframework.transaction.PlatformTransactionManager;
  *
  * <p><strong>Ordering parity (AAP &sect;0.6.3).</strong> The report must be ascending by {@code
  * (TRANCAT-ACCT-ID, TRANCAT-TYPE-CD, TRANCAT-CD)} exactly as the legacy {@code SORT FIELDS} list
- * specifies. This is reproduced by {@link TransactionCategoryBalanceRepository#findAll(Sort)} with
- * the ascending {@link Sort} over the embedded-key property paths {@code id.trancatAcctId}, {@code
- * id.trancatTypeCd} and {@code id.trancatCd}. The full composite key is unique, so the ordering is
+ * specifies. This is reproduced by {@link
+ * TransactionCategoryBalanceRepository#streamAllByOrderByIdAsc()} &mdash; a JDBC-cursor-backed
+ * stream whose JPQL {@code ORDER BY} ascends over the embedded-key property paths {@code
+ * id.trancatAcctId}, {@code id.trancatTypeCd} and {@code id.trancatCd}, fetching in bounded windows
+ * so heap stays bounded (QA F-2). The full composite key is unique, so the ordering is
  * deterministic with no ties (the legacy {@code SORT} declared no {@code EQUALS} option).
  *
  * <p><strong>Report line layout &mdash; fixed 40 characters ({@code LRECL=40}).</strong> Each line
@@ -187,6 +191,14 @@ public class CategoryBalanceReportStep {
    * {@code outputDir} job parameter.
    */
   private final String configuredOutputDir;
+
+  /**
+   * JPA persistence context used to detach each category-balance row immediately after it is
+   * written to the report file, so the streaming tasklet holds only the JDBC fetch window in heap
+   * rather than the whole {@code TCATBALF} table (QA F-2). The tasklet's only output is a file (no
+   * database writes), so detaching each just-read row is always safe.
+   */
+  @PersistenceContext private EntityManager entityManager;
 
   /**
    * Creates the category-balance-report configuration.
@@ -297,15 +309,20 @@ public class CategoryBalanceReportStep {
   public Tasklet categoryBalanceReportTasklet(
       @Value("#{jobParameters['outputDir']}") String outputDir) {
     return (contribution, chunkContext) -> {
-      List<TransactionCategoryBalance> rows =
-          transactionCategoryBalanceRepository.findAll(
-              Sort.by("id.trancatAcctId", "id.trancatTypeCd", "id.trancatCd"));
       try {
         Path reportPath = resolveOutputPath(outputDir, REPORT_FILE);
-        try (BufferedWriter writer = Files.newBufferedWriter(reportPath, StandardCharsets.UTF_8)) {
-          for (TransactionCategoryBalance tcb : rows) {
+        try (BufferedWriter writer = Files.newBufferedWriter(reportPath, StandardCharsets.UTF_8);
+            Stream<TransactionCategoryBalance> rows =
+                transactionCategoryBalanceRepository.streamAllByOrderByIdAsc()) {
+          Iterator<TransactionCategoryBalance> it = rows.iterator();
+          while (it.hasNext()) {
+            TransactionCategoryBalance tcb = it.next();
             writer.write(toReportLine(tcb));
             writer.write("\n");
+            // Release each row after writing so heap stays bounded to the JDBC fetch window rather
+            // than the full TCATBALF table (QA F-2). The output is a file, not the database, so
+            // there is no pending mutation to discard.
+            entityManager.detach(tcb);
           }
         }
       } catch (IOException e) {

@@ -28,16 +28,16 @@ import com.aws.carddemo.repository.TransactionRepository;
 import com.aws.carddemo.repository.TransactionTypeRepository;
 import com.aws.carddemo.util.CobolStringUtils;
 import com.aws.carddemo.util.NumberFormatter;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 /**
@@ -53,12 +53,12 @@ import org.springframework.stereotype.Service;
  * FIELDS=(TRAN-CARD-NUM,A)} with {@code INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,
  * TRAN-PROC-DT,LE,PARM-END-DATE)}, producing a card-number-ordered, date-filtered file that {@code
  * CBTRN03C} then reads. Here that sorted/filtered working set is rebuilt from the {@link
- * TransactionRepository} via {@code findAll(Sort.by(Sort.Direction.ASC, "tranCardNum"))} plus an
- * in-memory date filter (the {@link Sort} is used directly rather than adding a bespoke repository
- * method); the three lookups become {@code findById} calls on their JPA repositories (AAP
- * &sect;0.6.2). The run dates replace the COBOL {@code DATEPARM} file read and, in production,
- * originate as Spring Batch {@code JobParameters} (AAP &sect;0.1.1: JCL {@code PARM} &rarr; {@code
- * JobParameter}).
+ * TransactionRepository} via a bounded-memory streaming cursor {@code
+ * streamAllByOrderByTranCardNumAsc()} with a lazy in-memory date filter, so records stream in
+ * ascending {@code tranCardNum} order without materialising the whole table; the three lookups
+ * become {@code findById} calls on their JPA repositories (AAP &sect;0.6.2). The run dates replace
+ * the COBOL {@code DATEPARM} file read and, in production, originate as Spring Batch {@code
+ * JobParameters} (AAP &sect;0.1.1: JCL {@code PARM} &rarr; {@code JobParameter}).
  *
  * <p>Per migration convention this service contains <strong>no Spring Batch types</strong>: {@link
  * #run(String, String, Consumer)} is a plain method that the batch tier ({@code
@@ -302,8 +302,26 @@ public class TransactionReportService {
   private boolean endOfFile;
 
   /**
+   * Transaction-scoped entity manager used to {@code detach} each streamed transaction immediately
+   * after the cursor fetches it (via a {@code peek} ahead of the date filter), so the persistence
+   * context does not accumulate the whole 200k-row table — the bounded-memory complement to the
+   * streaming cursor. Injected by the container; bound to the tasklet transaction that brackets
+   * {@link #run(String, String, Consumer)}.
+   */
+  @PersistenceContext private EntityManager entityManager;
+
+  /**
+   * Open streaming cursor over the transaction table (ascending {@code tranCardNum}), held so it
+   * can be closed in {@link #closeTranfile()} to release the underlying JDBC cursor. {@code null}
+   * when no scan is in progress.
+   */
+  private Stream<Transaction> transactionStream;
+
+  /**
    * Ascending-card-number cursor over the sorted, date-filtered working set; {@code null} when not
-   * open.
+   * open. Backed by the streaming cursor with a {@code peek}-detach stage and a lazy date-range
+   * {@code filter}, so it yields only in-range records (mirroring the JCL {@code SORT INCLUDE})
+   * while every fetched row is detached to bound memory.
    */
   private Iterator<Transaction> cursor;
 
@@ -466,26 +484,27 @@ public class TransactionReportService {
    * <p>The legacy report never reads the live {@code TRANSACT} KSDS directly; the PROC first runs
    * {@code SORT FIELDS=(TRAN-CARD-NUM,A)} with {@code INCLUDE COND=(TRAN-PROC-DT,GE,
    * PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE)}. This method reproduces both: (a) ascending
-   * {@code TRAN-CARD-NUM} order via {@code findAll(Sort.by(Sort.Direction.ASC, "tranCardNum"))}
-   * (stable order; the legacy {@code SORT} declares no {@code EQUALS}, AAP &sect;0.6.3, so tie
-   * order is the repository's stable order), and (b) the date-range filter on {@code
-   * TRAN-PROC-TS(1:10)} ({@code = TRAN-PROC-DT}). An unexpected {@link DataAccessException} maps to
-   * the abend path.
+   * {@code TRAN-CARD-NUM} order via the bounded-memory streaming cursor {@code
+   * streamAllByOrderByTranCardNumAsc()} (stable order; the legacy {@code SORT} declares no {@code
+   * EQUALS}, AAP &sect;0.6.3, so tie order is the database's stable order), and (b) the date-range
+   * filter on {@code TRAN-PROC-TS(1:10)} ({@code = TRAN-PROC-DT}) applied lazily as a stream {@code
+   * filter} so the cursor yields only in-range records, exactly as iterating the pre-filtered SORT
+   * output did. A {@code peek} stage detaches <em>every</em> fetched row (in-range or not) before
+   * the filter, so the persistence context never accumulates the whole table. An unexpected {@link
+   * DataAccessException} maps to the abend path.
    */
   private void openTranfile() {
     // <- CBTRN03C 0000-TRANFILE-OPEN (+ TRANREPT.prc SORT/INCLUDE)
     try {
-      List<Transaction> sorted =
-          transactionRepository.findAll(Sort.by(Sort.Direction.ASC, "tranCardNum"));
-      List<Transaction> working = new ArrayList<>(sorted.size());
-      for (Transaction tx : sorted) {
-        // INCLUDE COND on TRAN-PROC-DT (= TRAN-PROC-TS(1:10)) within [start, end] inclusive.
-        String procDate = tx.getTranProcTs().substring(0, 10);
-        if (procDate.compareTo(wsStartDate) >= 0 && procDate.compareTo(wsEndDate) <= 0) {
-          working.add(tx);
-        }
-      }
-      this.cursor = working.iterator();
+      // Bounded-memory streaming cursor (HINT_FETCH_SIZE / HINT_READ_ONLY) ascending by
+      // tranCardNum, replacing the findAll(Sort) full-table materialization (~513 MB at 200k). The
+      // peek detaches each fetched row so memory stays O(fetch window); the filter reproduces the
+      // JCL SORT INCLUDE date range (inDateRange returns false for an out-of-range or null record),
+      // so the cursor yields exactly the pre-filtered in-range working set. Consumed inside the
+      // tasklet transaction and closed in closeTranfile() to release the JDBC cursor.
+      this.transactionStream = transactionRepository.streamAllByOrderByTranCardNumAsc();
+      this.cursor =
+          transactionStream.peek(entityManager::detach).filter(this::inDateRange).iterator();
       this.endOfFile = false; // MOVE 'N' is the initial END-OF-FILE state.
     } catch (DataAccessException ex) {
       throw abend(TRANFILE_DDNAME, "OPEN", FILE_STATUS_ABEND, TRANFILE_OPEN_ERROR_MESSAGE, ex);
@@ -857,10 +876,16 @@ public class TransactionReportService {
 
   /**
    * Closes the transaction working set, reproducing {@code 9000-TRANFILE-CLOSE} (CBTRN03C
-   * L514-530). Releasing the in-memory cursor is the Java counterpart of the VSAM {@code CLOSE}.
+   * L514-530). Closes the streaming cursor (releasing the underlying JDBC cursor) and then clears
+   * the in-memory references — the Java counterpart of the VSAM {@code CLOSE}. The stream close is
+   * null-safe and idempotent.
    */
   private void closeTranfile() {
     // <- CBTRN03C 9000-TRANFILE-CLOSE
+    if (this.transactionStream != null) {
+      this.transactionStream.close();
+      this.transactionStream = null;
+    }
     this.cursor = null;
   }
 

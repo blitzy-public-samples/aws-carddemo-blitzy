@@ -19,11 +19,13 @@ package com.aws.carddemo.service.batch;
 import com.aws.carddemo.domain.Customer;
 import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.CustomerRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.util.Iterator;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 /**
@@ -37,8 +39,9 @@ import org.springframework.stereotype.Service;
  * primary-key order, walks every record to end-of-file, emits each record to the job log, then
  * closes the file. The legacy VSAM {@code CUSTFILE} KSDS (indexed, {@code ACCESS MODE IS
  * SEQUENTIAL}, {@code RECORD KEY IS FD-CUST-ID}) is replaced by {@link CustomerRepository}; the
- * sequential ascending read becomes {@code findAll(Sort.by("custId"))} so the iteration order
- * matches the legacy key order exactly (AAP &sect;0.6.2).
+ * sequential ascending read becomes a bounded-memory iteration over {@code
+ * streamAllByOrderByCustIdAsc()} so the iteration order matches the legacy key order exactly (AAP
+ * &sect;0.6.2) without materialising the whole table.
  *
  * <p><strong>COBOL paragraph &rarr; Java method traceability</strong> (AAP &sect;0.6.7; see also
  * {@code docs/traceability-matrix.md}):
@@ -119,6 +122,21 @@ public class CustomerExtractService {
    * KEY IS FD-CUST-ID}). Injected by constructor for immutability and testability.
    */
   private final CustomerRepository customerRepository;
+
+  /**
+   * Transaction-scoped entity manager used to {@code detach} each streamed record immediately after
+   * it is read, so the persistence context does not accumulate the whole table (the bounded-memory
+   * complement to the streaming cursor). Injected by the container; bound to the tasklet
+   * transaction that brackets {@link #run()}.
+   */
+  @PersistenceContext private EntityManager entityManager;
+
+  /**
+   * Open streaming cursor over the customer master (ascending {@code custId}), held so it can be
+   * closed in {@link #closeCustfile()} to release the underlying JDBC cursor. {@code null} when no
+   * scan is in progress.
+   */
+  private Stream<Customer> customerStream;
 
   /**
    * Forward cursor over the customer master in ascending {@code custId} order, materialized by
@@ -207,12 +225,12 @@ public class CustomerExtractService {
    * 0000-CUSTFILE-OPEN} (L118-134).
    *
    * <p>The COBOL {@code OPEN INPUT CUSTFILE-FILE} on an indexed file with {@code ACCESS MODE IS
-   * SEQUENTIAL} establishes a forward scan in {@code RECORD KEY} order. Here that becomes a {@code
-   * findAll(Sort.by("custId"))} whose {@link Iterator} is the scan position; per the migration
-   * convention the repository exposes no bespoke finder, so ordering is expressed with {@link Sort}
-   * alone. The end-of-file switch is (re)set to {@code 'N'} ({@code endOfFile = false}) and any
-   * previously retained record is cleared, so each {@link #run()} starts from a clean
-   * working-state.
+   * SEQUENTIAL} establishes a forward scan in {@code RECORD KEY} order. Here that becomes a
+   * bounded-memory streaming cursor via {@code streamAllByOrderByCustIdAsc()} (a forward-only JDBC
+   * cursor that fetches rows in small windows rather than materialising the whole table); its
+   * {@link Iterator} is the scan position. The end-of-file switch is (re)set to {@code 'N'} ({@code
+   * endOfFile = false}) and any previously retained record is cleared, so each {@link #run()}
+   * starts from a clean working-state.
    *
    * <p>On the COBOL {@code ELSE MOVE 12 TO APPL-RESULT} branch (any non-{@code '00'} open status)
    * the program performs {@code DISPLAY 'ERROR OPENING CUSTFILE'}, {@code Z-DISPLAY-IO-STATUS} and
@@ -221,8 +239,12 @@ public class CustomerExtractService {
    */
   private void openCustfile() {
     try {
-      // L120: OPEN INPUT CUSTFILE-FILE -> establish the ascending FD-CUST-ID scan.
-      this.cursor = customerRepository.findAll(Sort.by("custId")).iterator();
+      // L120: OPEN INPUT CUSTFILE-FILE -> establish the ascending FD-CUST-ID scan as a
+      // bounded-memory streaming cursor (HINT_FETCH_SIZE / HINT_READ_ONLY), replacing the
+      // findAll(Sort) full-table materialization. The stream is consumed inside the tasklet
+      // transaction and closed in closeCustfile() to release the JDBC cursor.
+      this.customerStream = customerRepository.streamAllByOrderByCustIdAsc();
+      this.cursor = customerStream.iterator();
       // L65 / L121-122: END-OF-FILE = 'N'; clean per-run working-storage.
       this.endOfFile = false;
       this.currentCustomer = null;
@@ -257,6 +279,10 @@ public class CustomerExtractService {
       if (cursor.hasNext()) {
         // L94-96: CUSTFILE-STATUS = '00' -> capture record and DISPLAY CUSTOMER-RECORD (FIRST).
         this.currentCustomer = cursor.next();
+        // Detach immediately so the streamed scan does not accumulate the whole table in the
+        // persistence context. Customer has no JPA associations, so the detached record stays fully
+        // readable for both per-record emissions (here and the main-loop DISPLAY).
+        entityManager.detach(this.currentCustomer);
         LOG.info(renderCustomerRecord(currentCustomer));
       } else {
         // L98-99, L107-108: CUSTFILE-STATUS = '10' -> APPL-EOF -> MOVE 'Y' TO END-OF-FILE.
@@ -275,14 +301,18 @@ public class CustomerExtractService {
    * Closes the customer master, reproducing {@code 9000-CUSTFILE-CLOSE} (L136-152).
    *
    * <p>The legacy {@code CLOSE CUSTFILE-FILE} releases the open VSAM handle and checks its status.
-   * In the JPA translation the result set is fully materialized by {@link #openCustfile()}, so
-   * there is no underlying closeable resource and the COBOL {@code ELSE ... Z-ABEND-PROGRAM}
-   * close-error branch is unreachable. Releasing the cursor reference (and the retained record) is
-   * the faithful equivalent of the file close and lets the materialized list become eligible for
-   * garbage collection.
+   * In the JPA translation this closes the streaming cursor opened by {@link #openCustfile()}
+   * (releasing the underlying JDBC cursor); the COBOL {@code ELSE ... Z-ABEND-PROGRAM} close-error
+   * branch is unreachable in the JPA model. Releasing the stream and cursor references (and the
+   * retained record) is the faithful equivalent of the file close. Closing the stream is null-safe
+   * and idempotent.
    */
   private void closeCustfile() {
-    // L138: CLOSE CUSTFILE-FILE -> release the scan position (no fallible I/O in the JPA model).
+    // L138: CLOSE CUSTFILE-FILE -> close the streaming JDBC cursor, then release the scan position.
+    if (this.customerStream != null) {
+      this.customerStream.close();
+      this.customerStream = null;
+    }
     this.cursor = null;
     this.currentCustomer = null;
   }

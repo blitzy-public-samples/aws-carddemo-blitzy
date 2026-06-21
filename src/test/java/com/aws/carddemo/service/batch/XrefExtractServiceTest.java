@@ -19,7 +19,6 @@ package com.aws.carddemo.service.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -30,19 +29,20 @@ import ch.qos.logback.core.read.ListAppender;
 import com.aws.carddemo.domain.CardXref;
 import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.CardXrefRepository;
+import jakarta.persistence.EntityManager;
 import java.util.List;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessResourceFailureException;
-import org.springframework.data.domain.Sort;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Pure JUnit&nbsp;5 + AssertJ + Mockito unit tests for {@link XrefExtractService}, the batch
@@ -96,6 +96,12 @@ class XrefExtractServiceTest {
 
   @Mock private CardXrefRepository cardXrefRepository;
 
+  /**
+   * The JPA persistence context, mocked so the service's per-row {@code detach(...)} (which bounds
+   * heap during the streaming read, QA F-2) is a no-op under unit test.
+   */
+  @Mock private EntityManager entityManager;
+
   private XrefExtractService service;
   private Logger serviceLogger;
   private ListAppender<ILoggingEvent> logWatcher;
@@ -104,6 +110,9 @@ class XrefExtractServiceTest {
   @BeforeEach
   void setUp() {
     service = new XrefExtractService(cardXrefRepository);
+    // The EntityManager is field-injected (@PersistenceContext) in production; set the mock here so
+    // the streaming read's per-row detach(...) is exercised as a no-op.
+    ReflectionTestUtils.setField(service, "entityManager", entityManager);
 
     // Capture everything the service logs, regardless of any ambient log configuration. DEBUG is
     // below INFO, so both the INFO record/banner lines and the ERROR abend lines reach the
@@ -127,23 +136,17 @@ class XrefExtractServiceTest {
 
   @Test
   void run_reads_xrefs_using_ascending_xref_card_num_sort() {
-    when(cardXrefRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(cardXref(CARD_ONE, 567890123L, 98765432109L)));
+    when(cardXrefRepository.streamAllByOrderByXrefCardNumAsc())
+        .thenReturn(Stream.of(cardXref(CARD_ONE, 567890123L, 98765432109L)));
 
     service.run();
 
-    // The repository is queried exactly once, with an ascending sort on the JPA property name
-    // "xrefCardNum" (the legacy VSAM RECORD KEY FD-XREF-CARD-NUM read sequentially).
-    ArgumentCaptor<Sort> sortCaptor = ArgumentCaptor.forClass(Sort.class);
-    verify(cardXrefRepository).findAll(sortCaptor.capture());
-
-    Sort usedSort = sortCaptor.getValue();
-    assertThat(usedSort).isEqualTo(Sort.by("xrefCardNum"));
-
-    Sort.Order order = usedSort.getOrderFor("xrefCardNum");
-    assertThat(order).isNotNull();
-    assertThat(order.getDirection()).isEqualTo(Sort.Direction.ASC);
-    assertThat(order.isAscending()).isTrue();
+    // The repository is read exactly once via the streaming, ascending-key reader
+    // streamAllByOrderByXrefCardNumAsc() (the legacy VSAM RECORD KEY FD-XREF-CARD-NUM read
+    // sequentially), which fetches in bounded windows rather than buffering the whole table (QA
+    // F-2). The ascending-key ordering is encoded in the repository method name and asserted
+    // against a real database in CardXrefRepositoryIntegrationTest.
+    verify(cardXrefRepository).streamAllByOrderByXrefCardNumAsc();
   }
 
   // --- Phase B: DOUBLE emission (the parity quirk) -------------------------------------------
@@ -151,7 +154,7 @@ class XrefExtractServiceTest {
   @Test
   void run_emits_each_xref_record_exactly_twice() {
     CardXref xref = cardXref(CARD_ONE, 567890123L, 98765432109L);
-    when(cardXrefRepository.findAll(any(Sort.class))).thenReturn(List.of(xref));
+    when(cardXrefRepository.streamAllByOrderByXrefCardNumAsc()).thenReturn(Stream.of(xref));
 
     service.run();
 
@@ -181,7 +184,8 @@ class XrefExtractServiceTest {
     CardXref second = cardXref(CARD_TWO, 111222333L, 44455566677L);
     // findAll(Sort) returns the rows already in ascending-key order, as the VSAM sequential read
     // does; the service iterates them in that order.
-    when(cardXrefRepository.findAll(any(Sort.class))).thenReturn(List.of(first, second));
+    when(cardXrefRepository.streamAllByOrderByXrefCardNumAsc())
+        .thenReturn(Stream.of(first, second));
 
     service.run();
 
@@ -213,7 +217,7 @@ class XrefExtractServiceTest {
     // PIC X(14) renders as 14 spaces, so the whole-record image is exactly 50 characters
     // (CVACT03Y RECLN 50).
     CardXref xref = cardXref(CARD_ONE, 1L, 42L);
-    when(cardXrefRepository.findAll(any(Sort.class))).thenReturn(List.of(xref));
+    when(cardXrefRepository.streamAllByOrderByXrefCardNumAsc()).thenReturn(Stream.of(xref));
 
     service.run();
 
@@ -229,7 +233,7 @@ class XrefExtractServiceTest {
 
   @Test
   void run_completes_without_exception_when_no_xrefs_exist() {
-    when(cardXrefRepository.findAll(any(Sort.class))).thenReturn(List.of());
+    when(cardXrefRepository.streamAllByOrderByXrefCardNumAsc()).thenReturn(Stream.of());
 
     assertThatCode(() -> service.run()).doesNotThrowAnyException();
 
@@ -246,7 +250,7 @@ class XrefExtractServiceTest {
   void run_throws_io_status_exception_for_xreffile_when_repository_fails() {
     DataAccessResourceFailureException cause =
         new DataAccessResourceFailureException("XREFFILE open boom");
-    when(cardXrefRepository.findAll(any(Sort.class))).thenThrow(cause);
+    when(cardXrefRepository.streamAllByOrderByXrefCardNumAsc()).thenThrow(cause);
 
     assertThatThrownBy(() -> service.run())
         .isInstanceOfSatisfying(

@@ -19,10 +19,12 @@ package com.aws.carddemo.repository;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.aws.carddemo.domain.UserSecurity;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.PageRequest;
 
 /**
  * {@code @DataJpaTest} slice integration test for {@link UserSecurityRepository}, the Spring Data
@@ -191,6 +193,111 @@ class UserSecurityRepositoryIntegrationTest extends AbstractRepositoryIntegratio
     // The identifier reflects the lookup key (Hibernate id hydration); its logical value matches.
     assertThat(reread.getSecUsrId().trim()).isEqualTo(SHORT_USR_ID);
     assertThat(reread.getSecUsrType().trim()).isEqualTo(USER_TYPE);
+  }
+
+  // ===============================================================================================
+  // Keyset browse parity (F-1 fix) + projection over-fetch (F-4 fix). The user list (COUSR00C /
+  // CU00) previously read the entire user_security table (findAll(Sort)) and sliced in memory, and
+  // it selected the whole entity including sec_usr_pwd (the BCrypt hash) for a screen that renders
+  // only id/first/last/type. The browse now uses bounded keyset pages that return the closed
+  // UserListProjection. These tests prove against a real PostgreSQL char(8) sec_usr_id that:
+  //   (1) the Pageable limit bounds the read to one page (F-1 OOM remedy);
+  //   (2) bpchar SEC-USR-ID ordering matches the ascending VSAM-key browse and Java compareTo;
+  //   (3) the empty start key positions at LOW-VALUES (STARTBR from the top);
+  //   (4) GREATER-THAN-EQUAL is inclusive (ENTER landing) and GREATER-THAN is exclusive (PF8 after
+  //       the boundary record), and LESS-THAN descending reproduces PF7 READPREV;
+  //   (5) existsBySecUsrIdGreaterThan reproduces the PF8 "is there a next page" guard probe; and
+  //   (6) the projection exposes ONLY the four displayed columns (F-4) -- the type has no
+  //       getSecUsrPwd accessor, so the credential hash is structurally unreachable for a list
+  //       view (the projected select-list omitting sec_usr_pwd is additionally confirmed at runtime
+  //       via Hibernate SQL).
+  // ===============================================================================================
+
+  @Test
+  @DisplayName("keyset forward from the empty start key browses from the top, bounded by the limit")
+  void keysetForwardFromTop_boundedByLimit() {
+    for (int i = 1; i <= 5; i++) {
+      repository.save(buildUser(String.format("USER%04d", i), USER_TYPE));
+    }
+    flushAndClear();
+
+    // STARTBR from LOW-VALUES (empty key) with a two-row page: exactly the first two users
+    // ascending are returned, NOT the whole table -- the bounded read that remedies the F-1 OOM.
+    List<UserListProjection> page =
+        repository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc("", PageRequest.of(0, 2));
+
+    assertThat(page).hasSize(2);
+    assertThat(page)
+        .extracting(p -> p.getSecUsrId().trim())
+        .containsExactly("USER0001", "USER0002");
+  }
+
+  @Test
+  @DisplayName("keyset forward GREATER-THAN-EQUAL includes the start key; GREATER-THAN excludes it")
+  void keysetForwardInclusiveVsExclusive() {
+    for (int i = 1; i <= 5; i++) {
+      repository.save(buildUser(String.format("USER%04d", i), USER_TYPE));
+    }
+    flushAndClear();
+    String key = "USER0003";
+
+    List<UserListProjection> gteq =
+        repository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(key, PageRequest.of(0, 10));
+    List<UserListProjection> gt =
+        repository.findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(key, PageRequest.of(0, 10));
+
+    assertThat(gteq)
+        .extracting(p -> p.getSecUsrId().trim())
+        .containsExactly("USER0003", "USER0004", "USER0005");
+    assertThat(gt).extracting(p -> p.getSecUsrId().trim()).containsExactly("USER0004", "USER0005");
+  }
+
+  @Test
+  @DisplayName("keyset backward (LESS-THAN) returns descending rows below the cursor, bounded")
+  void keysetBackwardDescending_boundedByLimit() {
+    for (int i = 1; i <= 5; i++) {
+      repository.save(buildUser(String.format("USER%04d", i), USER_TYPE));
+    }
+    flushAndClear();
+
+    // PF7 READPREV below USER0005 with a two-row look-back: the two closest-below rows, descending.
+    List<UserListProjection> back =
+        repository.findBySecUsrIdLessThanOrderBySecUsrIdDesc("USER0005", PageRequest.of(0, 2));
+
+    assertThat(back)
+        .extracting(p -> p.getSecUsrId().trim())
+        .containsExactly("USER0004", "USER0003");
+  }
+
+  @Test
+  @DisplayName("existsBySecUsrIdGreaterThan reproduces the PF8 next-page guard probe")
+  void existsBySecUsrIdGreaterThanPeek() {
+    repository.save(buildUser("USER0001", USER_TYPE));
+    repository.save(buildUser("USER0002", USER_TYPE));
+    flushAndClear();
+
+    assertThat(repository.existsBySecUsrIdGreaterThan("USER0001")).isTrue();
+    assertThat(repository.existsBySecUsrIdGreaterThan("USER0002")).isFalse();
+  }
+
+  @Test
+  @DisplayName("keyset projection returns only the four displayed columns (F-4 over-fetch fix)")
+  void keysetProjectionExposesOnlyDisplayedColumns() {
+    // Persist a distinct admin user so the projected first/last/type values are unambiguous.
+    repository.save(buildUser(PRESENT_USR_ID, ADMIN_TYPE));
+    flushAndClear();
+
+    List<UserListProjection> page =
+        repository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc("", PageRequest.of(0, 10));
+
+    assertThat(page).hasSize(1);
+    UserListProjection row = page.get(0);
+    assertThat(row.getSecUsrId().trim()).isEqualTo(PRESENT_USR_ID);
+    assertThat(row.getSecUsrFname().trim()).isEqualTo(FIRST_NAME);
+    assertThat(row.getSecUsrLname().trim()).isEqualTo(LAST_NAME);
+    assertThat(row.getSecUsrType().trim()).isEqualTo(ADMIN_TYPE);
+    // The closed projection has no getSecUsrPwd accessor; the BCrypt hash is structurally
+    // unreachable for the list view (compile-time guarantee reinforcing the F-4 select-list fix).
   }
 
   /**

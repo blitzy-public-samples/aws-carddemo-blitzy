@@ -19,11 +19,13 @@ package com.aws.carddemo.service.batch;
 import com.aws.carddemo.domain.Card;
 import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.CardRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.util.Iterator;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 /**
@@ -67,8 +69,9 @@ import org.springframework.stereotype.Service;
  *
  * <p><strong>Ordering parity.</strong> The legacy {@code ACCESS MODE IS SEQUENTIAL} read over an
  * {@code INDEXED} KSDS keyed on {@code FD-CARD-NUM} returns records in ascending card-number order.
- * {@link #openCardfile()} reproduces that exactly with {@code findAll(Sort.by("cardNum"))} — the
- * repository is used through its inherited Spring Data method only; no custom finder is added.
+ * {@link #openCardfile()} reproduces that exactly with {@code streamAllByOrderByCardNumAsc()} — a
+ * bounded-memory streaming cursor that visits cards in ascending card-number order without
+ * materialising the whole table.
  *
  * <p><strong>Record rendering parity.</strong> A COBOL {@code DISPLAY} of the group item {@code
  * CARD-RECORD} writes the raw fixed-width 150-byte image (the concatenation of every {@code
@@ -126,9 +129,6 @@ public class CardExtractService {
    */
   private static final String IO_ERROR_STATUS = "99";
 
-  /** {@link Card} property the sequential scan orders by (the {@code card_num} primary key). */
-  private static final String SORT_PROPERTY = "cardNum";
-
   /** Operation label for the {@code OPEN} abend path (COBOL {@code 0000-CARDFILE-OPEN}). */
   private static final String OP_OPEN = "OPEN";
 
@@ -171,6 +171,21 @@ public class CardExtractService {
 
   /** Repository over the {@code card} table; the JPA replacement for the VSAM {@code CARDFILE}. */
   private final CardRepository cardRepository;
+
+  /**
+   * Transaction-scoped entity manager used to {@code detach} each streamed record immediately after
+   * it is read, so the persistence context does not accumulate the whole table (the bounded-memory
+   * complement to the streaming cursor). Injected by the container; bound to the tasklet
+   * transaction that brackets {@link #run()}.
+   */
+  @PersistenceContext private EntityManager entityManager;
+
+  /**
+   * Open streaming cursor over the card master (ascending {@code cardNum}), held so it can be
+   * closed in {@link #closeCardfile()} to release the underlying JDBC cursor. {@code null} when no
+   * scan is in progress.
+   */
+  private Stream<Card> cardStream;
 
   /**
    * Sequential cursor over the card master in ascending {@code cardNum} order, established by
@@ -255,9 +270,9 @@ public class CardExtractService {
   // <- CBACT02C 0000-CARDFILE-OPEN (L118-L134)
   /**
    * Opens the card master for sequential ascending-key reading, the JPA analog of {@code OPEN INPUT
-   * CARDFILE-FILE}. Materializes the ordered result of {@code findAll(Sort.by("cardNum"))} and
-   * takes its iterator as the run cursor, and clears the end-of-file flag (COBOL {@code END-OF-FILE
-   * = 'N'} initial state).
+   * CARDFILE-FILE}. Opens a bounded-memory streaming cursor via {@code
+   * streamAllByOrderByCardNumAsc()} and takes its iterator as the run cursor, and clears the
+   * end-of-file flag (COBOL {@code END-OF-FILE = 'N'} initial state).
    *
    * <p>A successful open mirrors FILE STATUS {@code '00'}. Any {@link DataAccessException} is the
    * unexpected-status branch (L123-L132): it is translated into an {@link IoStatusException} for
@@ -266,7 +281,11 @@ public class CardExtractService {
    */
   private void openCardfile() {
     try {
-      this.cursor = cardRepository.findAll(Sort.by(SORT_PROPERTY)).iterator();
+      // Bounded-memory streaming cursor (HINT_FETCH_SIZE / HINT_READ_ONLY) ascending by cardNum,
+      // replacing the findAll(Sort) full-table materialization. The stream is consumed inside the
+      // tasklet transaction and closed in closeCardfile() to release the JDBC cursor.
+      this.cardStream = cardRepository.streamAllByOrderByCardNumAsc();
+      this.cursor = cardStream.iterator();
       this.endOfFile = false;
     } catch (DataAccessException ex) {
       throw buildAbend(OP_OPEN, ERR_OPEN, ex);
@@ -295,6 +314,10 @@ public class CardExtractService {
         // FILE STATUS '00': a record was read into the working area (no DISPLAY — L96 is
         // commented).
         this.currentCard = cursor.next();
+        // Detach immediately so the streamed scan does not accumulate the whole table in the
+        // persistence context. Card has no JPA associations, so the detached record stays fully
+        // readable for the main-loop DISPLAY.
+        entityManager.detach(this.currentCard);
       } else {
         // FILE STATUS '10': end of file — set the COBOL END-OF-FILE = 'Y' switch and stop the loop.
         this.endOfFile = true;
@@ -307,12 +330,18 @@ public class CardExtractService {
 
   // <- CBACT02C 9000-CARDFILE-CLOSE (L136-L152)
   /**
-   * Closes the card master, the JPA analog of {@code CLOSE CARDFILE-FILE}. The ordered result set
-   * was fully materialized by {@link #openCardfile()}, so "closing" is a pure in-memory release of
-   * the run cursor and current record; unlike a VSAM {@code CLOSE} it issues no I/O and therefore
-   * has no failing-status branch to translate.
+   * Closes the card master, the JPA analog of {@code CLOSE CARDFILE-FILE}. Closes the streaming
+   * cursor opened by {@link #openCardfile()} to release the underlying JDBC cursor, then drops the
+   * in-memory references; unlike a VSAM {@code CLOSE} it issues no failing-status branch to
+   * translate. Closing the stream is null-safe and idempotent.
    */
   private void closeCardfile() {
+    // Release the streaming JDBC cursor before dropping the in-memory references (the streamed
+    // analog of CLOSE CARDFILE-FILE). Closing is null-safe and idempotent.
+    if (this.cardStream != null) {
+      this.cardStream.close();
+      this.cardStream = null;
+    }
     this.cursor = null;
     this.currentCard = null;
   }

@@ -19,7 +19,6 @@ package com.aws.carddemo.service.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -37,6 +36,7 @@ import com.aws.carddemo.repository.DisclosureGroupRepository;
 import com.aws.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.aws.carddemo.repository.TransactionRepository;
 import com.aws.carddemo.util.CobolStringUtils;
+import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.net.URL;
@@ -50,6 +50,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
@@ -58,7 +59,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.domain.Sort;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Golden-file parity test for {@link InterestCalculationService} (the Java port of legacy COBOL
@@ -179,6 +180,14 @@ class InterestCalculationGoldenParityTest {
   @Mock private CardXrefRepository cardXrefRepository;
   @Mock private TransactionRepository transactionRepository;
 
+  /**
+   * Stand-in for the field-injected {@code @PersistenceContext EntityManager} the streaming tcatbal
+   * cursor detaches each read row through; under the manual constructor wiring the per-row detach
+   * is a no-op (QA F-2). The interest run's ACCOUNT REWRITE and TRANSACTION WRITE are never
+   * detached, so this mock cannot mask a lost write or perturb the golden output.
+   */
+  @Mock private EntityManager entityManager;
+
   /** System under test, constructed in {@link #setUp()} from the five mocked repositories. */
   private InterestCalculationService service;
 
@@ -192,6 +201,11 @@ class InterestCalculationGoldenParityTest {
             cardXrefRepository,
             transactionRepository);
     service.setClock(FIXED_CLOCK);
+
+    // The streaming tcatbal cursor detaches each read row through the field-injected EntityManager;
+    // inject the mock so the detach is exercised harmlessly under the manual constructor wiring (QA
+    // F-2).
+    ReflectionTestUtils.setField(service, "entityManager", entityManager);
   }
 
   @Test
@@ -199,9 +213,9 @@ class InterestCalculationGoldenParityTest {
     // ----- Curated interest-smoke inputs (golden/interest/README.md)
     // ------------------------------
     // Category balances in ascending composite-key order (account, type, category).
-    when(tranCatBalanceRepository.findAll(any(Sort.class)))
+    when(tranCatBalanceRepository.streamAllByOrderByIdAsc())
         .thenReturn(
-            List.of(
+            Stream.of(
                 tcb(11L, REC_TYPE, "0001", "1234.56"),
                 tcb(11L, REC_TYPE, "0002", "2000.00"),
                 tcb(22L, REC_TYPE, "0001", "999.99"),

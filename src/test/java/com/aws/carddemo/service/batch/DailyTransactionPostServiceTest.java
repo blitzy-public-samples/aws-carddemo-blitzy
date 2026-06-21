@@ -35,9 +35,11 @@ import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.AccountRepository;
 import com.aws.carddemo.repository.CardXrefRepository;
 import com.aws.carddemo.repository.DailyTransactionRepository;
+import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -47,7 +49,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessResourceFailureException;
-import org.springframework.data.domain.Sort;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Behavioral / parity unit tests for {@link DailyTransactionPostService}, the Java translation of
@@ -101,6 +103,13 @@ class DailyTransactionPostServiceTest {
   @Mock private CardXrefRepository cardXrefRepository;
   @Mock private AccountRepository accountRepository;
 
+  /**
+   * Stand-in for the field-injected {@code @PersistenceContext EntityManager} the streaming reader
+   * uses to detach each row; under the manual constructor wiring the per-row detach is a no-op (QA
+   * F-2 batch streaming).
+   */
+  @Mock private EntityManager entityManager;
+
   /** System under test, constructed in {@link #setUp()} from the three mocked repositories. */
   private DailyTransactionPostService service;
 
@@ -121,6 +130,10 @@ class DailyTransactionPostServiceTest {
     service =
         new DailyTransactionPostService(
             dailyTransactionRepository, cardXrefRepository, accountRepository);
+
+    // The streaming reader detaches each row through the field-injected EntityManager; inject the
+    // mock so the detach is exercised harmlessly under the manual constructor wiring (QA F-2).
+    ReflectionTestUtils.setField(service, "entityManager", entityManager);
 
     // Attach a ListAppender so the byte-faithful COBOL DISPLAY lines can be asserted. DEBUG keeps
     // the INFO/ERROR lines the service emits while remaining quiet about lower-level framework
@@ -148,8 +161,8 @@ class DailyTransactionPostServiceTest {
   void run_with_valid_card_and_existing_account_logs_success_and_reads_account() {
     String cardNum = "4111111111111111";
     Long acctId = 123L;
-    when(dailyTransactionRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(dailyTransaction("TXN0000000000001", cardNum)));
+    when(dailyTransactionRepository.streamAllByOrderByDalytranIdAsc())
+        .thenReturn(Stream.of(dailyTransaction("TXN0000000000001", cardNum)));
     when(cardXrefRepository.findById(cardNum))
         .thenReturn(Optional.of(cardXref(cardNum, acctId, 100_000_001L)));
     when(accountRepository.findById(acctId)).thenReturn(Optional.of(account(acctId)));
@@ -181,8 +194,8 @@ class DailyTransactionPostServiceTest {
   void run_with_valid_card_but_missing_account_logs_not_found_and_still_reads_account() {
     String cardNum = "4222222222222222";
     Long acctId = 999L;
-    when(dailyTransactionRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(dailyTransaction("TXN0000000000002", cardNum)));
+    when(dailyTransactionRepository.streamAllByOrderByDalytranIdAsc())
+        .thenReturn(Stream.of(dailyTransaction("TXN0000000000002", cardNum)));
     when(cardXrefRepository.findById(cardNum))
         .thenReturn(Optional.of(cardXref(cardNum, acctId, 100_000_002L)));
     when(accountRepository.findById(acctId)).thenReturn(Optional.empty());
@@ -208,8 +221,8 @@ class DailyTransactionPostServiceTest {
   void run_with_unknown_card_logs_skip_and_never_reads_account() {
     String cardNum = "4000000000000000";
     String tranId = "TXN0000000000003";
-    when(dailyTransactionRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(dailyTransaction(tranId, cardNum)));
+    when(dailyTransactionRepository.streamAllByOrderByDalytranIdAsc())
+        .thenReturn(Stream.of(dailyTransaction(tranId, cardNum)));
     when(cardXrefRepository.findById(cardNum)).thenReturn(Optional.empty());
 
     service.run();
@@ -239,20 +252,16 @@ class DailyTransactionPostServiceTest {
 
   @Test
   void run_reads_daily_transactions_in_ascending_dalytran_id_order() {
-    // An empty file is sufficient to capture the Sort used to open the cursor; the service still
-    // performs exactly one (harmless) blank-record verification pass, which reads nothing further.
-    when(dailyTransactionRepository.findAll(any(Sort.class))).thenReturn(List.of());
+    // An empty file is sufficient to confirm the cursor is opened via the ascending-key streaming
+    // query; the service still performs exactly one (harmless) blank-record verification pass,
+    // which reads nothing further. The ascending dalytran-id ordering is now encoded in the derived
+    // query method name streamAllByOrderByDalytranIdAsc() and asserted end-to-end against real
+    // PostgreSQL in DailyTransactionRepositoryIntegrationTest (QA F-2 bounded-memory streaming).
+    when(dailyTransactionRepository.streamAllByOrderByDalytranIdAsc()).thenReturn(Stream.empty());
 
     service.run();
 
-    ArgumentCaptor<Sort> sortCaptor = ArgumentCaptor.forClass(Sort.class);
-    verify(dailyTransactionRepository).findAll(sortCaptor.capture());
-    Sort capturedSort = sortCaptor.getValue();
-    assertThat(capturedSort).isEqualTo(Sort.by("dalytranId"));
-    Sort.Order order = capturedSort.getOrderFor("dalytranId");
-    assertThat(order).isNotNull();
-    assertThat(order.getProperty()).isEqualTo("dalytranId");
-    assertThat(order.getDirection()).isEqualTo(Sort.Direction.ASC);
+    verify(dailyTransactionRepository).streamAllByOrderByDalytranIdAsc();
     assertNoWrites();
   }
 
@@ -273,9 +282,9 @@ class DailyTransactionPostServiceTest {
     String cardC = "4333333333333333";
     String tranC = "TXN0000000000003";
 
-    when(dailyTransactionRepository.findAll(any(Sort.class)))
+    when(dailyTransactionRepository.streamAllByOrderByDalytranIdAsc())
         .thenReturn(
-            List.of(
+            Stream.of(
                 dailyTransaction("TXN0000000000001", cardA),
                 dailyTransaction("TXN0000000000002", cardB),
                 dailyTransaction(tranC, cardC)));
@@ -327,8 +336,8 @@ class DailyTransactionPostServiceTest {
     // performs no posting and sets no RETURN-CODE — run() is void — so no store is ever mutated.
     String cardNum = "4111111111111111";
     Long acctId = 123L;
-    when(dailyTransactionRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(dailyTransaction("TXN0000000000001", cardNum)));
+    when(dailyTransactionRepository.streamAllByOrderByDalytranIdAsc())
+        .thenReturn(Stream.of(dailyTransaction("TXN0000000000001", cardNum)));
     when(cardXrefRepository.findById(cardNum))
         .thenReturn(Optional.of(cardXref(cardNum, acctId, 100_000_001L)));
     when(accountRepository.findById(acctId)).thenReturn(Optional.of(account(acctId)));
@@ -354,12 +363,12 @@ class DailyTransactionPostServiceTest {
 
   @Test
   void run_throws_io_status_exception_for_dalytran_when_cursor_fails() {
-    // The sequential cursor is established by findAll(Sort) inside 0000-DALYTRAN-OPEN; a
-    // data-access
+    // The sequential cursor is established by streamAllByOrderByDalytranIdAsc() inside
+    // 0000-DALYTRAN-OPEN; a data-access
     // failure there is the unrecoverable I/O condition that CBTRN01C handles via
     // Z-DISPLAY-IO-STATUS
     // + Z-ABEND-PROGRAM, translated here into an IoStatusException for the DALYTRAN file.
-    when(dailyTransactionRepository.findAll(any(Sort.class)))
+    when(dailyTransactionRepository.streamAllByOrderByDalytranIdAsc())
         .thenThrow(new DataAccessResourceFailureException("daily-transaction cursor failure"));
 
     assertThatThrownBy(() -> service.run())

@@ -64,6 +64,23 @@ spring:
       maximum-pool-size: 10
       minimum-idle: 2
       connection-timeout: 30000
+      # F-3 (QA INFO) — connection-pool operational safety + observability. Every key below is
+      # env-overridable at deploy time via Spring relaxed binding (SPRING_DATASOURCE_HIKARI_*),
+      # consistent with the SPRING_DATASOURCE_* overrides on the datasource above.
+      # leak-detection-threshold: log a stack trace whenever a connection is held longer than this
+      # many ms (0 = disabled, the Hikari default). 30000 ms surfaces a leaked / never-closed
+      # connection without false alarms on normal queries (QA suggested 30-60 s).
+      leak-detection-threshold: 30000
+      # max-lifetime: proactively retire and replace a pooled connection after this many ms so it
+      # never outlives a database/infrastructure-imposed limit (1800000 ms = 30 min; the Hikari
+      # default, made explicit).
+      max-lifetime: 1800000
+      # idle-timeout: retire a connection that has sat idle (beyond minimum-idle) for this many ms
+      # (600000 ms = 10 min; the Hikari default, made explicit).
+      idle-timeout: 600000
+      # validation-timeout: maximum time to wait for a connection-aliveness check (5000 ms = 5 s;
+      # the Hikari default, made explicit).
+      validation-timeout: 5000
 
   # ---------------------------------------------------------------------------
   # JPA / Hibernate - Flyway is AUTHORITATIVE for schema (AAP §0.6.1, §0.6.2)

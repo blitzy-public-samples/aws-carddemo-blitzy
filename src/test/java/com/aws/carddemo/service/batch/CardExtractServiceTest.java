@@ -19,7 +19,6 @@ package com.aws.carddemo.service.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -30,17 +29,18 @@ import ch.qos.logback.core.read.ListAppender;
 import com.aws.carddemo.domain.Card;
 import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.CardRepository;
+import jakarta.persistence.EntityManager;
 import java.util.List;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessResourceFailureException;
-import org.springframework.data.domain.Sort;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Pure JUnit&nbsp;5 + Mockito + AssertJ unit tests for {@link CardExtractService}, the batch "read
@@ -85,6 +85,12 @@ class CardExtractServiceTest {
 
   @Mock private CardRepository cardRepository;
 
+  /**
+   * The JPA persistence context, mocked so the service's per-row {@code detach(...)} (which bounds
+   * heap during the streaming read, QA F-2) is a no-op under unit test.
+   */
+  @Mock private EntityManager entityManager;
+
   private CardExtractService service;
   private Logger serviceLogger;
   private ListAppender<ILoggingEvent> logWatcher;
@@ -93,6 +99,9 @@ class CardExtractServiceTest {
   @BeforeEach
   void setUp() {
     service = new CardExtractService(cardRepository);
+    // The EntityManager is field-injected (@PersistenceContext) in production; set the mock here so
+    // the streaming read's per-row detach(...) is exercised as a no-op.
+    ReflectionTestUtils.setField(service, "entityManager", entityManager);
 
     // Capture the service's SLF4J output (the COBOL DISPLAY equivalents). DEBUG sits below INFO and
     // ERROR, so both the per-record INFO emissions and the abend ERROR lines reach the appender.
@@ -117,21 +126,16 @@ class CardExtractServiceTest {
   void run_reads_cards_using_ascending_card_num_sort() {
     Card only =
         card("4111111111111111", 12_345_678_901L, "123", "JOHN Q PUBLIC", "2025-12-31", "Y");
-    when(cardRepository.findAll(any(Sort.class))).thenReturn(List.of(only));
+    when(cardRepository.streamAllByOrderByCardNumAsc()).thenReturn(Stream.of(only));
 
     service.run();
 
-    // The sequential VSAM read over the CARDFILE KSDS keyed on FD-CARD-NUM is reproduced by an
-    // ascending sort on the entity property "cardNum"; capture and assert the exact Sort used.
-    ArgumentCaptor<Sort> sortCaptor = ArgumentCaptor.forClass(Sort.class);
-    verify(cardRepository).findAll(sortCaptor.capture());
-    Sort actualSort = sortCaptor.getValue();
-
-    assertThat(actualSort).isEqualTo(Sort.by("cardNum"));
-    Sort.Order order = actualSort.getOrderFor("cardNum");
-    assertThat(order).isNotNull();
-    assertThat(order.getProperty()).isEqualTo("cardNum");
-    assertThat(order.getDirection()).isEqualTo(Sort.Direction.ASC);
+    // The sequential VSAM read over the CARDFILE KSDS keyed on FD-CARD-NUM is reproduced by the
+    // streaming, ascending-key reader streamAllByOrderByCardNumAsc(), which fetches in bounded
+    // windows rather than buffering the whole table (QA F-2). The ascending-key ordering is encoded
+    // in the repository method name and asserted against a real database in
+    // CardRepositoryIntegrationTest.
+    verify(cardRepository).streamAllByOrderByCardNumAsc();
   }
 
   // ===== Phase B: single emission per record (the parity quirk) =================================
@@ -140,7 +144,7 @@ class CardExtractServiceTest {
   void run_emits_each_card_exactly_once() {
     Card only =
         card("4111111111111111", 12_345_678_901L, "123", "JOHN Q PUBLIC", "2025-12-31", "Y");
-    when(cardRepository.findAll(any(Sort.class))).thenReturn(List.of(only));
+    when(cardRepository.streamAllByOrderByCardNumAsc()).thenReturn(Stream.of(only));
 
     service.run();
 
@@ -161,7 +165,7 @@ class CardExtractServiceTest {
     Card first = card("1000000000000001", 1L, "001", "ALICE", "2030-01-01", "Y");
     Card second = card("2000000000000002", 2L, "002", "BOB", "2031-02-02", "Y");
     Card third = card("3000000000000003", 3L, "003", "CAROL", "2032-03-03", "N");
-    when(cardRepository.findAll(any(Sort.class))).thenReturn(List.of(first, second, third));
+    when(cardRepository.streamAllByOrderByCardNumAsc()).thenReturn(Stream.of(first, second, third));
 
     service.run();
 
@@ -184,7 +188,7 @@ class CardExtractServiceTest {
 
   @Test
   void run_completes_without_exception_when_no_cards_exist() {
-    when(cardRepository.findAll(any(Sort.class))).thenReturn(List.of());
+    when(cardRepository.streamAllByOrderByCardNumAsc()).thenReturn(Stream.of());
 
     assertThatCode(() -> service.run()).doesNotThrowAnyException();
 
@@ -199,7 +203,7 @@ class CardExtractServiceTest {
   void run_throws_io_status_exception_for_cardfile_when_repository_fails() {
     DataAccessResourceFailureException cause =
         new DataAccessResourceFailureException("CARDFILE open boom");
-    when(cardRepository.findAll(any(Sort.class))).thenThrow(cause);
+    when(cardRepository.streamAllByOrderByCardNumAsc()).thenThrow(cause);
 
     // The unexpected FILE STATUS path (non-'00'/non-'10') maps to the 9999-ABEND-PROGRAM
     // equivalent: an IoStatusException for the CARDFILE OPEN carrying the synthetic "99" status.

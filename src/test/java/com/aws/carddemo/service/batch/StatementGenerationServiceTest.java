@@ -233,8 +233,8 @@ class StatementGenerationServiceTest {
    *       (cardNum, tranId)} sort rather than the fixture order.
    *   <li>{@code XREFFILE}: same sequential lifecycle over {@code xrefs}, but the cursor is seeded
    *       in ascending {@code xrefCardNum} order, faithfully mirroring the production {@code
-   *       FileIoService} (which reads the cross-reference via {@code
-   *       findAll(Sort.by("xrefCardNum"))}).
+   *       FileIoService} (which reads the cross-reference via the bounded-memory streaming finder
+   *       {@code streamAllByOrderByXrefCardNumAsc()}).
    *   <li>{@code CUSTFILE}/{@code ACCTFILE}: {@code OPEN}/{@code CLOSE} return {@code '00'}; {@code
    *       READ_KEY} parses the zoned-numeric key exactly as {@code CBSTM03B} did ({@code
    *       LK-M03B-KEY (1:LK-M03B-KEY-LN)}) and looks it up &mdash; a hit returns {@code '00'} with

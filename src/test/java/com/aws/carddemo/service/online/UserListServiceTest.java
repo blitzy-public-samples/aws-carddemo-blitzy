@@ -18,7 +18,11 @@ package com.aws.carddemo.service.online;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -28,6 +32,7 @@ import com.aws.carddemo.dto.CardWorkArea;
 import com.aws.carddemo.dto.screen.UserListScreen;
 import com.aws.carddemo.dto.screen.UserListScreen.UserListRow;
 import com.aws.carddemo.exception.AuthorizationException;
+import com.aws.carddemo.repository.UserListProjection;
 import com.aws.carddemo.repository.UserSecurityRepository;
 import com.aws.carddemo.util.Messages;
 import java.util.ArrayList;
@@ -40,7 +45,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessResourceFailureException;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Pageable;
 
 /**
  * Pure JUnit&nbsp;5 + Mockito + AssertJ unit tests for {@link UserListService}, the online <em>List
@@ -89,14 +94,6 @@ class UserListServiceTest {
 
   @InjectMocks private UserListService service;
 
-  /**
-   * The ascending-by-user-id sort the service issues against the repository, mirroring its private
-   * {@code SORT_BY_USR_ID} constant. {@link Sort} implements value equality, so stubbing and
-   * verifying with this instance matches the exact argument the service passes (and asserts the
-   * ascending VSAM-key browse order).
-   */
-  private static final Sort SORT_BY_USR_ID = Sort.by(Sort.Direction.ASC, "secUsrId");
-
   // ===============================================================================================
   // Fixtures
   // ===============================================================================================
@@ -130,6 +127,126 @@ class UserListServiceTest {
       list.add(user(i));
     }
     return list;
+  }
+
+  /**
+   * Stubs the keyset browse source over an in-memory ascending snapshot of {@code count} users.
+   * Models the four repository methods {@link UserListService} now uses &mdash; the forward GTEQ
+   * page, the forward strictly-greater page (the PF8 {@code READNEXT} step), the backward
+   * strictly-below descending page (PF7 {@code READPREV}), and the bounded next-page existence
+   * probe &mdash; each bounded to the {@link Pageable} row limit and returning the {@link
+   * UserListProjection} (the four displayed columns only; the BCrypt password hash is NEVER
+   * selected, satisfying finding F-4 and credential hygiene, AAP &sect;0.6.6).
+   */
+  private void givenUsers(int count) {
+    stubKeyset(users(count));
+  }
+
+  /**
+   * Installs lenient keyset simulators for the four browse methods over {@code sorted}. Stubs are
+   * {@link org.mockito.Mockito#lenient() lenient} because a given test exercises only one browse
+   * direction (or the existence probe), so the unused stubs do not trip strict stubbing.
+   */
+  private void stubKeyset(List<UserSecurity> sorted) {
+    lenient()
+        .when(
+            userSecurityRepository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                anyString(), any(Pageable.class)))
+        .thenAnswer(inv -> forwardSlice(sorted, inv.getArgument(0), true, inv.getArgument(1)));
+    lenient()
+        .when(
+            userSecurityRepository.findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(
+                anyString(), any(Pageable.class)))
+        .thenAnswer(inv -> forwardSlice(sorted, inv.getArgument(0), false, inv.getArgument(1)));
+    lenient()
+        .when(
+            userSecurityRepository.findBySecUsrIdLessThanOrderBySecUsrIdDesc(
+                anyString(), any(Pageable.class)))
+        .thenAnswer(inv -> backwardSlice(sorted, inv.getArgument(0), inv.getArgument(1)));
+    lenient()
+        .when(userSecurityRepository.existsBySecUsrIdGreaterThan(anyString()))
+        .thenAnswer(inv -> anyUserAfter(sorted, inv.getArgument(0)));
+  }
+
+  /**
+   * Reproduces the forward keyset query (GTEQ when {@code inclusive}, else strictly-greater): the
+   * ascending slice of users at/after the key, bounded to the page size, as projections.
+   */
+  private static List<UserListProjection> forwardSlice(
+      List<UserSecurity> sorted, String key, boolean inclusive, Pageable pageable) {
+    List<UserListProjection> out = new ArrayList<>();
+    int limit = pageable.getPageSize();
+    for (UserSecurity u : sorted) {
+      int cmp = u.getSecUsrId().compareTo(key);
+      if (inclusive ? cmp >= 0 : cmp > 0) {
+        out.add(projection(u));
+        if (out.size() >= limit) {
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Reproduces {@code findBySecUsrIdLessThanOrderBySecUsrIdDesc}: the descending (closest-below
+   * first) slice of users strictly below the key, bounded to the page size, as projections.
+   */
+  private static List<UserListProjection> backwardSlice(
+      List<UserSecurity> sorted, String key, Pageable pageable) {
+    List<UserListProjection> out = new ArrayList<>();
+    int limit = pageable.getPageSize();
+    for (int i = sorted.size() - 1; i >= 0; i--) {
+      UserSecurity u = sorted.get(i);
+      if (u.getSecUsrId().compareTo(key) < 0) {
+        out.add(projection(u));
+        if (out.size() >= limit) {
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Reproduces {@code existsBySecUsrIdGreaterThan}: whether any user sorts strictly after the key.
+   */
+  private static boolean anyUserAfter(List<UserSecurity> sorted, String key) {
+    for (UserSecurity u : sorted) {
+      if (u.getSecUsrId().compareTo(key) > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Wraps a {@link UserSecurity} fixture as the closed {@link UserListProjection} the browse
+   * queries return &mdash; the four displayed columns only. The password hash is deliberately
+   * unreachable through this view, mirroring the production projection that finding F-4 mandates.
+   */
+  private static UserListProjection projection(UserSecurity u) {
+    return new UserListProjection() {
+      @Override
+      public String getSecUsrId() {
+        return u.getSecUsrId();
+      }
+
+      @Override
+      public String getSecUsrFname() {
+        return u.getSecUsrFname();
+      }
+
+      @Override
+      public String getSecUsrLname() {
+        return u.getSecUsrLname();
+      }
+
+      @Override
+      public String getSecUsrType() {
+        return u.getSecUsrType();
+      }
+    };
   }
 
   /** A fresh, empty list screen (the ten-row grid has not yet been painted). */
@@ -249,7 +366,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("first entry marks re-entry and paints page one from the top of the file")
   void firstEntry_marksReenterAndPaintsPageOne() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(25));
+    givenUsers(25);
     CardDemoCommarea commarea = adminFirstEntry();
     UserListScreen s = screen();
 
@@ -267,7 +384,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("admin first page fills the full ten-row grid with id/name/type (never password)")
   void adminFirstPage_full10Rows_populatesGrid() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(25));
+    givenUsers(25);
     UserListScreen s = screen();
 
     String next = service.processUserList(s, adminCommarea(), CardWorkArea.Aid.ENTER);
@@ -289,9 +406,12 @@ class UserListServiceTest {
     assertThat(s.getPageNum()).isEqualTo("00000001");
     assertThat(s.getErrMsg()).isEmpty();
 
-    // Control-flow parity: exactly one ascending VSAM-browse-equivalent query, and nothing else.
+    // Control-flow parity: exactly one bounded keyset browse from the top of the file (GTEQ ""),
+    // and nothing else.
     InOrder inOrder = inOrder(userSecurityRepository);
-    inOrder.verify(userSecurityRepository).findAll(SORT_BY_USR_ID);
+    inOrder
+        .verify(userSecurityRepository)
+        .findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(eq(""), any(Pageable.class));
     inOrder.verifyNoMoreInteractions();
   }
 
@@ -302,7 +422,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("ENTER with a blank filter browses from the top and clears the filter echo")
   void enter_blankFilter_browsesFromTop() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(25));
+    givenUsers(25);
     UserListScreen s = screen();
 
     String next = service.processUserList(s, adminCommarea(), CardWorkArea.Aid.ENTER);
@@ -316,7 +436,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("ENTER with a user-id filter positions the browse GTEQ at that id")
   void enter_nonBlankFilter_positionsGteq() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(25));
+    givenUsers(25);
     UserListScreen s = screen();
     s.setUsrIdIn(userId(15));
 
@@ -330,7 +450,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("ENTER with a short filter is space-padded to the key width before GTEQ positioning")
   void enter_shortFilter_isSpacePaddedForGteq() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(25));
+    givenUsers(25);
     UserListScreen s = screen();
     s.setUsrIdIn("USER000"); // 7 chars -> padded to "USER000 " (fixed-width X(8) key semantics)
 
@@ -344,7 +464,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("ENTER with a filter beyond the last id shows the 'at the top' (NOTFND) message")
   void enter_filterBeyondEnd_showsAtTop() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(25));
+    givenUsers(25);
     UserListScreen s = screen();
     s.setUsrIdIn("ZZZZZZZZ");
 
@@ -359,7 +479,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("ENTER against an empty file shows the 'at the top' (NOTFND) message")
   void enter_emptyFile_showsAtTop() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(0));
+    givenUsers(0);
     UserListScreen s = screen();
 
     String next = service.processUserList(s, adminCommarea(), CardWorkArea.Aid.ENTER);
@@ -408,7 +528,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("an unrecognized selection flag shows the byte-exact message and renders the list")
   void invalidSelectionCode_redisplaysWithMessage() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(25));
+    givenUsers(25);
     UserListScreen s = screenWithSelection(0, "X", userId(3));
 
     String next = service.processUserList(s, adminCommarea(), CardWorkArea.Aid.ENTER);
@@ -421,7 +541,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("a selection flag paired with a blank row id is ignored and falls through to browse")
   void selectionWithBlankId_isIgnored() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(25));
+    givenUsers(25);
     UserListScreen s = screenWithSelection(0, "U", "        ");
 
     String next = service.processUserList(s, adminCommarea(), CardWorkArea.Aid.ENTER);
@@ -437,7 +557,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("PF8 with a further page advances to the next page and refreshes the rows")
   void forwardPaging_pf8_advances() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(25));
+    givenUsers(25);
     UserListScreen s = screenShowing(1, UserListService.PAGE_SIZE, 1);
 
     String next = service.processUserList(s, adminCommarea(), CardWorkArea.Aid.PFK08);
@@ -452,7 +572,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("PF8 onto the final partial page shows the 'reached the bottom' message")
   void forwardPaging_pf8_ontoLastPartialPage_showsReachedBottom() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(25));
+    givenUsers(25);
     UserListScreen s = screenShowing(11, UserListService.PAGE_SIZE, 2);
 
     String next = service.processUserList(s, adminCommarea(), CardWorkArea.Aid.PFK08);
@@ -468,7 +588,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("PF8 with no further page shows the 'already at the bottom' message")
   void forwardPaging_pf8_atBottom_showsAlreadyAtBottom() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(10));
+    givenUsers(10);
     UserListScreen s = screenShowing(1, UserListService.PAGE_SIZE, 1);
 
     String next = service.processUserList(s, adminCommarea(), CardWorkArea.Aid.PFK08);
@@ -480,7 +600,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("PF8 on an empty list shows the 'already at the bottom' message")
   void forwardPaging_pf8_noPopulatedRow_showsAlreadyAtBottom() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(5));
+    givenUsers(5);
     UserListScreen s = screen();
 
     String next = service.processUserList(s, adminCommarea(), CardWorkArea.Aid.PFK08);
@@ -508,7 +628,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("PF7 from page two pages back to page one and shows the 'reached the top' message")
   void backwardPaging_pf7_fromPage2_returnsToPageOne() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(25));
+    givenUsers(25);
     UserListScreen s = screenShowing(11, UserListService.PAGE_SIZE, 2);
 
     String next = service.processUserList(s, adminCommarea(), CardWorkArea.Aid.PFK07);
@@ -523,7 +643,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("PF7 from page three steps back to page two without the top-of-file message")
   void backwardPaging_pf7_fromPage3_stepsBackToPageTwo() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID)).thenReturn(users(25));
+    givenUsers(25);
     UserListScreen s = screenShowing(21, 5, 3);
 
     String next = service.processUserList(s, adminCommarea(), CardWorkArea.Aid.PFK07);
@@ -569,7 +689,8 @@ class UserListServiceTest {
   @Test
   @DisplayName("a datastore failure shows 'Unable to lookup User...' and redisplays (no exception)")
   void repositoryThrows_setsUnableToLookupMessage() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID))
+    when(userSecurityRepository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+            anyString(), any(Pageable.class)))
         .thenThrow(new DataAccessResourceFailureException("simulated datastore failure"));
     UserListScreen s = screen();
 
@@ -583,7 +704,7 @@ class UserListServiceTest {
   @Test
   @DisplayName("a datastore failure while paging forward (PF8) shows 'Unable to lookup User...'")
   void forwardPaging_pf8_datastoreFailure_showsUnableToLookup() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID))
+    when(userSecurityRepository.existsBySecUsrIdGreaterThan(anyString()))
         .thenThrow(new DataAccessResourceFailureException("simulated datastore failure"));
     UserListScreen s = screenShowing(1, UserListService.PAGE_SIZE, 1);
 
@@ -596,7 +717,8 @@ class UserListServiceTest {
   @Test
   @DisplayName("a datastore failure while paging backward (PF7) shows 'Unable to lookup User...'")
   void backwardPaging_pf7_datastoreFailure_showsUnableToLookup() {
-    when(userSecurityRepository.findAll(SORT_BY_USR_ID))
+    when(userSecurityRepository.findBySecUsrIdLessThanOrderBySecUsrIdDesc(
+            anyString(), any(Pageable.class)))
         .thenThrow(new DataAccessResourceFailureException("simulated datastore failure"));
     UserListScreen s = screenShowing(11, UserListService.PAGE_SIZE, 2);
 

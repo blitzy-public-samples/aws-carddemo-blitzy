@@ -37,12 +37,14 @@ import com.aws.carddemo.repository.CardXrefRepository;
 import com.aws.carddemo.repository.DisclosureGroupRepository;
 import com.aws.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.aws.carddemo.repository.TransactionRepository;
+import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayNameGeneration;
 import org.junit.jupiter.api.DisplayNameGenerator;
@@ -51,7 +53,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.domain.Sort;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Pure JUnit&nbsp;5 + AssertJ + Mockito unit tests for {@link InterestCalculationService}, the
@@ -153,6 +155,14 @@ class InterestCalculationServiceTest {
   @Mock private CardXrefRepository cardXrefRepository;
   @Mock private TransactionRepository transactionRepository;
 
+  /**
+   * Stand-in for the field-injected {@code @PersistenceContext EntityManager} the streaming tcatbal
+   * cursor uses to detach each read row; under the manual constructor wiring the per-row detach is
+   * a no-op (QA F-2 batch streaming). The interest run's ACCOUNT REWRITE and TRANSACTION WRITE are
+   * never detached, so this mock cannot mask a lost write.
+   */
+  @Mock private EntityManager entityManager;
+
   /** System under test, constructed in {@link #setUp()} from the five mocked repositories. */
   private InterestCalculationService service;
 
@@ -168,6 +178,11 @@ class InterestCalculationServiceTest {
             cardXrefRepository,
             transactionRepository);
     service.setClock(FIXED_CLOCK);
+
+    // The streaming tcatbal cursor detaches each read row through the field-injected EntityManager;
+    // inject the mock so the detach is exercised harmlessly under the manual constructor wiring (QA
+    // F-2).
+    ReflectionTestUtils.setField(service, "entityManager", entityManager);
   }
 
   // ===== Phase A: truncation parity (the headline assertion) =====================================
@@ -178,8 +193,8 @@ class InterestCalculationServiceTest {
     // (1000.00 * 15.07) / 1200 = 15070 / 1200 = 12.5583... -> truncate DOWN at scale 2 = 12.55.
     // HALF_UP would have produced 12.56, so this vector distinguishes DOWN from HALF_UP.
     Long acctId = 1L;
-    when(tranCatBalanceRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
+    when(tranCatBalanceRepository.streamAllByOrderByIdAsc())
+        .thenReturn(Stream.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
     Account account = account(acctId, "0.00", ACCT_GROUP, "5.00", "3.00");
     when(accountRepository.findById(acctId)).thenReturn(Optional.of(account));
     when(cardXrefRepository.findByXrefAcctId(acctId)).thenReturn(List.of(xref(CARD_NUM, acctId)));
@@ -205,8 +220,8 @@ class InterestCalculationServiceTest {
     // (500.00 * 19.99) / 1200 = 9995 / 1200 = 8.3291... -> truncate DOWN at scale 2 = 8.32.
     // HALF_UP would have produced 8.33.
     Long acctId = 2L;
-    when(tranCatBalanceRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(tcb(acctId, REC_TYPE, REC_CAT, "500.00")));
+    when(tranCatBalanceRepository.streamAllByOrderByIdAsc())
+        .thenReturn(Stream.of(tcb(acctId, REC_TYPE, REC_CAT, "500.00")));
     when(accountRepository.findById(acctId))
         .thenReturn(Optional.of(account(acctId, "0.00", ACCT_GROUP, "0.00", "0.00")));
     when(cardXrefRepository.findByXrefAcctId(acctId)).thenReturn(List.of(xref(CARD_NUM, acctId)));
@@ -225,9 +240,9 @@ class InterestCalculationServiceTest {
   @Test
   void control_break_updates_previous_account_and_eof_updates_final_account() {
     // Two accounts in ascending order (111 then 222), one category row each, both non-zero rate.
-    when(tranCatBalanceRepository.findAll(any(Sort.class)))
+    when(tranCatBalanceRepository.streamAllByOrderByIdAsc())
         .thenReturn(
-            List.of(
+            Stream.of(
                 tcb(111L, REC_TYPE, REC_CAT, "1000.00"), tcb(222L, REC_TYPE, REC_CAT, "2000.00")));
     Account acct111 = account(111L, "100.00", ACCT_GROUP, "5.00", "3.00");
     Account acct222 = account(222L, "200.00", ACCT_GROUP, "7.00", "9.00");
@@ -266,8 +281,8 @@ class InterestCalculationServiceTest {
   @Test
   void single_account_is_updated_once_at_eof() {
     Long acctId = 42L;
-    when(tranCatBalanceRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
+    when(tranCatBalanceRepository.streamAllByOrderByIdAsc())
+        .thenReturn(Stream.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
     when(accountRepository.findById(acctId))
         .thenReturn(Optional.of(account(acctId, "0.00", ACCT_GROUP, "0.00", "0.00")));
     when(cardXrefRepository.findByXrefAcctId(acctId)).thenReturn(List.of(xref(CARD_NUM, acctId)));
@@ -286,8 +301,8 @@ class InterestCalculationServiceTest {
   void uses_default_disclosure_group_when_specific_group_missing() {
     Long acctId = 7L;
     String missingGroup = "NOSUCHGRP1"; // 10 chars; no specific disclosure row exists for it.
-    when(tranCatBalanceRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
+    when(tranCatBalanceRepository.streamAllByOrderByIdAsc())
+        .thenReturn(Stream.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
     when(accountRepository.findById(acctId))
         .thenReturn(Optional.of(account(acctId, "0.00", missingGroup, "0.00", "0.00")));
     when(cardXrefRepository.findByXrefAcctId(acctId)).thenReturn(List.of(xref(CARD_NUM, acctId)));
@@ -310,8 +325,8 @@ class InterestCalculationServiceTest {
   void abends_when_specific_and_default_disclosure_groups_both_missing() {
     Long acctId = 8L;
     String missingGroup = "NOSUCHGRP2"; // 10 chars; neither it nor DEFAULT has a disclosure row.
-    when(tranCatBalanceRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
+    when(tranCatBalanceRepository.streamAllByOrderByIdAsc())
+        .thenReturn(Stream.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
     when(accountRepository.findById(acctId))
         .thenReturn(Optional.of(account(acctId, "0.00", missingGroup, "0.00", "0.00")));
     when(cardXrefRepository.findByXrefAcctId(acctId)).thenReturn(List.of(xref(CARD_NUM, acctId)));
@@ -336,8 +351,8 @@ class InterestCalculationServiceTest {
   @Test
   void abends_with_acctfile_status_23_when_account_missing() {
     Long acctId = 9L;
-    when(tranCatBalanceRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
+    when(tranCatBalanceRepository.streamAllByOrderByIdAsc())
+        .thenReturn(Stream.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
     // 1100-GET-ACCT-DATA accepts only FILE STATUS '00'; a missing account ('23') abends.
     when(accountRepository.findById(acctId)).thenReturn(Optional.empty());
 
@@ -354,8 +369,8 @@ class InterestCalculationServiceTest {
   @Test
   void abends_when_xref_missing_for_account() {
     Long acctId = 10L;
-    when(tranCatBalanceRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
+    when(tranCatBalanceRepository.streamAllByOrderByIdAsc())
+        .thenReturn(Stream.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
     when(accountRepository.findById(acctId))
         .thenReturn(Optional.of(account(acctId, "0.00", ACCT_GROUP, "0.00", "0.00")));
     // 1110-GET-XREF-DATA accepts only FILE STATUS '00'; an empty alternate-index read abends.
@@ -375,8 +390,8 @@ class InterestCalculationServiceTest {
   @Test
   void zero_rate_record_writes_no_interest_transaction_but_still_updates_account() {
     Long acctId = 11L;
-    when(tranCatBalanceRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
+    when(tranCatBalanceRepository.streamAllByOrderByIdAsc())
+        .thenReturn(Stream.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
     Account account = account(acctId, "250.00", ACCT_GROUP, "5.00", "3.00");
     when(accountRepository.findById(acctId)).thenReturn(Optional.of(account));
     when(cardXrefRepository.findByXrefAcctId(acctId)).thenReturn(List.of(xref(CARD_NUM, acctId)));
@@ -401,8 +416,8 @@ class InterestCalculationServiceTest {
   @Test
   void interest_transaction_has_expected_fields_and_db2_timestamp() {
     Long acctId = 111L;
-    when(tranCatBalanceRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
+    when(tranCatBalanceRepository.streamAllByOrderByIdAsc())
+        .thenReturn(Stream.of(tcb(acctId, REC_TYPE, REC_CAT, "1000.00")));
     when(accountRepository.findById(acctId))
         .thenReturn(Optional.of(account(acctId, "0.00", ACCT_GROUP, "0.00", "0.00")));
     when(cardXrefRepository.findByXrefAcctId(acctId)).thenReturn(List.of(xref(CARD_NUM, acctId)));
@@ -442,24 +457,16 @@ class InterestCalculationServiceTest {
 
   @Test
   void cursor_reads_tcatbal_in_ascending_composite_order() {
-    // An empty cursor suffices: the run reads nothing, but findAll is still invoked with the
-    // ascending composite Sort that guarantees records are grouped by account for the control
-    // break.
-    when(tranCatBalanceRepository.findAll(any(Sort.class))).thenReturn(List.of());
+    // An empty cursor suffices: the run reads nothing, but the streaming cursor is still opened via
+    // the ascending composite-key query that guarantees records are grouped by account for the
+    // control break. The (account, type, category) ordering is now encoded in the derived/JPQL
+    // query streamAllByOrderByIdAsc() and asserted end-to-end against real PostgreSQL in
+    // TransactionCategoryBalanceRepositoryIntegrationTest (QA F-2 bounded-memory streaming).
+    when(tranCatBalanceRepository.streamAllByOrderByIdAsc()).thenReturn(Stream.empty());
 
     service.run(PARM_DATE);
 
-    ArgumentCaptor<Sort> sortCaptor = ArgumentCaptor.forClass(Sort.class);
-    verify(tranCatBalanceRepository).findAll(sortCaptor.capture());
-
-    Sort usedSort = sortCaptor.getValue();
-    assertThat(usedSort).isEqualTo(Sort.by("id.trancatAcctId", "id.trancatTypeCd", "id.trancatCd"));
-
-    List<Sort.Order> orders = usedSort.stream().toList();
-    assertThat(orders)
-        .extracting(Sort.Order::getProperty)
-        .containsExactly("id.trancatAcctId", "id.trancatTypeCd", "id.trancatCd");
-    assertThat(orders).allMatch(Sort.Order::isAscending);
+    verify(tranCatBalanceRepository).streamAllByOrderByIdAsc();
   }
 
   // ===== capture helpers + entity factories ======================================================

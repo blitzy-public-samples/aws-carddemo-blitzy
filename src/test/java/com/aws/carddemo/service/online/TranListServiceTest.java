@@ -18,7 +18,11 @@ package com.aws.carddemo.service.online;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -42,6 +46,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.data.domain.Pageable;
 
 /**
  * Pure JUnit&nbsp;5 + Mockito + AssertJ unit tests for {@link TranListService}, the online
@@ -111,9 +116,73 @@ class TranListServiceTest {
     return list;
   }
 
-  /** Stubs the ascending browse source with {@code count} transactions. */
+  /** Stubs the keyset browse source with {@code count} transactions (ids {@code 1..count}). */
   private void givenTransactions(int count) {
-    when(transactionRepository.findAllByOrderByTranIdAsc()).thenReturn(txList(count));
+    stubKeyset(txList(count));
+  }
+
+  /**
+   * Installs lenient keyset simulators over an in-memory ascending snapshot, modelling the two
+   * repository browse methods {@link TranListService} now uses: the forward GTEQ page ({@link
+   * TransactionRepository#findByTranIdGreaterThanEqualOrderByTranIdAsc}) and the backward
+   * strictly-below descending page ({@link
+   * TransactionRepository#findByTranIdLessThanOrderByTranIdDesc}). Both honor the {@link Pageable}
+   * row limit, so the simulators reproduce the real "fetch only page_size + 1 rows" keyset
+   * semantics rather than the legacy full-table read &mdash; the very behavior change finding F-1
+   * mandates. Stubs are {@link org.mockito.Mockito#lenient() lenient} because a given test
+   * exercises only one browse direction; the other stub goes unused without failing
+   * strict-stubbing.
+   */
+  private void stubKeyset(List<Transaction> sorted) {
+    lenient()
+        .when(
+            transactionRepository.findByTranIdGreaterThanEqualOrderByTranIdAsc(
+                anyString(), any(Pageable.class)))
+        .thenAnswer(inv -> forwardSlice(sorted, inv.getArgument(0), inv.getArgument(1)));
+    lenient()
+        .when(
+            transactionRepository.findByTranIdLessThanOrderByTranIdDesc(
+                anyString(), any(Pageable.class)))
+        .thenAnswer(inv -> backwardSlice(sorted, inv.getArgument(0), inv.getArgument(1)));
+  }
+
+  /**
+   * Reproduces {@code findByTranIdGreaterThanEqualOrderByTranIdAsc}: the ascending slice of
+   * transactions with {@code tran_id >= key}, bounded to the {@link Pageable} page size.
+   */
+  private static List<Transaction> forwardSlice(
+      List<Transaction> sorted, String key, Pageable pageable) {
+    List<Transaction> out = new ArrayList<>();
+    int limit = pageable.getPageSize();
+    for (Transaction t : sorted) {
+      if (t.getTranId().compareTo(key) >= 0) {
+        out.add(t);
+        if (out.size() >= limit) {
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Reproduces {@code findByTranIdLessThanOrderByTranIdDesc}: the descending (closest-below-first)
+   * slice of transactions with {@code tran_id < key}, bounded to the {@link Pageable} page size.
+   */
+  private static List<Transaction> backwardSlice(
+      List<Transaction> sorted, String key, Pageable pageable) {
+    List<Transaction> out = new ArrayList<>();
+    int limit = pageable.getPageSize();
+    for (int i = sorted.size() - 1; i >= 0; i--) {
+      Transaction t = sorted.get(i);
+      if (t.getTranId().compareTo(key) < 0) {
+        out.add(t);
+        if (out.size() >= limit) {
+          break;
+        }
+      }
+    }
+    return out;
   }
 
   /** A commarea for a signed-on standard user that has already entered this program (re-entry). */
@@ -214,9 +283,12 @@ class TranListServiceTest {
     assertThat(amount).isEqualByComparingTo(new BigDecimal("101.00"));
     assertThat(amount.scale()).isEqualTo(2);
 
-    // Control-flow parity: exactly one VSAM-browse-equivalent query, and nothing else.
+    // Control-flow parity: exactly one bounded keyset browse from the top of the file (GTEQ ""),
+    // and nothing else.
     InOrder inOrder = inOrder(transactionRepository);
-    inOrder.verify(transactionRepository).findAllByOrderByTranIdAsc();
+    inOrder
+        .verify(transactionRepository)
+        .findByTranIdGreaterThanEqualOrderByTranIdAsc(eq(""), any(Pageable.class));
     inOrder.verifyNoMoreInteractions();
   }
 
@@ -229,10 +301,13 @@ class TranListServiceTest {
     service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER); // page 1 (browse #1)
     service.processTranList(s, reentered(), CardWorkArea.Aid.PFK08); // page 2 (browse #2)
 
-    // The two interactions are the same method, so the in-order multiplicity form is used to
-    // verify exactly two ordered browses (one per turn), then no further interactions.
+    // Both turns position with the same inclusive GTEQ keyset query (ENTER from the top, then PF8
+    // from the page-one boundary), so the in-order multiplicity form verifies exactly two ordered
+    // browses (one per turn), then no further interactions.
     InOrder inOrder = inOrder(transactionRepository);
-    inOrder.verify(transactionRepository, times(2)).findAllByOrderByTranIdAsc();
+    inOrder
+        .verify(transactionRepository, times(2))
+        .findByTranIdGreaterThanEqualOrderByTranIdAsc(anyString(), any(Pageable.class));
     inOrder.verifyNoMoreInteractions();
     assertThat(s.getPageNum()).isEqualTo("00000002");
     assertThat(s.getRows().get(0).getTrnId()).isEqualTo(id(11));
@@ -567,7 +642,7 @@ class TranListServiceTest {
   void populate_truncatesDescription() {
     Transaction t = tx(1);
     t.setTranDesc("This description is definitely longer than twenty-six characters");
-    when(transactionRepository.findAllByOrderByTranIdAsc()).thenReturn(List.of(t));
+    stubKeyset(List.of(t));
     TranListScreen s = screen();
 
     service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER);
@@ -580,7 +655,7 @@ class TranListServiceTest {
   void populate_handlesUnusableTimestamp() {
     Transaction t = tx(1);
     t.setTranOrigTs(null);
-    when(transactionRepository.findAllByOrderByTranIdAsc()).thenReturn(List.of(t));
+    stubKeyset(List.of(t));
     TranListScreen s = screen();
 
     service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER);
@@ -593,7 +668,7 @@ class TranListServiceTest {
   void populate_handlesNullDescription() {
     Transaction t = tx(1);
     t.setTranDesc(null);
-    when(transactionRepository.findAllByOrderByTranIdAsc()).thenReturn(List.of(t));
+    stubKeyset(List.of(t));
     TranListScreen s = screen();
 
     service.processTranList(s, reentered(), CardWorkArea.Aid.ENTER);
@@ -608,7 +683,8 @@ class TranListServiceTest {
   @Test
   @DisplayName("an unexpected data-access failure is escalated as IoStatusException")
   void dataAccessFailure_escalatesAsIoStatusException() {
-    when(transactionRepository.findAllByOrderByTranIdAsc())
+    when(transactionRepository.findByTranIdGreaterThanEqualOrderByTranIdAsc(
+            anyString(), any(Pageable.class)))
         .thenThrow(new DataAccessResourceFailureException("simulated outage"));
 
     assertThatThrownBy(() -> service.processTranList(screen(), reentered(), CardWorkArea.Aid.ENTER))

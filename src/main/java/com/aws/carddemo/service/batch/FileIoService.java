@@ -24,9 +24,11 @@ import com.aws.carddemo.repository.AccountRepository;
 import com.aws.carddemo.repository.CardXrefRepository;
 import com.aws.carddemo.repository.CustomerRepository;
 import com.aws.carddemo.repository.TransactionRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.util.Iterator;
 import java.util.Optional;
-import org.springframework.data.domain.Sort;
+import java.util.stream.Stream;
 import org.springframework.stereotype.Component;
 
 /**
@@ -73,12 +75,15 @@ import org.springframework.stereotype.Component;
  *
  * <p><strong>Sequential cursor state.</strong> {@code CBSTM03B} kept each file open across calls
  * (open once, read many, close once). That is reproduced for the two sequential files by the
- * per-bean cursor fields {@link #trnxCursor} and {@link #xrefCursor}: an {@code OPEN}
- * (re)initialises the iterator, a {@code READ} advances it, and a {@code CLOSE} discards it. The
- * sequential reads return records in deterministic ascending key order ({@code TRNXFILE} by {@code
- * tranId}, {@code XREFFILE} by {@code xrefCardNum}) so downstream statement output is reproducible
- * for golden-file parity. The two keyed files ({@code CUSTFILE} / {@code ACCTFILE}) need no cursor
- * — each keyed read is an independent {@code findById}.
+ * per-bean cursor fields {@link #trnxCursor} and {@link #xrefCursor}, each backed by a
+ * bounded-memory streaming cursor ({@link #trnxStream} / {@link #xrefStream}): an {@code OPEN}
+ * opens the stream and takes its iterator, a {@code READ} advances it (detaching each returned
+ * record so the persistence context never accumulates the whole table), and a {@code CLOSE} closes
+ * the stream to release the underlying JDBC cursor. The sequential reads return records in
+ * deterministic ascending key order ({@code TRNXFILE} by {@code tranId}, {@code XREFFILE} by {@code
+ * xrefCardNum}) so downstream statement output is reproducible for golden-file parity. The two
+ * keyed files ({@code CUSTFILE} / {@code ACCTFILE}) need no cursor — each keyed read is an
+ * independent {@code findById}.
  *
  * <p><strong>Thread-safety.</strong> Because this bean holds mutable sequential-cursor state it is
  * <em>not</em> thread-safe and is intended for single-threaded batch statement generation, matching
@@ -123,6 +128,30 @@ public class FileIoService {
 
   /** Account master repository — replaces VSAM {@code ACCT-FILE} ({@code ACCTFILE}). */
   private final AccountRepository accountRepository;
+
+  /**
+   * Transaction-scoped entity manager used to {@code detach} each streamed sequential record
+   * immediately after a {@code READ} returns it, so the persistence context does not accumulate the
+   * whole table across the open-once/read-many/close-once cycle (the bounded-memory complement to
+   * the streaming cursors). Injected by the container; bound to the tasklet transaction that
+   * brackets the calling batch service's {@code run(...)} (the cursors stay valid for the full
+   * cycle because that whole cycle executes inside one tasklet transaction).
+   */
+  @PersistenceContext private EntityManager entityManager;
+
+  /**
+   * Open streaming cursor over the transaction master (ascending {@code tranId}), held so it can be
+   * closed on {@code CLOSE} to release the underlying JDBC cursor. {@code null} when the file is
+   * closed.
+   */
+  private Stream<Transaction> trnxStream;
+
+  /**
+   * Open streaming cursor over the card cross-reference (ascending {@code xrefCardNum}), held so it
+   * can be closed on {@code CLOSE} to release the underlying JDBC cursor. {@code null} when the
+   * file is closed.
+   */
+  private Stream<CardXref> xrefStream;
 
   /**
    * Sequential cursor over the transaction master, established by a {@code TRNXFILE} {@code OPEN}
@@ -202,20 +231,34 @@ public class FileIoService {
     // <- CBSTM03B 1000-TRNXFILE-PROC
     WorkArea.Operation operation = area.getOperation();
     if (operation == WorkArea.Operation.OPEN) {
-      // OPEN INPUT TRNX-FILE: deterministic ascending-tranId iteration (golden-file parity).
-      trnxCursor = transactionRepository.findAllByOrderByTranIdAsc().iterator();
+      // OPEN INPUT TRNX-FILE: deterministic ascending-tranId iteration (golden-file parity) via a
+      // bounded-memory streaming cursor (HINT_FETCH_SIZE / HINT_READ_ONLY), replacing the
+      // findAllByOrderByTranIdAsc() full-table materialization. Closed on CLOSE to release the
+      // JDBC cursor; valid across all READs because the whole open/read/close cycle runs inside one
+      // tasklet transaction.
+      trnxStream = transactionRepository.streamAllByOrderByTranIdAsc();
+      trnxCursor = trnxStream.iterator();
       area.setReturnCode(STATUS_OK);
     } else if (operation == WorkArea.Operation.READ) {
       // READ TRNX-FILE INTO LK-M03B-FLDT: advance the cursor; "10" at end-of-file.
       if (trnxCursor != null && trnxCursor.hasNext()) {
-        area.setRecord(trnxCursor.next());
+        Transaction record = trnxCursor.next();
+        // Detach immediately so the streamed scan does not accumulate the whole table in the
+        // persistence context. Transaction has no JPA associations, so the detached record stays
+        // fully readable for the caller (the WS-TRNX-TABLE build holds detached read-only rows).
+        entityManager.detach(record);
+        area.setRecord(record);
         area.setReturnCode(STATUS_OK);
       } else {
         area.setRecord(null);
         area.setReturnCode(STATUS_EOF);
       }
     } else if (operation == WorkArea.Operation.CLOSE) {
-      // CLOSE TRNX-FILE: discard the cursor.
+      // CLOSE TRNX-FILE: close the streaming JDBC cursor, then discard the cursor (null-safe).
+      if (trnxStream != null) {
+        trnxStream.close();
+        trnxStream = null;
+      }
       trnxCursor = null;
       area.setReturnCode(STATUS_OK);
     }
@@ -224,10 +267,10 @@ public class FileIoService {
 
   /**
    * Card cross-reference handler — supports {@code OPEN} / sequential {@code READ} / {@code CLOSE}
-   * only, mirroring the three {@code IF} branches of the COBOL paragraph. The cross-reference
-   * repository exposes no {@code findAllByOrderBy...} finder, so deterministic ascending-key order
-   * over the primary key {@code xrefCardNum} is obtained with {@link Sort}; no repository method is
-   * added. {@code WRITE} / {@code REWRITE} are no-ops (no branch in {@code CBSTM03B}).
+   * only, mirroring the three {@code IF} branches of the COBOL paragraph. Deterministic
+   * ascending-key order over the primary key {@code xrefCardNum} is obtained from the
+   * bounded-memory streaming finder {@code streamAllByOrderByXrefCardNumAsc()}. {@code WRITE} /
+   * {@code REWRITE} are no-ops (no branch in {@code CBSTM03B}).
    *
    * @param area the work area; its {@link WorkArea#getReturnCode() returnCode} and, on a successful
    *     read, its {@link WorkArea#getRecord() record} are set before returning
@@ -236,20 +279,32 @@ public class FileIoService {
     // <- CBSTM03B 2000-XREFFILE-PROC
     WorkArea.Operation operation = area.getOperation();
     if (operation == WorkArea.Operation.OPEN) {
-      // OPEN INPUT XREF-FILE: deterministic ascending-xrefCardNum iteration via Sort.
-      xrefCursor = cardXrefRepository.findAll(Sort.by("xrefCardNum")).iterator();
+      // OPEN INPUT XREF-FILE: deterministic ascending-xrefCardNum iteration via a bounded-memory
+      // streaming cursor (HINT_FETCH_SIZE / HINT_READ_ONLY), replacing the findAll(Sort)
+      // full-table materialization. Closed on CLOSE; valid across all READs (single tasklet tx).
+      xrefStream = cardXrefRepository.streamAllByOrderByXrefCardNumAsc();
+      xrefCursor = xrefStream.iterator();
       area.setReturnCode(STATUS_OK);
     } else if (operation == WorkArea.Operation.READ) {
       // READ XREF-FILE INTO LK-M03B-FLDT: advance the cursor; "10" at end-of-file.
       if (xrefCursor != null && xrefCursor.hasNext()) {
-        area.setRecord(xrefCursor.next());
+        CardXref record = xrefCursor.next();
+        // Detach immediately so the streamed scan does not accumulate the whole table in the
+        // persistence context. CardXref has no JPA associations, so the detached record stays fully
+        // readable for the caller.
+        entityManager.detach(record);
+        area.setRecord(record);
         area.setReturnCode(STATUS_OK);
       } else {
         area.setRecord(null);
         area.setReturnCode(STATUS_EOF);
       }
     } else if (operation == WorkArea.Operation.CLOSE) {
-      // CLOSE XREF-FILE: discard the cursor.
+      // CLOSE XREF-FILE: close the streaming JDBC cursor, then discard the cursor (null-safe).
+      if (xrefStream != null) {
+        xrefStream.close();
+        xrefStream = null;
+      }
       xrefCursor = null;
       area.setReturnCode(STATUS_OK);
     }

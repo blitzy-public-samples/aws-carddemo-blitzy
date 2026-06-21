@@ -24,6 +24,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.PageRequest;
 
 /**
  * {@code @DataJpaTest} slice integration test for {@link CardRepository}, the Spring Data JPA
@@ -143,5 +144,125 @@ class CardRepositoryIntegrationTest extends AbstractRepositoryIntegrationTest {
     flushAndClear();
 
     assertThat(repository.findById("9999999999999999")).isEmpty();
+  }
+
+  // ===============================================================================================
+  // Keyset browse parity (F-1 fix). The unbounded findAll() browse that materialised the whole
+  // card table on every page request is replaced by bounded keyset pages. These tests prove,
+  // against a real PostgreSQL char(16) primary key, that: (1) the Pageable limit bounds the read to
+  // one page (the F-1 OOM remedy); (2) the bpchar CARD-NUM ordering matches the ascending VSAM-key
+  // browse and Java compareTo; (3) the empty start key positions at LOW-VALUES to browse from the
+  // top (STARTBR); (4) >= is inclusive and > is exclusive (READNEXT after the boundary record);
+  // (5) the < descending query reproduces READPREV; and (6) the exists probe reproduces the PF8
+  // "is there a next page" peek (COCRDLIC). Account-filtered variants confine the browse to one
+  // account through ix_card_acct_id.
+  // ===============================================================================================
+
+  @Test
+  @DisplayName("keyset forward from the empty start key browses from the top, bounded by the limit")
+  void keysetForwardFromTop_boundedByLimit() {
+    for (int i = 1; i <= 5; i++) {
+      repository.save(buildCard(String.format("%016d", i), 90000000001L));
+    }
+    flushAndClear();
+
+    // STARTBR from LOW-VALUES (empty key) with a two-row page: PostgreSQL returns exactly the first
+    // two cards ascending, NOT the whole table -- the bounded read that remedies the F-1 OOM.
+    List<Card> page =
+        repository.findByCardNumGreaterThanEqualOrderByCardNumAsc("", PageRequest.of(0, 2));
+
+    assertThat(page).hasSize(2);
+    assertThat(page)
+        .extracting(c -> c.getCardNum().trim())
+        .containsExactly("0000000000000001", "0000000000000002");
+  }
+
+  @Test
+  @DisplayName("keyset forward GREATER-THAN-EQUAL includes the start key; GREATER-THAN excludes it")
+  void keysetForwardInclusiveVsExclusive() {
+    for (int i = 1; i <= 5; i++) {
+      repository.save(buildCard(String.format("%016d", i), 90000000001L));
+    }
+    flushAndClear();
+    String key = "0000000000000003";
+
+    List<Card> gteq =
+        repository.findByCardNumGreaterThanEqualOrderByCardNumAsc(key, PageRequest.of(0, 10));
+    List<Card> gt =
+        repository.findByCardNumGreaterThanOrderByCardNumAsc(key, PageRequest.of(0, 10));
+
+    assertThat(gteq)
+        .extracting(c -> c.getCardNum().trim())
+        .containsExactly("0000000000000003", "0000000000000004", "0000000000000005");
+    assertThat(gt)
+        .extracting(c -> c.getCardNum().trim())
+        .containsExactly("0000000000000004", "0000000000000005");
+  }
+
+  @Test
+  @DisplayName("keyset backward (LESS-THAN) returns descending rows below the cursor, bounded")
+  void keysetBackwardDescending_boundedByLimit() {
+    for (int i = 1; i <= 5; i++) {
+      repository.save(buildCard(String.format("%016d", i), 90000000001L));
+    }
+    flushAndClear();
+
+    // READPREV below card 5 with a two-row look-back: the two closest-below rows, descending.
+    List<Card> back =
+        repository.findByCardNumLessThanOrderByCardNumDesc(
+            "0000000000000005", PageRequest.of(0, 2));
+
+    assertThat(back)
+        .extracting(c -> c.getCardNum().trim())
+        .containsExactly("0000000000000004", "0000000000000003");
+  }
+
+  @Test
+  @DisplayName("existsByCardNumGreaterThan reproduces the PF8 next-page peek")
+  void existsByCardNumGreaterThanPeek() {
+    repository.save(buildCard("0000000000000001", 90000000001L));
+    repository.save(buildCard("0000000000000002", 90000000001L));
+    flushAndClear();
+
+    assertThat(repository.existsByCardNumGreaterThan("0000000000000001")).isTrue();
+    assertThat(repository.existsByCardNumGreaterThan("0000000000000002")).isFalse();
+  }
+
+  @Test
+  @DisplayName("account-filtered keyset pages confine the browse to one account (ix_card_acct_id)")
+  void keysetAccountFiltered_confinedToAccount() {
+    // Two accounts interleaved by card number; the account-filtered keyset must return only the
+    // requested account's cards (ascending, bounded), and the exists probe must respect the filter.
+    repository.save(buildCard("0000000000000001", 90000000001L));
+    repository.save(buildCard("0000000000000002", 90000000002L));
+    repository.save(buildCard("0000000000000003", 90000000001L));
+    repository.save(buildCard("0000000000000004", 90000000001L));
+    flushAndClear();
+
+    List<Card> firstTwo =
+        repository.findByCardAcctIdAndCardNumGreaterThanEqualOrderByCardNumAsc(
+            90000000001L, "", PageRequest.of(0, 2));
+    assertThat(firstTwo)
+        .extracting(c -> c.getCardNum().trim())
+        .containsExactly("0000000000000001", "0000000000000003");
+
+    List<Card> afterFirst =
+        repository.findByCardAcctIdAndCardNumGreaterThanOrderByCardNumAsc(
+            90000000001L, "0000000000000001", PageRequest.of(0, 10));
+    assertThat(afterFirst)
+        .extracting(c -> c.getCardNum().trim())
+        .containsExactly("0000000000000003", "0000000000000004");
+
+    List<Card> back =
+        repository.findByCardAcctIdAndCardNumLessThanOrderByCardNumDesc(
+            90000000001L, "0000000000000004", PageRequest.of(0, 10));
+    assertThat(back)
+        .extracting(c -> c.getCardNum().trim())
+        .containsExactly("0000000000000003", "0000000000000001");
+
+    assertThat(repository.existsByCardAcctIdAndCardNumGreaterThan(90000000001L, "0000000000000003"))
+        .isTrue();
+    assertThat(repository.existsByCardAcctIdAndCardNumGreaterThan(90000000001L, "0000000000000004"))
+        .isFalse();
   }
 }

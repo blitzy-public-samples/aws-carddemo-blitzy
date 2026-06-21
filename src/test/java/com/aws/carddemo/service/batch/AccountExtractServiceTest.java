@@ -19,7 +19,6 @@ package com.aws.carddemo.service.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.catchThrowable;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -30,20 +29,22 @@ import ch.qos.logback.core.read.ListAppender;
 import com.aws.carddemo.domain.Account;
 import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.AccountRepository;
+import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
-import java.util.AbstractList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Spliterators;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessResourceFailureException;
-import org.springframework.data.domain.Sort;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Pure JUnit&nbsp;5 + Mockito + AssertJ unit tests for {@link AccountExtractService}, the batch
@@ -93,6 +94,12 @@ class AccountExtractServiceTest {
   /** The {@code ACCTFILE} store, mocked so the service is exercised without a database. */
   @Mock private AccountRepository accountRepository;
 
+  /**
+   * The JPA persistence context, mocked so the service's per-row {@code detach(...)} (which bounds
+   * heap during the streaming read, QA F-2) is a no-op under unit test.
+   */
+  @Mock private EntityManager entityManager;
+
   /** System under test, instantiated per test in {@link #setUp()} with the mocked repository. */
   private AccountExtractService service;
 
@@ -110,6 +117,9 @@ class AccountExtractServiceTest {
   @BeforeEach
   void setUp() {
     service = new AccountExtractService(accountRepository);
+    // The EntityManager is field-injected (@PersistenceContext) in production; set the mock here so
+    // the streaming read's per-row detach(...) is exercised as a no-op.
+    ReflectionTestUtils.setField(service, "entityManager", entityManager);
 
     // Attach a ListAppender to the service logger and lower the level so INFO and ERROR events
     // (every COBOL DISPLAY the service emits) are both captured regardless of ambient config.
@@ -146,17 +156,16 @@ class AccountExtractServiceTest {
             "50.00",
             "99950",
             "GRP1");
-    when(accountRepository.findAll(any(Sort.class))).thenReturn(List.of(acctA));
-    ArgumentCaptor<Sort> sortCaptor = ArgumentCaptor.forClass(Sort.class);
+    when(accountRepository.streamAllByOrderByAcctIdAsc()).thenReturn(Stream.of(acctA));
 
     service.run();
 
-    // The open paragraph reads the master via findAll(Sort) — the Java counterpart of the VSAM
-    // sequential read in ascending RECORD KEY (FD-ACCT-ID) order.
-    verify(accountRepository).findAll(sortCaptor.capture());
-    assertThat(sortCaptor.getValue()).isEqualTo(Sort.by("acctId"));
-    assertThat(sortCaptor.getValue().getOrderFor("acctId").getDirection())
-        .isEqualTo(Sort.Direction.ASC);
+    // The open paragraph reads the master via the streaming, ascending-key reader
+    // streamAllByOrderByAcctIdAsc() — the Java counterpart of the VSAM sequential read in ascending
+    // RECORD KEY (FD-ACCT-ID) order — fetching in bounded windows rather than buffering the whole
+    // table (QA F-2). The ascending-key ordering is encoded in the repository method name and is
+    // asserted against a real database in AccountRepositoryIntegrationTest.
+    verify(accountRepository).streamAllByOrderByAcctIdAsc();
   }
 
   // --- Phase B: DOUBLE emission shape (the parity quirk) --------------------------------------
@@ -177,7 +186,7 @@ class AccountExtractServiceTest {
             "50.00",
             "99950",
             "GRP1");
-    when(accountRepository.findAll(any(Sort.class))).thenReturn(List.of(acct));
+    when(accountRepository.streamAllByOrderByAcctIdAsc()).thenReturn(Stream.of(acct));
 
     service.run();
 
@@ -264,7 +273,8 @@ class AccountExtractServiceTest {
             "70.00",
             "33333",
             "GRPC");
-    when(accountRepository.findAll(any(Sort.class))).thenReturn(List.of(first, second, third));
+    when(accountRepository.streamAllByOrderByAcctIdAsc())
+        .thenReturn(Stream.of(first, second, third));
 
     service.run();
 
@@ -298,7 +308,7 @@ class AccountExtractServiceTest {
   void run_completes_without_exception_when_no_accounts_exist() {
     // An empty master => FILE STATUS '10' on the first read => clean loop termination, not an
     // error.
-    when(accountRepository.findAll(any(Sort.class))).thenReturn(List.of());
+    when(accountRepository.streamAllByOrderByAcctIdAsc()).thenReturn(Stream.of());
 
     assertThatCode(() -> service.run()).doesNotThrowAnyException();
 
@@ -314,8 +324,9 @@ class AccountExtractServiceTest {
   void run_throws_io_status_exception_for_acctfile_when_repository_fails() {
     DataAccessResourceFailureException cause =
         new DataAccessResourceFailureException("simulated VSAM I/O error");
-    // findAll is invoked from 0000-ACCTFILE-OPEN, so the failure surfaces while opening the file.
-    when(accountRepository.findAll(any(Sort.class))).thenThrow(cause);
+    // The streaming reader is invoked from 0000-ACCTFILE-OPEN, so the failure surfaces while
+    // opening the file.
+    when(accountRepository.streamAllByOrderByAcctIdAsc()).thenThrow(cause);
 
     Throwable thrown = catchThrowable(() -> service.run());
 
@@ -337,7 +348,7 @@ class AccountExtractServiceTest {
         new DataAccessResourceFailureException("simulated VSAM read error");
     // The open succeeds (iterator() is obtained); the failure surfaces on the first read
     // (hasNext()), so 1000-ACCTFILE-GET-NEXT abends with operation READ rather than OPEN.
-    when(accountRepository.findAll(any(Sort.class))).thenReturn(new ReadFailingList(cause));
+    when(accountRepository.streamAllByOrderByAcctIdAsc()).thenReturn(readFailingStream(cause));
 
     Throwable thrown = catchThrowable(() -> service.run());
 
@@ -423,43 +434,25 @@ class AccountExtractServiceTest {
   }
 
   /**
-   * A {@link List} whose iterator raises a supplied {@link RuntimeException} on the first {@code
-   * hasNext()}, used to drive the read-path abend. It extends {@link AbstractList} (which, unlike
-   * {@link java.util.ArrayList}, is not {@link java.io.Serializable}) so the zero-warning build's
-   * {@code serial} lint does not demand a {@code serialVersionUID}. {@code iterator()} succeeds (so
-   * the service's open completes); the failure surfaces only when the scan reads.
+   * Builds a {@link Stream} whose iterator raises the supplied {@link RuntimeException} on the
+   * first {@code hasNext()}, used to drive the read-path abend. Obtaining the iterator succeeds (so
+   * the service's open completes); the failure surfaces only when the scan reads &mdash;
+   * reproducing a VSAM read error mid-stream now that the reader is the JDBC-cursor-backed {@code
+   * streamAllByOrderByAcctIdAsc()} (QA F-2).
    */
-  private static final class ReadFailingList extends AbstractList<Account> {
+  private static Stream<Account> readFailingStream(RuntimeException failure) {
+    Iterator<Account> failingIterator =
+        new Iterator<>() {
+          @Override
+          public boolean hasNext() {
+            throw failure;
+          }
 
-    private final RuntimeException failure;
-
-    private ReadFailingList(RuntimeException failure) {
-      this.failure = failure;
-    }
-
-    @Override
-    public Account get(int index) {
-      throw failure;
-    }
-
-    @Override
-    public int size() {
-      return 1;
-    }
-
-    @Override
-    public Iterator<Account> iterator() {
-      return new Iterator<>() {
-        @Override
-        public boolean hasNext() {
-          throw failure;
-        }
-
-        @Override
-        public Account next() {
-          throw failure;
-        }
-      };
-    }
+          @Override
+          public Account next() {
+            throw failure;
+          }
+        };
+    return StreamSupport.stream(Spliterators.spliteratorUnknownSize(failingIterator, 0), false);
   }
 }

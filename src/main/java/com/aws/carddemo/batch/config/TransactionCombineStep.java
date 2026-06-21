@@ -20,6 +20,8 @@ import com.aws.carddemo.domain.Transaction;
 import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.TransactionRepository;
 import com.aws.carddemo.util.CobolStringUtils;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -29,7 +31,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.util.List;
+import java.util.Iterator;
+import java.util.stream.Stream;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.configuration.annotation.StepScope;
@@ -67,10 +70,10 @@ import org.springframework.transaction.PlatformTransactionManager;
  * as two {@link org.springframework.batch.core.step.tasklet.Tasklet}-based steps:
  *
  * <ol>
- *   <li><em>sort step</em> &mdash; reads every transaction ordered ascending by {@code TRAN-ID} via
- *       {@link TransactionRepository#findAllByOrderByTranIdAsc()} and writes each one as a 350-byte
- *       fixed-width {@code CVTRA05Y} record (newline-separated) into the {@code TRANSACT.COMBINED}
- *       output file;
+ *   <li><em>sort step</em> &mdash; streams every transaction ordered ascending by {@code TRAN-ID}
+ *       via {@link TransactionRepository#streamAllByOrderByTranIdAsc()} (a JDBC-cursor-backed
+ *       stream that bounds heap, QA F-2) and writes each one as a 350-byte fixed-width {@code
+ *       CVTRA05Y} record (newline-separated) into the {@code TRANSACT.COMBINED} output file;
  *   <li><em>repro step</em> &mdash; copies {@code TRANSACT.COMBINED} to {@code TRANSACT.VSAM.KSDS},
  *       mirroring the IDCAMS {@code REPRO} load of the combined file into the transaction master.
  * </ol>
@@ -166,6 +169,14 @@ public class TransactionCombineStep {
    * explicit {@code outputDir} job parameter.
    */
   private final String configuredOutputDir;
+
+  /**
+   * JPA persistence context used to detach each transaction immediately after it is written to the
+   * combined file, so the streaming sort tasklet holds only the JDBC fetch window in heap rather
+   * than the whole transaction master (QA F-2). The tasklet's only output is a file (no database
+   * writes), so detaching each just-read row is always safe.
+   */
+  @PersistenceContext private EntityManager entityManager;
 
   /**
    * Creates the combine-job configuration.
@@ -294,14 +305,20 @@ public class TransactionCombineStep {
   public Tasklet transactionCombineSortTasklet(
       @Value("#{jobParameters['outputDir']}") String outputDir) {
     return (contribution, chunkContext) -> {
-      List<Transaction> transactions = transactionRepository.findAllByOrderByTranIdAsc();
       try {
         Path combinedPath = resolveOutputPath(outputDir, COMBINED_FILE);
-        try (BufferedWriter writer =
-            Files.newBufferedWriter(combinedPath, StandardCharsets.UTF_8)) {
-          for (Transaction transaction : transactions) {
+        try (BufferedWriter writer = Files.newBufferedWriter(combinedPath, StandardCharsets.UTF_8);
+            Stream<Transaction> transactions =
+                transactionRepository.streamAllByOrderByTranIdAsc()) {
+          Iterator<Transaction> it = transactions.iterator();
+          while (it.hasNext()) {
+            Transaction transaction = it.next();
             writer.write(toFixedWidthRecord(transaction));
             writer.write("\n");
+            // Release each row after writing so heap stays bounded to the JDBC fetch window rather
+            // than the full transaction master (QA F-2). The output is a file, not the database, so
+            // there is no pending mutation to discard.
+            entityManager.detach(transaction);
           }
         }
       } catch (IOException e) {

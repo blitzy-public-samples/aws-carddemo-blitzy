@@ -25,9 +25,11 @@ import com.aws.carddemo.repository.CardRepository;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 
 /**
@@ -47,7 +49,8 @@ import org.springframework.stereotype.Service;
  *   <li>{@code 2210-EDIT-ACCOUNT} &rarr; {@link #editAccount}
  *   <li>{@code 2220-EDIT-CARD} &rarr; {@link #editCard}
  *   <li>{@code 2250-EDIT-ARRAY} &rarr; {@link #editArray}
- *   <li>{@code 9500-FILTER-RECORDS} &rarr; {@link #filterRecords}
+ *   <li>{@code 9500-FILTER-RECORDS} &rarr; pushed into the keyset queries ({@link #browseForward} /
+ *       {@link #browseBackward}) and {@link #singleCard}
  *   <li>{@code 9000-READ-FORWARD} &rarr; {@link #readForward}
  *   <li>{@code 9100-READ-BACKWARDS} &rarr; {@link #readBackwards}
  *   <li>{@code 1100-SCREEN-INIT} / {@code 1300-SETUP-SCREEN-ATTRS} &rarr; {@link #populateHeader}
@@ -304,7 +307,7 @@ public class CardListService {
     // freshly initialised to SPACES on this path, so the browse begins at the lowest key = page 1).
     if (st.inputError) {
       if (st.acctFilter != FilterFlag.NOT_OK && st.cardFilter != FilterFlag.NOT_OK) {
-        readForward(fetchFiltered(st), null, true, st);
+        readForward(null, true, st);
       }
       finishRedisplay(screen, commarea, st, effAid);
       return null;
@@ -331,31 +334,33 @@ public class CardListService {
       }
     }
 
-    // The remaining branches all browse the card store; fetch the filtered, ordered candidate set
-    // once. An unexpected failure here is the only path that raises IoStatusException.
-    List<Card> filtered = fetchFiltered(st);
+    // The remaining branches all browse the card store via bounded keyset queries (one screen page
+    // plus a one-row "peek"); each read method issues its own range query against the active
+    // filter.
+    // An unexpected data-access failure inside any of them is the only path that raises
+    // IoStatusException (the legacy WHEN OTHER response abend).
 
     if (effAid == CardWorkArea.Aid.PFK07 && caFirstPageAtDispatch) {
       // WHEN PF07 + CA-FIRST-PAGE (L439-L454): already at the top — refresh the first page.
-      readForward(filtered, st.firstCardNum, true, st);
+      readForward(st.firstCardNum, true, st);
     } else if (effAid == CardWorkArea.Aid.PFK03 || (commarea.isPgmReenter() && !fromThis)) {
       // WHEN PF03 / (PGM-REENTER from another program) (L458-L482): fresh restart at page 1.
       st.screenNum = 1;
       st.firstCardNum = null;
       st.freshStart = true;
-      readForward(filtered, null, true, st);
-    } else if (effAid == CardWorkArea.Aid.PFK08 && hasNext(filtered, st)) {
+      readForward(null, true, st);
+    } else if (effAid == CardWorkArea.Aid.PFK08 && hasNext(st)) {
       // WHEN PF08 + CA-NEXT-PAGE-EXISTS (L486-L497): page down. The browse resumes strictly after
       // the last row currently displayed (legacy GTEQ on WS-CA-LAST-CARD-NUM, the peeked next key).
       st.screenNum = st.screenNum + 1;
-      readForward(filtered, st.lastDisplayedCardNum, false, st);
+      readForward(st.lastDisplayedCardNum, false, st);
     } else if (effAid == CardWorkArea.Aid.PFK07 && !caFirstPageAtDispatch) {
       // WHEN PF07 + NOT CA-FIRST-PAGE (L501-L513): page up.
       st.screenNum = st.screenNum - 1;
-      readBackwards(filtered, st.firstCardNum, st);
+      readBackwards(st.firstCardNum, st);
     } else {
       // WHEN OTHER (L572-L582): refresh the current page (browse from its first key).
-      readForward(filtered, st.firstCardNum, true, st);
+      readForward(st.firstCardNum, true, st);
     }
 
     // COMMON-RETURN (L604-L620): stamp the conversation origin and redisplay.
@@ -523,92 +528,155 @@ public class CardListService {
   // ===============================================================================================
 
   /**
-   * Fetches the ordered, filtered candidate set that the keyset-paging reads operate over.
+   * Issues a bounded forward keyset read &mdash; the {@code STARTBR ... GTEQ} + {@code READNEXT}
+   * equivalent of the legacy VSAM browse, honouring the active filters.
    *
-   * <p>Mirrors the legacy VSAM browse + {@code 9500-FILTER-RECORDS} combination, but materialised
-   * as a sorted Java list. Per the migration directive, an account filter is pushed down to the
-   * repository ({@code findByCardAcctId}); otherwise the full file is read. The {@code
-   * 9500-FILTER-RECORDS} predicate is then applied to every record (it is a no-op for the
-   * account-equality test when the push-down was used, and additionally applies the card-number
-   * filter). Records are ordered ascending by the 16-character card number, which is the VSAM key
-   * order for the {@code char(16)} key.
+   * <p>Rather than materialise the whole {@code CARDDAT} file and slice it in memory, the browse is
+   * pushed down to PostgreSQL as a ranged, ordered, {@code FETCH FIRST :limit ROWS ONLY} query so
+   * that at most one screen page (plus the one-row {@code CA-NEXT-PAGE-EXISTS} "peek") is ever
+   * read. This bounds heap usage under concurrency (QA finding F-1) while preserving the exact
+   * {@code CARD-NUM}-ascending VSAM key order, the PF8 page-down semantics and the next-page peek.
+   * The {@code char(16)} key column orders identically to {@link String#compareTo} over the
+   * zero-padded card numbers, so page <em>N</em> shows the same seven records as the legacy browse.
    *
-   * <p><strong>Bounded-result / VSAM-browse parity exception (intentional).</strong> The code
-   * review performance checklist flags the {@code findAll()} read on the no-account-filter path as
-   * an unbounded full-table load. This is a deliberate, AAP-sanctioned parity decision, not an
-   * oversight. Legacy {@code COCRDLIC} browses {@code CARDDAT} with VSAM {@code STARTBR GTEQ} /
-   * {@code READNEXT} / {@code READPREV}; reproducing that browse with byte-for-byte paging parity
-   * &mdash; in particular {@code 9100-READ-BACKWARDS} (PF7 page-up), which must locate the current
-   * first key within the ordered key set and walk the preceding records, together with the exact
-   * {@code CA-NEXT-PAGE-EXISTS} one-record "peek" and the {@code "NO MORE RECORDS TO SHOW"} edge
-   * conditions &mdash; requires one stable ascending projection of the key set to slice in service;
-   * a forward-only bounded query cannot reproduce the page-up direction over identical ordering.
-   * Under AAP precedence D1, 100% behavioral parity (AAP &sect;0.7.1 R1 / &sect;0.6.5) outranks the
-   * generic performance heuristic. The blast radius is further bounded because (a) the supported
-   * account filter is pushed down to {@code findByCardAcctId} (the common bounded path), and (b)
-   * the migration's local-only validation runs against the small legacy fixtures (AAP &sect;0.6.7).
-   * A repository-level cursor/range query may replace this only if it preserves identical PF7/PF8
-   * ordering and edge-message semantics.
+   * <ul>
+   *   <li>card-number filter valid &rarr; at most the one matching card (a {@code findById}), with
+   *       the start-key range and any account filter applied in service ({@link
+   *       #singleCardForward});
+   *   <li>account filter valid &rarr; the {@code ix_card_acct_id}-backed account range query;
+   *   <li>otherwise &rarr; the unfiltered card-number range query over the whole key set.
+   * </ul>
    *
    * @param st the mutable per-request working storage (holds the active filters)
-   * @return the filtered, ascending-by-card-number candidate list
+   * @param startKey the browse start key (16-character card number); {@code null}/blank starts at
+   *     the lowest key
+   * @param inclusive {@code true} to include a record whose key equals {@code startKey} (first page
+   *     / refresh / page-up boundary), {@code false} to start strictly after it (page-down)
+   * @param limit the maximum number of rows to read (one screen page plus the peek row)
+   * @return up to {@code limit} matching cards in ascending {@code CARD-NUM} order
    * @throws IoStatusException if the underlying repository read fails unexpectedly (the legacy
    *     {@code WHEN OTHER} response branch)
    */
-  private List<Card> fetchFiltered(ListState st) {
-    List<Card> candidates;
+  private List<Card> browseForward(ListState st, String startKey, boolean inclusive, int limit) {
+    String key = (startKey == null || startKey.isBlank()) ? "" : pad16(startKey);
+    Pageable page = PageRequest.of(0, limit);
     try {
-      if (st.acctFilter == FilterFlag.VALID && st.acctId != null) {
-        candidates = cardRepository.findByCardAcctId(st.acctId);
-      } else {
-        // Full ascending browse source for in-service keyset paging — intentional VSAM-browse
-        // parity exception (PF7 READPREV page-up + next-page peek need the full ordered key set);
-        // see the method Javadoc. AAP D1: parity (§0.7.1/§0.6.5) over the perf heuristic; the
-        // account-filtered path above is bounded and local validation uses small fixtures.
-        candidates = cardRepository.findAll();
+      if (st.cardFilter == FilterFlag.VALID) {
+        return singleCardForward(st, key, inclusive);
       }
+      if (st.acctFilter == FilterFlag.VALID && st.acctId != null) {
+        return inclusive
+            ? cardRepository.findByCardAcctIdAndCardNumGreaterThanEqualOrderByCardNumAsc(
+                st.acctId, key, page)
+            : cardRepository.findByCardAcctIdAndCardNumGreaterThanOrderByCardNumAsc(
+                st.acctId, key, page);
+      }
+      return inclusive
+          ? cardRepository.findByCardNumGreaterThanEqualOrderByCardNumAsc(key, page)
+          : cardRepository.findByCardNumGreaterThanOrderByCardNumAsc(key, page);
     } catch (RuntimeException ex) {
       // Equivalent to the COBOL WHEN OTHER RESP branch that builds WS-FILE-ERROR-MESSAGE and
       // abends.
       throw new IoStatusException(LIT_CARD_FILE_NAME, "READ", "??", ex);
     }
-    List<Card> result = new ArrayList<>();
-    for (Card card : candidates) {
-      if (!filterRecords(card, st)) {
-        result.add(card);
-      }
-    }
-    result.sort(Comparator.comparing((Card card) -> pad16(card.getCardNum())));
-    return result;
   }
 
   /**
-   * Reproduces {@code 9500-FILTER-RECORDS} (COBOL L1382-L1410): decide whether a card record is
-   * excluded by the active filters.
+   * Issues a bounded backward keyset read &mdash; the {@code STARTBR ... GTEQ} + {@code READPREV}
+   * equivalent used by {@code 9100-READ-BACKWARDS} (PF7 page-up), honouring the active filters.
    *
-   * <p>The record is included by default. When the account filter is valid it is excluded if the
-   * card's account id differs from the filter; when the card filter is valid it is excluded if the
-   * card number differs from the filter.
+   * <p>Returns the records immediately <em>below</em> {@code firstKey} in
+   * <strong>descending</strong> {@code CARD-NUM} order (closest-below first), bounded to {@code
+   * limit} rows; the caller reverses them into ascending display order. As with {@link
+   * #browseForward}, the read is pushed down as a ranged {@code FETCH FIRST :limit ROWS ONLY} query
+   * so memory stays bounded (QA finding F-1).
    *
-   * @param card the candidate card record
    * @param st the mutable per-request working storage (holds the active filters)
-   * @return {@code true} if the record must be excluded, {@code false} to keep it
+   * @param firstKey the current page's first card number (16-character); records strictly below it
+   *     are returned
+   * @param limit the maximum number of rows to read (one screen page)
+   * @return up to {@code limit} matching cards in descending {@code CARD-NUM} order
+   * @throws IoStatusException if the underlying repository read fails unexpectedly (the legacy
+   *     {@code WHEN OTHER} response branch)
    */
-  private boolean filterRecords(Card card, ListState st) {
-    // SET WS-DONOT-EXCLUDE-THIS-RECORD TO TRUE (default include).
-    if (st.acctFilter == FilterFlag.VALID) {
-      // IF CARD-ACCT-ID = CC-ACCT-ID CONTINUE ELSE EXCLUDE.
-      if (!Objects.equals(card.getCardAcctId(), st.acctId)) {
-        return true;
+  private List<Card> browseBackward(ListState st, String firstKey, int limit) {
+    String key = (firstKey == null || firstKey.isBlank()) ? "" : pad16(firstKey);
+    Pageable page = PageRequest.of(0, limit);
+    try {
+      if (st.cardFilter == FilterFlag.VALID) {
+        return singleCardBackward(st, key);
       }
-    }
-    if (st.cardFilter == FilterFlag.VALID) {
-      // IF CARD-NUM = CC-CARD-NUM-N CONTINUE ELSE EXCLUDE.
-      if (!pad16(card.getCardNum()).equals(st.cardNumFilter)) {
-        return true;
+      if (st.acctFilter == FilterFlag.VALID && st.acctId != null) {
+        return cardRepository.findByCardAcctIdAndCardNumLessThanOrderByCardNumDesc(
+            st.acctId, key, page);
       }
+      return cardRepository.findByCardNumLessThanOrderByCardNumDesc(key, page);
+    } catch (RuntimeException ex) {
+      // Equivalent to the COBOL WHEN OTHER RESP branch that builds WS-FILE-ERROR-MESSAGE and
+      // abends.
+      throw new IoStatusException(LIT_CARD_FILE_NAME, "READ", "??", ex);
     }
-    return false;
+  }
+
+  /**
+   * Resolves the at-most-one card selected by a valid card-number filter, applying the {@code
+   * 9500-FILTER-RECORDS} account-equality predicate. A card-number filter is always exactly 16
+   * digits (the {@code 2220-EDIT-CARD} edit rejects anything else), so it identifies a single
+   * primary-key row; this is the keyset equivalent of browsing the file and excluding every record
+   * whose key differs from the filter.
+   *
+   * @param st the mutable per-request working storage (holds the active filters)
+   * @return a 0- or 1-element list: the matching card, or empty when it does not exist or fails the
+   *     account-equality filter
+   */
+  private List<Card> singleCard(ListState st) {
+    Optional<Card> found = cardRepository.findById(st.cardNumFilter);
+    if (found.isEmpty()) {
+      return List.of();
+    }
+    Card card = found.get();
+    // 9500-FILTER-RECORDS: when the account filter is also valid, exclude a card on a different
+    // account (IF CARD-ACCT-ID = CC-ACCT-ID CONTINUE ELSE EXCLUDE).
+    if (st.acctFilter == FilterFlag.VALID && !Objects.equals(card.getCardAcctId(), st.acctId)) {
+      return List.of();
+    }
+    return List.of(card);
+  }
+
+  /**
+   * Applies the forward start-key range ({@code >=} inclusive / {@code >} exclusive) to the single
+   * card selected by a card-number filter, mirroring {@code STARTBR GTEQ} positioning over a
+   * one-record key set.
+   *
+   * @param st the mutable per-request working storage (holds the active filters)
+   * @param key the 16-character browse start key ({@code ""} starts at the lowest key)
+   * @param inclusive {@code true} to keep a card whose key equals {@code key}, {@code false} to
+   *     keep it only when strictly greater
+   * @return the single matching card, or empty when it does not qualify
+   */
+  private List<Card> singleCardForward(ListState st, String key, boolean inclusive) {
+    List<Card> base = singleCard(st);
+    if (base.isEmpty() || key.isEmpty()) {
+      return base;
+    }
+    int cmp = pad16(base.get(0).getCardNum()).compareTo(key);
+    return (inclusive ? cmp >= 0 : cmp > 0) ? base : List.of();
+  }
+
+  /**
+   * Applies the backward start-key range ({@code < firstKey}) to the single card selected by a
+   * card-number filter, mirroring the {@code READPREV} walk over a one-record key set.
+   *
+   * @param st the mutable per-request working storage (holds the active filters)
+   * @param key the 16-character page-up anchor key; the card qualifies only when strictly below it
+   * @return the single matching card, or empty when it does not qualify
+   */
+  private List<Card> singleCardBackward(ListState st, String key) {
+    List<Card> base = singleCard(st);
+    if (base.isEmpty() || key.isEmpty()) {
+      return List.of();
+    }
+    return pad16(base.get(0).getCardNum()).compareTo(key) < 0 ? base : List.of();
   }
 
   /**
@@ -617,27 +685,31 @@ public class CardListService {
    * exists.
    *
    * <p>The legacy program issues {@code STARTBR ... GTEQ} on the browse RID then {@code READNEXT}s,
-   * filtering each record. The Java equivalent locates the start index in the pre-filtered,
-   * ascending list and collects forward. Reaching seven rows triggers a one-record "peek": if a
-   * further record exists the next page is flagged present, otherwise the end-of-data message
-   * {@link #MSG_NO_MORE_RECORDS} is raised (only when no message is already pending — the {@code
-   * WS-ERROR-MSG-OFF} guard). Running out before filling the page raises the same end-of-data
-   * message, and additionally sets the no-records condition {@link #MSG_NO_RECORDS_FOUND} when the
-   * first page yields nothing.
+   * filtering each record. The Java equivalent pushes the browse down to a bounded keyset query
+   * ({@link #browseForward}) that fetches {@link #MAX_SCREEN_LINES} + 1 rows: the first {@code
+   * MAX_SCREEN_LINES} populate the page and the extra {@code (n + 1)}-th row is the one-record
+   * "peek". A present peek row ({@code fetched.size() > MAX_SCREEN_LINES}) flags the next page
+   * present; otherwise the end-of-data message {@link #MSG_NO_MORE_RECORDS} is raised (only when no
+   * message is already pending — the {@code WS-ERROR-MSG-OFF} guard). Running out before filling
+   * the page raises the same end-of-data message, and additionally sets the no-records condition
+   * {@link #MSG_NO_RECORDS_FOUND} when the first page yields nothing. The {@code fetched.size() >
+   * MAX_SCREEN_LINES} test is exactly equivalent to the legacy "is there an index after the seventh
+   * collected row" peek, so the {@code CA-NEXT-PAGE-EXISTS} latch is byte-faithful while only one
+   * bounded page (plus one row) is ever read.
    *
-   * @param filtered the ordered, filtered candidate list
    * @param startKey the browse start key (16-character card number); {@code null}/blank starts at
    *     the lowest key
    * @param inclusive {@code true} to include a record whose key equals {@code startKey} (first page
    *     / refresh / page-up boundary), {@code false} to start strictly after it (page-down)
    * @param st the mutable per-request working storage (receives the collected page and flags)
    */
-  private void readForward(List<Card> filtered, String startKey, boolean inclusive, ListState st) {
+  private void readForward(String startKey, boolean inclusive, ListState st) {
+    // STARTBR GTEQ + READNEXT, bounded to one page plus the peek row.
+    List<Card> fetched = browseForward(st, startKey, inclusive, MAX_SCREEN_LINES + 1);
     st.pageCards = new ArrayList<>(); // MOVE LOW-VALUES TO WS-ALL-ROWS
-    int idx = startIndex(filtered, startKey, inclusive);
-    while (idx < filtered.size() && st.pageCards.size() < MAX_SCREEN_LINES) {
-      st.pageCards.add(filtered.get(idx));
-      idx++;
+    int rowsRead = Math.min(MAX_SCREEN_LINES, fetched.size());
+    for (int i = 0; i < rowsRead; i++) {
+      st.pageCards.add(fetched.get(i));
     }
     int collected = st.pageCards.size();
     if (collected >= 1) {
@@ -650,8 +722,10 @@ public class CardListService {
     }
     boolean endReached;
     if (collected == MAX_SCREEN_LINES) {
-      // Page is full — peek one more record (the legacy extra READNEXT after the 7th row).
-      if (idx < filtered.size()) {
+      // Page is full — the peek row (the legacy extra READNEXT after the 7th row) is present iff
+      // the
+      // bounded query returned more than one full page.
+      if (fetched.size() > MAX_SCREEN_LINES) {
         st.caNextPageExists = true; // SET CA-NEXT-PAGE-EXISTS
         endReached = false;
       } else {
@@ -681,23 +755,26 @@ public class CardListService {
    *
    * <p>The legacy program issues {@code STARTBR ... GTEQ} on the current first key, discards that
    * record with the first {@code READPREV}, then walks backwards filling rows seven down to one.
-   * The Java equivalent finds the index of the current first key in the filtered list and takes the
-   * seven preceding records (in ascending order). A page-up always implies a following page exists
-   * (the page we came from), so the next-page indicator is set present (legacy L1287).
+   * The Java equivalent pushes that page-up down to a bounded descending keyset query ({@link
+   * #browseBackward}) that returns up to {@link #MAX_SCREEN_LINES} records strictly below the
+   * current first key, closest-below first; these are then reversed into ascending display order.
+   * Because the descending read yields exactly the records the legacy backward walk would collect
+   * (the seven keys immediately preceding the current first key, in identical {@code char(16)} key
+   * order), the resulting page is byte-faithful while only one bounded page is ever read. A page-up
+   * always implies a following page exists (the page we came from), so the next-page indicator is
+   * set present (legacy L1287).
    *
-   * @param filtered the ordered, filtered candidate list
    * @param firstKey the current page's first card number (16-character)
    * @param st the mutable per-request working storage (receives the collected page and flags)
    */
-  private void readBackwards(List<Card> filtered, String firstKey, ListState st) {
+  private void readBackwards(String firstKey, ListState st) {
+    // STARTBR GTEQ on the current first key + READPREV walk, bounded to one page (descending).
+    List<Card> fetched = browseBackward(st, firstKey, MAX_SCREEN_LINES);
     st.pageCards = new ArrayList<>(); // MOVE LOW-VALUES TO WS-ALL-ROWS
-    int currentFirst = startIndex(filtered, firstKey, true);
-    int start = currentFirst - MAX_SCREEN_LINES;
-    if (start < 0) {
-      start = 0;
-    }
-    for (int i = start; i < currentFirst && st.pageCards.size() < MAX_SCREEN_LINES; i++) {
-      st.pageCards.add(filtered.get(i));
+    // browseBackward returns closest-below first (descending); reverse into ascending display
+    // order.
+    for (int i = fetched.size() - 1; i >= 0; i--) {
+      st.pageCards.add(fetched.get(i));
     }
     int collected = st.pageCards.size();
     if (collected >= 1) {
@@ -708,44 +785,35 @@ public class CardListService {
   }
 
   /**
-   * Computes the index of the first record at or after the browse key, mirroring {@code STARTBR
-   * GTEQ} followed by the first {@code READNEXT}.
-   *
-   * @param filtered the ordered, filtered candidate list
-   * @param startKey the browse start key (16-character card number); {@code null}/blank means the
-   *     lowest key (index 0)
-   * @param inclusive {@code true} to return the index of a key equal to {@code startKey}, {@code
-   *     false} to return the index strictly after it
-   * @return the start index, or {@code filtered.size()} when no record qualifies
-   */
-  private static int startIndex(List<Card> filtered, String startKey, boolean inclusive) {
-    if (startKey == null || startKey.isBlank()) {
-      return 0;
-    }
-    String key = pad16(startKey);
-    for (int i = 0; i < filtered.size(); i++) {
-      int cmp = pad16(filtered.get(i).getCardNum()).compareTo(key);
-      if (inclusive ? cmp >= 0 : cmp > 0) {
-        return i;
-      }
-    }
-    return filtered.size();
-  }
-
-  /**
    * Recomputes the {@code CA-NEXT-PAGE-EXISTS} condition at dispatch time: whether any record
    * follows the last displayed row. The legacy program persisted this in the COMMAREA from the
-   * previous read; because the browse is read-only the recomputed value is identical.
+   * previous read; because the browse is read-only the recomputed value is identical. The probe is
+   * a bounded {@code EXISTS} keyset query (no rows materialised), honouring the active filters.
    *
-   * @param filtered the ordered, filtered candidate list
    * @param st the mutable per-request working storage (holds the last displayed key)
    * @return {@code true} if a further page of records exists after the current page
+   * @throws IoStatusException if the underlying repository probe fails unexpectedly (the legacy
+   *     {@code WHEN OTHER} response branch)
    */
-  private static boolean hasNext(List<Card> filtered, ListState st) {
+  private boolean hasNext(ListState st) {
     if (st.lastDisplayedCardNum == null) {
       return false;
     }
-    return startIndex(filtered, st.lastDisplayedCardNum, false) < filtered.size();
+    String key = pad16(st.lastDisplayedCardNum);
+    try {
+      if (st.cardFilter == FilterFlag.VALID) {
+        // A card-number filter matches at most one row; nothing can follow it.
+        return false;
+      }
+      if (st.acctFilter == FilterFlag.VALID && st.acctId != null) {
+        return cardRepository.existsByCardAcctIdAndCardNumGreaterThan(st.acctId, key);
+      }
+      return cardRepository.existsByCardNumGreaterThan(key);
+    } catch (RuntimeException ex) {
+      // Equivalent to the COBOL WHEN OTHER RESP branch that builds WS-FILE-ERROR-MESSAGE and
+      // abends.
+      throw new IoStatusException(LIT_CARD_FILE_NAME, "READ", "??", ex);
+    }
   }
 
   // ===============================================================================================

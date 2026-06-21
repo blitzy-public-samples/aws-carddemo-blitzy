@@ -18,7 +18,6 @@ package com.aws.carddemo.service.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -33,16 +32,16 @@ import com.aws.carddemo.repository.CustomerRepository;
 import com.aws.carddemo.repository.TransactionRepository;
 import com.aws.carddemo.service.batch.FileIoService.WorkArea;
 import com.aws.carddemo.service.batch.FileIoService.WorkArea.Operation;
+import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
-import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.domain.Sort;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Pure Mockito unit tests for {@link FileIoService}, the centralized file-I/O subprogram that is
@@ -112,6 +111,13 @@ class FileIoServiceTest {
   @Mock private CustomerRepository customerRepository;
   @Mock private AccountRepository accountRepository;
 
+  /**
+   * Stand-in for the field-injected {@code @PersistenceContext EntityManager} the TRNXFILE and
+   * XREFFILE streaming cursors detach each read row through; under the manual constructor wiring
+   * the per-row detach is a no-op (QA F-2 batch streaming).
+   */
+  @Mock private EntityManager entityManager;
+
   /** The system under test; rebuilt fresh before every test so cursor state never leaks. */
   private FileIoService service;
 
@@ -120,6 +126,11 @@ class FileIoServiceTest {
     service =
         new FileIoService(
             transactionRepository, cardXrefRepository, customerRepository, accountRepository);
+
+    // The TRNXFILE/XREFFILE streaming cursors detach each read row through the field-injected
+    // EntityManager; inject the mock so the detach is exercised harmlessly under the manual
+    // constructor wiring (QA F-2).
+    ReflectionTestUtils.setField(service, "entityManager", entityManager);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -137,7 +148,7 @@ class FileIoServiceTest {
   void trnxfile_open_read_to_eof_then_close_returns_status_codes_and_records() {
     Transaction t1 = transaction(TRAN_ID_1);
     Transaction t2 = transaction(TRAN_ID_2);
-    when(transactionRepository.findAllByOrderByTranIdAsc()).thenReturn(List.of(t1, t2));
+    when(transactionRepository.streamAllByOrderByTranIdAsc()).thenReturn(Stream.of(t1, t2));
 
     WorkArea wa = new WorkArea(WorkArea.TRNXFILE, Operation.OPEN);
 
@@ -165,7 +176,7 @@ class FileIoServiceTest {
               assertThat(wa.getReturnCode()).isEqualTo(STATUS_OK);
             });
 
-    verify(transactionRepository).findAllByOrderByTranIdAsc();
+    verify(transactionRepository).streamAllByOrderByTranIdAsc();
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -173,17 +184,18 @@ class FileIoServiceTest {
   // ---------------------------------------------------------------------------------------------
 
   /**
-   * The card cross-reference is a sequential cursor whose deterministic order is obtained with
-   * {@code Sort.by("xrefCardNum")} (ascending). The {@code OPEN}/{@code READ}/{@code CLOSE} cycle
-   * mirrors {@code TRNXFILE}; additionally the {@link Sort} passed to {@code findAll} is captured
-   * and asserted to be ascending by {@code xrefCardNum}, pinning the golden-file ordering
-   * guarantee.
+   * The card cross-reference is a sequential cursor whose deterministic order is obtained with the
+   * ascending-key streaming finder {@code streamAllByOrderByXrefCardNumAsc()} (a bounded-memory
+   * cursor, QA F-2). The {@code OPEN}/{@code READ}/{@code CLOSE} cycle mirrors {@code TRNXFILE};
+   * additionally the streaming finder is verified to be invoked &mdash; its derived query name pins
+   * the ascending {@code xrefCardNum} order (asserted end-to-end against real PostgreSQL in {@code
+   * CardXrefRepositoryIntegrationTest}), preserving the golden-file ordering guarantee.
    */
   @Test
   void xreffile_sequential_cycle_uses_ascending_xref_card_num_and_returns_records_then_eof() {
     CardXref x1 = cardXref(CARD_NUM_1);
     CardXref x2 = cardXref(CARD_NUM_2);
-    when(cardXrefRepository.findAll(any(Sort.class))).thenReturn(List.of(x1, x2));
+    when(cardXrefRepository.streamAllByOrderByXrefCardNumAsc()).thenReturn(Stream.of(x1, x2));
 
     WorkArea wa = new WorkArea(WorkArea.XREFFILE, Operation.OPEN);
 
@@ -211,13 +223,7 @@ class FileIoServiceTest {
               assertThat(wa.getReturnCode()).isEqualTo(STATUS_OK);
             });
 
-    ArgumentCaptor<Sort> sortCaptor = ArgumentCaptor.forClass(Sort.class);
-    verify(cardXrefRepository).findAll(sortCaptor.capture());
-    Sort usedSort = sortCaptor.getValue();
-    assertThat(usedSort).isEqualTo(Sort.by("xrefCardNum"));
-    Sort.Order order = usedSort.getOrderFor("xrefCardNum");
-    assertThat(order).isNotNull();
-    assertThat(order.isAscending()).isTrue();
+    verify(cardXrefRepository).streamAllByOrderByXrefCardNumAsc();
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -351,7 +357,7 @@ class FileIoServiceTest {
    */
   @Test
   void process_never_throws_for_eof_not_found_or_unknown_ddname() {
-    when(transactionRepository.findAllByOrderByTranIdAsc()).thenReturn(List.of());
+    when(transactionRepository.streamAllByOrderByTranIdAsc()).thenReturn(Stream.empty());
     when(customerRepository.findById(999L)).thenReturn(Optional.empty());
 
     // (1) End-of-file on an exhausted sequential read (TRNXFILE opened over an empty master).

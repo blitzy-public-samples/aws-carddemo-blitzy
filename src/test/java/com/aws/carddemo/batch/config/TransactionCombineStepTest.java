@@ -62,9 +62,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  *
  * <ol>
  *   <li>{@code transactionCombineSortStep} &mdash; reads every transaction ascending by {@code
- *       TRAN-ID} via {@link TransactionRepository#findAllByOrderByTranIdAsc()} and writes each one
- *       as a 350-byte fixed-width {@code CVTRA05Y} record (newline-terminated) into {@code
- *       TRANSACT.COMBINED}, reproducing {@code STEP05R} ({@code SORT FIELDS=(TRAN-ID,A)});
+ *       TRAN-ID} via {@link TransactionRepository#streamAllByOrderByTranIdAsc()} (a bounded-memory
+ *       streaming cursor, QA F-2) and writes each one as a 350-byte fixed-width {@code CVTRA05Y}
+ *       record (newline-terminated) into {@code TRANSACT.COMBINED}, reproducing {@code STEP05R}
+ *       ({@code SORT FIELDS=(TRAN-ID,A)});
  *   <li>{@code transactionCombineReproStep} &mdash; copies {@code TRANSACT.COMBINED} verbatim onto
  *       {@code TRANSACT.VSAM.KSDS}, reproducing the {@code STEP10} IDCAMS {@code REPRO} load of the
  *       combined file into the transaction master.

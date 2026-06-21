@@ -24,6 +24,7 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.PageRequest;
 
 /**
  * {@link org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest @DataJpaTest} slice
@@ -177,6 +178,78 @@ class TransactionRepositoryIntegrationTest extends AbstractRepositoryIntegration
 
     assertThat(reread.getTranAmt()).isEqualByComparingTo("504.77");
     assertThat(reread.getTranAmt().scale()).isEqualTo(2);
+  }
+
+  // ===============================================================================================
+  // Keyset browse parity (F-1 fix). The transaction list (COTRN00C / CT00) previously read the
+  // entire 200k-row table on every page turn (findAllByOrderByTranIdAsc) and sliced in memory,
+  // which exhausted the heap under concurrency. The browse now uses bounded keyset pages. These
+  // tests prove against a real PostgreSQL char(16) tran_id that: (1) the Pageable limit bounds the
+  // read to one page; (2) bpchar TRAN-ID ordering matches the ascending VSAM-key browse and Java
+  // compareTo; (3) the empty start key positions at LOW-VALUES (STARTBR from the top); (4) the
+  // GREATER-THAN-EQUAL forward query is inclusive of the start key (the PF8 path re-reads the
+  // boundary record and skips it in memory); and (5) the LESS-THAN descending query reproduces the
+  // PF7 READPREV look-back. The retained findAllByOrderByTranIdAsc() (covered above) is kept only
+  // for the bounded max-id callers and is no longer on the browse path.
+  // ===============================================================================================
+
+  @Test
+  @DisplayName("keyset forward from the empty start key browses from the top, bounded by the limit")
+  void keysetForwardFromTop_boundedByLimit() {
+    for (int i = 1; i <= 5; i++) {
+      entityManager.persist(
+          buildTransaction(String.format("%016d", i), "2022-07-18 00:00:0" + i + ".000000"));
+    }
+    flushAndClear();
+
+    // STARTBR from LOW-VALUES (empty key) with a two-row page: exactly the first two transactions
+    // ascending are returned, NOT the whole table -- the bounded read that remedies the F-1 OOM.
+    List<Transaction> page =
+        repository.findByTranIdGreaterThanEqualOrderByTranIdAsc("", PageRequest.of(0, 2));
+
+    assertThat(page).hasSize(2);
+    assertThat(page)
+        .extracting(t -> t.getTranId().trim())
+        .containsExactly("0000000000000001", "0000000000000002");
+  }
+
+  @Test
+  @DisplayName("keyset forward GREATER-THAN-EQUAL is inclusive of the start key (PF8 re-read)")
+  void keysetForwardInclusiveOfStartKey() {
+    for (int i = 1; i <= 5; i++) {
+      entityManager.persist(
+          buildTransaction(String.format("%016d", i), "2022-07-18 00:00:0" + i + ".000000"));
+    }
+    flushAndClear();
+
+    // The PF8 path re-reads the boundary record (inclusive >=) and skips it in memory, so the
+    // boundary id 3 is present at the head of the slice.
+    List<Transaction> page =
+        repository.findByTranIdGreaterThanEqualOrderByTranIdAsc(
+            "0000000000000003", PageRequest.of(0, 10));
+
+    assertThat(page)
+        .extracting(t -> t.getTranId().trim())
+        .containsExactly("0000000000000003", "0000000000000004", "0000000000000005");
+  }
+
+  @Test
+  @DisplayName("keyset backward (LESS-THAN) returns descending rows below the cursor, bounded")
+  void keysetBackwardDescending_boundedByLimit() {
+    for (int i = 1; i <= 5; i++) {
+      entityManager.persist(
+          buildTransaction(String.format("%016d", i), "2022-07-18 00:00:0" + i + ".000000"));
+    }
+    flushAndClear();
+
+    // PF7 READPREV below transaction 5 with a two-row look-back: the two closest-below rows,
+    // descending.
+    List<Transaction> back =
+        repository.findByTranIdLessThanOrderByTranIdDesc("0000000000000005", PageRequest.of(0, 2));
+
+    assertThat(back)
+        .extracting(t -> t.getTranId().trim())
+        .containsExactly("0000000000000004", "0000000000000003");
   }
 
   /**

@@ -19,7 +19,6 @@ package com.aws.carddemo.service.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -30,9 +29,12 @@ import ch.qos.logback.core.read.ListAppender;
 import com.aws.carddemo.domain.Customer;
 import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.CustomerRepository;
-import java.util.AbstractList;
+import jakarta.persistence.EntityManager;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Spliterators;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayNameGeneration;
@@ -45,7 +47,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataAccessResourceFailureException;
-import org.springframework.data.domain.Sort;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Pure JUnit&nbsp;5 + Mockito + AssertJ unit tests for {@link CustomerExtractService}, the batch
@@ -91,6 +93,12 @@ class CustomerExtractServiceTest {
 
   @Mock CustomerRepository customerRepository;
 
+  /**
+   * The JPA persistence context, mocked so the service's per-row {@code detach(...)} (which bounds
+   * heap during the streaming read, QA F-2) is a no-op under unit test.
+   */
+  @Mock EntityManager entityManager;
+
   CustomerExtractService service;
 
   private Logger serviceLogger;
@@ -100,6 +108,9 @@ class CustomerExtractServiceTest {
   @BeforeEach
   void set_up() {
     service = new CustomerExtractService(customerRepository);
+    // The EntityManager is field-injected (@PersistenceContext) in production; set the mock here so
+    // the streaming read's per-row detach(...) is exercised as a no-op.
+    ReflectionTestUtils.setField(service, "entityManager", entityManager);
 
     // Capture the service's log output (the COBOL DISPLAY equivalents) for assertions. The level
     // is forced to DEBUG so every INFO record image and ERROR abend line is retained regardless of
@@ -123,22 +134,17 @@ class CustomerExtractServiceTest {
 
   @Test
   void run_reads_customers_using_ascending_cust_id_sort() {
-    when(customerRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(customer(100_000_001L, "SOLO-TOKEN")));
+    when(customerRepository.streamAllByOrderByCustIdAsc())
+        .thenReturn(Stream.of(customer(100_000_001L, "SOLO-TOKEN")));
 
     service.run();
 
-    // The materialized ascending scan must be requested with exactly Sort.by("custId").
-    ArgumentCaptor<Sort> sortCaptor = ArgumentCaptor.forClass(Sort.class);
-    verify(customerRepository).findAll(sortCaptor.capture());
-    Sort usedSort = sortCaptor.getValue();
-    assertThat(usedSort).isEqualTo(Sort.by("custId"));
-
-    // ...and that single order must be ascending on custId (the legacy RECORD KEY sequence).
-    Sort.Order custIdOrder = usedSort.getOrderFor("custId");
-    assertThat(custIdOrder).isNotNull();
-    assertThat(custIdOrder.isAscending()).isTrue();
-    assertThat(custIdOrder.getDirection()).isEqualTo(Sort.Direction.ASC);
+    // The ascending scan must be issued via the streaming, ascending-key reader
+    // streamAllByOrderByCustIdAsc(), which fetches in bounded windows rather than buffering the
+    // whole table (QA F-2). The ascending custId ordering (the legacy RECORD KEY sequence) is
+    // encoded in the repository method name and asserted against a real database in
+    // CustomerRepositoryIntegrationTest.
+    verify(customerRepository).streamAllByOrderByCustIdAsc();
   }
 
   // ===== Phase B: DOUBLE emission (the parity quirk) ============================================
@@ -146,7 +152,7 @@ class CustomerExtractServiceTest {
   @Test
   void run_emits_each_customer_record_exactly_twice() {
     Customer only = customer(100_000_001L, "ALICE-ONLY-TOKEN");
-    when(customerRepository.findAll(any(Sort.class))).thenReturn(List.of(only));
+    when(customerRepository.streamAllByOrderByCustIdAsc()).thenReturn(Stream.of(only));
 
     service.run();
 
@@ -173,8 +179,8 @@ class CustomerExtractServiceTest {
     Customer firstCustomer = customer(100_000_001L, "ALPHA-FIRST-TOKEN");
     Customer secondCustomer = customer(200_000_002L, "BETA-SECOND-TOKEN");
     // findAll(Sort) returns the materialized ascending scan, already in custId order.
-    when(customerRepository.findAll(any(Sort.class)))
-        .thenReturn(List.of(firstCustomer, secondCustomer));
+    when(customerRepository.streamAllByOrderByCustIdAsc())
+        .thenReturn(Stream.of(firstCustomer, secondCustomer));
 
     service.run();
 
@@ -193,7 +199,7 @@ class CustomerExtractServiceTest {
 
   @Test
   void run_completes_without_exception_when_no_customers_exist() {
-    when(customerRepository.findAll(any(Sort.class))).thenReturn(List.of());
+    when(customerRepository.streamAllByOrderByCustIdAsc()).thenReturn(Stream.of());
 
     assertThatCode(() -> service.run()).doesNotThrowAnyException();
 
@@ -209,7 +215,7 @@ class CustomerExtractServiceTest {
   @Test
   void run_throws_io_status_exception_for_custfile_when_repository_fails() {
     DataAccessException failure = new DataAccessResourceFailureException("custfile open failed");
-    when(customerRepository.findAll(any(Sort.class))).thenThrow(failure);
+    when(customerRepository.streamAllByOrderByCustIdAsc()).thenThrow(failure);
 
     assertThatThrownBy(() -> service.run())
         .isInstanceOf(IoStatusException.class)
@@ -237,8 +243,7 @@ class CustomerExtractServiceTest {
     DataAccessException failure = new DataAccessResourceFailureException("custfile read failed");
     // The open succeeds (the iterator is created), but advancing the cursor raises the failure,
     // exercising the 1000-CUSTFILE-GET-NEXT read-error branch (the READ abend).
-    when(customerRepository.findAll(any(Sort.class)))
-        .thenReturn(new ReadFailingCustomerList(failure));
+    when(customerRepository.streamAllByOrderByCustIdAsc()).thenReturn(readFailingStream(failure));
 
     assertThatThrownBy(() -> service.run())
         .isInstanceOf(IoStatusException.class)
@@ -315,47 +320,30 @@ class CustomerExtractServiceTest {
   }
 
   /**
-   * A {@link Customer} list whose iterator reports a record is available ({@code hasNext() ==
+   * Builds a {@link Stream} whose iterator reports a record is available ({@code hasNext() ==
    * true}) but raises the supplied {@link DataAccessException} when the record is read ({@code
    * next()}).
    *
    * <p>This drives the read-failure (abend) branch of {@link CustomerExtractService#run()} without
-   * a live database: {@code findAll} appears to return data so the open succeeds, and the failure
+   * a live database: obtaining the iterator succeeds so the open completes, and the failure
    * surfaces only when the service advances the cursor inside {@code 1000-CUSTFILE-GET-NEXT}. A
-   * typed list (rather than a raw {@code mock(List.class)}) is used so the test compiles cleanly
-   * under the project's zero-warning {@code -Werror -Xlint:all} build.
+   * typed iterator (rather than a raw {@code mock}) is used so the test compiles cleanly under the
+   * project's zero-warning {@code -Werror -Xlint:all} build, and the reader is now the
+   * JDBC-cursor-backed {@code streamAllByOrderByCustIdAsc()} (QA F-2).
    */
-  private static final class ReadFailingCustomerList extends AbstractList<Customer> {
+  private static Stream<Customer> readFailingStream(DataAccessException failure) {
+    Iterator<Customer> failingIterator =
+        new Iterator<>() {
+          @Override
+          public boolean hasNext() {
+            return true;
+          }
 
-    private final DataAccessException failure;
-
-    private ReadFailingCustomerList(DataAccessException failure) {
-      this.failure = failure;
-    }
-
-    @Override
-    public Customer get(int index) {
-      throw new IndexOutOfBoundsException(String.valueOf(index));
-    }
-
-    @Override
-    public int size() {
-      return 1;
-    }
-
-    @Override
-    public Iterator<Customer> iterator() {
-      return new Iterator<>() {
-        @Override
-        public boolean hasNext() {
-          return true;
-        }
-
-        @Override
-        public Customer next() {
-          throw failure;
-        }
-      };
-    }
+          @Override
+          public Customer next() {
+            throw failure;
+          }
+        };
+    return StreamSupport.stream(Spliterators.spliteratorUnknownSize(failingIterator, 0), false);
   }
 }
