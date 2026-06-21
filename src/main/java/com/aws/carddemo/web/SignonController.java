@@ -248,6 +248,18 @@ public class SignonController extends BaseScreenController {
       return VIEW_SIGNON;
     }
 
+    // Rotate the servlet session id on the anonymous -> authenticated boundary to defeat session
+    // fixation (CWE-384 / OWASP A07:2021): a pre-authentication JSESSIONID must never survive as an
+    // authenticated session identifier. This reproduces Spring Security's default changeSessionId
+    // session-authentication strategy, which the custom, filter-bypassing sign-on flow would
+    // otherwise skip (that strategy normally fires inside the authentication filter). It runs only
+    // after successful credential validation (next != null) and BEFORE the SecurityContext is
+    // persisted below, so the authenticated context is bound to the freshly minted session id.
+    // changeSessionId() (Servlet 3.1+) preserves all existing session attributes -- notably the
+    // COMMAREA stored above -- so the pseudo-conversational navigation state is retained across the
+    // rotation (AAP 0.6.5). The HttpSession parameter guarantees a session already exists here.
+    request.changeSessionId();
+
     // Successful authentication (the EXEC CICS XCTL equivalent). Establish the Spring Security
     // context from the role the service captured into the COMMAREA, so subsequent authenticated
     // requests (the redirect target and beyond) are recognized by the security filter chain.

@@ -287,6 +287,17 @@ public class SecurityConfig {
                     .hasRole(ROLE_ADMIN)
                     .anyRequest()
                     .authenticated())
+        // Session-fixation hardening (CWE-384 / OWASP A07:2021): on a successful authentication the
+        // servlet session id is rotated rather than reused, so a pre-authentication JSESSIONID can
+        // never be replayed as an authenticated session. changeSessionId() is Spring Security's
+        // secure default for the filter-based authentication paths (HTTP Basic, form login);
+        // declaring it explicitly makes the posture self-documenting and resilient to future
+        // default changes. The custom controller-driven sign-on flow (SignonController.doSignon),
+        // which bypasses the authentication filter, performs the equivalent
+        // request.changeSessionId() rotation itself, so every authentication path is covered by the
+        // same strategy.
+        .sessionManagement(
+            session -> session.sessionFixation(fixation -> fixation.changeSessionId()))
         .formLogin(
             form -> form.loginPage("/login").successHandler(roleBasedSuccessHandler()).permitAll())
         .httpBasic(Customizer.withDefaults())

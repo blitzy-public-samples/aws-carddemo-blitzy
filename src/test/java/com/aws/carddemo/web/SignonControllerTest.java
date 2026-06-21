@@ -16,6 +16,7 @@
  */
 package com.aws.carddemo.web;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -31,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -198,5 +200,72 @@ class SignonControllerTest {
         .andExpect(status().isOk())
         .andExpect(view().name("signon"))
         .andExpect(model().attributeExists("signonForm"));
+  }
+
+  /**
+   * {@code POST /signon} for a successful sign-on rotates the servlet session identifier, defeating
+   * session fixation (CWE-384 / OWASP A07:2021). The pre-authentication {@link MockHttpSession} id
+   * captured before the request must differ afterwards, proving the controller invokes {@code
+   * HttpServletRequest#changeSessionId()} on the anonymous&rarr;authenticated boundary &mdash; the
+   * modernized equivalent of Spring Security's default {@code changeSessionId}
+   * session-authentication strategy, which the custom, filter-bypassing sign-on flow would
+   * otherwise skip. {@code changeSessionId()} preserves the session attributes, so the COMMAREA
+   * navigation state survives the rotation.
+   *
+   * <p>The stub mutates the COMMAREA exactly as the real service would (resolved user id + the
+   * {@code 'U'} type) and returns {@code "COMEN01C"}, so the controller takes the success branch
+   * and the rotation executes before the redirect to {@code /menu}.
+   *
+   * @throws Exception if the simulated request cannot be performed
+   */
+  @Test
+  void post_validSignon_rotatesSessionIdToDefeatFixation() throws Exception {
+    given(signonService.processSignon(any(), any(), any()))
+        .willAnswer(
+            inv -> {
+              CardDemoCommarea commarea = inv.getArgument(1);
+              commarea.setUserId("USER0001");
+              commarea.setUsrTypUser();
+              return "COMEN01C";
+            });
+
+    MockHttpSession preAuthSession = new MockHttpSession();
+    String preAuthSessionId = preAuthSession.getId();
+
+    mockMvc
+        .perform(post("/signon").session(preAuthSession))
+        .andExpect(status().is3xxRedirection())
+        .andExpect(redirectedUrl("/menu"));
+
+    assertThat(preAuthSession.getId())
+        .as("the servlet session id must be rotated on successful sign-on (CWE-384)")
+        .isNotEqualTo(preAuthSessionId);
+  }
+
+  /**
+   * {@code POST /signon} that fails authentication (the service returns {@code null}) must NOT
+   * rotate the session identifier. The rotation is reserved for the successful
+   * anonymous&rarr;authenticated transition, mirroring Spring Security's strategy of rotating the
+   * session id only on a successful authentication; a failed attempt redisplays the sign-on screen
+   * and leaves the session id untouched. The pre-request {@link MockHttpSession} id is therefore
+   * unchanged afterwards.
+   *
+   * @throws Exception if the simulated request cannot be performed
+   */
+  @Test
+  void post_failedSignon_doesNotRotateSessionId() throws Exception {
+    given(signonService.processSignon(any(), any(), any())).willReturn(null);
+
+    MockHttpSession preAuthSession = new MockHttpSession();
+    String preAuthSessionId = preAuthSession.getId();
+
+    mockMvc
+        .perform(post("/signon").session(preAuthSession))
+        .andExpect(status().isOk())
+        .andExpect(view().name("signon"));
+
+    assertThat(preAuthSession.getId())
+        .as("the session id must not change when authentication fails")
+        .isEqualTo(preAuthSessionId);
   }
 }
