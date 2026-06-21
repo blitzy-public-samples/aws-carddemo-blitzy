@@ -137,11 +137,7 @@
     <ul class="menu-options" th:if="${menuOptions != null}">
         <li class="bms-label menu-option"
             th:each="opt : ${menuOptions}"
-            th:with="optNum=${opt.number == null ? '' : ('' + opt.number)},
-                     optLabel=${opt.label == null ? '' : opt.label}"
-            th:text="${#strings.isEmpty(optLabel)
-                        ? ''
-                        : ((#strings.length(optNum) == 1 ? ('0' + optNum) : optNum) + '. ' + optLabel)}">01. Account View</li>
+            th:text="${opt}">01. Account View</li>
     </ul>
 
     <!-- ===================== BMS lines 20, 23 and 24 ==================== -->
@@ -167,8 +163,11 @@
                    autofocus="autofocus" />
         </div>
 
-        <!-- BMS line 23: ERRMSG (red, bright); optional INFOMSG (neutral). -->
-        <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+        <!-- BMS line 23: ERRMSG (red, bright); optional INFOMSG (neutral).
+             COMEN01C sets the message on the bound screen DTO (mainMenuForm.errMsg);
+             resolve it effectively (model ${errMsg} first, then the form's errMsg) so
+             the COBOL ERRMSG literal renders rather than being swallowed. -->
+        <div th:replace="~{fragments/layout :: messages(${mainMenuForm?.errMsg ?: errMsg}, ${infoMsg})}"></div>
 
         <!--
           BMS line 24: PF-key legend rendered as this screen's own submit controls.

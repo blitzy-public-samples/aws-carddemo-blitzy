@@ -27,8 +27,11 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Pure JUnit&nbsp;5 + AssertJ unit tests for {@link GlobalExceptionHandler}, the Spring MVC
@@ -103,6 +106,19 @@ class GlobalExceptionHandlerTest {
    * response never discloses a sensitive identifier (CWE-532; AAP &sect;0.7.2).
    */
   private static final String RECORD_NOT_FOUND_DETAIL = "Record not found";
+
+  /**
+   * The fixed, path-free detail returned for an unmapped URL / static-resource miss (404, QA
+   * Defect&nbsp;#4); asserted as a literal because the production constant is {@code private}.
+   */
+  private static final String RESOURCE_NOT_FOUND_DETAIL = "The requested resource was not found.";
+
+  /**
+   * The fixed detail returned for a request method a known route does not support (405, QA
+   * Defect&nbsp;#4); asserted as a literal because the production constant is {@code private}.
+   */
+  private static final String METHOD_NOT_ALLOWED_DETAIL =
+      "Request method not supported for this resource.";
 
   /** Stateless advice under test, constructed directly — no Spring context and no injected deps. */
   private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
@@ -373,6 +389,62 @@ class GlobalExceptionHandlerTest {
     assertThat(body.getDetail()).doesNotContain("RuntimeException");
     assertThat(body.getProperties()).isNotNull();
     assertThat(body.getProperties()).containsEntry("abendCode", CICS_ABEND_CODE);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // NoResourceFoundException -> 404 Not Found (unmapped URL / static-resource miss; client error)
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Spring MVC's {@link NoResourceFoundException} (an unmapped URL — for example a mistyped route
+   * or a browser's automatic {@code GET /favicon.ico} probe) returns HTTP&nbsp;404 with the {@code
+   * "Resource Not Found"} title and the fixed, path-free detail. Being a <em>client</em> error
+   * rather than an application abend, it carries <strong>no</strong> {@code abendCode} property —
+   * so the preserved {@code "9999"} abend is reserved exclusively for genuine unrecoverable server
+   * failures (QA Defect&nbsp;#4: previously this fell through to the catch-all and was misreported
+   * as a 500 abend).
+   */
+  @Test
+  void handleNoResourceFound_returns404WithoutAbendCode() {
+    ResponseEntity<ProblemDetail> response =
+        handler.handleNoResourceFound(new NoResourceFoundException(HttpMethod.GET, "/favicon.ico"));
+
+    assertThat(response.getStatusCode().value()).isEqualTo(404);
+    ProblemDetail body = bodyOf(response);
+    assertThat(body.getTitle()).isEqualTo("Resource Not Found");
+    assertThat(body.getDetail()).isEqualTo(RESOURCE_NOT_FOUND_DETAIL);
+    Map<String, Object> properties = body.getProperties();
+    assertThat(properties).isNotNull();
+    assertThat(properties).doesNotContainKey("abendCode");
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // HttpRequestMethodNotSupportedException -> 405 Method Not Allowed (wrong HTTP verb; client
+  // error)
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Spring MVC's {@link HttpRequestMethodNotSupportedException} (a known route invoked with an
+   * unsupported HTTP method — for example a {@code GET} against a {@code POST}-only action) returns
+   * HTTP&nbsp;405 with the {@code "Method Not Allowed"} title, the fixed detail, and an {@code
+   * Allow} response header enumerating the supported methods (RFC&nbsp;7231 &sect;6.5.5). Being a
+   * <em>client</em> error it carries <strong>no</strong> {@code abendCode} property (QA
+   * Defect&nbsp;#4).
+   */
+  @Test
+  void handleMethodNotSupported_returns405WithAllowHeaderAndNoAbendCode() {
+    ResponseEntity<ProblemDetail> response =
+        handler.handleMethodNotSupported(
+            new HttpRequestMethodNotSupportedException("GET", List.of("POST")));
+
+    assertThat(response.getStatusCode().value()).isEqualTo(405);
+    ProblemDetail body = bodyOf(response);
+    assertThat(body.getTitle()).isEqualTo("Method Not Allowed");
+    assertThat(body.getDetail()).isEqualTo(METHOD_NOT_ALLOWED_DETAIL);
+    assertThat(response.getHeaders().getAllow()).contains(HttpMethod.POST);
+    Map<String, Object> properties = body.getProperties();
+    assertThat(properties).isNotNull();
+    assertThat(properties).doesNotContainKey("abendCode");
   }
 
   // ---------------------------------------------------------------------------------------------

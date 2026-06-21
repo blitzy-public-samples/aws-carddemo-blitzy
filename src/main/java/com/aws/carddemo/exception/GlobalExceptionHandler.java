@@ -18,14 +18,18 @@ package com.aws.carddemo.exception;
 
 import com.aws.carddemo.util.Messages;
 import java.time.OffsetDateTime;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Central Spring MVC {@link ControllerAdvice} that translates the {@code
@@ -124,6 +128,24 @@ public class GlobalExceptionHandler {
    * echoing the looked-up key.
    */
   private static final String RECORD_NOT_FOUND_DETAIL = "Record not found";
+
+  /**
+   * The fixed, path-free client-facing {@code detail} returned for every {@link
+   * NoResourceFoundException} (an unmapped URL or static-resource miss, such as a mistyped route or
+   * a browser's automatic {@code GET /favicon.ico} probe). The requested path is deliberately
+   * <em>not</em> echoed back, keeping the response free of request-controlled content (AAP
+   * &sect;0.7.2 security hygiene).
+   */
+  private static final String RESOURCE_NOT_FOUND_DETAIL = "The requested resource was not found.";
+
+  /**
+   * The fixed client-facing {@code detail} returned for every {@link
+   * HttpRequestMethodNotSupportedException} (a request method a known route does not support). The
+   * set of supported methods is conveyed through the {@code Allow} response header (RFC&nbsp;7231
+   * &sect;6.5.5) rather than through this text.
+   */
+  private static final String METHOD_NOT_ALLOWED_DETAIL =
+      "Request method not supported for this resource.";
 
   /** {@link ProblemDetail} property name carrying the response-composition timestamp. */
   private static final String PROP_TIMESTAMP = "timestamp";
@@ -332,6 +354,75 @@ public class GlobalExceptionHandler {
     body.setProperty(PROP_ABEND_CODE, CICS_ABEND_CODE);
     log.error("Application abend [{}]: {}", CICS_ABEND_CODE, detail, ex);
     return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+  }
+
+  /**
+   * Handles Spring MVC's {@link NoResourceFoundException} — raised when a request targets a URL
+   * that maps to no controller handler and no static resource (for example a mistyped route, or a
+   * browser's automatic {@code GET /favicon.ico} probe) — by returning <strong>HTTP&nbsp;404 (Not
+   * Found)</strong>.
+   *
+   * <p><strong>Why this handler exists.</strong> {@link NoResourceFoundException} extends {@link
+   * Exception}, so without a dedicated mapping it falls through to {@link
+   * #handleUnexpected(Exception)} and is misreported as an HTTP&nbsp;500 abend carrying {@link
+   * #CICS_ABEND_CODE}. That both inflates server-error (5xx) metrics and masks a genuine client
+   * mistake. A routing/resource miss is a <em>client</em> error, not an application abend, so this
+   * handler attaches <em>no</em> {@code "abendCode"} property and reserves the {@code "9999"} abend
+   * exclusively for genuine unrecoverable server failures.
+   *
+   * <p><strong>Security hygiene.</strong> The client-facing {@code detail} is the fixed, path-free
+   * {@link #RESOURCE_NOT_FOUND_DETAIL}; the requested path is never echoed back (AAP &sect;0.7.2).
+   * Logged at {@code DEBUG} because unmapped-URL and {@code favicon.ico} probes are routine
+   * background noise rather than actionable events.
+   *
+   * @param ex the unmapped-resource condition raised by the Spring MVC dispatcher
+   * @return a 404 response whose body is a {@link ProblemDetail} describing the missing resource
+   */
+  @ExceptionHandler(NoResourceFoundException.class)
+  public ResponseEntity<ProblemDetail> handleNoResourceFound(NoResourceFoundException ex) {
+    ProblemDetail body =
+        problemDetail(HttpStatus.NOT_FOUND, RESOURCE_NOT_FOUND_DETAIL, "Resource Not Found");
+    log.debug("No resource found for request: {}", ex.getMessage());
+    return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
+  }
+
+  /**
+   * Handles Spring MVC's {@link HttpRequestMethodNotSupportedException} — raised when a known route
+   * is invoked with an HTTP method it does not support (for example a {@code GET} against a {@code
+   * POST}-only action, or a {@code POST} against a {@code GET}-only render) — by returning
+   * <strong>HTTP&nbsp;405 (Method Not Allowed)</strong> with the {@code Allow} response header
+   * enumerating the supported methods, as RFC&nbsp;7231 &sect;6.5.5 requires.
+   *
+   * <p><strong>Why this handler exists.</strong> Like {@link NoResourceFoundException}, this
+   * framework exception extends {@link Exception} and would otherwise be misreported by {@link
+   * #handleUnexpected(Exception)} as an HTTP&nbsp;500 abend. A wrong-method request is a
+   * <em>client</em> error, not an application abend, so this handler attaches <em>no</em> {@code
+   * "abendCode"} property.
+   *
+   * <p><strong>Security hygiene.</strong> The client-facing {@code detail} is the fixed {@link
+   * #METHOD_NOT_ALLOWED_DETAIL}; the supported methods are conveyed only through the {@code Allow}
+   * header (which the framework reports via {@link
+   * HttpRequestMethodNotSupportedException#getSupportedHttpMethods()}). Logged at {@code WARN}
+   * because a method mismatch on an existing route can indicate a client-integration defect worth
+   * surfacing.
+   *
+   * @param ex the method-not-supported condition raised by the Spring MVC dispatcher
+   * @return a 405 response whose body is a {@link ProblemDetail} and whose {@code Allow} header
+   *     lists the supported HTTP methods (when the framework reports them)
+   */
+  @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+  public ResponseEntity<ProblemDetail> handleMethodNotSupported(
+      HttpRequestMethodNotSupportedException ex) {
+    ProblemDetail body =
+        problemDetail(
+            HttpStatus.METHOD_NOT_ALLOWED, METHOD_NOT_ALLOWED_DETAIL, "Method Not Allowed");
+    ResponseEntity.BodyBuilder builder = ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED);
+    Set<HttpMethod> supportedMethods = ex.getSupportedHttpMethods();
+    if (supportedMethods != null && !supportedMethods.isEmpty()) {
+      builder.allow(supportedMethods.toArray(new HttpMethod[0]));
+    }
+    log.warn("Method not supported: {}", ex.getMessage());
+    return builder.body(body);
   }
 
   /**

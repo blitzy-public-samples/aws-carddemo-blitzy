@@ -195,8 +195,13 @@
         </div>
 
         <!-- BMS line 23: ERRMSG (RED, bright). Shared messages fragment renders
-             the error row (and an optional info row) from model attributes. -->
-        <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+             the error row (and an optional info row).
+             BLITZY [QA-DEFECT#1 FIX]: TranViewService sets the message on the bound
+             screen DTO (screen.setErrMsg(), incl. the "Transaction ID NOT found..."
+             not-found message), not a top-level model attribute, so ${errMsg} rendered
+             empty (silent dead-end on read). Consume it under the form-scoped effective
+             pattern. TranView has no infoMsg field, so info keeps ${infoMsg}. -->
+        <div th:replace="~{fragments/layout :: messages(${transactionViewForm?.errMsg ?: errMsg}, ${infoMsg})}"></div>
 
         <!-- BMS line 24: PF-key legend (YELLOW) rendered as functional submit
              buttons. ENTER=Fetch is first so an implicit Enter submit in the

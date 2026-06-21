@@ -180,6 +180,16 @@
                                    th:field="*{rows[__${stat.index}__].sel}"
                                    th:attr="aria-label='Select transaction on row ' + ${stat.count}"
                                    maxlength="1" size="1" autocomplete="off" />
+                            <!-- BLITZY [QA-DEFECT#2 FIX]: COTRN00C drill-down requires
+                                 the per-row TRAN-ID to be submitted with the selection
+                                 flag so processEnterKey can route to /transaction-view
+                                 for the selected row. The TRAN-ID cell below is
+                                 display-only (th:text), so without this hidden field
+                                 the bound row's trnId is null and the navigation guard
+                                 fails, silently re-rendering the list. Round-trip the
+                                 key here. -->
+                            <input type="hidden"
+                                   th:field="*{rows[__${stat.index}__].trnId}" />
                         </td>
                         <td class="bms-col-tranid bms-label"
                             th:text="${row.trnId}">0000000000000000</td>

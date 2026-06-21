@@ -75,6 +75,39 @@
         <!-- EXPDAY (DRK/PROT in BMS): hidden, preserved for round-trip. -->
         <input type="hidden" th:field="*{expDay}" />
 
+        <!-- BLITZY [QA-DEFECT#5 FIX]: CCUP-CHANGE-ACTION pseudo-conversational state
+             token. COCRDUPC is a multi-step confirm-then-save state machine
+             (DETAILS-NOT-FETCHED -> SHOW-DETAILS -> CHANGES-OK-NOT-CONFIRMED ->
+             CHANGES-OKAYED-AND-DONE). CardUpdateService.currentState() reads
+             screen.getUpdateState() (null/blank defaults to DETAILS-NOT-FETCHED), and
+             PF5=Save is honored ONLY when the state is CHANGES-OK-NOT-CONFIRMED;
+             otherwise it is remapped to ENTER. Without round-tripping this token every
+             POST reset the state to DETAILS-NOT-FETCHED, so PF5 was always remapped and
+             the edit was silently discarded (save never committed). This hidden field
+             carries the advanced state the service sets via setUpdateState() back on
+             the next RECEIVE, mirroring the COMMAREA-preserved CCUP-CHANGE-ACTION. -->
+        <input type="hidden" th:field="*{updateState}" />
+
+        <!-- BLITZY [QA-DEFECT#5 FIX, cont.]: CCUP-OLD-DETAILS optimistic-lock
+             before-image. COCRDUPC captures the originally fetched ("OLD") card values
+             and, on PF5 save, re-reads the row and compares it against this OLD snapshot
+             (9300-CHECK-CHANGE-IN-REC); a match rewrites, a mismatch reports "Record
+             changed by some one else." CardUpdateService carries this snapshot on the
+             CardUpdateScreen DTO (unlike AccountUpdateService, which re-reads it from the
+             DB each turn), so — exactly like CCUP-OLD-DETAILS lives in the COBOL COMMAREA
+             across the pseudo-conversational cycle — it must round-trip with the form.
+             Without it the save reached the lock check with a blank before-image and
+             always failed the comparison, so the rewrite never committed. The
+             before-image is the fetch-time value compared to the DB at save time, so
+             optimistic-lock semantics are preserved (a genuine concurrent change still
+             yields the "changed by some one else" message). -->
+        <input type="hidden" th:field="*{oldCardCvvCd}" />
+        <input type="hidden" th:field="*{oldCrdName}" />
+        <input type="hidden" th:field="*{oldCrdStcd}" />
+        <input type="hidden" th:field="*{oldExpMon}" />
+        <input type="hidden" th:field="*{oldExpYear}" />
+        <input type="hidden" th:field="*{oldExpDay}" />
+
         <!-- ACCTSID (PROT/ASKIP): account number - read-only key (blue) + round-trip. -->
         <div class="bms-field-row">
             <span class="bms-prompt">Account Number:</span>
@@ -120,8 +153,14 @@
         </div>
 
         <!-- BMS INFOMSG (row 20, neutral) + ERRMSG (row 23, red) via the shared
-             message fragment. Both are optional controller model attributes. -->
-        <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+             message fragment.
+             BLITZY [QA-DEFECT#1 FIX]: CardUpdateService writes the message onto the
+             bound screen DTO (screen.setErrMsg()/setInfoMsg()), not a top-level model
+             attribute, so consuming ${errMsg}/${infoMsg} resolved to null and the row
+             rendered empty (success/validation/result messages silently dropped). Use
+             the form-scoped effective pattern (${cardUpdateForm?.x ?: x}) already proven
+             on the 9 working screens so the message the service set actually renders. -->
+        <div th:replace="~{fragments/layout :: messages(${cardUpdateForm?.errMsg ?: errMsg}, ${cardUpdateForm?.infoMsg ?: infoMsg})}"></div>
 
         <!-- BMS line 24 PF keys (FKEYS + FKEYSC) as real submit buttons. The
              controller dispatches on the pfKey parameter: ENTER=process,

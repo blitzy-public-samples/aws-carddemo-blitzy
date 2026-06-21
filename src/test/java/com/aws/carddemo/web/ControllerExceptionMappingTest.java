@@ -20,7 +20,10 @@ import static org.hamcrest.Matchers.containsString;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -246,5 +249,51 @@ class ControllerExceptionMappingTest {
         .andExpect(jsonPath("$.file").value("ACCTFILE"))
         .andExpect(jsonPath("$.operation").value("READ"))
         .andExpect(jsonPath("$.detail", containsString("FILE STATUS IS")));
+  }
+
+  /**
+   * Spring MVC's {@link org.springframework.web.servlet.resource.NoResourceFoundException} — raised
+   * when an authenticated request targets a URL mapped by no controller handler and no static
+   * resource — maps to <strong>HTTP&nbsp;404 (Not Found)</strong> via {@link
+   * GlobalExceptionHandler} rather than falling through to the unexpected-error catch-all as an
+   * HTTP&nbsp;500 abend (QA Defect&nbsp;#4). The {@code @ControllerAdvice}'s {@code
+   * ExceptionHandlerExceptionResolver} runs before the framework's {@code
+   * DefaultHandlerExceptionResolver}, so this handler wins and writes the RFC&nbsp;7807 body. Being
+   * a <em>client</em> error, the response carries the {@code "Resource Not Found"} title and
+   * <em>no</em> {@code abendCode} property.
+   *
+   * @throws Exception if the simulated request cannot be performed
+   */
+  @Test
+  void noResourceFound_mapsToNotFound() throws Exception {
+    mockMvc
+        .perform(get("/no-such-route-xyz"))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.status").value(404))
+        .andExpect(jsonPath("$.title").value("Resource Not Found"))
+        .andExpect(jsonPath("$.abendCode").doesNotExist());
+  }
+
+  /**
+   * Spring MVC's {@link org.springframework.web.HttpRequestMethodNotSupportedException} — raised
+   * when the {@code /account-view} route (which supports {@code GET} and {@code POST}) is invoked
+   * with an unsupported method such as {@code PUT} — maps to <strong>HTTP&nbsp;405 (Method Not
+   * Allowed)</strong> via {@link GlobalExceptionHandler}, carrying an {@code Allow} response header
+   * that enumerates the supported methods (RFC&nbsp;7231 &sect;6.5.5), rather than surfacing as an
+   * HTTP&nbsp;500 abend (QA Defect&nbsp;#4). Being a <em>client</em> error, the body carries the
+   * {@code "Method Not Allowed"} title and <em>no</em> {@code abendCode} property.
+   *
+   * @throws Exception if the simulated request cannot be performed
+   */
+  @Test
+  void methodNotSupported_mapsToMethodNotAllowed() throws Exception {
+    mockMvc
+        .perform(put(ACCOUNT_VIEW_PATH).with(csrf()))
+        .andExpect(status().isMethodNotAllowed())
+        .andExpect(header().string("Allow", containsString("GET")))
+        .andExpect(header().string("Allow", containsString("POST")))
+        .andExpect(jsonPath("$.status").value(405))
+        .andExpect(jsonPath("$.title").value("Method Not Allowed"))
+        .andExpect(jsonPath("$.abendCode").doesNotExist());
   }
 }

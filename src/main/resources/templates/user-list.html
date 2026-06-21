@@ -295,6 +295,16 @@
                                th:id="${'sel' + stat.index}"
                                th:field="*{rows[__${stat.index}__].sel}"
                                maxlength="1" size="1" autocomplete="off" />
+                        <!-- BLITZY [QA-DEFECT#2 FIX]: COUSR00C drill-down requires the
+                             per-row USR-ID to be submitted with the selection flag so
+                             processEnterKey can route to /user-update or /user-delete
+                             for the selected row. The USR-ID cell below is display-only
+                             (th:text), so without this hidden field the bound row's
+                             usrId is null and the navigation guard
+                             (isPresent(selFlag) && isPresent(selectedUsrId)) fails,
+                             silently re-rendering the list. Round-trip the key here. -->
+                        <input type="hidden"
+                               th:field="*{rows[__${stat.index}__].usrId}" />
                     </td>
                     <td class="cu00-col-usrid bms-label" th:text="${row.usrId}">USERID01</td>
                     <td class="cu00-col-fname bms-label" th:text="${row.fName}">First Name</td>

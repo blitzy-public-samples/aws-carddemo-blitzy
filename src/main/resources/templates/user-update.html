@@ -232,8 +232,12 @@
             </div>
 
             <!-- BMS line 23: ERRMSG (red, bright) + optional info line, via the
-                 shared messages fragment. -->
-            <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+                 shared messages fragment.
+                 BLITZY [QA-DEFECT#1 FIX]: UserUpdateService sets the message on the
+                 bound screen DTO (screen.setErrMsg()), not a top-level model attribute,
+                 so ${errMsg} rendered empty. Consume it under the form-scoped effective
+                 pattern. UserUpdate has no infoMsg field, so info keeps ${infoMsg}. -->
+            <div th:replace="~{fragments/layout :: messages(${userUpdateForm?.errMsg ?: errMsg}, ${infoMsg})}"></div>
 
             <!--
               BMS line 24: PF-key legend rendered as the actual submit controls.

@@ -215,7 +215,13 @@
                  messages fragment. Wrapped in a live region so assistive technology
                  announces validation / status failures. -->
             <div role="alert">
-                <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+                <!-- BLITZY [QA-DEFECT#1 FIX]: UserAddService writes the message onto the
+                     bound screen DTO (screen.setErrMsg(), reused for both validation
+                     errors and the "User <id> has been added" success), not a top-level
+                     model attribute, so ${errMsg} resolved to null and the row rendered
+                     empty. Consume it under the form-scoped effective pattern. UserAdd
+                     has no infoMsg field, so the info slot keeps ${infoMsg}. -->
+                <div th:replace="~{fragments/layout :: messages(${userAddForm?.errMsg ?: errMsg}, ${infoMsg})}"></div>
             </div>
 
             <!--

@@ -199,8 +199,11 @@
             </p>
 
             <!-- BMS line 23: ERRMSG (red, bright) + optional info line, via the
-                 shared messages fragment. -->
-            <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+                 shared messages fragment. COADM01C sets the message on the bound
+                 screen DTO (adminMenuForm.errMsg); resolve it effectively (model
+                 ${errMsg} first, then the form's errMsg) so the COBOL ERRMSG literal
+                 renders rather than being swallowed. -->
+            <div th:replace="~{fragments/layout :: messages(${adminMenuForm?.errMsg ?: errMsg}, ${infoMsg})}"></div>
 
             <!--
               BMS line 24: PF-key legend rendered as the actual submit controls.

@@ -338,8 +338,13 @@
         </div>
 
         <!-- BMS line 22 (INFOMSG, neutral) + line 23 (ERRMSG, red). Rendered by the
-             shared messages fragment from model attributes errMsg / infoMsg. -->
-        <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+             shared messages fragment.
+             BLITZY [QA-DEFECT#1 FIX]: AccountUpdateService sets the message on the bound
+             screen DTO (screen.setErrMsg()/setInfoMsg()), not top-level model attributes,
+             so ${errMsg}/${infoMsg} rendered empty (post-update success swallowed).
+             AccountUpdateScreen has BOTH errMsg and infoMsg, so use the form-scoped
+             effective pattern for each. -->
+        <div th:replace="~{fragments/layout :: messages(${accountUpdateForm?.errMsg ?: errMsg}, ${accountUpdateForm?.infoMsg ?: infoMsg})}"></div>
 
         <!-- BMS line 24: PF-key legend rendered as interactive submit buttons (the
              web equivalent of the 3270 AID keys). Each carries the pressed key in

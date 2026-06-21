@@ -240,6 +240,18 @@
                                th:id="${'crdSel' + stat.index}"
                                th:field="*{rows[__${stat.index}__].crdSel}"
                                maxlength="1" size="1" autocomplete="off" />
+                        <!-- BLITZY [QA-DEFECT#2 FIX]: COCRDLIC drill-down requires the
+                             per-row ACCT-ID and CARD-NUM to be submitted with the
+                             selection flag. The account/card cells below are
+                             display-only (th:text), so without these hidden fields the
+                             bound row's acctNo/crdNum are null and
+                             CardListService.routeToSelected falls back to 0L, sending
+                             /card-view a missing identity ("Did not find this card").
+                             Round-trip both keys here so the selected card resolves. -->
+                        <input type="hidden"
+                               th:field="*{rows[__${stat.index}__].acctNo}" />
+                        <input type="hidden"
+                               th:field="*{rows[__${stat.index}__].crdNum}" />
                     </td>
                     <td class="bms-label ccli-acctcell" th:text="${row.acctNo}">00000000000</td>
                     <td class="bms-label ccli-cardcell" th:text="${row.crdNum}">0000000000000000</td>

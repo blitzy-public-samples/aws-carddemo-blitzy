@@ -228,8 +228,12 @@
             <span id="confirm-hint" class="bms-sep">(Y/N)</span>
         </div>
 
-        <!-- BMS line 23: error / info message line (ERRMSG, red). -->
-        <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+        <!-- BMS line 23: error / info message line (ERRMSG, red).
+             BLITZY [QA-DEFECT#1 FIX]: TranAddService sets the message on the bound screen
+             DTO (screen.setErrMsg(), reused for the post-commit success), not a top-level
+             model attribute, so ${errMsg} rendered empty. Consume it under the form-scoped
+             effective pattern. TranAdd has no infoMsg field, so info keeps ${infoMsg}. -->
+        <div th:replace="~{fragments/layout :: messages(${transactionAddForm?.errMsg ?: errMsg}, ${infoMsg})}"></div>
 
         <!-- BMS line 24: PF-key actions. Every AID key submits the form with a
              distinct pfKey value; TranAddController branches on it (ENTER=add,
