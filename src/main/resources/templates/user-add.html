@@ -241,11 +241,11 @@
                 <button type="submit" name="pfKey" value="PF12">F12=Exit</button>
             </div>
         </form>
-
-        <!-- BMS line 24 legend text (yellow), reusing the shared footer fragment.
-             Mirrors the COUSR1A line-24 literal exactly; the submit buttons above
-             are the interactive equivalent of these AID keys. -->
-        <div th:replace="~{fragments/layout :: footer('ENTER=Add User  F3=Back  F4=Clear  F12=Exit')}"></div>
+        <!-- NOTE: the functional submit buttons inside the form above ARE the BMS
+             line-24 legend (yellow .bms-pfkey row). A second static footer() fragment
+             was previously rendered here, producing a duplicate legend; it has been
+             removed so the legend renders exactly once, matching the other screens and
+             the single BMS row-24 contract (QA F3 Issue #6). -->
     </div>
 
     <!--

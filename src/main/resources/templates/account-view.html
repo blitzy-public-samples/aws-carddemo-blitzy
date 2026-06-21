@@ -71,13 +71,17 @@
             background-color: #000000;
         }
 
-        /* Section headings — BMS COLOR=NEUTRAL, normal intensity, centred. Kept
-           at body font-size because terminal text is uniform height. */
+        /* Section headings — BMS COLOR=NEUTRAL. Per the shared layout standard,
+           3270 NEUTRAL headings render bright-white + bold (.bms-heading), as on
+           the other 16 screens (and the identical "Customer Details" field on
+           account-update). The heading elements below also carry .bms-heading;
+           these rules add only the screen-specific centring/margins and keep the
+           uniform 3270 cell font-size (QA F3 Issue #3). */
         .av-heading {
             margin-block: 0.4em;
-            color: #C0C0C0;
+            color: #FFFFFF;
             font-size: 1rem;
-            font-weight: normal;
+            font-weight: bold;
             text-align: center;
         }
 
@@ -175,7 +179,7 @@
         <main id="av-main">
 
             <!-- Line 4: screen heading (NEUTRAL). -->
-            <h1 class="av-heading">View Account</h1>
+            <h1 class="bms-heading av-heading">View Account</h1>
 
             <!-- Lines 5-10: account details. Left column = identity/dates/group;
                  right column = edited monetary amounts (right-justified). -->
@@ -260,7 +264,7 @@
             </section>
 
             <!-- Line 11: customer-details heading (NEUTRAL). -->
-            <h2 class="av-heading">Customer Details</h2>
+            <h2 class="bms-heading av-heading">Customer Details</h2>
 
             <!-- Lines 12-20: customer details (all display/protected). -->
             <section class="av-section" aria-label="Customer details">

@@ -48,7 +48,7 @@
          L2  'Prog :' + PGMNAME(COSGN00C) + TITLE02(yellow) + 'Time :' + CURTIME
          The fragment fills CURDATE/CURTIME from the model (or the current
          date/time when absent), mirroring the program-populated BMS fields. */-->
-    <div th:replace="~{fragments/layout :: header(${title01} ?: 'AWS CardDemo', 'CC00', 'COSGN00C')}"></div>
+    <div th:replace="~{fragments/layout :: header(${title01} ?: 'AWS Mainframe Modernization', 'CC00', 'COSGN00C')}"></div>
 
     <!--/* Line 3: 'AppID:' + APPLID + 'SysID:' + SYSID. These are protected
          (display-only) BMS fields and are rendered as read-only text - never
@@ -125,40 +125,35 @@
             <span class="bms-label">(8 Char)</span>
         </div>
 
-        <!--/* AID / PF-key parity (AAP 0.6.5). ENTER = Sign-on is the primary
-             submit and is first in document order, so pressing Enter in either
-             field triggers it. F3 = Exit is a secondary submit. Both carry
-             name="pfKey" so SignonController can reproduce the CCARD-AID-*
-             routing. The .bms-pfkey class styles them as the terminal legend. */-->
-        <div class="bms-pfkey">
+        <!--/* BMS line 23: message band - ERRMSG (red, bright) / optional INFOMSG.
+             Resolves the effective error from, in order: the model ${errMsg}, the
+             form's errMsg, or a generic message when Spring Security signals ?error.
+             Wrapped in role="alert" so assistive technology announces validation /
+             authentication failures. Placed inside the form, ABOVE the legend, so the
+             BMS row-23 (message) -> row-24 (legend) order is preserved and the legend
+             renders exactly once (QA F3 Issue #6). */-->
+        <div role="alert"
+             th:with="effErr=${!#strings.isEmpty(errMsg)
+                                ? errMsg
+                                : (signonForm != null and !#strings.isEmpty(signonForm.errMsg)
+                                    ? signonForm.errMsg
+                                    : (param.error != null ? 'Invalid User ID or Password. Please try again.' : ''))}">
+            <div th:replace="~{fragments/layout :: messages(${effErr}, ${infoMsg})}"></div>
+        </div>
+
+        <!--/* BMS line 24: PF-key legend rendered as functional submit buttons so the
+             single yellow line-24 row is BOTH the legend AND the interactive AID
+             control (no phantom second legend row - QA F3 Issue #6). ENTER = Sign-on
+             is the primary submit and is first in document order, so pressing Enter in
+             either field triggers it; F3 = Exit is a secondary submit. Both carry
+             name="pfKey" so SignonController reproduces the CCARD-AID-* routing.
+             Styled by the layout's .bms-footer / .bms-pfkey classes. */-->
+        <div class="bms-footer bms-pfkey">
             <button type="submit" name="pfKey" value="ENTER">ENTER=Sign-on</button>
             <button type="submit" name="pfKey" value="PF3">F3=Exit</button>
         </div>
     </form>
 </main>
-
-<!--/* ================================================================= */-->
-<!--/* Line 23: message band - ERRMSG (red, bright) / optional INFOMSG.   */-->
-<!--/* Resolves the effective error from, in order: the model ${errMsg},  */-->
-<!--/* the form's errMsg, or a generic message when Spring Security        */-->
-<!--/* signals ?error. Wrapped in role="alert" so assistive technology     */-->
-<!--/* announces validation / authentication failures.                     */-->
-<!--/* ================================================================= */-->
-<div role="alert"
-     th:with="effErr=${!#strings.isEmpty(errMsg)
-                        ? errMsg
-                        : (signonForm != null and !#strings.isEmpty(signonForm.errMsg)
-                            ? signonForm.errMsg
-                            : (param.error != null ? 'Invalid User ID or Password. Please try again.' : ''))}">
-    <div th:replace="~{fragments/layout :: messages(${effErr}, ${infoMsg})}"></div>
-</div>
-
-<!--/* ================================================================= */-->
-<!--/* Line 24: PF-key legend (yellow).                                   */-->
-<!--/* ================================================================= */-->
-<footer>
-    <div th:replace="~{fragments/layout :: footer('ENTER=Sign-on  F3=Exit')}"></div>
-</footer>
 
 </body>
 </html>

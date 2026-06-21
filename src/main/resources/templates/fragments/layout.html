@@ -108,14 +108,14 @@
 <body>
 
 <!-- header(title, tranId, programId): BMS lines 1-2.
-     Consumed via:  <div th:replace="~{fragments/layout :: header('AWS CardDemo','CC00','COSGN00C')}"></div> -->
+     Consumed via:  <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization','CC00','COSGN00C')}"></div> -->
 <div th:fragment="header(title, tranId, programId)" class="bms-header">
     <div class="bms-header-row">
         <span class="bms-hside">
             <span class="bms-label">Tran: </span>
             <span class="bms-label" th:text="${tranId}">CC00</span>
         </span>
-        <span class="bms-title" th:text="${title}">AWS CardDemo</span>
+        <span class="bms-title" th:text="${title}">AWS Mainframe Modernization</span>
         <span class="bms-hside">
             <span class="bms-label">Date: </span>
             <span class="bms-label"
@@ -127,10 +127,13 @@
             <span class="bms-label">Prog: </span>
             <span class="bms-label" th:text="${programId}">COSGN00C</span>
         </span>
-        <!-- Line-2 centered slot mirrors BMS TITLE02 (often blank / a secondary
-             title). Optional model attribute title2; empty when not supplied,
-             but the flex:1 column is preserved so Prog/Time stay aligned. -->
-        <span class="bms-title" th:text="${title2}"></span>
+        <!-- Line-2 centered slot = BMS TITLE02 (COTTL01Y CCDA-TITLE02 = 'CardDemo'),
+             which all 17 online COBOL programs MOVE to the header. Honour an explicit
+             title2 when a screen/controller supplies one; otherwise default to the
+             BMS-faithful 'CardDemo' so every screen shows it consistently
+             (QA F3 Issue #2). The flex:1 column keeps Prog/Time aligned. -->
+        <span class="bms-title"
+              th:text="${!#strings.isEmpty(title2) ? title2 : 'CardDemo'}">CardDemo</span>
         <span class="bms-hside">
             <span class="bms-label">Time: </span>
             <span class="bms-label"

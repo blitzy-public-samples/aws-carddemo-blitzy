@@ -171,7 +171,7 @@
       passed as the fragment's first argument with a sensible default.
     -->
     <div th:with="curDate=${cardListForm.curDate}, curTime=${cardListForm.curTime}, title2=${cardListForm.title02}">
-        <div th:replace="~{fragments/layout :: header(${cardListForm.title01} ?: 'AWS CardDemo', 'CCLI', 'COCRDLIC')}">
+        <div th:replace="~{fragments/layout :: header(${cardListForm.title01} ?: 'AWS Mainframe Modernization', 'CCLI', 'COCRDLIC')}">
             <!-- header band injected from fragments/layout.html -->
         </div>
     </div>
@@ -268,13 +268,21 @@
 
         <!--
           BMS line 24: PF-key legend rendered as functional submit buttons so the
-          controller can dispatch on the "pfKey" request parameter. ENTER applies
-          the filters / row selection, F7 / F8 page backward / forward, F3 exits.
-          ENTER is first so it is the implicit action when the operator presses
-          Enter inside a filter field, matching the 3270 ENTER semantics.
+          controller can dispatch on the "pfKey" request parameter. F7 / F8 page
+          backward / forward, F3 exits.
+
+          The BMS COCRDLI row-24 legend text is exactly
+          'F3=Exit F7=Backward F8=Forward' (no ENTER token). ENTER still selects a
+          flagged row, so it remains a functional submit kept FIRST in document order
+          (so the browser's default Enter-key submit inside a filter/select field maps
+          to 3270 ENTER) but is rendered visually-hidden (sr-only) and removed from the
+          tab order, so the VISIBLE legend matches the BMS contract exactly - QA F3
+          Issue #5. Removing the button entirely would mis-route Enter to F3=Exit.
         -->
         <div class="bms-footer bms-pfkey ccli-pfkeys">
-            <button type="submit" name="pfKey" value="ENTER">ENTER=Select</button>
+            <button type="submit" name="pfKey" value="ENTER"
+                    class="ccli-visually-hidden" tabindex="-1"
+                    aria-label="Enter equals Select">ENTER=Select</button>
             <button type="submit" name="pfKey" value="PF3">F3=Exit</button>
             <button type="submit" name="pfKey" value="PF7">F7=Backward</button>
             <button type="submit" name="pfKey" value="PF8">F8=Forward</button>

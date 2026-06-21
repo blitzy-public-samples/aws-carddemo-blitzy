@@ -33,19 +33,30 @@
 
 <body class="bms-screen">
 
+    <!-- Screen-scoped layout helper ONLY (class, never inline style). The shared
+         colour vocabulary and 24x80 monospace grid live once in fragments/layout.html;
+         this rule only centres the BMS line-4 heading (COCRDSL.bms POS=(4,30),
+         near-centred on the 80-col map), mirroring the class-based pattern used by
+         the sibling form/detail screens (e.g. card-update's .card-update-heading) —
+         QA F3 Issue #4. -->
+    <style>
+        /* BMS line 4 heading ("View Credit Card Detail", NEUTRAL bright): centred. */
+        .card-view-heading { text-align: center; }
+    </style>
+
     <!-- ================================================================= -->
     <!-- BMS lines 1-2 : header band                                       -->
     <!--   Tran: CCDL        [TITLE01]        Date: mm/dd/yy                -->
     <!--   Prog: COCRDSLC    [TITLE02]        Time: hh:mm:ss               -->
     <!-- TRNNAME=CCDL / PGMNAME=COCRDSLC (COCRDSL.bms lines 34-74).        -->
     <!-- ================================================================= -->
-    <div th:replace="~{fragments/layout :: header(${cardViewForm?.title01} ?: 'AWS CardDemo', 'CCDL', 'COCRDSLC')}"></div>
+    <div th:replace="~{fragments/layout :: header(${cardViewForm?.title01} ?: 'AWS Mainframe Modernization', 'CCDL', 'COCRDSLC')}"></div>
 
     <!-- BMS line 4 (POS 4,30 / COLOR=NEUTRAL) : screen heading. Exposed as a
          level-1 heading for assistive technology (role + aria-level) while
          keeping the uniform 16px terminal cell size of the 3270 grid; a native
          h1 would scale up and break the terminal look (COCRDSL.bms 75-78). -->
-    <div class="bms-heading" role="heading" aria-level="1">View Credit Card Detail</div>
+    <div class="bms-heading card-view-heading" role="heading" aria-level="1">View Credit Card Detail</div>
 
     <!-- ================================================================= -->
     <!-- Card view / search form. ENTER submits the search criteria; F3     -->
