@@ -19,8 +19,8 @@ package com.aws.carddemo.batch.writer;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.aws.carddemo.exception.IoStatusException;
 import java.io.IOException;
@@ -345,13 +345,13 @@ class ReportFileWriterTest {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Resilient golden-file parity (skips automatically when the fixture is absent)
+  // Deterministic golden-file parity (always runs; no skip)
   // ---------------------------------------------------------------------------------------------
 
   @Test
-  void golden_report_matches_when_present() throws Exception {
+  void golden_report_matches() throws Exception {
     URL url = getClass().getResource("/golden/reports/daily-transaction-report-basic.txt");
-    assumeTrue(url != null, "golden report fixture not present; skipping");
+    assertNotNull(url, "golden report fixture must ship under /golden/reports/");
 
     byte[] golden = Files.readAllBytes(Path.of(url.toURI()));
     // Every record is exactly LRECL characters plus the one-byte "\n" separator.

@@ -17,6 +17,7 @@
 package com.aws.carddemo.batch.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import com.aws.carddemo.domain.Transaction;
 import com.aws.carddemo.repository.TransactionRepository;
@@ -140,12 +141,15 @@ class TransactionCombineStepTest {
   private static final String TRAN_ID_3 = "0000000000000003";
 
   /**
-   * Optional, scenario-specific golden file for this exact three-row case. It is intentionally
-   * absent by default: the committed {@code golden/sorted/dailytran.combined-sorted.dat} is the
-   * full 300-row {@code dailytran} scenario, not this synthetic three-row case, so it must not be
-   * compared here. The guarded block below compares only when a matching golden is present and
-   * otherwise relies on the structural assertions (AAP: "else skip the byte compare and keep the
-   * structural asserts").
+   * Scenario-specific golden file for this exact three-row case, shipped at {@code
+   * src/test/resources/golden/sorted/transaction-combine-three-row.dat}. It holds the byte-exact
+   * combine output for the three seeded transactions — 350 bytes per record, newline-terminated, in
+   * ascending {@code TRAN-ID} order with the signed-overpunch {@code TRAN-AMT}s — and is compared
+   * byte-for-byte against the live job output below (a hard {@link
+   * org.junit.jupiter.api.Assertions#assertNotNull} guards it so a deleted/renamed fixture fails
+   * loudly rather than silently eroding parity coverage). This three-row case is distinct from the
+   * committed full 300-row {@code golden/sorted/dailytran.combined-sorted.dat} scenario, which is
+   * exercised separately by {@link TransactionCombineSortParityTest}.
    */
   private static final String GOLDEN_RESOURCE = "/golden/sorted/transaction-combine-three-row.dat";
 
@@ -259,12 +263,15 @@ class TransactionCombineStepTest {
     // target is byte-identical to the sorted combine output (and is produced after the sort).
     assertThat(Files.readAllBytes(ksds)).isEqualTo(Files.readAllBytes(combined));
 
-    // (7) Secondary, OPTIONAL golden-file parity (guarded). Compare only when a scenario-specific
-    // golden for this three-row case is present; otherwise skip and rely on the structural asserts.
+    // (7) Golden-file parity: the scenario-specific golden for this exact three-row case is shipped
+    // at GOLDEN_RESOURCE and is compared byte-for-byte against the live combine output. The fixture
+    // is hard-asserted present (assertNotNull) so a deleted or renamed golden fails the test loudly
+    // and can never silently erode parity coverage (matching the StatementFileWriterTest
+    // hard-assert
+    // convention rather than a silent skip).
     try (InputStream golden = getClass().getResourceAsStream(GOLDEN_RESOURCE)) {
-      if (golden != null) {
-        assertThat(Files.readAllBytes(combined)).isEqualTo(golden.readAllBytes());
-      }
+      assertNotNull(golden, "golden fixture must ship on the classpath: " + GOLDEN_RESOURCE);
+      assertThat(Files.readAllBytes(combined)).isEqualTo(golden.readAllBytes());
     }
   }
 
