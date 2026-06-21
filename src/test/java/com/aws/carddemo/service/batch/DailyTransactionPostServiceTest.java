@@ -162,7 +162,10 @@ class DailyTransactionPostServiceTest {
         .contains("SUCCESSFUL READ OF XREF", "SUCCESSFUL READ OF ACCOUNT FILE")
         .noneMatch(line -> line.contains("NOT FOUND"))
         .noneMatch(line -> line.contains("COULD NOT BE VERIFIED"))
-        .noneMatch(line -> line.contains("INVALID"));
+        .noneMatch(line -> line.contains("INVALID"))
+        // Security/PII regression guard: the full PAN is never logged — only the masked last-four
+        // form appears, and only at DEBUG (AAP §0.6.6, §0.7.3).
+        .noneMatch(line -> line.contains(cardNum));
     // The account WAS read (3000-READ-ACCOUNT ran); atLeastOnce tolerates the read-ahead re-verify.
     verify(accountRepository, atLeastOnce()).findById(acctId);
     assertThat(service.getXrefReadStatus()).isZero();
@@ -211,10 +214,18 @@ class DailyTransactionPostServiceTest {
 
     service.run();
 
+    // The skip diagnostic now masks the PAN to its last four digits (AAP §0.6.6, §0.7.3); the
+    // non-PAN transaction id is retained for triage of the skip.
+    String maskedCard = "*".repeat(cardNum.length() - 4) + cardNum.substring(cardNum.length() - 4);
     assertThat(messages())
         .contains(
             "INVALID CARD NUMBER FOR XREF",
-            "CARD NUMBER " + cardNum + " COULD NOT BE VERIFIED. SKIPPING TRANSACTION ID-" + tranId);
+            "CARD NUMBER "
+                + maskedCard
+                + " COULD NOT BE VERIFIED. SKIPPING TRANSACTION ID-"
+                + tranId);
+    // Security/PII regression guard: the full PAN must never appear in any captured log line.
+    assertThat(messages()).noneMatch(line -> line.contains(cardNum));
     // Key control-flow parity: 3000-READ-ACCOUNT is skipped when the xref is missing, so the
     // account file is never read at all — not even on the read-ahead re-verification.
     verify(accountRepository, never()).findById(any());
@@ -278,7 +289,9 @@ class DailyTransactionPostServiceTest {
 
     service.run();
 
-    // Each record emitted exactly the message set of its branch.
+    // Each record emitted exactly the message set of its branch. The (c) skip diagnostic masks the
+    // PAN to its last four digits (AAP §0.6.6, §0.7.3).
+    String maskedCardC = "*".repeat(cardC.length() - 4) + cardC.substring(cardC.length() - 4);
     assertThat(messages())
         .contains(
             "SUCCESSFUL READ OF ACCOUNT FILE", // (a) account found
@@ -286,9 +299,15 @@ class DailyTransactionPostServiceTest {
             "ACCOUNT " + acctB + " NOT FOUND", // (b) account missing
             "INVALID CARD NUMBER FOR XREF", // (c) xref missing
             "CARD NUMBER "
-                + cardC
+                + maskedCardC
                 + " COULD NOT BE VERIFIED. SKIPPING TRANSACTION ID-"
                 + tranC); // (c) xref missing
+    // Security/PII regression guard: no full PAN (for any of the three cards) ever appears in the
+    // captured log output — only masked last-four forms are emitted.
+    assertThat(messages())
+        .noneMatch(line -> line.contains(cardA))
+        .noneMatch(line -> line.contains(cardB))
+        .noneMatch(line -> line.contains(cardC));
 
     // The account was read only for the two xref-found records (a, b) and never for the
     // xref-missing record (c). Capturing every account-key read proves both facts at once.

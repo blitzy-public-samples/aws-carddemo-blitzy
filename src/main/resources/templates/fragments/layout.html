@@ -37,6 +37,12 @@
             margin: 0;
             padding: 0;
             background-color: #000000;
+            /* Narrow-viewport strategy (non-destructive): the .bms-screen grid
+               below keeps its fixed 80ch width to preserve exact 24x80 BMS
+               geometry. On viewports narrower than 80ch the page scrolls
+               horizontally to the intact grid instead of compressing/breaking
+               it — terminal fidelity is never sacrificed for responsiveness. */
+            overflow-x: auto;
         }
         /* Screen container: fixed ~80-column width, monospace, dark bg,
            light (NEUTRAL) default text. Monospace + fixed width preserve
@@ -134,12 +140,19 @@
 </div>
 
 <!-- messages(errMsg, infoMsg): ERRMSG row 23 (red/bright) + optional INFOMSG (neutral).
-     Consumed via:  <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div> -->
+     Consumed via:  <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+     Live-region semantics are declared centrally here so EVERY screen that
+     reuses this fragment announces validation/abend messages to screen readers,
+     regardless of whether it wraps the fragment or inserts it directly:
+       - the error line carries role="alert"  (assertive: announced immediately);
+       - the info line carries role="status" (polite: announced when idle).
+     role="alert"/role="status" already imply aria-live + aria-atomic, so the
+     full message text is read whenever it is present on the rendered page. -->
 <div th:fragment="messages(errMsg, infoMsg)" class="bms-messages">
-    <div class="bms-error"
+    <div class="bms-error" role="alert"
          th:if="${!#strings.isEmpty(errMsg)}"
          th:text="${errMsg}">Error message goes here</div>
-    <div class="bms-heading"
+    <div class="bms-heading" role="status"
          th:if="${!#strings.isEmpty(infoMsg)}"
          th:text="${infoMsg}">Info message goes here</div>
 </div>

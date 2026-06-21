@@ -27,7 +27,6 @@ import com.aws.carddemo.util.MenuOptions;
 import com.aws.carddemo.util.Messages;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -75,9 +74,11 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <em>derived from</em> {@link MenuOptions#ADMIN_MENU_OPTIONS} rather than hard-coded. The shipped
  * {@code COADM02Y} table ships four real ({@code COUSR00C}..{@code COUSR03C}) rows and no {@code
  * DUMMY} placeholder, so the "coming soon" runtime branch is unreachable through the public API
- * with the live table; it is documented and skipped ({@link
- * #enter_comingSoonOption_redisplaysComingSoon_withoutOptionName()}) and its name-less parity is
- * still verified statically ({@link #comingSoonMessage_isByteExact_andOmitsEveryOptionName()}).
+ * with the live table; it is therefore exercised directly through the package-private {@link
+ * AdminMenuService#dispatchSelectedOption} seam with a synthetic placeholder ({@link
+ * #dispatchSelectedOption_placeholder_redisplaysComingSoon_withoutOptionName()}), and its name-less
+ * parity is also verified statically ({@link
+ * #comingSoonMessage_isByteExact_andOmitsEveryOptionName()}).
  *
  * <p><strong>Byte-exact message parity.</strong> The invalid-option, invalid-key, "coming soon",
  * and admin-only denial messages are compared against the production constants exactly as declared,
@@ -285,38 +286,31 @@ class AdminMenuServiceTest {
     assertThat(screen.getOption()).isEqualTo(String.format("%02d", last.number()));
   }
 
-  // ===== Re-entry + ENTER + "coming soon" (documented & skipped: no DUMMY admin row) ============
+  // ===== ENTER + "coming soon" placeholder branch — exercised directly via the seam (no skip) ====
 
   @Test
-  @Disabled(
-      "The shipped COADM02Y ADMIN_MENU_OPTIONS table contains no DUMMY/placeholder row (all four"
-          + " options target real COUSR00C..COUSR03C programs), so the name-less 'coming soon'"
-          + " runtime branch is unreachable through the public API without modifying production"
-          + " data (out of scope). The name-less parity of the message is verified statically by"
-          + " comingSoonMessage_isByteExact_andOmitsEveryOptionName(). Enable this test if a"
-          + " placeholder (DUMMY*) admin option is ever added to the table.")
-  @DisplayName(
-      "Re-entry + ENTER + coming-soon option: name-less 'coming soon' (documented, skipped)")
-  void enter_comingSoonOption_redisplaysComingSoon_withoutOptionName() {
-    // Ready-to-enable body: locate a placeholder option and assert the name-less "coming soon"
-    // redisplay. With the live table this finds nothing (hence @Disabled), but the assertions are
-    // correct for the day a DUMMY admin option is introduced.
-    MenuOptions.MenuOption comingSoon =
-        MenuOptions.ADMIN_MENU_OPTIONS.stream()
-            .filter(o -> o.programName().startsWith(AdminMenuService.DUMMY_PREFIX))
-            .findFirst()
-            .orElseThrow();
+  @DisplayName("Placeholder (DUMMY) option dispatch redisplays the name-less 'coming soon' message")
+  void dispatchSelectedOption_placeholder_redisplaysComingSoon_withoutOptionName() {
+    // The shipped COADM02Y table ships four real (COUSR00C..COUSR03C) options and no DUMMY
+    // placeholder, so the "coming soon" branch is unreachable through the public processAdminMenu
+    // API with production data (the prior end-to-end test was @Disabled for exactly that reason).
+    // Exercise the production branch directly through the package-private dispatchSelectedOption
+    // seam with a synthetic placeholder whose program name carries the DUMMY_PREFIX — production
+    // data stays untouched while the runtime behavior is proven, and no test is skipped.
+    MenuOptions.MenuOption placeholder =
+        new MenuOptions.MenuOption(
+            9, "Coming Soon Option", AdminMenuService.DUMMY_PREFIX + "001", null);
     CardDemoCommarea commarea = reenteredAdmin();
-    AdminMenuScreen screen = screenWithOption(Integer.toString(comingSoon.number()));
+    AdminMenuScreen screen = screenWithOption("9");
 
-    String next = service.processAdminMenu(screen, commarea, CardWorkArea.Aid.ENTER);
+    String next = service.dispatchSelectedOption(placeholder, screen, commarea);
 
     assertThat(next).isNull();
     // Deliberate difference (3) from the COMEN01C twin: COADM01C comments out the option-name
     // segment of the STRING (L150-151), so the message embeds NO option name.
     assertThat(screen.getErrMsg()).isEqualTo(AdminMenuService.MSG_COMING_SOON);
     assertThat(screen.getErrMsg()).contains("is coming soon ...");
-    assertThat(screen.getErrMsg()).doesNotContain(comingSoon.name().trim());
+    assertThat(screen.getErrMsg()).doesNotContain(placeholder.name().trim());
     assertThat(commarea.getToProgram()).isNull();
   }
 

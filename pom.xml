@@ -230,6 +230,42 @@
                 </configuration>
             </plugin>
 
+            <!-- Resolve the absolute path of the Mockito core jar into the
+                 build property ${org.mockito:mockito-core:jar} so Surefire can
+                 load it as an explicit -javaagent below. This is the Mockito-
+                 documented remedy for JDK 21+ (Mockito 5): without it, Mockito's
+                 inline mock-maker self-attaches the Byte Buddy agent at runtime,
+                 which emits the JDK "A Java agent has been loaded dynamically"
+                 warning and will stop working in a future JDK. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>resolve-mockito-agent</id>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Surefire: load Mockito as an explicit -javaagent (silences the
+                 JDK dynamic-agent warning, see maven-dependency-plugin above).
+                 @{argLine} is LATE-BOUND to the property that JaCoCo's
+                 prepare-agent sets, so the JaCoCo coverage agent is preserved
+                 and the >=80% line gate keeps working. -Xshare:off disables
+                 Class Data Sharing, which the launch-time agents would
+                 otherwise warn about ("Sharing is only supported for boot
+                 loader classes because bootstrap classpath has been appended"). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+                </configuration>
+            </plugin>
+
             <!-- JaCoCo coverage: agent + report + >=80% line gate (AAP §0.7.3).
                  The check is naturally skipped until tests generate exec data. -->
             <plugin>
@@ -305,10 +341,14 @@
                  failBuildOnCVSS=7 fails the build on any critical/high (CVSS >= 7)
                  vulnerability.
 
-                 The NVD data feed is large and is rate-limited without an API key, so
-                 CI supplies one (mvn verify -DnvdApiKey=$NVD_API_KEY). Offline builds or
-                 those without a key may opt out of only this gate via
-                 -Ddependency-check.skip=true (the gate is enabled by default). -->
+                 The NVD data feed is large and is rate-limited without an API key.
+                 CI supplies an authenticated key from the `NVD_API_KEY` repository
+                 secret, which .github/workflows/ci.yml passes to Maven as
+                 `-DnvdApiKey=$NVD_API_KEY` (and caches the NVD database between runs),
+                 so `./mvnw -B clean verify` runs this gate to completion WITHOUT
+                 -Ddependency-check.skip=true. Offline or key-less builds may opt out of
+                 ONLY this gate via -Ddependency-check.skip=true (the gate is enabled by
+                 default; see README "Continuous Integration"). -->
             <plugin>
                 <groupId>org.owasp</groupId>
                 <artifactId>dependency-check-maven</artifactId>
@@ -317,6 +357,9 @@
                     <skip>${dependency-check.skip}</skip>
                     <failBuildOnCVSS>7</failBuildOnCVSS>
                     <nvdValidForHours>24</nvdValidForHours>
+                    <!-- Persist the NVD database in the local Maven repository so the
+                         CI cache (and local incremental builds) can reuse it. -->
+                    <dataDirectory>${settings.localRepository}/org/owasp/dependency-check-data</dataDirectory>
                 </configuration>
                 <executions>
                     <execution>

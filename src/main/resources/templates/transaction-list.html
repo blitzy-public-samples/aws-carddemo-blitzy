@@ -88,6 +88,21 @@
         .bms-row-input { width: 2ch; text-align: center; padding: 0; }
         /* Line 21 usage instruction. */
         .bms-instruction { margin-block-start: 0.5em; }
+        /* Standard screen-reader-only helper (no visual footprint). Used to give
+           the transaction grid a table-level accessible description (caption),
+           matching the card-list and user-list screens. */
+        .ct00-visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            margin: -1px;
+            padding: 0;
+            border: 0;
+            clip: rect(0 0 0 0);
+            clip-path: inset(50%);
+            overflow: hidden;
+            white-space: nowrap;
+        }
     </style>
 
     <!-- ============================ BMS lines 1-2 ============================
@@ -131,6 +146,10 @@
                  2 set by the service) is rendered verbatim — the template performs
                  NO arithmetic or formatting and only right-aligns it. -->
             <table class="bms-tran-table">
+                <caption class="ct00-visually-hidden">
+                    List of transactions. Type S in the Select column next to a transaction and press
+                    Enter to view it. Use F7 and F8 to page backward and forward.
+                </caption>
                 <thead>
                     <tr class="bms-heading">
                         <th scope="col" class="bms-col-sel">Sel</th>

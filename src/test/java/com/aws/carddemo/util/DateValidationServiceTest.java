@@ -124,6 +124,73 @@ class DateValidationServiceTest {
   }
 
   // ---------------------------------------------------------------------------
+  // validateDate — CEEDAYS Lilian-range feedback (the tolerated 2513 / non-tolerated 2521 paths)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  @DisplayName(
+      "validateDate emits the tolerated CEEDAYS 2513 (Unsupp. Range) for dates before 15 Oct 1582")
+  void validateDate_emits_tolerated_2513_for_dates_before_lilian_epoch() {
+    // A structurally valid date earlier than the Lilian epoch (Lilian day 1 = 1582-10-15) is
+    // reported by CEEDAYS as FC-UNSUPP-RANGE: severity 0003, message 2513, result "Unsupp. Range".
+    // The date is NOT valid, but COTRN02C/CORPT00C (and the migrated TranAddService/ReportService)
+    // tolerate message 2513 — so this is the feedback that makes their tolerance branch live.
+    var early = DateValidationService.validateDate("15001231", "YYYYMMDD");
+    assertThat(early.valid()).isFalse();
+    assertThat(early.severity()).isEqualTo("0003");
+    assertThat(early.messageNumber()).isEqualTo(DateValidationService.MSG_UNSUPPORTED_RANGE);
+    assertThat(early.resultText()).isEqualTo(DateValidationService.RESULT_UNSUPPORTED_RANGE);
+    assertThat(early.isToleratedUnsupportedRange()).isTrue();
+  }
+
+  @Test
+  @DisplayName("validateDate places the Lilian epoch boundary exactly at 15 October 1582")
+  void validateDate_lilian_epoch_boundary_is_exact() {
+    // 14 October 1582 is before Lilian day 1 -> unsupported range (tolerated 2513).
+    var dayBefore = DateValidationService.validateDate("15821014", "YYYYMMDD");
+    assertThat(dayBefore.valid()).isFalse();
+    assertThat(dayBefore.isToleratedUnsupportedRange()).isTrue();
+
+    // 15 October 1582 is Lilian day 1 -> the first in-range, fully valid date.
+    var epoch = DateValidationService.validateDate("15821015", "YYYYMMDD");
+    assertThat(epoch.valid()).isTrue();
+    assertThat(epoch.severity()).isEqualTo(DateValidationService.SEVERITY_OK);
+    assertThat(epoch.isToleratedUnsupportedRange()).isFalse();
+  }
+
+  @Test
+  @DisplayName("validateDate reports proleptic year 0 as the NON-tolerated CEEDAYS 2521")
+  void validateDate_year_zero_is_non_tolerated_2521() {
+    // CEEDAYS uses the AD/CE era, which has no year zero -> FC-YEAR-IN-ERA-ZERO (message 2521,
+    // severity 0003). This is an error callers do NOT tolerate (it is not 2513), so the migrated
+    // callers reject it exactly as COBOL does — unlike a naive proleptic parse that would accept
+    // it.
+    var yearZero = DateValidationService.validateDate("00000101", "YYYYMMDD");
+    assertThat(yearZero.valid()).isFalse();
+    assertThat(yearZero.severity()).isEqualTo("0003");
+    assertThat(yearZero.messageNumber()).isEqualTo("2521");
+    assertThat(yearZero.isToleratedUnsupportedRange()).isFalse();
+  }
+
+  @Test
+  @DisplayName(
+      "validateDate honors the hyphenated YYYY-MM-DD mask the migrated date-entry callers use")
+  void validateDate_supports_hyphenated_mask_used_by_callers() {
+    // TranAddService/ReportService validate screen dates with the 'YYYY-MM-DD' mask (the COTRN02C
+    // and CORPT00C WS-DATE-FORMAT). A modern in-range date is valid...
+    var modern = DateValidationService.validateDate("2022-07-18", "YYYY-MM-DD");
+    assertThat(modern.valid()).isTrue();
+    assertThat(modern.severity()).isEqualTo(DateValidationService.SEVERITY_OK);
+
+    // ...and a structurally valid pre-epoch date is the tolerated 2513, exercised through the exact
+    // mask the callers pass, so their isToleratedUnsupportedRange() tolerance branch is reachable.
+    var early = DateValidationService.validateDate("1500-12-31", "YYYY-MM-DD");
+    assertThat(early.valid()).isFalse();
+    assertThat(early.messageNumber()).isEqualTo(DateValidationService.MSG_UNSUPPORTED_RANGE);
+    assertThat(early.isToleratedUnsupportedRange()).isTrue();
+  }
+
+  // ---------------------------------------------------------------------------
   // editDateCcyymmdd — century gating, leap February, month/day range edits
   // ---------------------------------------------------------------------------
 
@@ -259,12 +326,14 @@ class DateValidationServiceTest {
     assertThat(DateValidationService.MSG_UNSUPPORTED_RANGE).isEqualTo("2513");
     assertThat(DateValidationService.RESULT_VALID).isEqualTo("Date is valid");
     assertThat(DateValidationService.RESULT_INVALID).isEqualTo("Date is invalid");
+    assertThat(DateValidationService.RESULT_UNSUPPORTED_RANGE).isEqualTo("Unsupp. Range");
     assertThat(DateValidationService.DEFAULT_FORMAT).isEqualTo("YYYYMMDD");
 
-    // The CEEDAYS "Unsupp. Range" message (2513) is tolerated even when the date is invalid.
+    // The CEEDAYS "Unsupp. Range" message (2513) is tolerated even when the date is invalid. Every
+    // CEEDAYS error feedback token carries severity "0003" (the X'0003' severity halfword).
     var tolerated =
         new DateValidationService.DateValidationResult(
-            "0012", "2513", "Unsupp. Range  ", "", false);
+            "0003", "2513", DateValidationService.RESULT_UNSUPPORTED_RANGE, "", false);
     assertThat(tolerated.isToleratedUnsupportedRange()).isTrue();
 
     // Any other message number is not tolerated.

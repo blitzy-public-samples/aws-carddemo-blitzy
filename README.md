@@ -216,6 +216,27 @@ mvnw.cmd clean verify
 ≥80% line-coverage gate, the code-style checks, or the CVE scan are not satisfied. To produce the
 runnable JAR without running the full verification, use `./mvnw clean package`.
 
+> **OWASP dependency-check & the NVD API key.** The CVE scan downloads the National Vulnerability
+> Database (NVD) feed, which is heavily rate-limited for anonymous clients. Supply an
+> [NVD API key](https://nvd.nist.gov/developers/request-an-api-key) to make the scan fast and
+> reliable: `./mvnw clean verify -DnvdApiKey=$NVD_API_KEY`. In CI the key is provided by the
+> `NVD_API_KEY` repository secret (see *Continuous Integration* below). An offline or key-less build
+> may opt out of **only** this gate with `./mvnw clean verify -Ddependency-check.skip=true`; the gate
+> is otherwise enabled by default.
+
+> **Zero-warning build on Java 25.** The compiler runs with `-Werror -Xlint:all` so source
+> warnings fail the build. Two pieces of build configuration keep the *runtime* (Maven/test JVM)
+> output free of the JDK 25 warnings emitted by tooling dependencies:
+> - **`.mvn/jvm.config`** passes `--sun-misc-unsafe-memory-access=allow` and
+>   `--enable-native-access=ALL-UNNAMED` to the Maven JVM, silencing the `sun.misc.Unsafe` warning
+>   from Maven's bundled Guice and the Jansi native-access warning. These flags only relax JDK
+>   diagnostics for Maven's own libraries; they do not alter application behavior.
+> - The **Surefire** `argLine` loads Mockito as an explicit `-javaagent` (with `-Xshare:off`),
+>   following Mockito's JDK 21+ guidance, so the inline mock-maker no longer self-attaches at
+>   runtime. `@{argLine}` is late-bound to JaCoCo's coverage agent, so the ≥80% line-coverage gate
+>   is unaffected. The Maven wrapper is pinned to Apache Maven **3.9.11** in
+>   `.mvn/wrapper/maven-wrapper.properties`.
+
 ### 3. Run the application
 
 The application reads its database connection and seed credentials from the environment, so no
@@ -277,6 +298,14 @@ The repository is a single-module Maven project. The modernized Java application
 `src/`, the build/run scaffolding lives at the repository root, and the original COBOL source is
 retained read-only under `legacy/app/`. The `diagrams/` folder remains at the repository root.
 
+> **How "read-only" is enforced.** Git tracks the legacy source like any other file, so it cannot
+> be made filesystem-immutable inside a clone. Instead the read-only rule (AAP §0.7.2, Rule R7) is
+> enforced as **governance**: the `legacy-readonly` job in `.github/workflows/ci.yml` fails the
+> build if any commit modifies a file under `legacy/`, and `.github/CODEOWNERS` routes any pull
+> request that touches the legacy tree to the maintainers (make this a hard gate by enabling
+> "Require review from Code Owners" branch protection). The legacy tree therefore remains
+> byte-identical to its baseline; it is reference-only and is never modified by the migration.
+
 ```text
 .
 ├── pom.xml                          # Maven build manifest (Java 25, Spring Boot 3.5.x)
@@ -287,8 +316,9 @@ retained read-only under `legacy/app/`. The `diagrams/` folder remains at the re
 ├── README.md                        # This file
 ├── LICENSE, NOTICE                  # Apache License 2.0
 ├── .github/
+│   ├── CODEOWNERS                   # Review governance (routes legacy/ changes to maintainers)
 │   └── workflows/
-│       └── ci.yml                   # CI: build + tests + JaCoCo (>=80%) + OWASP dependency-check
+│       └── ci.yml                   # CI: build + tests + JaCoCo (>=80%) + OWASP + legacy read-only guard
 ├── docs/
 │   └── traceability-matrix.md       # 100% COBOL paragraph -> Java method mapping
 ├── diagrams/                        # Data-model and navigation/screen references (unchanged)
@@ -419,6 +449,12 @@ enforces the project's quality gates:
 2. Run the unit and integration tests (Testcontainers PostgreSQL).
 3. Enforce the **JaCoCo ≥80% line-coverage** gate.
 4. Run the **OWASP dependency-check** and fail on any **critical/high** CVE.
+
+The OWASP gate runs to completion (it is **never** skipped in CI): the workflow passes an
+authenticated NVD API key from the `NVD_API_KEY` repository secret as `-DnvdApiKey=$NVD_API_KEY` and
+caches the NVD database between runs. Configure the secret under **Settings → Secrets and variables →
+Actions** before relying on the gate; request a key from
+<https://nvd.nist.gov/developers/request-an-api-key>.
 
 A green CI run is the bar for merging changes.
 

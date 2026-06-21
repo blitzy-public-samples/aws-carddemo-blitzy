@@ -20,9 +20,9 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.aws.carddemo.exception.IoStatusException;
 import java.io.IOException;
@@ -232,17 +232,42 @@ class RejectFileWriterTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Resilient golden-file byte-compare (skips cleanly when the fixture is absent)
+  // Deterministic golden-file round-trip parity (always runs; no skip)
   // ---------------------------------------------------------------------------
 
   @Test
-  void golden_dalyrejs_matches_when_present() throws Exception {
-    URL url = getClass().getResource("/golden/reject/dalyrejs.dat");
-    assumeTrue(url != null, "golden reject fixture not present; skipping byte-compare");
+  void golden_dalyrejs_reproduced_byte_for_byte(@TempDir Path dir) throws Exception {
+    // Canonical DALYREJS golden reference shipped under src/test/resources — the SAME multi-reason
+    // reject fixture used for service-level posting golden parity. It holds five reject records,
+    // each the 350-byte DALYTRAN image + 80-byte validation trailer = 430 chars, followed by the
+    // fixed "\n" separator (an exact multiple of 431 bytes).
+    URL url = getClass().getResource("/golden/reject/mixed-all-reasons.reject.dat");
+    assertNotNull(url, "canonical golden reject fixture must ship under /golden/reject/");
 
     byte[] golden = Files.readAllBytes(Path.of(url.toURI()));
-    // Each record is exactly 430 characters followed by "\n", so the file is a multiple of 431.
-    assertEquals(0, golden.length % 431);
+    // Fixed-record grid: a whole number of 431-byte (430 + LF) records.
+    assertEquals(0, golden.length % (LRECL + 1));
+    int recordCount = golden.length / (LRECL + 1);
+    // The fixture is pure 7-bit ASCII, so one byte equals one char and fixed-offset slicing is
+    // exact.
+    String goldenText = new String(golden, StandardCharsets.UTF_8);
+
+    // Round-trip parity: feed each fixed 430-char record back through the production writer and
+    // prove it reproduces the canonical DALYREJS bytes EXACTLY (no pad / trim / re-justify / case
+    // change). Reading by fixed offsets (not line splitting) mirrors a true RECFM=F reader and is
+    // immune to any byte that resembles a line terminator inside a record image.
+    Path out = dir.resolve("dalyrejs.dat");
+    RejectFileWriter w = new RejectFileWriter();
+    w.open(out);
+    for (int i = 0; i < recordCount; i++) {
+      int base = i * (LRECL + 1);
+      assertEquals('\n', goldenText.charAt(base + LRECL), "record separator must sit on the grid");
+      w.accept(goldenText.substring(base, base + LRECL));
+    }
+    w.close();
+
+    assertArrayEquals(golden, Files.readAllBytes(out));
+    assertEquals(recordCount, (int) w.getRecordsWritten());
   }
 
   /**

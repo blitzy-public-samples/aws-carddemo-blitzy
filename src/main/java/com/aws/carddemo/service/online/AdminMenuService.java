@@ -277,7 +277,34 @@ public class AdminMenuService {
     // The subscript is now guaranteed to be in 1..ADMIN_MENU_OPT_COUNT. No per-option role check is
     // applied here — deliberate difference (2) from the COMEN01C/MainMenuService twin.
     MenuOptions.MenuOption selected = MenuOptions.ADMIN_MENU_OPTIONS.get(option - 1);
+    return dispatchSelectedOption(selected, screen, commarea);
+  }
 
+  /**
+   * Dispatches a validated, in-range admin-menu option — the COADM01C dispatch tail (L137-155) of
+   * {@code PROCESS-ENTER-KEY}. A <em>real</em> target (a {@code programName} not prefixed with the
+   * {@link #DUMMY_PREFIX} placeholder marker) stamps the routing context ({@code CDEMO-FROM-*},
+   * {@code MOVE ZEROS TO CDEMO-PGM-CONTEXT}, {@code CDEMO-TO-PROGRAM}) and returns the program id
+   * so the caller can {@code XCTL} to it; a {@code DUMMY} placeholder instead repaints the menu
+   * with the name-less {@link #MSG_COMING_SOON} message and returns {@code null}.
+   *
+   * <p>This is a package-private extraction of the dispatch tail of {@link #processEnterKey} with
+   * no change to the public flow ({@code processEnterKey} simply delegates to it after
+   * range-checking the subscript, so the {@code PROCESS-ENTER-KEY} traceability mapping is
+   * unchanged). It exists as a test seam: the shipped {@code COADM02Y} table ({@link
+   * MenuOptions#ADMIN_MENU_OPTIONS}) contains no {@code DUMMY} row (all four options target real
+   * {@code COUSR00C}..{@code COUSR03C} programs), so the placeholder / "coming soon" branch is
+   * otherwise unreachable through the public API without modifying production data. Extracting it
+   * lets {@code AdminMenuServiceTest} exercise that branch directly with a synthetic placeholder.
+   *
+   * @param selected the validated menu option whose subscript the caller has already range-checked
+   * @param screen the screen contract repainted on the placeholder ("coming soon") path
+   * @param commarea the navigation state updated with the routing context on the dispatch path
+   * @return the target program name to {@code XCTL} to, or {@code null} when {@code selected} is a
+   *     {@code DUMMY} placeholder (the menu is redisplayed with the "coming soon" message)
+   */
+  String dispatchSelectedOption(
+      MenuOptions.MenuOption selected, AdminMenuScreen screen, CardDemoCommarea commarea) {
     // L137-155: dispatch.
     String pgmName = selected.programName();
     if (!pgmName.startsWith(DUMMY_PREFIX)) {

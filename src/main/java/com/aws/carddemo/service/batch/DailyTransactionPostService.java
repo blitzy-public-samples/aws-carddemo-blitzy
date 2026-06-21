@@ -250,9 +250,13 @@ public class DailyTransactionPostService {
             LOG.info("ACCOUNT {} NOT FOUND", acctId); // DISPLAY 'ACCOUNT ' ACCT-ID ' NOT FOUND'
           }
         } else { // ELSE -- card could not be verified; skip (no posting occurs in this pass)
+          // COBOL parity (CBTRN01C): DISPLAY 'CARD NUMBER ' DALYTRAN-CARD-NUM ' COULD NOT BE
+          // VERIFIED. SKIPPING TRANSACTION ID-' DALYTRAN-ID. The card number (PAN) is masked to its
+          // last four digits so no full PAN reaches the logs (AAP §0.6.6, §0.7.3); the (non-PAN)
+          // transaction id is retained for operational triage of the skip.
           LOG.info(
               "CARD NUMBER {} COULD NOT BE VERIFIED. SKIPPING TRANSACTION ID-{}",
-              dalytranRecord.getDalytranCardNum(),
+              maskCardNumber(dalytranRecord.getDalytranCardNum()),
               dalytranRecord.getDalytranId());
         }
       }
@@ -310,10 +314,18 @@ public class DailyTransactionPostService {
     Optional<CardXref> xref = cardXrefRepository.findById(xrefCardNum);
     if (xref.isPresent()) { // NOT INVALID KEY
       cardXrefRecord = xref.get();
-      LOG.info("SUCCESSFUL READ OF XREF");
-      LOG.info("CARD NUMBER: {}", cardXrefRecord.getXrefCardNum());
-      LOG.info("ACCOUNT ID : {}", cardXrefRecord.getXrefAcctId());
-      LOG.info("CUSTOMER ID: {}", cardXrefRecord.getXrefCustId());
+      // COBOL parity (CBTRN01C 2000-LOOKUP-XREF): DISPLAY 'SUCCESSFUL READ OF XREF' / CARD NUMBER /
+      // ACCOUNT ID / CUSTOMER ID. Reproduced ONLY as a guarded, DEBUG-level (off by default)
+      // diagnostic so no cardholder PII reaches production logs (AAP §0.1.1 security hardening,
+      // §0.7.3). The card number (PAN) is masked to its last four digits using the project-wide
+      // CardDemoCommarea convention (AAP §0.6.6); the account and customer ids surface only when
+      // DEBUG diagnostics are explicitly enabled.
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("SUCCESSFUL READ OF XREF");
+        LOG.debug("CARD NUMBER: {}", maskCardNumber(cardXrefRecord.getXrefCardNum()));
+        LOG.debug("ACCOUNT ID : {}", cardXrefRecord.getXrefAcctId());
+        LOG.debug("CUSTOMER ID: {}", cardXrefRecord.getXrefCustId());
+      }
     } else { // INVALID KEY -> FILE STATUS '23'
       LOG.info("INVALID CARD NUMBER FOR XREF");
       xrefReadStatus = 4;
@@ -491,6 +503,27 @@ public class DailyTransactionPostService {
     LOG.error(ex.getDisplayMessage()); // Z-DISPLAY-IO-STATUS: 'FILE STATUS IS: NNNN'...
     LOG.error("ABENDING PROGRAM"); // Z-ABEND-PROGRAM
     return ex;
+  }
+
+  /**
+   * Masks a card number (PAN) for safe inclusion in diagnostic log output, revealing at most the
+   * last four digits and replacing every earlier digit with {@code '*'}. This matches the
+   * project-wide convention used by {@code CardDemoCommarea} and {@code TransactionReportService}
+   * (AAP &sect;0.6.6 PII hygiene), so the full PAN is never written to application or test logs.
+   *
+   * @param cardNum the raw card number; {@code null} renders as the literal {@code "null"}
+   * @return the masked card number (for example {@code "************3456"}), never the full PAN
+   */
+  private static String maskCardNumber(String cardNum) {
+    if (cardNum == null) {
+      return "null";
+    }
+    String trimmed = cardNum.trim();
+    if (trimmed.length() <= 4) {
+      return "*".repeat(trimmed.length());
+    }
+    int maskLength = trimmed.length() - 4;
+    return "*".repeat(maskLength) + trimmed.substring(maskLength);
   }
 
   /**

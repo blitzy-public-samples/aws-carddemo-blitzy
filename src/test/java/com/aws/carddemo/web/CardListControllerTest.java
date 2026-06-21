@@ -16,17 +16,21 @@
  */
 package com.aws.carddemo.web;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willAnswer;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.model;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
 
 import com.aws.carddemo.config.SecurityConfig;
+import com.aws.carddemo.dto.screen.CardListScreen;
 import com.aws.carddemo.repository.UserSecurityRepository;
 import com.aws.carddemo.service.online.CardListService;
 import org.junit.jupiter.api.Test;
@@ -191,5 +195,34 @@ class CardListControllerTest {
         .andExpect(status().isOk())
         .andExpect(view().name("card-list"))
         .andExpect(model().attributeExists("cardListForm"));
+  }
+
+  /**
+   * Accessibility (review Finding 6): when the screen carries an informational message, the shared
+   * {@code fragments/layout :: messages} fragment renders it inside an element with {@code
+   * role="status"} so screen readers announce it politely. Here the mocked service populates {@code
+   * infoMsg} on the bound {@link CardListScreen} and returns {@code null} (the re-display path),
+   * and the rendered HTML is asserted to contain both {@code role="status"} and the message text.
+   *
+   * @throws Exception if the simulated request cannot be performed
+   */
+  @Test
+  @WithMockUser
+  void post_infoMessage_rendersPoliteStatusRole() throws Exception {
+    willAnswer(
+            invocation -> {
+              CardListScreen bound = invocation.getArgument(0);
+              bound.setInfoMsg("No records to display.");
+              return null; // re-display the list (no program transfer)
+            })
+        .given(cardListService)
+        .processCardList(any(), any(), any());
+
+    mockMvc
+        .perform(post("/card-list").param("pfKey", "ENTER").with(csrf()))
+        .andExpect(status().isOk())
+        .andExpect(view().name("card-list"))
+        .andExpect(content().string(containsString("role=\"status\"")))
+        .andExpect(content().string(containsString("No records to display.")));
   }
 }

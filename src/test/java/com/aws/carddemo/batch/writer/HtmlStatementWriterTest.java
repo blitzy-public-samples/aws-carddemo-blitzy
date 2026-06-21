@@ -19,8 +19,8 @@ package com.aws.carddemo.batch.writer;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.aws.carddemo.exception.IoStatusException;
 import java.io.IOException;
@@ -237,17 +237,41 @@ class HtmlStatementWriterTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Resilient golden-file parity — skipped when the fixture is not present
+  // Deterministic golden-file round-trip parity (always runs; no skip)
   // ---------------------------------------------------------------------------
 
   @Test
-  void golden_html_statement_matches_when_present() throws Exception {
-    URL url = getClass().getResource("/golden/statements/htmlfile.txt");
-    assumeTrue(url != null, "golden HTML statement fixture not present; skipping");
+  void golden_html_statement_reproduced_byte_for_byte(@TempDir Path dir) throws Exception {
+    // Canonical HTMLFILE golden reference shipped under src/test/resources — the SAME fixture the
+    // statement-generation job golden parity test (StatementGenerationJobConfigTest GOLDEN_HTML)
+    // byte-compares against. Every record is exactly LRECL (100) chars then the fixed "\n"
+    // separator (an exact multiple of 101 bytes).
+    URL url = getClass().getResource("/golden/statements/acct-00000000050.statement.html");
+    assertNotNull(url, "canonical golden HTML fixture must ship under /golden/statements/");
 
     byte[] golden = Files.readAllBytes(Path.of(url.toURI()));
-    // Every HTML statement record is LRECL chars followed by the one-character separator.
     assertEquals(0, golden.length % (LRECL + 1));
+    int recordCount = golden.length / (LRECL + 1);
+    // The fixture is pure 7-bit ASCII, so one byte equals one char and fixed-offset slicing is
+    // exact.
+    String goldenText = new String(golden, StandardCharsets.UTF_8);
+
+    // Round-trip parity: feed each fixed 100-char record back through the production writer and
+    // prove it reproduces the canonical HTMLFILE bytes EXACTLY. Fixed-offset reads mirror a
+    // RECFM=FB reader and are immune to any byte resembling a line terminator inside a record
+    // image.
+    Path file = dir.resolve("htmlfile.txt");
+    HtmlStatementWriter writer = new HtmlStatementWriter();
+    writer.open(file);
+    for (int i = 0; i < recordCount; i++) {
+      int base = i * (LRECL + 1);
+      assertEquals('\n', goldenText.charAt(base + LRECL), "record separator must sit on the grid");
+      writer.accept(goldenText.substring(base, base + LRECL));
+    }
+    writer.close();
+
+    assertArrayEquals(golden, Files.readAllBytes(file));
+    assertEquals(recordCount, (int) writer.getRecordsWritten());
   }
 
   /**

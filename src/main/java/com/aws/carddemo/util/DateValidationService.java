@@ -66,19 +66,45 @@ import java.time.format.ResolverStyle;
  *       day-month-year combinations &rarr; Language-Environment backstop is preserved.
  * </ul>
  *
- * <h2>{@code CEEDAYS} approximation</h2>
+ * <h2>{@code CEEDAYS} feedback emulation</h2>
  *
  * <p>The mainframe {@code CEEDAYS} service is unavailable off-host, so {@link #validateDate(String,
- * String)} approximates it with strict {@link java.time} parsing ({@link ResolverStyle#STRICT}).
- * The COBOL picture mask is translated to a {@link DateTimeFormatter} pattern by a small private
- * translator (see {@link #toJavaPattern(String)}). A successful parse maps to severity {@code
- * "0000"} / message {@code "0000"} / result text {@link #RESULT_VALID}; a parse failure maps to
- * severity {@code "0012"} (the typical {@code CEE} error severity) / message {@code "0000"} /
- * result text {@link #RESULT_INVALID}. The intermediate {@code CEEDAYS} feedback tokens
- * ("Insufficient", "Datevalue error", "Invalid Era", and so on) require the real {@code CEEDAYS}
- * feedback codes, which are not reproducible off-mainframe; everything that cannot be detected by
- * strict parsing therefore defaults to {@link #RESULT_INVALID}. This approximation is documented as
- * a known limitation.
+ * String)} reproduces the externally observable subset of its feedback codes that migrated callers
+ * branch on, using strict {@link java.time} parsing ({@link ResolverStyle#STRICT}). The COBOL
+ * picture mask is translated to a {@link DateTimeFormatter} pattern by a small private translator
+ * (see {@link #toJavaPattern(String)}). After a successful strict parse the resulting calendar date
+ * is classified against the {@code CEEDAYS} Lilian-day supported range (15&nbsp;October&nbsp;1582,
+ * Lilian day {@code 1}, through 31&nbsp;December&nbsp;9999 &mdash; the range over which {@code
+ * CEEDAYS} can return a Lilian day number):
+ *
+ * <ul>
+ *   <li><b>Valid &amp; in range</b> &mdash; severity {@link #SEVERITY_OK} ({@code "0000"}), message
+ *       {@code "0000"}, result {@link #RESULT_VALID} ({@code FC-INVALID-DATE}, the all-zero "ok"
+ *       feedback token).
+ *   <li><b>Year-within-era zero</b> (proleptic year {@code 0}) &mdash; severity {@code "0003"},
+ *       message {@code "2521"}, result {@code "YearInEra is 0"} ({@code FC-YEAR-IN-ERA-ZERO}). The
+ *       AD/CE era {@code CEEDAYS} uses has no year zero, so this is an error callers do
+ *       <em>not</em> tolerate.
+ *   <li><b>Before the Lilian epoch</b> (a real calendar date earlier than
+ *       15&nbsp;October&nbsp;1582) &mdash; severity {@code "0003"}, message {@link
+ *       #MSG_UNSUPPORTED_RANGE} ({@code "2513"}), result {@link #RESULT_UNSUPPORTED_RANGE} ({@code
+ *       "Unsupp. Range"}, {@code FC-UNSUPP-RANGE}). This is the feedback that {@code
+ *       COTRN02C}/{@code CORPT00C} (and their migrated equivalents {@code TranAddService}/{@code
+ *       ReportService}) explicitly tolerate; see {@link
+ *       DateValidationResult#isToleratedUnsupportedRange()}.
+ * </ul>
+ *
+ * <p>A parse failure (an impossible calendar date, a non-numeric field, or a mask that yields an
+ * unusable pattern) maps to severity {@code "0003"} &mdash; the severity carried by <em>every</em>
+ * {@code CEEDAYS} error feedback token (the first halfword {@code X'0003'} of {@code
+ * FC-BAD-DATE-VALUE}, {@code FC-INVALID-MONTH}, {@code FC-NON-NUMERIC-DATA}, and the rest) &mdash;
+ * with message {@code "0000"} and result {@link #RESULT_INVALID}. The exact {@code CEEDAYS}
+ * sub-code among those parse-failure tokens ("Insufficient", "Datevalue error", "Invalid Era",
+ * "Invalid month", "Bad Pic String", "Nonnumeric data") is not reconstructed: it requires the real
+ * {@code CEEDAYS} internals and &mdash; critically for parity &mdash; no migrated caller branches
+ * on it. Every one of those tokens is a non-{@code 2513} error and therefore drives the identical
+ * reject decision in every caller. Only the {@code 2513} (tolerated) versus non-{@code 2513}
+ * (rejected) distinction is behaviorally observable, and that distinction is reproduced exactly.
  *
  * <p>The class is stateless, JDK-only (no Spring dependency, keeping the {@code util} package
  * dependency-free), uses no floating-point arithmetic, and is therefore thread-safe.
@@ -101,14 +127,49 @@ public final class DateValidationService {
   /** 15-character {@code WS-RESULT} text used by {@code CSUTLDTC} for an invalid date. */
   public static final String RESULT_INVALID = "Date is invalid";
 
+  /**
+   * 15-character {@code WS-RESULT} text {@code CSUTLDTC} emits for {@code FC-UNSUPP-RANGE} &mdash;
+   * a real calendar date that falls outside the {@code CEEDAYS} Lilian supported range. Pairs with
+   * {@link #MSG_UNSUPPORTED_RANGE} and is the tolerated feedback (see {@link
+   * DateValidationResult#isToleratedUnsupportedRange()}). Stored unpadded; {@link #buildResultLine}
+   * right-pads it to the 15-character {@code WS-RESULT} field, reproducing the COBOL literal {@code
+   * 'Unsupp. Range '} byte-for-byte.
+   */
+  public static final String RESULT_UNSUPPORTED_RANGE = "Unsupp. Range";
+
   /** Default COBOL picture mask ({@code WS-DATE-FORMAT VALUE 'YYYYMMDD'} in {@code CSUTLDWY}). */
   public static final String DEFAULT_FORMAT = "YYYYMMDD";
 
-  /** Severity string emitted when strict parsing rejects a date (typical {@code CEE} severity). */
-  private static final String SEVERITY_ERROR = "0012";
+  /**
+   * Severity emitted for every {@code CEEDAYS} error feedback code. The {@code CSUTLDTC} feedback
+   * tokens all carry {@code X'0003'} in their severity halfword (for example {@code
+   * FC-UNSUPP-RANGE} = {@code X'000309D1...'}), so {@code MOVE SEVERITY OF FEEDBACK-CODE TO
+   * WS-SEVERITY-N} yields {@code 3} &rarr; {@code "0003"}. Callers branch only on {@link
+   * #SEVERITY_OK} versus non-zero, so the precise value is observable only in the rendered {@code
+   * WS-MESSAGE} line, where {@code "0003"} is byte-faithful to the mainframe.
+   */
+  private static final String SEVERITY_ERROR = "0003";
 
-  /** Message number emitted when strict parsing rejects a date (best-effort approximation). */
+  /** Message number for an error with no specific reconstructable {@code CEEDAYS} sub-code. */
   private static final String MSG_NONE = "0000";
+
+  /**
+   * {@code CEEDAYS} message number for {@code FC-YEAR-IN-ERA-ZERO} (feedback token {@code
+   * X'000309D9...'} &rarr; {@code 0x09D9} = {@code 2521}): a proleptic year of {@code 0}, which has
+   * no representation in the AD/CE era {@code CEEDAYS} uses. This is a non-tolerated error.
+   */
+  private static final String MSG_YEAR_IN_ERA_ZERO = "2521";
+
+  /** 15-character {@code WS-RESULT} text {@code CSUTLDTC} emits for {@code FC-YEAR-IN-ERA-ZERO}. */
+  private static final String RESULT_YEAR_IN_ERA_ZERO = "YearInEra is 0";
+
+  /**
+   * First date {@code CEEDAYS} can represent as a Lilian day number (Lilian day {@code 1} =
+   * 15&nbsp;October&nbsp;1582). A strictly earlier real calendar date is reported as {@code
+   * FC-UNSUPP-RANGE} (message {@link #MSG_UNSUPPORTED_RANGE}), the feedback migrated callers
+   * tolerate.
+   */
+  private static final LocalDate LILIAN_RANGE_START = LocalDate.of(1582, 10, 15);
 
   /** Number of characters in a {@code CCYYMMDD} date ({@code WS-EDIT-DATE-CCYYMMDD} is 8 bytes). */
   private static final int CCYYMMDD_LENGTH = 8;
@@ -160,8 +221,11 @@ public final class DateValidationService {
 
     /**
      * Indicates whether this result carries the tolerated {@code CEEDAYS} "Unsupp. Range" message
-     * ({@link DateValidationService#MSG_UNSUPPORTED_RANGE}). Callers such as {@code COACTUPC} treat
-     * such a result as acceptable even though {@link #valid()} is {@code false}.
+     * ({@link DateValidationService#MSG_UNSUPPORTED_RANGE}). The date-entry transactions {@code
+     * COTRN02C} and {@code CORPT00C} (migrated to {@code TranAddService} and {@code ReportService})
+     * accept a {@code 2513} result &mdash; {@code IF CSUTLDTC-RESULT-SEV-CD = '0000' ... ELSE IF
+     * CSUTLDTC-RESULT-MSG-NUM NOT = '2513'} &mdash; treating it as acceptable even though {@link
+     * #valid()} is {@code false}.
      *
      * @return {@code true} iff {@link #messageNumber()} equals {@code "2513"}
      */
@@ -219,11 +283,16 @@ public final class DateValidationService {
    * Validates a date string against a COBOL picture mask, reproducing {@code CSUTLDTC} (the {@code
    * CDV1} transaction's call to {@code CEEDAYS}).
    *
-   * <p>Because {@code CEEDAYS} is unavailable off-host, validation is approximated with strict
-   * {@link java.time} parsing. A successful parse yields severity {@link #SEVERITY_OK}, message
-   * {@code "0000"}, and result text {@link #RESULT_VALID}; any parse failure yields a non-zero
-   * severity ({@code "0012"}), message {@code "0000"}, and result text {@link #RESULT_INVALID}.
-   * This method never throws for an invalid date.
+   * <p>Because {@code CEEDAYS} is unavailable off-host, validation uses strict {@link java.time}
+   * parsing and then classifies the parsed date against the {@code CEEDAYS} Lilian supported range
+   * (see the class Javadoc). A valid in-range date yields severity {@link #SEVERITY_OK}, message
+   * {@code "0000"}, and result text {@link #RESULT_VALID}. A real calendar date before the Lilian
+   * epoch (15&nbsp;October&nbsp;1582) yields severity {@code "0003"}, message {@link
+   * #MSG_UNSUPPORTED_RANGE} ({@code "2513"}), and result {@link #RESULT_UNSUPPORTED_RANGE} &mdash;
+   * the feedback migrated callers tolerate. A proleptic year of {@code 0} yields the non-tolerated
+   * {@code "2521"} ({@code FC-YEAR-IN-ERA-ZERO}). Any parse failure yields severity {@code "0003"},
+   * message {@code "0000"}, and result text {@link #RESULT_INVALID}. This method never throws for
+   * an invalid date.
    *
    * @param date the date text (COBOL {@code LS-DATE}, {@code PIC X(10)}); {@code null} is treated
    *     as spaces
@@ -245,14 +314,39 @@ public final class DateValidationService {
     try {
       DateTimeFormatter formatter =
           DateTimeFormatter.ofPattern(toJavaPattern(mask)).withResolverStyle(ResolverStyle.STRICT);
-      LocalDate.parse(CobolStringUtils.trim(dateText), formatter);
-      severity = SEVERITY_OK;
-      messageNumber = MSG_NONE;
-      resultText = RESULT_VALID;
-      valid = true;
+      LocalDate parsed = LocalDate.parse(CobolStringUtils.trim(dateText), formatter);
+      // The date is a real calendar date; now reproduce the CEEDAYS Lilian-range feedback that
+      // migrated callers branch on. CEEDAYS can only return a Lilian day number for dates from
+      // 15 October 1582 (Lilian day 1) onward, and the AD/CE era it uses has no year zero.
+      if (parsed.getYear() == 0) {
+        // FC-YEAR-IN-ERA-ZERO (message 2521): non-tolerated error. The COBOL caller branches only
+        // on severity == '0000' OR message == '2513', so this rejects exactly like the mainframe.
+        severity = SEVERITY_ERROR;
+        messageNumber = MSG_YEAR_IN_ERA_ZERO;
+        resultText = RESULT_YEAR_IN_ERA_ZERO;
+        valid = false;
+      } else if (parsed.isBefore(LILIAN_RANGE_START)) {
+        // FC-UNSUPP-RANGE (message 2513): a structurally valid date earlier than the Lilian epoch.
+        // This is the feedback COTRN02C/CORPT00C (and TranAddService/ReportService) tolerate, so
+        // emitting it here makes DateValidationResult#isToleratedUnsupportedRange() observable
+        // instead of dead — closing the behavioral-parity gap against the mainframe.
+        severity = SEVERITY_ERROR;
+        messageNumber = MSG_UNSUPPORTED_RANGE;
+        resultText = RESULT_UNSUPPORTED_RANGE;
+        valid = false;
+      } else {
+        // FC-INVALID-DATE (the all-zero "ok" feedback token): valid date within the supported
+        // range.
+        severity = SEVERITY_OK;
+        messageNumber = MSG_NONE;
+        resultText = RESULT_VALID;
+        valid = true;
+      }
     } catch (DateTimeParseException | IllegalArgumentException ex) {
       // Strict parsing rejected the date (or the mask produced an unusable pattern). Mirror the
-      // CEEDAYS "invalid date" outcome rather than propagating the exception.
+      // CEEDAYS error outcome (severity 0003) rather than propagating the exception. The specific
+      // CEEDAYS sub-code is not reconstructable off-host, but every parse-failure token is a
+      // non-2513 error, so all callers reject identically.
       severity = SEVERITY_ERROR;
       messageNumber = MSG_NONE;
       resultText = RESULT_INVALID;

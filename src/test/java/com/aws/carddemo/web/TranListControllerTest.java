@@ -16,11 +16,14 @@
  */
 package com.aws.carddemo.web;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willAnswer;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.flash;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.model;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
@@ -28,6 +31,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
 
 import com.aws.carddemo.config.SecurityConfig;
+import com.aws.carddemo.dto.screen.TranListScreen;
 import com.aws.carddemo.repository.UserSecurityRepository;
 import com.aws.carddemo.service.online.TranListService;
 import org.junit.jupiter.api.Test;
@@ -120,7 +124,45 @@ class TranListControllerTest {
         .perform(get("/transaction-list"))
         .andExpect(status().isOk())
         .andExpect(view().name("transaction-list"))
-        .andExpect(model().attributeExists("transactionListForm"));
+        .andExpect(model().attributeExists("transactionListForm"))
+        // Accessibility (review Finding 7): the transaction grid carries a
+        // visually-hidden <caption> giving the table a screen-reader description,
+        // matching the card-list and user-list screens.
+        .andExpect(content().string(containsString("List of transactions.")))
+        // Responsive parity (review Finding 8): the shared layout keeps the fixed
+        // 80ch BMS grid but lets narrow viewports scroll horizontally to it.
+        .andExpect(content().string(containsString("overflow-x: auto")));
+  }
+
+  /**
+   * Accessibility (review Finding 6): when the screen carries an error message, the shared {@code
+   * fragments/layout :: messages} fragment renders it inside an element with {@code role="alert"}
+   * so screen readers announce the validation/abend message assertively. Here the mocked service
+   * populates {@code errMsg} on the bound {@link TranListScreen} and returns {@code null} (the
+   * re-display path), and the rendered HTML is asserted to contain both {@code role="alert"} and
+   * the message text.
+   *
+   * @throws Exception if the simulated request cannot be performed
+   */
+  @Test
+  @WithMockUser
+  void post_errorMessage_rendersAssertiveAlertRole() throws Exception {
+    willAnswer(
+            invocation -> {
+              TranListScreen bound = invocation.getArgument(0);
+              bound.setErrMsg("Did not find this transaction in transaction file.");
+              return null; // re-display the list (no program transfer)
+            })
+        .given(tranListService)
+        .processTranList(any(), any(), any());
+
+    mockMvc
+        .perform(post("/transaction-list").param("pfKey", "ENTER").with(csrf()))
+        .andExpect(status().isOk())
+        .andExpect(view().name("transaction-list"))
+        .andExpect(content().string(containsString("role=\"alert\"")))
+        .andExpect(
+            content().string(containsString("Did not find this transaction in transaction file.")));
   }
 
   /**

@@ -15,7 +15,9 @@
 #   * zero-warning compilation (maven-compiler-plugin -Werror/-Xlint:all)
 #   * JUnit 5 + Testcontainers PostgreSQL integration tests (local-only)
 #   * JaCoCo >= 80% line-coverage gate
-#   * OWASP dependency-check (fails on critical/high CVEs)
+#   * OWASP dependency-check (fails on critical/high CVEs; the build step passes an
+#     authenticated NVD API key from the `NVD_API_KEY` repository secret so the gate
+#     runs to completion and is never skipped)
 #   * Spotless format check
 # Therefore this workflow MUST NOT mask the Maven exit status: the build step's
 # non-zero exit code must propagate and fail the job.
@@ -52,8 +54,30 @@ jobs:
       - name: Ensure Maven wrapper is executable
         run: chmod +x ./mvnw
 
+      # Persist the OWASP dependency-check NVD database across runs. The database is
+      # large (hundreds of MB) and rebuilding it from the NVD feed on every run is slow
+      # and rate-limited; a dedicated cache (latest restored, fresh copy saved each run)
+      # keeps the CVE gate fast and reliable independently of the broader Maven cache.
+      - name: Cache OWASP dependency-check NVD database
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: owasp-nvd-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            owasp-nvd-${{ runner.os }}-
+
       - name: Build, test, and enforce all quality gates
-        run: ./mvnw -B clean verify
+        # NVD_API_KEY is an authenticated NVD API key supplied as the repository secret
+        # `NVD_API_KEY`. It lifts the strict anonymous NVD rate limit so the OWASP
+        # dependency-check gate (failBuildOnCVSS=7, bound to `verify` in pom.xml) can
+        # refresh the feed and run to completion — proving the zero critical/high CVE
+        # gate WITHOUT `-Ddependency-check.skip=true`. When the secret is absent (for
+        # example on forked-PR runs that cannot read secrets) the property is empty and
+        # dependency-check falls back to the cached database; the gate still runs and is
+        # never skipped, so the Maven exit status continues to gate the job.
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: ./mvnw -B clean verify -DnvdApiKey="${NVD_API_KEY}"
 
       - name: Upload JaCoCo coverage report
         if: always()
@@ -70,3 +94,44 @@ jobs:
           name: owasp-dependency-check-report
           path: target/dependency-check-report.html
           if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Enforce the read-only governance of the retained legacy mainframe tree.
+  # `legacy/app/**` is the original COBOL/CICS/VSAM/JCL/BMS source kept verbatim as
+  # the behavioral specification and parity anchor (AAP §0.7.2; Rule R7). Git cannot
+  # make tracked files filesystem-immutable in a clone, so read-only is enforced as
+  # policy: this job fails the build if any commit modifies a file under legacy/,
+  # and .github/CODEOWNERS routes such changes to the maintainers for review.
+  # ---------------------------------------------------------------------------
+  legacy-readonly:
+    name: Enforce /legacy read-only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail if the retained /legacy reference tree was modified
+        run: |
+          # Determine the correct comparison range for both pull_request and push events.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          fi
+          zero="0000000000000000000000000000000000000000"
+          if [ -z "$base" ] || [ "$base" = "$zero" ]; then
+            echo "No prior commit to compare against (new branch); skipping legacy read-only diff."
+            exit 0
+          fi
+          changed="$(git diff --name-only "$base" "$head" -- legacy/ || true)"
+          if [ -n "$changed" ]; then
+            echo "::error::The /legacy reference tree is retained read-only and must not change. Modified files:"
+            echo "$changed"
+            exit 1
+          fi
+          echo "OK: no modifications under legacy/ between $base and $head."
