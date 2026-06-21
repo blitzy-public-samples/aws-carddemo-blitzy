@@ -21,11 +21,13 @@ import java.time.OffsetDateTime;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.TypeMismatchException;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.validation.BindException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -146,6 +148,18 @@ public class GlobalExceptionHandler {
    */
   private static final String METHOD_NOT_ALLOWED_DETAIL =
       "Request method not supported for this resource.";
+
+  /**
+   * The fixed, request-content-free client-facing {@code detail} returned for a request-binding or
+   * type-conversion failure (a {@link BindException} — including its {@code
+   * MethodArgumentNotValidException} subclass — or a {@link TypeMismatchException}, such as its
+   * {@code MethodArgumentTypeMismatchException} subclass). The rejected value, field path, and
+   * framework exception type are deliberately <em>not</em> echoed back, keeping the response free
+   * of request-controlled content and of internal framework detail (AAP &sect;0.7.2 security
+   * hygiene; CWE-209 / information disclosure).
+   */
+  private static final String BAD_INPUT_DETAIL =
+      "One or more submitted fields are not in the expected format.";
 
   /** {@link ProblemDetail} property name carrying the response-composition timestamp. */
   private static final String PROP_TIMESTAMP = "timestamp";
@@ -423,6 +437,38 @@ public class GlobalExceptionHandler {
     }
     log.warn("Method not supported: {}", ex.getMessage());
     return builder.body(body);
+  }
+
+  /**
+   * Handles a request data-binding or type-conversion failure by returning <strong>HTTP&nbsp;400
+   * (Bad Request)</strong> rather than letting it fall through to the {@code Exception} catch-all
+   * (which would mislabel a client typo as a {@code "9999"} server abend / HTTP 500).
+   *
+   * <p>This is the framework-level safety net for the kind of input the COBOL programs validate
+   * character-by-character and <em>never</em> abend on: a non-numeric value typed into a field the
+   * binder must convert. It covers {@link BindException} (and therefore its {@code
+   * MethodArgumentNotValidException} subclass — {@code @ModelAttribute} binding/validation errors)
+   * and {@link TypeMismatchException} (and therefore its {@code
+   * MethodArgumentTypeMismatchException} subclass — {@code @RequestParam}/{@code @PathVariable}
+   * conversion errors). The monetary screen fields are now carried as strings and validated in the
+   * service layer, so well-behaved screens report the precise COBOL field message before reaching
+   * here; this handler guarantees that any remaining binder-level conversion failure is still a
+   * graceful, leak-free {@code 400}.
+   *
+   * <p>The client-facing {@code detail} is the fixed {@link #BAD_INPUT_DETAIL}; the rejected value,
+   * field path, and framework exception type are deliberately withheld from the response (AAP
+   * &sect;0.7.2 security hygiene) and logged at {@code WARN} (the error is user-correctable and is
+   * <em>not</em> an abend, so no {@code "abendCode"} property is attached and the {@code "9999"}
+   * code is reserved for genuine unrecoverable failures).
+   *
+   * @param ex the binding or type-conversion failure raised by the web binder
+   * @return a 400 response whose body is a {@link ProblemDetail} describing the invalid input
+   */
+  @ExceptionHandler({BindException.class, TypeMismatchException.class})
+  public ResponseEntity<ProblemDetail> handleBindingFailure(Exception ex) {
+    ProblemDetail body = problemDetail(HttpStatus.BAD_REQUEST, BAD_INPUT_DETAIL, "Invalid Input");
+    log.warn("Request binding/type-conversion failure: {}", ex.getClass().getSimpleName());
+    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
   }
 
   /**

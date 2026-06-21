@@ -35,7 +35,6 @@ import com.aws.carddemo.dto.screen.TranAddScreen;
 import com.aws.carddemo.exception.IoStatusException;
 import com.aws.carddemo.repository.CardXrefRepository;
 import com.aws.carddemo.repository.TransactionRepository;
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
@@ -88,11 +87,12 @@ import org.springframework.dao.DataIntegrityViolationException;
  * {@code "Your"} (COTRN02C L728-732); it is asserted both as the full string and via {@code
  * contains} per fragment.
  *
- * <p><strong>Decimal fidelity</strong> (AAP &sect;0.6.1): the persisted {@code tranAmt} is asserted
- * as a {@link BigDecimal} at scale&nbsp;2 (never a binary {@code double}). <strong>FILE STATUS
- * mapping</strong> (AAP &sect;0.6.4): not-found and duplicate-key paths redisplay on-screen rather
- * than throw, while an unexpected failure positioning for the next transaction id is translated to
- * {@link IoStatusException}.
+ * <p><strong>Decimal fidelity</strong> (AAP &sect;0.6.1): the operator types the amount as raw text
+ * which the service validates ({@code NUMVAL-C}) then converts, and the persisted {@code tranAmt}
+ * is asserted as a {@code BigDecimal} at scale&nbsp;2 (never a binary {@code double}). <strong>FILE
+ * STATUS mapping</strong> (AAP &sect;0.6.4): not-found and duplicate-key paths redisplay on-screen
+ * rather than throw, while an unexpected failure positioning for the next transaction id is
+ * translated to {@link IoStatusException}.
  */
 @ExtendWith(MockitoExtension.class)
 class TranAddServiceTest {
@@ -132,8 +132,8 @@ class TranAddServiceTest {
    * Builds a fully populated, fully valid Add-Transaction screen on the <em>account</em> key path
    * (account id supplied, card number blank). Individual tests mutate exactly one field to drive a
    * specific branch. Dates are genuinely valid {@code YYYY-MM-DD} strings so the real {@code
-   * DateValidationService} accepts them. The amount is a scale-2 {@link BigDecimal} per AAP
-   * &sect;0.6.1.
+   * DateValidationService} accepts them. The amount is the raw screen string {@code "100.00"} that
+   * the service validates and converts to a scale-2 {@code BigDecimal} per AAP &sect;0.6.1.
    */
   private static TranAddScreen validScreen() {
     TranAddScreen screen = new TranAddScreen();
@@ -143,7 +143,7 @@ class TranAddServiceTest {
     screen.setTcatCd("0005");
     screen.setTrnSrc("POS");
     screen.setTDesc("GROCERY PURCHASE");
-    screen.setTrnAmt(new BigDecimal("100.00"));
+    screen.setTrnAmt("100.00");
     screen.setTOrigDt("2024-01-15");
     screen.setTProcDt("2024-01-16");
     screen.setMid("000012345");
@@ -205,9 +205,10 @@ class TranAddServiceTest {
     verify(transactionRepository).save(captor.capture());
     Transaction saved = captor.getValue();
     assertThat(saved.getTranId()).isEqualTo(EXPECTED_TRAN_ID);
-    // Decimal fidelity (AAP §0.6.1): scale-2 BigDecimal, asserted by comparison AND preserved
-    // scale;
-    // the amount is never compared or stored as a binary floating-point (double) value.
+    // Decimal fidelity (AAP §0.6.1): the raw "100.00" string is converted to a scale-2 BigDecimal,
+    // asserted by comparison AND preserved scale; the amount is never compared or stored as a
+    // binary
+    // floating-point (double) value.
     assertThat(saved.getTranAmt()).isEqualByComparingTo("100.00");
     assertThat(saved.getTranAmt().scale()).isEqualTo(2);
     assertThat(saved.getTranTypeCd()).isEqualTo("01");
@@ -326,9 +327,7 @@ class TranAddServiceTest {
             (Consumer<TranAddScreen>) s -> s.setTDesc(""),
             "Description can NOT be empty..."),
         arguments(
-            "Amount",
-            (Consumer<TranAddScreen>) s -> s.setTrnAmt(null),
-            "Amount can NOT be empty..."),
+            "Amount", (Consumer<TranAddScreen>) s -> s.setTrnAmt(""), "Amount can NOT be empty..."),
         arguments(
             "Orig Date",
             (Consumer<TranAddScreen>) s -> s.setTOrigDt(""),
@@ -424,6 +423,39 @@ class TranAddServiceTest {
 
     assertThat(next).isNull();
     assertThat(screen.getErrMsg()).as("non-numeric %s field", label).isEqualTo(expected);
+    verify(transactionRepository, never()).save(any());
+  }
+
+  // ===== 7b. Amount edit-mask: non-numeric and over-capacity text (COTRN02C L339-351) ===========
+
+  /**
+   * Supplies malformed amount text that the COBOL inspects character-by-character before any {@code
+   * NUMVAL-C} conversion: purely non-numeric input (the exact value from the QA reproduction, which
+   * previously broke {@code BigDecimal} data binding and abended with HTTP&nbsp;500), and a
+   * magnitude that overflows the eight-integer-digit edit mask {@code PIC -99999999.99}. Both must
+   * redisplay with the format message and never reach the insert.
+   */
+  private static Stream<Arguments> amountFormatCases() {
+    return Stream.of(
+        arguments("non-numeric", "ABCDEFGH"),
+        arguments("over-capacity", "999999999.99"),
+        arguments("embedded letters", "12A4.56"));
+  }
+
+  @ParameterizedTest(name = "[{index}] {0} amount -> format message")
+  @MethodSource("amountFormatCases")
+  @DisplayName("malformed amount text stops at 'Amount should be in format -99999999.99', no save")
+  void malformedAmount_redisplaysFormatMessage_noSave(String label, String badAmount) {
+    givenXrefResolvesAccountToCard();
+    TranAddScreen screen = validScreen();
+    screen.setTrnAmt(badAmount);
+
+    String next = service.processTranAdd(screen, reentered(), CardWorkArea.Aid.ENTER);
+
+    assertThat(next).isNull();
+    assertThat(screen.getErrMsg())
+        .as("%s amount field", label)
+        .isEqualTo("Amount should be in format -99999999.99");
     verify(transactionRepository, never()).save(any());
   }
 

@@ -70,10 +70,11 @@ import org.springframework.transaction.annotation.Transactional;
  * CardDemoCommarea} (user, role, navigation context) and {@link TranAddScreen} (operator input and
  * the message line), exactly as the COBOL COMMAREA and BMS symbolic map do.
  *
- * <p><strong>Decimal fidelity (AAP &sect;0.6.1).</strong> The transaction amount is handled
- * strictly as {@link BigDecimal} at scale&nbsp;2 with {@link RoundingMode#DOWN} (truncation), never
- * {@code float}/{@code double}, matching the COBOL {@code PIC S9(09)V99} {@code NUMVAL-C}
- * conversion.
+ * <p><strong>Decimal fidelity (AAP &sect;0.6.1).</strong> The transaction amount arrives as the raw
+ * screen string and is validated character-by-character ({@code NUMVAL-C} edit rules) before being
+ * converted to a {@link BigDecimal} at scale&nbsp;2 with {@link RoundingMode#DOWN} (truncation),
+ * never {@code float}/{@code double}, matching the COBOL {@code PIC S9(09)V99} {@code NUMVAL-C}
+ * conversion. Malformed input is reported as the field message rather than failing data binding.
  *
  * <p><strong>Persistence and exception mapping (AAP &sect;0.6.4).</strong> Cross-reference lookups
  * map to {@link CardXrefRepository}; the transaction write maps to {@link TransactionRepository}. A
@@ -224,8 +225,9 @@ public class TranAddService {
   /**
    * Largest magnitude representable by the transaction-amount edit mask {@code PIC -99999999.99}
    * (eight integer digits, two fraction digits). The COBOL validates the raw {@code TRNAMTI} text
-   * against this shape character-by-character; with a {@link BigDecimal}-typed screen field the
-   * equivalent observable constraint is that the (scale-2, truncated) magnitude fits the mask.
+   * against this shape character-by-character; here the raw string is first validated by {@link
+   * #isValidNumValC(String)}, then parsed by {@link #numValC(String)}, and finally its (scale-2,
+   * truncated) magnitude is required to fit this mask.
    */
   private static final BigDecimal AMOUNT_MAX = new BigDecimal("99999999.99");
 
@@ -491,8 +493,8 @@ public class TranAddService {
       screen.setErrMsg(MSG_DESCRIPTION_EMPTY);
       return true;
     }
-    if (screen.getTrnAmt() == null) {
-      // TRNAMTI = SPACES → an unset BigDecimal models the empty amount field.
+    if (isBlank(screen.getTrnAmt())) {
+      // TRNAMTI = SPACES → a blank raw amount string models the empty amount field.
       screen.setErrMsg(MSG_AMOUNT_EMPTY);
       return true;
     }
@@ -532,10 +534,15 @@ public class TranAddService {
     }
 
     // --- Amount edit-mask check (L339-351) ---
-    // The COBOL inspects the raw TRNAMTI text against PIC -99999999.99 character-by-character. With
-    // a BigDecimal-typed screen field the equivalent observable constraint is that the truncated
-    // (scale-2) magnitude fits the mask's eight integer + two fraction digits.
-    BigDecimal scaledAmount = screen.getTrnAmt().setScale(AMOUNT_SCALE, RoundingMode.DOWN);
+    // The COBOL inspects the raw TRNAMTI text against PIC -99999999.99 character-by-character and
+    // only parses it via NUMVAL-C once the shape is valid; it never abends on malformed input. We
+    // reproduce that exactly: reject any non-NUMVAL-C string (e.g. "ABCDEFGH") with the format
+    // message, then parse, then enforce the mask's eight integer + two fraction digits.
+    if (!isValidNumValC(screen.getTrnAmt())) {
+      screen.setErrMsg(MSG_AMOUNT_FORMAT);
+      return true;
+    }
+    BigDecimal scaledAmount = numValC(screen.getTrnAmt()).setScale(AMOUNT_SCALE, RoundingMode.DOWN);
     if (scaledAmount.abs().compareTo(AMOUNT_MAX) > 0) {
       screen.setErrMsg(MSG_AMOUNT_FORMAT);
       return true;
@@ -552,7 +559,9 @@ public class TranAddService {
     }
 
     // --- Amount NUMVAL-C conversion + reformat back into the field (L383-386) ---
-    screen.setTrnAmt(scaledAmount);
+    // COBOL reformats the validated amount back into TRNAMTI; we paint the canonical scale-2 plain
+    // string (e.g. "100.00") so the redisplayed field shows the normalised value.
+    screen.setTrnAmt(scaledAmount.toPlainString());
 
     // --- CSUTLDTC semantic date validation (L389-427) ---
     // COBOL tolerates message 2513 (unsupported range) exactly; reproduce that tolerance here.
@@ -597,7 +606,10 @@ public class TranAddService {
         CobolStringUtils.padLeftZeros(CobolStringUtils.trim(screen.getTcatCd()), 4));
     transaction.setTranSource(CobolStringUtils.padRight(screen.getTrnSrc(), 10));
     transaction.setTranDesc(CobolStringUtils.padRight(screen.getTDesc(), 100));
-    transaction.setTranAmt(screen.getTrnAmt().setScale(AMOUNT_SCALE, RoundingMode.DOWN));
+    // The amount has already passed isValidNumValC in VALIDATE-INPUT-DATA-FIELDS and was
+    // reformatted
+    // to its canonical scale-2 string, so numValC always yields a non-null value here.
+    transaction.setTranAmt(numValC(screen.getTrnAmt()).setScale(AMOUNT_SCALE, RoundingMode.DOWN));
     transaction.setTranMerchantId(Long.parseLong(CobolStringUtils.trim(screen.getMid())));
     transaction.setTranMerchantName(CobolStringUtils.padRight(screen.getMName(), 50));
     transaction.setTranMerchantCity(CobolStringUtils.padRight(screen.getMCity(), 50));
@@ -684,7 +696,7 @@ public class TranAddService {
       screen.setTtypCd(CobolStringUtils.rtrim(CobolStringUtils.truncate(last.getTranTypeCd(), 2)));
       screen.setTcatCd(CobolStringUtils.rtrim(CobolStringUtils.truncate(last.getTranCatCd(), 4)));
       screen.setTrnSrc(CobolStringUtils.rtrim(CobolStringUtils.truncate(last.getTranSource(), 10)));
-      screen.setTrnAmt(last.getTranAmt());
+      screen.setTrnAmt(moneyToString(last.getTranAmt()));
       screen.setTDesc(CobolStringUtils.rtrim(CobolStringUtils.truncate(last.getTranDesc(), 60)));
       screen.setTOrigDt(CobolStringUtils.truncate(last.getTranOrigTs(), 10));
       screen.setTProcDt(CobolStringUtils.truncate(last.getTranProcTs(), 10));
@@ -798,6 +810,112 @@ public class TranAddService {
       }
     }
     return true;
+  }
+
+  /**
+   * {@code FUNCTION TEST-NUMVAL-C} parity: {@code true} when {@code raw} is a valid
+   * numeric-with-currency string — the form {@code NUMVAL-C} accepts. Permits optional surrounding
+   * whitespace, an optional single leading <em>or</em> trailing sign ({@code +}/{@code -}), an
+   * optional leading currency symbol ({@code $}), grouping commas, and at most one decimal point
+   * with a fractional part. At least one digit must be present; any other character makes the value
+   * invalid (the legacy {@code "Amount should be in format -99999999.99"} condition).
+   *
+   * @param raw the raw screen characters
+   * @return {@code true} when the value is a syntactically valid signed decimal
+   */
+  private static boolean isValidNumValC(String raw) {
+    if (raw == null) {
+      return false;
+    }
+    String s = raw.trim();
+    if (s.isEmpty()) {
+      return false;
+    }
+    // Optional single trailing sign (NUMVAL-C accepts a trailing + or -).
+    char last = s.charAt(s.length() - 1);
+    boolean trailingSign = (last == '+' || last == '-');
+    if (trailingSign) {
+      s = s.substring(0, s.length() - 1).trim();
+    }
+    // Optional single leading sign — only when there was no trailing sign.
+    if (!trailingSign && !s.isEmpty() && (s.charAt(0) == '+' || s.charAt(0) == '-')) {
+      s = s.substring(1).trim();
+    }
+    // Optional leading currency symbol.
+    if (!s.isEmpty() && s.charAt(0) == '$') {
+      s = s.substring(1).trim();
+    }
+    if (s.isEmpty()) {
+      return false;
+    }
+    boolean sawDigit = false;
+    boolean sawDot = false;
+    for (int i = 0; i < s.length(); i++) {
+      char c = s.charAt(i);
+      if (c >= '0' && c <= '9') {
+        sawDigit = true;
+      } else if (c == ',') {
+        // Grouping comma — accepted (NUMVAL-C ignores grouping; position not strictly enforced).
+        continue;
+      } else if (c == '.') {
+        if (sawDot) {
+          return false; // at most one decimal point
+        }
+        sawDot = true;
+      } else {
+        return false; // any other character makes the amount invalid
+      }
+    }
+    return sawDigit;
+  }
+
+  /**
+   * {@code FUNCTION NUMVAL-C} parity: parses a numeric-with-currency string (already validated by
+   * {@link #isValidNumValC(String)}) into a {@link BigDecimal}. Strips the optional currency
+   * symbol, grouping commas and embedded spaces, and normalises a leading or trailing sign.
+   *
+   * @param raw the raw screen characters
+   * @return the parsed value, or {@code null} when the string cannot be parsed
+   */
+  private static BigDecimal numValC(String raw) {
+    if (raw == null) {
+      return null;
+    }
+    String s = raw.trim();
+    if (s.isEmpty()) {
+      return null;
+    }
+    boolean negative = false;
+    char last = s.charAt(s.length() - 1);
+    if (last == '+' || last == '-') {
+      negative = (last == '-');
+      s = s.substring(0, s.length() - 1).trim();
+    } else if (s.charAt(0) == '+' || s.charAt(0) == '-') {
+      negative = (s.charAt(0) == '-');
+      s = s.substring(1).trim();
+    }
+    s = s.replace("$", "").replace(",", "").replace(" ", "");
+    if (s.isEmpty() || ".".equals(s)) {
+      return null;
+    }
+    try {
+      BigDecimal value = new BigDecimal(s);
+      return negative ? value.negate() : value;
+    } catch (NumberFormatException ex) {
+      return null;
+    }
+  }
+
+  /**
+   * Renders a monetary entity value as a plain scale-2 decimal string for the {@code PIC X(12)}
+   * amount field ({@code ""} for {@code null}). Truncates to scale 2 ({@link RoundingMode#DOWN}) so
+   * the painted value matches the stored amount to the cent.
+   *
+   * @param value the entity amount
+   * @return the plain decimal string (e.g. {@code "100.00"}), or {@code ""} when {@code null}
+   */
+  private static String moneyToString(BigDecimal value) {
+    return value == null ? "" : value.setScale(AMOUNT_SCALE, RoundingMode.DOWN).toPlainString();
   }
 
   /**

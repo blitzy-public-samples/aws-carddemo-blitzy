@@ -23,14 +23,18 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.aws.carddemo.util.Messages;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.TypeMismatchException;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.BindException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
@@ -119,6 +123,13 @@ class GlobalExceptionHandlerTest {
    */
   private static final String METHOD_NOT_ALLOWED_DETAIL =
       "Request method not supported for this resource.";
+
+  /**
+   * The fixed, request-content-free detail returned for a binding / type-conversion failure (400);
+   * asserted as a literal because the production constant is {@code private}.
+   */
+  private static final String BAD_INPUT_DETAIL =
+      "One or more submitted fields are not in the expected format.";
 
   /** Stateless advice under test, constructed directly — no Spring context and no injected deps. */
   private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
@@ -445,6 +456,62 @@ class GlobalExceptionHandlerTest {
     Map<String, Object> properties = body.getProperties();
     assertThat(properties).isNotNull();
     assertThat(properties).doesNotContainKey("abendCode");
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // BindException / TypeMismatchException -> 400 Bad Request (binder/type-conversion failure)
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * A {@link TypeMismatchException} — the failure the web binder raises when a non-numeric value
+   * (here the exact {@code "ABCDEFGH"} from the QA reproduction) is submitted for a field the
+   * binder must convert — returns HTTP&nbsp;400 with the {@code "Invalid Input"} title and the
+   * fixed, content-free detail. Being a recoverable <em>client</em> error it carries
+   * <strong>no</strong> {@code abendCode} property (so it is never misreported as the {@code
+   * "9999"} server abend / 500 that QA Issue&nbsp;2 observed), and the rejected value and framework
+   * type never leak into the body.
+   */
+  @Test
+  void handleBindingFailure_typeMismatch_returns400NoAbendCodeNoLeak() {
+    TypeMismatchException ex = new TypeMismatchException("ABCDEFGH", BigDecimal.class);
+
+    ResponseEntity<ProblemDetail> response = handler.handleBindingFailure(ex);
+
+    assertThat(response.getStatusCode().value()).isEqualTo(400);
+    ProblemDetail body = bodyOf(response);
+    assertThat(body.getTitle()).isEqualTo("Invalid Input");
+    assertThat(body.getDetail()).isEqualTo(BAD_INPUT_DETAIL);
+    assertThat(body.getDetail()).doesNotContain("ABCDEFGH");
+    assertThat(body.getDetail()).doesNotContain("BigDecimal");
+    assertThat(body.getDetail()).doesNotContain("TypeMismatch");
+    Map<String, Object> properties = body.getProperties();
+    assertThat(properties).isNotNull();
+    assertThat(properties).doesNotContainKey("abendCode");
+  }
+
+  /**
+   * A {@link BindException} (an {@code @ModelAttribute} binding/validation failure) likewise
+   * returns a graceful HTTP&nbsp;400 with no {@code abendCode}. Because {@link
+   * MethodArgumentNotValidException} is a subclass of {@link BindException} in Spring&nbsp;6, the
+   * same {@code @ExceptionHandler} intercepts it too — asserted here at the type level so the
+   * coverage guarantee is locked in without constructing the framework-internal object.
+   */
+  @Test
+  void handleBindingFailure_bindException_returns400AndCoversMethodArgumentNotValid() {
+    BindException ex = new BindException(new Object(), "transactionAddForm");
+
+    ResponseEntity<ProblemDetail> response = handler.handleBindingFailure(ex);
+
+    assertThat(response.getStatusCode().value()).isEqualTo(400);
+    ProblemDetail body = bodyOf(response);
+    assertThat(body.getTitle()).isEqualTo("Invalid Input");
+    assertThat(body.getDetail()).isEqualTo(BAD_INPUT_DETAIL);
+    assertThat(body.getProperties()).isNotNull();
+    assertThat(body.getProperties()).doesNotContainKey("abendCode");
+
+    // MethodArgumentNotValidException extends BindException (Spring 6), so the same handler
+    // applies.
+    assertThat(BindException.class).isAssignableFrom(MethodArgumentNotValidException.class);
   }
 
   // ---------------------------------------------------------------------------------------------

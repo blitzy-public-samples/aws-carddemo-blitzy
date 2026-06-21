@@ -18,7 +18,6 @@
 package com.aws.carddemo.dto.screen;
 
 import jakarta.validation.constraints.Size;
-import java.math.BigDecimal;
 
 /**
  * Screen view contract for the Account Update screen.
@@ -32,11 +31,27 @@ import java.math.BigDecimal;
  *
  * <p>Every {@code PIC X(n)} display field is modelled as a {@link String} bounded to its exact
  * fixed-width length via {@link Size}. The five monetary fields (credit limit, cash credit limit,
- * current balance, current cycle credit and current cycle debit) are modelled as {@link
- * java.math.BigDecimal} with a conceptual scale of 2 to guarantee decimal fidelity; floating point
- * types are never used for monetary data. This class intentionally contains no formatting, parsing,
- * re-assembly or optimistic-locking logic &mdash; those concerns live in the service layer (for
- * example {@code service.online.AccountUpdateService}) and in {@code util.NumberFormatter}.
+ * current balance, current cycle credit and current cycle debit) are the legacy {@code ACRDLIM} /
+ * {@code ACSHLIM} / {@code ACURBAL} / {@code ACRCYCR} / {@code ACRCYDB} screen inputs &mdash; each
+ * a {@code PIC X(15)} character field on the 3270 map &mdash; and are therefore modelled as {@link
+ * String} (bounded to 15) exactly like every other input. This faithfully reproduces the COBOL
+ * behaviour in which the raw characters the operator typed are received first and only validated /
+ * parsed in {@code 1250-EDIT-SIGNED-9V2} ({@code FUNCTION TEST-NUMVAL-C} then {@code NUMVAL-C}); a
+ * malformed amount yields the legacy "{@code <field> is not valid}" message rather than a binding
+ * failure. Decimal fidelity is preserved downstream: the service parses each validated amount into
+ * a {@link java.math.BigDecimal} truncated to scale 2 ({@code RoundingMode.DOWN}) before it touches
+ * the entity (AAP &sect;0.6.1); floating-point types are never used for monetary data.
+ *
+ * <p>For optimistic-locking parity ({@code 9700-CHECK-CHANGE-IN-REC}) the screen also carries the
+ * {@code old*} snapshot fields &mdash; the account and customer values that were fetched and shown
+ * on the display turn ({@code 9500-STORE-FETCHED-DATA} &rarr; {@code ACUP-OLD-DETAILS}). They are
+ * rendered as hidden inputs so they round-trip across the pseudo-conversational boundary exactly as
+ * the COBOL {@code WS-THIS-PROGCOMMAREA} carried {@code ACUP-OLD-DETAILS}; the service compares the
+ * freshly re-read record against this carried snapshot to detect a concurrent change.
+ *
+ * <p>This class intentionally contains no formatting, parsing, re-assembly or optimistic-locking
+ * logic &mdash; those concerns live in the service layer (for example {@code
+ * service.online.AccountUpdateService}) and in {@code util.NumberFormatter}.
  *
  * <p>Authoritative source: {@code legacy/app/cpy-bms/COACTUP.CPY} (field names and lengths) with
  * {@code legacy/app/bms/COACTUP.bms} as the rendering reference. See Agent Action Plan &sect;0.4.1
@@ -81,9 +96,10 @@ public class AccountUpdateScreen {
   @Size(max = 2)
   private String opnDay; // OPNDAY PIC X(2)
 
-  // Credit limit (monetary).
-  // ACRDLIM credit limit (screen PIC X(15)); monetary value -> BigDecimal (scale 2)
-  private BigDecimal acrdLim;
+  // Credit limit (monetary). ACRDLIM is a PIC X(15) screen input: the raw typed characters are
+  // received here and validated/parsed in the service (1250-EDIT-SIGNED-9V2 -> NUMVAL-C).
+  @Size(max = 15)
+  private String acrdLim; // ACRDLIM PIC X(15)
 
   // Card expiry date, split into year / month / day input components.
   @Size(max = 4)
@@ -95,9 +111,10 @@ public class AccountUpdateScreen {
   @Size(max = 2)
   private String expDay; // EXPDAY PIC X(2)
 
-  // Cash credit limit (monetary).
-  // ACSHLIM cash credit limit (screen PIC X(15)); monetary value -> BigDecimal (scale 2)
-  private BigDecimal acshLim;
+  // Cash credit limit (monetary). ACSHLIM is a PIC X(15) screen input; validated/parsed in the
+  // service (1250-EDIT-SIGNED-9V2 -> NUMVAL-C).
+  @Size(max = 15)
+  private String acshLim; // ACSHLIM PIC X(15)
 
   // Card reissue date, split into year / month / day input components.
   @Size(max = 4)
@@ -109,21 +126,24 @@ public class AccountUpdateScreen {
   @Size(max = 2)
   private String risDay; // RISDAY PIC X(2)
 
-  // Current balance (monetary).
-  // ACURBAL current balance (screen PIC X(15)); monetary value -> BigDecimal (scale 2)
-  private BigDecimal acurBal;
+  // Current balance (monetary). ACURBAL is a PIC X(15) screen input; validated/parsed in the
+  // service (1250-EDIT-SIGNED-9V2 -> NUMVAL-C).
+  @Size(max = 15)
+  private String acurBal; // ACURBAL PIC X(15)
 
-  // Current cycle credit (monetary).
-  // ACRCYCR current cycle credit (screen PIC X(15)); monetary value -> BigDecimal (scale 2)
-  private BigDecimal acrCycr;
+  // Current cycle credit (monetary). ACRCYCR is a PIC X(15) screen input; validated/parsed in the
+  // service (1250-EDIT-SIGNED-9V2 -> NUMVAL-C).
+  @Size(max = 15)
+  private String acrCycr; // ACRCYCR PIC X(15)
 
   // Account group identifier.
   @Size(max = 10)
   private String aaddGrp; // AADDGRP PIC X(10)
 
-  // Current cycle debit (monetary).
-  // ACRCYDB current cycle debit (screen PIC X(15)); monetary value -> BigDecimal (scale 2)
-  private BigDecimal acrCydb;
+  // Current cycle debit (monetary). ACRCYDB is a PIC X(15) screen input; validated/parsed in the
+  // service (1250-EDIT-SIGNED-9V2 -> NUMVAL-C).
+  @Size(max = 15)
+  private String acrCydb; // ACRCYDB PIC X(15)
 
   // Customer number.
   @Size(max = 9)
@@ -227,6 +247,108 @@ public class AccountUpdateScreen {
   @Size(max = 10)
   private String fkey12; // FKEY12 PIC X(10)
 
+  // ===========================================================================================
+  // OLD snapshot — the account/customer values fetched and shown on the DISPLAY turn
+  // (9500-STORE-FETCHED-DATA -> ACUP-OLD-DETAILS). These are rendered as hidden form inputs so
+  // they round-trip across the pseudo-conversational boundary, exactly as the COBOL carried
+  // ACUP-OLD-DETAILS in WS-THIS-PROGCOMMAREA. The service reconstructs the OLD entities from
+  // these fields and compares them, field by field, against the freshly re-read records on the
+  // PF5 write turn (9700-CHECK-CHANGE-IN-REC). They are NOT re-captured on the validate/write
+  // turns, so a concurrent change made after the display turn is detected.
+  //
+  // Numeric values are carried as their canonical text form (money: plain decimal at scale 2;
+  // SSN / FICO: the integer digits; dates: yyyy-MM-dd) and re-parsed by the service. Lengths are
+  // generous text bounds (not 3270 map widths — these are hidden state, never displayed).
+
+  // OLD account snapshot.
+  @Size(max = 11)
+  private String oldAcctId;
+
+  @Size(max = 1)
+  private String oldActiveStatus;
+
+  @Size(max = 15)
+  private String oldCurrBal;
+
+  @Size(max = 15)
+  private String oldCreditLimit;
+
+  @Size(max = 15)
+  private String oldCashCreditLimit;
+
+  @Size(max = 15)
+  private String oldCurrCycCredit;
+
+  @Size(max = 15)
+  private String oldCurrCycDebit;
+
+  @Size(max = 10)
+  private String oldOpenDate; // yyyy-MM-dd
+
+  @Size(max = 10)
+  private String oldExpiryDate; // yyyy-MM-dd
+
+  @Size(max = 10)
+  private String oldReissueDate; // yyyy-MM-dd
+
+  @Size(max = 10)
+  private String oldGroupId;
+
+  // OLD customer snapshot.
+  @Size(max = 9)
+  private String oldCustId;
+
+  @Size(max = 25)
+  private String oldFirstName;
+
+  @Size(max = 25)
+  private String oldMiddleName;
+
+  @Size(max = 25)
+  private String oldLastName;
+
+  @Size(max = 50)
+  private String oldAddrLine1;
+
+  @Size(max = 50)
+  private String oldAddrLine2;
+
+  @Size(max = 50)
+  private String oldAddrLine3;
+
+  @Size(max = 2)
+  private String oldStateCd;
+
+  @Size(max = 3)
+  private String oldCountryCd;
+
+  @Size(max = 10)
+  private String oldZip;
+
+  @Size(max = 15)
+  private String oldPhone1; // (aaa)bbb-cccc
+
+  @Size(max = 15)
+  private String oldPhone2; // (aaa)bbb-cccc
+
+  @Size(max = 9)
+  private String oldSsn; // 9-digit numeric text
+
+  @Size(max = 20)
+  private String oldGovtId;
+
+  @Size(max = 10)
+  private String oldDob; // yyyy-MM-dd
+
+  @Size(max = 10)
+  private String oldEftId;
+
+  @Size(max = 1)
+  private String oldPriHolder;
+
+  @Size(max = 3)
+  private String oldFico; // numeric text
+
   /** Creates an empty screen view contract; fields are populated through the setters. */
   public AccountUpdateScreen() {
     // No initialisation required: this is a framework-light data holder.
@@ -320,11 +442,11 @@ public class AccountUpdateScreen {
     this.opnDay = opnDay;
   }
 
-  public BigDecimal getAcrdLim() {
+  public String getAcrdLim() {
     return acrdLim;
   }
 
-  public void setAcrdLim(BigDecimal acrdLim) {
+  public void setAcrdLim(String acrdLim) {
     this.acrdLim = acrdLim;
   }
 
@@ -352,11 +474,11 @@ public class AccountUpdateScreen {
     this.expDay = expDay;
   }
 
-  public BigDecimal getAcshLim() {
+  public String getAcshLim() {
     return acshLim;
   }
 
-  public void setAcshLim(BigDecimal acshLim) {
+  public void setAcshLim(String acshLim) {
     this.acshLim = acshLim;
   }
 
@@ -384,19 +506,19 @@ public class AccountUpdateScreen {
     this.risDay = risDay;
   }
 
-  public BigDecimal getAcurBal() {
+  public String getAcurBal() {
     return acurBal;
   }
 
-  public void setAcurBal(BigDecimal acurBal) {
+  public void setAcurBal(String acurBal) {
     this.acurBal = acurBal;
   }
 
-  public BigDecimal getAcrCycr() {
+  public String getAcrCycr() {
     return acrCycr;
   }
 
-  public void setAcrCycr(BigDecimal acrCycr) {
+  public void setAcrCycr(String acrCycr) {
     this.acrCycr = acrCycr;
   }
 
@@ -408,11 +530,11 @@ public class AccountUpdateScreen {
     this.aaddGrp = aaddGrp;
   }
 
-  public BigDecimal getAcrCydb() {
+  public String getAcrCydb() {
     return acrCydb;
   }
 
-  public void setAcrCydb(BigDecimal acrCydb) {
+  public void setAcrCydb(String acrCydb) {
     this.acrCydb = acrCydb;
   }
 
@@ -662,5 +784,241 @@ public class AccountUpdateScreen {
 
   public void setFkey12(String fkey12) {
     this.fkey12 = fkey12;
+  }
+
+  // ===========================================================================================
+  // OLD snapshot accessors (hidden carried state — ACUP-OLD-DETAILS).
+  // ===========================================================================================
+
+  public String getOldAcctId() {
+    return oldAcctId;
+  }
+
+  public void setOldAcctId(String oldAcctId) {
+    this.oldAcctId = oldAcctId;
+  }
+
+  public String getOldActiveStatus() {
+    return oldActiveStatus;
+  }
+
+  public void setOldActiveStatus(String oldActiveStatus) {
+    this.oldActiveStatus = oldActiveStatus;
+  }
+
+  public String getOldCurrBal() {
+    return oldCurrBal;
+  }
+
+  public void setOldCurrBal(String oldCurrBal) {
+    this.oldCurrBal = oldCurrBal;
+  }
+
+  public String getOldCreditLimit() {
+    return oldCreditLimit;
+  }
+
+  public void setOldCreditLimit(String oldCreditLimit) {
+    this.oldCreditLimit = oldCreditLimit;
+  }
+
+  public String getOldCashCreditLimit() {
+    return oldCashCreditLimit;
+  }
+
+  public void setOldCashCreditLimit(String oldCashCreditLimit) {
+    this.oldCashCreditLimit = oldCashCreditLimit;
+  }
+
+  public String getOldCurrCycCredit() {
+    return oldCurrCycCredit;
+  }
+
+  public void setOldCurrCycCredit(String oldCurrCycCredit) {
+    this.oldCurrCycCredit = oldCurrCycCredit;
+  }
+
+  public String getOldCurrCycDebit() {
+    return oldCurrCycDebit;
+  }
+
+  public void setOldCurrCycDebit(String oldCurrCycDebit) {
+    this.oldCurrCycDebit = oldCurrCycDebit;
+  }
+
+  public String getOldOpenDate() {
+    return oldOpenDate;
+  }
+
+  public void setOldOpenDate(String oldOpenDate) {
+    this.oldOpenDate = oldOpenDate;
+  }
+
+  public String getOldExpiryDate() {
+    return oldExpiryDate;
+  }
+
+  public void setOldExpiryDate(String oldExpiryDate) {
+    this.oldExpiryDate = oldExpiryDate;
+  }
+
+  public String getOldReissueDate() {
+    return oldReissueDate;
+  }
+
+  public void setOldReissueDate(String oldReissueDate) {
+    this.oldReissueDate = oldReissueDate;
+  }
+
+  public String getOldGroupId() {
+    return oldGroupId;
+  }
+
+  public void setOldGroupId(String oldGroupId) {
+    this.oldGroupId = oldGroupId;
+  }
+
+  public String getOldCustId() {
+    return oldCustId;
+  }
+
+  public void setOldCustId(String oldCustId) {
+    this.oldCustId = oldCustId;
+  }
+
+  public String getOldFirstName() {
+    return oldFirstName;
+  }
+
+  public void setOldFirstName(String oldFirstName) {
+    this.oldFirstName = oldFirstName;
+  }
+
+  public String getOldMiddleName() {
+    return oldMiddleName;
+  }
+
+  public void setOldMiddleName(String oldMiddleName) {
+    this.oldMiddleName = oldMiddleName;
+  }
+
+  public String getOldLastName() {
+    return oldLastName;
+  }
+
+  public void setOldLastName(String oldLastName) {
+    this.oldLastName = oldLastName;
+  }
+
+  public String getOldAddrLine1() {
+    return oldAddrLine1;
+  }
+
+  public void setOldAddrLine1(String oldAddrLine1) {
+    this.oldAddrLine1 = oldAddrLine1;
+  }
+
+  public String getOldAddrLine2() {
+    return oldAddrLine2;
+  }
+
+  public void setOldAddrLine2(String oldAddrLine2) {
+    this.oldAddrLine2 = oldAddrLine2;
+  }
+
+  public String getOldAddrLine3() {
+    return oldAddrLine3;
+  }
+
+  public void setOldAddrLine3(String oldAddrLine3) {
+    this.oldAddrLine3 = oldAddrLine3;
+  }
+
+  public String getOldStateCd() {
+    return oldStateCd;
+  }
+
+  public void setOldStateCd(String oldStateCd) {
+    this.oldStateCd = oldStateCd;
+  }
+
+  public String getOldCountryCd() {
+    return oldCountryCd;
+  }
+
+  public void setOldCountryCd(String oldCountryCd) {
+    this.oldCountryCd = oldCountryCd;
+  }
+
+  public String getOldZip() {
+    return oldZip;
+  }
+
+  public void setOldZip(String oldZip) {
+    this.oldZip = oldZip;
+  }
+
+  public String getOldPhone1() {
+    return oldPhone1;
+  }
+
+  public void setOldPhone1(String oldPhone1) {
+    this.oldPhone1 = oldPhone1;
+  }
+
+  public String getOldPhone2() {
+    return oldPhone2;
+  }
+
+  public void setOldPhone2(String oldPhone2) {
+    this.oldPhone2 = oldPhone2;
+  }
+
+  public String getOldSsn() {
+    return oldSsn;
+  }
+
+  public void setOldSsn(String oldSsn) {
+    this.oldSsn = oldSsn;
+  }
+
+  public String getOldGovtId() {
+    return oldGovtId;
+  }
+
+  public void setOldGovtId(String oldGovtId) {
+    this.oldGovtId = oldGovtId;
+  }
+
+  public String getOldDob() {
+    return oldDob;
+  }
+
+  public void setOldDob(String oldDob) {
+    this.oldDob = oldDob;
+  }
+
+  public String getOldEftId() {
+    return oldEftId;
+  }
+
+  public void setOldEftId(String oldEftId) {
+    this.oldEftId = oldEftId;
+  }
+
+  public String getOldPriHolder() {
+    return oldPriHolder;
+  }
+
+  public void setOldPriHolder(String oldPriHolder) {
+    this.oldPriHolder = oldPriHolder;
+  }
+
+  public String getOldFico() {
+    return oldFico;
+  }
+
+  public void setOldFico(String oldFico) {
+    this.oldFico = oldFico;
   }
 }

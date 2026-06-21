@@ -39,6 +39,7 @@ import com.aws.carddemo.repository.AccountRepository;
 import com.aws.carddemo.repository.CardXrefRepository;
 import com.aws.carddemo.repository.CustomerRepository;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
@@ -80,14 +81,19 @@ import org.springframework.dao.DataAccessResourceFailureException;
  *
  * <p><strong>Control-flow parity (AAP §0.6.5).</strong> The read chain (xref &rarr; account &rarr;
  * customer) and the optimistic <em>read-for-update &rarr; compare &rarr; REWRITE</em> ordering are
- * asserted with Mockito {@link InOrder}. The five monetary fields are asserted as {@link
- * BigDecimal} at scale 2 on both display and save (AAP §0.6.1 — no floating-point for decimal
- * data).
+ * asserted with Mockito {@link InOrder}. The five monetary fields are fixed-width {@code PIC X(15)}
+ * text on the screen (the Issue-2 parity fix — validated char-by-char before {@code NUMVAL-C}
+ * parsing) and are asserted as scale-2 plain strings on display; the persisted account entity still
+ * stores them as {@link BigDecimal} truncated to scale 2, asserted on the captured save (AAP §0.6.1
+ * — no floating-point for decimal data).
  *
- * <p><strong>Optimistic update parity (AAP §0.3.3, §0.6.6).</strong> The entities carry no
- * {@code @Version}; the service re-reads both records inside the write path and compares them,
- * field by field, against the snapshot shown to the user. Tests drive the {@code DATA-WAS-CHANGED}
- * branch by stubbing a divergent second read and assert that no overwrite occurs.
+ * <p><strong>Optimistic update parity (AAP §0.3.3, §0.6.5, §0.6.6).</strong> The entities carry no
+ * {@code @Version}; the service captures the display-turn snapshot in hidden {@code old*} fields
+ * and carries it across the pseudo-conversational boundary, then on the confirm turn re-reads the
+ * record <em>once</em> for update and compares it, field by field, against that carried snapshot —
+ * <em>not</em> a fresh same-turn re-read (the Issue-1 lost-update fix). Tests seed the carried
+ * snapshot and drive the {@code DATA-WAS-CHANGED} branch by stubbing a divergent read-for-update,
+ * asserting that no overwrite occurs.
  *
  * <p><strong>Read-only redisplay vs. abend (AAP §0.6.4).</strong> Field-validation failures and
  * record-not-found conditions set an on-screen message and redisplay (return {@code null}); only an
@@ -110,11 +116,13 @@ class AccountUpdateServiceTest {
   private static final String CARD_NUM = "1234567890123456";
 
   /**
-   * An amount one order of magnitude beyond the legacy {@code PIC S9(10)V99} capacity ({@code
-   * 9999999999.99}); the only reachable {@code 1250-EDIT-SIGNED-9V2} "is not valid" trigger now
-   * that monetary fields arrive pre-parsed as {@link BigDecimal}.
+   * A monetary text input one order of magnitude beyond the legacy {@code PIC S9(10)V99} capacity
+   * ({@code 9999999999.99}); a syntactically valid {@code TEST-NUMVAL-C} number whose parsed
+   * magnitude exceeds the field capacity, exercising the {@code 1250-EDIT-SIGNED-9V2} "is not
+   * valid" trigger. Monetary fields are now fixed-width {@code PIC X(15)} text (the parity fix), so
+   * this is supplied as a {@code String} exactly as a user would key it.
    */
-  private static final BigDecimal OVER_CAPACITY = new BigDecimal("99999999999.99");
+  private static final String OVER_CAPACITY = "99999999999.99";
 
   /**
    * Byte-exact open-date error produced by the real {@code DateValidationService.editDateCcyymmdd}
@@ -231,12 +239,14 @@ class AccountUpdateServiceTest {
     screen.setRisYear("2015");
     screen.setRisMon("06");
     screen.setRisDay("01");
-    // 3/5/7/8/9. Five monetary fields, BigDecimal scale 2, within PIC S9(10)V99 capacity.
-    screen.setAcrdLim(new BigDecimal("6000.00"));
-    screen.setAcshLim(new BigDecimal("1500.00"));
-    screen.setAcurBal(new BigDecimal("2000.00"));
-    screen.setAcrCycr(new BigDecimal("300.00"));
-    screen.setAcrCydb(new BigDecimal("90.00"));
+    // 3/5/7/8/9. Five monetary fields, fixed-width PIC X(15) text exactly as keyed, within the
+    // PIC S9(10)V99 capacity (the Issue-2 parity fix types these as String, validated char-by-char
+    // before NUMVAL-C parsing rather than bound straight to BigDecimal).
+    screen.setAcrdLim("6000.00");
+    screen.setAcshLim("1500.00");
+    screen.setAcurBal("2000.00");
+    screen.setAcrCycr("300.00");
+    screen.setAcrCydb("90.00");
     screen.setAaddGrp("GRP1");
     // 10. SSN parts (part 1 not 000/666/900-999).
     screen.setActSsn1("123");
@@ -272,24 +282,31 @@ class AccountUpdateServiceTest {
     // 23. EFT account id (numeric). 24. Primary card holder (Y/N).
     screen.setAcsEftc("1234567890");
     screen.setAcsPflg("Y");
+    // Carry the display-turn OLD snapshot (the factory baseline) in the hidden old* fields so the
+    // optimistic-lock reconstruction (loadOldSnapshot) has the original values to compare against
+    // without re-reading the database (Issue 1 fix; AAP §0.6.5). The NEW monetary / address values
+    // above deliberately differ from this baseline so 1205-COMPARE-OLD-NEW always reports a change.
+    carryOldSnapshot(screen, account(ACCT_ID), customer(CUST_ID));
     return screen;
   }
 
   /**
    * Builds a screen whose every editable field equals the supplied OLD snapshot, exactly as the
-   * service's {@code 9500-STORE-FETCHED-DATA} / {@code 3202-SHOW-ORIGINAL-VALUES} would paint it.
-   * Used by the "no changes detected" test so that {@code 1205-COMPARE-OLD-NEW} reports no change.
+   * service's {@code 9500-STORE-FETCHED-DATA} / {@code 3202-SHOW-ORIGINAL-VALUES} would paint it,
+   * and carries that same snapshot in the hidden {@code old*} fields. Used by the "no changes
+   * detected" test: the reconstructed OLD (from {@code old*}) equals the visible NEW values so
+   * {@code 1205-COMPARE-OLD-NEW} reports no change.
    */
   private static AccountUpdateScreen screenFromEntities(Account account, Customer customer) {
     AccountUpdateScreen screen = new AccountUpdateScreen();
     screen.setAcctSid(String.valueOf(account.getAcctId()));
     screen.setAcstNum(String.valueOf(customer.getCustId()));
     screen.setAcstTus(account.getAcctActiveStatus());
-    screen.setAcurBal(account.getAcctCurrBal());
-    screen.setAcrdLim(account.getAcctCreditLimit());
-    screen.setAcshLim(account.getAcctCashCreditLimit());
-    screen.setAcrCycr(account.getAcctCurrCycCredit());
-    screen.setAcrCydb(account.getAcctCurrCycDebit());
+    screen.setAcurBal(moneyStr(account.getAcctCurrBal()));
+    screen.setAcrdLim(moneyStr(account.getAcctCreditLimit()));
+    screen.setAcshLim(moneyStr(account.getAcctCashCreditLimit()));
+    screen.setAcrCycr(moneyStr(account.getAcctCurrCycCredit()));
+    screen.setAcrCydb(moneyStr(account.getAcctCurrCycDebit()));
     screen.setOpnYear("2010");
     screen.setOpnMon("01");
     screen.setOpnDay("15");
@@ -325,7 +342,58 @@ class AccountUpdateServiceTest {
     screen.setAcsGovt(customer.getCustGovtIssuedId());
     screen.setAcsEftc(customer.getCustEftAccountId());
     screen.setAcsPflg(customer.getCustPriCardHolderInd());
+    carryOldSnapshot(screen, account, customer);
     return screen;
+  }
+
+  /**
+   * Populates the screen's hidden {@code old*} snapshot fields from the supplied account /
+   * customer, mirroring the service's {@code captureOldSnapshot} (the Java equivalent of {@code
+   * 9500-STORE-FETCHED-DATA} which copies the fetched record into {@code ACUP-OLD-DETAILS} in the
+   * COMMAREA). The optimistic-lock fix (Issue&nbsp;1) carries the <em>display-turn</em> snapshot
+   * across the pseudo-conversational boundary in these hidden fields rather than re-reading the
+   * database on the confirm turn; the unit tests must therefore seed the same snapshot the browser
+   * would round-trip so {@code 9700-CHECK-CHANGE-IN-REC} compares the fresh read-for-update against
+   * the original display-turn values (AAP §0.6.5). The canonical text forms match the service
+   * exactly: monetary fields are scale-2 plain strings, the SSN is nine zero-padded digits, and ids
+   * / FICO are decimal strings.
+   */
+  private static void carryOldSnapshot(AccountUpdateScreen screen, Account a, Customer c) {
+    screen.setOldAcctId(a.getAcctId() == null ? null : String.valueOf(a.getAcctId()));
+    screen.setOldActiveStatus(a.getAcctActiveStatus());
+    screen.setOldCurrBal(moneyStr(a.getAcctCurrBal()));
+    screen.setOldCreditLimit(moneyStr(a.getAcctCreditLimit()));
+    screen.setOldCashCreditLimit(moneyStr(a.getAcctCashCreditLimit()));
+    screen.setOldCurrCycCredit(moneyStr(a.getAcctCurrCycCredit()));
+    screen.setOldCurrCycDebit(moneyStr(a.getAcctCurrCycDebit()));
+    screen.setOldOpenDate(a.getAcctOpenDate());
+    screen.setOldExpiryDate(a.getAcctExpiraionDate());
+    screen.setOldReissueDate(a.getAcctReissueDate());
+    screen.setOldGroupId(a.getAcctGroupId());
+    screen.setOldCustId(c.getCustId() == null ? null : String.valueOf(c.getCustId()));
+    screen.setOldFirstName(c.getCustFirstName());
+    screen.setOldMiddleName(c.getCustMiddleName());
+    screen.setOldLastName(c.getCustLastName());
+    screen.setOldAddrLine1(c.getCustAddrLine1());
+    screen.setOldAddrLine2(c.getCustAddrLine2());
+    screen.setOldAddrLine3(c.getCustAddrLine3());
+    screen.setOldStateCd(c.getCustAddrStateCd());
+    screen.setOldCountryCd(c.getCustAddrCountryCd());
+    screen.setOldZip(c.getCustAddrZip());
+    screen.setOldPhone1(c.getCustPhoneNum1());
+    screen.setOldPhone2(c.getCustPhoneNum2());
+    screen.setOldSsn(c.getCustSsn() == null ? null : String.format("%09d", c.getCustSsn()));
+    screen.setOldGovtId(c.getCustGovtIssuedId());
+    screen.setOldDob(c.getCustDobYyyyMmDd());
+    screen.setOldEftId(c.getCustEftAccountId());
+    screen.setOldPriHolder(c.getCustPriCardHolderInd());
+    screen.setOldFico(
+        c.getCustFicoCreditScore() == null ? null : String.valueOf(c.getCustFicoCreditScore()));
+  }
+
+  /** Renders a monetary {@link BigDecimal} as the canonical scale-2, truncated plain string. */
+  private static String moneyStr(BigDecimal v) {
+    return v == null ? "" : v.setScale(2, RoundingMode.DOWN).toPlainString();
   }
 
   /**
@@ -488,7 +556,7 @@ class AccountUpdateServiceTest {
 
   @Test
   @DisplayName(
-      "Loaded screen carries all five monetary fields as BigDecimal at scale 2 (decimal fidelity)")
+      "Loaded screen paints all five monetary fields as scale-2 text (PIC X(15) decimal fidelity)")
   void enter_knownAccount_populatesFiveMoneyFieldsAtScale2() {
     Account account = account(ACCT_ID);
     when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of(xref(ACCT_ID, CUST_ID)));
@@ -498,17 +566,14 @@ class AccountUpdateServiceTest {
     AccountUpdateScreen screen = validScreen();
     service.processAccountUpdate(screen, fetchCommarea(), CardWorkArea.Aid.ENTER);
 
-    // Each of the five PIC S9(10)V99 fields is rendered as BigDecimal, value- and scale-faithful.
-    assertThat(screen.getAcurBal()).isEqualByComparingTo("1234.56");
-    assertThat(screen.getAcurBal().scale()).isEqualTo(2);
-    assertThat(screen.getAcrdLim()).isEqualByComparingTo("5000.00");
-    assertThat(screen.getAcrdLim().scale()).isEqualTo(2);
-    assertThat(screen.getAcshLim()).isEqualByComparingTo("1000.00");
-    assertThat(screen.getAcshLim().scale()).isEqualTo(2);
-    assertThat(screen.getAcrCycr()).isEqualByComparingTo("250.00");
-    assertThat(screen.getAcrCycr().scale()).isEqualTo(2);
-    assertThat(screen.getAcrCydb()).isEqualByComparingTo("75.00");
-    assertThat(screen.getAcrCydb().scale()).isEqualTo(2);
+    // Each of the five PIC S9(10)V99 fields is painted as a canonical scale-2 plain string
+    // (moneyToString) — the underlying BigDecimal scale fidelity is asserted on the saved entity in
+    // confirm_savedAccount_hasFiveMoneyFieldsAtScale2; here we pin the rendered display text.
+    assertThat(screen.getAcurBal()).isEqualTo("1234.56");
+    assertThat(screen.getAcrdLim()).isEqualTo("5000.00");
+    assertThat(screen.getAcshLim()).isEqualTo("1000.00");
+    assertThat(screen.getAcrCycr()).isEqualTo("250.00");
+    assertThat(screen.getAcrCydb()).isEqualTo("75.00");
   }
 
   @Test
@@ -592,10 +657,9 @@ class AccountUpdateServiceTest {
   void noChangesDetected_redisplays_noSave() {
     Account account = account(ACCT_ID);
     Customer customer = customer(CUST_ID);
-    when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
-    when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
 
-    // Every editable field equals the OLD snapshot -> 1205-COMPARE-OLD-NEW finds NO-CHANGES.
+    // Every editable field equals the OLD snapshot, which is reconstructed from the carried hidden
+    // old* fields (no DB read on the compare turn) -> 1205-COMPARE-OLD-NEW finds NO-CHANGES.
     AccountUpdateScreen screen = screenFromEntities(account, customer);
     String result = service.processAccountUpdate(screen, editCommarea(), CardWorkArea.Aid.ENTER);
 
@@ -746,12 +810,10 @@ class AccountUpdateServiceTest {
       "Each field is edited in the exact legacy order; the first failure redisplays its message")
   void validationOrder_eachInvalidField_redisplaysExactMessage_noSave(
       String caseName, Consumer<AccountUpdateScreen> spoiler, String expectedMessage) {
-    // loadOldSnapshot reads the OLD account/customer; the OLD current balance (1234.56) differs
+    // validScreen() carries the OLD snapshot (factory baseline) in the hidden old* fields, which
+    // loadOldSnapshot reconstructs without a DB read; the OLD current balance (1234.56) differs
     // from validScreen (2000.00) so 1205-COMPARE-OLD-NEW always reports a change and the field
     // edits run on every case.
-    when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account(ACCT_ID)));
-    when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer(CUST_ID)));
-
     AccountUpdateScreen screen = validScreen();
     spoiler.accept(screen); // spoil exactly one field
 
@@ -824,9 +886,10 @@ class AccountUpdateServiceTest {
   // =======================================
 
   @Test
-  @DisplayName("PF5 confirm re-reads BOTH records before writing, then saves account THEN customer")
+  @DisplayName("PF5 confirm re-reads BOTH records for update before writing account THEN customer")
   void confirm_validEdits_reReadsThenSavesBothInOrder_successMessage() {
-    // The same managed instances are returned on the snapshot read and the read-for-update, so
+    // The OLD snapshot is reconstructed from the carried hidden old* fields (validScreen seeds the
+    // factory baseline); the single read-for-update returns the same values, so
     // 9700-CHECK-CHANGE-IN-REC sees no concurrent change and the write proceeds.
     when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account(ACCT_ID)));
     when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer(CUST_ID)));
@@ -837,13 +900,14 @@ class AccountUpdateServiceTest {
     assertThat(result).isNull();
     assertThat(screen.getInfoMsg()).isEqualTo(AccountUpdateService.INFO_CONFIRM_UPDATE_SUCCESS);
 
-    // Account: both reads (snapshot + read-for-update) precede the account REWRITE.
+    // Account: the single read-for-update precedes the account REWRITE. (The display-turn snapshot
+    // is carried in old*, not re-read — the Issue-1 optimistic-lock fix.)
     InOrder acctInOrder = inOrder(accountRepository);
-    acctInOrder.verify(accountRepository, times(2)).findById(ACCT_ID);
+    acctInOrder.verify(accountRepository, times(1)).findById(ACCT_ID);
     acctInOrder.verify(accountRepository).saveAndFlush(any(Account.class));
-    // Customer: both reads precede the customer REWRITE.
+    // Customer: the single read-for-update precedes the customer REWRITE.
     InOrder custInOrder = inOrder(customerRepository);
-    custInOrder.verify(customerRepository, times(2)).findById(CUST_ID);
+    custInOrder.verify(customerRepository, times(1)).findById(CUST_ID);
     custInOrder.verify(customerRepository).saveAndFlush(any(Customer.class));
     // The account REWRITE precedes the customer REWRITE (9600 order).
     InOrder saveInOrder = inOrder(accountRepository, customerRepository);
@@ -915,10 +979,11 @@ class AccountUpdateServiceTest {
   void confirm_optimisticConflictOnReRead_redisplays_noOverwrite() {
     Account changed = account(ACCT_ID);
     changed.setAcctCurrBal(new BigDecimal("9999.99")); // a concurrent change since the display
-    // Snapshot read returns the displayed values; the read-for-update returns the changed record.
-    when(accountRepository.findById(ACCT_ID))
-        .thenReturn(Optional.of(account(ACCT_ID)))
-        .thenReturn(Optional.of(changed));
+    // The OLD snapshot is the display-turn baseline carried in old* (validScreen seeds factory,
+    // curr-bal 1234.56). The single read-for-update returns the concurrently CHANGED record
+    // (curr-bal 9999.99) so 9700-CHECK-CHANGE-IN-REC detects divergence — exactly the lost-update
+    // anomaly Issue 1 must prevent (a fresh same-turn re-read would have masked it).
+    when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(changed));
     when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer(CUST_ID)));
 
     AccountUpdateScreen screen = validScreen();
@@ -934,10 +999,9 @@ class AccountUpdateServiceTest {
   @Test
   @DisplayName("Read-for-update finds the account gone -> 'could not lock' redisplay, no write")
   void confirm_accountVanishedOnReRead_couldNotLock_redisplays() {
-    when(accountRepository.findById(ACCT_ID))
-        .thenReturn(Optional.of(account(ACCT_ID))) // snapshot
-        .thenReturn(Optional.empty()); // read-for-update finds nothing to lock
-    when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer(CUST_ID)));
+    // The OLD snapshot is carried in old* (validScreen); the single read-for-update finds nothing
+    // to lock, so 9600 reports "could not lock" before the customer is ever re-read.
+    when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.empty());
 
     AccountUpdateScreen screen = validScreen();
     String result = service.processAccountUpdate(screen, editCommarea(), CardWorkArea.Aid.PFK05);
@@ -969,10 +1033,10 @@ class AccountUpdateServiceTest {
   @DisplayName(
       "A DataAccessException on the read-for-update maps to IoStatusException (FILE STATUS)")
   void confirm_dataAccessExceptionOnReRead_mapsToIoStatusException() {
+    // The OLD snapshot is carried in old* (validScreen); the single read-for-update raises a
+    // DataAccessException, which maps to an IoStatusException before the customer is re-read.
     when(accountRepository.findById(ACCT_ID))
-        .thenReturn(Optional.of(account(ACCT_ID))) // snapshot read succeeds
-        .thenThrow(new DataAccessResourceFailureException("db down")); // read-for-update fails
-    when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer(CUST_ID)));
+        .thenThrow(new DataAccessResourceFailureException("db down"));
 
     assertThatThrownBy(
             () ->
@@ -994,8 +1058,8 @@ class AccountUpdateServiceTest {
     String result = service.processAccountUpdate(screen, editCommarea(), CardWorkArea.Aid.PFK12);
 
     assertThat(result).isNull();
-    // The edits are discarded: the screen is repainted from the OLD snapshot (1234.56).
-    assertThat(screen.getAcurBal()).isEqualByComparingTo("1234.56");
+    // The edits are discarded: the screen is repainted from the re-read record (1234.56).
+    assertThat(screen.getAcurBal()).isEqualTo("1234.56");
     assertThat(screen.getErrMsg()).isEmpty();
     verify(accountRepository, never()).saveAndFlush(any());
     verify(customerRepository, never()).saveAndFlush(any());

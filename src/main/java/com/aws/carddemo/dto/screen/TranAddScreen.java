@@ -17,7 +17,6 @@
 package com.aws.carddemo.dto.screen;
 
 import jakarta.validation.constraints.Size;
-import java.math.BigDecimal;
 
 /**
  * Screen view contract for the <strong>Transaction Add</strong> screen, migrated from the legacy
@@ -38,8 +37,13 @@ import java.math.BigDecimal;
  * <em>not</em> performed here; they belong to the web/service layer and {@code
  * util.NumberFormatter} so this DTO stays a pure transport contract.
  *
- * <p>The transaction amount {@link #getTrnAmt() trnAmt} is held as a {@link BigDecimal} (monetary,
- * scale 2) and never as {@code float}/{@code double}, in keeping with the decimal-fidelity rule.
+ * <p>The transaction amount {@link #getTrnAmt() trnAmt} is carried as the <em>raw screen
+ * string</em> (legacy {@code TRNAMTI}, {@code PIC X(12)}) — exactly the characters the operator
+ * typed — so that non-numeric input is validated and surfaced as the COBOL field message ({@code
+ * "Amount should be in format -99999999.99"}) rather than failing data binding. The service layer
+ * validates the text character-by-character (COTRN02C {@code NUMVAL-C} semantics) and only then
+ * converts it to a scale-2 {@link java.math.BigDecimal} for persistence — never a {@code
+ * float}/{@code double}, in keeping with the decimal-fidelity rule (AAP &sect;0.6.1).
  *
  * <p>Unlike the transaction-view screen {@code COTRN01}, this add screen accepts the account id
  * ({@code ACTIDIN}) or card number ({@code CARDNIN}) the new transaction will be attached to and
@@ -48,8 +52,8 @@ import java.math.BigDecimal;
  * com.aws.carddemo.service.online.TranAddService}.
  *
  * <p>Authority: AAP §0.4.1 (screen DTOs ← {@code app/cpy-bms/*.CPY} + {@code app/bms/*.bms},
- * preserving field lengths), §0.3.4 (screen view contract / navigation parity) and §0.6.1 (monetary
- * fields → {@link BigDecimal}).
+ * preserving field lengths), §0.3.4 (screen view contract / navigation parity) and §0.6.1 (the
+ * monetary amount is validated then converted to a scale-2 {@code BigDecimal} downstream).
  */
 public class TranAddScreen {
 
@@ -105,11 +109,15 @@ public class TranAddScreen {
    * Transaction amount entered on the screen. Legacy {@code TRNAMTI}; BMS raw {@code PIC X(12)}
    * with entry hint {@code (-99999999.99)}.
    *
-   * <p>Held as a {@link BigDecimal} (monetary value, scale 2) per AAP §0.6.1 — never {@code float}
-   * or {@code double}. Parsing and formatting of the raw screen text belong to the web/service
-   * layer and {@code util.NumberFormatter}, not to this view DTO.
+   * <p>Carried as the <em>raw screen string</em> (never a numeric type) so the web layer can bind
+   * any characters the operator types — including malformed input such as {@code "ABCDEFGH"} —
+   * without a binding/conversion failure. The service layer validates the text against the COBOL
+   * {@code NUMVAL-C} edit rules and only then converts it to a scale-2 {@link java.math.BigDecimal}
+   * for persistence (AAP §0.6.1; COTRN02C {@code VALIDATE-INPUT-DATA-FIELDS}). Width is the BMS
+   * {@code PIC X(12)} mask field.
    */
-  private BigDecimal trnAmt;
+  @Size(max = 12)
+  private String trnAmt;
 
   /**
    * Original transaction date, hint {@code (YYYY-MM-DD)}; legacy {@code TORIGDTI}, {@code PIC
@@ -271,13 +279,15 @@ public class TranAddScreen {
     this.tDesc = tDesc;
   }
 
-  /** Returns the transaction amount as a scale-2 {@link BigDecimal} ({@code TRNAMTI}). */
-  public BigDecimal getTrnAmt() {
+  /** Returns the raw transaction-amount text exactly as entered ({@code TRNAMTI}). */
+  public String getTrnAmt() {
     return trnAmt;
   }
 
-  /** Sets the transaction amount; callers supply a scale-2 {@link BigDecimal} ({@code TRNAMTI}). */
-  public void setTrnAmt(BigDecimal trnAmt) {
+  /**
+   * Sets the raw transaction-amount text ({@code TRNAMTI}); the service validates and converts it.
+   */
+  public void setTrnAmt(String trnAmt) {
     this.trnAmt = trnAmt;
   }
 

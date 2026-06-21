@@ -18,7 +18,6 @@ package com.aws.carddemo.dto.screen;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.math.BigDecimal;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -33,8 +32,10 @@ import org.junit.jupiter.api.Test;
  *
  * <ul>
  *   <li><b>Getter/setter round-trip</b> for every one of the 21 logical fields (AAP &sect;0.4.1).
- *   <li><b>Monetary fidelity</b>: {@code trnAmt} is a {@link BigDecimal} (scale 2) and never a
- *       {@code float}/{@code double}, including negative amounts (AAP &sect;0.6.1).
+ *   <li><b>Raw-amount fidelity</b>: {@code trnAmt} is the raw screen string ({@code TRNAMTI},
+ *       {@code PIC X(12)}) carried verbatim — including malformed and negative text — so the
+ *       service layer can validate it character-by-character and convert it to a scale-2 {@code
+ *       BigDecimal} downstream without a binding failure (AAP &sect;0.6.1).
  *   <li><b>Fixed-width fidelity</b>: each {@code String} field round-trips the exact COBOL {@code
  *       PIC X(n)} / BMS {@code LENGTH} width without truncation (AAP &sect;0.4.1).
  * </ul>
@@ -160,32 +161,34 @@ class TranAddScreenTest {
   }
 
   /**
-   * The transaction amount is carried as a {@link BigDecimal} of scale 2 and round-trips by value
-   * without any precision loss, honouring the decimal-fidelity rule (AAP &sect;0.6.1).
+   * The transaction amount is carried as the raw screen string and round-trips verbatim. Decimal
+   * fidelity (AAP &sect;0.6.1) is enforced by the service layer, which validates the text and
+   * converts it to a scale-2 {@code BigDecimal}; the DTO itself is a pure transport contract.
    */
   @Test
-  void trn_amt_round_trips_as_big_decimal() {
+  void trn_amt_round_trips_as_raw_string() {
     TranAddScreen screen = new TranAddScreen();
 
-    screen.setTrnAmt(new BigDecimal("1234567.89"));
+    screen.setTrnAmt("1234567.89");
 
-    assertThat(screen.getTrnAmt()).isEqualByComparingTo(new BigDecimal("1234567.89"));
-    assertThat(screen.getTrnAmt().scale()).isEqualTo(2);
+    assertThat(screen.getTrnAmt()).isEqualTo("1234567.89");
   }
 
   /**
-   * Negative amounts (debit-style entries permitted by the BMS amount mask {@code (-99999999.99)})
-   * round-trip exactly at scale 2, confirming the field is decimal — not an unsigned or
-   * floating-point — value.
+   * Malformed amount text (the exact non-numeric input that previously broke data binding) is
+   * carried verbatim so the service layer can reject it with the COBOL field message rather than
+   * the request abending. Negative amounts permitted by the BMS mask {@code (-99999999.99)}
+   * likewise round-trip unchanged.
    */
   @Test
-  void trn_amt_supports_negative_amounts() {
+  void trn_amt_carries_malformed_and_negative_text_verbatim() {
     TranAddScreen screen = new TranAddScreen();
 
-    screen.setTrnAmt(new BigDecimal("-99.99"));
+    screen.setTrnAmt("ABCDEFGH");
+    assertThat(screen.getTrnAmt()).isEqualTo("ABCDEFGH");
 
-    assertThat(screen.getTrnAmt()).isEqualByComparingTo(new BigDecimal("-99.99"));
-    assertThat(screen.getTrnAmt().scale()).isEqualTo(2);
+    screen.setTrnAmt("-99.99");
+    assertThat(screen.getTrnAmt()).isEqualTo("-99.99");
   }
 
   /** A freshly constructed screen has every field unset (null), including the amount. */

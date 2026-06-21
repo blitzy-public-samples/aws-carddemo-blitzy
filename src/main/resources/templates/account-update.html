@@ -103,6 +103,46 @@
     <form th:object="${accountUpdateForm}" method="post" th:action="@{/account-update}"
           class="acctupd-form" autocomplete="off">
 
+        <!--
+          OLD display-turn snapshot (AAP 0.6.5 / COACTUPC ACUP-OLD-* in the COMMAREA).
+          These hidden fields carry the account/customer values exactly as they were fetched and
+          shown on the display turn across the pseudo-conversational boundary. On the PF5 confirm
+          turn the service re-reads the record fresh and compares it against this carried snapshot
+          (9700-CHECK-CHANGE-IN-REC); a divergence means another user changed the record while this
+          one was editing, so the save is refused ("Record changed by some one else. Please
+          review"). They are server-managed (captured in 9500-STORE-FETCHED-DATA); a user never
+          edits them. Mirrors CardUpdate's working old* hidden-field pattern.
+        -->
+        <input type="hidden" th:field="*{oldAcctId}" />
+        <input type="hidden" th:field="*{oldActiveStatus}" />
+        <input type="hidden" th:field="*{oldCurrBal}" />
+        <input type="hidden" th:field="*{oldCreditLimit}" />
+        <input type="hidden" th:field="*{oldCashCreditLimit}" />
+        <input type="hidden" th:field="*{oldCurrCycCredit}" />
+        <input type="hidden" th:field="*{oldCurrCycDebit}" />
+        <input type="hidden" th:field="*{oldOpenDate}" />
+        <input type="hidden" th:field="*{oldExpiryDate}" />
+        <input type="hidden" th:field="*{oldReissueDate}" />
+        <input type="hidden" th:field="*{oldGroupId}" />
+        <input type="hidden" th:field="*{oldCustId}" />
+        <input type="hidden" th:field="*{oldFirstName}" />
+        <input type="hidden" th:field="*{oldMiddleName}" />
+        <input type="hidden" th:field="*{oldLastName}" />
+        <input type="hidden" th:field="*{oldAddrLine1}" />
+        <input type="hidden" th:field="*{oldAddrLine2}" />
+        <input type="hidden" th:field="*{oldAddrLine3}" />
+        <input type="hidden" th:field="*{oldStateCd}" />
+        <input type="hidden" th:field="*{oldCountryCd}" />
+        <input type="hidden" th:field="*{oldZip}" />
+        <input type="hidden" th:field="*{oldPhone1}" />
+        <input type="hidden" th:field="*{oldPhone2}" />
+        <input type="hidden" th:field="*{oldSsn}" />
+        <input type="hidden" th:field="*{oldGovtId}" />
+        <input type="hidden" th:field="*{oldDob}" />
+        <input type="hidden" th:field="*{oldEftId}" />
+        <input type="hidden" th:field="*{oldPriHolder}" />
+        <input type="hidden" th:field="*{oldFico}" />
+
         <!-- ============================ ACCOUNT ============================ -->
 
         <!-- BMS line 5: Account Number (IC = initial cursor -> autofocus) + Active Y/N. -->

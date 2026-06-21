@@ -21,7 +21,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import jakarta.validation.constraints.Size;
 import java.lang.reflect.Field;
-import java.math.BigDecimal;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -33,13 +32,17 @@ import org.junit.jupiter.api.Test;
  * field {@code LENGTH}s). It asserts three properties that guarantee parity with the 3270 screen:
  *
  * <ul>
- *   <li><b>Round-trip fidelity</b> &mdash; every one of the 54 fields stores and returns the value
- *       it was given. This includes the editable split-component fields that distinguish the
- *       Account Update screen from the Account View screen: the year / month / day date components,
- *       the three SSN parts and the area / prefix / line telephone components.
- *   <li><b>Monetary decimal fidelity (AAP &sect;0.6.1)</b> &mdash; the five monetary fields (credit
+ *   <li><b>Round-trip fidelity</b> &mdash; every field stores and returns the value it was given.
+ *       This includes the editable split-component fields that distinguish the Account Update
+ *       screen from the Account View screen (the year / month / day date components, the three SSN
+ *       parts and the area / prefix / line telephone components) and the hidden {@code old*}
+ *       snapshot fields that carry the display-turn values across the pseudo-conversational
+ *       boundary for the optimistic-concurrency check (AAP &sect;0.6.5).
+ *   <li><b>Monetary text fidelity (AAP &sect;0.6.1)</b> &mdash; the five monetary fields (credit
  *       limit, cash credit limit, current balance, current cycle credit, current cycle debit) are
- *       {@link BigDecimal} with a conceptual scale of 2; floating-point types are never used.
+ *       fixed-width {@code PIC X(15)} {@code String} holders that round-trip the raw characters
+ *       verbatim; the service validates them char-by-char and parses to {@code BigDecimal} at scale
+ *       2 (floating-point types are never used).
  *   <li><b>Field-width parity (AAP &sect;0.4.1)</b> &mdash; the {@link Size} bound on every {@code
  *       String} field equals the corresponding BMS map {@code LENGTH}.
  * </ul>
@@ -187,14 +190,16 @@ class AccountUpdateScreenTest {
   }
 
   /**
-   * Each of the five monetary fields is a {@link BigDecimal} that round-trips a value with two
-   * fractional digits without loss (AAP &sect;0.6.1). {@code isEqualByComparingTo} is used so the
-   * assertion is robust to representation differences while still confirming numeric equality.
+   * Each of the five monetary fields is a fixed-width {@code PIC X(15)} text holder (the accepted
+   * parity fix, AAP &sect;0.6.1 / COTRN02C / COACTUPC {@code 1250-EDIT-SIGNED-9V2}): the DTO
+   * round-trips the raw characters verbatim and the service validates them char-by-char (the legacy
+   * {@code TEST-NUMVAL-C} edit) before parsing to {@code BigDecimal}, so a non-numeric typo
+   * surfaces a graceful field message instead of a Spring type-mismatch binding abend (HTTP 500).
    */
   @Test
-  void monetary_fields_round_trip_as_big_decimal() {
+  void monetary_fields_round_trip_as_string() {
     AccountUpdateScreen screen = new AccountUpdateScreen();
-    BigDecimal expected = new BigDecimal("1234567.89");
+    String expected = "1234567.89";
 
     screen.setAcrdLim(expected);
     screen.setAcshLim(expected);
@@ -202,41 +207,40 @@ class AccountUpdateScreenTest {
     screen.setAcrCycr(expected);
     screen.setAcrCydb(expected);
 
-    assertThat(screen.getAcrdLim()).isInstanceOf(BigDecimal.class).isEqualByComparingTo(expected);
-    assertThat(screen.getAcshLim()).isInstanceOf(BigDecimal.class).isEqualByComparingTo(expected);
-    assertThat(screen.getAcurBal()).isInstanceOf(BigDecimal.class).isEqualByComparingTo(expected);
-    assertThat(screen.getAcrCycr()).isInstanceOf(BigDecimal.class).isEqualByComparingTo(expected);
-    assertThat(screen.getAcrCydb()).isInstanceOf(BigDecimal.class).isEqualByComparingTo(expected);
+    assertThat(screen.getAcrdLim()).isInstanceOf(String.class).isEqualTo(expected);
+    assertThat(screen.getAcshLim()).isEqualTo(expected);
+    assertThat(screen.getAcurBal()).isEqualTo(expected);
+    assertThat(screen.getAcrCycr()).isEqualTo(expected);
+    assertThat(screen.getAcrCydb()).isEqualTo(expected);
   }
 
   /**
-   * The current balance accepts and preserves a negative value, mirroring the signed COBOL picture
-   * {@code PIC S9(10)V99}.
+   * The current balance round-trips a signed value verbatim, mirroring the signed COBOL picture
+   * {@code PIC S9(10)V99}; the leading minus is preserved as raw text for the service's
+   * char-by-char {@code TEST-NUMVAL-C} validation (it is not parsed by the DTO).
    */
   @Test
   void current_balance_round_trips_negative_value() {
     AccountUpdateScreen screen = new AccountUpdateScreen();
 
-    screen.setAcurBal(new BigDecimal("-50.00"));
+    screen.setAcurBal("-50.00");
 
-    assertThat(screen.getAcurBal()).isEqualByComparingTo(new BigDecimal("-50.00"));
-    assertThat(screen.getAcurBal()).isNegative();
+    assertThat(screen.getAcurBal()).isEqualTo("-50.00");
   }
 
   /**
-   * The DTO is a pass-through holder, so a value supplied at scale 2 is returned at scale 2 &mdash;
-   * preserving the COBOL {@code PIC S9(10)V99} two-decimal precision. The primary equality
-   * assertion remains scale-insensitive for robustness.
+   * The DTO is a pass-through fixed-width text holder, so a monetary value supplied with two
+   * fractional digits is returned verbatim &mdash; scale enforcement (COBOL {@code PIC S9(10)V99}
+   * truncation) is the service's responsibility ({@code scale2} / {@code moneyToString}), not the
+   * screen contract's.
    */
   @Test
-  void monetary_fields_preserve_scale_of_two() {
+  void monetary_fields_preserve_raw_text() {
     AccountUpdateScreen screen = new AccountUpdateScreen();
-    BigDecimal scaledTwo = new BigDecimal("100.00");
 
-    screen.setAcrdLim(scaledTwo);
+    screen.setAcrdLim("100.00");
 
-    assertThat(screen.getAcrdLim()).isEqualByComparingTo(scaledTwo);
-    assertThat(screen.getAcrdLim().scale()).isEqualTo(2);
+    assertThat(screen.getAcrdLim()).isEqualTo("100.00");
   }
 
   /**
@@ -289,8 +293,45 @@ class AccountUpdateScreenTest {
   }
 
   /**
-   * A freshly constructed screen leaves every field at its default: {@code String} fields are
-   * {@code null} and the five monetary {@link BigDecimal} fields are {@code null} (the no-argument
+   * The hidden {@code old*} snapshot fields (the Java analogue of {@code ACUP-OLD-*} in the
+   * COMMAREA, AAP &sect;0.6.5) round-trip the display-turn values verbatim across the
+   * pseudo-conversational boundary, and carry the {@link Size} bound matching their canonical
+   * carried form. These fields are the baseline the service's optimistic-concurrency check compares
+   * its fresh re-read against; a representative account field, customer field and the two
+   * numeric-as-string fields are exercised.
+   */
+  @Test
+  void old_snapshot_fields_round_trip_and_carry_size_bounds() throws NoSuchFieldException {
+    AccountUpdateScreen screen = new AccountUpdateScreen();
+
+    screen.setOldAcctId("00000000001");
+    screen.setOldActiveStatus("Y");
+    screen.setOldCreditLimit("7500.00");
+    screen.setOldCurrCycDebit("350.50");
+    screen.setOldFirstName("JOHN");
+    screen.setOldPhone1("(212)555-0123");
+    screen.setOldSsn("123456789");
+    screen.setOldFico("700");
+
+    assertThat(screen.getOldAcctId()).isEqualTo("00000000001");
+    assertThat(screen.getOldActiveStatus()).isEqualTo("Y");
+    assertThat(screen.getOldCreditLimit()).isEqualTo("7500.00");
+    assertThat(screen.getOldCurrCycDebit()).isEqualTo("350.50");
+    assertThat(screen.getOldFirstName()).isEqualTo("JOHN");
+    assertThat(screen.getOldPhone1()).isEqualTo("(212)555-0123");
+    assertThat(screen.getOldSsn()).isEqualTo("123456789");
+    assertThat(screen.getOldFico()).isEqualTo("700");
+
+    assertSizeMax("oldAcctId", 11);
+    assertSizeMax("oldCreditLimit", 15);
+    assertSizeMax("oldFirstName", 25);
+    assertSizeMax("oldSsn", 9);
+    assertSizeMax("oldFico", 3);
+  }
+
+  /**
+   * A freshly constructed screen leaves every field at its default: all {@code String} fields,
+   * including the five monetary {@code PIC X(15)} fields, are {@code null} (the no-argument
    * constructor performs no initialisation).
    */
   @Test

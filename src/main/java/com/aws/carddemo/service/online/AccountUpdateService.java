@@ -662,10 +662,11 @@ public class AccountUpdateService {
       return;
     }
 
-    // SEARCH KEYS ALREADY VALIDATED AND DATA FETCHED — confirm the filter flags and load the OLD
-    // snapshot (the values that were fetched and shown on a prior turn) for change detection.
+    // SEARCH KEYS ALREADY VALIDATED AND DATA FETCHED — confirm the filter flags and rebuild the OLD
+    // snapshot (the values that were fetched and shown on the display turn, carried across the
+    // pseudo-conversational boundary in the hidden old* fields) for change detection.
     flow.acctFilterValid = true;
-    loadOldSnapshot(commarea, flow);
+    loadOldSnapshot(screen, flow);
 
     boolean changed = compareOldNew(screen, flow);
 
@@ -942,21 +943,46 @@ public class AccountUpdateService {
   }
 
   /**
-   * {@code 1250-EDIT-SIGNED-9V2} (L2180-2208): an absent amount is "must be supplied".
+   * {@code 1250-EDIT-SIGNED-9V2} (L2180-2221): validates one of the five monetary screen fields,
+   * which arrive as the raw {@code PIC X(15)} characters the operator typed (exactly as the COBOL
+   * receives them), reproducing the legacy paragraph step for step:
    *
-   * <p>The legacy paragraph also emits "{@code is not valid}" when {@code FUNCTION TEST-NUMVAL-C}
-   * rejects a malformed amount string; here the amount arrives already parsed as a {@link
-   * BigDecimal}, so the only reachable form of that failure is an amount that exceeds the legacy
-   * {@code PIC S9(10)V99} capacity.
+   * <ol>
+   *   <li><b>Not supplied</b> — {@code LOW-VALUES OR SPACES} &rarr; "{@code <field> must be
+   *       supplied.}" ({@link #SFX_MUST_BE_SUPPLIED}).
+   *   <li><b>Malformed</b> — {@code FUNCTION TEST-NUMVAL-C(x) NOT = 0} &rarr; "{@code <field> is
+   *       not valid}" ({@link #SFX_NOT_VALID}). This is the branch the QA report exercised with a
+   *       non-numeric amount: the legacy program surfaces a graceful field message here and never
+   *       abends. Because the field is now modelled as a {@link String}, a non-numeric value
+   *       reaches the service and is rejected here instead of failing request binding.
+   *   <li><b>Out of capacity</b> — a value whose magnitude exceeds the {@code PIC S9(10)V99}
+   *       capacity is also rejected as "{@code is not valid}" (the value cannot be stored without
+   *       silent high-order truncation), preserving the established defensive behaviour.
+   * </ol>
    *
-   * @return {@code true} when the amount is supplied and within capacity
+   * <p>Only after these checks pass is the amount parsed by {@link #numValC(String)} ({@code
+   * FUNCTION NUMVAL-C}); the entity-mutation path ({@link #applyAccountUpdates}) re-parses and
+   * truncates to scale 2.
+   *
+   * @param flow the request flow accumulating the first error message
+   * @param varName the field label ({@code WS-EDIT-VARIABLE-NAME})
+   * @param value the raw screen characters for the amount
+   * @return {@code true} when the amount is supplied, numerically valid and within capacity
    */
-  private boolean editSigned9v2(Flow flow, String varName, BigDecimal value) {
-    if (value == null) {
+  private boolean editSigned9v2(Flow flow, String varName, String value) {
+    // 1. Not supplied (LOW-VALUES OR SPACES) — note: a zero amount IS supplied (not blank).
+    if (isBlankSpaces(value)) {
       flow.fail(msg(varName, SFX_MUST_BE_SUPPLIED));
       return false;
     }
-    if (value.abs().compareTo(MONEY_MAX) > 0) {
+    // 2. FUNCTION TEST-NUMVAL-C: a malformed (non-numeric) amount string is "is not valid".
+    if (!isValidNumValC(value)) {
+      flow.fail(msg(varName, SFX_NOT_VALID));
+      return false;
+    }
+    // 3. FUNCTION NUMVAL-C parse + PIC S9(10)V99 capacity guard.
+    BigDecimal parsed = numValC(value);
+    if (parsed == null || parsed.abs().compareTo(MONEY_MAX) > 0) {
       flow.fail(msg(varName, SFX_NOT_VALID));
       return false;
     }
@@ -1140,27 +1166,141 @@ public class AccountUpdateService {
   }
 
   /**
-   * Loads the OLD snapshot (the account and customer values that were fetched and shown on a prior
-   * turn) for use by change detection and the optimistic-concurrency check. This first read
-   * establishes the baseline; the write path re-reads the same records to detect a concurrent
-   * change.
+   * Reconstructs the OLD snapshot — the account and customer values that were fetched and shown to
+   * the user on the <em>display</em> turn — from the hidden {@code old*} fields the screen carried
+   * across the pseudo-conversational boundary. This is the Java analogue of restoring {@code
+   * ACUP-OLD-ACCT-DATA} / {@code ACUP-OLD-CUST-DATA} from the COMMAREA on re-entry (COACTUPC
+   * L884-892).
    *
-   * @param commarea the commarea carrying the account (and customer) ids
+   * <p><strong>Why not a fresh database read?</strong> The optimistic-concurrency check ({@code
+   * 9700-CHECK-CHANGE-IN-REC}) must compare the freshly re-read record against the values that were
+   * <em>displayed to the user</em>, captured at the display turn ({@code 9500-STORE-FETCHED-DATA}).
+   * Re-reading the database here on the confirm turn would yield the current row — identical to the
+   * write path's own re-read — so the comparison would always be equal and a concurrent
+   * modification could never be detected (the silent lost-update defect this fix removes). The OLD
+   * snapshot is therefore rebuilt from the carried {@code old*} fields, never re-read.
+   *
+   * @param screen the screen contract carrying the round-tripped {@code old*} snapshot fields
    * @param flow the request flow whose OLD snapshot is populated
    */
-  private void loadOldSnapshot(CardDemoCommarea commarea, Flow flow) {
-    Long acctId = commarea.getAcctId();
-    if (acctId != null) {
-      flow.oldAccount = accountRepository.findById(acctId).orElse(null);
+  private void loadOldSnapshot(AccountUpdateScreen screen, Flow flow) {
+    flow.oldAccount = reconstructOldAccount(screen);
+    flow.oldCustomer = reconstructOldCustomer(screen);
+  }
+
+  /**
+   * Rebuilds the OLD account entity from the carried {@code old*} snapshot strings. Returns {@code
+   * null} when no account was carried (a blank {@code oldAcctId}), mirroring the COBOL {@code MOVE
+   * LOW-VALUES TO ACUP-OLD-ACCT-DATA} (no snapshot) state. Monetary fields parse back through
+   * {@link #parseMoneyOrNull(String)} (scale 2, truncated); dates are the canonical {@code
+   * yyyy-MM-dd} entity strings; the id is parsed to a {@link Long}.
+   *
+   * @param screen the screen contract carrying the {@code old*} fields
+   * @return the reconstructed account snapshot, or {@code null} when none was carried
+   */
+  private Account reconstructOldAccount(AccountUpdateScreen screen) {
+    Long oldAcctId = parseLongOrNull(screen.getOldAcctId());
+    if (oldAcctId == null) {
+      return null;
     }
-    Long custId = commarea.getCustId();
-    if (custId == null && acctId != null) {
-      // Resolve the customer id from the account through the cross-reference (9200 chain) when the
-      // commarea did not carry it.
-      custId = resolveCustId(acctId);
+    Account acct = new Account();
+    acct.setAcctId(oldAcctId);
+    acct.setAcctActiveStatus(emptyToNull(screen.getOldActiveStatus()));
+    acct.setAcctCurrBal(scale2(parseMoneyOrNull(screen.getOldCurrBal())));
+    acct.setAcctCreditLimit(scale2(parseMoneyOrNull(screen.getOldCreditLimit())));
+    acct.setAcctCashCreditLimit(scale2(parseMoneyOrNull(screen.getOldCashCreditLimit())));
+    acct.setAcctCurrCycCredit(scale2(parseMoneyOrNull(screen.getOldCurrCycCredit())));
+    acct.setAcctCurrCycDebit(scale2(parseMoneyOrNull(screen.getOldCurrCycDebit())));
+    acct.setAcctOpenDate(emptyToNull(screen.getOldOpenDate()));
+    acct.setAcctExpiraionDate(emptyToNull(screen.getOldExpiryDate()));
+    acct.setAcctReissueDate(emptyToNull(screen.getOldReissueDate()));
+    acct.setAcctGroupId(emptyToNull(screen.getOldGroupId()));
+    return acct;
+  }
+
+  /**
+   * Rebuilds the OLD customer entity from the carried {@code old*} snapshot strings. Returns {@code
+   * null} when no customer was carried (a blank {@code oldCustId}), mirroring {@code MOVE
+   * LOW-VALUES TO ACUP-OLD-CUST-DATA}. The SSN and FICO score parse back to {@link Long}; the two
+   * phone numbers are carried in their full {@code (aaa)bbb-cccc} display form; the date of birth
+   * is the canonical {@code yyyy-MM-dd} entity string.
+   *
+   * @param screen the screen contract carrying the {@code old*} fields
+   * @return the reconstructed customer snapshot, or {@code null} when none was carried
+   */
+  private Customer reconstructOldCustomer(AccountUpdateScreen screen) {
+    Long oldCustId = parseLongOrNull(screen.getOldCustId());
+    if (oldCustId == null) {
+      return null;
     }
-    if (custId != null) {
-      flow.oldCustomer = customerRepository.findById(custId).orElse(null);
+    Customer cust = new Customer();
+    cust.setCustId(oldCustId);
+    cust.setCustFirstName(emptyToNull(screen.getOldFirstName()));
+    cust.setCustMiddleName(emptyToNull(screen.getOldMiddleName()));
+    cust.setCustLastName(emptyToNull(screen.getOldLastName()));
+    cust.setCustAddrLine1(emptyToNull(screen.getOldAddrLine1()));
+    cust.setCustAddrLine2(emptyToNull(screen.getOldAddrLine2()));
+    cust.setCustAddrLine3(emptyToNull(screen.getOldAddrLine3()));
+    cust.setCustAddrStateCd(emptyToNull(screen.getOldStateCd()));
+    cust.setCustAddrCountryCd(emptyToNull(screen.getOldCountryCd()));
+    cust.setCustAddrZip(emptyToNull(screen.getOldZip()));
+    cust.setCustPhoneNum1(emptyToNull(screen.getOldPhone1()));
+    cust.setCustPhoneNum2(emptyToNull(screen.getOldPhone2()));
+    cust.setCustSsn(parseLongOrNull(screen.getOldSsn()));
+    cust.setCustGovtIssuedId(emptyToNull(screen.getOldGovtId()));
+    cust.setCustDobYyyyMmDd(emptyToNull(screen.getOldDob()));
+    cust.setCustEftAccountId(emptyToNull(screen.getOldEftId()));
+    cust.setCustPriCardHolderInd(emptyToNull(screen.getOldPriHolder()));
+    cust.setCustFicoCreditScore(parseLongOrNull(screen.getOldFico()));
+    return cust;
+  }
+
+  /**
+   * Captures the fetched account and customer into the screen's hidden {@code old*} fields at the
+   * display turn — the Java analogue of {@code 9500-STORE-FETCHED-DATA}'s {@code MOVE ... TO
+   * ACUP-OLD-*}. These fields round-trip across the pseudo-conversational boundary as hidden form
+   * inputs and become the baseline that the write path's optimistic-concurrency check compares its
+   * fresh re-read against. Values are stored in the same canonical forms the comparison expects:
+   * money as plain scale-2 strings, dates as {@code yyyy-MM-dd}, ids/SSN/FICO as digit strings,
+   * phones in their {@code (aaa)bbb-cccc} display form.
+   *
+   * @param screen the screen contract whose {@code old*} fields are populated
+   * @param account the fetched account (skipped when {@code null})
+   * @param customer the fetched customer (skipped when {@code null})
+   */
+  private void captureOldSnapshot(AccountUpdateScreen screen, Account account, Customer customer) {
+    if (account != null) {
+      screen.setOldAcctId(longToString(account.getAcctId()));
+      screen.setOldActiveStatus(account.getAcctActiveStatus());
+      screen.setOldCurrBal(moneyToString(account.getAcctCurrBal()));
+      screen.setOldCreditLimit(moneyToString(account.getAcctCreditLimit()));
+      screen.setOldCashCreditLimit(moneyToString(account.getAcctCashCreditLimit()));
+      screen.setOldCurrCycCredit(moneyToString(account.getAcctCurrCycCredit()));
+      screen.setOldCurrCycDebit(moneyToString(account.getAcctCurrCycDebit()));
+      screen.setOldOpenDate(account.getAcctOpenDate());
+      screen.setOldExpiryDate(account.getAcctExpiraionDate());
+      screen.setOldReissueDate(account.getAcctReissueDate());
+      screen.setOldGroupId(account.getAcctGroupId());
+    }
+    if (customer != null) {
+      screen.setOldCustId(longToString(customer.getCustId()));
+      screen.setOldFirstName(customer.getCustFirstName());
+      screen.setOldMiddleName(customer.getCustMiddleName());
+      screen.setOldLastName(customer.getCustLastName());
+      screen.setOldAddrLine1(customer.getCustAddrLine1());
+      screen.setOldAddrLine2(customer.getCustAddrLine2());
+      screen.setOldAddrLine3(customer.getCustAddrLine3());
+      screen.setOldStateCd(customer.getCustAddrStateCd());
+      screen.setOldCountryCd(customer.getCustAddrCountryCd());
+      screen.setOldZip(customer.getCustAddrZip());
+      screen.setOldPhone1(customer.getCustPhoneNum1());
+      screen.setOldPhone2(customer.getCustPhoneNum2());
+      screen.setOldSsn(longToSsn9(customer.getCustSsn()));
+      screen.setOldGovtId(customer.getCustGovtIssuedId());
+      screen.setOldDob(customer.getCustDobYyyyMmDd());
+      screen.setOldEftId(customer.getCustEftAccountId());
+      screen.setOldPriHolder(customer.getCustPriCardHolderInd());
+      screen.setOldFico(longToString(customer.getCustFicoCreditScore()));
     }
   }
 
@@ -1217,6 +1357,10 @@ public class AccountUpdateService {
     flow.foundCustomer = true;
     commarea.setAcctStatus(flow.oldAccount.getAcctActiveStatus());
     populateScreenFromEntities(screen, flow.oldAccount, flow.oldCustomer);
+    // MOVE ... TO ACUP-OLD-* — capture the displayed values into the hidden old* snapshot fields so
+    // they round-trip across the pseudo-conversational boundary and become the baseline the write
+    // path's optimistic-concurrency check compares its fresh re-read against.
+    captureOldSnapshot(screen, flow.oldAccount, flow.oldCustomer);
   }
 
   /**
@@ -1240,13 +1384,15 @@ public class AccountUpdateService {
       return true;
     }
 
-    // ----- Account block. -----
+    // ----- Account block. Monetary screen fields are PIC X(15) text; parse to BigDecimal (a
+    // non-numeric value parses to null and so registers as a difference, exactly as a changed
+    // amount would). -----
     boolean accountSame =
         eqLong(parseLongOrNull(screen.getAcctSid()), oldAccount.getAcctId())
             && eqUpperTrim(screen.getAcstTus(), oldAccount.getAcctActiveStatus())
-            && eqMoney(screen.getAcurBal(), oldAccount.getAcctCurrBal())
-            && eqMoney(screen.getAcrdLim(), oldAccount.getAcctCreditLimit())
-            && eqMoney(screen.getAcshLim(), oldAccount.getAcctCashCreditLimit())
+            && eqMoney(parseMoneyOrNull(screen.getAcurBal()), oldAccount.getAcctCurrBal())
+            && eqMoney(parseMoneyOrNull(screen.getAcrdLim()), oldAccount.getAcctCreditLimit())
+            && eqMoney(parseMoneyOrNull(screen.getAcshLim()), oldAccount.getAcctCashCreditLimit())
             && eqDate8(
                 date8(screen.getOpnYear(), screen.getOpnMon(), screen.getOpnDay()),
                 entityDate8(oldAccount.getAcctOpenDate()))
@@ -1256,8 +1402,8 @@ public class AccountUpdateService {
             && eqDate8(
                 date8(screen.getRisYear(), screen.getRisMon(), screen.getRisDay()),
                 entityDate8(oldAccount.getAcctReissueDate()))
-            && eqMoney(screen.getAcrCycr(), oldAccount.getAcctCurrCycCredit())
-            && eqMoney(screen.getAcrCydb(), oldAccount.getAcctCurrCycDebit())
+            && eqMoney(parseMoneyOrNull(screen.getAcrCycr()), oldAccount.getAcctCurrCycCredit())
+            && eqMoney(parseMoneyOrNull(screen.getAcrCydb()), oldAccount.getAcctCurrCycDebit())
             && eqUpperTrim(screen.getAaddGrp(), oldAccount.getAcctGroupId());
 
     if (!accountSame) {
@@ -1300,21 +1446,6 @@ public class AccountUpdateService {
     return !customerSame;
   }
 
-  /**
-   * Resolves a customer id from an account id through the card cross-reference alternate index (the
-   * {@code 9200-GETCARDXREF-BYACCT} lookup).
-   *
-   * @param acctId the account id
-   * @return the customer id, or {@code null} when no cross-reference exists
-   */
-  private Long resolveCustId(Long acctId) {
-    List<CardXref> xrefs = cardXrefRepository.findByXrefAcctId(acctId);
-    if (xrefs == null || xrefs.isEmpty()) {
-      return null;
-    }
-    return xrefs.get(0).getXrefCustId();
-  }
-
   // =============================================================================================
   // Optimistic write — 9600-WRITE-PROCESSING (L3888-4107) + 9700-CHECK-CHANGE-IN-REC (L4109-4195)
   // =============================================================================================
@@ -1327,17 +1458,20 @@ public class AccountUpdateService {
    * neither has changed since they were displayed ({@code 9700-CHECK-CHANGE-IN-REC}), rewrites the
    * account then the customer, and issues {@code SYNCPOINT ROLLBACK} if the customer rewrite fails.
    * Under JPA there is no row-lock verb and the entities carry no {@code @Version}; the optimistic
-   * concurrency parity is therefore provided by re-reading the records and comparing them
-   * field-by-field against the OLD snapshot that was shown to the user (AAP §0.3.3). The {@link
-   * Transactional} boundary on {@link #processAccountUpdate} supplies the all-or-nothing rollback;
-   * {@link #requestRollback()} marks the transaction for rollback when a save fails so the partial
-   * account update is undone, mirroring {@code SYNCPOINT ROLLBACK}.
+   * concurrency parity is therefore provided by re-reading the records here on the confirm turn and
+   * comparing them field-by-field against the OLD snapshot that was shown to the user — which was
+   * captured at the <em>display</em> turn ({@code 9500-STORE-FETCHED-DATA}) and carried across the
+   * pseudo-conversational boundary in the hidden {@code old*} fields, then rebuilt by {@link
+   * #loadOldSnapshot(AccountUpdateScreen, Flow)} (AAP §0.3.3, §0.6.5). The {@link Transactional}
+   * boundary on {@link #processAccountUpdate} supplies the all-or-nothing rollback; {@link
+   * #requestRollback()} marks the transaction for rollback when a save fails so the partial account
+   * update is undone, mirroring {@code SYNCPOINT ROLLBACK}.
    *
-   * <p>Note on single-transaction reads: within one request both reads share the same persistence
-   * context, so in production the re-read returns the same managed instance as the snapshot and the
-   * concurrency check passes (the displayed-vs-current divergence originates in a separate prior
-   * request/transaction). Unit tests stub the repository so the second read returns a divergent
-   * instance, exercising the {@code DATA-WAS-CHANGED} branch.
+   * <p>Because the baseline is the display-turn snapshot (not a fresh read), a row mutated
+   * out-of-band between the display turn and this confirm turn is correctly detected here: the
+   * fresh re-read diverges from the carried snapshot and the {@code DATA-WAS-CHANGED} branch
+   * refuses the save, exactly as the COBOL does. Reconstructing the baseline from a fresh read
+   * instead would compare two same-turn reads and never detect a conflict (a silent lost update).
    *
    * @param screen the screen contract carrying the validated NEW values to persist
    * @param commarea the commarea carrying the resolved account and customer ids
@@ -1491,11 +1625,11 @@ public class AccountUpdateService {
    */
   private void applyAccountUpdates(Account acct, AccountUpdateScreen screen) {
     acct.setAcctActiveStatus(screen.getAcstTus());
-    acct.setAcctCurrBal(scale2(screen.getAcurBal()));
-    acct.setAcctCreditLimit(scale2(screen.getAcrdLim()));
-    acct.setAcctCashCreditLimit(scale2(screen.getAcshLim()));
-    acct.setAcctCurrCycCredit(scale2(screen.getAcrCycr()));
-    acct.setAcctCurrCycDebit(scale2(screen.getAcrCydb()));
+    acct.setAcctCurrBal(scale2(parseMoneyOrNull(screen.getAcurBal())));
+    acct.setAcctCreditLimit(scale2(parseMoneyOrNull(screen.getAcrdLim())));
+    acct.setAcctCashCreditLimit(scale2(parseMoneyOrNull(screen.getAcshLim())));
+    acct.setAcctCurrCycCredit(scale2(parseMoneyOrNull(screen.getAcrCycr())));
+    acct.setAcctCurrCycDebit(scale2(parseMoneyOrNull(screen.getAcrCydb())));
     acct.setAcctOpenDate(
         entityDateStr(screen.getOpnYear(), screen.getOpnMon(), screen.getOpnDay()));
     acct.setAcctExpiraionDate(
@@ -1578,10 +1712,13 @@ public class AccountUpdateService {
   /**
    * Populates the editable screen fields for the current state — {@code 3200-SETUP-SCREEN-VARS}
    * (L2700-2725). When the program was just entered the primed blank screen is left as-is.
-   * Otherwise the field block is chosen by state: a not-fetched / zero account shows blank initial
-   * values ({@code 3201}); a fetched account shows the OLD snapshot ({@code 3202}); a record being
-   * edited keeps the user's NEW input that the screen DTO already carries ({@code 3203}); any other
-   * state defaults to the OLD snapshot.
+   * Otherwise the field block is chosen by state exactly as the COBOL {@code EVALUATE TRUE}: a
+   * not-fetched / zero account shows blank initial values ({@code 3201-SHOW-INITIAL-VALUES}); a
+   * fetched account being viewed ({@code ACUP-SHOW-DETAILS}) shows the OLD display-turn snapshot
+   * ({@code 3202-SHOW-ORIGINAL-VALUES}); and every {@code ACUP-CHANGES-MADE} state — values {@code
+   * 'E','N','C','L','F'} (CHANGES_NOT_OK, CHANGES_OK_NOT_CONFIRMED, CHANGES_OKAYED_AND_DONE,
+   * CHANGES_OKAYED_LOCK_ERROR, CHANGES_OKAYED_BUT_FAILED) — keeps the user's NEW input that the
+   * screen DTO already carries ({@code 3203-SHOW-UPDATED-VALUES}).
    *
    * @param screen the screen contract
    * @param commarea the navigation commarea (program-enter flag + resolved account id)
@@ -1601,15 +1738,17 @@ public class AccountUpdateService {
       // 3201-SHOW-INITIAL-VALUES — clear every detail field.
       clearDetailFields(screen);
     } else if (flow.state == AcupState.SHOW_DETAILS) {
-      // 3202-SHOW-ORIGINAL-VALUES — repaint from the OLD snapshot.
+      // 3202-SHOW-ORIGINAL-VALUES — repaint from the OLD (display-turn) snapshot. Reached on the
+      // initial fetch, after a PF12 cancel (which re-fetches), and after a DATA-WAS-CHANGED
+      // concurrency conflict, where the COBOL deliberately shows the ORIGINAL values that were
+      // displayed (ACUP-OLD-*), not the freshly re-read record (9600 never re-runs 9500).
       populateScreenFromEntities(screen, flow.oldAccount, flow.oldCustomer);
-    } else if (flow.state == AcupState.CHANGES_NOT_OK
-        || flow.state == AcupState.CHANGES_OK_NOT_CONFIRMED) {
-      // 3203-SHOW-UPDATED-VALUES — the screen DTO already carries the user's NEW input; keep it.
-      noOp();
     } else {
-      // WHEN OTHER -> 3202-SHOW-ORIGINAL-VALUES.
-      populateScreenFromEntities(screen, flow.oldAccount, flow.oldCustomer);
+      // ACUP-CHANGES-MADE — values 'E','N','C','L','F' (CHANGES_NOT_OK, CHANGES_OK_NOT_CONFIRMED,
+      // CHANGES_OKAYED_AND_DONE, CHANGES_OKAYED_LOCK_ERROR, CHANGES_OKAYED_BUT_FAILED) all dispatch
+      // to 3203-SHOW-UPDATED-VALUES: keep the user's NEW input that the screen DTO already carries
+      // (after a successful save this is the just-persisted value).
+      noOp();
     }
   }
 
@@ -1619,8 +1758,8 @@ public class AccountUpdateService {
    * phones and the three dates) are decomposed exactly as the COBOL reference moves do: SSN from
    * the 9-digit value at offsets (0,3)/(3,5)/(5,9); each phone from the {@code (aaa)bbb-cccc} form
    * at offsets (1,4)/(5,8)/(9,13); each date from the {@code yyyy-MM-dd} value at offsets
-   * (0,4)/(5,7)/(8,10). Monetary fields are carried as {@link BigDecimal} (the view layer renders
-   * the edited PIC).
+   * (0,4)/(5,7)/(8,10). Monetary fields are rendered as plain scale-2 decimal strings ({@link
+   * #moneyToString(BigDecimal)}) into the {@code PIC X(15)} screen inputs.
    *
    * @param screen the screen contract to paint
    * @param account the account entity (skipped when {@code null})
@@ -1630,11 +1769,11 @@ public class AccountUpdateService {
       AccountUpdateScreen screen, Account account, Customer customer) {
     if (account != null) {
       screen.setAcstTus(account.getAcctActiveStatus());
-      screen.setAcurBal(account.getAcctCurrBal());
-      screen.setAcrdLim(account.getAcctCreditLimit());
-      screen.setAcshLim(account.getAcctCashCreditLimit());
-      screen.setAcrCycr(account.getAcctCurrCycCredit());
-      screen.setAcrCydb(account.getAcctCurrCycDebit());
+      screen.setAcurBal(moneyToString(account.getAcctCurrBal()));
+      screen.setAcrdLim(moneyToString(account.getAcctCreditLimit()));
+      screen.setAcshLim(moneyToString(account.getAcctCashCreditLimit()));
+      screen.setAcrCycr(moneyToString(account.getAcctCurrCycCredit()));
+      screen.setAcrCydb(moneyToString(account.getAcctCurrCycDebit()));
       screen.setOpnYear(datePartYear(account.getAcctOpenDate()));
       screen.setOpnMon(datePartMon(account.getAcctOpenDate()));
       screen.setOpnDay(datePartDay(account.getAcctOpenDate()));
@@ -1787,6 +1926,19 @@ public class AccountUpdateService {
   /** Null-safe {@code TRIM} — returns {@code ""} for {@code null}, otherwise the trimmed value. */
   private static String safeTrim(String value) {
     return value == null ? "" : value.trim();
+  }
+
+  /**
+   * Collapses a blank carried snapshot field to {@code null} so the reconstructed OLD entity
+   * mirrors an absent database column. A {@code null} or all-blank {@code old*} value (the COBOL
+   * {@code LOW-VALUES}/{@code SPACES} "no snapshot" condition) becomes {@code null}; any other
+   * value is preserved verbatim (no trim) so fixed-width content compares byte-faithfully.
+   *
+   * @param value the carried {@code old*} field value
+   * @return {@code null} when blank, otherwise the value unchanged
+   */
+  private static String emptyToNull(String value) {
+    return (value == null || value.isEmpty()) ? null : value;
   }
 
   /** {@code true} when the value is {@code null} or trims to empty (COBOL SPACES / LOW-VALUES). */
@@ -1997,6 +2149,129 @@ public class AccountUpdateService {
    */
   private static BigDecimal scale2(BigDecimal value) {
     return value == null ? null : value.setScale(MONEY_SCALE, RoundingMode.DOWN);
+  }
+
+  /**
+   * {@code FUNCTION TEST-NUMVAL-C} parity: {@code true} when {@code raw} is a valid
+   * numeric-with-currency string — the form {@code NUMVAL-C} accepts. Permits optional surrounding
+   * whitespace, an optional single leading <em>or</em> trailing sign ({@code +}/{@code -}), an
+   * optional leading currency symbol ({@code $}), grouping commas, and at most one decimal point
+   * with a fractional part. At least one digit must be present; any other character makes the value
+   * invalid (the legacy "{@code is not valid}" condition).
+   *
+   * @param raw the raw screen characters
+   * @return {@code true} when the value is a syntactically valid signed decimal
+   */
+  private static boolean isValidNumValC(String raw) {
+    if (raw == null) {
+      return false;
+    }
+    String s = raw.trim();
+    if (s.isEmpty()) {
+      return false;
+    }
+    // Optional single trailing sign (NUMVAL-C accepts a trailing + or -).
+    char last = s.charAt(s.length() - 1);
+    boolean trailingSign = (last == '+' || last == '-');
+    if (trailingSign) {
+      s = s.substring(0, s.length() - 1).trim();
+    }
+    // Optional single leading sign — only when there was no trailing sign.
+    if (!trailingSign && !s.isEmpty() && (s.charAt(0) == '+' || s.charAt(0) == '-')) {
+      s = s.substring(1).trim();
+    }
+    // Optional leading currency symbol.
+    if (!s.isEmpty() && s.charAt(0) == '$') {
+      s = s.substring(1).trim();
+    }
+    if (s.isEmpty()) {
+      return false;
+    }
+    boolean sawDigit = false;
+    boolean sawDot = false;
+    for (int i = 0; i < s.length(); i++) {
+      char c = s.charAt(i);
+      if (c >= '0' && c <= '9') {
+        sawDigit = true;
+      } else if (c == ',') {
+        // Grouping comma — accepted (NUMVAL-C ignores grouping; position not strictly enforced).
+        continue;
+      } else if (c == '.') {
+        if (sawDot) {
+          return false; // at most one decimal point
+        }
+        sawDot = true;
+      } else {
+        return false; // any other character makes the amount invalid
+      }
+    }
+    return sawDigit;
+  }
+
+  /**
+   * {@code FUNCTION NUMVAL-C} parity: parses a numeric-with-currency string (already validated by
+   * {@link #isValidNumValC(String)}) into a {@link BigDecimal}. Strips the optional currency
+   * symbol, grouping commas and embedded spaces, and normalises a leading or trailing sign.
+   *
+   * @param raw the raw screen characters
+   * @return the parsed value, or {@code null} when the string cannot be parsed
+   */
+  private static BigDecimal numValC(String raw) {
+    if (raw == null) {
+      return null;
+    }
+    String s = raw.trim();
+    if (s.isEmpty()) {
+      return null;
+    }
+    boolean negative = false;
+    char last = s.charAt(s.length() - 1);
+    if (last == '+' || last == '-') {
+      negative = (last == '-');
+      s = s.substring(0, s.length() - 1).trim();
+    } else if (s.charAt(0) == '+' || s.charAt(0) == '-') {
+      negative = (s.charAt(0) == '-');
+      s = s.substring(1).trim();
+    }
+    s = s.replace("$", "").replace(",", "").replace(" ", "");
+    if (s.isEmpty() || ".".equals(s)) {
+      return null;
+    }
+    try {
+      BigDecimal value = new BigDecimal(s);
+      return negative ? value.negate() : value;
+    } catch (NumberFormatException ex) {
+      return null;
+    }
+  }
+
+  /**
+   * Parses a monetary screen field to a {@link BigDecimal} for change-detection and entity
+   * mutation, returning {@code null} when the field is blank or not a valid {@code NUMVAL-C}
+   * numeric. On the write path the field has already passed {@link #editSigned9v2}; on the
+   * change-detection path a {@code null} result simply registers as a difference from the stored
+   * value (so the field edits then run and surface the precise message).
+   *
+   * @param raw the raw screen characters
+   * @return the parsed amount, or {@code null} when blank or non-numeric
+   */
+  private static BigDecimal parseMoneyOrNull(String raw) {
+    if (isBlankSpaces(raw) || !isValidNumValC(raw)) {
+      return null;
+    }
+    return numValC(raw);
+  }
+
+  /**
+   * Renders a monetary entity value as a plain scale-2 decimal string for a {@code PIC X(15)}
+   * screen field ({@code ""} for {@code null}). Truncates to scale 2 ({@link RoundingMode#DOWN}) so
+   * the painted value matches the stored amount to the cent.
+   *
+   * @param value the entity amount
+   * @return the plain decimal string (e.g. {@code "1234.56"}), or {@code ""} when {@code null}
+   */
+  private static String moneyToString(BigDecimal value) {
+    return value == null ? "" : value.setScale(MONEY_SCALE, RoundingMode.DOWN).toPlainString();
   }
 
   /** Renders a {@link Long} for display ({@code ""} for {@code null}). */
