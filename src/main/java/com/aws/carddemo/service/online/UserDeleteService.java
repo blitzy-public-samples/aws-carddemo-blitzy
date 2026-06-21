@@ -210,6 +210,9 @@ public class UserDeleteService {
 
     // L84-88: SET ERR-FLG-OFF; MOVE SPACES TO WS-MESSAGE, ERRMSGO.
     screen.setErrMsg("");
+    // Clear the green success channel on every entry so a stale confirmation never lingers behind a
+    // later not-found/error redisplay (the two message channels are mutually exclusive; QA F4-1).
+    screen.setSuccessMsg("");
 
     // L95-105: first entry — paint the screen (and process a pre-selected user id from the list).
     if (!commarea.isPgmReenter()) {
@@ -425,8 +428,13 @@ public class UserDeleteService {
       // L307-311: EXEC CICS DELETE — remove the managed entity read for update in this transaction.
       userSecurityRepository.delete(user);
       // L313-322: DFHRESP(NORMAL) — clear the fields, then build the green success message.
+      // COUSR03C L317 MOVEs DFHGREEN to the ERRMSG colour attribute on this success path, so the
+      // confirmation renders GREEN (not the red of a not-found/error message). Route it through
+      // setSuccessMsg so it renders via .bms-success; errMsg was just cleared by
+      // initializeAllFields,
+      // keeping the two channels mutually exclusive (QA F4-1).
       initializeAllFields(screen);
-      screen.setErrMsg(MSG_USER_DELETED_PREFIX + userId.trim() + MSG_USER_DELETED_SUFFIX);
+      screen.setSuccessMsg(MSG_USER_DELETED_PREFIX + userId.trim() + MSG_USER_DELETED_SUFFIX);
     } catch (DataAccessException ex) {
       // L329-335: WHEN OTHER — unexpected I/O error. The COBOL reuses the 'Unable to Update
       // User...'
@@ -467,6 +475,9 @@ public class UserDeleteService {
     screen.setLName("");
     screen.setUsrType("");
     screen.setErrMsg("");
+    // Clear the green success channel too (single legacy ERRMSG field; modeled here as two mutually
+    // exclusive channels) so a PF4 clear never leaves a stale confirmation behind (QA F4-1).
+    screen.setSuccessMsg("");
   }
 
   /**

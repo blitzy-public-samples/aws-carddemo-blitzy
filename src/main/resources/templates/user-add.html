@@ -211,17 +211,22 @@
                 <span id="usrType-hint" class="bms-sep">(A=Admin, U=User)</span>
             </div>
 
-            <!-- BMS line 23: error / info message line (ERRMSG, red), via the shared
-                 messages fragment. Wrapped in a live region so assistive technology
-                 announces validation / status failures. -->
-            <div role="alert">
-                <!-- BLITZY [QA-DEFECT#1 FIX]: UserAddService writes the message onto the
-                     bound screen DTO (screen.setErrMsg(), reused for both validation
-                     errors and the "User <id> has been added" success), not a top-level
-                     model attribute, so ${errMsg} resolved to null and the row rendered
-                     empty. Consume it under the form-scoped effective pattern. UserAdd
-                     has no infoMsg field, so the info slot keeps ${infoMsg}. -->
-                <div th:replace="~{fragments/layout :: messages(${userAddForm?.errMsg ?: errMsg}, ${infoMsg})}"></div>
+            <!-- BMS line 23: error / success / info message line (ERRMSG), via the shared
+                 messagesWithSuccess fragment, which declares its own live regions per line
+                 (error=role="alert" assertive, success/info=role="status" polite). -->
+            <!-- BLITZY [QA-INFO-2 FIX]: removed the redundant outer role="alert" wrapper that
+                 nested a second alert region around the fragment's own role="alert" error line
+                 (double-announcement in some screen readers). The fragment owns the live-region
+                 semantics now. -->
+            <div>
+                <!-- BLITZY [QA-DEFECT#1 + QA-F4-1 FIX]: UserAddService writes the message onto the
+                     bound screen DTO, not a top-level model attribute, so ${errMsg} resolved to
+                     null and the row rendered empty. Consume it under the form-scoped effective
+                     pattern. The "User <id> has been added ..." success is now carried on a
+                     separate GREEN channel (successMsg, DFHGREEN parity) so it is visually distinct
+                     from red validation/duplicate errors. UserAdd has no infoMsg field, so the info
+                     slot keeps ${infoMsg}. -->
+                <div th:replace="~{fragments/layout :: messagesWithSuccess(${userAddForm?.errMsg ?: errMsg}, ${infoMsg}, ${userAddForm?.successMsg})}"></div>
             </div>
 
             <!--

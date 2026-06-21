@@ -200,12 +200,15 @@
             </div>
 
             <!--
-              BMS line 23: ERRMSG (red, bright) + optional info line, via the shared
-              messages fragment. The effective error prefers the form's errMsg (the
+              BMS line 23: ERRMSG (red/green) + optional info line, via the shared
+              messagesWithSuccess fragment. The effective error prefers the form's errMsg (the
               UserDeleteScreen carries it), falling back to a top-level ${errMsg}.
               ${infoMsg} is a top-level attribute (the DTO has no info field).
+              BLITZY [QA-F4-1 FIX]: the "User <id> has been deleted ..." success now rides a
+              separate GREEN channel (successMsg, DFHGREEN parity) so it is visually distinct from
+              the red not-found/error messages.
             -->
-            <div th:replace="~{fragments/layout :: messages(${userDeleteForm?.errMsg ?: errMsg}, ${infoMsg})}"></div>
+            <div th:replace="~{fragments/layout :: messagesWithSuccess(${userDeleteForm?.errMsg ?: errMsg}, ${infoMsg}, ${userDeleteForm?.successMsg})}"></div>
 
             <!--
               BMS line 24: PF-key legend rendered as the actual submit controls.

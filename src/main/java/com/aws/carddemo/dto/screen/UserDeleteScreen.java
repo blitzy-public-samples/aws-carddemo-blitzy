@@ -109,4 +109,15 @@ public class UserDeleteScreen {
   /** Error / informational message line displayed to the operator. */
   @Size(max = 78)
   private String errMsg; // ERRMSG PIC X(78)
+
+  /**
+   * Green success-confirmation line shown on a successful delete ({@code "User &lt;id&gt; has been
+   * deleted ..."}). The legacy {@code COUSR03C} writes the confirmation into {@code ERRMSG} and
+   * flips its colour to {@code DFHGREEN} (L317); the modernized UI models that green channel as
+   * this dedicated field so success is visually distinct from the red {@link #errMsg}. On success
+   * this is set and {@code errMsg} is blank; on failure {@code errMsg} carries the red message and
+   * this is blank — the two are mutually exclusive (QA F4-1).
+   */
+  @Size(max = 78)
+  private String successMsg; // ERRMSG (DFHGREEN) PIC X(78)
 }

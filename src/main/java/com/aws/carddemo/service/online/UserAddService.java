@@ -228,6 +228,9 @@ public class UserAddService {
 
     // MAIN-PARA L73-76: SET ERR-FLG-OFF; MOVE SPACES TO WS-MESSAGE, ERRMSGO.
     screen.setErrMsg("");
+    // Clear the green success channel on every entry so a stale confirmation never lingers behind a
+    // later validation/error redisplay (the two message channels are mutually exclusive; QA F4-1).
+    screen.setSuccessMsg("");
 
     // MAIN-PARA L83-87: first entry into the program (IF NOT CDEMO-PGM-REENTER) — set the re-enter
     // flag and send an empty form. The EIBCALEN = 0 (no-COMMAREA) bounce to COSGN00C (L78-80) is a
@@ -358,8 +361,13 @@ public class UserAddService {
     }
 
     // NORMAL (L251-259): PERFORM INITIALIZE-ALL-FIELDS, then build the green success line.
+    // COUSR01C L254 MOVEs DFHGREEN to the ERRMSG colour attribute on this success path, so the
+    // confirmation renders GREEN (not the red of a validation/duplicate error). The modernized UI
+    // carries the green channel as a separate field; route the confirmation through setSuccessMsg
+    // (errMsg was just cleared by initializeAllFields, keeping the two mutually exclusive) so it
+    // renders via .bms-success instead of .bms-error (QA F4-1).
     initializeAllFields(screen);
-    screen.setErrMsg(userAddedMessage(userId));
+    screen.setSuccessMsg(userAddedMessage(userId));
     return null;
   }
 
@@ -394,6 +402,9 @@ public class UserAddService {
     screen.setPasswd(null);
     screen.setUsrType(null);
     screen.setErrMsg("");
+    // Clear the green success channel too (single legacy ERRMSG field; modeled here as two mutually
+    // exclusive channels). A subsequent setSuccessMsg on the success path repopulates it (QA F4-1).
+    screen.setSuccessMsg("");
   }
 
   /**

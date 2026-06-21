@@ -225,6 +225,9 @@ public class UserUpdateService {
 
     // MAIN-PARA L84-88: SET ERR-FLG-OFF / USR-MODIFIED-NO; MOVE SPACES TO WS-MESSAGE / ERRMSGO.
     screen.setErrMsg("");
+    // Clear the green success channel on every entry so a stale confirmation never lingers behind a
+    // later validation/error redisplay (the two message channels are mutually exclusive; QA F4-1).
+    screen.setSuccessMsg("");
 
     // First entry — NOT CDEMO-PGM-REENTER (L95-105).
     if (!commarea.isPgmReenter()) {
@@ -462,7 +465,12 @@ public class UserUpdateService {
     try {
       userSecurityRepository.save(user);
       // DFHRESP(NORMAL), L370-375: STRING 'User ' SEC-USR-ID ' has been updated ...'.
-      screen.setErrMsg(userUpdatedMessage(user.getSecUsrId()));
+      // COUSR02C L371 MOVEs DFHGREEN to the ERRMSG colour attribute on this success path, so the
+      // confirmation renders GREEN (not the red of a validation/error message). Route it through
+      // setSuccessMsg so it renders via .bms-success; errMsg was cleared at MAIN-PARA entry and is
+      // not touched here (update keeps the record on screen), so the two channels stay mutually
+      // exclusive (QA F4-1).
+      screen.setSuccessMsg(userUpdatedMessage(user.getSecUsrId()));
     } catch (DataAccessException ex) {
       // WHEN OTHER, L383-389: surface the failure on-screen without aborting the request.
       screen.setErrMsg(MSG_UNABLE_UPDATE_USER);
@@ -496,6 +504,9 @@ public class UserUpdateService {
     screen.setPasswd("");
     screen.setUsrType("");
     screen.setErrMsg("");
+    // Clear the green success channel too (single legacy ERRMSG field; modeled here as two mutually
+    // exclusive channels) so a PF4 clear never leaves a stale confirmation behind (QA F4-1).
+    screen.setSuccessMsg("");
   }
 
   // ===== RETURN-TO-PREV-SCREEN (L250-261) =======================================================

@@ -367,7 +367,9 @@ class UserDeleteServiceTest {
 
     assertThat(next).isNull();
     // Byte-exact green success message (COUSR03C L318-321): "User <id> has been deleted ...".
-    assertThat(screen.getErrMsg())
+    // QA F4-1: COUSR03C L317 renders this confirmation in DFHGREEN, so it rides the dedicated
+    // GREEN success channel; the RED error channel must be blank (the two are mutually exclusive).
+    assertThat(screen.getSuccessMsg())
         .isEqualTo(
             UserDeleteService.MSG_USER_DELETED_PREFIX
                 + TARGET_USER_ID
@@ -375,6 +377,7 @@ class UserDeleteServiceTest {
         .isEqualTo("User USER0007 has been deleted ...")
         .contains(" has been deleted ...")
         .startsWith("User " + TARGET_USER_ID);
+    assertThat(screen.getErrMsg()).isEmpty();
     // Control-flow parity (AAP §0.7.1): the read-for-update precedes the delete of that same
     // record.
     InOrder inOrder = inOrder(userSecurityRepository);

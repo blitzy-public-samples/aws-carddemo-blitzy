@@ -30,6 +30,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title th:text="${pageTitle} ?: 'CardDemo'">CardDemo</title>
+    <!--/* BLITZY [QA-INFO-1 FIX]: declare an inline data-URI SVG favicon so the
+         browser stops issuing the default GET /favicon.ico request that 404'd on
+         every one of the 17 screens. Self-contained (no external asset, no extra
+         network round-trip, no CSP needed). BMS-themed: bright-green "$" on black,
+         matching the 3270 terminal palette. */-->
+    <link rel="icon" type="image/svg+xml"
+          href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2016'%3E%3Crect%20width='16'%20height='16'%20fill='%23000'/%3E%3Ctext%20x='8'%20y='13'%20font-family='monospace'%20font-size='14'%20fill='%2300FF00'%20text-anchor='middle'%3E%24%3C/text%3E%3C/svg%3E" />
     <style>
         /* ---- 3270 terminal palette + fixed 24x80 monospace grid ---- */
         * { box-sizing: border-box; }
@@ -86,6 +93,12 @@
         .bms-heading { color: #FFFFFF; font-weight: bold; } /* NEUTRAL bright */
         .bms-sep     { color: #C0C0C0; }                    /* NEUTRAL separator */
         .bms-error   { color: #FF3333; font-weight: bold; } /* RED bright (ERRMSG) */
+        /* GREEN bright success line (ERRMSG with DFHGREEN attribute). The legacy
+           COUSR01C/COUSR02C/COUSR03C admin confirmations MOVE DFHGREEN TO ERRMSGC on
+           success, so a successful add/update/delete renders the ERRMSG row green while
+           validation/error messages stay red (BMS default COLOR=RED). Reproduced here as a
+           distinct success class so the operator can tell success from failure (QA F4-1). */
+        .bms-success { color: #00FF00; font-weight: bold; } /* GREEN bright (DFHGREEN) */
         .bms-messages { min-height: 1.25em; margin-top: 0.3em; }
         /* ---- PF-key footer (line 24) ---- */
         .bms-footer, .bms-pfkey { color: #FFFF00; margin-top: 0.5em; } /* YELLOW */
@@ -102,6 +115,47 @@
             padding: 0 0.5ch;
         }
         .bms-pfkey button:hover { text-decoration: underline; }
+        /* ---- Shared accessibility utilities (QA F4-2 / INFO-5) ----
+           Distinct .bms-* names so they never collide with the per-screen
+           .skip-link / .ccli-skip-link rules already defined by admin-menu,
+           main-menu and card-list (those screens keep their own definitions). */
+        /* Off-screen skip link, revealed only on keyboard focus, so screen-reader
+           and keyboard users can jump past the 2-line BMS header band straight to
+           the main content. Kept visually hidden until focused to preserve the
+           exact 24x80 terminal layout for sighted users. */
+        .bms-skip-link {
+            position: absolute;
+            left: -9999px;
+            top: auto;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+        .bms-skip-link:focus,
+        .bms-skip-link:focus-visible {
+            position: static;
+            width: auto;
+            height: auto;
+            overflow: visible;
+            color: #FFFF00;                 /* YELLOW, matches PF-key legend */
+            background-color: #000000;
+        }
+        /* Visually-hidden (but screen-reader-exposed) content. Used for the sign-on
+           screen's <h1>: BMS COSGN00 has no visible line-4 title, so the heading is
+           exposed to assistive technology and to heading navigation (WCAG 1.3.1 /
+           2.4.6) without painting anything on the 24x80 grid. */
+        .bms-visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            margin: -1px;
+            padding: 0;
+            border: 0;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            clip-path: inset(50%);
+            white-space: nowrap;
+        }
     </style>
 </head>
 
@@ -155,6 +209,30 @@
     <div class="bms-error" role="alert"
          th:if="${!#strings.isEmpty(errMsg)}"
          th:text="${errMsg}">Error message goes here</div>
+    <div class="bms-heading" role="status"
+         th:if="${!#strings.isEmpty(infoMsg)}"
+         th:text="${infoMsg}">Info message goes here</div>
+</div>
+
+<!-- messagesWithSuccess(errMsg, infoMsg, successMsg): same ERRMSG row 23 band as
+     messages(...), extended with a third GREEN success channel (DFHGREEN) for the
+     admin user-management confirmations (COUSR01C/COUSR02C/COUSR03C add/update/delete).
+     QA F4-1: success was previously routed through errMsg and rendered RED (.bms-error),
+     visually identical to a failure. The three states are mutually exclusive (the service
+     sets at most one of errMsg / successMsg), so order is irrelevant; each line is guarded
+     by its own th:if.  Live-region semantics:
+       - error line   -> role="alert"  (assertive: announced immediately);
+       - success line -> role="status" (polite: a confirmation, not an interruption);
+       - info  line   -> role="status" (polite).
+     This fragment is purely additive: the 2-arg messages(...) fragment above is unchanged
+     and the other screens that do not surface a green success keep using it. -->
+<div th:fragment="messagesWithSuccess(errMsg, infoMsg, successMsg)" class="bms-messages">
+    <div class="bms-error" role="alert"
+         th:if="${!#strings.isEmpty(errMsg)}"
+         th:text="${errMsg}">Error message goes here</div>
+    <div class="bms-success" role="status"
+         th:if="${!#strings.isEmpty(successMsg)}"
+         th:text="${successMsg}">Success message goes here</div>
     <div class="bms-heading" role="status"
          th:if="${!#strings.isEmpty(infoMsg)}"
          th:text="${infoMsg}">Info message goes here</div>

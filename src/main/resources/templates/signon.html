@@ -39,6 +39,11 @@
 
 <body class="bms-screen">
 
+<!-- BLITZY [QA-INFO-5 FIX]: keyboard/screen-reader skip-link to jump past the
+     BMS header band to the main content. Off-screen until focused (shared
+     .bms-skip-link), so the 24x80 terminal layout is unchanged. -->
+<a class="bms-skip-link" href="#signon-main">Skip to main content</a>
+
 <!--/* ================================================================= */-->
 <!--/* BMS header band (lines 1-3)                                        */-->
 <!--/* ================================================================= */-->
@@ -69,7 +74,14 @@
 <!--/* ================================================================= */-->
 <!--/* Screen body (lines 5-20)                                          */-->
 <!--/* ================================================================= */-->
-<main>
+<main id="signon-main">
+
+    <!-- BLITZY [QA-F4-2 FIX]: the BMS COSGN00 map has no visible line-4 title, so
+         the sign-on screen had no heading element. Expose a visually-hidden <h1> so
+         the screen has a real level-1 heading for screen-reader heading navigation
+         and document.querySelectorAll('h1,h2') (WCAG 1.3.1 / 2.4.6) — without
+         painting anything on the 24x80 grid (preserves exact BMS fidelity). -->
+    <h1 class="bms-visually-hidden">Sign On</h1>
 
     <!--/* Line 5: intro literal. BMS COLOR=NEUTRAL (length 66); NEUTRAL is the
          default .bms-screen text colour, so no colour class is applied. */-->
@@ -128,12 +140,15 @@
         <!--/* BMS line 23: message band - ERRMSG (red, bright) / optional INFOMSG.
              Resolves the effective error from, in order: the model ${errMsg}, the
              form's errMsg, or a generic message when Spring Security signals ?error.
-             Wrapped in role="alert" so assistive technology announces validation /
-             authentication failures. Placed inside the form, ABOVE the legend, so the
-             BMS row-23 (message) -> row-24 (legend) order is preserved and the legend
-             renders exactly once (QA F3 Issue #6). */-->
-        <div role="alert"
-             th:with="effErr=${!#strings.isEmpty(errMsg)
+             Placed inside the form, ABOVE the legend, so the BMS row-23 (message) ->
+             row-24 (legend) order is preserved and the legend renders exactly once
+             (QA F3 Issue #6).
+             BLITZY [QA-INFO-2 FIX]: removed the redundant outer role="alert" wrapper
+             that nested a second alert region around the messages fragment's own
+             role="alert" error line (double-announcement in some screen readers). The
+             shared messages fragment owns the live-region semantics; this wrapper now
+             only computes the effective error via th:with. */-->
+        <div th:with="effErr=${!#strings.isEmpty(errMsg)
                                 ? errMsg
                                 : (signonForm != null and !#strings.isEmpty(signonForm.errMsg)
                                     ? signonForm.errMsg

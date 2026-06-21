@@ -187,6 +187,20 @@
         <!-- Preserve the displayed page across paging submits (F7 / F8). -->
         <input type="hidden" th:field="*{pageNo}" />
 
+        <!-- BLITZY [QA-F4-4 FIX]: Round-trip the message line so the COCRDLIC
+             last-page latch (CA-LAST-PAGE-DISPLAYED) survives the pseudo-conversational
+             turn. The service derives caLastPageShown from the INCOMING errMsg
+             (CardListService L235-236: caLastPageShown = "NO MORE RECORDS TO SHOW"
+             .equals(incoming errMsg)); a first F8 at the last page emits
+             "NO MORE RECORDS TO SHOW", and a second F8 must then latch to
+             "NO MORE PAGES TO DISPLAY" (L868-869). Without this hidden field the
+             message never round-trips, the latch never arms, and the
+             "NO MORE PAGES TO DISPLAY" branch is dead. Safe to round-trip: the
+             service unconditionally overwrites errMsg via setupMessage (L882) on every
+             call, so the displayed message is always freshly computed; the incoming
+             value is consumed only to arm the latch. -->
+        <input type="hidden" th:field="*{errMsg}" />
+
         <!-- BMS lines 6-7: account-id and card-number search filters (green,
              editable). autofocus mirrors the BMS IC (insert-cursor) on ACCTSID. -->
         <div class="ccli-filter">

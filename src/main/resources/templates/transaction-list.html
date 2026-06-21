@@ -35,6 +35,10 @@
 <head th:replace="~{fragments/layout :: head('List Transactions')}"></head>
 
 <body>
+<!--/* BLITZY [QA-INFO-5 FIX]: keyboard skip-link to bypass the header band and jump
+       straight to the main 24x80 screen content. Visually hidden off-canvas until
+       focused (see .bms-skip-link in the shared layout fragment); revealed on Tab. */-->
+<a class="bms-skip-link" href="#transaction-list-main">Skip to main content</a>
 <div class="bms-screen">
 
     <!-- Screen-specific layout for COTRN00 (Transaction List). The shared
@@ -111,12 +115,39 @@
          attributes with a live date/time fallback). -->
     <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CT00', 'COTRN00C')}"></div>
 
-    <main>
+    <main id="transaction-list-main">
         <!-- All interactive fields bind to the transactionListForm command object
              (a TranListScreen). The screen is pseudo-conversational (mirrors
              COTRN00C): a POST carries the chosen PF-key action and the per-row
              selection flags back to the controller. -->
         <form th:object="${transactionListForm}" method="post" th:action="@{/transaction-list}">
+
+            <!-- BLITZY [QA-F4-5 FIX]: Round-trip the pseudo-conversational paging
+                 cursors. COTRN00C carries CDEMO-CT00-INFO (TRNID-FIRST, TRNID-LAST,
+                 PAGE-NUM, NEXT-PAGE-FLG) in its COMMAREA across each RECEIVE/SEND
+                 cycle; the TranListScreen DTO mirrors that group with pageNumValue,
+                 nextPageYes, trnIdFirst and trnIdLast (documented as "carried here
+                 as hidden round-tripped fields"). Without these hidden inputs the
+                 fields bind to defaults (0/false/null) on every POST, so
+                 TranListService.processPf8Key always sees nextPageYes=false (=>
+                 "already at the bottom") and processPf7Key always sees
+                 pageNumValue<=1 (=> "already at the top"), leaving the user stuck on
+                 page 1. Emitting them here restores the COMMAREA cursor parity used
+                 by the sibling Card List / User List screens. The controller stores
+                 only CardDemoCommarea in session (cursors are intentionally NOT in
+                 COMMAREA), so the round-trip happens through the form, exactly as the
+                 DTO contract specifies. -->
+            <input type="hidden" th:field="*{pageNumValue}" />
+            <input type="hidden" th:field="*{nextPageYes}" />
+            <input type="hidden" th:field="*{trnIdFirst}" />
+            <input type="hidden" th:field="*{trnIdLast}" />
+            <!-- Round-trip the display page-number too (the eight-digit PAGENUM string,
+                 distinct from the integer pageNumValue used by the paging logic). The
+                 boundary guards return without re-setting it, so persisting it here keeps
+                 the "Page:" indicator populated on an "already at the top/bottom"
+                 redisplay, mirroring the sibling Card List (pageNo) and User List
+                 (pageNum) round-trips. -->
+            <input type="hidden" th:field="*{pageNum}" />
 
             <!-- ========================== BMS line 4 ==========================
                  'List Transactions' heading (neutral, bright) + 'Page:' (turquoise)
@@ -190,6 +221,30 @@
                                  key here. -->
                             <input type="hidden"
                                    th:field="*{rows[__${stat.index}__].trnId}" />
+                            <!-- BLITZY [QA-F4-5 FIX]: Round-trip the rest of the row's
+                                 display data (date, description, amount) exactly as the
+                                 sibling Card List screen round-trips acctNo + crdNum.
+                                 COTRN00C retains the displayed page in working storage and
+                                 re-sends it on a boundary key press WITHOUT re-reading the
+                                 file (PROCESS-PF7/PF8-KEY check NEXT-PAGE-FLG / PAGE-NUM
+                                 before any STARTBR; the TranListService boundary guards
+                                 likewise perform no browse, a behavior pinned by
+                                 TranListServiceTest's verifyNoInteractions assertions).
+                                 Persisting these fields here reproduces that working-storage
+                                 retention so an "already at the top/bottom" redisplay keeps
+                                 the full row data on screen (no blanked detail columns),
+                                 matching COBOL and the Card List "no broken rows" behavior.
+                                 The JavaBeans property names are TDate/TDesc/TAmt (the
+                                 getters are getTDate/getTDesc/getTAmt; per the JavaBeans
+                                 spec a name whose first two letters are both upper-case is
+                                 left un-decapitalized), so the binding paths must use that
+                                 exact casing for the data binder to write them back. -->
+                            <input type="hidden"
+                                   th:field="*{rows[__${stat.index}__].TDate}" />
+                            <input type="hidden"
+                                   th:field="*{rows[__${stat.index}__].TDesc}" />
+                            <input type="hidden"
+                                   th:field="*{rows[__${stat.index}__].TAmt}" />
                         </td>
                         <td class="bms-col-tranid bms-label"
                             th:text="${row.trnId}">0000000000000000</td>

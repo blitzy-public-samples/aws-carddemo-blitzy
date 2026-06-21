@@ -41,6 +41,11 @@
 
 <body class="bms-screen">
 
+    <!-- BLITZY [QA-INFO-5 FIX]: keyboard/screen-reader skip-link to jump past the
+         2-line BMS header band to the screen heading/main content. Off-screen until
+         focused (shared .bms-skip-link), so the 24x80 terminal layout is unchanged. -->
+    <a class="bms-skip-link" href="#transaction-view-main">Skip to main content</a>
+
     <!-- Screen-specific layout helpers (classes only — no inline styles). The
          shared colour/typography vocabulary lives in fragments/layout.html; this
          block only positions label/value groups onto the 24x80 BMS line grid and
@@ -69,8 +74,17 @@
             min-width: 12ch;
             text-align: right;
         }
-        /* Centred bright heading (BMS line 4 "View Transaction"). */
-        .tv-heading { text-align: center; margin: 0.4em 0; }
+        /* Centred bright heading (BMS line 4 "View Transaction").
+           Native <h1> (QA F4-2): neutralise the browser default h1 sizing so the
+           heading keeps the uniform 16px 3270 cell size and the 24x80 grid is
+           preserved (matches the .av-heading / .admin-menu__heading pattern). */
+        .tv-heading {
+            text-align: center;
+            margin: 0.4em 0;
+            font-size: inherit;
+            line-height: inherit;
+            font-weight: bold;
+        }
         /* NEUTRAL separator rule (BMS line 8) sized to its 70-char extent. */
         .tv-sep { color: #C0C0C0; overflow: hidden; }
         /* Field-width reservations (ch) matching each BMS field LENGTH so the
@@ -90,8 +104,12 @@
          YELLOW; Date/Time fall back to the current date/time inside the fragment. -->
     <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CT01', 'COTRN01C')}"></div>
 
-    <!-- BMS line 4: screen heading (NEUTRAL bright, centred). -->
-    <div class="bms-heading tv-heading">View Transaction</div>
+    <!-- BMS line 4: screen heading (NEUTRAL bright, centred).
+         BLITZY [QA-F4-2 FIX]: now a native <h1> (was a non-semantic <div>) so
+         document.querySelectorAll('h1,h2') sees it and screen-reader heading
+         navigation works (WCAG 1.3.1 / 2.4.6). The .tv-heading CSS reset keeps the
+         uniform 16px 3270 cell size. Also the INFO-5 skip-link target. -->
+    <h1 id="transaction-view-main" class="bms-heading tv-heading">View Transaction</h1>
 
     <!-- Single screen form: carries the editable search Tran ID and the pressed
          PF key back to the controller. Read-only detail fields are bound for

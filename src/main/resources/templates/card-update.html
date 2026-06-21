@@ -34,6 +34,10 @@
 </head>
 
 <body>
+<!--/* BLITZY [QA-INFO-5 FIX]: keyboard skip-link to bypass the header band and jump
+       straight to the main 24x80 screen content. Visually hidden off-canvas until
+       focused (see .bms-skip-link in the shared layout fragment); revealed on Tab. */-->
+<a class="bms-skip-link" href="#card-update-main">Skip to main content</a>
 
 <!--
   Screen-scoped layout helpers ONLY (classes, never inline styles). The shared
@@ -49,7 +53,7 @@
     .card-update-num { text-align: right; }
 </style>
 
-<main class="bms-screen">
+<main id="card-update-main" class="bms-screen">
 
     <!-- BMS lines 1-2: header band. Tran=CCUP, Prog=COCRDUPC, centered title
          (TITLE01); date/time + secondary title (TITLE02) are supplied by the

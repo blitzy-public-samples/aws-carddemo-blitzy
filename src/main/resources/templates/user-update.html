@@ -231,13 +231,15 @@
                 <span class="bms-sep bms-hint">(A=Admin, U=User)</span>
             </div>
 
-            <!-- BMS line 23: ERRMSG (red, bright) + optional info line, via the
-                 shared messages fragment.
-                 BLITZY [QA-DEFECT#1 FIX]: UserUpdateService sets the message on the
-                 bound screen DTO (screen.setErrMsg()), not a top-level model attribute,
-                 so ${errMsg} rendered empty. Consume it under the form-scoped effective
-                 pattern. UserUpdate has no infoMsg field, so info keeps ${infoMsg}. -->
-            <div th:replace="~{fragments/layout :: messages(${userUpdateForm?.errMsg ?: errMsg}, ${infoMsg})}"></div>
+            <!-- BMS line 23: ERRMSG (red/green) + optional info line, via the shared
+                 messagesWithSuccess fragment.
+                 BLITZY [QA-DEFECT#1 + QA-F4-1 FIX]: UserUpdateService sets the message on the
+                 bound screen DTO, not a top-level model attribute, so ${errMsg} rendered empty.
+                 Consume it under the form-scoped effective pattern. The "User <id> has been
+                 updated ..." success now rides a separate GREEN channel (successMsg, DFHGREEN
+                 parity) so it is visually distinct from red validation/error messages. UserUpdate
+                 has no infoMsg field, so info keeps ${infoMsg}. -->
+            <div th:replace="~{fragments/layout :: messagesWithSuccess(${userUpdateForm?.errMsg ?: errMsg}, ${infoMsg}, ${userUpdateForm?.successMsg})}"></div>
 
             <!--
               BMS line 24: PF-key legend rendered as the actual submit controls.

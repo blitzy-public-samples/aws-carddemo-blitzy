@@ -155,8 +155,11 @@ class UserAddServiceTest {
     assertThat(persisted.getSecUsrType()).isEqualTo(USR_TYPE);
 
     // NORMAL branch: STRING-built confirmation; INITIALIZE-ALL-FIELDS blanks the input fields.
-    assertThat(screen.getErrMsg()).isEqualTo("User " + USER_ID + " has been added ...");
-    assertThat(screen.getErrMsg()).contains(USER_ID).doesNotContain(PWD_PLAINTEXT);
+    // QA F4-1: COUSR01C L254 renders this confirmation in DFHGREEN, so it rides the dedicated
+    // GREEN success channel; the RED error channel must be blank (the two are mutually exclusive).
+    assertThat(screen.getSuccessMsg()).isEqualTo("User " + USER_ID + " has been added ...");
+    assertThat(screen.getSuccessMsg()).contains(USER_ID).doesNotContain(PWD_PLAINTEXT);
+    assertThat(screen.getErrMsg()).isEmpty();
     assertThat(screen.getFName()).isNull();
     assertThat(screen.getLName()).isNull();
     assertThat(screen.getUserId()).isNull();

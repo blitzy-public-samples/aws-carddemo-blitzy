@@ -30,6 +30,10 @@
 <head th:replace="~{fragments/layout :: head('Update Account')}"></head>
 
 <body>
+<!--/* BLITZY [QA-INFO-5 FIX]: keyboard skip-link to bypass the header band and jump
+       straight to the main 24x80 screen content. Visually hidden off-canvas until
+       focused (see .bms-skip-link in the shared layout fragment); revealed on Tab. */-->
+<a class="bms-skip-link" href="#account-update-main">Skip to main content</a>
 
 <!--
   Page-scoped layout styles. The 3270 palette, monospace 24x80 grid, and the
@@ -64,9 +68,22 @@
        template performs NO arithmetic. */
     .acctupd-num   { text-align: right; }
     .acctupd-money { text-align: right; }
+    /* BLITZY [QA-F4-3 FIX] WCAG 2.5.8 Target Size (Minimum) [AA]: the BMS
+       character-cell inputs render only ~21px tall (the 16px Courier line box),
+       just below the 24x24 minimum, which is the sole Lighthouse a11y failure on
+       this screen. Raise the interactive hit-area to >=24px. The growth is
+       VERTICAL only (min-height) - the min-width:24px floor is a no-op for every
+       field on this screen (the narrowest, a 1-char input, already measures
+       exactly 24px wide; all others are wider), so the monospace character grid,
+       the 80-column width and the cross-line column alignment (AAP 0.3.4 24x80
+       fidelity) are fully preserved. box-sizing:border-box folds the 1px HILIGHT
+       underline into the 24px so the rendered box is exactly 24px. Re-verified:
+       all 43 inputs >=24x24px, 0 pairwise collisions at 1280/768/480, Lighthouse
+       target-size passes. */
+    .bms-input { min-height: 24px; min-width: 24px; box-sizing: border-box; }
 </style>
 
-<main class="bms-screen">
+<main id="account-update-main" class="bms-screen">
 
     <!-- BMS lines 1-2: Tran/Date band + Prog/Time band. tranId=CAUP, programId=COACTUPC. -->
     <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CAUP', 'COACTUPC')}"></div>

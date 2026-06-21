@@ -109,6 +109,21 @@ public class UserAddScreen {
   @Size(max = 78)
   private String errMsg;
 
+  /**
+   * Green success-confirmation line shown to the operator on a successful add ({@code "User
+   * &lt;id&gt; has been added ..."}).
+   *
+   * <p>The legacy {@code COUSR01C} writes the confirmation into the single {@code ERRMSG} field but
+   * flips its colour attribute to {@code DFHGREEN} (L254) so success is visually distinct from the
+   * red validation/error messages. The modernized UI cannot carry a separate colour-attribute byte,
+   * so the green channel is modeled as this dedicated field: when an add succeeds the message is
+   * placed here (rendered green) and {@link #errMsg} is left blank; on any validation or
+   * persistence failure {@link #errMsg} carries the red message and this field is left blank. The
+   * two are always mutually exclusive (QA F4-1).
+   */
+  @Size(max = 78)
+  private String successMsg;
+
   /** Creates an empty Add User screen contract with all fields unset. */
   public UserAddScreen() {
     // No-args constructor for framework binding (Spring MVC / serialization).
@@ -335,6 +350,24 @@ public class UserAddScreen {
   }
 
   /**
+   * Returns the green success-confirmation line ({@code ERRMSG} rendered with {@code DFHGREEN}).
+   *
+   * @return the success message line, or {@code null} if unset
+   */
+  public String getSuccessMsg() {
+    return successMsg;
+  }
+
+  /**
+   * Sets the green success-confirmation line ({@code ERRMSG} rendered with {@code DFHGREEN}).
+   *
+   * @param successMsg the success message line (max 78 characters)
+   */
+  public void setSuccessMsg(String successMsg) {
+    this.successMsg = successMsg;
+  }
+
+  /**
    * Returns a diagnostic representation of this screen contract.
    *
    * <p>The {@code passwd} field is deliberately redacted to avoid leaking sensitive credentials
@@ -368,6 +401,8 @@ public class UserAddScreen {
         + usrType
         + ", errMsg="
         + errMsg
+        + ", successMsg="
+        + successMsg
         + '}';
   }
 }

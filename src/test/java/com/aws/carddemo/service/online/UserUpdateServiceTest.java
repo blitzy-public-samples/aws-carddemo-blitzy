@@ -393,7 +393,10 @@ class UserUpdateServiceTest {
     String next = service.processUserUpdate(screen, adminReentered(), CardWorkArea.Aid.PFK05);
 
     assertThat(next).isNull();
-    assertThat(screen.getErrMsg()).isEqualTo("User " + USER_ID + " has been updated ...");
+    // QA F4-1: COUSR02C L371 renders this confirmation in DFHGREEN, so it rides the dedicated
+    // GREEN success channel; the RED error channel must be blank (the two are mutually exclusive).
+    assertThat(screen.getSuccessMsg()).isEqualTo("User " + USER_ID + " has been updated ...");
+    assertThat(screen.getErrMsg()).isEmpty();
 
     // Control-flow parity: the re-read precedes the rewrite (read-for-update).
     ArgumentCaptor<UserSecurity> captor = ArgumentCaptor.forClass(UserSecurity.class);
@@ -425,7 +428,10 @@ class UserUpdateServiceTest {
     String next = service.processUserUpdate(screen, adminReentered(), CardWorkArea.Aid.PFK05);
 
     assertThat(next).isNull();
-    assertThat(screen.getErrMsg()).isEqualTo("User " + USER_ID + " has been updated ...");
+    // QA F4-1: COUSR02C L371 renders this confirmation in DFHGREEN, so it rides the dedicated
+    // GREEN success channel; the RED error channel must be blank (the two are mutually exclusive).
+    assertThat(screen.getSuccessMsg()).isEqualTo("User " + USER_ID + " has been updated ...");
+    assertThat(screen.getErrMsg()).isEmpty();
 
     // Control-flow parity for the §0.6.6 crux: lookup -> encode -> save.
     ArgumentCaptor<UserSecurity> captor = ArgumentCaptor.forClass(UserSecurity.class);
