@@ -473,7 +473,20 @@ public class AccountViewService {
     }
 
     // L666-676: CC-ACCT-ID NOT NUMERIC OR EQUAL ZEROES -> invalid.
-    if (!isAllDigits(filter) || isAllZeros(filter)) {
+    //
+    // The legacy field CC-ACCT-ID is PIC X(11) and is fed by the BMS map field ACCTSID, which is
+    // physically eleven columns wide; the 3270 hardware therefore made it impossible for COBOL to
+    // ever receive more than eleven characters here, so 2210-EDIT-ACCOUNT had no length test. On
+    // the
+    // web the same field arrives as an unbounded request parameter, so a length guard is added to
+    // restore that physical bound. An over-eleven-character value is, by definition, not "a
+    // non-zero
+    // 11 digit number", so it is folded into this exact same invalid branch and surfaces the
+    // identical MSG_ACCT_FILTER_INVALID rather than being passed on to Long.parseLong below (where
+    // an
+    // over-Long value would otherwise throw NumberFormatException and abend with HTTP 500). Eleven
+    // digits always fit in a long (max long is nineteen digits), so this never rejects a legal id.
+    if (filter.length() > 11 || !isAllDigits(filter) || isAllZeros(filter)) {
       if (isReturnMsgOff(screen)) {
         screen.setErrMsg(MSG_ACCT_FILTER_INVALID);
       }

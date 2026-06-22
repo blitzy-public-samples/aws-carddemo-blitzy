@@ -197,6 +197,84 @@ class UserAddServiceTest {
     verifyNoInteractions(userSecurityRepository, passwordEncoder);
   }
 
+  // ===== ENTER — fixed-width length validation (QA FINAL_ALT Issue 6)
+  // =============================
+
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("overlongFieldCases")
+  @DisplayName(
+      "PROCESS-ENTER-KEY: over-length fields rejected with a field-specific length message")
+  void overlongField_redisplaysLengthMessage_beforeAnyWrite(
+      String label, UserAddScreen screen, String expectedMessage) {
+    String next = service.processUserAdd(screen, adminCommarea(), CardWorkArea.Aid.ENTER);
+
+    assertThat(next).isNull();
+    assertThat(screen.getErrMsg()).isEqualTo(expectedMessage);
+    // The length guards sit before WRITE-USER-SEC-FILE, so no existence check, hash, or save runs —
+    // the over-length value never reaches the fixed-width column to raise a DB length error.
+    verifyNoInteractions(userSecurityRepository, passwordEncoder);
+  }
+
+  @Test
+  @DisplayName(
+      "Empty check still precedes length check (blank First Name wins over over-long Last)")
+  void emptyCheckPrecedesLengthCheck_cobolOrderPreserved() {
+    // First Name is blank AND Last Name is over-length. The empty checks run as a complete block in
+    // byte-exact COBOL order BEFORE any length guard, so the blank First Name message must win —
+    // proving the new length validation did not perturb the pinned empty-field ordering.
+    UserAddScreen screen = screen("", "X".repeat(21), USER_ID, PWD_PLAINTEXT, USR_TYPE);
+
+    String next = service.processUserAdd(screen, adminCommarea(), CardWorkArea.Aid.ENTER);
+
+    assertThat(next).isNull();
+    assertThat(screen.getErrMsg()).isEqualTo("First Name can NOT be empty...");
+    verifyNoInteractions(userSecurityRepository, passwordEncoder);
+  }
+
+  @Test
+  @DisplayName("QA Issue 6: over-long first/last name shows a length message, NOT a DB error")
+  void overlongName_qaScenario_showsLengthMessage_notMisleadingDuplicate() {
+    // Reproduces the QA FINAL_ALT Issue 6 payload exactly: a valid id/password/type with first and
+    // last names longer than the 20-char fixed width. Before the guard this slipped through the
+    // empty checks, hit the user_security char(20) column, raised
+    // "value too long for type character(20)", and surfaced as the misleading
+    // "User ID already exist..." duplicate branch. It must now redisplay the First Name length
+    // message and perform NO persistence at all.
+    UserAddScreen screen =
+        screen(
+            "Reallyreallyreallylongfirstname",
+            "Reallyreallyreallylonglastname",
+            "QAEDGE2",
+            "PASS1234",
+            "U");
+
+    String next = service.processUserAdd(screen, adminCommarea(), CardWorkArea.Aid.ENTER);
+
+    assertThat(next).isNull();
+    assertThat(screen.getErrMsg()).isEqualTo("First Name can NOT exceed 20 characters...");
+    assertThat(screen.getErrMsg()).isNotEqualTo("User ID already exist...");
+    verifyNoInteractions(userSecurityRepository, passwordEncoder);
+  }
+
+  @Test
+  @DisplayName("Boundary: exactly-20-char names pass the length guard and persist normally")
+  void exactlyMaxLengthName_passesLengthGuard_persists() {
+    // A name of exactly 20 characters is the largest the SEC-USR-FNAME PIC X(20) column accepts, so
+    // it must NOT be rejected by the length guard (the guard fires strictly above the maximum).
+    String twentyCharName = "ABCDEFGHIJKLMNOPQRST"; // exactly 20 characters
+    assertThat(twentyCharName).hasSize(20);
+    UserAddScreen screen = screen(twentyCharName, twentyCharName, USER_ID, PWD_PLAINTEXT, USR_TYPE);
+    when(userSecurityRepository.existsById(USER_ID)).thenReturn(false);
+    when(passwordEncoder.encode(PWD_PLAINTEXT)).thenReturn(PWD_HASH);
+
+    String next = service.processUserAdd(screen, adminCommarea(), CardWorkArea.Aid.ENTER);
+
+    assertThat(next).isNull();
+    // No length error; the success path runs and persists the record.
+    assertThat(screen.getSuccessMsg()).isEqualTo("User " + USER_ID + " has been added ...");
+    verify(userSecurityRepository).save(any(UserSecurity.class));
+  }
+
   // ===== ENTER — duplicate / write failures (FILE STATUS mapping) ================================
 
   @Test
@@ -389,6 +467,34 @@ class UserAddServiceTest {
             "user type (spaces) blank",
             screen(FNAME, LNAME, USER_ID, PWD_PLAINTEXT, "  "),
             "User Type can NOT be empty..."));
+  }
+
+  /**
+   * The four fixed-width over-length cases, one per length-bounded field, each just one character
+   * past its {@code CSUSR01Y} maximum (FNAME/LNAME {@code X(20)}, USERID {@code X(8)}, USRTYPE
+   * {@code X(1)}). Each case keeps every other field valid so the targeted field is the sole
+   * violation, mirroring the structure of {@link #emptyFieldCases()}.
+   *
+   * @return the labelled (screen, expected-message) cases
+   */
+  private static Stream<Arguments> overlongFieldCases() {
+    return Stream.of(
+        arguments(
+            "first name (21 chars) too long",
+            screen("X".repeat(21), LNAME, USER_ID, PWD_PLAINTEXT, USR_TYPE),
+            "First Name can NOT exceed 20 characters..."),
+        arguments(
+            "last name (21 chars) too long",
+            screen(FNAME, "X".repeat(21), USER_ID, PWD_PLAINTEXT, USR_TYPE),
+            "Last Name can NOT exceed 20 characters..."),
+        arguments(
+            "user id (9 chars) too long",
+            screen(FNAME, LNAME, "X".repeat(9), PWD_PLAINTEXT, USR_TYPE),
+            "User ID can NOT exceed 8 characters..."),
+        arguments(
+            "user type (2 chars) too long",
+            screen(FNAME, LNAME, USER_ID, PWD_PLAINTEXT, "UU"),
+            "User Type can NOT exceed 1 character..."));
   }
 
   /**

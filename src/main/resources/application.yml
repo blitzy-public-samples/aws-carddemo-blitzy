@@ -153,6 +153,15 @@ spring:
 # is an explicit, self-documenting restatement of the contract.
 server:
   port: 8080
+  # Honor reverse-proxy forwarding headers (X-Forwarded-Proto/-For/-Host/-Port).
+  # In production TLS is terminated at an edge proxy/load balancer that forwards
+  # cleartext to the app with `X-Forwarded-Proto: https`. `framework` lets Spring
+  # (via ForwardedHeaderFilter) reconstruct the original scheme so request.isSecure()
+  # returns true behind the proxy. That, in turn, makes Spring Security emit the
+  # HSTS header (SecurityConfig) on the externally-HTTPS path (QA Issue 4), while a
+  # direct cleartext request keeps isSecure()=false and correctly omits HSTS per
+  # RFC 6797. Safe by default: with no forwarding headers present it is a no-op.
+  forward-headers-strategy: framework
 
 # =============================================================================
 # CardDemo application properties (custom namespace)

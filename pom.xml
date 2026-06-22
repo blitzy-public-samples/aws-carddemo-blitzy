@@ -72,6 +72,29 @@
              Offline builds or those without an NVD API key may opt out of only this
              gate with -Ddependency-check.skip=true. -->
         <dependency-check.skip>false</dependency-check.skip>
+
+        <!-- NVD API resilience for the OWASP CVE gate.
+             The NVD feed is rate-limited (HTTP 429) for anonymous/low-quota callers;
+             without a key the public API frequently rejects requests, leaving the
+             local CVE database unpopulated (dependency-check then reports
+             `NoDataException: No documents exist`). A longer inter-request delay plus
+             a higher retry count let the update survive 429 back-off and complete:
+               - nvdApiDelay      : milliseconds between NVD API requests (default 8s,
+                                    comfortably above NVD's anonymous floor).
+               - nvdMaxRetryCount : attempts before giving up on a throttled request.
+             Both are overridable on the command line (e.g. -Ddependency-check.nvdApiDelay=4000)
+             and are honored alongside an API key supplied via -DnvdApiKey or the
+             NVD_API_KEY environment variable (see the plugin configuration below). -->
+        <dependency-check.nvdApiDelay>8000</dependency-check.nvdApiDelay>
+        <dependency-check.nvdMaxRetryCount>30</dependency-check.nvdMaxRetryCount>
+
+        <!-- Optional internal/mirrored NVD data feed (an "approved internal vulnerability
+             data source"). When set via -Dnvd.datafeed.url=<url> the CVE gate loads NVD
+             data from the mirror instead of the rate-limited public API, so the scan
+             completes in restricted/offline networks. Empty by default -> the public NVD
+             API is used (the plugin applies this only when non-empty, so the empty
+             default is a safe no-op). -->
+        <nvd.datafeed.url></nvd.datafeed.url>
     </properties>
 
     <dependencies>
@@ -360,6 +383,24 @@
                     <!-- Persist the NVD database in the local Maven repository so the
                          CI cache (and local incremental builds) can reuse it. -->
                     <dataDirectory>${settings.localRepository}/org/owasp/dependency-check-data</dataDirectory>
+                    <!-- NVD API key resolution (Issue 2 root cause: anonymous NVD -> HTTP
+                         429 -> NoDataException). The plugin uses the `nvdApiKey` value when
+                         present (CI passes `-DnvdApiKey=$NVD_API_KEY` from the repository
+                         secret), and OTHERWISE reads the key from the NVD_API_KEY
+                         environment variable named here — so a key exported into the
+                         environment (local/runtime) authenticates the scan without any
+                         command-line flag. `nvdApiKey` is intentionally NOT bound to a
+                         (possibly empty) property here: an empty string would count as a
+                         supplied key and suppress this environment-variable fallback. -->
+                    <nvdApiKeyEnvironmentVariable>NVD_API_KEY</nvdApiKeyEnvironmentVariable>
+                    <!-- 429 resilience: space out and retry NVD API requests so the CVE
+                         database populates for anonymous/low-quota callers (see the
+                         dependency-check.nvdApiDelay / nvdMaxRetryCount properties). -->
+                    <nvdApiDelay>${dependency-check.nvdApiDelay}</nvdApiDelay>
+                    <nvdMaxRetryCount>${dependency-check.nvdMaxRetryCount}</nvdMaxRetryCount>
+                    <!-- Optional approved internal NVD mirror; empty -> use the public API
+                         (applied only when non-empty, so the empty default is a no-op). -->
+                    <nvdDatafeedUrl>${nvd.datafeed.url}</nvdDatafeedUrl>
                 </configuration>
                 <executions>
                     <execution>

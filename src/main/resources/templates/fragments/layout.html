@@ -156,6 +156,29 @@
             clip-path: inset(50%);
             white-space: nowrap;
         }
+        /* ---- Narrow-viewport responsive scaling (QA Issue 5) ----
+           Below the 768px tablet breakpoint the fixed 80ch grid (~768px wide at the
+           16px desktop cell) no longer fits, so on phones it overflowed and clipped
+           the right-hand fields. Rather than reflow/break the terminal — which would
+           sacrifice the exact 24x80 BMS geometry the AAP (section 0.3.4) mandates — the
+           WHOLE grid is scaled down by shrinking the font size. Because the container
+           width (80ch / max-width 80ch), padding (1ch / 0.5em) and every child metric
+           are expressed in font-relative ch/em units, lowering the font size scales the
+           entire screen proportionally: the 24x80 cell geometry is preserved exactly,
+           just smaller, and nothing is clipped.
+
+           calc(100vw / 50) keeps the 80ch grid at ~96vw (80ch ~= 48 x font-size, so
+           48 x 100vw/50 = 0.96 x 100vw), leaving a small margin for any scrollbar so
+           there is no horizontal overflow at 375px (or any width < 768px). BOTH the
+           root font size (so the single rem-based heading, account-view .av-heading,
+           scales in step) and .bms-screen (the ch grid + all inherit/ch/em children)
+           use the same factor, so the screen stays uniform. This rule applies ONLY
+           below 768px; at >= 768px the desktop/tablet layout is untouched (16px), so
+           the QA-verified desktop fidelity at 768/1280/1920 is unchanged. */
+        @media (max-width: 767.98px) {
+            html { font-size: calc(100vw / 50); }
+            .bms-screen { font-size: calc(100vw / 50); }
+        }
     </style>
 </head>
 

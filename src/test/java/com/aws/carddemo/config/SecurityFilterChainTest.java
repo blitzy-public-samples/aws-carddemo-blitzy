@@ -17,9 +17,11 @@
 package com.aws.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.aws.carddemo.repository.UserSecurityRepository;
@@ -218,5 +220,51 @@ class SecurityFilterChainTest {
   @WithMockUser
   void getDataRoute_authenticated_isAccessible() throws Exception {
     mockMvc.perform(get("/account-view")).andExpect(status().isOk());
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // HSTS response header (QA Issue 4): emitted on secure (HTTPS / proxied) requests, correctly
+  // absent on cleartext HTTP, per RFC 6797.
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * On a secure request (HTTPS, or behind a TLS-terminating proxy that sets {@code
+   * X-Forwarded-Proto: https} with {@code server.forward-headers-strategy=framework}) the response
+   * carries the HSTS header with the configured one-year max-age and {@code includeSubDomains}. The
+   * default hardening headers (e.g. {@code X-Content-Type-Options: nosniff}) remain present,
+   * proving the explicit HSTS customizer did not disable the other defaults.
+   *
+   * @throws Exception if the simulated request cannot be performed
+   */
+  @Test
+  @WithMockUser
+  void hsts_isEmitted_onSecureRequest() throws Exception {
+    mockMvc
+        .perform(get("/account-view").secure(true))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Strict-Transport-Security", containsString("max-age=31536000")))
+        .andExpect(
+            header().string("Strict-Transport-Security", containsString("includeSubDomains")))
+        // No regression to the QA-verified default headers.
+        .andExpect(header().string("X-Content-Type-Options", "nosniff"));
+  }
+
+  /**
+   * On a plain cleartext HTTP request the HSTS header is intentionally absent: RFC 6797 §7.2
+   * forbids honoring an HSTS policy delivered over non-secure transport, and Spring Security's
+   * {@code HstsHeaderWriter} writes the header only when {@code request.isSecure()} is true. This
+   * is the exact (correct) behavior QA observed on local HTTP; the fix ensures the header IS
+   * emitted over HTTPS (see {@link #hsts_isEmitted_onSecureRequest()}) without forcing it onto
+   * cleartext.
+   *
+   * @throws Exception if the simulated request cannot be performed
+   */
+  @Test
+  @WithMockUser
+  void hsts_isAbsent_onCleartextRequest() throws Exception {
+    mockMvc
+        .perform(get("/account-view"))
+        .andExpect(status().isOk())
+        .andExpect(header().doesNotExist("Strict-Transport-Security"));
   }
 }

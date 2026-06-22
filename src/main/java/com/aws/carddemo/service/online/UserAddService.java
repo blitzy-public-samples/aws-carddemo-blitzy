@@ -144,6 +144,46 @@ public class UserAddService {
   /** {@code 'User Type can NOT be empty...'} (PROCESS-ENTER-KEY, L144). */
   static final String MSG_USRTYPE_EMPTY = "User Type can NOT be empty...";
 
+  // ===== Fixed-width length-violation messages ===================================================
+  //
+  // COUSR01C has NO length-validation literals because every SEC-USER-DATA field is fed by a BMS
+  // map
+  // field whose physical 3270 column width (FNAMEL=20, LNAMEL=20, USRIDINL=8, USRTYPEL=1) made an
+  // over-length value impossible to enter. On the web those fields arrive as unbounded request
+  // parameters, so the physical bound is restored server-side. The maxima come straight from the
+  // CSUSR01Y copybook (SEC-USR-FNAME PIC X(20), SEC-USR-LNAME PIC X(20), SEC-USR-ID PIC X(08),
+  // SEC-USR-TYPE PIC X(01)) and from the matching user_security columns (char(20)/char(20)/char(8)/
+  // char(1)). The messages follow the legacy "... can NOT ..." line style with the trailing
+  // ellipsis
+  // so they redisplay on the same ERRMSG line as the empty-field messages. SEC-USR-PWD (PIC X(08))
+  // is
+  // deliberately not length-capped here: it is BCrypt-hashed into varchar(60) (AAP §0.6.6), so its
+  // input length neither overflows the column nor carries a fixed-width parity contract.
+
+  /** First Name exceeds the {@code SEC-USR-FNAME PIC X(20)} fixed width. */
+  static final String MSG_FNAME_TOO_LONG = "First Name can NOT exceed 20 characters...";
+
+  /** Last Name exceeds the {@code SEC-USR-LNAME PIC X(20)} fixed width. */
+  static final String MSG_LNAME_TOO_LONG = "Last Name can NOT exceed 20 characters...";
+
+  /** User ID exceeds the {@code SEC-USR-ID PIC X(08)} fixed width. */
+  static final String MSG_USERID_TOO_LONG = "User ID can NOT exceed 8 characters...";
+
+  /** User Type exceeds the {@code SEC-USR-TYPE PIC X(01)} fixed width. */
+  static final String MSG_USRTYPE_TOO_LONG = "User Type can NOT exceed 1 character...";
+
+  /** {@code SEC-USR-FNAME} fixed width (CSUSR01Y / user_security.sec_usr_fname char(20)). */
+  static final int MAX_FNAME_LEN = 20;
+
+  /** {@code SEC-USR-LNAME} fixed width (CSUSR01Y / user_security.sec_usr_lname char(20)). */
+  static final int MAX_LNAME_LEN = 20;
+
+  /** {@code SEC-USR-ID} fixed width (CSUSR01Y / user_security.sec_usr_id char(8)). */
+  static final int MAX_USERID_LEN = 8;
+
+  /** {@code SEC-USR-TYPE} fixed width (CSUSR01Y / user_security.sec_usr_type char(1)). */
+  static final int MAX_USRTYPE_LEN = 1;
+
   /** {@code 'User ID already exist...'} (WRITE-USER-SEC-FILE DUPKEY/DUPREC branch, L263). */
   static final String MSG_USER_ALREADY_EXISTS = "User ID already exist...";
 
@@ -302,6 +342,33 @@ public class UserAddService {
       screen.setErrMsg(MSG_USRTYPE_EMPTY);
       return null;
     }
+
+    // Fixed-width length guards — restore the physical BMS field-width bound the 3270 hardware
+    // enforced (see the MSG_*_TOO_LONG constants). These run STRICTLY AFTER every empty check so
+    // the
+    // byte-exact COBOL empty-field order (First Name, Last Name, User ID, Password, User Type) is
+    // preserved verbatim; a length message can therefore never pre-empt an empty message. They run
+    // BEFORE writeUserSecFile so an over-length value is rejected with a clear, field-specific
+    // message instead of overflowing a fixed-width char column and surfacing as the misleading
+    // duplicate-key / "Unable to Add User" branch. The checks follow the same field order as the
+    // empty checks; password is excluded (BCrypt-hashed into varchar(60), no fixed-width contract).
+    if (exceedsFixedWidth(screen.getFName(), MAX_FNAME_LEN)) {
+      screen.setErrMsg(MSG_FNAME_TOO_LONG);
+      return null;
+    }
+    if (exceedsFixedWidth(screen.getLName(), MAX_LNAME_LEN)) {
+      screen.setErrMsg(MSG_LNAME_TOO_LONG);
+      return null;
+    }
+    if (exceedsFixedWidth(screen.getUserId(), MAX_USERID_LEN)) {
+      screen.setErrMsg(MSG_USERID_TOO_LONG);
+      return null;
+    }
+    if (exceedsFixedWidth(screen.getUsrType(), MAX_USRTYPE_LEN)) {
+      screen.setErrMsg(MSG_USRTYPE_TOO_LONG);
+      return null;
+    }
+
     // L153-160: IF NOT ERR-FLG-ON — MOVE the input fields into SEC-USER-DATA and write the record.
     return writeUserSecFile(screen);
   }
@@ -453,5 +520,24 @@ public class UserAddService {
    */
   private static boolean isBlank(String value) {
     return value == null || value.trim().isEmpty();
+  }
+
+  /**
+   * Returns {@code true} when {@code value} carries more meaningful characters than a fixed-width
+   * {@code PIC X(max)} field can hold.
+   *
+   * <p>Only <em>trailing</em> spaces are ignored ({@link String#stripTrailing()}), exactly matching
+   * PostgreSQL {@code char(n)} semantics: an over-length string is rejected unless the excess
+   * characters are all spaces, in which case the value is silently truncated to fit. This
+   * guarantees the guard never rejects a value the column would have accepted, while still catching
+   * the genuinely over-length input that would otherwise raise {@code value too long for type
+   * character(n)} on write.
+   *
+   * @param value the candidate field value, possibly {@code null}
+   * @param max the fixed-width maximum from the {@code CSUSR01Y} copybook
+   * @return {@code true} if the trailing-space-stripped value is longer than {@code max}
+   */
+  private static boolean exceedsFixedWidth(String value, int max) {
+    return value != null && value.stripTrailing().length() > max;
   }
 }

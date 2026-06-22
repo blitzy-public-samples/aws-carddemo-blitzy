@@ -287,6 +287,22 @@ public class SecurityConfig {
                     .hasRole(ROLE_ADMIN)
                     .anyRequest()
                     .authenticated())
+        // Security response headers. Spring Security already emits X-Content-Type-Options=nosniff,
+        // X-Frame-Options=DENY and the no-store cache headers by default; HSTS is declared here
+        // EXPLICITLY so the posture is self-documenting and verifiable. HTTP Strict Transport
+        // Security (RFC 6797): max-age one year, includeSubDomains. By design the underlying
+        // HstsHeaderWriter writes the header ONLY on secure requests (request.isSecure()), because
+        // RFC 6797 §7.2 forbids honoring an HSTS header received over plain HTTP — so on a local
+        // cleartext :8080 request the header is intentionally (and correctly) absent. In a real
+        // deployment TLS is terminated at the edge proxy, which forwards X-Forwarded-Proto: https;
+        // server.forward-headers-strategy=framework (application.yml) makes Tomcat honor that
+        // header so request.isSecure() becomes true and HSTS is emitted to the browser. This
+        // resolves QA Issue 4 (HSTS configured + emitted over HTTPS) without misleadingly forcing
+        // the header onto cleartext local traffic.
+        .headers(
+            headers ->
+                headers.httpStrictTransportSecurity(
+                    hsts -> hsts.includeSubDomains(true).maxAgeInSeconds(31_536_000L)))
         // Session-fixation hardening (CWE-384 / OWASP A07:2021): on a successful authentication the
         // servlet session id is rotated rather than reused, so a pre-authentication JSESSIONID can
         // never be replayed as an authenticated session. changeSessionId() is Spring Security's

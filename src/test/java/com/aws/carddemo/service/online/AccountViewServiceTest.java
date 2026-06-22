@@ -278,6 +278,31 @@ class AccountViewServiceTest {
     verifyNoInteractions(cardXrefRepository, accountRepository, customerRepository);
   }
 
+  // ===== 2a. Over-length numeric filter: validation message, NOT an HTTP 500 abend ===============
+
+  @Test
+  @DisplayName("Over-length numeric filter: redisplays the two-space message; no abend; no reads")
+  void overlongNumericFilter_redisplaysInsteadOfAbending() {
+    // QA FINAL_ALT Issue 3 regression: an all-digit value longer than the CC-ACCT-ID PIC X(11)
+    // field (here the exact 30-nine adversarial payload) is all-digits and non-zero, so before the
+    // length guard it slipped past the numeric/zero edit and reached Long.parseLong, overflowing
+    // Long.MAX_VALUE and throwing NumberFormatException -> 9999 abend -> HTTP 500. It must instead
+    // be
+    // folded into the standard invalid-filter branch: the same two-space message, no read
+    // attempted,
+    // and crucially NO exception escaping the service.
+    AccountViewScreen screen = screen("999999999999999999999999999999");
+    CardDemoCommarea commarea = reenteredCommarea();
+
+    String next = service.processAccountView(screen, commarea, CardWorkArea.Aid.ENTER);
+
+    assertThat(next).isNull();
+    assertThat(screen.getErrMsg()).isEqualTo("Account Filter must  be a non-zero 11 digit number");
+    verifyNoInteractions(cardXrefRepository, accountRepository, customerRepository);
+    // The account id is reset to zero, exactly as for any other invalid filter.
+    assertThat(commarea.getAcctId()).isZero();
+  }
+
   // ===== 3. Cross-reference not found: two-space message; account/customer never read ============
 
   @Test
