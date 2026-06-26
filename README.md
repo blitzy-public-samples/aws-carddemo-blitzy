@@ -23,6 +23,7 @@ anchor, and golden-file parity reference.
 - [Testing](#testing)
 - [Continuous Integration](#continuous-integration)
 - [Traceability](#traceability)
+- [Path to Production](#path-to-production)
 - [Legacy Mainframe Application (retained read-only under `legacy/app/`)](#legacy-mainframe-application-retained-read-only-under-legacyapp)
   - [Technologies (legacy mainframe stack)](#technologies-legacy-mainframe-stack)
   - [Installation on the mainframe](#installation-on-the-mainframe)
@@ -470,6 +471,111 @@ and `2900-WRITE-TRANSACTION-FILE`) become private service methods invoked in the
 preserving the original control flow. The [Application Inventory](#application-inventory) tables in
 the Legacy section provide the transaction/job → COBOL program cross-reference that anchors this
 matrix.
+
+<br/>
+
+
+## Path to Production
+
+The modernized application above is fully buildable, testable, and runnable on its own. The
+following additions wire it for a managed production deployment. They are **purely additive** — they
+introduce no change to the application's business logic, domain model, repositories, services, web
+controllers, or batch job definitions.
+
+### Continuous Deployment (`/.github/workflows/cd.yml`)
+
+After a **successful CI run on `main`**, the CD workflow builds the application container image from
+the repository [`Dockerfile`](Dockerfile) (multi-stage Temurin 25 build, non-root runtime,
+`EXPOSE 8080`) and publishes it to the **GitHub Container Registry (GHCR)**:
+
+- **Trigger** — `workflow_run` gated on the `CI` workflow completing with `conclusion == 'success'`
+  on `main` (so an image is published only after the build, tests, JaCoCo, OWASP, and Spotless gates
+  all pass), plus a manual `workflow_dispatch`.
+- **Tags** — `latest` and the short commit SHA, derived by `docker/metadata-action`.
+- **Auth** — the built-in `GITHUB_TOKEN` with least-privilege `packages: write`; no external secret
+  is required to publish to GHCR. To publish to **AWS Elastic Container Registry (ECR)** instead
+  (for cohesion with the Terraform AWS estate), swap the login/registry steps for
+  `aws-actions/configure-aws-credentials` (OIDC) + `aws-actions/amazon-ecr-login` as documented in
+  the workflow comments.
+
+### Production batch scheduling (`config/BatchSchedulingConfig.java`)
+
+In production the eleven Spring Batch jobs are time-triggered by
+`com.aws.carddemo.config.BatchSchedulingConfig`, which replaces the legacy JCL job scheduler with
+Spring `@Scheduled` cron triggers launched through the auto-configured `JobLauncher`. It mirrors the
+on-demand launch already used by `ReportService` and stamps each launch with a unique `scheduledAt`
+parameter so every fire creates a fresh `JobInstance`.
+
+- It is **gated** by `@ConditionalOnProperty("carddemo.batch.scheduling.enabled" = "true")`, which is
+  set **only** in the `prod` profile (`application-prod.yml`). It is therefore inert in the default
+  and test profiles, and the test suite never launches a job.
+- It does **not** declare `@EnableBatchProcessing` (which would disable Boot's batch
+  auto-configuration) and preserves `spring.batch.job.enabled=false` (no jobs auto-run on startup).
+- Each job has a staggered overnight default cron (01:00–05:00) that follows the legacy nightly batch
+  order. Retune any job per environment with `carddemo.batch.scheduling.cron.<job>` (for example
+  `carddemo.batch.scheduling.cron.interest-calculation`), or disable an individual job by setting its
+  cron to the Spring disabled-trigger sentinel `"-"`.
+
+### Infrastructure as Code (`infra/`, Terraform)
+
+The [`infra/`](infra/) directory provisions a managed **PostgreSQL 16** database on **AWS RDS** with
+production hardening: **automated backups** (configurable `backup_retention_period`, default 14
+days), **enforced TLS** (an RDS parameter group sets `rds.force_ssl = 1`, and the emitted JDBC URL
+carries `?sslmode=require`), storage encryption, Multi-AZ, and deletion protection. It also creates
+an **AWS Secrets Manager** secret holding the database endpoint and the application credentials. See
+[`infra/README.md`](infra/README.md) for full usage. Typical flow:
+
+```bash
+cd infra
+cp terraform.tfvars.example terraform.tfvars   # fill in vpc_id, subnet_ids, etc.
+terraform init
+terraform plan
+terraform apply
+```
+
+### Secrets management (AWS Secrets Manager via Spring Cloud AWS)
+
+Production credentials are **never** committed and **never** taken from the blank seed defaults.
+`pom.xml` adds the Spring Cloud AWS BOM and the `spring-cloud-aws-starter-secrets-manager` starter.
+The Terraform-provisioned secret stores a JSON document whose **keys are canonical Spring property
+names** (`spring.datasource.url`, `spring.datasource.username`, `spring.datasource.password`,
+`carddemo.security.seed.admin-password`, `carddemo.security.seed.user-password`), so they overlay the
+application's externalized placeholders directly.
+
+> The eager `SecretsManagerAutoConfiguration` (which builds an injectable client needing an AWS
+> region at startup) is excluded in `application.yml` so the default and test profiles stay hermetic.
+> Production loads the secret through the separate **ConfigData** import mechanism
+> (`spring.config.import`), which is unaffected by that exclusion.
+
+### Production profile (`application-prod.yml`)
+
+Activate the production profile with `SPRING_PROFILES_ACTIVE=prod`. The profile:
+
+- imports the secret via `spring.config.import: aws-secretsmanager:${CARDDEMO_DB_SECRET_NAME:carddemo/prod/db}`
+  (non-optional — the app fails fast if the secret cannot be loaded);
+- loads the datasource and the BCrypt-seed admin/user passwords from Secrets Manager;
+- keeps `spring.jpa.hibernate.ddl-auto=validate` (Flyway remains authoritative) and
+  `spring.batch.job.enabled=false`; and
+- sets `carddemo.batch.scheduling.enabled=true` to activate the batch scheduler.
+
+The AWS region and credentials are resolved from the standard AWS provider chain — set `AWS_REGION`
+(or rely on EC2/ECS/EKS instance metadata) and prefer an IAM role with
+`secretsmanager:GetSecretValue` over committed access keys.
+
+```bash
+# End-to-end production deploy (high level)
+terraform -chdir=infra apply                 # 1. provision RDS + the Secrets Manager secret
+#                                            # 2. CD publishes the image to the registry on a green CI run on main
+SPRING_PROFILES_ACTIVE=prod \
+AWS_REGION=<your-region> \
+CARDDEMO_DB_SECRET_NAME=carddemo/prod/db \
+  java -jar target/carddemo-*.jar            # 3. run the published image/jar with the prod profile
+```
+
+> **Scope note.** These additions cover CI/CD, the database infrastructure, secret loading, and
+> production scheduling/configuration. Container-orchestration manifests (for example ECS task
+> definitions or Kubernetes/Helm charts) and the registry-to-runtime rollout are environment-specific
+> and intentionally left to the deploying team.
 
 <br/>
 
