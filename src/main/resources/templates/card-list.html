@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ Card List screen - CICS transaction CCLI, program COCRDLIC. Thymeleaf web
+  ~ equivalent of the legacy BMS map COCRDLI / CCRDLIA (24x80 3270). Renders a
+  ~ paged list of credit cards with account-number / card-number filters and
+  ~ seven repeating, selectable rows. Fidelity reference (mirrored exactly):
+  ~ legacy/app/bms/COCRDLI.bms. Backing form object:
+  ~ com.aws.carddemo.dto.screen.CardListScreen (model attribute "cardListForm").
+  ~ Reuses fragments/layout.html for the head (terminal CSS), the header band,
+  ~ and the message line. No third-party CSS or JavaScript.
+-->
+<html lang="en"
+      xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6">
+
+<head th:replace="~{fragments/layout :: head('List Credit Cards')}"></head>
+
+<body>
+
+<!--
+  Screen-specific styling. The shared head fragment (replaced above) owns the
+  3270 terminal palette and the fixed 24x80 monospace grid; the rules below add
+  only the Card List table geometry plus two invisible-accessibility helpers
+  (skip link, visually-hidden text). Every colour resolves to a layout class
+  (.bms-input green, .bms-label blue, .bms-heading / .bms-sep neutral,
+  .bms-prompt turquoise, .bms-footer / .bms-pfkey yellow); no inline styles, no
+  !important, no ID selectors, no third-party CSS. Class names are scoped with
+  the "ccli-" prefix so sibling screens never collide. Logical properties keep
+  the layout direction-agnostic.
+-->
+<style>
+    /* Skip-navigation link: off-screen until it receives keyboard focus. */
+    .ccli-skip-link {
+        position: absolute;
+        inset-block-start: -3em;
+        inset-inline-start: 0;
+        background-color: #000000;
+        color: #ffff00;
+        padding: 0.25em 1ch;
+        z-index: 1;
+    }
+    .ccli-skip-link:focus {
+        inset-block-start: 0;
+    }
+
+    /* Standard screen-reader-only helper (no visual footprint). */
+    .ccli-visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        border: 0;
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        overflow: hidden;
+        white-space: nowrap;
+    }
+
+    /* BMS line 4: screen heading (centred) + page indicator (right edge). */
+    .ccli-subhead {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        white-space: nowrap;
+        margin-block: 0.5em 0.35em;
+    }
+    .ccli-screen-title {
+        flex: 1 1 auto;
+        text-align: center;
+        margin: 0;
+        font-size: inherit;
+        font-weight: bold;
+    }
+    .ccli-page {
+        flex: 0 0 auto;
+    }
+
+    /* BMS lines 6-7: turquoise prompt + green editable filter input. Indented
+       to mirror the BMS prompt origin near column 22. */
+    .ccli-filter {
+        display: flex;
+        gap: 1ch;
+        align-items: baseline;
+        white-space: nowrap;
+        margin-block-end: 0.15em;
+        margin-inline-start: 21ch;
+    }
+    .ccli-filter label {
+        flex: 0 0 auto;
+    }
+    .ccli-acctsid {
+        width: 12ch;
+    }
+    .ccli-cardsid {
+        width: 17ch;
+    }
+
+    /* BMS lines 9-17: fixed-layout monospace grid of up to seven card rows.
+       Indented to mirror the BMS "Select" column origin near column 10. */
+    .ccli-table {
+        border-collapse: collapse;
+        table-layout: fixed;
+        margin-block: 0.5em;
+        margin-inline-start: 8ch;
+    }
+    .ccli-table caption {
+        text-align: start;
+    }
+    .ccli-table th,
+    .ccli-table td {
+        text-align: start;
+        padding: 0 1ch;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        vertical-align: top;
+    }
+    .ccli-col-sel {
+        width: 11ch;
+    }
+    .ccli-col-acct {
+        width: 22ch;
+    }
+    .ccli-col-card {
+        width: 22ch;
+    }
+    .ccli-col-sts {
+        width: 9ch;
+    }
+    /* Single-character selection input, centred within its cell. maxlength=1 in
+       the markup enforces the BMS CRDSEL one-byte field; the slightly wider box
+       keeps the control comfortably clickable without altering what is stored. */
+    .ccli-sel {
+        width: 3ch;
+        text-align: center;
+    }
+
+    /* BMS line 24: PF-key legend rendered as real submit buttons. The yellow
+       terminal-legend look comes from .bms-footer / .bms-pfkey in the layout. */
+    .ccli-pfkeys {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2ch;
+    }
+</style>
+
+<a class="ccli-skip-link" href="#ccli-main">Skip to main content</a>
+
+<main id="ccli-main" class="bms-screen">
+
+    <!--
+      BMS lines 1-2: shared header band (Tran / title / date on line 1, Prog /
+      title2 / time on line 2). The outer th:with exposes the form's date, time
+      and secondary title to the header fragment, which reads curDate, curTime
+      and title2 as context variables; the centred line-1 title (TITLE01) is
+      passed as the fragment's first argument with a sensible default.
+    -->
+    <div th:with="curDate=${cardListForm.curDate}, curTime=${cardListForm.curTime}, title2=${cardListForm.title02}">
+        <div th:replace="~{fragments/layout :: header(${cardListForm.title01} ?: 'AWS Mainframe Modernization', 'CCLI', 'COCRDLIC')}">
+            <!-- header band injected from fragments/layout.html -->
+        </div>
+    </div>
+
+    <form th:object="${cardListForm}" method="post" th:action="@{/card-list}">
+
+        <!-- BMS line 4: screen heading + PAGENO page number. -->
+        <div class="ccli-subhead">
+            <h1 class="bms-heading ccli-screen-title">List Credit Cards</h1>
+            <span class="bms-label ccli-page">Page&nbsp;<span th:text="*{pageNo}">1</span></span>
+        </div>
+
+        <!-- Preserve the displayed page across paging submits (F7 / F8). -->
+        <input type="hidden" th:field="*{pageNo}" />
+
+        <!-- BLITZY [QA-F4-4 FIX]: Round-trip the message line so the COCRDLIC
+             last-page latch (CA-LAST-PAGE-DISPLAYED) survives the pseudo-conversational
+             turn. The service derives caLastPageShown from the INCOMING errMsg
+             (CardListService L235-236: caLastPageShown = "NO MORE RECORDS TO SHOW"
+             .equals(incoming errMsg)); a first F8 at the last page emits
+             "NO MORE RECORDS TO SHOW", and a second F8 must then latch to
+             "NO MORE PAGES TO DISPLAY" (L868-869). Without this hidden field the
+             message never round-trips, the latch never arms, and the
+             "NO MORE PAGES TO DISPLAY" branch is dead. Safe to round-trip: the
+             service unconditionally overwrites errMsg via setupMessage (L882) on every
+             call, so the displayed message is always freshly computed; the incoming
+             value is consumed only to arm the latch. -->
+        <input type="hidden" th:field="*{errMsg}" />
+
+        <!-- BMS lines 6-7: account-id and card-number search filters (green,
+             editable). autofocus mirrors the BMS IC (insert-cursor) on ACCTSID. -->
+        <div class="ccli-filter">
+            <label class="bms-prompt" for="acctSid">Account Number&nbsp;&nbsp;&nbsp;&nbsp;:</label>
+            <input type="text" id="acctSid" class="bms-input ccli-acctsid"
+                   th:field="*{acctSid}" maxlength="11" size="11"
+                   autocomplete="off" inputmode="numeric" autofocus="autofocus" />
+        </div>
+        <div class="ccli-filter">
+            <label class="bms-prompt" for="cardSid">Credit Card Number:</label>
+            <input type="text" id="cardSid" class="bms-input ccli-cardsid"
+                   th:field="*{cardSid}" maxlength="16" size="16"
+                   autocomplete="off" inputmode="numeric" />
+        </div>
+
+        <!-- BMS lines 9-17: column headings, dashed separator, and up to seven
+             repeating card rows. The selection cell is green/editable; the
+             account, card and status cells are blue/read-only (protected). -->
+        <table class="ccli-table">
+            <caption class="ccli-visually-hidden">
+                List of credit cards. Type S in the Select column next to a card and press Enter to
+                view it. Use F7 and F8 to page backward and forward.
+            </caption>
+            <colgroup>
+                <col class="ccli-col-sel" />
+                <col class="ccli-col-acct" />
+                <col class="ccli-col-card" />
+                <col class="ccli-col-sts" />
+            </colgroup>
+            <thead>
+                <tr>
+                    <th scope="col" class="bms-heading">Select</th>
+                    <th scope="col" class="bms-heading">Account Number</th>
+                    <th scope="col" class="bms-heading">Card Number</th>
+                    <th scope="col" class="bms-heading">Active</th>
+                </tr>
+                <tr class="bms-sep ccli-sep" aria-hidden="true">
+                    <td>------</td>
+                    <td>---------------</td>
+                    <td>---------------</td>
+                    <td>--------</td>
+                </tr>
+            </thead>
+            <tbody>
+                <tr th:each="row,stat : *{rows}">
+                    <td>
+                        <label class="ccli-visually-hidden"
+                               th:for="${'crdSel' + stat.index}"
+                               th:text="|Select card on row ${stat.count}|">Select card</label>
+                        <input type="text" class="bms-input ccli-sel"
+                               th:id="${'crdSel' + stat.index}"
+                               th:field="*{rows[__${stat.index}__].crdSel}"
+                               maxlength="1" size="1" autocomplete="off" />
+                        <!-- BLITZY [QA-DEFECT#2 FIX]: COCRDLIC drill-down requires the
+                             per-row ACCT-ID and CARD-NUM to be submitted with the
+                             selection flag. The account/card cells below are
+                             display-only (th:text), so without these hidden fields the
+                             bound row's acctNo/crdNum are null and
+                             CardListService.routeToSelected falls back to 0L, sending
+                             /card-view a missing identity ("Did not find this card").
+                             Round-trip both keys here so the selected card resolves. -->
+                        <input type="hidden"
+                               th:field="*{rows[__${stat.index}__].acctNo}" />
+                        <input type="hidden"
+                               th:field="*{rows[__${stat.index}__].crdNum}" />
+                    </td>
+                    <td class="bms-label ccli-acctcell" th:text="${row.acctNo}">00000000000</td>
+                    <td class="bms-label ccli-cardcell" th:text="${row.crdNum}">0000000000000000</td>
+                    <td class="bms-label ccli-stscell" th:text="${row.crdSts}">Y</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- BMS line 20 (INFOMSG, neutral) + line 23 (ERRMSG, red): shared
+             message line. The fragment renders the error first, then the info. -->
+        <div th:replace="~{fragments/layout :: messages(${cardListForm.errMsg}, ${cardListForm.infoMsg})}">
+            <!-- message line injected from fragments/layout.html -->
+        </div>
+
+        <!--
+          BMS line 24: PF-key legend rendered as functional submit buttons so the
+          controller can dispatch on the "pfKey" request parameter. F7 / F8 page
+          backward / forward, F3 exits.
+
+          The BMS COCRDLI row-24 legend text is exactly
+          'F3=Exit F7=Backward F8=Forward' (no ENTER token). ENTER still selects a
+          flagged row, so it remains a functional submit kept FIRST in document order
+          (so the browser's default Enter-key submit inside a filter/select field maps
+          to 3270 ENTER) but is rendered visually-hidden (sr-only) and removed from the
+          tab order, so the VISIBLE legend matches the BMS contract exactly - QA F3
+          Issue #5. Removing the button entirely would mis-route Enter to F3=Exit.
+        -->
+        <div class="bms-footer bms-pfkey ccli-pfkeys">
+            <button type="submit" name="pfKey" value="ENTER"
+                    class="ccli-visually-hidden" tabindex="-1"
+                    aria-label="Enter equals Select">ENTER=Select</button>
+            <button type="submit" name="pfKey" value="PF3">F3=Exit</button>
+            <button type="submit" name="pfKey" value="PF7">F7=Backward</button>
+            <button type="submit" name="pfKey" value="PF8">F8=Forward</button>
+        </div>
+
+    </form>
+
+</main>
+
+</body>
+</html>

@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ Card Update screen - CICS transaction CCUP, program COCRDUPC. Web equivalent
+  ~ of the legacy CICS/BMS map COCRDUP / CCRDUPA ("Update Credit Card Details").
+  ~ The 24x80 field contract is mirrored from legacy/app/bms/COCRDUP.bms and the
+  ~ shared terminal chrome (head/CSS, header band, message line, PF-key footer)
+  ~ is reused from fragments/layout.html. Plain Thymeleaf only - no component
+  ~ library and no external CSS/JS (AAP 0.3.4, 0.6.6; 100% UI parity).
+-->
+<html lang="en"
+      xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6">
+
+<!-- Shared <head> + terminal CSS pulled from the layout fragment; the browser
+     tab title is the screen heading. The static children below are prototype
+     content only (discarded when Thymeleaf resolves th:replace). -->
+<head th:replace="~{fragments/layout :: head('Update Credit Card Details')}">
+    <meta charset="UTF-8" />
+    <title>Update Credit Card Details</title>
+</head>
+
+<body>
+<!--/* BLITZY [QA-INFO-5 FIX]: keyboard skip-link to bypass the header band and jump
+       straight to the main 24x80 screen content. Visually hidden off-canvas until
+       focused (see .bms-skip-link in the shared layout fragment); revealed on Tab. */-->
+<a class="bms-skip-link" href="#card-update-main">Skip to main content</a>
+
+<!--
+  Screen-scoped layout helpers ONLY (classes, never inline styles). The shared
+  colour vocabulary and 24x80 monospace grid live once in fragments/layout.html;
+  the rules below only center the BMS line-4 heading and right-align the
+  JUS=RIGHT expiry month/year fields, mirroring the class-based pattern used by
+  the sibling screen templates (e.g. transaction-add/transaction-view).
+-->
+<style>
+    /* BMS line 4 heading ("Update Credit Card Details", NEUTRAL bright): centered. */
+    .card-update-heading { text-align: center; }
+    /* EXPMON / EXPYEAR are JUS=RIGHT on the 3270 map: right-aligned numeric entry. */
+    .card-update-num { text-align: right; }
+</style>
+
+<main id="card-update-main" class="bms-screen">
+
+    <!-- BMS lines 1-2: header band. Tran=CCUP, Prog=COCRDUPC, centered title
+         (TITLE01); date/time + secondary title (TITLE02) are supplied by the
+         controller as curDate/curTime/title2 model attributes (the fragment
+         falls back to the current date/time when they are absent). -->
+    <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CCUP', 'COCRDUPC')}"></div>
+
+    <!-- BMS line 4: screen heading (NEUTRAL, centered). -->
+    <h1 class="bms-heading card-update-heading">Update Credit Card Details</h1>
+
+    <!--
+      Card-update form. Submits back to the Card Update controller (txn CCUP).
+      th:object binds the editable form-backing bean `cardUpdateForm`.
+
+      Protected key fields (ACCTSID / CARDSID, PROT on the 3270) are presented
+      read-only and carried as hidden inputs so the post preserves the record
+      identity for the optimistic update performed by the service. The DRK/PROT
+      expiry-day (EXPDAY) is likewise carried as a hidden input to preserve the
+      RECEIVE/SEND round-trip without being shown (AAP 0.6.6 REDEFINES note).
+    -->
+    <form th:object="${cardUpdateForm}" method="post" th:action="@{/card-update}">
+
+        <!-- EXPDAY (DRK/PROT in BMS): hidden, preserved for round-trip. -->
+        <input type="hidden" th:field="*{expDay}" />
+
+        <!-- BLITZY [QA-DEFECT#5 FIX]: CCUP-CHANGE-ACTION pseudo-conversational state
+             token. COCRDUPC is a multi-step confirm-then-save state machine
+             (DETAILS-NOT-FETCHED -> SHOW-DETAILS -> CHANGES-OK-NOT-CONFIRMED ->
+             CHANGES-OKAYED-AND-DONE). CardUpdateService.currentState() reads
+             screen.getUpdateState() (null/blank defaults to DETAILS-NOT-FETCHED), and
+             PF5=Save is honored ONLY when the state is CHANGES-OK-NOT-CONFIRMED;
+             otherwise it is remapped to ENTER. Without round-tripping this token every
+             POST reset the state to DETAILS-NOT-FETCHED, so PF5 was always remapped and
+             the edit was silently discarded (save never committed). This hidden field
+             carries the advanced state the service sets via setUpdateState() back on
+             the next RECEIVE, mirroring the COMMAREA-preserved CCUP-CHANGE-ACTION. -->
+        <input type="hidden" th:field="*{updateState}" />
+
+        <!-- BLITZY [QA-DEFECT#5 FIX, cont.]: CCUP-OLD-DETAILS optimistic-lock
+             before-image. COCRDUPC captures the originally fetched ("OLD") card values
+             and, on PF5 save, re-reads the row and compares it against this OLD snapshot
+             (9300-CHECK-CHANGE-IN-REC); a match rewrites, a mismatch reports "Record
+             changed by some one else." CardUpdateService carries this snapshot on the
+             CardUpdateScreen DTO (unlike AccountUpdateService, which re-reads it from the
+             DB each turn), so — exactly like CCUP-OLD-DETAILS lives in the COBOL COMMAREA
+             across the pseudo-conversational cycle — it must round-trip with the form.
+             Without it the save reached the lock check with a blank before-image and
+             always failed the comparison, so the rewrite never committed. The
+             before-image is the fetch-time value compared to the DB at save time, so
+             optimistic-lock semantics are preserved (a genuine concurrent change still
+             yields the "changed by some one else" message). -->
+        <input type="hidden" th:field="*{oldCardCvvCd}" />
+        <input type="hidden" th:field="*{oldCrdName}" />
+        <input type="hidden" th:field="*{oldCrdStcd}" />
+        <input type="hidden" th:field="*{oldExpMon}" />
+        <input type="hidden" th:field="*{oldExpYear}" />
+        <input type="hidden" th:field="*{oldExpDay}" />
+
+        <!-- ACCTSID (PROT/ASKIP): account number - read-only key (blue) + round-trip. -->
+        <div class="bms-field-row">
+            <span class="bms-prompt">Account Number:</span>
+            <span class="bms-label" th:text="*{acctSid}">00000000000</span>
+            <input type="hidden" th:field="*{acctSid}" />
+        </div>
+
+        <!-- CARDSID: card number - read-only key (blue) + round-trip. -->
+        <div class="bms-field-row">
+            <span class="bms-prompt">Card Number:</span>
+            <span class="bms-label" th:text="*{cardSid}">0000000000000000</span>
+            <input type="hidden" th:field="*{cardSid}" />
+        </div>
+
+        <!-- CRDNAME (UNPROT, green): name on card - editable, 50 chars. -->
+        <div class="bms-field-row">
+            <label class="bms-prompt" for="crdName">Name on Card:</label>
+            <input type="text" id="crdName" class="bms-input"
+                   th:field="*{crdName}" maxlength="50" size="50" autocomplete="off" />
+        </div>
+
+        <!-- CRDSTCD (UNPROT, green): card active status Y/N - editable, 1 char. -->
+        <div class="bms-field-row">
+            <label class="bms-prompt" for="crdStcd">Card Active Y/N:</label>
+            <input type="text" id="crdStcd" class="bms-input"
+                   th:field="*{crdStcd}" maxlength="1" size="1" autocomplete="off" />
+        </div>
+
+        <!-- EXPMON / EXPYEAR (UNPROT, green, JUS=RIGHT): expiry month / year -
+             editable, right-aligned numeric. BMS renders a single "Expiry Date"
+             prompt with the month and year inline, separated by '/'. -->
+        <div class="bms-field-row">
+            <span class="bms-prompt">Expiry Date:</span>
+            <input type="text" id="expMon" class="bms-input card-update-num"
+                   th:field="*{expMon}" maxlength="2" size="2"
+                   inputmode="numeric" aria-label="Expiry month (MM)"
+                   autocomplete="off" />
+            <span class="bms-sep">/</span>
+            <input type="text" id="expYear" class="bms-input card-update-num"
+                   th:field="*{expYear}" maxlength="4" size="4"
+                   inputmode="numeric" aria-label="Expiry year (YYYY)"
+                   autocomplete="off" />
+        </div>
+
+        <!-- BMS INFOMSG (row 20, neutral) + ERRMSG (row 23, red) via the shared
+             message fragment.
+             BLITZY [QA-DEFECT#1 FIX]: CardUpdateService writes the message onto the
+             bound screen DTO (screen.setErrMsg()/setInfoMsg()), not a top-level model
+             attribute, so consuming ${errMsg}/${infoMsg} resolved to null and the row
+             rendered empty (success/validation/result messages silently dropped). Use
+             the form-scoped effective pattern (${cardUpdateForm?.x ?: x}) already proven
+             on the 9 working screens so the message the service set actually renders. -->
+        <div th:replace="~{fragments/layout :: messages(${cardUpdateForm?.errMsg ?: errMsg}, ${cardUpdateForm?.infoMsg ?: infoMsg})}"></div>
+
+        <!-- BMS line 24 PF keys (FKEYS + FKEYSC) as real submit buttons. The
+             controller dispatches on the pfKey parameter: ENTER=process,
+             F3=exit, F5=save, F12=cancel. Rendered to look like the terminal
+             legend by the layout .bms-pfkey CSS. -->
+        <div class="bms-footer bms-pfkey">
+            <button type="submit" name="pfKey" value="ENTER">ENTER=Process</button>
+            <button type="submit" name="pfKey" value="PF3">F3=Exit</button>
+            <button type="submit" name="pfKey" value="PF5">F5=Save</button>
+            <button type="submit" name="pfKey" value="PF12">F12=Cancel</button>
+        </div>
+
+    </form>
+</main>
+</body>
+</html>

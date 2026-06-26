@@ -1,0 +1,452 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      AWS CardDemo — COBOL-to-Java migration target build manifest.
+
+      Provisioned by the environment-setup agent to establish a working build
+      baseline (Java 25 + Spring Boot 3.5.x). File-implementation agents add the
+      Java sources under src/main/java/com/aws/carddemo/** and may refine this
+      manifest (e.g. tighten compiler/coverage gates, add modules).
+
+      Stack (per Agent Action Plan §0.5.1):
+        - Java 25 LTS  (<release>25</release>)
+        - Spring Boot 3.5.x (newest patch; required for Java 25 runtime support)
+        - Spring Data JPA, Spring Batch, Spring Security, Bean Validation
+        - PostgreSQL + Flyway migrations
+        - JUnit 5 + Testcontainers (local-only integration testing)
+        - JaCoCo (>=80% line gate), OWASP dependency-check, Spotless
+    -->
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.15</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.aws.carddemo</groupId>
+    <artifactId>carddemo</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <packaging>jar</packaging>
+    <name>carddemo</name>
+    <description>AWS CardDemo credit-card management system migrated from z/OS COBOL to Java/Spring Boot</description>
+
+    <!--
+      Licensing (Agent Action Plan §0.7.3): the project remains under the Apache
+      License 2.0, matching the repository LICENSE/NOTICE files. All newly
+      introduced dependencies must be Apache-2.0-compatible.
+    -->
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <properties>
+        <!-- Java 25 compile + runtime target -->
+        <java.version>25</java.version>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- Explicitly pinned (not BOM-managed) -->
+        <mapstruct.version>1.6.3</mapstruct.version>
+        <lombok-mapstruct-binding.version>0.2.0</lombok-mapstruct-binding.version>
+        <jacoco.version>0.8.15</jacoco.version>
+        <dependency-check.version>12.2.2</dependency-check.version>
+        <spotless.version>3.7.0</spotless.version>
+
+        <!-- Spring Cloud AWS (io.awspring.cloud) — production secrets management.
+             The 3.4.x line aligns with Spring Boot 3.5.x (this project uses
+             3.5.15); imported as a BOM (below) so the starter's version and its
+             AWS SDK transitives stay centrally managed rather than hand-pinned. -->
+        <spring-cloud-aws.version>3.4.2</spring-cloud-aws.version>
+
+        <!-- JaCoCo line-coverage gate (Agent Action Plan §0.7.3). Inactive until
+             tests produce execution data; becomes enforced once sources+tests exist. -->
+        <jacoco.line.coverage.min>0.80</jacoco.line.coverage.min>
+
+        <!-- OWASP dependency-check is bound to the `verify` phase (AAP §0.7.3 CVE
+             gate) and ENABLED by default, so a single `mvn verify` enforces every
+             quality gate exactly as CI and the README's `./mvnw clean verify` do.
+             Offline builds or those without an NVD API key may opt out of only this
+             gate with -Ddependency-check.skip=true. -->
+        <dependency-check.skip>false</dependency-check.skip>
+
+        <!-- NVD API resilience for the OWASP CVE gate.
+             The NVD feed is rate-limited (HTTP 429) for anonymous/low-quota callers;
+             without a key the public API frequently rejects requests, leaving the
+             local CVE database unpopulated (dependency-check then reports
+             `NoDataException: No documents exist`). A longer inter-request delay plus
+             a higher retry count let the update survive 429 back-off and complete:
+               - nvdApiDelay      : milliseconds between NVD API requests (default 8s,
+                                    comfortably above NVD's anonymous floor).
+               - nvdMaxRetryCount : attempts before giving up on a throttled request.
+             Both are overridable on the command line (e.g. -Ddependency-check.nvdApiDelay=4000)
+             and are honored alongside an API key supplied via -DnvdApiKey or the
+             NVD_API_KEY environment variable (see the plugin configuration below). -->
+        <dependency-check.nvdApiDelay>8000</dependency-check.nvdApiDelay>
+        <dependency-check.nvdMaxRetryCount>30</dependency-check.nvdMaxRetryCount>
+
+        <!-- Optional internal/mirrored NVD data feed (an "approved internal vulnerability
+             data source"). When set via -Dnvd.datafeed.url=<url> the CVE gate loads NVD
+             data from the mirror instead of the rate-limited public API, so the scan
+             completes in restricted/offline networks. Empty by default -> the public NVD
+             API is used (the plugin applies this only when non-empty, so the empty
+             default is a safe no-op). -->
+        <nvd.datafeed.url></nvd.datafeed.url>
+    </properties>
+
+    <!-- Import the Spring Cloud AWS BOM so io.awspring.cloud artifacts (here, the
+         Secrets Manager starter and its AWS SDK transitives) are version-aligned
+         without pinning each one. The Spring Boot starter-parent continues to
+         govern all Boot/Spring/third-party versions; this only adds the AWS line. -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>io.awspring.cloud</groupId>
+                <artifactId>spring-cloud-aws-dependencies</artifactId>
+                <version>${spring-cloud-aws.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- ===== Web / online transactions (CICS programs -> controllers) ===== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-thymeleaf</artifactId>
+        </dependency>
+        <!-- Thymeleaf + Spring Security integration: registers the sec:* attribute
+             processors (sec:authorize / sec:authentication) consumed by the
+             ADMIN-gated online screen templates (admin-menu, user-list / user-add /
+             user-update / user-delete). This dialect is NOT brought in transitively
+             by spring-boot-starter-thymeleaf, and without it Thymeleaf leaves the
+             sec:authorize guards unprocessed (the view-layer ROLE_ADMIN gate would
+             silently no-op). The version is managed by the Spring Boot dependency
+             BOM (thymeleaf-extras-springsecurity.version). -->
+        <dependency>
+            <groupId>org.thymeleaf.extras</groupId>
+            <artifactId>thymeleaf-extras-springsecurity6</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- ===== Persistence (VSAM -> JPA / PostgreSQL) ===== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
+        <!-- ===== Batch (JCL -> Spring Batch jobs) ===== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <!-- ===== Security (RACF + clear-text creds -> Spring Security + BCrypt) ===== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- ===== Boilerplate reduction / mapping (optional per AAP) ===== -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.mapstruct</groupId>
+            <artifactId>mapstruct</artifactId>
+            <version>${mapstruct.version}</version>
+        </dependency>
+
+        <!-- ===== Test: JUnit 5 + Mockito + AssertJ, Batch test, Testcontainers ===== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.batch</groupId>
+            <artifactId>spring-batch-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- ===== Production secrets management (AWS Secrets Manager) =====
+             Adds the Spring Cloud AWS Secrets Manager integration used by the
+             `prod` profile. It is ACTIVATED only by a
+             `spring.config.import: aws-secretsmanager:...` entry, which is declared
+             solely in application-prod.yml. No test or default profile imports it,
+             so the auto-configured Secrets Manager config-data loader never runs
+             and the test context never contacts AWS — the suite stays hermetic.
+             Version is governed by the Spring Cloud AWS BOM imported above. -->
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-secrets-manager</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Spring Boot packaging; lombok is compile-only and excluded from the fat jar -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+
+            <!-- Java 25 compiler + annotation processors (lombok, mapstruct) -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <release>${maven.compiler.release}</release>
+                    <parameters>true</parameters>
+                    <showWarnings>true</showWarnings>
+                    <compilerArgs>
+                        <!-- Zero-warning build gate (Agent Action Plan §0.7.3):
+                             promote all compiler warnings to errors. The `-processing`
+                             lint category is excluded so the Lombok/MapStruct annotation
+                             processors do not emit "No processor claimed any of these
+                             annotations" warnings that would otherwise fail the build. -->
+                        <arg>-Werror</arg>
+                        <arg>-Xlint:all,-processing</arg>
+                    </compilerArgs>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                        <path>
+                            <groupId>org.mapstruct</groupId>
+                            <artifactId>mapstruct-processor</artifactId>
+                            <version>${mapstruct.version}</version>
+                        </path>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok-mapstruct-binding</artifactId>
+                            <version>${lombok-mapstruct-binding.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+
+            <!-- Resolve the absolute path of the Mockito core jar into the
+                 build property ${org.mockito:mockito-core:jar} so Surefire can
+                 load it as an explicit -javaagent below. This is the Mockito-
+                 documented remedy for JDK 21+ (Mockito 5): without it, Mockito's
+                 inline mock-maker self-attaches the Byte Buddy agent at runtime,
+                 which emits the JDK "A Java agent has been loaded dynamically"
+                 warning and will stop working in a future JDK. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>resolve-mockito-agent</id>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Surefire: load Mockito as an explicit -javaagent (silences the
+                 JDK dynamic-agent warning, see maven-dependency-plugin above).
+                 @{argLine} is LATE-BOUND to the property that JaCoCo's
+                 prepare-agent sets, so the JaCoCo coverage agent is preserved
+                 and the >=80% line gate keeps working. -Xshare:off disables
+                 Class Data Sharing, which the launch-time agents would
+                 otherwise warn about ("Sharing is only supported for boot
+                 loader classes because bootstrap classpath has been appended"). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+                </configuration>
+            </plugin>
+
+            <!-- JaCoCo coverage: agent + report + >=80% line gate (AAP §0.7.3).
+                 The check is naturally skipped until tests generate exec data. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <execution>
+                        <id>jacoco-prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.line.coverage.min}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Spotless code-style enforcement (google-java-format). Passes with no sources. -->
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+                <version>${spotless.version}</version>
+                <configuration>
+                    <java>
+                        <googleJavaFormat/>
+                        <removeUnusedImports/>
+                        <trimTrailingWhitespace/>
+                        <endWithNewline/>
+                    </java>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>spotless-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- OWASP dependency-check (AAP §0.7.3: zero critical/high CVE gate).
+                 Bound to the `verify` phase so a single `mvn verify` enforces every
+                 quality gate (coverage + style + CVE) together — matching the README's
+                 documented `./mvnw clean verify` command and the CI workflow.
+                 failBuildOnCVSS=7 fails the build on any critical/high (CVSS >= 7)
+                 vulnerability.
+
+                 The NVD data feed is large and is rate-limited without an API key.
+                 CI supplies an authenticated key from the `NVD_API_KEY` repository
+                 secret, which .github/workflows/ci.yml passes to Maven as
+                 `-DnvdApiKey=$NVD_API_KEY` (and caches the NVD database between runs),
+                 so `./mvnw -B clean verify` runs this gate to completion WITHOUT
+                 -Ddependency-check.skip=true. Offline or key-less builds may opt out of
+                 ONLY this gate via -Ddependency-check.skip=true (the gate is enabled by
+                 default; see README "Continuous Integration"). -->
+            <plugin>
+                <groupId>org.owasp</groupId>
+                <artifactId>dependency-check-maven</artifactId>
+                <version>${dependency-check.version}</version>
+                <configuration>
+                    <skip>${dependency-check.skip}</skip>
+                    <failBuildOnCVSS>7</failBuildOnCVSS>
+                    <nvdValidForHours>24</nvdValidForHours>
+                    <!-- Persist the NVD database in the local Maven repository so the
+                         CI cache (and local incremental builds) can reuse it. -->
+                    <dataDirectory>${settings.localRepository}/org/owasp/dependency-check-data</dataDirectory>
+                    <!-- NVD API key resolution (Issue 2 root cause: anonymous NVD -> HTTP
+                         429 -> NoDataException). The plugin uses the `nvdApiKey` value when
+                         present (CI passes `-DnvdApiKey=$NVD_API_KEY` from the repository
+                         secret), and OTHERWISE reads the key from the NVD_API_KEY
+                         environment variable named here — so a key exported into the
+                         environment (local/runtime) authenticates the scan without any
+                         command-line flag. `nvdApiKey` is intentionally NOT bound to a
+                         (possibly empty) property here: an empty string would count as a
+                         supplied key and suppress this environment-variable fallback. -->
+                    <nvdApiKeyEnvironmentVariable>NVD_API_KEY</nvdApiKeyEnvironmentVariable>
+                    <!-- 429 resilience: space out and retry NVD API requests so the CVE
+                         database populates for anonymous/low-quota callers (see the
+                         dependency-check.nvdApiDelay / nvdMaxRetryCount properties). -->
+                    <nvdApiDelay>${dependency-check.nvdApiDelay}</nvdApiDelay>
+                    <nvdMaxRetryCount>${dependency-check.nvdMaxRetryCount}</nvdMaxRetryCount>
+                    <!-- Optional approved internal NVD mirror; empty -> use the public API
+                         (applied only when non-empty, so the empty default is a no-op). -->
+                    <nvdDatafeedUrl>${nvd.datafeed.url}</nvdDatafeedUrl>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>owasp-dependency-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ signon.html - Web (Thymeleaf) equivalent of the legacy CICS BMS map
+  ~ COSGN00 / COSGN0A (CICS transaction CC00, program COSGN00C). Renders the
+  ~ application sign-on / login screen with parity to the BMS field contract in
+  ~ legacy/app/bms/COSGN00.bms (field position, length, attribute, colour and
+  ~ initial value). The 24x80 terminal chrome (header band, message line,
+  ~ PF-key footer) and the terminal-look CSS are provided by the shared
+  ~ fragment template fragments/layout.html. Plain Thymeleaf fragments only -
+  ~ no thymeleaf-layout-dialect, no component library, no external CSS/JS.
+  ~
+  ~ Form binding: ${signonForm} is a com.aws.carddemo.dto.screen.SignonScreen
+  ~ (properties userId, passwd, errMsg, ...) supplied by SignonController.
+  ~ Credential hygiene (AAP 0.6.6): the password field (BMS ATTRB=DRK, masked)
+  ~ is rendered as <input type="password"> and is never echoed back into a
+  ~ value attribute and never logged.
+-->
+<html lang="en"
+      xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security">
+
+<!--/* Shared <head>: meta + 3270 terminal CSS that defines the .bms-* classes
+     used throughout this template. th:replace swaps in the layout fragment. */-->
+<head th:replace="~{fragments/layout :: head('Sign On')}"></head>
+
+<body class="bms-screen">
+
+<!-- BLITZY [QA-INFO-5 FIX]: keyboard/screen-reader skip-link to jump past the
+     BMS header band to the main content. Off-screen until focused (shared
+     .bms-skip-link), so the 24x80 terminal layout is unchanged. -->
+<a class="bms-skip-link" href="#signon-main">Skip to main content</a>
+
+<!--/* ================================================================= */-->
+<!--/* BMS header band (lines 1-3)                                        */-->
+<!--/* ================================================================= */-->
+<header>
+    <!--/* Lines 1-2 via the shared header fragment:
+         L1  'Tran :' + TRNNAME(CC00) + TITLE01(yellow, centred) + 'Date :' + CURDATE
+         L2  'Prog :' + PGMNAME(COSGN00C) + TITLE02(yellow) + 'Time :' + CURTIME
+         The fragment fills CURDATE/CURTIME from the model (or the current
+         date/time when absent), mirroring the program-populated BMS fields. */-->
+    <div th:replace="~{fragments/layout :: header(${title01} ?: 'AWS Mainframe Modernization', 'CC00', 'COSGN00C')}"></div>
+
+    <!--/* Line 3: 'AppID:' + APPLID + 'SysID:' + SYSID. These are protected
+         (display-only) BMS fields and are rendered as read-only text - never
+         as inputs. The shared header fragment renders only lines 1-2, so this
+         third header line is composed here using the same row/colour classes. */-->
+    <div class="bms-header-row">
+        <span class="bms-hside">
+            <span class="bms-label">AppID: </span>
+            <span class="bms-label" th:text="${applId}">&#160;</span>
+        </span>
+        <span class="bms-hside">
+            <span class="bms-label">SysID: </span>
+            <span class="bms-label" th:text="${sysId}">&#160;</span>
+        </span>
+    </div>
+</header>
+
+<!--/* ================================================================= */-->
+<!--/* Screen body (lines 5-20)                                          */-->
+<!--/* ================================================================= */-->
+<main id="signon-main">
+
+    <!-- BLITZY [QA-F4-2 FIX]: the BMS COSGN00 map has no visible line-4 title, so
+         the sign-on screen had no heading element. Expose a visually-hidden <h1> so
+         the screen has a real level-1 heading for screen-reader heading navigation
+         and document.querySelectorAll('h1,h2') (WCAG 1.3.1 / 2.4.6) — without
+         painting anything on the 24x80 grid (preserves exact BMS fidelity). -->
+    <h1 class="bms-visually-hidden">Sign On</h1>
+
+    <!--/* Line 5: intro literal. BMS COLOR=NEUTRAL (length 66); NEUTRAL is the
+         default .bms-screen text colour, so no colour class is applied. */-->
+    <p>This is a Credit Card Demo Application for Mainframe Modernization</p>
+
+    <!--/* Lines 7-15: decorative "dollar bill" ASCII art. BMS COLOR=BLUE
+         (.bms-label), length 42 per line. Reproduced verbatim from the BMS
+         INITIAL= values inside <pre> so the monospace art is preserved exactly.
+         NOTE: the art lines are intentionally outdented to column 0 because
+         <pre> preserves all leading whitespace - indenting them to match the
+         surrounding markup would shift the art to the right. */-->
+    <pre class="bms-label">+========================================+
+|%%%%%%%  NATIONAL RESERVE NOTE  %%%%%%%%|
+|%(1)  THE UNITED STATES OF KICSLAND (1)%|
+|%$$              ___       ********  $$%|
+|%$    {x}       (o o)                 $%|
+|%$     ******  (  V  )      O N E     $%|
+|%(1)          ---m-m---             (1)%|
+|%%~~~~~~~~~~~ ONE DOLLAR ~~~~~~~~~~~~~%%|
++========================================+</pre>
+
+    <!--/* Line 17: prompt. BMS COLOR=TURQUOISE (.bms-prompt), length 49. */-->
+    <p class="bms-prompt">Type your User ID and Password, then press ENTER:</p>
+
+    <!--/* Lines 19-20: sign-on form, bound to the SignonScreen DTO ('signonForm').
+         USERID  - BMS UNPROT, GREEN, length 8, IC (initial cursor) -> autofocus.
+         PASSWD  - BMS UNPROT, GREEN, length 8, ATTRB=DRK (masked) -> type=password.
+         Each field's BMS LENGTH is enforced with maxlength/size = 8. The
+         turquoise labels keep the BMS 13-character padding (so the colons and
+         inputs line up) using non-breaking spaces. */-->
+    <form th:object="${signonForm}" method="post" th:action="@{/signon}">
+
+        <div>
+            <label class="bms-prompt" for="userId">User ID&#160;&#160;&#160;&#160;&#160;:</label>
+            <input type="text"
+                   th:field="*{userId}"
+                   class="bms-input"
+                   maxlength="8"
+                   size="8"
+                   autocomplete="username"
+                   autofocus="autofocus" />
+            <span class="bms-label">(8 Char)</span>
+        </div>
+
+        <div>
+            <label class="bms-prompt" for="passwd">Password&#160;&#160;&#160;&#160;:</label>
+            <input type="password"
+                   th:field="*{passwd}"
+                   class="bms-input"
+                   maxlength="8"
+                   size="8"
+                   autocomplete="current-password" />
+            <span class="bms-label">(8 Char)</span>
+        </div>
+
+        <!--/* BMS line 23: message band - ERRMSG (red, bright) / optional INFOMSG.
+             Resolves the effective error from, in order: the model ${errMsg}, the
+             form's errMsg, or a generic message when Spring Security signals ?error.
+             Placed inside the form, ABOVE the legend, so the BMS row-23 (message) ->
+             row-24 (legend) order is preserved and the legend renders exactly once
+             (QA F3 Issue #6).
+             BLITZY [QA-INFO-2 FIX]: removed the redundant outer role="alert" wrapper
+             that nested a second alert region around the messages fragment's own
+             role="alert" error line (double-announcement in some screen readers). The
+             shared messages fragment owns the live-region semantics; this wrapper now
+             only computes the effective error via th:with. */-->
+        <div th:with="effErr=${!#strings.isEmpty(errMsg)
+                                ? errMsg
+                                : (signonForm != null and !#strings.isEmpty(signonForm.errMsg)
+                                    ? signonForm.errMsg
+                                    : (param.error != null ? 'Invalid User ID or Password. Please try again.' : ''))}">
+            <div th:replace="~{fragments/layout :: messages(${effErr}, ${infoMsg})}"></div>
+        </div>
+
+        <!--/* BMS line 24: PF-key legend rendered as functional submit buttons so the
+             single yellow line-24 row is BOTH the legend AND the interactive AID
+             control (no phantom second legend row - QA F3 Issue #6). ENTER = Sign-on
+             is the primary submit and is first in document order, so pressing Enter in
+             either field triggers it; F3 = Exit is a secondary submit. Both carry
+             name="pfKey" so SignonController reproduces the CCARD-AID-* routing.
+             Styled by the layout's .bms-footer / .bms-pfkey classes. */-->
+        <div class="bms-footer bms-pfkey">
+            <button type="submit" name="pfKey" value="ENTER">ENTER=Sign-on</button>
+            <button type="submit" name="pfKey" value="PF3">F3=Exit</button>
+        </div>
+    </form>
+</main>
+
+</body>
+</html>

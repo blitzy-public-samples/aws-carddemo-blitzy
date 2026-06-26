@@ -1,0 +1,150 @@
+# =============================================================================
+# AWS CardDemo - Spring profile: test
+# =============================================================================
+# Testcontainers PostgreSQL; Flyway authoritative; ddl-auto=validate.
+#
+# Project : AWS CardDemo - the z/OS COBOL / CICS / VSAM / JCL / BMS credit-card
+#           management system modernized to Java 25 + Spring Boot 3.5.x
+#           (base package com.aws.carddemo).
+# License : Apache License 2.0 - same posture as the repository LICENSE/NOTICE.
+#
+# PURPOSE
+#   This is the `test` Spring profile, activated by `@ActiveProfiles("test")`
+#   (or `spring.profiles.active=test`) in the JUnit 5 + Testcontainers
+#   integration suite under src/test (owned by a separate agent). It LAYERS on
+#   top of the default application.yml and overrides ONLY what differs for the
+#   local-only test run mandated by the Agent Action Plan:
+#     * AAP §0.6.7 - all validation is local: JUnit 5 + Testcontainers
+#       PostgreSQL seeded from the legacy app/data/ASCII/*.txt fixtures (via the
+#       Flyway V2 migration + test resources); golden-file parity tests compare
+#       Java output against expected COBOL output. NO running COBOL / mainframe
+#       environment is required.
+#     * AAP §0.7.3 - >=80% line coverage (JaCoCo), local-only validation.
+#
+# WHAT THIS PROFILE OVERRIDES vs INHERITS
+#   OVERRIDES : the datasource (-> an ephemeral Testcontainers PostgreSQL 16)
+#               and the seed-credential DEFAULTS (-> clearly non-production test
+#               values, still externalized through ${ENV:default}).
+#   INHERITS  : everything else from application.yml unchanged -
+#               spring.application.name, the HikariCP pool block, Thymeleaf,
+#               server.port, and logging levels. (Profile YAML is merged ON TOP
+#               of the base file, so only the keys below are restated.)
+#
+# THIS FILE CONTAINS NO SECRETS.
+#   The datasource is an in-process Testcontainers database (credentials are
+#   the container defaults, not real secrets). The seed passwords flow through
+#   Spring's `${ENV_VAR:default}` placeholder syntax with CLEARLY NON-PRODUCTION
+#   test defaults (AAP §0.6.6, §0.7.2: "no hardcoded credentials"). These test
+#   defaults exist only so sign-on / role-gating integration tests run
+#   deterministically; they are BCrypt-hashed by the seed code and must NEVER be
+#   reused for any real environment.
+#
+# WHY THE SAME Flyway MIGRATIONS AS PRODUCTION
+#   `spring.flyway.locations` points at the SAME classpath:db/migration scripts
+#   (V1__schema.sql + V2__seed_reference_data.sql) used in production. Combined
+#   with `spring.jpa.hibernate.ddl-auto=validate`, this guarantees the tests run
+#   against the EXACT VSAM-faithful schema (numeric(p,s) decimal scale, char(n)
+#   fixed-width keys, the three alternate indexes) - never a Hibernate-generated
+#   approximation. This is essential for behavioral parity (AAP §0.6.1, §0.6.2).
+# =============================================================================
+
+spring:
+  # ---------------------------------------------------------------------------
+  # Datasource - Testcontainers PostgreSQL 16 (AAP §0.5.1, §0.6.7)
+  # ---------------------------------------------------------------------------
+  # APPROACH (A) - Testcontainers JDBC-URL (used here; self-contained, needs no
+  # extra Java wiring so this profile works even before the src/test agent adds
+  # any container configuration):
+  #   * `jdbc:tc:postgresql:16:///carddemo` makes the Testcontainers JDBC driver
+  #     start an ephemeral `postgres:16` container (matching docker-compose and
+  #     AAP §0.5.1) with database name `carddemo` on first connection.
+  #   * The URL is HARDCODED (not `${ENV:default}`) on purpose: the test profile
+  #     must always force an isolated, throwaway container - never an external
+  #     database - so the suite is hermetic and reproducible.
+  #   * username/password are the PostgreSQLContainer defaults (`test`/`test`).
+  #     The Testcontainers driver resolves credentials from the container
+  #     itself, so these are stated only for clarity / self-documentation.
+  #
+  # APPROACH (B) - `@ServiceConnection` / programmatic container (alternative
+  # for the src/test agent): annotate a `@Container PostgreSQLContainer<>(
+  # "postgres:16")` field with `@ServiceConnection` (or register a
+  # DynamicPropertySource). In that mode DO NOT set `spring.datasource.url`
+  # here - delete the three datasource keys below and let the container supply
+  # the connection - and keep only the JPA / Flyway / Batch knobs. Approach (A)
+  # is preferred in this committed profile because it is fully self-contained.
+  datasource:
+    url: jdbc:tc:postgresql:16:///carddemo
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+    username: test
+    password: test
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate - Flyway is AUTHORITATIVE for schema (AAP §0.6.1, §0.6.2)
+  # ---------------------------------------------------------------------------
+  # ddl-auto=validate (restated from the base profile for emphasis): Hibernate
+  # NEVER generates DDL. The schema is created ONLY by the Flyway migrations
+  # below, so the tests validate the real VSAM-faithful schema and Hibernate
+  # fails fast on any entity<->table drift. Do NOT change to create/update.
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    # No lazy loading in the view layer; service boundaries own transactions.
+    open-in-view: false
+    # Keep SQL out of the test logs for clean, parity-friendly output. Flip to
+    # true locally only when debugging a specific failing test.
+    show-sql: false
+
+  # ---------------------------------------------------------------------------
+  # Flyway - SAME migrations as production (DDL + reference seed) - AAP §0.5.2
+  # ---------------------------------------------------------------------------
+  # Each test run gets a fresh, empty Testcontainers database, so V1 (11 tables
+  # + 3 alternate indexes) and V2 (reference / lookup seed data) apply from
+  # scratch every time. Reusing the exact production migrations is what makes
+  # the schema VSAM-faithful for parity tests. `clean` is intentionally NOT
+  # enabled (Flyway's safe default) - a brand-new container needs no cleaning.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch - explicit, test-controlled job launching (AAP §0.4.1, §0.6.7)
+  # ---------------------------------------------------------------------------
+  # job.enabled=false: jobs are NOT auto-run on context startup. Batch tests
+  # launch each job explicitly via `JobLauncherTestUtils`, supplying the JCL
+  # run-date as a Spring Batch JobParameter - mirroring application.yml.
+  #
+  # jdbc.initialize-schema=always: create Spring Batch's own metadata tables
+  # (BATCH_*) for batch job tests. Flyway owns only the 11 business tables, so
+  # Boot owns the batch metadata schema here (consistent with application.yml).
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      initialize-schema: always
+
+# =============================================================================
+# CardDemo application properties (custom namespace)
+# =============================================================================
+carddemo:
+  # ---------------------------------------------------------------------------
+  # Seed sign-on identities - TEST-ONLY defaults (AAP §0.6.5, §0.6.6, §0.7.2)
+  # ---------------------------------------------------------------------------
+  # Mirrors the base `carddemo.security.seed` block but supplies deterministic,
+  # CLEARLY NON-PRODUCTION test passwords so sign-on / role-gating integration
+  # tests (admin type 'A', standard user type 'U') run without external
+  # configuration. The base profile defaults these passwords to BLANK; tests
+  # need a usable value, so a fixed test default is provided.
+  #
+  # The passwords still flow through `${ENV_VAR:default}` - they are NEVER real
+  # secrets, are BCrypt-hashed by the seed code before insertion into the
+  # user_security table, and MUST NOT be reused outside the test suite. Override
+  # via CARDDEMO_ADMIN_PASSWORD / CARDDEMO_USER_PASSWORD if a test needs to.
+  security:
+    seed:
+      admin-id: ADMIN001
+      admin-type: A
+      admin-password: ${CARDDEMO_ADMIN_PASSWORD:test-admin-secret}
+      user-id: USER0001
+      user-type: U
+      user-password: ${CARDDEMO_USER_PASSWORD:test-user-secret}

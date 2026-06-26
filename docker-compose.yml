@@ -1,0 +1,159 @@
+# =============================================================================
+# AWS CardDemo - local development & integration-test stack (Docker Compose)
+# =============================================================================
+#
+# Provisions PostgreSQL 16+ for local development and runtime of the CardDemo
+# Spring Boot service (the z/OS COBOL / CICS credit-card system migrated to
+# Java 25 + Spring Boot 3.5.x) and, optionally, the application container built
+# from the repository-root `Dockerfile`.
+#
+# Authority: Agent Action Plan §0.2.1 / §0.3.1 (mandated "docker-compose.yml
+# (CREATE; PostgreSQL 16+ for local/test)"), §0.5.1 (Docker Hub `postgres` 16+,
+# recommend 17/18), §0.6.2 (VSAM-faithful key ordering -> deterministic `C`
+# locale), and §0.6.6 (no hardcoded secrets - environment-supplied with safe
+# local-development defaults only).
+#
+# -----------------------------------------------------------------------------
+# Two run modes
+# -----------------------------------------------------------------------------
+#   1. PostgreSQL only (the common local-dev path - README "Start PostgreSQL
+#      locally"). The `app` is run from your IDE or via `./mvnw spring-boot:run`
+#      against this database:
+#
+#          docker compose up -d                # starts only the `db` service
+#
+#   2. Full stack in containers (README "Run the full stack with Docker"). The
+#      `app` service is opt-in via the `app` Compose profile, so the default
+#      `up` above never forces an application image build:
+#
+#          docker compose --profile app up -d --build
+#
+# Schema ownership: the application manages its schema and reference data with
+# Flyway at startup (migrations under src/main/resources/db/migration). NO DDL
+# is baked into this compose file - Flyway is authoritative.
+#
+# Automated tests do NOT use this file: the JUnit 5 integration suite uses
+# Testcontainers, which starts its own ephemeral PostgreSQL. This stack is for
+# manual local runs and developer/IDE convenience only.
+#
+# -----------------------------------------------------------------------------
+# Credentials & secrets (AAP §0.6.6)
+# -----------------------------------------------------------------------------
+# Every credential below is supplied through environment-variable interpolation
+# with a LOCAL-DEVELOPMENT-ONLY default. These defaults are NOT production
+# secrets and MUST be overridden outside local development (via your shell, a
+# `.env` file, or your orchestrator/secret manager). The database trio resolves
+# either the `POSTGRES_*` or the `CARDDEMO_DB_*` variable (whichever is set),
+# falling back to `carddemo`, so the values stay consistent with the datasource
+# wiring of the `app` service and with what `application.yml` expects for the
+# default profile.
+#
+# -----------------------------------------------------------------------------
+# Parallel-instance safety (only when applicable)
+# -----------------------------------------------------------------------------
+# Independent local clones can share this warmed environment. When a clone needs
+# its OWN isolated database, parameterize the host-global resources so instances
+# never collide on host port or project name (container, network and volume
+# names are automatically namespaced by the Compose project):
+#
+#       export CLONE_INDEX=1
+#       export COMPOSE_PROJECT_NAME="carddemo_${CLONE_INDEX}"
+#       export CARDDEMO_PG_PORT=$((5432 + CLONE_INDEX))   # host port; container stays 5432
+#       docker compose up -d
+#
+# Note: NO obsolete top-level `version:` key is declared - it is ignored by
+# Compose v2 / the Compose Specification.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # db - PostgreSQL 16+ relational store (replaces the legacy VSAM KSDS and
+  #      sequential files). This is the primary, always-on service.
+  # ---------------------------------------------------------------------------
+  db:
+    # PostgreSQL 16 is the supported minimum (AAP §0.5.1); override
+    # POSTGRES_VERSION to adopt a newer tag (e.g. 17 or 18) without editing
+    # this file.
+    image: postgres:${POSTGRES_VERSION:-16}
+    environment:
+      # Database name / user / password. POSTGRES_* is the primary override
+      # (per the agent specification); CARDDEMO_DB_* is accepted as an alias so
+      # the override documented in the README also takes effect. All default to
+      # the local-dev value "carddemo" - NOT a production secret.
+      POSTGRES_DB: ${POSTGRES_DB:-${CARDDEMO_DB_NAME:-carddemo}}
+      POSTGRES_USER: ${POSTGRES_USER:-${CARDDEMO_DB_USER:-carddemo}}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-${CARDDEMO_DB_PASSWORD:-carddemo}}
+      # Deterministic, locale-stable initialization so character-key ordering and
+      # equality match the original VSAM semantics (AAP §0.6.2). Only applied on
+      # first initialization of an empty data volume.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      # Expose 5432 to the host by default for local app runs and IDE access.
+      # Override CARDDEMO_PG_PORT to avoid collisions when several instances run
+      # on one host (the container always listens on 5432 internally).
+      - "${CARDDEMO_PG_PORT:-5432}:5432"
+    volumes:
+      # Persist the database across container restarts/recreates in a named
+      # volume (declared below; namespaced by the Compose project).
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` reports true readiness for connections; `depends_on` of the
+      # app service waits on this condition. Use the resolved user/db so the
+      # probe matches the configured credentials.
+      test:
+        - "CMD-SHELL"
+        - "pg_isready -U ${POSTGRES_USER:-${CARDDEMO_DB_USER:-carddemo}} -d ${POSTGRES_DB:-${CARDDEMO_DB_NAME:-carddemo}}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # app - CardDemo Spring Boot application (opt-in via the `app` profile).
+  #
+  #   Enable with:  docker compose --profile app up -d --build
+  #
+  # Built from the repository-root Dockerfile. Connects to the `db` service over
+  # the Compose-managed network using the service name `db` as the host. No
+  # secrets are baked into the image or this file; all are supplied via the
+  # environment with overridable local-dev defaults (AAP §0.6.6).
+  # ---------------------------------------------------------------------------
+  app:
+    profiles: ["app", "full"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: carddemo:latest
+    depends_on:
+      db:
+        # Start the app only after PostgreSQL reports healthy, so Flyway can
+        # connect and apply migrations on first boot.
+        condition: service_healthy
+    ports:
+      # Spring MVC's embedded server listens on 8080 (see Dockerfile EXPOSE).
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      # Datasource: the host is the `db` service name; the database/user/password
+      # mirror the `db` service exactly so the values stay consistent. Spring
+      # Boot binds these SPRING_DATASOURCE_* variables to spring.datasource.*.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:-${CARDDEMO_DB_NAME:-carddemo}}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-${CARDDEMO_DB_USER:-carddemo}}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-${CARDDEMO_DB_PASSWORD:-carddemo}}
+      # Seed sign-on credentials. Externalized inputs (no hardcoded production
+      # values): these default to the documented demo password and are
+      # BCrypt-hashed by the application at startup. Override outside local dev.
+      CARDDEMO_ADMIN_PASSWORD: ${CARDDEMO_ADMIN_PASSWORD:-PASSWORD}
+      CARDDEMO_USER_PASSWORD: ${CARDDEMO_USER_PASSWORD:-PASSWORD}
+      # Active Spring profile (default profile reads application.yml).
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-default}
+    restart: unless-stopped
+
+# -----------------------------------------------------------------------------
+# Named volumes
+# -----------------------------------------------------------------------------
+volumes:
+  # PostgreSQL data directory. Compose namespaces this by project name (e.g.
+  # "<project>_pgdata"), so independent clones/projects do not collide. Remove
+  # with `docker compose down -v` to reset the local database.
+  pgdata:

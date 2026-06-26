@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ Transaction View screen (transaction CT01, program COTRN01C) — the web
+  ~ equivalent of legacy CICS BMS map COTRN01 / COTRN1A. Read-only detail view
+  ~ of a single transaction, with a single editable "Enter Tran ID" search
+  ~ field. 100% UI parity to the BMS field contract (labels, lengths, colours,
+  ~ read-only vs editable, PF-key legend). Fidelity reference:
+  ~ legacy/app/bms/COTRN01.bms. Plain Thymeleaf only — reuses the shared
+  ~ fragments/layout.html chrome; no component library, no external CSS/JS.
+  ~
+  ~ Binding contract: the form-backing object is exposed in the model as
+  ~ "transactionViewForm" (per AAP §0.4.1) and is an instance of
+  ~ com.aws.carddemo.dto.screen.TranViewScreen. The *{...} selection paths below
+  ~ are the exact JavaBean property names of that DTO (trnIdIn, trnId, cardNum,
+  ~ ttypCd, tcatCd, trnSrc, tDesc, trnAmt, tOrigDt, tProcDt, mid, mName, mCity,
+  ~ mZip, errMsg), verified against TranViewScreen so the view renders and binds
+  ~ correctly. The amount (trnAmt) is a BigDecimal supplied by the service layer;
+  ~ this template performs NO arithmetic or formatting on it (decimal fidelity is
+  ~ owned by the service/util layer per AAP §0.6.1) and only right-aligns it.
+-->
+<html lang="en"
+      xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6">
+
+<!-- Shared <head>: terminal CSS + page title (BMS heading text reused as title). -->
+<head th:replace="~{fragments/layout :: head('View Transaction')}"></head>
+
+<body class="bms-screen">
+
+    <!-- BLITZY [QA-INFO-5 FIX]: keyboard/screen-reader skip-link to jump past the
+         2-line BMS header band to the screen heading/main content. Off-screen until
+         focused (shared .bms-skip-link), so the 24x80 terminal layout is unchanged. -->
+    <a class="bms-skip-link" href="#transaction-view-main">Skip to main content</a>
+
+    <!-- Screen-specific layout helpers (classes only — no inline styles). The
+         shared colour/typography vocabulary lives in fragments/layout.html; this
+         block only positions label/value groups onto the 24x80 BMS line grid and
+         reserves field widths (in ch) matching the BMS LENGTH= of each field. -->
+    <style>
+        /* A single BMS "line": one or more label/value groups, left aligned. */
+        .tv-row {
+            display: flex;
+            align-items: baseline;
+            white-space: nowrap;
+            column-gap: 3ch;
+            margin: 0.15em 0;
+        }
+        /* One label + value pair within a line. */
+        .tv-grp {
+            display: inline-flex;
+            align-items: baseline;
+            column-gap: 1ch;
+        }
+        /* BLUE protected (read-only) data value — mirrors BMS COLOR=BLUE. */
+        .tv-data { color: #5599FF; }
+        /* TRNAMT is a service-supplied monetary value; it is right-aligned to
+           mirror the numeric edited PIC, with NO template arithmetic/formatting. */
+        .tv-amt {
+            display: inline-block;
+            min-width: 12ch;
+            text-align: right;
+        }
+        /* Centred bright heading (BMS line 4 "View Transaction").
+           Native <h1> (QA F4-2): neutralise the browser default h1 sizing so the
+           heading keeps the uniform 16px 3270 cell size and the 24x80 grid is
+           preserved (matches the .av-heading / .admin-menu__heading pattern). */
+        .tv-heading {
+            text-align: center;
+            margin: 0.4em 0;
+            font-size: inherit;
+            line-height: inherit;
+            font-weight: bold;
+        }
+        /* NEUTRAL separator rule (BMS line 8) sized to its 70-char extent. */
+        .tv-sep { color: #C0C0C0; overflow: hidden; }
+        /* Field-width reservations (ch) matching each BMS field LENGTH so the
+           read-only columns line up like the 3270 map. min-width (not width) so
+           longer-than-expected values are never clipped. */
+        .tv-w2  { min-width: 2ch; }
+        .tv-w4  { min-width: 4ch; }
+        .tv-w9  { min-width: 9ch; }
+        .tv-w10 { min-width: 10ch; }
+        .tv-w16 { min-width: 16ch; }
+        .tv-w25 { min-width: 25ch; }
+        .tv-w30 { min-width: 30ch; }
+        .tv-w60 { min-width: 60ch; }
+    </style>
+
+    <!-- BMS lines 1-2: header band. Tran=CT01, Prog=COTRN01C, centred title in
+         YELLOW; Date/Time fall back to the current date/time inside the fragment. -->
+    <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CT01', 'COTRN01C')}"></div>
+
+    <!-- BMS line 4: screen heading (NEUTRAL bright, centred).
+         BLITZY [QA-F4-2 FIX]: now a native <h1> (was a non-semantic <div>) so
+         document.querySelectorAll('h1,h2') sees it and screen-reader heading
+         navigation works (WCAG 1.3.1 / 2.4.6). The .tv-heading CSS reset keeps the
+         uniform 16px 3270 cell size. Also the INFO-5 skip-link target. -->
+    <h1 id="transaction-view-main" class="bms-heading tv-heading">View Transaction</h1>
+
+    <!-- Single screen form: carries the editable search Tran ID and the pressed
+         PF key back to the controller. Read-only detail fields are bound for
+         display only (th:text) and are not submitted. -->
+    <form th:object="${transactionViewForm}" method="post" th:action="@{/transaction-view}">
+
+        <!-- BMS line 6: 'Enter Tran ID:' (TURQUOISE prompt) + TRNIDIN
+             (GREEN, UNPROT, IC=initial cursor, HILIGHT=UNDERLINE). The only
+             editable field. maxlength/size = BMS LENGTH (16). -->
+        <div class="tv-row">
+            <span class="tv-grp">
+                <label for="trnIdIn" class="bms-prompt">Enter Tran ID:</label>
+                <input type="text"
+                       th:field="*{trnIdIn}"
+                       class="bms-input tv-w16"
+                       maxlength="16"
+                       size="16"
+                       autofocus="autofocus"
+                       autocomplete="off" />
+            </span>
+        </div>
+
+        <!-- BMS line 8: 70-character NEUTRAL separator rule (decorative). -->
+        <div class="tv-sep" aria-hidden="true">----------------------------------------------------------------------</div>
+
+        <!-- BMS line 10: Transaction ID (16) + Card Number (16) — read-only BLUE. -->
+        <div class="tv-row">
+            <span class="tv-grp">
+                <span class="bms-prompt">Transaction ID:</span>
+                <span class="tv-data tv-w16" th:text="*{trnId}"></span>
+            </span>
+            <span class="tv-grp">
+                <span class="bms-prompt">Card Number:</span>
+                <span class="tv-data tv-w16" th:text="*{cardNum}"></span>
+            </span>
+        </div>
+
+        <!-- BMS line 12: Type CD (2) + Category CD (4) + Source (10) — read-only BLUE. -->
+        <div class="tv-row">
+            <span class="tv-grp">
+                <span class="bms-prompt">Type CD:</span>
+                <span class="tv-data tv-w2" th:text="*{ttypCd}"></span>
+            </span>
+            <span class="tv-grp">
+                <span class="bms-prompt">Category CD:</span>
+                <span class="tv-data tv-w4" th:text="*{tcatCd}"></span>
+            </span>
+            <span class="tv-grp">
+                <span class="bms-prompt">Source:</span>
+                <span class="tv-data tv-w10" th:text="*{trnSrc}"></span>
+            </span>
+        </div>
+
+        <!-- BMS line 14: Description (60) — read-only BLUE. -->
+        <div class="tv-row">
+            <span class="tv-grp">
+                <span class="bms-prompt">Description:</span>
+                <span class="tv-data tv-w60" th:text="*{tDesc}"></span>
+            </span>
+        </div>
+
+        <!-- BMS line 16: Amount (12, service-supplied, right-aligned, no template
+             math) + Orig Date (10) + Proc Date (10) — read-only BLUE. -->
+        <div class="tv-row">
+            <span class="tv-grp">
+                <span class="bms-prompt">Amount:</span>
+                <span class="tv-data tv-amt" th:text="*{trnAmt}"></span>
+            </span>
+            <span class="tv-grp">
+                <span class="bms-prompt">Orig Date:</span>
+                <span class="tv-data tv-w10" th:text="*{tOrigDt}"></span>
+            </span>
+            <span class="tv-grp">
+                <span class="bms-prompt">Proc Date:</span>
+                <span class="tv-data tv-w10" th:text="*{tProcDt}"></span>
+            </span>
+        </div>
+
+        <!-- BMS line 18: Merchant ID (9) + Merchant Name (30) — read-only BLUE. -->
+        <div class="tv-row">
+            <span class="tv-grp">
+                <span class="bms-prompt">Merchant ID:</span>
+                <span class="tv-data tv-w9" th:text="*{mid}"></span>
+            </span>
+            <span class="tv-grp">
+                <span class="bms-prompt">Merchant Name:</span>
+                <span class="tv-data tv-w30" th:text="*{mName}"></span>
+            </span>
+        </div>
+
+        <!-- BMS line 20: Merchant City (25) + Merchant Zip (10) — read-only BLUE. -->
+        <div class="tv-row">
+            <span class="tv-grp">
+                <span class="bms-prompt">Merchant City:</span>
+                <span class="tv-data tv-w25" th:text="*{mCity}"></span>
+            </span>
+            <span class="tv-grp">
+                <span class="bms-prompt">Merchant Zip:</span>
+                <span class="tv-data tv-w10" th:text="*{mZip}"></span>
+            </span>
+        </div>
+
+        <!-- BMS line 23: ERRMSG (RED, bright). Shared messages fragment renders
+             the error row (and an optional info row).
+             BLITZY [QA-DEFECT#1 FIX]: TranViewService sets the message on the bound
+             screen DTO (screen.setErrMsg(), incl. the "Transaction ID NOT found..."
+             not-found message), not a top-level model attribute, so ${errMsg} rendered
+             empty (silent dead-end on read). Consume it under the form-scoped effective
+             pattern. TranView has no infoMsg field, so info keeps ${infoMsg}. -->
+        <div th:replace="~{fragments/layout :: messages(${transactionViewForm?.errMsg ?: errMsg}, ${infoMsg})}"></div>
+
+        <!-- BMS line 24: PF-key legend (YELLOW) rendered as functional submit
+             buttons. ENTER=Fetch is first so an implicit Enter submit in the
+             search field activates it. name="pfKey" carries the action key. -->
+        <div class="bms-footer bms-pfkey">
+            <button type="submit" name="pfKey" value="ENTER">ENTER=Fetch</button>
+            <button type="submit" name="pfKey" value="PF3">F3=Back</button>
+            <button type="submit" name="pfKey" value="PF4">F4=Clear</button>
+            <button type="submit" name="pfKey" value="PF5">F5=Browse Tran.</button>
+        </div>
+
+    </form>
+
+</body>
+</html>

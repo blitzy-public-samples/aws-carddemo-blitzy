@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ bill-pay.html - Web (Thymeleaf) equivalent of the legacy CICS BMS map
+  ~ COBIL00 / COBIL0A (CICS transaction CB00, program COBIL00C): the Bill
+  ~ Payment screen used to pay an account's current balance in full. Rendered
+  ~ with 100% field / colour / PF-key parity to the BMS field contract in
+  ~ legacy/app/bms/COBIL00.bms (field position, length, attribute, colour and
+  ~ initial value), per AAP 0.3.4 and 0.6.1. The shared 24x80 terminal chrome
+  ~ (head + CSS, header band, message line) is reused from fragments/layout.html.
+  ~ Plain Thymeleaf only - no thymeleaf-layout-dialect, no component library,
+  ~ no external CSS/JS.
+  ~
+  ~ FORM-BINDING CONTRACT (fulfilled by web.BillPayController +
+  ~ service.online.BillPayService): the controller exposes a model attribute
+  ~ named "billPayForm" whose runtime type is
+  ~ com.aws.carddemo.dto.screen.BillPayScreen. This template binds only the
+  ~ map's editable / displayed fields (BMS name -> BillPayScreen property,
+  ~ BMS LENGTH in parentheses):
+  ~     ACTIDIN -> actIdIn(11)   [editable input]
+  ~     CURBAL  -> curBal        [read-only display; java.math.BigDecimal, scale 2]
+  ~     CONFIRM -> confirm(1)    [editable input, Y/N]
+  ~     ERRMSG  -> errMsg(78)    [message line]
+  ~ CURBAL is a scale-2 BigDecimal (AAP 0.6.1 - never float/double); it is the
+  ~ service's responsibility to set it at the intended monetary scale. This view
+  ~ renders it verbatim with th:text and performs NO arithmetic / formatting in
+  ~ the template. The header date/time (curDate / curTime / title2) come from
+  ~ separate model attributes resolved inside the shared header fragment.
+  ~ Submitting any PF key posts the request parameter pfKey = ENTER | PF3 | PF4,
+  ~ on which BillPayController branches (ENTER=continue/confirm, PF3=back,
+  ~ PF4=clear), reproducing the CCARD-AID-* routing of the CICS program.
+-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6">
+
+<!-- Shared <head>: meta + 3270 terminal CSS that defines the .bms-* colour and
+     24x80 monospace grid classes used throughout this template. th:replace swaps
+     in the layout fragment in its entirety. -->
+<head th:replace="~{fragments/layout :: head('Bill Payment')}"></head>
+
+<body>
+
+<!--
+  Screen-scoped layout helpers ONLY. The colour vocabulary and 24x80 monospace
+  grid are defined once in fragments/layout.html; the rules below merely arrange
+  the COBIL0A field rows, render the BMS line-8 separator in YELLOW (matching the
+  mapset's COLOR=YELLOW), and right-align the displayed balance. These are not
+  inline styles and introduce no third-party library.
+-->
+<style>
+    /* Visually-hidden skip link; revealed on keyboard focus (invisible a11y). */
+    .bms-skip {
+        position: absolute;
+        inline-size: 1px;
+        block-size: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+    .bms-skip:focus {
+        position: static;
+        inline-size: auto;
+        block-size: auto;
+        clip-path: none;
+        color: #FFFF00;
+    }
+    /* BMS line 4 heading ("Bill Payment", BRT NEUTRAL) - centred on the row. */
+    .bms-screen-title {
+        font-size: inherit;
+        font-weight: bold;
+        margin-block: 0.5em 0.75em;
+        margin-inline: 0;
+        text-align: center;
+    }
+    /* One BMS line: keep a label + its field(s) together on a single 80-col row. */
+    .bms-line {
+        margin-block: 0.4em;
+        white-space: nowrap;
+    }
+    .bms-line > label { margin-inline-end: 0.5ch; }
+    .bms-line > .bms-input { margin-inline-end: 2ch; }
+    /* BMS line 8 separator rule - COLOR=YELLOW, length 70 in the mapset. The
+       yellow (#FFFF00) is the same palette value used by .bms-title/.bms-footer
+       in fragments/layout.html, so no new colour is introduced. */
+    .bms-rule {
+        color: #FFFF00;
+        margin-block: 0.4em;
+        overflow: hidden;
+        white-space: nowrap;
+    }
+    /* CURBAL is an edited numeric (PIC X(14)) shown right-aligned in its field
+       width; .bms-label (from the layout) supplies the BMS BLUE colour. */
+    .bms-balance {
+        display: inline-block;
+        min-inline-size: 14ch;
+        text-align: right;
+    }
+    .bms-confirm > label { margin-inline-end: 0.5ch; }
+    .bms-confirm > .bms-input { margin-inline-end: 0.75ch; }
+</style>
+
+<!-- Skip-navigation link (invisible a11y; first focusable element). -->
+<a class="bms-skip" href="#main-content">Skip to main content</a>
+
+<!-- The whole 24x80 screen is one monospace, fixed-width terminal block. -->
+<main id="main-content" class="bms-screen">
+
+    <!-- BMS lines 1-2: header band via the shared fragment.
+         L1  'Tran:' + TRNNAME(CB00) + TITLE01(yellow, centred) + 'Date:' + CURDATE
+         L2  'Prog:' + PGMNAME(COBIL00C) + TITLE02(yellow) + 'Time:' + CURTIME
+         The fragment fills CURDATE/CURTIME from the model (or the current
+         date/time when absent), mirroring the program-populated BMS fields. -->
+    <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization','CB00','COBIL00C')}"></div>
+
+    <!-- BMS line 4: screen heading ('Bill Payment'). -->
+    <h1 class="bms-heading bms-screen-title">Bill Payment</h1>
+
+    <!-- Bill-payment form, bound to the BillPayScreen DTO ('billPayForm').
+         method=post; the service performs all validation (server-side parity
+         with the CICS program), so no client-side constraints are imposed. -->
+    <form th:object="${billPayForm}" method="post" th:action="@{/bill-pay}"
+          autocomplete="off" novalidate="novalidate">
+
+        <!-- BMS line 6: account-id entry. ACTIDIN - BMS UNPROT, GREEN, length 11,
+             ATTRB=IC (initial cursor) -> autofocus; HILIGHT=UNDERLINE is supplied
+             by the .bms-input bottom border. The 'Enter Acct ID:' literal is the
+             exact BMS INITIAL value. -->
+        <div class="bms-line">
+            <label for="actIdIn" class="bms-prompt">Enter Acct ID:</label>
+            <input type="text" id="actIdIn" th:field="*{actIdIn}"
+                   class="bms-input" maxlength="11" size="11"
+                   autofocus="autofocus" />
+        </div>
+
+        <!-- BMS line 8: separator rule (70 characters, COLOR=YELLOW). Decorative,
+             so hidden from assistive technology. -->
+        <div class="bms-rule" aria-hidden="true">----------------------------------------------------------------------</div>
+
+        <!-- BMS line 11: current balance. Prompt 'Your current balance is:'
+             (TURQUOISE) + CURBAL (BLUE, ASKIP / protected display). CURBAL is
+             read-only: rendered with th:text from the pre-set scale-2 BigDecimal
+             (NO template arithmetic), right-aligned in its 14-char field. -->
+        <div class="bms-line">
+            <span class="bms-prompt">Your current balance is:</span>
+            <span class="bms-label bms-balance" th:text="*{curBal}">0.00</span>
+        </div>
+
+        <!-- BMS line 15: payment confirmation. Prompt 'Do you want to pay your
+             balance now. Please confirm:' (TURQUOISE) + CONFIRM (BMS UNPROT,
+             GREEN, length 1) + '(Y/N)' hint (NEUTRAL -> .bms-sep). -->
+        <div class="bms-line bms-confirm">
+            <label for="confirm" class="bms-prompt">Do you want to pay your balance now. Please confirm:</label>
+            <input type="text" id="confirm" th:field="*{confirm}"
+                   class="bms-input" maxlength="1" size="1"
+                   aria-describedby="confirm-hint" />
+            <span id="confirm-hint" class="bms-sep">(Y/N)</span>
+        </div>
+
+        <!-- BMS line 23: message band - ERRMSG (red, bright) / optional INFOMSG.
+             Resolves the effective error from, in order: the model ${errMsg},
+             then the form's errMsg. Wrapped in role="alert" so assistive
+             technology announces validation failures (invisible a11y). -->
+        <div role="alert"
+             th:with="effErr=${!#strings.isEmpty(errMsg)
+                                ? errMsg
+                                : (billPayForm != null and !#strings.isEmpty(billPayForm.errMsg)
+                                    ? billPayForm.errMsg : '')}">
+            <div th:replace="~{fragments/layout :: messages(${effErr}, ${infoMsg})}"></div>
+        </div>
+
+        <!-- BMS line 24: PF-key legend, rendered as functional submit buttons so
+             the single yellow line-24 row is both the BMS legend AND the
+             interactive AID control (parity: no phantom extra row). Each AID key
+             posts pfKey, on which BillPayController branches. ENTER is first in
+             document order, so the browser's default Enter-key submit maps to the
+             3270 ENTER. Styled by the layout's .bms-footer / .bms-pfkey classes. -->
+        <div class="bms-footer bms-pfkey">
+            <button type="submit" name="pfKey" value="ENTER">ENTER=Continue</button>
+            <button type="submit" name="pfKey" value="PF3">F3=Back</button>
+            <button type="submit" name="pfKey" value="PF4">F4=Clear</button>
+        </div>
+
+    </form>
+
+</main>
+
+</body>
+</html>

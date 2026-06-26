@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ Transaction List screen — web equivalent of CICS BMS map COTRN00 / COTRN0A
+  ~ (transaction CT00, program COTRN00C). Renders a paged list of transactions
+  ~ with a search-by-id field, a 10-row selection grid, and ENTER/F3/F7/F8
+  ~ PF-key actions. Fidelity reference (mirrored exactly): legacy/app/bms/COTRN00.bms.
+  ~
+  ~ The command object bound as ${transactionListForm} is a
+  ~ com.aws.carddemo.dto.screen.TranListScreen (the per-screen request/response
+  ~ contract, AAP §0.4.1); property paths below match that DTO exactly
+  ~ (pageNum, trnIdIn, rows[].{sel,trnId,tDate,tDesc,tAmt}, errMsg).
+  ~
+  ~ Reuses the shared 3270 chrome from fragments/layout.html. Plain Thymeleaf
+  ~ only — no component library, no external CSS/JS.
+-->
+<html lang="en"
+      xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6">
+
+<!-- Shared head: terminal CSS + 24x80 monospace grid (replaces this element). -->
+<head th:replace="~{fragments/layout :: head('List Transactions')}"></head>
+
+<body>
+<!--/* BLITZY [QA-INFO-5 FIX]: keyboard skip-link to bypass the header band and jump
+       straight to the main 24x80 screen content. Visually hidden off-canvas until
+       focused (see .bms-skip-link in the shared layout fragment); revealed on Tab. */-->
+<a class="bms-skip-link" href="#transaction-list-main">Skip to main content</a>
+<div class="bms-screen">
+
+    <!-- Screen-specific layout for COTRN00 (Transaction List). The shared
+         fragments/layout.html supplies the 3270 colour palette and the fixed
+         24x80 monospace grid (.bms-screen, .bms-label, .bms-input, .bms-heading,
+         .bms-prompt, .bms-error, .bms-footer, .bms-pfkey, .bms-sep). This block
+         adds ONLY the table geometry needed to reproduce the COTRN00 column map
+         and the right-aligned Amount column. No third-party CSS. -->
+    <style>
+        /* Line 4 heading row: centred screen title + right-aligned page number. */
+        .bms-list-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            white-space: nowrap;
+        }
+        .bms-list-title {
+            flex: 1 1 auto;
+            text-align: center;
+            font-size: inherit;
+            font-weight: bold;
+            margin: 0;
+        }
+        /* Line 6 search prompt + input on a single line. */
+        .bms-search-line { margin-block: 0.4em; white-space: nowrap; }
+        .bms-search-line label { margin-inline-end: 1ch; }
+        /* Lines 8-19 transaction grid. Column widths (ch) mirror the BMS field
+           lengths: Sel=3, Transaction ID=16, Date=8, Description=26, Amount=12. */
+        .bms-tran-table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-block: 0.25em;
+        }
+        .bms-tran-table th,
+        .bms-tran-table td {
+            padding-block: 0;
+            padding-inline: 0 1ch;
+            text-align: start;
+            white-space: nowrap;
+            vertical-align: top;
+        }
+        .bms-col-sel    { width: 4ch;  }
+        .bms-col-tranid { width: 17ch; }
+        .bms-col-date   { width: 9ch;  }
+        .bms-col-desc   { width: 27ch; }
+        .bms-col-amt    { width: 13ch; }
+        /* Right-align the Amount column (higher specificity than the generic
+           cell rule above so the alignment is not overridden). */
+        .bms-tran-table .bms-col-amt { text-align: end; }
+        /* Per-row selection input (BMS SEL000#, single-character editable). */
+        .bms-row-input { width: 2ch; text-align: center; padding: 0; }
+        /* Line 21 usage instruction. */
+        .bms-instruction { margin-block-start: 0.5em; }
+        /* Standard screen-reader-only helper (no visual footprint). Used to give
+           the transaction grid a table-level accessible description (caption),
+           matching the card-list and user-list screens. */
+        .ct00-visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            margin: -1px;
+            padding: 0;
+            border: 0;
+            clip: rect(0 0 0 0);
+            clip-path: inset(50%);
+            overflow: hidden;
+            white-space: nowrap;
+        }
+    </style>
+
+    <!-- ============================ BMS lines 1-2 ============================
+         Header band: Tran:/CT00 + centred title + Date  /  Prog:/COTRN00C + Time.
+         curDate/curTime/title2 are supplied by the layout fragment (model
+         attributes with a live date/time fallback). -->
+    <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CT00', 'COTRN00C')}"></div>
+
+    <main id="transaction-list-main">
+        <!-- All interactive fields bind to the transactionListForm command object
+             (a TranListScreen). The screen is pseudo-conversational (mirrors
+             COTRN00C): a POST carries the chosen PF-key action and the per-row
+             selection flags back to the controller. -->
+        <form th:object="${transactionListForm}" method="post" th:action="@{/transaction-list}">
+
+            <!-- BLITZY [QA-F4-5 FIX]: Round-trip the pseudo-conversational paging
+                 cursors. COTRN00C carries CDEMO-CT00-INFO (TRNID-FIRST, TRNID-LAST,
+                 PAGE-NUM, NEXT-PAGE-FLG) in its COMMAREA across each RECEIVE/SEND
+                 cycle; the TranListScreen DTO mirrors that group with pageNumValue,
+                 nextPageYes, trnIdFirst and trnIdLast (documented as "carried here
+                 as hidden round-tripped fields"). Without these hidden inputs the
+                 fields bind to defaults (0/false/null) on every POST, so
+                 TranListService.processPf8Key always sees nextPageYes=false (=>
+                 "already at the bottom") and processPf7Key always sees
+                 pageNumValue<=1 (=> "already at the top"), leaving the user stuck on
+                 page 1. Emitting them here restores the COMMAREA cursor parity used
+                 by the sibling Card List / User List screens. The controller stores
+                 only CardDemoCommarea in session (cursors are intentionally NOT in
+                 COMMAREA), so the round-trip happens through the form, exactly as the
+                 DTO contract specifies. -->
+            <input type="hidden" th:field="*{pageNumValue}" />
+            <input type="hidden" th:field="*{nextPageYes}" />
+            <input type="hidden" th:field="*{trnIdFirst}" />
+            <input type="hidden" th:field="*{trnIdLast}" />
+            <!-- Round-trip the display page-number too (the eight-digit PAGENUM string,
+                 distinct from the integer pageNumValue used by the paging logic). The
+                 boundary guards return without re-setting it, so persisting it here keeps
+                 the "Page:" indicator populated on an "already at the top/bottom"
+                 redisplay, mirroring the sibling Card List (pageNo) and User List
+                 (pageNum) round-trips. -->
+            <input type="hidden" th:field="*{pageNum}" />
+
+            <!-- ========================== BMS line 4 ==========================
+                 'List Transactions' heading (neutral, bright) + 'Page:' (turquoise)
+                 + PAGENUM (blue, display-only). -->
+            <div class="bms-list-head">
+                <h1 class="bms-heading bms-list-title">List Transactions</h1>
+                <span class="bms-hside">
+                    <span class="bms-prompt">Page: </span>
+                    <span class="bms-label" th:text="*{pageNum}">1</span>
+                </span>
+            </div>
+
+            <!-- ========================== BMS line 6 ==========================
+                 Search by Transaction ID (TRNIDIN, green editable, max 16). -->
+            <div class="bms-search-line">
+                <label class="bms-prompt" for="trnIdIn">Search Tran ID:</label>
+                <input type="text" class="bms-input"
+                       th:field="*{trnIdIn}"
+                       maxlength="16" size="16" autocomplete="off" />
+            </div>
+
+            <!-- ======================= BMS lines 8-19 =========================
+                 Column headings + up to 10 transaction rows. Only the Sel cell is
+                 editable (BMS UNPROT, green); Transaction ID / Date / Description /
+                 Amount are protected display fields (BMS ASKIP, blue) rendered as
+                 read-only text. The Amount value (TranListRow.tAmt, BigDecimal scale
+                 2 set by the service) is rendered verbatim — the template performs
+                 NO arithmetic or formatting and only right-aligns it. -->
+            <table class="bms-tran-table">
+                <caption class="ct00-visually-hidden">
+                    List of transactions. Type S in the Select column next to a transaction and press
+                    Enter to view it. Use F7 and F8 to page backward and forward.
+                </caption>
+                <thead>
+                    <tr class="bms-heading">
+                        <th scope="col" class="bms-col-sel">Sel</th>
+                        <th scope="col" class="bms-col-tranid">Transaction ID</th>
+                        <th scope="col" class="bms-col-date">Date</th>
+                        <th scope="col" class="bms-col-desc">Description</th>
+                        <th scope="col" class="bms-col-amt">Amount</th>
+                    </tr>
+                    <!-- BMS line 9 dash separators (decorative; hidden from AT). -->
+                    <tr class="bms-sep" aria-hidden="true">
+                        <td class="bms-col-sel">---</td>
+                        <td class="bms-col-tranid">----------------</td>
+                        <td class="bms-col-date">--------</td>
+                        <td class="bms-col-desc">--------------------------</td>
+                        <td class="bms-col-amt">------------</td>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Iterate the page list, capped at 10 physical rows (BMS rows
+                         10-19). A null/short list simply yields fewer rows. -->
+                    <tr th:each="row,stat : *{rows}" th:if="${stat.index} &lt; 10">
+                        <td class="bms-col-sel">
+                            <!-- BLITZY [A11Y]: BMS SEL000# is a single-character field
+                                 (LENGTH=1); the 2ch input is below the WCAG 44x44px
+                                 touch-target minimum. Implemented per BMS parity and
+                                 flagged for designer review (do not silently enlarge). -->
+                            <input type="text" class="bms-input bms-row-input"
+                                   th:field="*{rows[__${stat.index}__].sel}"
+                                   th:attr="aria-label='Select transaction on row ' + ${stat.count}"
+                                   maxlength="1" size="1" autocomplete="off" />
+                            <!-- BLITZY [QA-DEFECT#2 FIX]: COTRN00C drill-down requires
+                                 the per-row TRAN-ID to be submitted with the selection
+                                 flag so processEnterKey can route to /transaction-view
+                                 for the selected row. The TRAN-ID cell below is
+                                 display-only (th:text), so without this hidden field
+                                 the bound row's trnId is null and the navigation guard
+                                 fails, silently re-rendering the list. Round-trip the
+                                 key here. -->
+                            <input type="hidden"
+                                   th:field="*{rows[__${stat.index}__].trnId}" />
+                            <!-- BLITZY [QA-F4-5 FIX]: Round-trip the rest of the row's
+                                 display data (date, description, amount) exactly as the
+                                 sibling Card List screen round-trips acctNo + crdNum.
+                                 COTRN00C retains the displayed page in working storage and
+                                 re-sends it on a boundary key press WITHOUT re-reading the
+                                 file (PROCESS-PF7/PF8-KEY check NEXT-PAGE-FLG / PAGE-NUM
+                                 before any STARTBR; the TranListService boundary guards
+                                 likewise perform no browse, a behavior pinned by
+                                 TranListServiceTest's verifyNoInteractions assertions).
+                                 Persisting these fields here reproduces that working-storage
+                                 retention so an "already at the top/bottom" redisplay keeps
+                                 the full row data on screen (no blanked detail columns),
+                                 matching COBOL and the Card List "no broken rows" behavior.
+                                 The JavaBeans property names are TDate/TDesc/TAmt (the
+                                 getters are getTDate/getTDesc/getTAmt; per the JavaBeans
+                                 spec a name whose first two letters are both upper-case is
+                                 left un-decapitalized), so the binding paths must use that
+                                 exact casing for the data binder to write them back. -->
+                            <input type="hidden"
+                                   th:field="*{rows[__${stat.index}__].TDate}" />
+                            <input type="hidden"
+                                   th:field="*{rows[__${stat.index}__].TDesc}" />
+                            <input type="hidden"
+                                   th:field="*{rows[__${stat.index}__].TAmt}" />
+                        </td>
+                        <td class="bms-col-tranid bms-label"
+                            th:text="${row.trnId}">0000000000000000</td>
+                        <td class="bms-col-date bms-label"
+                            th:text="${row.tDate}">mm/dd/yy</td>
+                        <td class="bms-col-desc bms-label"
+                            th:text="${row.tDesc}">Description</td>
+                        <td class="bms-col-amt bms-label"
+                            th:text="${row.tAmt}">0.00</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- ========================== BMS line 21 =========================
+                 Usage instruction (neutral, bright) — verbatim from the BMS map. -->
+            <div class="bms-instruction bms-heading">Type 'S' to View Transaction details from the list</div>
+
+            <!-- ========================== BMS line 23 =========================
+                 ERRMSG (red) via the shared layout messages fragment. errMsg is a
+                 field on the bound TranListScreen; this screen has no info line. -->
+            <div th:replace="~{fragments/layout :: messages(*{errMsg}, null)}"></div>
+
+            <!-- ========================== BMS line 24 =========================
+                 PF-key legend rendered as functional submit buttons. The chosen key
+                 posts as name="pfKey" so the controller branches exactly as COTRN00C
+                 did on EIBAID: ENTER=Continue, F3=Back, F7=Backward, F8=Forward.
+                 Styled yellow by the layout's .bms-pfkey rule to read as the terminal
+                 legend rather than OS buttons. -->
+            <div class="bms-footer bms-pfkey">
+                <button type="submit" name="pfKey" value="ENTER">ENTER=Continue</button>
+                <button type="submit" name="pfKey" value="PF3">F3=Back</button>
+                <button type="submit" name="pfKey" value="PF7">F7=Backward</button>
+                <button type="submit" name="pfKey" value="PF8">F8=Forward</button>
+            </div>
+
+        </form>
+    </main>
+</div>
+</body>
+</html>

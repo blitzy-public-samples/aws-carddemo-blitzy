@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ Transaction Add screen (CICS transaction CT02, program COTRN02C).
+  ~ Web equivalent of the legacy BMS mapset COTRN02 / map COTRN2A
+  ~ (legacy/app/bms/COTRN02.bms), rendered with 100% field / colour / PF-key
+  ~ parity (AAP 0.3.4, 0.6.1). The shared 24x80 terminal chrome (head + CSS,
+  ~ header band, message line) is reused from fragments/layout.html. Plain
+  ~ Thymeleaf only - no component library, no external CSS/JS.
+  ~
+  ~ FORM-BINDING CONTRACT (fulfilled by web.TranAddController +
+  ~ service.online.TranAddService): the controller exposes a model attribute
+  ~ named "transactionAddForm" (the TranAddScreen DTO) whose canonical COBOL-derived
+  ~ properties map 1:1 to the COTRN2A input fields (BMS name -> property, BMS LENGTH
+  ~ in parentheses):
+  ~     ACTIDIN -> actIdIn(11)         CARDNIN -> cardNin(16)
+  ~     TTYPCD  -> ttypCd(2)           TCATCD  -> tcatCd(4)
+  ~     TRNSRC  -> trnSrc(10)          TDESC   -> TDesc(60)
+  ~     TRNAMT  -> trnAmt(12)          TORIGDT -> TOrigDt(10)
+  ~     TPROCDT -> TProcDt(10)         MID     -> mid(9)
+  ~     MNAME   -> MName(30)           MCITY   -> MCity(25)
+  ~     MZIP    -> MZip(10)            CONFIRM -> confirm(1)
+  ~ The amount field is captured as raw text here (no template arithmetic);
+  ~ the service parses it to a java.math.BigDecimal at scale 2 with truncation
+  ~ (RoundingMode.DOWN) per AAP 0.6.1. The message line (ERRMSG) and the header
+  ~ date/time come from the separate model attributes errMsg / infoMsg and
+  ~ curDate / curTime / title2. Submitting any PF key posts the request
+  ~ parameter pfKey = ENTER | PF3 | PF4 | PF5, on which the controller branches.
+-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6">
+
+<!-- Shared head + terminal palette/typography (BMS chrome). -->
+<head th:replace="~{fragments/layout :: head('Add Transaction')}">
+    <meta charset="UTF-8" />
+    <title>Add Transaction</title>
+</head>
+
+<body>
+
+<!--
+  Screen-scoped layout helpers ONLY. The colour vocabulary and 24x80 monospace
+  grid are defined once in fragments/layout.html; the rules below merely arrange
+  the COTRN2A field rows and keep the amount right-aligned. These are not inline
+  styles and introduce no third-party library.
+-->
+<style>
+    /* Visually-hidden skip link; revealed on keyboard focus. */
+    .bms-skip {
+        position: absolute;
+        inline-size: 1px;
+        block-size: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+    .bms-skip:focus {
+        position: static;
+        inline-size: auto;
+        block-size: auto;
+        clip-path: none;
+        color: #FFFF00;
+    }
+    /* BMS line 4 heading ("Add Transaction", BRT NEUTRAL). */
+    .bms-screen-title {
+        font-size: inherit;
+        font-weight: bold;
+        margin-block: 0.5em 0.75em;
+        margin-inline: 0;
+        text-align: center;
+    }
+    /* One BMS line: keep label + field(s) on a single 80-col row. */
+    .bms-line {
+        margin-block: 0.25em;
+        white-space: nowrap;
+    }
+    .bms-line > label { margin-inline-end: 0.5ch; }
+    .bms-line > .bms-input { margin-inline-end: 2ch; }
+    .bms-line > .bms-sep { margin-inline-end: 2ch; }
+    /* BMS line 8 separator rule. */
+    .bms-rule {
+        margin-block: 0.4em;
+        overflow: hidden;
+        white-space: nowrap;
+    }
+    /* Amount / dates row (BMS lines 14-15): stack each entry hint under its
+       field so the (-99999999.99) / (YYYY-MM-DD) literals sit on the line
+       below, exactly as COTRN2A renders them. */
+    .bms-field {
+        display: inline-flex;
+        flex-direction: column;
+        vertical-align: top;
+        margin-inline-end: 2.5ch;
+    }
+    .bms-field-line { white-space: nowrap; }
+    .bms-field-line > label { margin-inline-end: 0.5ch; }
+    .bms-hint { font-size: 0.95em; margin-block-start: 0.1em; }
+    /* Monetary field is right-aligned (PIC S9(09)V99 edited entry). */
+    .bms-amount { text-align: right; }
+    .bms-confirm > label { margin-inline-end: 0.5ch; }
+    .bms-confirm > .bms-input { margin-inline-end: 0.75ch; }
+</style>
+
+<a class="bms-skip" href="#main-content">Skip to main content</a>
+
+<main id="main-content" class="bms-screen">
+
+    <!-- BMS lines 1-2: header band (Tran: CT02 / Prog: COTRN02C / title / date / time). -->
+    <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization','CT02','COTRN02C')}"></div>
+
+    <!-- BMS line 4: screen heading. -->
+    <h1 class="bms-heading bms-screen-title">Add Transaction</h1>
+
+    <!-- Add-transaction form. method=post; the service performs all validation
+         (server-side parity with the CICS program), so no client constraints. -->
+    <form th:object="${transactionAddForm}" method="post"
+          th:action="@{/transaction-add}" autocomplete="off" novalidate="novalidate">
+
+        <!-- BMS line 6: key input - account number (or) card number. -->
+        <div class="bms-line">
+            <label for="actIdIn" class="bms-prompt">Enter Acct #:</label>
+            <input type="text" id="actIdIn" th:field="*{actIdIn}"
+                   class="bms-input" maxlength="11" size="11" />
+            <span class="bms-sep">(or)</span>
+            <label for="cardNin" class="bms-prompt">Card #:</label>
+            <input type="text" id="cardNin" th:field="*{cardNin}"
+                   class="bms-input" maxlength="16" size="16" />
+        </div>
+
+        <!-- BMS line 8: separator rule (70 characters, NEUTRAL). -->
+        <div class="bms-rule bms-sep" aria-hidden="true">----------------------------------------------------------------------</div>
+
+        <!-- BMS line 10: type code / category code / source. -->
+        <div class="bms-line">
+            <label for="ttypCd" class="bms-prompt">Type CD:</label>
+            <input type="text" id="ttypCd" th:field="*{ttypCd}"
+                   class="bms-input" maxlength="2" size="2" />
+            <label for="tcatCd" class="bms-prompt">Category CD:</label>
+            <input type="text" id="tcatCd" th:field="*{tcatCd}"
+                   class="bms-input" maxlength="4" size="4" />
+            <label for="trnSrc" class="bms-prompt">Source:</label>
+            <input type="text" id="trnSrc" th:field="*{trnSrc}"
+                   class="bms-input" maxlength="10" size="10" />
+        </div>
+
+        <!-- BMS line 12: description. -->
+        <div class="bms-line">
+            <label for="TDesc" class="bms-prompt">Description:</label>
+            <input type="text" id="TDesc" th:field="*{TDesc}"
+                   class="bms-input" maxlength="60" size="60" />
+        </div>
+
+        <!-- BMS lines 14-15: amount / orig date / proc date, each carrying its
+             entry-format hint (BLUE) on the line below, per COTRN2A. -->
+        <div class="bms-line">
+            <span class="bms-field">
+                <span class="bms-field-line">
+                    <label for="trnAmt" class="bms-prompt">Amount:</label>
+                    <input type="text" id="trnAmt" th:field="*{trnAmt}"
+                           class="bms-input bms-amount" maxlength="12" size="12"
+                           inputmode="decimal" aria-describedby="amount-hint" />
+                </span>
+                <span id="amount-hint" class="bms-hint bms-label">(-99999999.99)</span>
+            </span>
+            <span class="bms-field">
+                <span class="bms-field-line">
+                    <label for="TOrigDt" class="bms-prompt">Orig Date:</label>
+                    <input type="text" id="TOrigDt" th:field="*{TOrigDt}"
+                           class="bms-input" maxlength="10" size="10"
+                           aria-describedby="originDate-hint" />
+                </span>
+                <span id="originDate-hint" class="bms-hint bms-label">(YYYY-MM-DD)</span>
+            </span>
+            <span class="bms-field">
+                <span class="bms-field-line">
+                    <label for="TProcDt" class="bms-prompt">Proc Date:</label>
+                    <input type="text" id="TProcDt" th:field="*{TProcDt}"
+                           class="bms-input" maxlength="10" size="10"
+                           aria-describedby="processingDate-hint" />
+                </span>
+                <span id="processingDate-hint" class="bms-hint bms-label">(YYYY-MM-DD)</span>
+            </span>
+        </div>
+
+        <!-- BMS line 16: merchant id / merchant name. -->
+        <div class="bms-line">
+            <label for="mid" class="bms-prompt">Merchant ID:</label>
+            <input type="text" id="mid" th:field="*{mid}"
+                   class="bms-input" maxlength="9" size="9" />
+            <label for="MName" class="bms-prompt">Merchant Name:</label>
+            <input type="text" id="MName" th:field="*{MName}"
+                   class="bms-input" maxlength="30" size="30" />
+        </div>
+
+        <!-- BMS line 18: merchant city / merchant zip. -->
+        <div class="bms-line">
+            <label for="MCity" class="bms-prompt">Merchant City:</label>
+            <input type="text" id="MCity" th:field="*{MCity}"
+                   class="bms-input" maxlength="25" size="25" />
+            <label for="MZip" class="bms-prompt">Merchant Zip:</label>
+            <input type="text" id="MZip" th:field="*{MZip}"
+                   class="bms-input" maxlength="10" size="10" />
+        </div>
+
+        <!-- BMS line 21: add confirmation (Y/N). NOTE: the BMS COLOR for this
+             prompt is TURQUOISE, but the agent prompt explicitly specifies a
+             NEUTRAL confirm prompt; the explicit directive wins, so the prompt
+             and its (Y/N) hint use the neutral class (bms-sep). The CONFIRM
+             input remains GREEN, maxlength 1. -->
+        <div class="bms-line bms-confirm">
+            <label for="confirm" class="bms-sep">You are about to add this transaction. Please confirm :</label>
+            <input type="text" id="confirm" th:field="*{confirm}"
+                   class="bms-input" maxlength="1" size="1"
+                   aria-describedby="confirm-hint" />
+            <span id="confirm-hint" class="bms-sep">(Y/N)</span>
+        </div>
+
+        <!-- BMS line 23: error / info message line (ERRMSG, red).
+             BLITZY [QA-DEFECT#1 FIX]: TranAddService sets the message on the bound screen
+             DTO (screen.setErrMsg(), reused for the post-commit success), not a top-level
+             model attribute, so ${errMsg} rendered empty. Consume it under the form-scoped
+             effective pattern. TranAdd has no infoMsg field, so info keeps ${infoMsg}. -->
+        <div th:replace="~{fragments/layout :: messages(${transactionAddForm?.errMsg ?: errMsg}, ${infoMsg})}"></div>
+
+        <!-- BMS line 24: PF-key actions. Every AID key submits the form with a
+             distinct pfKey value; TranAddController branches on it (ENTER=add,
+             PF3=back, PF4=clear, PF5=copy last transaction). ENTER is listed
+             first so the browser's default form submit maps to 3270 ENTER. -->
+        <div class="bms-footer bms-pfkey">
+            <button type="submit" name="pfKey" value="ENTER">ENTER=Continue</button>
+            <button type="submit" name="pfKey" value="PF3">F3=Back</button>
+            <button type="submit" name="pfKey" value="PF4">F4=Clear</button>
+            <button type="submit" name="pfKey" value="PF5">F5=Copy Last Tran.</button>
+        </div>
+
+    </form>
+
+</main>
+
+</body>
+</html>

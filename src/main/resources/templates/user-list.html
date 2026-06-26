@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ List Users screen - web equivalent of the legacy CICS/BMS map COUSR00 /
+  ~ COUSR0A (CICS transaction CU00, COBOL program COUSR00C). Renders a paged,
+  ~ admin-only list of security users with a user-id search filter, ten
+  ~ repeating selectable rows, an instruction line, and ENTER/F3/F7/F8 PF-key
+  ~ actions. Fidelity reference (read & mirror exactly): legacy/app/bms/COUSR00.bms
+  ~ (24x80 3270 field contract). Authority: AAP 0.3.1, 0.3.4, 0.4.1, 0.6.5.
+  ~
+  ~ ADMIN-ONLY: the whole screen body is gated to ROLE_ADMIN, which maps to the
+  ~ COBOL condition 88 CDEMO-USRTYP-ADMIN VALUE 'A' (AAP 0.6.5). The
+  ~ UserListController and SecurityConfig enforce the same rule server-side; the
+  ~ sec:authorize guard below is the view-layer line of defence (defence in depth).
+  ~
+  ~ Backing form object: ${userListForm}, a com.aws.carddemo.dto.screen.UserListScreen
+  ~ (the per-screen request/response contract, AAP 0.4.1). The property paths below
+  ~ bind to that DTO's ACTUAL accessors - usrIdIn, pageNum, errMsg and the nested
+  ~ rows[].{sel, usrId, fName, lName, uType} - rather than the looser BMS->camelCase
+  ~ aliases sketched in the work item, because Thymeleaf form binding resolves
+  ~ against the real getters/setters. This mirrors the sibling TranListScreen +
+  ~ transaction-list.html convention and keeps the controller integration correct.
+  ~
+  ~ Reuses the shared 3270 chrome from fragments/layout.html (head/terminal CSS,
+  ~ header band, message line, PF-key styling). Plain Thymeleaf fragments only -
+  ~ no thymeleaf-layout-dialect, no component library, no external CSS/JS.
+-->
+<html lang="en"
+      xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6">
+
+<!-- Shared <head>: charset/viewport/title + the 3270 terminal palette and the
+     fixed 24x80 monospace grid CSS. Replaces this element wholesale. -->
+<head th:replace="~{fragments/layout :: head('List Users')}"></head>
+
+<body>
+
+<!-- Invisible-accessibility skip link: off-screen until it receives keyboard
+     focus, so it has zero visual impact on the 3270 layout but lets keyboard /
+     screen-reader users jump straight to the screen body. -->
+<a class="cu00-skip-link" href="#cu00-main">Skip to main content</a>
+
+<!--
+  Screen-scoped STRUCTURAL styles only (skip-link, screen-reader helper, the
+  line-4 heading row, the search line, the user grid geometry, and the PF-key
+  row). Every COLOUR resolves to a shared .bms-* class defined once in
+  fragments/layout.html (.bms-input green/editable, .bms-label blue/data,
+  .bms-heading + .bms-sep neutral, .bms-prompt turquoise, .bms-error red,
+  .bms-footer / .bms-pfkey yellow); nothing here is external or third-party.
+  Class names are scoped with the "cu00-" prefix (the CU00 transaction id) so
+  sibling screens never collide. Logical properties keep the layout
+  direction-agnostic. These rules live in the body because the shared head
+  fragment replaces this document's <head> wholesale.
+-->
+<style>
+    /* Skip-navigation link: visually hidden until it receives keyboard focus. */
+    .cu00-skip-link {
+        position: absolute;
+        inset-block-start: -3em;
+        inset-inline-start: 0;
+        background-color: #000000;
+        color: #FFFF00;
+        padding: 0.25em 1ch;
+        z-index: 1;
+    }
+    .cu00-skip-link:focus,
+    .cu00-skip-link:focus-visible {
+        inset-block-start: 0;
+    }
+
+    /* Standard screen-reader-only helper (no visual footprint). Used to label
+       the per-row selection inputs for assistive technology. */
+    .cu00-visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        border: 0;
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        overflow: hidden;
+        white-space: nowrap;
+    }
+
+    /* BMS line 4: screen heading (centred, POS 4,35) + the page indicator
+       ("Page:" POS 4,65 turquoise, PAGENUM POS 4,71 blue) pinned to the right. */
+    .cu00-list-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        white-space: nowrap;
+        margin-block: 0.5em 0.35em;
+    }
+    .cu00-list-title {
+        flex: 1 1 auto;
+        text-align: center;
+        margin: 0;
+        font-size: inherit;
+        font-weight: bold;
+    }
+    .cu00-page {
+        flex: 0 0 auto;
+    }
+
+    /* BMS line 6: turquoise prompt + green editable user-id filter on one line. */
+    .cu00-search-line {
+        white-space: nowrap;
+        margin-block: 0.4em;
+    }
+    .cu00-search-line label {
+        margin-inline-end: 1ch;
+    }
+    /* USRIDIN: BMS LENGTH=8. Fixed eight-character width. */
+    .cu00-usrid-filter {
+        inline-size: 9ch;
+    }
+
+    /* BMS lines 8-19: the fixed-layout monospace grid of column headings, dashed
+       separator, and up to ten user rows. Column widths (ch) mirror the BMS
+       field lengths (Sel=1, User ID=8, First Name=20, Last Name=20, Type=1) plus
+       their inter-column gutters; the table is indented to begin near the BMS
+       "Sel" column origin (column 5). */
+    .cu00-table {
+        border-collapse: collapse;
+        table-layout: fixed;
+        margin-block: 0.5em;
+        margin-inline-start: 4ch;
+    }
+    .cu00-table th,
+    .cu00-table td {
+        text-align: start;
+        padding: 0 1ch;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        vertical-align: top;
+    }
+    .cu00-col-sel   { width: 7ch;  }
+    .cu00-col-usrid { width: 12ch; }
+    .cu00-col-fname { width: 24ch; }
+    .cu00-col-lname { width: 24ch; }
+    .cu00-col-type  { width: 5ch;  }
+
+    /* Single-character selection input (BMS SEL000#, LENGTH=1), centred in its
+       cell. maxlength=1 in the markup enforces the one-byte field; the slightly
+       wider box keeps the control comfortably clickable without changing what is
+       stored or how the value round-trips. */
+    .cu00-sel {
+        width: 3ch;
+        text-align: center;
+        padding: 0;
+    }
+
+    /* BMS line 21: usage instruction (neutral, bright). */
+    .cu00-instruction {
+        margin-block-start: 0.5em;
+    }
+
+    /* BMS line 24: PF-key legend rendered as real submit buttons. The yellow
+       terminal-legend look (and the 0.5ch padding on each button edge) comes from
+       .bms-footer / .bms-pfkey in the shared layout; here we only lay the buttons
+       out in a wrapping flex row with two-character columns of separation. */
+    .cu00-pfkeys {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        column-gap: 1ch;
+    }
+</style>
+
+<!--
+  Fixed ~80-column monospace terminal container (preserves the 24x80 BMS grid)
+  AND the admin-only gate for the entire screen body. ROLE_ADMIN <=> COBOL 88
+  CDEMO-USRTYP-ADMIN VALUE 'A' (AAP 0.6.5). Standard users never reach this view
+  (UserListController + SecurityConfig redirect them); this guard is the
+  view-layer line of defence. Gating the whole .bms-screen means nothing on the
+  page - header band included - renders for a non-admin principal.
+-->
+<main id="cu00-main" class="bms-screen" sec:authorize="hasRole('ADMIN')">
+
+    <!--
+      BMS lines 1-2: shared header band (Tran:/CU00 + centred TITLE01 + Date on
+      line 1; Prog:/COUSR00C + centred TITLE02 + Time on line 2). The outer
+      th:with exposes the form's date, time and secondary title to the header
+      fragment, which reads curDate, curTime and title2 as context variables;
+      TITLE01 is passed as the fragment's first argument. Defaults mirror the
+      COBOL CCDA-SCREEN-TITLE copybook (COTTL01Y): TITLE01 "AWS Mainframe
+      Modernization", TITLE02 "CardDemo".
+    -->
+    <div th:with="curDate=${userListForm.curDate},
+                  curTime=${userListForm.curTime},
+                  title2=${userListForm.title02} ?: 'CardDemo'">
+        <div th:replace="~{fragments/layout :: header(${userListForm.title01} ?: 'AWS Mainframe Modernization', 'CU00', 'COUSR00C')}">
+            <!-- header band injected from fragments/layout.html -->
+        </div>
+    </div>
+
+    <!--
+      The screen is pseudo-conversational (mirrors COUSR00C): a POST carries the
+      pressed PF-key action, the user-id search filter, the displayed page number,
+      and the per-row selection flags back to UserListController. All interactive
+      fields bind to the userListForm command object (a UserListScreen).
+    -->
+    <form th:object="${userListForm}" method="post" th:action="@{/user-list}">
+
+        <!-- BMS line 4: "List Users" heading (neutral, bright) + "Page:"
+             (turquoise) + PAGENUM (blue, display-only). -->
+        <div class="cu00-list-head">
+            <h1 class="bms-heading cu00-list-title">List Users</h1>
+            <span class="bms-hside cu00-page">
+                <span class="bms-prompt">Page: </span>
+                <span class="bms-label" th:text="*{pageNum}">1</span>
+            </span>
+        </div>
+
+        <!-- Preserve the displayed page across paging submits (F7 / F8). PAGENUM
+             is display-only on the BMS map; this hidden field round-trips it so
+             the controller knows the current page when ENTER/F7/F8 are pressed. -->
+        <input type="hidden" th:field="*{pageNum}" />
+
+        <!-- BMS line 6: "Search User ID:" prompt (turquoise) + USRIDIN filter
+             (green, editable, max 8). autofocus mirrors the BMS insert-cursor. -->
+        <div class="cu00-search-line">
+            <label class="bms-prompt" for="usrIdIn">Search User ID:</label>
+            <input type="text" id="usrIdIn" class="bms-input cu00-usrid-filter"
+                   th:field="*{usrIdIn}" maxlength="8" size="8"
+                   autocomplete="off" autofocus="autofocus" />
+        </div>
+
+        <!-- BMS lines 8-19: column headings, dashed separator, and up to ten
+             repeating user rows. Only the selection cell is editable (BMS UNPROT,
+             green); User ID / First Name / Last Name / Type are protected display
+             fields (BMS ASKIP, blue) rendered as read-only text. -->
+        <table class="cu00-table">
+            <caption class="cu00-visually-hidden">
+                List of users. Type U in the Select column next to a user and press Enter to update
+                them, or D to delete them. Use F7 and F8 to page backward and forward.
+            </caption>
+            <colgroup>
+                <col class="cu00-col-sel" />
+                <col class="cu00-col-usrid" />
+                <col class="cu00-col-fname" />
+                <col class="cu00-col-lname" />
+                <col class="cu00-col-type" />
+            </colgroup>
+            <thead>
+                <tr class="bms-heading">
+                    <th scope="col" class="cu00-col-sel">Sel</th>
+                    <th scope="col" class="cu00-col-usrid">User ID</th>
+                    <th scope="col" class="cu00-col-fname">First Name</th>
+                    <th scope="col" class="cu00-col-lname">Last Name</th>
+                    <th scope="col" class="cu00-col-type">Type</th>
+                </tr>
+                <!-- BMS line 9 dash separators (decorative; hidden from AT). The
+                     dash counts match the BMS field lengths exactly. -->
+                <tr class="bms-sep" aria-hidden="true">
+                    <td class="cu00-col-sel">---</td>
+                    <td class="cu00-col-usrid">--------</td>
+                    <td class="cu00-col-fname">--------------------</td>
+                    <td class="cu00-col-lname">--------------------</td>
+                    <td class="cu00-col-type">----</td>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Iterate the page list, capped at the ten physical BMS rows
+                     (rows 10-19). A null / short list simply yields fewer rows;
+                     an over-long list is truncated to the fixed 3270 geometry. -->
+                <tr th:each="row,stat : *{rows}" th:if="${stat.index} &lt; 10">
+                    <td class="cu00-col-sel">
+                        <!-- Explicit, screen-reader-only label tied to this row's
+                             selection input (invisible accessibility). -->
+                        <label class="cu00-visually-hidden"
+                               th:for="${'sel' + stat.index}"
+                               th:text="|Select user on row ${stat.count}|">Select user</label>
+                        <!-- BLITZY [A11Y]: BMS SEL000# is a single-character field
+                             (LENGTH=1); the resulting input is below the WCAG
+                             44x44px touch-target minimum. Implemented per BMS
+                             parity and flagged for designer review (do not silently
+                             enlarge - Figma/BMS precedence). -->
+                        <input type="text" class="bms-input cu00-sel"
+                               th:id="${'sel' + stat.index}"
+                               th:field="*{rows[__${stat.index}__].sel}"
+                               maxlength="1" size="1" autocomplete="off" />
+                        <!-- BLITZY [QA-DEFECT#2 FIX]: COUSR00C drill-down requires the
+                             per-row USR-ID to be submitted with the selection flag so
+                             processEnterKey can route to /user-update or /user-delete
+                             for the selected row. The USR-ID cell below is display-only
+                             (th:text), so without this hidden field the bound row's
+                             usrId is null and the navigation guard
+                             (isPresent(selFlag) && isPresent(selectedUsrId)) fails,
+                             silently re-rendering the list. Round-trip the key here. -->
+                        <input type="hidden"
+                               th:field="*{rows[__${stat.index}__].usrId}" />
+                    </td>
+                    <td class="cu00-col-usrid bms-label" th:text="${row.usrId}">USERID01</td>
+                    <td class="cu00-col-fname bms-label" th:text="${row.fName}">First Name</td>
+                    <td class="cu00-col-lname bms-label" th:text="${row.lName}">Last Name</td>
+                    <td class="cu00-col-type bms-label" th:text="${row.uType}">U</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- BMS line 21: usage instruction (neutral, bright) - verbatim from the
+             BMS map literal. -->
+        <div class="cu00-instruction bms-heading">Type 'U' to Update or 'D' to Delete a User from the list</div>
+
+        <!-- BMS line 23: ERRMSG (red) via the shared layout messages fragment.
+             errMsg is a field on the bound UserListScreen; this screen has no
+             info line, so the second argument is null. -->
+        <div th:replace="~{fragments/layout :: messages(*{errMsg}, null)}">
+            <!-- message line injected from fragments/layout.html -->
+        </div>
+
+        <!--
+          BMS line 24: PF-key legend rendered as functional submit buttons. The
+          pressed key posts as name="pfKey" so UserListController branches exactly
+          as COUSR00C did on EIBAID: ENTER=Continue (apply the filter / process the
+          row selection), F3=Back (return to the admin menu), F7=Backward and
+          F8=Forward (page the list). ENTER is first so it is the implicit action
+          when the operator presses Enter inside a field, matching 3270 ENTER
+          semantics. The .bms-pfkey styling makes these read as the yellow terminal
+          legend rather than OS buttons.
+        -->
+        <div class="bms-footer bms-pfkey cu00-pfkeys">
+            <button type="submit" name="pfKey" value="ENTER">ENTER=Continue</button>
+            <button type="submit" name="pfKey" value="PF3">F3=Back</button>
+            <button type="submit" name="pfKey" value="PF7">F7=Backward</button>
+            <button type="submit" name="pfKey" value="PF8">F8=Forward</button>
+        </div>
+
+    </form>
+</main>
+
+</body>
+</html>

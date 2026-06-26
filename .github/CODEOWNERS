@@ -1,0 +1,25 @@
+# CODEOWNERS — review governance for the AWS CardDemo repository.
+#
+# GitHub automatically requests review from the listed Code Owners when a pull
+# request modifies a matching path. To make Code Owner review a HARD requirement,
+# enable the branch-protection rule "Require review from Code Owners" on the
+# protected branch (e.g. `main`).
+#
+# IMPORTANT: replace the placeholder owner below with a real GitHub user or team
+# that has write access to this repository (for example @your-org/carddemo-admins).
+# An unresolved owner cannot satisfy a required Code Owner review.
+
+# ---------------------------------------------------------------------------
+# Retained legacy mainframe reference tree — READ-ONLY governance.
+#
+# `legacy/app/**` is the original z/OS COBOL / CICS / VSAM / JCL / BMS source,
+# retained verbatim as the behavioral specification, traceability anchor, and
+# golden-file parity reference (AAP §0.2.1 and §0.7.2; refactoring Rule R7). It
+# MUST NOT be modified by the migration. These entries route any pull request that
+# touches the legacy tree to the maintainers, complementing the automated
+# `legacy-readonly` CI guard in .github/workflows/ci.yml that fails the build on
+# any change under `legacy/`. Together they make the read-only rule enforceable
+# rather than advisory.
+# ---------------------------------------------------------------------------
+/legacy/         @aws-carddemo-maintainers
+/legacy/app/     @aws-carddemo-maintainers

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ Card View Detail screen - transaction CCDL, program COCRDSLC.
+  ~ Web equivalent of the legacy CICS BMS map COCRDSL / CCRDSLA (fidelity
+  ~ reference: legacy/app/bms/COCRDSL.bms). The operator enters an Account
+  ~ Number and/or a Card Number, presses ENTER to look up a single credit
+  ~ card, and views its holder name, active flag and expiry date as read-only
+  ~ detail. The field set, colours and PF-key legend mirror the 24x80 BMS map
+  ~ for 100% UI parity (AAP 0.3.4). Rendered with plain Thymeleaf on top of the
+  ~ shared fragments/layout.html terminal chrome only - no component library
+  ~ and no external CSS or JS.
+-->
+<html lang="en"
+      xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6">
+
+<!-- Shared head element + inline 3270 terminal CSS (BMS mapset chrome). -->
+<head th:replace="~{fragments/layout :: head('View Credit Card Detail')}"></head>
+
+<body class="bms-screen">
+
+    <!-- BLITZY [QA-INFO-5 FIX]: keyboard/screen-reader skip-link to jump past the
+         2-line BMS header band to the screen heading/main content. Off-screen until
+         focused (shared .bms-skip-link), so the 24x80 terminal layout is unchanged. -->
+    <a class="bms-skip-link" href="#card-view-main">Skip to main content</a>
+
+    <!-- Screen-scoped layout helper ONLY (class, never inline style). The shared
+         colour vocabulary and 24x80 monospace grid live once in fragments/layout.html;
+         this rule only centres the BMS line-4 heading (COCRDSL.bms POS=(4,30),
+         near-centred on the 80-col map), mirroring the class-based pattern used by
+         the sibling form/detail screens (e.g. card-update's .card-update-heading) —
+         QA F3 Issue #4. -->
+    <style>
+        /* BMS line 4 heading ("View Credit Card Detail", NEUTRAL bright): centred.
+           Native <h1> (QA F4-2): neutralise the browser default h1 sizing so the
+           heading keeps the uniform 16px 3270 cell size and the 24x80 grid is
+           preserved (matches the .av-heading / .admin-menu__heading pattern). */
+        .card-view-heading {
+            text-align: center;
+            font-size: inherit;
+            line-height: inherit;
+            font-weight: bold;
+            margin: 0;
+        }
+    </style>
+
+    <!-- ================================================================= -->
+    <!-- BMS lines 1-2 : header band                                       -->
+    <!--   Tran: CCDL        [TITLE01]        Date: mm/dd/yy                -->
+    <!--   Prog: COCRDSLC    [TITLE02]        Time: hh:mm:ss               -->
+    <!-- TRNNAME=CCDL / PGMNAME=COCRDSLC (COCRDSL.bms lines 34-74).        -->
+    <!-- ================================================================= -->
+    <div th:replace="~{fragments/layout :: header(${cardViewForm?.title01} ?: 'AWS Mainframe Modernization', 'CCDL', 'COCRDSLC')}"></div>
+
+    <!-- BMS line 4 (POS 4,30 / COLOR=NEUTRAL) : screen heading.
+         BLITZY [QA-F4-2 FIX]: now a native <h1> (was a <div role="heading"
+         aria-level="1">) so document.querySelectorAll('h1,h2') sees it and
+         screen-reader heading navigation works (WCAG 1.3.1 / 2.4.6), consistent
+         with the sibling detail screens. The .card-view-heading CSS reset keeps the
+         uniform 16px 3270 cell size so the terminal look is unchanged (COCRDSL.bms
+         75-78). Also the INFO-5 skip-link target (#card-view-main). -->
+    <h1 id="card-view-main" class="bms-heading card-view-heading">View Credit Card Detail</h1>
+
+    <!-- ================================================================= -->
+    <!-- Card view / search form. ENTER submits the search criteria; F3     -->
+    <!-- exits. CardViewController handles POST /card-view, performs the     -->
+    <!-- lookup and re-renders this screen with the detail fields populated. -->
+    <!-- ================================================================= -->
+    <form th:object="${cardViewForm}" method="post" th:action="@{/card-view}">
+
+        <!-- =========== Search criteria : UNPROT / green editable ========= -->
+
+        <!-- BMS line 7 : 'Account Number :' + ACCTSID (LENGTH=11, IC).
+             Bound to CardViewScreen.acctSid (copybook COCRDSL.CPY field name). -->
+        <div class="bms-field">
+            <label class="bms-prompt" for="acctSid">Account Number:</label>
+            <input type="text" class="bms-input"
+                   th:field="*{acctSid}"
+                   maxlength="11" size="11"
+                   inputmode="numeric" autocomplete="off"
+                   autofocus="autofocus" />
+        </div>
+
+        <!-- BMS line 8 : 'Card Number :' + CARDSID (LENGTH=16).
+             Bound to CardViewScreen.cardSid. -->
+        <div class="bms-field">
+            <label class="bms-prompt" for="cardSid">Card Number:</label>
+            <input type="text" class="bms-input"
+                   th:field="*{cardSid}"
+                   maxlength="16" size="16"
+                   inputmode="numeric" autocomplete="off" />
+        </div>
+
+        <!-- ======== Card detail : PROT / ASKIP read-only display (blue) === -->
+
+        <!-- BMS line 11 : 'Name on card :' + CRDNAME (LENGTH=50).
+             Read-only display bound to CardViewScreen.crdName. -->
+        <div class="bms-field">
+            <span class="bms-prompt">Name on card:</span>
+            <span class="bms-label" th:text="*{crdName}"></span>
+        </div>
+
+        <!-- BMS line 13 : 'Card Active Y/N :' + CRDSTCD (LENGTH=1, ASKIP).
+             Read-only display bound to CardViewScreen.crdStcd (Y = active). -->
+        <div class="bms-field">
+            <span class="bms-prompt">Card Active Y/N:</span>
+            <span class="bms-label" th:text="*{crdStcd}"></span>
+        </div>
+
+        <!-- BMS line 15 : 'Expiry Date :' + EXPMON (2) '/' EXPYEAR (4).
+             Read-only display bound to CardViewScreen.expMon / .expYear. -->
+        <div class="bms-field">
+            <span class="bms-prompt">Expiry Date:</span>
+            <span class="bms-label" th:text="*{expMon}"></span>
+            <span class="bms-sep">/</span>
+            <span class="bms-label" th:text="*{expYear}"></span>
+        </div>
+
+        <!-- ===== Messages : INFOMSG (line 20, neutral) + ERRMSG (line 23, red).
+             Pulled from the CardViewScreen DTO (which carries errMsg / infoMsg),
+             with a top-level model-attribute fallback for robustness. -->
+        <div th:replace="~{fragments/layout :: messages(${cardViewForm.errMsg ?: errMsg}, ${cardViewForm.infoMsg ?: infoMsg})}"></div>
+
+        <!-- ===== BMS line 24 (FKEYS, yellow) : PF-key legend ============== -->
+        <!-- INITIAL='ENTER=Search Cards  F3=Exit'. Rendered as real submit    -->
+        <!-- buttons (name=pfKey) so ENTER / F3 drive the pseudo-conversational -->
+        <!-- actions; .bms-pfkey styles them as the terminal legend rather than -->
+        <!-- OS buttons (see fragments/layout.html).                            -->
+        <div class="bms-footer bms-pfkey">
+            <button type="submit" name="pfKey" value="ENTER">ENTER=Search Cards</button>
+            <button type="submit" name="pfKey" value="PF3">F3=Exit</button>
+        </div>
+
+    </form>
+
+</body>
+</html>

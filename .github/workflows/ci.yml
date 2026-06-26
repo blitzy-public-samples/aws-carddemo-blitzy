@@ -1,0 +1,138 @@
+# .github/workflows/ci.yml
+# ---------------------------------------------------------------------------
+# Continuous Integration for the AWS CardDemo COBOL -> Java 25 / Spring Boot
+# migration.
+#
+# This single, portable Maven pipeline replaces the legacy 3-way z/OS mainframe
+# compile (batch COBOL via BATCMP.jcl/BUILDBAT.prc, BMS maps via
+# BMSCMP.jcl/BUILDBMS.prc, CICS online via CICCMP.jcl/BUILDONL.prc), which each
+# required distinct STEPLIBs (IGY COBOL compiler, CICS SDFHLOAD/SDFHCOB/SDFHMAC,
+# CEE runtime) plus manual NEWCOPY/INSTALL. Here, only JDK 25 + Docker on
+# ubuntu-latest are required.
+#
+# All quality / compliance gates are bound to the Maven `verify` phase in the
+# root pom.xml, so a single `./mvnw -B clean verify` enforces every gate:
+#   * zero-warning compilation (maven-compiler-plugin -Werror/-Xlint:all)
+#   * JUnit 5 + Testcontainers PostgreSQL integration tests (local-only)
+#   * JaCoCo >= 80% line-coverage gate
+#   * OWASP dependency-check (fails on critical/high CVEs; the build step passes an
+#     authenticated NVD API key from the `NVD_API_KEY` repository secret so the gate
+#     runs to completion and is never skipped)
+#   * Spotless format check
+# Therefore this workflow MUST NOT mask the Maven exit status: the build step's
+# non-zero exit code must propagate and fail the job.
+# ---------------------------------------------------------------------------
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Least-privilege: the build only needs to read repository contents.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build, Test & Quality Gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25 (Temurin) with Maven cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Ensure Maven wrapper is executable
+        run: chmod +x ./mvnw
+
+      # Persist the OWASP dependency-check NVD database across runs. The database is
+      # large (hundreds of MB) and rebuilding it from the NVD feed on every run is slow
+      # and rate-limited; a dedicated cache (latest restored, fresh copy saved each run)
+      # keeps the CVE gate fast and reliable independently of the broader Maven cache.
+      - name: Cache OWASP dependency-check NVD database
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: owasp-nvd-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            owasp-nvd-${{ runner.os }}-
+
+      - name: Build, test, and enforce all quality gates
+        # All quality / compliance gates are bound to the Maven `verify` phase in
+        # pom.xml. The OWASP dependency-check gate (failBuildOnCVSS=7) is ALWAYS
+        # enforced here and is NEVER skipped — note the deliberate absence of
+        # `-Ddependency-check.skip=true` (the offline opt-out is eliminated). An
+        # authenticated NVD API key from the `NVD_API_KEY` repository secret is passed
+        # straight to Maven as `-DnvdApiKey`, lifting the anonymous NVD rate limit so the
+        # CVE feed refreshes and the gate runs to completion. On runs where the secret is
+        # unavailable (e.g. forked pull requests that cannot read secrets) the value
+        # resolves empty and dependency-check falls back to the cached NVD database; the
+        # gate still runs and continues to gate the job via Maven's exit status, which
+        # must propagate and is never masked.
+        run: ./mvnw -B clean verify -DnvdApiKey=${{ secrets.NVD_API_KEY }}
+
+      - name: Upload JaCoCo coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-coverage-report
+          path: target/site/jacoco/
+          if-no-files-found: warn
+
+      - name: Upload OWASP dependency-check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-dependency-check-report
+          path: target/dependency-check-report.html
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Enforce the read-only governance of the retained legacy mainframe tree.
+  # `legacy/app/**` is the original COBOL/CICS/VSAM/JCL/BMS source kept verbatim as
+  # the behavioral specification and parity anchor (AAP §0.7.2; Rule R7). Git cannot
+  # make tracked files filesystem-immutable in a clone, so read-only is enforced as
+  # policy: this job fails the build if any commit modifies a file under legacy/,
+  # and .github/CODEOWNERS routes such changes to the maintainers for review.
+  # ---------------------------------------------------------------------------
+  legacy-readonly:
+    name: Enforce /legacy read-only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail if the retained /legacy reference tree was modified
+        run: |
+          # Determine the correct comparison range for both pull_request and push events.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          fi
+          zero="0000000000000000000000000000000000000000"
+          if [ -z "$base" ] || [ "$base" = "$zero" ]; then
+            echo "No prior commit to compare against (new branch); skipping legacy read-only diff."
+            exit 0
+          fi
+          changed="$(git diff --name-only "$base" "$head" -- legacy/ || true)"
+          if [ -n "$changed" ]; then
+            echo "::error::The /legacy reference tree is retained read-only and must not change. Modified files:"
+            echo "$changed"
+            exit 1
+          fi
+          echo "OK: no modifications under legacy/ between $base and $head."

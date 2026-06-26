@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ Shared Thymeleaf layout fragments for the AWS CardDemo web UI.
+  ~ Reproduces the common 24x80 BMS 3270 screen chrome (header band, message
+  ~ line, PF-key footer) and terminal-look CSS once, for reuse by all 17 screen
+  ~ templates under src/main/resources/templates/. Fidelity reference: the BMS
+  ~ mapsets in legacy/app/bms/*.bms. Plain Thymeleaf fragments only (no
+  ~ thymeleaf-layout-dialect, no component library, no external CSS/JS).
+-->
+<html xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6">
+
+<!-- head(pageTitle): shared head element + terminal CSS.
+     Consumed via:  <head th:replace="~{fragments/layout :: head('Sign On')}"></head> -->
+<head th:fragment="head(pageTitle)">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title th:text="${pageTitle} ?: 'CardDemo'">CardDemo</title>
+    <!--/* BLITZY [QA-INFO-1 FIX]: declare an inline data-URI SVG favicon so the
+         browser stops issuing the default GET /favicon.ico request that 404'd on
+         every one of the 17 screens. Self-contained (no external asset, no extra
+         network round-trip, no CSP needed). BMS-themed: bright-green "$" on black,
+         matching the 3270 terminal palette. */-->
+    <link rel="icon" type="image/svg+xml"
+          href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2016'%3E%3Crect%20width='16'%20height='16'%20fill='%23000'/%3E%3Ctext%20x='8'%20y='13'%20font-family='monospace'%20font-size='14'%20fill='%2300FF00'%20text-anchor='middle'%3E%24%3C/text%3E%3C/svg%3E" />
+    <style>
+        /* ---- 3270 terminal palette + fixed 24x80 monospace grid ---- */
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            padding: 0;
+            background-color: #000000;
+            /* Narrow-viewport strategy (non-destructive): the .bms-screen grid
+               below keeps its fixed 80ch width to preserve exact 24x80 BMS
+               geometry. On viewports narrower than 80ch the page scrolls
+               horizontally to the intact grid instead of compressing/breaking
+               it — terminal fidelity is never sacrificed for responsiveness. */
+            overflow-x: auto;
+        }
+        /* Screen container: fixed ~80-column width, monospace, dark bg,
+           light (NEUTRAL) default text. Monospace + fixed width preserve
+           the 24x80 BMS grid alignment. Screens apply class="bms-screen"
+           to their top-level body or wrapper element. */
+        .bms-screen {
+            font-family: 'Courier New', Consolas, 'Lucida Console', monospace;
+            font-size: 16px;
+            line-height: 1.25;
+            width: 80ch;
+            max-width: 80ch;
+            min-height: 24em;
+            margin: 0 auto;
+            padding: 0.5em 1ch;
+            background-color: #000000;
+            color: #C0C0C0;                 /* NEUTRAL default */
+        }
+        /* ---- BMS header band (lines 1-2) ---- */
+        .bms-header { margin-bottom: 0.5em; }
+        .bms-header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            white-space: nowrap;
+        }
+        .bms-hside { flex: 0 0 auto; }
+        /* ---- BMS colour vocabulary ---- */
+        .bms-label  { color: #5599FF; }                 /* BLUE  - labels/data */
+        .bms-title  { color: #FFFF00; font-weight: bold;/* YELLOW- centered title */
+                      flex: 1 1 auto; text-align: center; }
+        .bms-prompt { color: #00FFFF; }                 /* TURQUOISE - prompts */
+        .bms-input  {                                    /* GREEN - editable */
+            color: #00FF00;
+            background-color: #000000;
+            border: none;
+            border-bottom: 1px solid #00AA00;           /* HILIGHT=UNDERLINE */
+            font-family: inherit;
+            font-size: inherit;
+        }
+        .bms-input:focus { outline: 1px solid #00FF00; }
+        .bms-heading { color: #FFFFFF; font-weight: bold; } /* NEUTRAL bright */
+        .bms-sep     { color: #C0C0C0; }                    /* NEUTRAL separator */
+        .bms-error   { color: #FF3333; font-weight: bold; } /* RED bright (ERRMSG) */
+        /* GREEN bright success line (ERRMSG with DFHGREEN attribute). The legacy
+           COUSR01C/COUSR02C/COUSR03C admin confirmations MOVE DFHGREEN TO ERRMSGC on
+           success, so a successful add/update/delete renders the ERRMSG row green while
+           validation/error messages stay red (BMS default COLOR=RED). Reproduced here as a
+           distinct success class so the operator can tell success from failure (QA F4-1). */
+        .bms-success { color: #00FF00; font-weight: bold; } /* GREEN bright (DFHGREEN) */
+        .bms-messages { min-height: 1.25em; margin-top: 0.3em; }
+        /* ---- PF-key footer (line 24) ---- */
+        .bms-footer, .bms-pfkey { color: #FFFF00; margin-top: 0.5em; } /* YELLOW */
+        /* PF-key submit buttons rendered by each screen inside its form,
+           styled to look like the terminal legend rather than OS buttons. */
+        .bms-pfkey button,
+        .bms-pfkey input[type='submit'] {
+            background: none;
+            border: none;
+            color: #FFFF00;
+            font-family: inherit;
+            font-size: inherit;
+            cursor: pointer;
+            padding: 0 0.5ch;
+        }
+        .bms-pfkey button:hover { text-decoration: underline; }
+        /* ---- Shared accessibility utilities (QA F4-2 / INFO-5) ----
+           Distinct .bms-* names so they never collide with the per-screen
+           .skip-link / .ccli-skip-link rules already defined by admin-menu,
+           main-menu and card-list (those screens keep their own definitions). */
+        /* Off-screen skip link, revealed only on keyboard focus, so screen-reader
+           and keyboard users can jump past the 2-line BMS header band straight to
+           the main content. Kept visually hidden until focused to preserve the
+           exact 24x80 terminal layout for sighted users. */
+        .bms-skip-link {
+            position: absolute;
+            left: -9999px;
+            top: auto;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+        .bms-skip-link:focus,
+        .bms-skip-link:focus-visible {
+            position: static;
+            width: auto;
+            height: auto;
+            overflow: visible;
+            color: #FFFF00;                 /* YELLOW, matches PF-key legend */
+            background-color: #000000;
+        }
+        /* Visually-hidden (but screen-reader-exposed) content. Used for the sign-on
+           screen's <h1>: BMS COSGN00 has no visible line-4 title, so the heading is
+           exposed to assistive technology and to heading navigation (WCAG 1.3.1 /
+           2.4.6) without painting anything on the 24x80 grid. */
+        .bms-visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            margin: -1px;
+            padding: 0;
+            border: 0;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            clip-path: inset(50%);
+            white-space: nowrap;
+        }
+        /* ---- Narrow-viewport responsive scaling (QA Issue 5) ----
+           Below the 768px tablet breakpoint the fixed 80ch grid (~768px wide at the
+           16px desktop cell) no longer fits, so on phones it overflowed and clipped
+           the right-hand fields. Rather than reflow/break the terminal — which would
+           sacrifice the exact 24x80 BMS geometry the AAP (section 0.3.4) mandates — the
+           WHOLE grid is scaled down by shrinking the font size. Because the container
+           width (80ch / max-width 80ch), padding (1ch / 0.5em) and every child metric
+           are expressed in font-relative ch/em units, lowering the font size scales the
+           entire screen proportionally: the 24x80 cell geometry is preserved exactly,
+           just smaller, and nothing is clipped.
+
+           calc(100vw / 50) keeps the 80ch grid at ~96vw (80ch ~= 48 x font-size, so
+           48 x 100vw/50 = 0.96 x 100vw), leaving a small margin for any scrollbar so
+           there is no horizontal overflow at 375px (or any width < 768px). BOTH the
+           root font size (so the single rem-based heading, account-view .av-heading,
+           scales in step) and .bms-screen (the ch grid + all inherit/ch/em children)
+           use the same factor, so the screen stays uniform. This rule applies ONLY
+           below 768px; at >= 768px the desktop/tablet layout is untouched (16px), so
+           the QA-verified desktop fidelity at 768/1280/1920 is unchanged. */
+        @media (max-width: 767.98px) {
+            html { font-size: calc(100vw / 50); }
+            .bms-screen { font-size: calc(100vw / 50); }
+        }
+    </style>
+</head>
+
+<body>
+
+<!-- header(title, tranId, programId): BMS lines 1-2.
+     Consumed via:  <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization','CC00','COSGN00C')}"></div> -->
+<div th:fragment="header(title, tranId, programId)" class="bms-header">
+    <div class="bms-header-row">
+        <span class="bms-hside">
+            <span class="bms-label">Tran: </span>
+            <span class="bms-label" th:text="${tranId}">CC00</span>
+        </span>
+        <span class="bms-title" th:text="${title}">AWS Mainframe Modernization</span>
+        <span class="bms-hside">
+            <span class="bms-label">Date: </span>
+            <span class="bms-label"
+                  th:text="${!#strings.isEmpty(curDate) ? curDate : #dates.format(#dates.createNow(), 'MM/dd/yy')}">mm/dd/yy</span>
+        </span>
+    </div>
+    <div class="bms-header-row">
+        <span class="bms-hside">
+            <span class="bms-label">Prog: </span>
+            <span class="bms-label" th:text="${programId}">COSGN00C</span>
+        </span>
+        <!-- Line-2 centered slot = BMS TITLE02 (COTTL01Y CCDA-TITLE02 = 'CardDemo'),
+             which all 17 online COBOL programs MOVE to the header. Honour an explicit
+             title2 when a screen/controller supplies one; otherwise default to the
+             BMS-faithful 'CardDemo' so every screen shows it consistently
+             (QA F3 Issue #2). The flex:1 column keeps Prog/Time aligned. -->
+        <span class="bms-title"
+              th:text="${!#strings.isEmpty(title2) ? title2 : 'CardDemo'}">CardDemo</span>
+        <span class="bms-hside">
+            <span class="bms-label">Time: </span>
+            <span class="bms-label"
+                  th:text="${!#strings.isEmpty(curTime) ? curTime : #dates.format(#dates.createNow(), 'HH:mm:ss')}">hh:mm:ss</span>
+        </span>
+    </div>
+</div>
+
+<!-- messages(errMsg, infoMsg): ERRMSG row 23 (red/bright) + optional INFOMSG (neutral).
+     Consumed via:  <div th:replace="~{fragments/layout :: messages(${errMsg}, ${infoMsg})}"></div>
+     Live-region semantics are declared centrally here so EVERY screen that
+     reuses this fragment announces validation/abend messages to screen readers,
+     regardless of whether it wraps the fragment or inserts it directly:
+       - the error line carries role="alert"  (assertive: announced immediately);
+       - the info line carries role="status" (polite: announced when idle).
+     role="alert"/role="status" already imply aria-live + aria-atomic, so the
+     full message text is read whenever it is present on the rendered page. -->
+<div th:fragment="messages(errMsg, infoMsg)" class="bms-messages">
+    <div class="bms-error" role="alert"
+         th:if="${!#strings.isEmpty(errMsg)}"
+         th:text="${errMsg}">Error message goes here</div>
+    <div class="bms-heading" role="status"
+         th:if="${!#strings.isEmpty(infoMsg)}"
+         th:text="${infoMsg}">Info message goes here</div>
+</div>
+
+<!-- messagesWithSuccess(errMsg, infoMsg, successMsg): same ERRMSG row 23 band as
+     messages(...), extended with a third GREEN success channel (DFHGREEN) for the
+     admin user-management confirmations (COUSR01C/COUSR02C/COUSR03C add/update/delete).
+     QA F4-1: success was previously routed through errMsg and rendered RED (.bms-error),
+     visually identical to a failure. The three states are mutually exclusive (the service
+     sets at most one of errMsg / successMsg), so order is irrelevant; each line is guarded
+     by its own th:if.  Live-region semantics:
+       - error line   -> role="alert"  (assertive: announced immediately);
+       - success line -> role="status" (polite: a confirmation, not an interruption);
+       - info  line   -> role="status" (polite).
+     This fragment is purely additive: the 2-arg messages(...) fragment above is unchanged
+     and the other screens that do not surface a green success keep using it. -->
+<div th:fragment="messagesWithSuccess(errMsg, infoMsg, successMsg)" class="bms-messages">
+    <div class="bms-error" role="alert"
+         th:if="${!#strings.isEmpty(errMsg)}"
+         th:text="${errMsg}">Error message goes here</div>
+    <div class="bms-success" role="status"
+         th:if="${!#strings.isEmpty(successMsg)}"
+         th:text="${successMsg}">Success message goes here</div>
+    <div class="bms-heading" role="status"
+         th:if="${!#strings.isEmpty(infoMsg)}"
+         th:text="${infoMsg}">Info message goes here</div>
+</div>
+
+<!-- footer(keys): BMS PF-key legend row 24 (yellow). th:text auto-escapes '&'.
+     Consumed via:  <div th:replace="~{fragments/layout :: footer('ENTER=Continue  F3=Exit')}"></div> -->
+<div th:fragment="footer(keys)" class="bms-footer bms-pfkey"
+     th:text="${keys}">ENTER=Continue  F3=Exit</div>
+
+</body>
+</html>

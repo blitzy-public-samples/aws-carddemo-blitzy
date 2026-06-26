@@ -1,0 +1,221 @@
+# =============================================================================
+# AWS CardDemo - primary Spring Boot configuration (default profile)
+# =============================================================================
+#
+# Project : AWS CardDemo - the z/OS COBOL / CICS / VSAM / JCL / BMS credit-card
+#           management system modernized to Java 25 + Spring Boot 3.5.x
+#           (base package com.aws.carddemo).
+# License : Apache License 2.0 - same posture as the repository LICENSE/NOTICE
+#           and the build manifest (pom.xml). New dependencies must remain
+#           Apache-2.0 compatible.
+#
+# THIS FILE CONTAINS NO SECRETS.
+#   Every credential and connection endpoint is EXTERNALIZED through an
+#   environment variable using Spring's `${ENV_VAR:default}` placeholder syntax
+#   (Agent Action Plan §0.6.6, §0.7.2: "no hardcoded credentials"). The only
+#   committed defaults are the LOCAL-DEVELOPMENT docker-compose values
+#   (database name/user/password all `carddemo`) and BLANK seed passwords -
+#   never a production secret. Override every value outside local development
+#   via your shell, a `.env`/orchestrator, or a secret manager.
+#
+# Runtime contract (must stay consistent across these files):
+#   * pom.xml ................ Spring Boot 3.5.x parent, group com.aws.carddemo,
+#                              artifact `carddemo`, Java 25.
+#   * docker-compose.yml ..... PostgreSQL service host `db`, db/user/password
+#                              `carddemo`; injects SPRING_DATASOURCE_* and the
+#                              CARDDEMO_*_PASSWORD seed variables.
+#   * Dockerfile ............. EXPOSE 8080 (see `server.port` below).
+#   * db/migration/V*.sql .... Flyway-owned, AUTHORITATIVE schema + reference
+#                              data (see `spring.flyway.locations` below).
+#
+# This is the DEFAULT-profile configuration. The `test` profile
+# (application-test.yml) overrides the datasource for the Testcontainers-backed
+# integration suite; the active profile is selected with
+# SPRING_PROFILES_ACTIVE (docker-compose sets it to `default`).
+# =============================================================================
+
+spring:
+  # Logical application name. Matches the Maven artifactId / base package
+  # (com.aws.carddemo:carddemo) and surfaces in logs and management metadata.
+  application:
+    name: carddemo
+
+  # ---------------------------------------------------------------------------
+  # Spring Cloud AWS - exclude the eager Secrets Manager auto-configuration
+  # ---------------------------------------------------------------------------
+  # The spring-cloud-aws-starter-secrets-manager dependency contributes
+  # SecretsManagerAutoConfiguration, which eagerly builds a SecretsManagerClient
+  # bean; constructing that client resolves an AWS region at startup and FAILS in
+  # any environment without one (local dev, the Testcontainers suite, CI). We do
+  # NOT use an injected client - production loads secrets DECLARATIVELY via
+  # `spring.config.import: aws-secretsmanager:...` (see application-prod.yml),
+  # which is a separate Spring ConfigData mechanism that is NOT affected by
+  # spring.autoconfigure.exclude. Excluding the auto-configuration here keeps the
+  # default and test profiles hermetic (no AWS region/credentials needed) while
+  # leaving production secret loading via the prod-only config import fully
+  # functional.
+  autoconfigure:
+    exclude:
+      - io.awspring.cloud.autoconfigure.config.secretsmanager.SecretsManagerAutoConfiguration
+
+  # ---------------------------------------------------------------------------
+  # Datasource (VSAM KSDS / sequential files -> PostgreSQL) - AAP §0.4.1, §0.6.2
+  # ---------------------------------------------------------------------------
+  # All four values are externalized. The defaults match docker-compose.yml
+  # EXACTLY so the documented `docker compose up` + `./mvnw spring-boot:run`
+  # workflow works out of the box:
+  #   * host `db`            = the compose service name (resolved on the compose
+  #                            network); the compose `app` service injects
+  #                            SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/<db>.
+  #   * database/user/pass   = local-dev value `carddemo` (NOT a production
+  #                            secret); override with SPRING_DATASOURCE_* in any
+  #                            real environment.
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://db:5432/carddemo}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    password: ${SPRING_DATASOURCE_PASSWORD:carddemo}
+    driver-class-name: org.postgresql.Driver
+    # Conservative HikariCP pool sizing (Spring Boot's default connection pool).
+    # Kept small and explicit; tune per environment via SPRING_DATASOURCE_HIKARI_*.
+    hikari:
+      pool-name: CardDemoHikariPool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+      # F-3 (QA INFO) — connection-pool operational safety + observability. Every key below is
+      # env-overridable at deploy time via Spring relaxed binding (SPRING_DATASOURCE_HIKARI_*),
+      # consistent with the SPRING_DATASOURCE_* overrides on the datasource above.
+      # leak-detection-threshold: log a stack trace whenever a connection is held longer than this
+      # many ms (0 = disabled, the Hikari default). 30000 ms surfaces a leaked / never-closed
+      # connection without false alarms on normal queries (QA suggested 30-60 s).
+      leak-detection-threshold: 30000
+      # max-lifetime: proactively retire and replace a pooled connection after this many ms so it
+      # never outlives a database/infrastructure-imposed limit (1800000 ms = 30 min; the Hikari
+      # default, made explicit).
+      max-lifetime: 1800000
+      # idle-timeout: retire a connection that has sat idle (beyond minimum-idle) for this many ms
+      # (600000 ms = 10 min; the Hikari default, made explicit).
+      idle-timeout: 600000
+      # validation-timeout: maximum time to wait for a connection-aliveness check (5000 ms = 5 s;
+      # the Hikari default, made explicit).
+      validation-timeout: 5000
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate - Flyway is AUTHORITATIVE for schema (AAP §0.6.1, §0.6.2)
+  # ---------------------------------------------------------------------------
+  # ddl-auto=validate is the mechanism that guarantees the VSAM-faithful schema
+  # (numeric(p,s) decimal scale, char(n) fixed-width keys, the three alternate
+  # indexes) defined in db/migration/V1__schema.sql is NEVER silently mutated by
+  # Hibernate. Hibernate only VALIDATES that the entity mappings match the
+  # Flyway-created tables and fails fast on any drift; it never creates, updates,
+  # or drops DDL. Do NOT change this to create/update/create-drop.
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    # Disable Open Session In View: no lazy loading in the view layer; service
+    # boundaries own their transactions (best practice, avoids surprise queries).
+    open-in-view: false
+    # Keep SQL out of the logs for the clean / zero-warning posture (AAP §0.7.3).
+    show-sql: false
+    # The PostgreSQL dialect is auto-detected from the JDBC driver; it is left
+    # unset deliberately so Boot/Hibernate selects the correct version-specific
+    # dialect for the running PostgreSQL 16+ instance.
+
+  # ---------------------------------------------------------------------------
+  # Flyway - database migrations (DDL + reference seed) - AAP §0.4.1, §0.5.2
+  # ---------------------------------------------------------------------------
+  # Authoritative schema management. `locations` MUST match the child folder
+  # where the migrations live: src/main/resources/db/migration ->
+  # classpath:db/migration (V1__schema.sql = 11 business tables + 3 alternate
+  # indexes; V2__seed_reference_data.sql = reference/lookup data). A fresh
+  # database is managed entirely by V1/V2, so baselining is disabled.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch (JCL job streams -> Spring Batch jobs) - AAP §0.4.1, §0.6.7
+  # ---------------------------------------------------------------------------
+  # job.enabled=false: jobs are NOT auto-run on startup. Each batch job is
+  # triggered explicitly (mapped from its JCL driver), and the JCL run-date
+  # parameter (e.g. PARM='2022071800' in legacy/app/jcl/INTCALC.jcl) is supplied
+  # by the batch layer as a Spring Batch JobParameter - never hardcoded here.
+  #
+  # jdbc.initialize-schema=always: create Spring Batch's own metadata tables
+  # (BATCH_*) at startup. Flyway V1 covers ONLY the 11 business tables, so the
+  # batch metadata schema is owned by Boot here. This is restart-safe even
+  # against a persistent database: Spring Boot's BatchDataSourceScriptDatabase-
+  # Initializer runs the batch DDL with continue-on-error, so "relation already
+  # exists" on a subsequent boot is tolerated rather than fatal.
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      initialize-schema: always
+
+  # ---------------------------------------------------------------------------
+  # Thymeleaf - server-side rendering of the 17 migrated BMS screens (UI opt. A)
+  # ---------------------------------------------------------------------------
+  # Templates render from the Spring Boot default classpath:/templates/. Caching
+  # is enabled (production default) for performance; the prefix/suffix defaults
+  # are unchanged.
+  thymeleaf:
+    cache: true
+
+# -----------------------------------------------------------------------------
+# Embedded web server - AAP §0.3.4 (online transactions -> web controllers)
+# -----------------------------------------------------------------------------
+# Listen on 8080 to align with the repository Dockerfile `EXPOSE 8080` and the
+# docker-compose `app` port mapping. 8080 is also Spring MVC's default, so this
+# is an explicit, self-documenting restatement of the contract.
+server:
+  port: 8080
+  # Honor reverse-proxy forwarding headers (X-Forwarded-Proto/-For/-Host/-Port).
+  # In production TLS is terminated at an edge proxy/load balancer that forwards
+  # cleartext to the app with `X-Forwarded-Proto: https`. `framework` lets Spring
+  # (via ForwardedHeaderFilter) reconstruct the original scheme so request.isSecure()
+  # returns true behind the proxy. That, in turn, makes Spring Security emit the
+  # HSTS header (SecurityConfig) on the externally-HTTPS path (QA Issue 4), while a
+  # direct cleartext request keeps isSecure()=false and correctly omits HSTS per
+  # RFC 6797. Safe by default: with no forwarding headers present it is a no-op.
+  forward-headers-strategy: framework
+
+# =============================================================================
+# CardDemo application properties (custom namespace)
+# =============================================================================
+carddemo:
+  # ---------------------------------------------------------------------------
+  # Seed sign-on identities - AAP §0.6.5, §0.6.6, §0.7.2 (credential hygiene)
+  # ---------------------------------------------------------------------------
+  # The legacy clear-text VSAM USRSEC credentials (copybook CSUSR01Y, default
+  # ADMIN001/USER0001 with password `PASSWORD`) are replaced with hashed,
+  # externalized credentials. The bootstrap credential seeder binds this block
+  # and BCrypt-hashes the supplied passwords with the SecurityConfig
+  # PasswordEncoder before inserting the two seed users (type 'A' = admin,
+  # 'U' = standard user) into the user_security table.
+  #
+  # The passwords are EXTERNALIZED with a BLANK default on purpose: no usable
+  # password ships in source control, so a real run MUST supply
+  # CARDDEMO_ADMIN_PASSWORD / CARDDEMO_USER_PASSWORD (the seeder fails fast if a
+  # required seed password is absent). NEVER put a real or usable plaintext
+  # password here.
+  security:
+    seed:
+      admin-id: ADMIN001
+      admin-type: A
+      admin-password: ${CARDDEMO_ADMIN_PASSWORD:}
+      user-id: USER0001
+      user-type: U
+      user-password: ${CARDDEMO_USER_PASSWORD:}
+
+# -----------------------------------------------------------------------------
+# Logging - conservative, parity-friendly levels (AAP §0.7.3 clean output)
+# -----------------------------------------------------------------------------
+# Keep output clean: application and root at INFO; Hibernate SQL is NOT raised
+# to DEBUG (it stays quiet, complementing spring.jpa.show-sql=false).
+logging:
+  level:
+    root: INFO
+    com.aws.carddemo: INFO
+    org.hibernate.SQL: WARN

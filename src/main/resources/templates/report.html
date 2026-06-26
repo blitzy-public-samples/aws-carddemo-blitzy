@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~ You may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  ~
+  ~ Transaction Reports screen (transaction CR00, program CORPT00C).
+  ~ Web equivalent of the legacy CICS BMS map CORPT00 / CORPT0A
+  ~ (legacy/app/bms/CORPT00.bms) - submit a transaction-report batch job.
+  ~ 100% UI parity with the 24x80 BMS field contract: report-type selector
+  ~ flags (Monthly/Yearly/Custom), a custom start/end date range, and a
+  ~ Y/N confirmation that triggers the TransactionReportJob batch.
+  ~ Shared 3270 screen chrome (header band, message line, PF-key footer
+  ~ styling, terminal CSS palette) is reused from fragments/layout.html.
+  ~ Plain Thymeleaf only - no component library, no external CSS/JS.
+-->
+<html lang="en"
+      xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security6">
+
+<!-- Shared <head>: terminal CSS palette + page <title>. The host <head> is
+     fully replaced by the layout fragment, so screen-specific layout CSS is
+     declared in the <body> below (a <style> here would be discarded). -->
+<head th:replace="~{fragments/layout :: head('Transaction Reports')}">
+    <title>Transaction Reports</title>
+</head>
+
+<body>
+
+<!-- Invisible-accessibility skip link (no visual impact; not present in the
+     BMS map, so it is visually hidden to preserve 24x80 fidelity). -->
+<a class="visually-hidden" href="#main-content">Skip to main content</a>
+
+<!-- Screen-scoped layout only (positioning / spacing / field widths). All
+     COLOURS come from the shared palette classes in fragments/layout.html
+     (bms-label = BLUE, bms-prompt = TURQUOISE, bms-input = GREEN,
+     bms-sep = NEUTRAL, bms-heading = NEUTRAL-bright). Class selectors only,
+     CSS logical properties, no id selectors and no child combinators. -->
+<style>
+    .visually-hidden {
+        position: absolute;
+        width: 1px; height: 1px;
+        margin: -1px; padding: 0; border: 0;
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        overflow: hidden;
+        white-space: nowrap;
+    }
+    /* Line-4 screen name 'Transaction Reports' - centred, NEUTRAL bright.
+       font-size:inherit keeps the h1 heading at the 16px terminal cell size
+       so the 24x80 grid is preserved (the UA default h1 size would break it). */
+    .rpt-heading {
+        font-size: inherit;
+        font-weight: bold;
+        text-align: center;
+        margin-block: 0.5em 1.5em;
+    }
+    /* Report-type selector group - reset the native fieldset chrome; the
+       BMS map has no visible box, only the 3 flag rows. */
+    .rpt-fieldset { margin: 0; padding: 0; border: 0; }
+    /* Each selector / date / confirm line stays on a single 80ch row. */
+    .rpt-row { white-space: nowrap; margin-block: 0.15em; }
+    /* BMS spaces the three selectors on rows 7, 9 and 11 (a blank row
+       between each); reproduce that rhythm with row spacing. */
+    .rpt-selector { margin-block: 0.6em; }
+    /* 1-character flag inputs (Monthly / Yearly / Custom) and the Y/N
+       confirm field: a single green underlined character cell. */
+    .rpt-flag { inline-size: 2ch; text-align: center; }
+    /* Turquoise label that follows each flag. */
+    .rpt-flag-label { margin-inline-start: 1.5ch; }
+    /* 'Start Date :' / '  End Date :' prompts, aligned in one column. */
+    .rpt-date-label { display: inline-block; inline-size: 13ch; text-align: end; }
+    /* MM and DD (2 digits) and YYYY (4 digits) numeric cells. */
+    .rpt-num2 { inline-size: 3ch; text-align: center; }
+    .rpt-num4 { inline-size: 5ch; text-align: center; }
+    /* '/' date separators (BLUE) and the trailing '(MM/DD/YYYY)' hint. */
+    .rpt-sep  { margin-inline: 0.25ch; }
+    .rpt-hint { margin-inline-start: 1.5ch; }
+    /* Start the date range just under the Custom selector (BMS rows 13-14). */
+    .rpt-daterange { margin-block-start: 0.75em; }
+    /* Confirmation line (BMS row 19). */
+    .rpt-confirm { margin-block-start: 1.5em; }
+    .rpt-confirm-hint { margin-inline-start: 1ch; }
+</style>
+
+<main id="main-content" class="bms-screen">
+
+    <!-- BMS lines 1-2: Tran:/Date: and Prog:/Time: bands with the centred
+         system titles. TITLE01='AWS Mainframe Modernization' (CCDA-TITLE01),
+         tranId='CR00' (WS-TRANID), programId='CORPT00C' (WS-PGMNAME). The
+         line-2 centre title (TITLE02='CardDemo'), Date and Time are supplied
+         by the controller as model attributes (title2/curDate/curTime). -->
+    <div th:replace="~{fragments/layout :: header('AWS Mainframe Modernization', 'CR00', 'CORPT00C')}"></div>
+
+    <!-- BMS line 4 (POS 4,30): screen heading, NEUTRAL bright. -->
+    <h1 class="bms-heading rpt-heading">Transaction Reports</h1>
+
+    <!-- All editable fields post back to the ReportController (CORPT00C).
+         The chosen PF key is carried by the submit button's name="pfKey". -->
+    <form th:object="${reportForm}" method="post" th:action="@{/report}">
+
+        <!-- Report-type selectors (BMS rows 7/9/11). Each is a single-character
+             flag exactly as the 3270 map defines (MONTHLY/YEARLY/CUSTOM); the
+             original behaves like a radio group (only one is chosen) but the
+             1-character field contract is preserved rather than swapping in
+             HTML radio inputs. A fieldset + visually-hidden legend gives the
+             group an accessible name without altering the visual layout. -->
+        <fieldset class="rpt-fieldset">
+            <legend class="visually-hidden">Report type</legend>
+
+            <!-- BMS row 7: MONTHLY (IC -> autofocus). -->
+            <div class="rpt-row rpt-selector">
+                <input type="text" th:field="*{monthly}" id="monthly"
+                       class="bms-input rpt-flag" maxlength="1"
+                       autocomplete="off" autofocus="autofocus" />
+                <label for="monthly" class="bms-prompt rpt-flag-label">Monthly (Current Month)</label>
+            </div>
+
+            <!-- BMS row 9: YEARLY. -->
+            <div class="rpt-row rpt-selector">
+                <input type="text" th:field="*{yearly}" id="yearly"
+                       class="bms-input rpt-flag" maxlength="1"
+                       autocomplete="off" />
+                <label for="yearly" class="bms-prompt rpt-flag-label">Yearly (Current Year)</label>
+            </div>
+
+            <!-- BMS row 11: CUSTOM. -->
+            <div class="rpt-row rpt-selector">
+                <input type="text" th:field="*{custom}" id="custom"
+                       class="bms-input rpt-flag" maxlength="1"
+                       autocomplete="off" />
+                <label for="custom" class="bms-prompt rpt-flag-label">Custom (Date Range)</label>
+            </div>
+        </fieldset>
+
+        <!-- Custom date range (BMS rows 13-14). NUM green cells separated by
+             BLUE '/' with a trailing BLUE '(MM/DD/YYYY)' hint - mirroring the
+             BMS COLOR=BLUE on the separators and format hint exactly. -->
+        <div class="rpt-row rpt-daterange">
+            <span class="bms-prompt rpt-date-label">Start Date :</span>
+            <input type="text" th:field="*{sdtMm}" id="sdtMm"
+                   class="bms-input rpt-num2" maxlength="2" inputmode="numeric"
+                   autocomplete="off" aria-label="Start date month (MM)" />
+            <span class="bms-label rpt-sep">/</span>
+            <input type="text" th:field="*{sdtDd}" id="sdtDd"
+                   class="bms-input rpt-num2" maxlength="2" inputmode="numeric"
+                   autocomplete="off" aria-label="Start date day (DD)" />
+            <span class="bms-label rpt-sep">/</span>
+            <input type="text" th:field="*{sdtYyyy}" id="sdtYyyy"
+                   class="bms-input rpt-num4" maxlength="4" inputmode="numeric"
+                   autocomplete="off" aria-label="Start date year (YYYY)" />
+            <span class="bms-label rpt-hint">(MM/DD/YYYY)</span>
+        </div>
+
+        <div class="rpt-row">
+            <span class="bms-prompt rpt-date-label">End Date :</span>
+            <input type="text" th:field="*{edtMm}" id="edtMm"
+                   class="bms-input rpt-num2" maxlength="2" inputmode="numeric"
+                   autocomplete="off" aria-label="End date month (MM)" />
+            <span class="bms-label rpt-sep">/</span>
+            <input type="text" th:field="*{edtDd}" id="edtDd"
+                   class="bms-input rpt-num2" maxlength="2" inputmode="numeric"
+                   autocomplete="off" aria-label="End date day (DD)" />
+            <span class="bms-label rpt-sep">/</span>
+            <input type="text" th:field="*{edtYyyy}" id="edtYyyy"
+                   class="bms-input rpt-num4" maxlength="4" inputmode="numeric"
+                   autocomplete="off" aria-label="End date year (YYYY)" />
+            <span class="bms-label rpt-hint">(MM/DD/YYYY)</span>
+        </div>
+
+        <!-- Confirmation (BMS row 19): TURQUOISE prompt + 1-character GREEN
+             Y/N field + NEUTRAL '(Y/N)' hint (BMS COLOR=NEUTRAL). -->
+        <div class="rpt-row rpt-confirm">
+            <span class="bms-prompt">The Report will be submitted for printing. Please confirm: </span>
+            <input type="text" th:field="*{confirm}" id="confirm"
+                   class="bms-input rpt-flag" maxlength="1"
+                   autocomplete="off" aria-label="Confirm submission (Y/N)" />
+            <span class="bms-sep rpt-confirm-hint">(Y/N)</span>
+        </div>
+
+        <!-- BMS line 23: ERRMSG (red, bright). Optional info line is unused by
+             this screen and renders nothing when the model attribute is absent. -->
+        <div th:replace="~{fragments/layout :: messages(${reportForm.errMsg}, ${infoMsg})}"></div>
+
+        <!-- BMS line 24: PF-key legend rendered as real submit buttons so the
+             keys are operable. The shared .bms-pfkey CSS styles them as the
+             yellow terminal legend. The pressed key is sent as pfKey:
+             ENTER=Continue (ENTER) and F3=Back (PF3). -->
+        <div class="bms-footer bms-pfkey">
+            <button type="submit" name="pfKey" value="ENTER">ENTER=Continue</button>
+            <button type="submit" name="pfKey" value="PF3">F3=Back</button>
+        </div>
+
+    </form>
+
+</main>
+
+</body>
+</html>
