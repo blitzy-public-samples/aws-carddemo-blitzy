@@ -41,6 +41,24 @@ spring:
     name: carddemo
 
   # ---------------------------------------------------------------------------
+  # Spring Cloud AWS - exclude the eager Secrets Manager auto-configuration
+  # ---------------------------------------------------------------------------
+  # The spring-cloud-aws-starter-secrets-manager dependency contributes
+  # SecretsManagerAutoConfiguration, which eagerly builds a SecretsManagerClient
+  # bean; constructing that client resolves an AWS region at startup and FAILS in
+  # any environment without one (local dev, the Testcontainers suite, CI). We do
+  # NOT use an injected client - production loads secrets DECLARATIVELY via
+  # `spring.config.import: aws-secretsmanager:...` (see application-prod.yml),
+  # which is a separate Spring ConfigData mechanism that is NOT affected by
+  # spring.autoconfigure.exclude. Excluding the auto-configuration here keeps the
+  # default and test profiles hermetic (no AWS region/credentials needed) while
+  # leaving production secret loading via the prod-only config import fully
+  # functional.
+  autoconfigure:
+    exclude:
+      - io.awspring.cloud.autoconfigure.config.secretsmanager.SecretsManagerAutoConfiguration
+
+  # ---------------------------------------------------------------------------
   # Datasource (VSAM KSDS / sequential files -> PostgreSQL) - AAP §0.4.1, §0.6.2
   # ---------------------------------------------------------------------------
   # All four values are externalized. The defaults match docker-compose.yml
