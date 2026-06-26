@@ -1,438 +1,416 @@
 # Blitzy Project Guide — AWS CardDemo: COBOL → Java 25 / Spring Boot 3.5 Migration
 
-> **Brand legend** — In every chart and status indicator: **Completed / AI Work = Dark Blue `#5B39F3`**, **Remaining / Not Completed = White `#FFFFFF`**, headings/accents = Violet-Black `#B23AF2`, highlights = Mint `#A8FDD9`.
+> **AAP-Scoped Completion: 89.8%** &nbsp;•&nbsp; **657h completed / 732h total / 75h remaining**
+> Brand legend — <span style="color:#5B39F3">**Completed / AI Work = Dark Blue `#5B39F3`**</span> &nbsp;|&nbsp; **Remaining = White `#FFFFFF`**
 
 ---
 
 ## 1. Executive Summary
 
 ### 1.1 Project Overview
-
-This project migrates **AWS CardDemo** — a z/OS COBOL / CICS / VSAM / JCL / BMS credit-card management system — to a modern **Java 25 LTS + Spring Boot 3.5.15** layered application, in the **same repository**, with the original COBOL assets retained read-only under `/legacy`. Copybooks become JPA entities/DTOs, VSAM files become PostgreSQL tables via Spring Data JPA, COBOL paragraphs become service methods preserving perform order, JCL becomes Spring Batch jobs, and 17 BMS/CICS transactions become Spring MVC controllers with Thymeleaf screens. The acceptance bar is **100% behavioral parity with zero functional regression**, enforced through decimal-fidelity arithmetic, golden-file parity tests, and a 100% paragraph→method traceability matrix. Target users are card operations/administration staff who previously used 3270 terminals.
+AWS CardDemo — a z/OS COBOL / CICS / VSAM / JCL / BMS credit-card management system (28 COBOL programs, 28 copybooks, 17 BMS screens, 29 JCL members) — has been migrated to a layered **Java 25 LTS + Spring Boot 3.5.15** service with **100% behavioral parity** as the acceptance bar. Copybooks became JPA entities/DTOs, VSAM files became PostgreSQL tables via Spring Data JPA, COBOL paragraphs became control-flow-preserving service methods, JCL became Spring Batch jobs, and BMS screens became Thymeleaf views. The legacy COBOL is retained read-only under `/legacy`. Target users are card-operations staff (online transactions) and batch operations (posting, interest, statements, reports). Business impact: removes mainframe dependency while preserving every business rule and decimal-exact calculation.
 
 ### 1.2 Completion Status
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieOuterStrokeColor':'#B23AF2','pieOuterStrokeWidth':'2px','pieTitleTextSize':'16px','pieSectionTextSize':'14px','pieSectionTextColor':'#111111','pieLegendTextColor':'#111111'}}}%%
-pie showData title Completion — 95.1% Complete (740h of 778h)
-    "Completed Work (AI)" : 740
-    "Remaining Work" : 38
+%%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieOuterStrokeColor':'#B23AF2','pieOuterStrokeWidth':'2px','pieSectionTextColor':'#000000','pieLegendTextColor':'#000000','pieTitleTextSize':'16px'}}}%%
+pie showData title AAP-Scoped Completion — 89.8% Complete
+    "Completed Work (AI) — #5B39F3" : 657
+    "Remaining Work — #FFFFFF" : 75
 ```
 
-| Metric | Value |
+| Metric | Hours |
 |---|---|
-| **Total Hours** | **778 h** |
-| **Completed Hours (AI + Manual)** | **740 h** (740 AI / 0 manual) |
-| **Remaining Hours** | **38 h** |
-| **Percent Complete** | **95.1 %** (740 ÷ 778) |
+| **Total Project Hours** | **732** |
+| Completed Hours (AI: 657 + Manual: 0) | **657** |
+| Remaining Hours | **75** |
+| **Percent Complete** | **89.8%** |
 
-> Completion is computed using AAP-scoped hours only (PA1): `Completion % = Completed ÷ (Completed + Remaining) = 740 ÷ 778 = 95.1%`. Every completed hour traces to an AAP deliverable; every remaining hour is path-to-production.
+> Completion formula (PA1, AAP-scoped + path-to-production only): `657 / (657 + 75) = 657 / 732 = 89.75% → 89.8%`. All completed hours are autonomous AI work; no manual hours were logged this engagement.
 
 ### 1.3 Key Accomplishments
-
-- ✅ **Complete domain model** — 11 JPA entities + 3 composite-key IDs from copybooks; **all** monetary/rate fields use `BigDecimal` (zero `float`/`double`).
-- ✅ **Persistence layer** — 11 Spring Data JPA repositories; Flyway `V1__schema.sql` (incl. the **3 VSAM alternate indexes** from `LISTCAT`) and `V2__seed_reference_data.sql`.
-- ✅ **Online tier** — 17 CICS transactions → 17 controllers + 17 services (+ `BaseScreenController`), 17 screen DTOs, 18 Thymeleaf templates; COMMAREA navigation, AID/PF-key handling, and `ADMIN`/`USER` role gating preserved.
-- ✅ **Batch tier** — 11 Spring Batch jobs + 10 services + `FileIoService`; interest truncation parity `(bal*rate)/1200` with `RoundingMode.DOWN`; 430-byte `DALYREJS` reject writer; JCL params → `JobParameters`.
-- ✅ **Security hardening** — Spring Security + BCrypt, externalized credentials, role gating, session-id rotation (CWE-384); clear-text password field and default credentials eliminated.
-- ✅ **Quality gates green** — zero-warning build (`-Werror`), **1330/1330 tests pass**, **92.01% line coverage** (≥80% gate), Spotless 272/272 clean, **100% paragraph→method** traceability matrix (840 lines).
-- ✅ **Build & CI** — Maven (Java 25 / Spring Boot 3.5.15), Maven wrapper, Dockerfile, docker-compose (PostgreSQL 16), GitHub Actions CI with JaCoCo and OWASP dependency-check gates.
-- ✅ **Legacy preserved** — 148 COBOL/JCL/BMS files relocated read-only under `/legacy`; no source deleted.
+- ✅ **Full migration delivered** — 134 main Java files (≈45,867 LOC) implementing every AAP layer: 11 entities + 3 composite IDs, 27 DTOs, 12 repositories, 17 online services, 10 batch services, 18 controllers, 17 Thymeleaf screens, 6 config / 6 exception / 6 util classes.
+- ✅ **1332 tests pass** (0 failures, 0 errors, 0 skipped) across 140 test files (≈38,513 LOC).
+- ✅ **JaCoCo line coverage 92.06%** (7,250 / 7,875) — well above the ≥80% gate; method 97.65%, class 99.22%.
+- ✅ **Zero-warning build** under `-Werror -Xlint:all,-processing` on Java 25; Spotless (googleJavaFormat) clean.
+- ✅ **Decimal & arithmetic parity** — all monetary/rate fields are `BigDecimal` (0 `float`/`double` field declarations); interest uses `RoundingMode.DOWN` at scale 2 with the `/1200` divisor (no `ROUNDED`).
+- ✅ **VSAM key/index parity** — Flyway schema encodes the 3 alternate indexes (`card_acct_id`, `xref_acct_id`, `transaction.proc_ts`) from the LISTCAT catalog.
+- ✅ **Security hardened** — Spring Security + BCrypt; clear-text password field and default credentials replaced with hashed, externalized credentials; session-id rotation on sign-on.
+- ✅ **100% paragraph→method traceability matrix** (`docs/traceability-matrix.md`, 840 lines / 617 rows) + golden-file parity tests.
+- ✅ **Path-to-production wired** — gated OWASP CI, GHCR CD pipeline, prod-gated batch scheduling, Terraform RDS, and AWS Secrets Manager prod profile.
+- ✅ **Runnable artifact** — `target/carddemo-0.0.1-SNAPSHOT.jar`; full Spring context loads under Testcontainers PostgreSQL.
+- ✅ **Legacy retained read-only** under `/legacy` (148 COBOL/JCL/BMS/data files), enforced by a dedicated CI job.
 
 ### 1.4 Critical Unresolved Issues
-
 | Issue | Impact | Owner | ETA |
 |---|---|---|---|
-| OWASP dependency-check never executed against live NVD (offline opt-out) | Cannot confirm the AAP "zero critical/high CVE" gate; potential transitive CVEs unverified | Security / DevOps | 0.5 day |
-| Production secrets not yet in a vault; default seed identities (`ADMIN001`/`USER0001`) not rotated | Insecure if deployed as-is with default/blank credentials | DevOps / Security | 0.5 day |
-| No production deployment / CD pipeline or managed PostgreSQL | Application cannot reach production without infra + deploy automation | DevOps / Platform | 1.5–2 days |
-| Behavioral-parity UAT against production-representative data not yet performed | Final parity sign-off pending despite green golden-file tests | QA / Business | 1 day |
+| OWASP dependency-check gate never executed against live NVD | Unknown critical/high CVE posture; release security sign-off blocked | DevSecOps | 0.5 day |
+| `terraform apply` not run; prod RDS not provisioned | No production datastore; cannot deploy | Platform/Infra | 1 day |
+| Prod-profile secret loading not exercised vs real AWS Secrets Manager | Risk of startup/credential misconfiguration at first deploy | Platform/Infra | 0.5 day |
+| Production master-data ETL not built (only reference data seeded) | Cannot cut over real account/customer/card/transaction data | Data Eng | 2 days |
+| No live end-to-end UI/runtime verification on a deployed environment | Parity confirmed only via slice/integration tests, not a running deploy | QA | 1 day |
 
-> These are **path-to-production** items, not defects in delivered code. All AAP code deliverables are complete and validated.
+> These are **path-to-production gaps requiring live infrastructure/credentials**, not defects in the delivered code. The autonomous build is green on the committed state.
 
 ### 1.5 Access Issues
-
-| System / Resource | Type of Access | Issue Description | Resolution Status | Owner |
+| System/Resource | Type of Access | Issue Description | Resolution Status | Owner |
 |---|---|---|---|---|
-| NVD (National Vulnerability Database) | API key | OWASP dependency-check requires an `NVD_API_KEY` repository secret to run the online scan; absent in the autonomous environment | Open — set repo secret | DevOps |
-| Production PostgreSQL | Database credentials/host | No managed production instance/credentials provisioned (dev uses docker-compose only) | Open — provision instance | Platform |
-| Secrets manager / vault | Credential store | Production secret store for `SPRING_DATASOURCE_*`, `CARDDEMO_ADMIN_PASSWORD`, `CARDDEMO_USER_PASSWORD` not yet configured | Open — configure vault | DevOps |
-| Container registry / deploy target | Push/deploy permissions | No registry or deployment environment wired for CD | Open — provision CD target | Platform |
-
-> No access issues blocked autonomous build/test validation — the full suite ran offline against Testcontainers PostgreSQL with a complete local `.m2` cache.
+| NVD (NIST vuln DB) | API key (`NVD_API_KEY`) | OWASP gate needs an authenticated key; anonymous NVD is HTTP-429 rate-limited, so the gate could not run in-sandbox | Pending — add repo secret; CI is already wired to consume it | DevSecOps |
+| AWS account (RDS, Secrets Manager, IAM) | Cloud credentials + `terraform` binary | Not available in the sandbox, so Terraform was validated structurally but not applied | Pending — provide deploy-time AWS access | Platform/Infra |
+| Container registry (GHCR → ECR) | Registry credentials | CD targets GHCR via `GITHUB_TOKEN`; ECR swap is documented but needs AWS registry creds | Pending — configure at deploy time | Platform/Infra |
 
 ### 1.6 Recommended Next Steps
-
-1. **[High]** Set the `NVD_API_KEY` CI secret and run `./mvnw clean verify -DnvdApiKey=$NVD_API_KEY`; triage and remediate any critical/high CVEs (the gate fails on CVSS ≥ 7).
-2. **[High]** Wire production secrets into a vault/secrets-manager and rotate the default seed identities to strong, unique credentials.
-3. **[High]** Perform final human code review and behavioral-parity sign-off (spot-check the traceability matrix, golden-file diffs, and decimal/truncation behavior).
-4. **[Medium]** Provision and harden production PostgreSQL 16+ (TLS, backups) and build the CD/deployment pipeline + batch scheduling.
-5. **[Medium]** Execute UAT and golden-file parity acceptance against production-representative data.
+1. **[High]** Add the `NVD_API_KEY` repository secret and run CI so the OWASP gate (`failBuildOnCVSS=7`) executes to completion; triage/suppress findings.
+2. **[High]** `terraform apply` the `infra/` stack in a non-prod account, then populate AWS Secrets Manager (`carddemo/prod/db`) and verify the prod profile boots and Flyway migrates.
+3. **[High]** Deploy the image and perform end-to-end smoke + UI verification (sign-on, role-gated menus, account/card/transaction screens, one batch run).
+4. **[Medium]** Build and run the production master-data migration ETL with reconciliation counts; author container-orchestration manifests (ECS/K8s/Helm).
+5. **[Medium]** Complete the human parity acceptance sign-off using the traceability matrix and stand up monitoring/alerting.
 
 ---
 
 ## 2. Project Hours Breakdown
 
 ### 2.1 Completed Work Detail
-
 | Component | Hours | Description |
-|---|---:|---|
-| Build & CI/CD scaffolding | 32 | `pom.xml` (Java 25, Spring Boot 3.5.15), Maven wrapper, `Dockerfile`, `docker-compose.yml` (PostgreSQL 16), `.gitignore`, GitHub Actions `ci.yml` with JaCoCo + OWASP + Spotless gates |
-| Domain model — entities & composite keys | 40 | 11 JPA entities + 3 composite-key IDs from copybooks; `BigDecimal` decimal fidelity; fixed-width column semantics |
-| Persistence — JPA repositories | 24 | 11 Spring Data repositories + `UserListProjection`; alternate-index/paginated queries |
-| Database schema & seed (Flyway) | 24 | `V1__schema.sql` (DDL, PKs, 3 VSAM alternate indexes) + `V2__seed_reference_data.sql` |
-| Online controllers | 80 | 17 transaction controllers + `BaseScreenController`; COMMAREA navigation, AID/PF-key handling, role gating |
-| Online business services | 96 | 17 services preserving COBOL paragraph perform-order control flow |
-| Screen DTOs & Thymeleaf UI | 56 | 17 screen DTOs, 18 templates, `CardDemoCommarea`, `CardWorkArea` (REDEFINES accessors) |
-| Spring Batch jobs & services | 120 | 11 job configs + 10 services + `FileIoService`; truncation parity, 430-byte reject writer, `JobParameters` |
-| Security hardening | 28 | `SecurityConfig`, `SecuritySeeder`, BCrypt, externalized creds, role gating, session-id rotation |
-| Exception handling | 16 | 6 typed exceptions; FILE STATUS/RESP mapping; `@ControllerAdvice` global handler |
-| Utilities & formatting | 28 | `CobolStringUtils`, `DateValidationService` (CSUTLDTC), `NumberFormatter`, `Messages`, `LookupCodes`, `MenuOptions` |
-| Infrastructure config | 12 | `DataSourceConfig`, `BatchConfig`, `JacksonConfig` |
-| Test suite | 160 | 139 test classes / 1330 tests — unit, WebMvc slices, Testcontainers integration, Spring Batch, golden-file parity (92.01% coverage) |
-| Documentation | 24 | `README.md` migration update + 840-line `docs/traceability-matrix.md` (100% paragraph→method) |
-| **Total Completed** | **740** | **= Completed Hours in Section 1.2** |
+|---|---|---|
+| Build, CI & Project Scaffolding | 18 | `pom.xml` (Spring Boot 3.5.15 BOM, Java 25, JaCoCo/OWASP/Spotless/Flyway plugins), Maven wrapper, `Dockerfile`, `docker-compose.yml`, `.gitignore` |
+| Legacy Asset Retention | 6 | Relocated 148 COBOL/JCL/BMS/CSD/data files to read-only `/legacy`; CI enforcement job |
+| Domain Model & Composite Keys | 28 | 11 JPA entities + 3 composite-key types from copybooks; `BigDecimal` decimal fidelity, fixed-width semantics |
+| DTO Layer | 30 | `CardDemoCommarea`, `CardWorkArea`, 17 screen DTOs, 8 report DTOs (field lengths, AID/PF-key, REDEFINES accessors) |
+| Persistence: Repositories + Flyway | 32 | 12 Spring Data JPA repositories; `V1__schema.sql` (PKs + 3 VSAM alternate indexes) + `V2__seed_reference_data.sql` |
+| Online Services | 110 | 17 services translating CICS programs with preserved perform-order control flow, role gating, COMMAREA navigation |
+| Web Controllers + Thymeleaf Screens | 86 | 18 controllers + 17 screen templates + fragments; PF-key/AID routing, validation, success/error feedback |
+| Batch Layer | 130 | 10 batch services + 11 jobs (posting, interest `/1200` truncation, statements, reports, extracts) + readers/processors/writers + reject-file writer |
+| Cross-cutting: Config / Exceptions / Utilities | 46 | DataSource/Batch/Security/Jackson config; FILE STATUS→typed exception hierarchy + `@ControllerAdvice`; date-validation & numeric/report formatters |
+| Security Hardening | 22 | Spring Security, BCrypt, credential externalization, session-fixation fix, admin route gating |
+| Automated Test Suite | 96 | 1332 tests / 140 files: unit + Mockito service + WebMvc slice + Testcontainers integration + golden-file parity; JaCoCo wiring |
+| Documentation & Traceability Matrix | 24 | README (Java build/run/structure), `docs/traceability-matrix.md` (100% paragraph→method), infra README |
+| Path-to-Production Additions (D2–D8) | 29 | Gated OWASP CI, GHCR CD, prod-gated `BatchSchedulingConfig`, Terraform RDS stack, Spring Cloud AWS Secrets Manager dep + autoconfig fix, `application-prod.yml` |
+| **Total Completed** | **657** | |
 
 ### 2.2 Remaining Work Detail
-
 | Category | Hours | Priority |
-|---|---:|---|
-| OWASP dependency-check NVD online scan & CVE remediation | 6 | High |
-| Final human code review & behavioral-parity sign-off | 8 | High |
-| Production secrets management & credential rotation | 4 | High |
-| Production PostgreSQL provisioning & backups | 6 | Medium |
-| Deployment / CD pipeline & batch scheduling | 8 | Medium |
-| UAT & golden-file parity acceptance vs production data | 6 | Medium |
-| **Total Remaining** | **38** | **= Remaining Hours in Section 1.2 & Section 7** |
+|---|---|---|
+| Execute OWASP dependency-check in CI with `NVD_API_KEY`; triage/suppress CVEs | 4 | High |
+| `terraform apply`: provision AWS RDS PostgreSQL 16; validate TLS connectivity + Flyway migrate | 6 | High |
+| Populate AWS Secrets Manager + verify prod-profile secret loading end-to-end | 4 | High |
+| Production runtime smoke test + UI verification on a deployed environment | 6 | High |
+| Container-orchestration manifests (ECS task def / Kubernetes / Helm) | 12 | Medium |
+| Production master-data migration ETL (account/customer/card/transaction from VSAM extracts) | 16 | Medium |
+| GHCR → ECR image registry swap configuration | 3 | Medium |
+| Human parity acceptance review / sign-off (traceability + spot-check) | 12 | Medium |
+| Monitoring / observability + alerting (CloudWatch dashboards & alarms) | 6 | Medium |
+| Load / performance testing in a prod-like environment | 6 | Low |
+| **Total Remaining** | **75** | |
 
-> **Optional (post-launch, 0 h in scope):** extended Actuator dashboards/alerting, closing the residual ~8% coverage gap (already exceeds the 80% gate at 92.01%), and further performance/caching tuning. Excluded from the 38 h to preserve cross-section integrity.
-
-### 2.3 Hours Reconciliation
-
-| Check | Result |
+### 2.3 Total Hours Reconciliation & Methodology
+| Bucket | Hours |
 |---|---|
-| Section 2.1 total | 740 h |
-| Section 2.2 total | 38 h |
-| 2.1 + 2.2 | **778 h = Total Project Hours (Section 1.2)** ✅ |
-| Remaining (1.2 = 2.2 = 7) | **38 h identical** ✅ |
-| Completion % | 740 ÷ 778 = **95.1 %** ✅ |
+| Section 2.1 — Completed | 657 |
+| Section 2.2 — Remaining | 75 |
+| **Total Project (Section 1.2)** | **732** |
+
+- **Methodology (PA1/PA2):** Completion is measured strictly over AAP-scoped deliverables plus standard path-to-production activities. `Completion % = Completed / (Completed + Remaining) = 657 / 732 = 89.75% → 89.8%`.
+- **Integrity:** `2.1 (657) + 2.2 (75) = 732`; the **75h remaining** value is identical in Sections 1.2, 2.2, and 7.
+- **Priority split of remaining:** High **20h**, Medium **49h**, Low **6h** = **75h**.
 
 ---
 
 ## 3. Test Results
-
-All tests below originate from Blitzy's autonomous validation logs — re-confirmed on disk from `target/surefire-reports` (137 class reports summing to **1330** tests) and `target/site/jacoco/jacoco.csv` (line coverage **7202/7827 = 92.01%**). Final authoritative run: `./mvnw -o clean verify`.
+All figures originate from Blitzy's autonomous validation run (`./mvnw -B clean verify`), captured in `target/surefire-reports/` (138 result files) and `target/site/jacoco/`.
 
 | Test Category | Framework | Total Tests | Passed | Failed | Coverage % | Notes |
-|---|---|---:|---:|---:|---:|---|
-| Unit | JUnit 5 (Jupiter) + Mockito + AssertJ | 453 | 453 | 0 | — | Service/util/domain logic, COBOL-faithful arithmetic & string handling (24 classes) |
-| Web / Controller slice | Spring MVC Test (`@WebMvcTest`) | 114 | 114 | 0 | — | Controller routing, CSRF, role gating, screen request/response contracts (21 classes) |
-| Integration | Testcontainers PostgreSQL 16 + `@SpringBootTest` / `@DataJpaTest` + Flyway | 746 | 746 | 0 | — | End-to-end repository/service/web against real PostgreSQL; golden-file parity (81 classes) |
-| Spring Batch | `spring-batch-test` (`JobLauncherTestUtils`) | 17 | 17 | 0 | — | All 11 jobs launch → COMPLETED against real PostgreSQL (11 classes) |
-| **Total** | **JUnit 5 platform** | **1330** | **1330** | **0** | **92.01% (line, aggregate)** | **0 skipped; 137 classes; JaCoCo gate ≥80% met** |
+|---|---|---|---|---|---|---|
+| Domain / DTO / Util / Exception Unit | JUnit 5 + AssertJ | 439 | 439 | 0 | — | Entity, DTO, formatter, date-validation, exception parity |
+| Service Unit (online + batch) | JUnit 5 + Mockito | 595 | 595 | 0 | — | Control-flow & business-rule parity (online 503 / batch 92) |
+| Web Controller Slice | Spring `MockMvc` (`@WebMvcTest`) | 120 | 120 | 0 | — | Routing, role gating, response contracts for all screens |
+| Batch Job Config / Step Integration | Spring Batch Test + Testcontainers | 87 | 87 | 0 | — | 11 job configs, combine/sort + category-balance steps |
+| Repository Integration | Spring Data JPA + Testcontainers PostgreSQL | 55 | 55 | 0 | — | CRUD, key semantics, alternate-index queries |
+| Config & Security | Spring Boot Test / Mockito | 32 | 32 | 0 | — | DataSource/Batch/Security/Jackson + scheduling config |
+| Application Context Load | Spring Boot Test + Testcontainers | 4 | 4 | 0 | — | Full context boots under the test profile |
+| **Totals** | — | **1332** | **1332** | **0** | **92.06% (line, aggregate)** | 0 skipped; JaCoCo line 92.06%, instruction 92.51%, method 97.65%, branch 74.03% |
 
-**Key validation facts**
-- 100% pass rate: **1330 passed, 0 failed, 0 errors, 0 skipped** (no `@Disabled`/`assume` skips).
-- Integration tests genuinely executed against real Testcontainers PostgreSQL 16 (Testcontainers 1.21.4 + Ryuk; Flyway V1+V2 applied).
-- Aggregate JaCoCo line coverage **92.01%** (7202 covered / 625 missed / 7827 total); coverage is measured project-wide rather than per test category.
+- **Golden-file parity:** `InterestCalculationGoldenParityTest` and `TransactionCombineSortParityTest` assert Java output byte/semantic-equality against 19 golden fixtures (statements, reports, reject files, sorted output).
+- **Integrity note:** Coverage is reported at the project (aggregate) level by JaCoCo; per-category coverage rolls up into the 92.06% line figure. All tests above are from Blitzy's autonomous logs.
 
 ---
 
 ## 4. Runtime Validation & UI Verification
 
-Validated via the boot jar (61 MB) started against branch PostgreSQL 16; startup ≈ 4.7 s.
+**Build & Runtime**
+- ✅ **Operational** — `./mvnw -B clean verify` → BUILD SUCCESS, zero warnings (`-Werror -Xlint:all,-processing`).
+- ✅ **Operational** — 1332/1332 tests green; full Spring context loads under the test profile via Testcontainers PostgreSQL.
+- ✅ **Operational** — Runnable fat jar produced (`target/carddemo-0.0.1-SNAPSHOT.jar`, 74 MB); default profile runnable via `docker compose up -d db` + `./mvnw spring-boot:run`.
+- ✅ **Operational** — Flyway `V1`/`V2` migrate cleanly against Testcontainers PostgreSQL 16 (`ddl-auto=validate`).
 
-**Application bootstrap**
-- ✅ HikariCP connection pool (`CardDemoHikariPool`) — Operational
-- ✅ Flyway migrate/validate (V1 schema + V2 seed) — Operational
-- ✅ Hibernate / JPA — Operational
-- ✅ Spring Security filter chain + `SecuritySeeder` (idempotent) — Operational
-- ✅ Embedded Tomcat on `:8080` — Operational
+**UI Verification (server-side Thymeleaf, 17 screens)**
+- ✅ **Operational** — 120 `MockMvc` controller-slice tests assert view names, model attributes, role gating, and response contracts for sign-on, menus, account/card/transaction, bill-pay, report, and user-management screens.
+- ⚠ **Partial** — Live end-to-end browser verification on a *deployed* environment is not yet performed (covered by remaining task H4); fidelity is currently asserted through slice + integration tests against the BMS field contracts.
 
-**Online tier (CICS parity)**
-- ✅ Sign-on screen renders (Thymeleaf + CSRF) — Operational
-- ✅ Authentication + role routing: admin → `/admin` (COADM01C / `CA00`), user → `/menu` (COMEN01C / `CM00`) — Operational
-- ✅ Role gating: `USER` → `/admin` & `/user-list` = **403**; anonymous → `/menu` = **401** — Operational
-- ✅ DB-backed screens: user-list paginated over **5014** users; account-view (`CAVW`) — Operational
-- ✅ COBOL-faithful behaviors: password upper-casing before BCrypt, `PASSWD PIC X(8)` length limit, pseudo-conversational error redisplay, session-id rotation (CWE-384) — Operational
-
-**Batch tier (JCL parity)**
-- ✅ All 11 jobs launch → COMPLETED in integration tests against real PostgreSQL (0 failures): `accountExtract`, `cardExtract`, `categoryBalanceReport`, `customerExtract`, `dailyTransactionPost`, `interestCalculation`, `statementGeneration`, `transactionCombine`, `transactionPosting`, `transactionReport`, `xrefExtract` — Operational
-- ✅ All batch beans wire into the production application context — Operational
-
-**API integration**
-- ⚠ External upstream/downstream integration & live batch scheduling — **Partial** (validated against golden-file fixtures; production integration/UAT pending — see Section 6 I1/I2)
+**API / Integration Outcomes**
+- ✅ **Operational** — Repository integration tests exercise real PostgreSQL (Testcontainers) including alternate-index lookups and composite keys.
+- ⚠ **Partial** — Prod profile (AWS Secrets Manager + RDS) validated by design (ConfigData SPI inspection + hermetic suite) but **not** exercised against live AWS.
+- ❌ **Failing/Not-run** — OWASP dependency-check gate not executed against live NVD in-sandbox (wired in CI; remaining task H1).
 
 ---
 
 ## 5. Compliance & Quality Review
+Cross-mapping AAP quality gates and parity constraints to status, with fixes applied during autonomous validation.
 
-Cross-mapping AAP deliverables/gates to Blitzy quality benchmarks. Fixes applied during the autonomous build are noted; the matrix reflects the final HEAD (`14591164`).
+| AAP Requirement / Gate | Benchmark | Status | Progress |
+|---|---|---|---|
+| Zero-warning build | `-Werror -Xlint:all,-processing` + Spotless | ✅ Pass | 100% |
+| Line coverage ≥ 80% | JaCoCo line ratio | ✅ Pass — 92.06% | 100% |
+| OWASP dependency-check — zero critical/high | `failBuildOnCVSS=7` | ⚠ Wired, not executed | 80% (gate configured in CI; needs NVD key run) |
+| 100% paragraph traceability | `docs/traceability-matrix.md` | ✅ Pass — 840 lines / 617 rows | 100% |
+| Decimal fidelity (`BigDecimal`, no float/double) | All monetary/rate fields | ✅ Pass — 0 float/double fields | 100% |
+| Truncation/rounding parity | `RoundingMode.DOWN`, scale 2, `/1200` | ✅ Pass | 100% |
+| VSAM key & alternate-index parity | 3 alternate indexes from LISTCAT | ✅ Pass | 100% |
+| FILE STATUS → typed exceptions | Exception hierarchy + `@ControllerAdvice` | ✅ Pass | 100% |
+| Security: BCrypt + no hardcoded secrets | Hashed, externalized credentials | ✅ Pass | 100% |
+| Local-only validation (Testcontainers) | No mainframe required | ✅ Pass | 100% |
+| Legacy retained read-only under `/legacy` | Not modified/deleted | ✅ Pass — CI-enforced | 100% |
+| Licensing | Apache 2.0; compatible deps | ✅ Pass | 100% |
 
-| Deliverable / Gate | Benchmark | Status | Progress | Notes |
-|---|---|---|---|---|
-| Behavioral parity (28 COBOL programs) | 100% parity, zero regression | ✅ Pass | ▰▰▰▰▰ | Golden-file parity tests + 100% paragraph→method traceability |
-| Decimal fidelity (§0.6.1) | `BigDecimal`, no float/double | ✅ Pass | ▰▰▰▰▰ | 0 float/double in domain; truncation `(bal*rate)/1200` `RoundingMode.DOWN` |
-| VSAM→PG keys & alt indexes (§0.6.2) | 3 alternate indexes preserved | ✅ Pass | ▰▰▰▰▰ | `ix_card_acct_id`, `ix_card_xref_acct_id`, `ix_transaction_proc_ts` w/ LISTCAT refs |
-| FILE STATUS → exceptions (§0.6.4) | Status-to-exception parity | ✅ Pass | ▰▰▰▰▰ | Typed hierarchy + `@ControllerAdvice`; upsert on `'00' OR '23'` |
-| Pseudo-conversational nav & role gating (§0.6.5) | COMMAREA + ADMIN/USER | ✅ Pass | ▰▰▰▰▰ | `hasRole` + `@PreAuthorize` defense-in-depth |
-| Credential hygiene (§0.6.6) | Hashed + externalized, no hardcoding | ✅ Pass | ▰▰▰▰▰ | BCrypt; env-driven `CARDDEMO_*_PASSWORD`; default rotation is path-to-prod |
-| Zero-warning build | Clean compile, no warnings | ✅ Pass | ▰▰▰▰▰ | `-Werror -Xlint:all,-processing`; BUILD SUCCESS |
-| Test coverage ≥80% line | JaCoCo gate | ✅ Pass | ▰▰▰▰▰ | **92.01%** (7202/7827) |
-| Code style | Spotless google-java-format | ✅ Pass | ▰▰▰▰▰ | 272/272 files clean |
-| 100% paragraph traceability | `docs/traceability-matrix.md` | ✅ Pass | ▰▰▰▰▰ | 840 lines, every paragraph → method |
-| Same-repo migration, legacy retained | Read-only `/legacy` | ✅ Pass | ▰▰▰▰▰ | 148 files relocated; untouched |
-| Licensing | Apache-2.0 compatible | ✅ Pass | ▰▰▰▰▰ | LICENSE/NOTICE unchanged |
-| **OWASP zero critical/high CVE** | Dependency-check gate | ⚠ **Partial** | ▰▰▰▰▱ | Gate wired (`failBuildOnCVSS=7`, NVD cache) but **not executed** offline — run with `NVD_API_KEY` |
+**Fixes applied during autonomous validation (from commit history):** OWASP CI gate hardening + CEEDAYS date parity + PII-redaction in logs (CWE-532) + zero-skipped-tests; session-id rotation on sign-on (SEC-001 / CWE-384); account-update optimistic locking + graceful monetary-field validation; list-pagination OOM + batch-memory + HikariCP tuning; visual-fidelity and accessibility fixes on BMS screens.
+
+**Outstanding compliance item:** OWASP gate execution against live NVD (remaining task H1).
 
 ---
 
 ## 6. Risk Assessment
-
 | Risk | Category | Severity | Probability | Mitigation | Status |
 |---|---|---|---|---|---|
-| T1 — Behavioral-parity edge cases across 28 COBOL programs | Technical | Medium | Low | 1330 tests + golden-file parity + 100% traceability + UAT | Mitigated (residual to UAT) |
-| T2 — Coverage gap ~8% (625/7827 lines) | Technical | Low | Low | Targeted tests for uncovered branches | Accepted (exceeds 80% at 92.01%) |
-| T3 — Decimal truncation extreme-value edge cases | Technical | Medium | Low | `BigDecimal` scale + `RoundingMode.DOWN` tests | Mitigated |
-| S1 — OWASP zero-CVE gate unverified (offline opt-out) | Security | **High** | Medium | Run with `NVD_API_KEY` in CI; triage/remediate | **Open** |
-| S2 — Production secrets not in vault (env vars only) | Security | Medium | Medium | Integrate secrets manager/vault | Open |
-| S3 — Default seed identities `ADMIN001`/`USER0001` | Security | Medium | Medium | Set strong `CARDDEMO_*_PASSWORD`; rotate in prod | Open |
-| O1 — No CD/deployment pipeline (CI builds+tests only) | Operational | Medium | High | Add CD stage (registry push + deploy) | Open |
-| O2 — No Actuator/health/metrics endpoints | Operational | Low-Med | Medium | Add `spring-boot-starter-actuator` + monitoring | Open |
-| O3 — Prod PostgreSQL provisioning + backups absent | Operational | Medium | High | Provision managed PG, backups, run Flyway | Open |
-| I1 — UAT/parity acceptance vs live upstream/downstream pending | Integration | Medium | Low | Formal UAT + golden-file acceptance vs prod data | Open |
-| I2 — Prod batch scheduling/triggering not wired | Integration | Low-Med | Medium | Wire scheduler (cron/orchestrator) | Open |
-
-> All open risks map to the 38 h path-to-production bucket; none indicates an incomplete AAP code deliverable. Highest priority: **S1 (OWASP)**.
+| Branch coverage 74.03% vs line 92.06% — complex batch/exception branches under-tested | Technical | Medium | Medium | Add targeted edge-case tests on posting/interest/reject branches before cutover | Open |
+| Parity validated only vs golden fixtures + units (local-only), not live mainframe | Technical | Medium | Low–Med | Parallel-run comparison during cutover + human parity sign-off | Mitigated |
+| Java 25 + Spring Boot 3.5.x is a very new runtime combination | Technical | Low | Low | Pinned Spring Boot BOM; full green suite on Java 25 | Mitigated |
+| OWASP gate not executed against live NVD — unknown critical/high CVEs | Security | High | Low–Med | Run gated CI scan with `NVD_API_KEY`; remediate/suppress before release | Open |
+| Prod secret loading unexercised vs real AWS Secrets Manager | Security | Medium | Low | Validate in a non-prod AWS account first; ConfigData SPI design proven | Open |
+| No app-layer encryption-at-rest / MFA | Security | Low | N/A | Out of AAP scope (v2); RDS storage encryption enabled in Terraform | Accepted |
+| No monitoring / observability / alerting configured | Operational | Medium | Medium | Add CloudWatch dashboards + alarms before go-live | Open |
+| No container-orchestration manifests; deployment topology undefined | Operational | Medium | Medium | Author ECS/K8s/Helm manifests with health checks + secret wiring | Open |
+| In-app `@Scheduled` batch may double-run if horizontally scaled | Operational | Medium | Low–Med | Run scheduler on a single instance or add a distributed lock (e.g., ShedLock) | Open |
+| `terraform apply` not run — real RDS VPC/subnet/SG integration unverified | Integration | Medium | Medium | Apply in non-prod first; validate connectivity and SSL enforcement | Open |
+| Production master-data ETL not built (only reference data seeded) | Integration | High | Medium | Build ETL + reconciliation counts before cutover | Open |
+| GHCR → ECR registry swap documented but not configured | Integration | Low | Low | Parameterize registry/credentials in CD | Open |
 
 ---
 
 ## 7. Visual Project Status
 
-**Project hours — Completed vs Remaining** (Completed = Dark Blue `#5B39F3`, Remaining = White `#FFFFFF`)
-
+**Project Hours — Completed vs Remaining** (Completed `#5B39F3`, Remaining `#FFFFFF`)
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieOuterStrokeColor':'#B23AF2','pieOuterStrokeWidth':'2px','pieTitleTextSize':'16px','pieSectionTextSize':'14px','pieSectionTextColor':'#111111','pieLegendTextColor':'#111111'}}}%%
-pie showData title Project Hours Breakdown (778h total)
-    "Completed Work" : 740
-    "Remaining Work" : 38
+%%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieOuterStrokeColor':'#B23AF2','pieOuterStrokeWidth':'2px','pieSectionTextColor':'#000000','pieLegendTextColor':'#000000','pieTitleTextSize':'16px'}}}%%
+pie showData title Project Hours Breakdown (732h total)
+    "Completed Work" : 657
+    "Remaining Work" : 75
 ```
 
-**Remaining 38 h by priority** (High vs Medium; Low = 0 h)
-
+**Remaining Work by Priority** (75h total)
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'pie1':'#B23AF2','pie2':'#A8FDD9','pieStrokeColor':'#5B39F3','pieStrokeWidth':'2px','pieOuterStrokeColor':'#5B39F3','pieTitleTextSize':'16px','pieSectionTextSize':'14px','pieSectionTextColor':'#111111','pieLegendTextColor':'#111111'}}}%%
-pie showData title Remaining Work by Priority (38h)
-    "High" : 18
-    "Medium" : 20
+%%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#A8FDD9','pie3':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieOuterStrokeColor':'#B23AF2','pieSectionTextColor':'#000000','pieLegendTextColor':'#000000','pieTitleTextSize':'16px'}}}%%
+pie showData title Remaining Work by Priority
+    "High (20h)" : 20
+    "Medium (49h)" : 49
+    "Low (6h)" : 6
 ```
 
-**Remaining hours per category (Section 2.2)**
-
+**Remaining Hours by Category (bar view)**
 | Category | Hours | Bar |
 |---|---:|---|
-| Deployment / CD pipeline & batch scheduling | 8 | ▰▰▰▰▰▰▰▰ |
-| Final code review & parity sign-off | 8 | ▰▰▰▰▰▰▰▰ |
-| OWASP NVD scan & CVE remediation | 6 | ▰▰▰▰▰▰ |
-| Production PostgreSQL provisioning & backups | 6 | ▰▰▰▰▰▰ |
-| UAT & golden-file parity acceptance | 6 | ▰▰▰▰▰▰ |
-| Production secrets & credential rotation | 4 | ▰▰▰▰ |
-| **Total** | **38** | — |
+| Production master-data ETL | 16 | ████████████████ |
+| Orchestration manifests (ECS/K8s/Helm) | 12 | ████████████ |
+| Human parity acceptance sign-off | 12 | ████████████ |
+| `terraform apply` provision RDS | 6 | ██████ |
+| Prod smoke + UI verification | 6 | ██████ |
+| Monitoring / observability | 6 | ██████ |
+| Load / performance testing | 6 | ██████ |
+| Execute OWASP gate in CI | 4 | ████ |
+| Secrets Manager + verify loading | 4 | ████ |
+| GHCR → ECR registry swap | 3 | ███ |
+| **Total** | **75** | |
 
-> **Integrity:** the pie "Remaining Work" = 38 = Section 1.2 Remaining = Section 2.2 sum.
+> **Integrity:** "Remaining Work" = **75h** matches Section 1.2 (Remaining Hours) and the Section 2.2 hours sum exactly.
 
 ---
 
 ## 8. Summary & Recommendations
 
-**Achievements.** The AWS CardDemo mainframe application has been fully re-expressed as a layered Java 25 / Spring Boot 3.5.15 service in the same repository. Every AAP code deliverable is complete and validated: 11 entities + repositories, Flyway schema/seed with the 3 VSAM alternate indexes, 17 online controller/service pairs with COMMAREA navigation and role gating, 11 Spring Batch jobs with decimal-truncation parity and a 430-byte reject writer, BCrypt-based security with externalized credentials, a typed exception hierarchy, and an 840-line 100% paragraph→method traceability matrix. The build is zero-warning, **1330/1330 tests pass** with **92.01% line coverage**, Spotless is clean, and the runtime — online flows and all 11 batch jobs — has been exercised against real PostgreSQL.
+**Achievements.** The AWS CardDemo mainframe application has been fully migrated to a layered Java 25 / Spring Boot 3.5.15 service. Every AAP deliverable category is present and validated: the complete domain model, persistence layer with VSAM-faithful keys/indexes, all 17 online transactions, all 11 batch jobs, the typed exception hierarchy, security hardening, and a 100% paragraph→method traceability matrix. The autonomous build is green — **1332/1332 tests pass**, **line coverage is 92.06%**, the build is warning-free, and a runnable jar is produced.
 
-**Remaining gaps (38 h).** Work outstanding is exclusively **path-to-production**: executing the OWASP dependency-check against live NVD data (the one wired-but-unverified AAP gate), production secrets/vault wiring and credential rotation, production PostgreSQL provisioning, a CD/deployment pipeline with batch scheduling, and UAT plus final human parity sign-off.
+**Remaining gaps.** The project is **89.8% complete** (657h of 732h). The outstanding **75h** is exclusively human/environment-gated path-to-production work that cannot be performed in the sandbox: executing the OWASP gate against the live NVD, provisioning AWS RDS via Terraform, populating and verifying AWS Secrets Manager, deploying for end-to-end smoke/UI verification, authoring orchestration manifests, building the production master-data ETL, completing the parity sign-off, and standing up monitoring.
 
-**Critical path to production.** (1) Run OWASP with an `NVD_API_KEY` and remediate any critical/high CVEs → (2) wire secrets/vault and rotate seed credentials → (3) provision production PostgreSQL → (4) build CD + scheduling → (5) UAT/parity acceptance → (6) human code-review sign-off.
+**Critical path to production.** (1) Run the OWASP gate in CI with `NVD_API_KEY` and clear findings → (2) `terraform apply` RDS + populate Secrets Manager + verify prod boot → (3) deploy and smoke/UI-verify → (4) run master-data ETL with reconciliation → (5) parity sign-off + monitoring. High-priority items total **20h**; the full remaining set is **75h**.
 
-**Success metrics.** Zero-warning build ✅ · ≥80% coverage ✅ (92.01%) · 1330/1330 tests ✅ · 100% traceability ✅ · OWASP zero-CVE ⚠ (pending live run) · 100% behavioral parity ✅ (pending UAT confirmation).
+**Success metrics.** Behavioral parity (golden-file + unit/integration tests green), ≥80% line coverage (achieved 92.06%), zero-warning build (achieved), and zero critical/high CVEs (pending CI execution).
 
-**Production-readiness assessment.** The codebase is **95.1% complete** and functionally production-ready; it is **not yet release-ready** until the OWASP scan is verified, production infrastructure/secrets are provisioned, and human sign-off is obtained. Recommended posture: proceed to a staging deployment immediately while completing the 38 h of path-to-production tasks. Estimated remaining effort: **≈ 1 week** for one engineer.
-
-| Metric | Value |
-|---|---|
-| AAP-scoped completion | **95.1%** |
-| Completed / Remaining / Total | 740 h / 38 h / 778 h |
-| Tests | 1330 passed, 0 failed (92.01% line coverage) |
-| Open high-severity risks | 1 (S1 — OWASP) |
+**Production-readiness assessment.** **Code-complete and validated; not yet deployed.** The software is ready for a non-prod deploy today; first production go-live is gated on the High-priority items above plus the master-data ETL and parity sign-off. Recommended confidence: **High** for the delivered build, **Medium** for first-deploy timeline pending live AWS/NVD access.
 
 ---
 
 ## 9. Development Guide
 
 ### 9.1 System Prerequisites
-
-| Requirement | Version | Notes |
-|---|---|---|
-| JDK | **25 (LTS)** | OpenJDK/Temurin 25; verified OpenJDK 25.0.3 |
-| Maven | 3.9+ | No local install required — use the bundled `./mvnw` (3.9.11) |
-| Docker + Compose | 28.x / Compose v2+ | For PostgreSQL (and Testcontainers) |
-| PostgreSQL | 16+ | Provided via `docker-compose.yml` (override with `POSTGRES_VERSION`) |
-| OS | Linux/macOS/WSL2 | 8 GB RAM recommended for the full test suite |
+- **JDK 25 (LTS)** — verified: OpenJDK/Temurin `25.0.3`. (`release 25` is required; older JDKs will fail to compile.)
+- **Maven 3.9+** — a pinned wrapper (`mvnw`, Maven `3.9.11`) is bundled; no system Maven needed.
+- **Docker 24+ with Compose v2** — verified: Docker `28.5.2`, Compose `v5.1.4` (provides PostgreSQL 16 locally and runs Testcontainers).
+- **PostgreSQL 16** — provided via Docker; no separate install required.
+- OS: Linux/macOS/WSL2; ≈4 GB free RAM for the test suite (Testcontainers).
 
 ### 9.2 Environment Setup
-
 ```bash
-# 1) Point JAVA_HOME at JDK 25 (or source the provided profile script)
-export JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64
-# alternatively: source /etc/profile.d/carddemo-build.sh
+# 1) Clone and enter the repository
+git clone <repo-url> && cd aws-carddemo
 
-# 2) Application configuration is fully environment-driven (src/main/resources/application.yml):
-#    SPRING_DATASOURCE_URL       (default jdbc:postgresql://db:5432/carddemo)
-#    SPRING_DATASOURCE_USERNAME  (default carddemo)
-#    SPRING_DATASOURCE_PASSWORD  (default carddemo)
-#    CARDDEMO_ADMIN_PASSWORD     (seed password for ADMIN001 — set a strong value)
-#    CARDDEMO_USER_PASSWORD      (seed password for USER0001 — set a strong value)
-#    Server listens on :8080
+# 2) Start a local PostgreSQL 16 (Flyway owns the schema; ddl-auto=validate)
+docker compose up -d db
+
+# 3) (Optional) Override defaults via environment variables — defaults work out of the box:
+export SPRING_DATASOURCE_URL="jdbc:postgresql://localhost:5432/carddemo"
+export SPRING_DATASOURCE_USERNAME="carddemo"
+export SPRING_DATASOURCE_PASSWORD="carddemo"
 ```
 
-### 9.3 Dependency Installation
-
+### 9.3 Dependency Installation & Build
 ```bash
-# The local Maven (~/.m2) cache is offline-complete; the build needs no internet.
-./mvnw -o dependency:resolve dependency:resolve-plugins -DincludeScope=test
+# Build + run all tests + coverage locally.
+# NOTE: OWASP dependency-check needs an NVD API key; skip it locally (it is enforced in CI).
+./mvnw -B clean verify -Ddependency-check.skip=true
+# Expected: BUILD SUCCESS · Tests run: 1332, Failures: 0, Errors: 0, Skipped: 0
+# Expected: JaCoCo "All coverage checks have been met" (line 92.06%)
+
+# Gated release/CI build (runs the OWASP gate):
+#   ./mvnw -B clean verify -DnvdApiKey=<YOUR_NVD_API_KEY>
 ```
 
 ### 9.4 Application Startup
-
 ```bash
-# 1) Start PostgreSQL 16 (host port 5432; override with CARDDEMO_PG_PORT)
-docker compose up -d
+# Option A — run from source against the local DB (default profile):
+./mvnw spring-boot:run
+#   App listens on http://localhost:8080
 
-# 2) Full verification: compile + 1330 tests + JaCoCo (>=80%) + Spotless
-#    (offline: append -Ddependency-check.skip=true to opt out of only the OWASP gate)
-./mvnw -o clean verify -Ddependency-check.skip=true
-
-# 3) Build the runnable boot jar
-./mvnw -o clean package -DskipTests          # -> target/carddemo-0.0.1-SNAPSHOT.jar (~61 MB)
-
-# 4) Run the application on :8080
-SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/carddemo \
-SPRING_DATASOURCE_USERNAME=carddemo \
-SPRING_DATASOURCE_PASSWORD=carddemo \
-CARDDEMO_ADMIN_PASSWORD=<admin_pw> \
-CARDDEMO_USER_PASSWORD=<user_pw> \
+# Option B — run the packaged jar:
 java -jar target/carddemo-0.0.1-SNAPSHOT.jar
-# Equivalent for development: ./mvnw spring-boot:run
+
+# Option C — full stack (app + db) in containers:
+docker compose --profile full up -d
 ```
 
 ### 9.5 Verification Steps
-
 ```bash
-# Confirm tooling
-java -version            # OpenJDK 25.0.3
-./mvnw -o -version       # Apache Maven 3.9.11 (Java 25)
-docker compose ps        # 'db' healthy on 5432
+# DB health (should report "accepting connections"):
+docker compose exec db pg_isready -U carddemo -d carddemo
 
-# Confirm the app is up (expect HTTP 200/302 to the sign-on screen)
-curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/
+# App is up — open the sign-on screen:
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/   # expect 200/302 to sign-on
 ```
-
-Expected: Flyway applies V1+V2, Hibernate initializes, the sign-on page renders (Thymeleaf + CSRF), and `SecuritySeeder` ensures `ADMIN001`/`USER0001` exist.
+- Browse to `http://localhost:8080` → CardDemo sign-on screen.
+- Sign in with a seeded user (default identities `ADMIN001` / `USER0001`; passwords are externalized/hashed — set them via `CARDDEMO_ADMIN_PASSWORD` / `CARDDEMO_USER_PASSWORD`).
+- Admin users reach the admin menu (user management `CU00`–`CU03`); standard users reach the main menu (account/card/transaction/bill-pay/report).
 
 ### 9.6 Example Usage
-
-- **Sign on** with `ADMIN001` (admin) or `USER0001` (user) using the configured passwords. Passwords are upper-cased and limited to 8 characters (COBOL `PASSWD PIC X(8)` parity).
-- **Admin** routes to `/admin` (admin menu `CA00`) with user management `CU00`–`CU03`; **user** routes to `/menu` (`CM00`) for account/card/transaction/bill/report screens.
-- **Batch jobs** (Spring Batch) cover all 11 JCL equivalents — e.g., `transactionPosting`, `interestCalculation`, `statementGeneration`, `transactionReport`.
+- **Online:** Sign on → Main Menu → Account View (`CAVW`) to read an account; Transaction Add (`CT02`) to post a transaction; Report (`CR00`) to trigger a batch report.
+- **Batch (dev):** Jobs are defined as Spring Batch jobs. In production they are launched by `BatchSchedulingConfig` (`@Scheduled`, enabled only when `carddemo.batch.scheduling.enabled=true`). Locally, drive a job through its job-config/test harness or enable the scheduling flag in a dev profile.
 
 ### 9.7 Troubleshooting
-
-| Symptom | Resolution |
-|---|---|
-| `JAVA_HOME` not set / wrong Java | `export JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64` (or `source /etc/profile.d/carddemo-build.sh`) |
-| Port 5432 already in use | `export CARDDEMO_PG_PORT=<free_port>` before `docker compose up -d` (container stays on 5432 internally) |
-| OWASP gate fails offline | Append `-Ddependency-check.skip=true`; in CI run `-DnvdApiKey=$NVD_API_KEY` instead |
-| Sign-on rejects valid-looking password | Password must be ≤ 8 chars and is auto-upper-cased (COBOL parity) |
-| App can't reach DB | Verify `SPRING_DATASOURCE_URL` host (`localhost` for `java -jar`, `db` inside compose network) |
+| Symptom | Cause | Resolution |
+|---|---|---|
+| Build hangs/fails on the OWASP step locally | No `NVD_API_KEY`; anonymous NVD is rate-limited (HTTP 429) | Use `-Ddependency-check.skip=true` locally; the gate runs in CI with the secret |
+| `Flyway validate` / connection errors at startup | DB not ready | `docker compose up -d db` and wait for `pg_isready` before starting the app |
+| Compilation errors about the language level | Wrong JDK | Use JDK 25 (`java -version` → `25.x`) |
+| Prod profile fails to start | Missing AWS Secrets Manager secret/region | The `prod` profile requires `carddemo/prod/db` in Secrets Manager + AWS region/credentials; not for local use |
 
 ---
 
 ## 10. Appendices
 
 ### A. Command Reference
-
-| Command | Purpose |
+| Purpose | Command |
 |---|---|
-| `docker compose up -d` | Start PostgreSQL 16 |
-| `./mvnw -o clean verify` | Compile + 1330 tests + JaCoCo + Spotless |
-| `./mvnw -o clean package -DskipTests` | Build boot jar |
-| `./mvnw spring-boot:run` | Run app (dev) |
-| `./mvnw clean verify -DnvdApiKey=$NVD_API_KEY` | Full verify including OWASP (CI) |
-| `java -jar target/carddemo-0.0.1-SNAPSHOT.jar` | Run boot jar |
+| Local build + test + coverage | `./mvnw -B clean verify -Ddependency-check.skip=true` |
+| Gated CI/release build | `./mvnw -B clean verify -DnvdApiKey=<KEY>` |
+| Run app (dev) | `./mvnw spring-boot:run` |
+| Run app (jar) | `java -jar target/carddemo-0.0.1-SNAPSHOT.jar` |
+| Start DB only | `docker compose up -d db` |
+| Full stack (app + db) | `docker compose --profile full up -d` |
+| Validate compose file | `docker compose config` |
+| DB health check | `docker compose exec db pg_isready -U carddemo -d carddemo` |
+| Maven/Java versions | `./mvnw -version` |
 
 ### B. Port Reference
-
-| Port | Service |
-|---|---|
-| 8080 | Spring Boot HTTP (Tomcat) |
-| 5432 | PostgreSQL (host; override `CARDDEMO_PG_PORT`) |
+| Service | Port | Notes |
+|---|---|---|
+| Spring Boot app | 8080 | `server.port` (HTTP, Thymeleaf UI) |
+| PostgreSQL | 5432 | docker-compose `db` service (image `postgres:16`) |
 
 ### C. Key File Locations
-
-| Path | Purpose |
+| Area | Path |
 |---|---|
-| `pom.xml` | Maven build (Java 25, Spring Boot 3.5.15, JaCoCo/Spotless/OWASP) |
-| `src/main/java/com/aws/carddemo/` | Application (domain, dto, repository, service, web, batch, config, exception, util) |
-| `src/main/resources/application.yml` | Configuration (datasource, JPA, batch, security) |
-| `src/main/resources/db/migration/V1__schema.sql`, `V2__seed_reference_data.sql` | Flyway DDL + seed |
-| `src/main/resources/templates/` | 18 Thymeleaf screens |
-| `src/test/java/`, `src/test/resources/golden/` | Tests + golden-file parity fixtures |
-| `.github/workflows/ci.yml` | CI (build, test, JaCoCo, OWASP) |
-| `docs/traceability-matrix.md` | 100% paragraph→method matrix (840 lines) |
-| `legacy/app/` | Original COBOL/JCL/BMS (read-only, 148 files) |
+| Application entry point | `src/main/java/com/aws/carddemo/CardDemoApplication.java` |
+| Domain entities / composite IDs | `src/main/java/com/aws/carddemo/domain/`, `.../domain/id/` |
+| DTOs (commarea, screen, report) | `src/main/java/com/aws/carddemo/dto/` |
+| Repositories | `src/main/java/com/aws/carddemo/repository/` |
+| Online services / controllers | `.../service/online/`, `.../web/` |
+| Batch services / jobs | `.../service/batch/`, `.../batch/{config,reader,processor,writer}/` |
+| Config / exceptions / utils | `.../config/`, `.../exception/`, `.../util/` |
+| Flyway migrations | `src/main/resources/db/migration/V1__schema.sql`, `V2__seed_reference_data.sql` |
+| Thymeleaf screens | `src/main/resources/templates/` |
+| App config | `src/main/resources/application.yml`, `application-test.yml`, `application-prod.yml` |
+| Tests | `src/test/java/com/aws/carddemo/`, golden fixtures under `src/test/resources/golden/` |
+| CI/CD | `.github/workflows/ci.yml`, `.github/workflows/cd.yml` |
+| Infrastructure (Terraform) | `infra/*.tf`, `infra/terraform.tfvars.example` |
+| Traceability matrix | `docs/traceability-matrix.md` |
+| Legacy COBOL (read-only) | `legacy/app/{cbl,cpy,cpy-bms,bms,jcl,proc,ctl,csd,catlg,data}` |
 
 ### D. Technology Versions
-
 | Technology | Version |
 |---|---|
-| Java (OpenJDK) | 25.0.3 (LTS) |
-| Spring Boot | 3.5.15 |
+| Java (Temurin) | 25.0.3 LTS (`release 25`) |
+| Spring Boot (parent BOM) | 3.5.15 |
 | Maven (wrapper) | 3.9.11 |
-| PostgreSQL | 16 (override to 17/18) |
-| Testcontainers | 1.21.4 |
-| Docker / Compose | 28.5.2 / v2 |
-| Build artifact | `carddemo-0.0.1-SNAPSHOT.jar` (~61 MB) |
+| PostgreSQL | 16 (Docker; 17/18 supported via `POSTGRES_VERSION`) |
+| Spring Data JPA / Spring Batch / Spring Security | Spring Boot 3.5.15 BOM-managed |
+| Flyway | BOM-managed (core + flyway-database-postgresql) |
+| Testcontainers | BOM-managed |
+| JaCoCo | line gate `jacoco.line.coverage.min=0.80` (achieved 92.06%) |
+| OWASP dependency-check | `failBuildOnCVSS=7` (CI-gated) |
+| Spotless | googleJavaFormat |
+| Spring Cloud AWS (Secrets Manager) | dependencies BOM 3.4.2 (prod profile) |
+| Docker / Compose | 28.5.2 / v5.1.4 |
 
 ### E. Environment Variable Reference
-
-| Variable | Default | Purpose |
+| Variable | Profile | Purpose / Default |
 |---|---|---|
-| `SPRING_DATASOURCE_URL` | `jdbc:postgresql://db:5432/carddemo` | JDBC URL |
-| `SPRING_DATASOURCE_USERNAME` | `carddemo` | DB user |
-| `SPRING_DATASOURCE_PASSWORD` | `carddemo` | DB password |
-| `CARDDEMO_ADMIN_PASSWORD` | _(blank)_ | Seed password for `ADMIN001` |
-| `CARDDEMO_USER_PASSWORD` | _(blank)_ | Seed password for `USER0001` |
-| `POSTGRES_VERSION` | `16` | PostgreSQL image tag |
-| `CARDDEMO_PG_PORT` | `5432` | Host port for PostgreSQL |
-| `NVD_API_KEY` | _(CI secret)_ | Authenticated NVD key for OWASP gate |
+| `SPRING_DATASOURCE_URL` | default | JDBC URL (default `jdbc:postgresql://db:5432/carddemo`) |
+| `SPRING_DATASOURCE_USERNAME` | default | DB user (default `carddemo`) |
+| `SPRING_DATASOURCE_PASSWORD` | default | DB password (default `carddemo` for local) |
+| `CARDDEMO_ADMIN_PASSWORD` | default | Seed admin password (externalized; BCrypt-hashed at seed) |
+| `CARDDEMO_USER_PASSWORD` | default | Seed standard-user password (externalized) |
+| `POSTGRES_VERSION` | compose | PostgreSQL image tag (default `16`) |
+| `CARDDEMO_DB_SECRET_NAME` | prod | Secrets Manager secret name (default `carddemo/prod/db`) |
+| `NVD_API_KEY` | CI | NVD API key for the OWASP dependency-check gate |
+
+> Prod credentials/datasource are supplied by AWS Secrets Manager via `spring.config.import: aws-secretsmanager:...`; no secrets are committed.
 
 ### F. Developer Tools Guide
-
-| Tool | Usage |
-|---|---|
-| JaCoCo | Coverage gate ≥80% (achieved 92.01%); report at `target/site/jacoco/` |
-| Spotless | google-java-format; `./mvnw spotless:check` / `spotless:apply` |
-| OWASP dependency-check | CVE gate `failBuildOnCVSS=7`, bound to `verify`; needs `NVD_API_KEY` |
-| Flyway | Schema versioning (V1 schema, V2 seed); validated at startup |
-| Testcontainers | Real PostgreSQL 16 for integration/batch tests (requires Docker) |
+- **JaCoCo report:** `target/site/jacoco/index.html` (line 92.06%).
+- **Surefire test reports:** `target/surefire-reports/` (138 result files; 1332 tests).
+- **OWASP report (CI):** uploaded as the `owasp-dependency-check-report` artifact in CI.
+- **Spotless:** `./mvnw spotless:check` (verify) / `spotless:apply` (format).
+- **CI pipeline (`ci.yml`):** Build, Test & Quality Gates job (`./mvnw -B clean verify -DnvdApiKey=...`) + a `/legacy` read-only enforcement job.
+- **CD pipeline (`cd.yml`):** triggers on green CI on `main` (or manual dispatch); builds the multi-stage image and pushes to GHCR (`latest` + short-sha).
+- **Terraform (`infra/`):** `terraform init && terraform plan && terraform apply` (deploy-time, requires AWS credentials).
 
 ### G. Glossary
-
 | Term | Meaning |
 |---|---|
-| AAP | Agent Action Plan — the authoritative project requirements |
+| AAP | Agent Action Plan — the authoritative migration specification |
 | BMS | Basic Mapping Support — 3270 screen definitions (→ Thymeleaf views) |
-| COMMAREA | CICS communication area — pseudo-conversational state (→ session/nav DTO) |
-| VSAM / KSDS | Mainframe indexed file storage (→ PostgreSQL tables via JPA) |
-| JCL / PROC | Job Control Language / procedures (→ Spring Batch jobs) |
-| Golden-file parity | Comparing Java output against captured expected COBOL output |
-| Alternate index | Secondary VSAM access path (→ PostgreSQL secondary index) |
-| Truncation parity | COBOL no-`ROUNDED` arithmetic reproduced via `BigDecimal` + `RoundingMode.DOWN` |
-| CWE-384 | Session fixation weakness — mitigated via session-id rotation |
+| COMMAREA | CICS communication area carrying pseudo-conversational state (→ session/navigation DTO) |
+| VSAM KSDS | Key-Sequenced Data Set (→ PostgreSQL table with PK/indexes) |
+| Alternate Index | VSAM secondary key path (→ secondary DB index, e.g. `card_acct_id`) |
+| JCL | Job Control Language batch scripts (→ Spring Batch jobs) |
+| FILE STATUS | COBOL 2-byte I/O status code (→ typed exception hierarchy) |
+| Golden-file parity | Byte/semantic comparison of Java output vs expected COBOL output |
+| Truncation parity | COBOL `COMPUTE` without `ROUNDED` → `BigDecimal` `RoundingMode.DOWN` |
+| `ddl-auto=validate` | Hibernate validates against the Flyway-owned schema; never mutates it |
