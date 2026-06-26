@@ -1,0 +1,112 @@
+# =============================================================================
+# AWS CardDemo - PRODUCTION profile configuration
+# =============================================================================
+#
+# Activated with SPRING_PROFILES_ACTIVE=prod (Refine-PR directive D7).
+#
+# THIS FILE CONTAINS NO SECRETS.
+#   Every production credential and connection endpoint is loaded at startup
+#   from AWS Secrets Manager via Spring Cloud AWS's ConfigData import
+#   (`spring.config.import` below) - NEVER from the externalized env-var
+#   defaults in application.yml and NEVER from the blank seed-password defaults.
+#   The default sign-on identities ADMIN001/USER0001 are seeded with the
+#   BCrypt-hashed passwords supplied by the secret, not with any value committed
+#   to source control (AAP Sect.0.6.5/0.6.6/0.7.2 - credential hygiene).
+#
+# -----------------------------------------------------------------------------
+# Cohesion with infra/ (Terraform)
+# -----------------------------------------------------------------------------
+#   The Secrets Manager secret provisioned by infra/main.tf
+#   (aws_secretsmanager_secret "db"; default name "<name_prefix>/<environment>/db"
+#   = "carddemo/prod/db") stores a JSON document whose KEYS ARE CANONICAL SPRING
+#   PROPERTY NAMES:
+#       spring.datasource.url                   (managed RDS JDBC URL, ?sslmode=require)
+#       spring.datasource.username
+#       spring.datasource.password
+#       carddemo.security.seed.admin-password   (the CARDDEMO_ADMIN_PASSWORD value)
+#       carddemo.security.seed.user-password    (the CARDDEMO_USER_PASSWORD value)
+#   Because the keys are real Spring property names, the imported secret overlays
+#   them DIRECTLY onto the Environment, overriding the ${SPRING_DATASOURCE_*} /
+#   ${CARDDEMO_*_PASSWORD} placeholders in application.yml with the managed RDS
+#   endpoint/credentials and the real seed passwords. No additional ${...}
+#   remapping is required here.
+#
+# -----------------------------------------------------------------------------
+# Why this is compatible with the spring.autoconfigure.exclude in application.yml
+# -----------------------------------------------------------------------------
+#   application.yml excludes io.awspring.cloud.autoconfigure.config.secretsmanager
+#   .SecretsManagerAutoConfiguration - the @AutoConfiguration that eagerly builds
+#   an injectable SecretsManagerClient bean (which would fail without a region in
+#   local/test/CI). The import below uses a DIFFERENT, ConfigData mechanism:
+#   SecretsManagerConfigDataLocationResolver + SecretsManagerConfigDataLoader,
+#   registered under the Spring Boot ConfigData SPI keys
+#   (org.springframework.boot.context.config.ConfigDataLocationResolver /
+#   ConfigDataLoader) in spring.factories. ConfigData resolvers/loaders are NOT
+#   @EnableAutoConfiguration classes, so `spring.autoconfigure.exclude` does not
+#   disable them. The prod secret import therefore works while the default/test
+#   profiles stay hermetic (no AWS region/credentials required there).
+#
+# -----------------------------------------------------------------------------
+# AWS region resolution (required for the secret import)
+# -----------------------------------------------------------------------------
+#   The Secrets Manager ConfigData loader needs an AWS region. In production the
+#   region is resolved from the standard AWS provider chain - the AWS_REGION (or
+#   AWS_DEFAULT_REGION) environment variable, or the EC2/ECS/EKS instance/task
+#   metadata when running on AWS. No region is hardcoded here. If metadata is
+#   unavailable, set AWS_REGION (or SPRING_CLOUD_AWS_REGION_STATIC) in the
+#   deployment environment. Credentials likewise come from the default chain
+#   (preferably an IAM role / IRSA with secretsmanager:GetSecretValue on the
+#   secret), so no AWS access keys are committed.
+# =============================================================================
+
+spring:
+  # ---------------------------------------------------------------------------
+  # Load production secrets from AWS Secrets Manager (ConfigData import).
+  # ---------------------------------------------------------------------------
+  # NON-OPTIONAL on purpose: if the secret cannot be loaded the application must
+  # FAIL FAST rather than silently fall back to the local-dev datasource
+  # defaults or blank seed passwords. The secret name is overridable via
+  # CARDDEMO_DB_SECRET_NAME (defaulting to the Terraform-provisioned
+  # "carddemo/prod/db"); set it to the environment-specific secret name or ARN.
+  config:
+    import: "aws-secretsmanager:${CARDDEMO_DB_SECRET_NAME:carddemo/prod/db}"
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate - Flyway remains AUTHORITATIVE for schema (AAP Sect.0.6.1/0.6.2)
+  # ---------------------------------------------------------------------------
+  # Restated explicitly for the production posture (defense-in-depth): Hibernate
+  # only VALIDATES that the entity mappings match the Flyway-created tables and
+  # NEVER creates/updates/drops DDL against the managed RDS database.
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch - jobs are NOT auto-run on startup (AAP Sect.0.4.1/0.6.7)
+  # ---------------------------------------------------------------------------
+  # Restated explicitly: each migrated JCL job stream runs only when triggered.
+  # In production, triggering is done by the scheduler enabled below
+  # (BatchSchedulingConfig) and on-demand by the online ReportService.
+  batch:
+    job:
+      enabled: false
+
+# =============================================================================
+# CardDemo application properties (production overrides)
+# =============================================================================
+carddemo:
+  # ---------------------------------------------------------------------------
+  # Production batch scheduling (Refine-PR directive D4)
+  # ---------------------------------------------------------------------------
+  # Activates com.aws.carddemo.config.BatchSchedulingConfig, which is gated by
+  # @ConditionalOnProperty("carddemo.batch.scheduling.enabled" = "true"). This
+  # flag is set ONLY here, in the prod profile - it is absent from application.yml
+  # and application-test.yml, so the scheduler (and its @EnableScheduling / 11
+  # @Scheduled triggers) is registered exclusively in production and never during
+  # the test suite. The per-job cron expressions are externalized as
+  # carddemo.batch.scheduling.cron.<job> with staggered overnight defaults
+  # (01:00-05:00) that follow the legacy nightly batch order; override any of
+  # them per environment, or disable an individual job by setting its cron to "-".
+  batch:
+    scheduling:
+      enabled: true
