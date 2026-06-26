@@ -67,17 +67,18 @@ jobs:
             owasp-nvd-${{ runner.os }}-
 
       - name: Build, test, and enforce all quality gates
-        # NVD_API_KEY is an authenticated NVD API key supplied as the repository secret
-        # `NVD_API_KEY`. It lifts the strict anonymous NVD rate limit so the OWASP
-        # dependency-check gate (failBuildOnCVSS=7, bound to `verify` in pom.xml) can
-        # refresh the feed and run to completion — proving the zero critical/high CVE
-        # gate WITHOUT `-Ddependency-check.skip=true`. When the secret is absent (for
-        # example on forked-PR runs that cannot read secrets) the property is empty and
-        # dependency-check falls back to the cached database; the gate still runs and is
-        # never skipped, so the Maven exit status continues to gate the job.
-        env:
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-        run: ./mvnw -B clean verify -DnvdApiKey="${NVD_API_KEY}"
+        # All quality / compliance gates are bound to the Maven `verify` phase in
+        # pom.xml. The OWASP dependency-check gate (failBuildOnCVSS=7) is ALWAYS
+        # enforced here and is NEVER skipped — note the deliberate absence of
+        # `-Ddependency-check.skip=true` (the offline opt-out is eliminated). An
+        # authenticated NVD API key from the `NVD_API_KEY` repository secret is passed
+        # straight to Maven as `-DnvdApiKey`, lifting the anonymous NVD rate limit so the
+        # CVE feed refreshes and the gate runs to completion. On runs where the secret is
+        # unavailable (e.g. forked pull requests that cannot read secrets) the value
+        # resolves empty and dependency-check falls back to the cached NVD database; the
+        # gate still runs and continues to gate the job via Maven's exit status, which
+        # must propagate and is never masked.
+        run: ./mvnw -B clean verify -DnvdApiKey=${{ secrets.NVD_API_KEY }}
 
       - name: Upload JaCoCo coverage report
         if: always()
