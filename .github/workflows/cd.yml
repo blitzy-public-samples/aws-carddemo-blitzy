@@ -1,0 +1,136 @@
+# .github/workflows/cd.yml
+# ---------------------------------------------------------------------------
+# Continuous Deployment for the AWS CardDemo COBOL -> Java 25 / Spring Boot
+# migration.
+#
+# Responsibility (AAP §0.2.1 "CI/CD pipeline"; Refine-PR directive D3):
+#   Build the application container image from the committed multi-stage
+#   Dockerfile, tag it, and publish it to a container registry **upon a
+#   successful merge** to the default branch.
+#
+# "Successful merge" gate
+#   This workflow is triggered by the *completion* of the `CI` workflow on
+#   `main` and only proceeds when that CI run CONCLUDED `success`. Because a
+#   merge to `main` is what triggers CI (build + JUnit/Testcontainers tests +
+#   JaCoCo >=80% + OWASP dependency-check + Spotless), an image is built and
+#   pushed only after every quality/compliance gate has passed for the merged
+#   commit. Manual publishing is also available via `workflow_dispatch`.
+#
+# Registry
+#   Defaults to the GitHub Container Registry (ghcr.io) authenticated with the
+#   built-in, automatically-provisioned `GITHUB_TOKEN` (no external secrets to
+#   configure), so the pipeline is operational out of the box. To publish to
+#   Amazon ECR instead (cohesive with the Terraform-provisioned AWS estate in
+#   infra/), replace the "Log in" step with `aws-actions/amazon-ecr-login` via
+#   an OIDC `aws-actions/configure-aws-credentials` role and point REGISTRY /
+#   IMAGE_NAME at the ECR repository URI (e.g.
+#   <acct>.dkr.ecr.<region>.amazonaws.com/carddemo).
+#
+# Security
+#   * Least-privilege token: only `contents: read` (checkout) + `packages:
+#     write` (push to GHCR).
+#   * No credentials are baked into the image (see Dockerfile); all secrets are
+#     injected at run time (AAP §0.6.6).
+# ---------------------------------------------------------------------------
+name: CD
+
+on:
+  # Publish only after CI has completed successfully on the default branch.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  # On-demand publishing (e.g. re-tag / ad-hoc release) from the Actions UI.
+  workflow_dispatch:
+
+# Least-privilege: read source to build, write packages to push the image.
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # Target container registry. Override (with a matching login step) to publish
+  # elsewhere, e.g. Amazon ECR or Docker Hub.
+  REGISTRY: ghcr.io
+  # owner/repo -> ghcr.io/owner/repo. docker/metadata-action lowercases this,
+  # satisfying GHCR's lowercase-repository requirement.
+  IMAGE_NAME: ${{ github.repository }}
+
+# Avoid concurrent publishes racing the `:latest` tag; cancel superseded runs.
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    name: Build & Push Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Gate: manual dispatch always allowed; otherwise require the upstream CI
+    # run to have concluded successfully ("successful merge").
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      # The commit to publish differs by trigger: for a workflow_run event it is
+      # the head SHA of the CI run that just passed; for a manual dispatch it is
+      # the ref the workflow was launched against.
+      - name: Resolve the commit to publish
+        id: commit
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            sha="${{ github.event.workflow_run.head_sha }}"
+          else
+            sha="${{ github.sha }}"
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(echo "${sha}" | cut -c1-12)" >> "$GITHUB_OUTPUT"
+          echo "Publishing commit ${sha}"
+
+      - name: Check out the published commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.commit.outputs.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Derive image tags + OCI labels. An immutable short-SHA tag pins the exact
+      # build; the moving `latest` tag tracks the newest successful main build.
+      - name: Derive image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ steps.commit.outputs.short_sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Reuse layers across runs to keep publishes fast.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Single, plain manifest (no provenance attestation) keeps the GHCR
+          # listing clean (no "unknown/unknown" platform entry).
+          provenance: false
+
+      - name: Summarize published image
+        run: |
+          echo "### Published image" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
