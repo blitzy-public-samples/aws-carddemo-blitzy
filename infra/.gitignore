@@ -1,0 +1,19 @@
+# Terraform working files and state must never be committed.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Local variable files may contain environment-specific values / secrets.
+# The committed template is terraform.tfvars.example.
+terraform.tfvars
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Plan output files can contain sensitive values.
+*.tfplan

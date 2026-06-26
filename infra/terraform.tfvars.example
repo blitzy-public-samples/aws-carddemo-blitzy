@@ -1,0 +1,38 @@
+# Example variable values for the CardDemo production PostgreSQL 16 module.
+# Copy to terraform.tfvars and adjust. Do NOT commit a real terraform.tfvars
+# containing environment-specific identifiers.
+
+aws_region  = "us-east-1"
+environment = "prod"
+name_prefix = "carddemo"
+
+# --- Networking: reference an EXISTING VPC and >= 2 private subnets (multi-AZ) ---
+vpc_id     = "vpc-0123456789abcdef0"
+subnet_ids = ["subnet-0aaa1111bbbb2222c", "subnet-0ddd3333eeee4444f"]
+
+# Restrict database ingress to the application tier only.
+allowed_cidr_blocks        = ["10.0.0.0/16"]
+allowed_security_group_ids = []
+
+# --- Engine / sizing ---
+engine_version        = "16"
+instance_class        = "db.t3.medium"
+allocated_storage     = 50
+max_allocated_storage = 200
+multi_az              = true
+
+# --- Backups (automated) ---
+backup_retention_period = 14
+backup_window           = "03:00-04:00"
+maintenance_window      = "sun:04:30-sun:05:30"
+
+# --- Security ---
+storage_encrypted   = true
+deletion_protection = true
+
+# --- Application seed credentials ---
+# Leave empty to let Terraform generate strong random values and store them in
+# Secrets Manager. Supply explicit values only if you must match an existing
+# credential.
+app_admin_password = ""
+app_user_password  = ""
