@@ -1,0 +1,12 @@
+# EOL / encoding guard for byte-exact golden-master data.
+#
+# The fixed-width records under src/test/resources/{fixtures,expected} are the
+# inputs and expected outputs of the CBACT04C -> Java interest-calculation
+# golden-master tests. They are LF-only, US-ASCII, fixed-length (350-byte
+# TRAN records, 50-byte driver/rate records, 36-byte xref records) and are
+# compared byte-for-byte. A single altered byte -- e.g. a CRLF injected by
+# core.autocrlf, an editor, or a platform checkout -- breaks the golden-master
+# assertions. Mark them "-text" so git performs NO line-ending or encoding
+# normalization on checkout or commit (treats them as binary for EOL purposes).
+src/test/resources/fixtures/*.txt  -text
+src/test/resources/expected/*.txt  -text
