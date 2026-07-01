@@ -64,10 +64,22 @@ import com.blitzy.carddemo.interest.support.Db2TimestampSupplier;
  *   <li><strong>ACCTFILE is the only mutated file</strong> ({@code args[5]} output); TCATBAL, XREF
  *       and DISCGRP are read-only; TRANSACT ({@code args[4]}) is write-only. Per the binding
  *       resolution in AAP &sect;0.7, TCATBAL is <em>not</em> updated &mdash; there is no TCATBAL
- *       output.</li>
- *   <li><strong>PARM-DATE passthrough:</strong> {@code args[6]} is forwarded verbatim; CBACT04C
- *       performs no validation on it (the service uses it as the 10-char prefix of each
- *       {@code TRAN-ID}, <code>app/cbl/CBACT04C.cbl:L474-480</code>).</li>
+ *       output. Because the {@code INTCALC} job assigns {@code TRANSACT} and {@code ACCTFILE} to
+ *       <em>separate</em> datasets (and the four inputs to separate read-only datasets), a single
+ *       file can never serve two DDs on the mainframe; the CLI enforces the same invariant by
+ *       rejecting a run whose two output paths ({@code args[4]}, {@code args[5]}) resolve to the
+ *       same file (see {@link #main(String[])}), which would otherwise let the 350-byte and 300-byte
+ *       writers clobber each other and emit corrupt output.</li>
+ *   <li><strong>PARM-DATE ({@code PIC X(10)}):</strong> {@code args[6]} models the COBOL
+ *       {@code LINKAGE} field {@code PARM-DATE PIC X(10)} (<code>app/cbl/CBACT04C.cbl:L177-178</code>).
+ *       Like any {@code PIC X(10)} field it is fixed at ten bytes, so the raw argument is coerced to
+ *       exactly ten characters &mdash; left-justified and space-padded if shorter, truncated if
+ *       longer &mdash; before use, exactly as a {@code MOVE} (or {@code LINKAGE} receive) into a
+ *       {@code PIC X(10)} field would. CBACT04C performs no <em>explicit</em> validation; that fixed
+ *       field width is the sole normalization and is preserved here so a non-ten-character argument
+ *       cannot yield a malformed/misaligned {@code TRAN-ID}. The service then uses that ten-character
+ *       value as the prefix of each 16-char {@code TRAN-ID} (<code>app/cbl/CBACT04C.cbl:L474-480</code>);
+ *       the INTCALC job's {@code '2022071800'} is already ten characters and passes through unchanged.</li>
  *   <li><strong>Determinism:</strong> the only non-deterministic input is the DB2 timestamp
  *       (<code>app/cbl/CBACT04C.cbl:L614</code>). It is injected through {@link Db2TimestampSupplier}
  *       so the golden-master test can supply a fixed value and obtain byte-exact output. Production
@@ -109,8 +121,17 @@ public final class InterestCalculator {
     private static final int ARG_PARM_DATE = 6;
 
     /**
-     * Exit status returned on invalid command-line usage (wrong argument count). Distinct from the
-     * abend status so callers/scripts can tell a usage error from a processing failure.
+     * Fixed width of the COBOL {@code LINKAGE} field {@code PARM-DATE PIC X(10)}
+     * (<code>app/cbl/CBACT04C.cbl:L177-178</code>). {@code args[6]} is coerced to exactly this many
+     * characters (space-padded if shorter, truncated if longer) before it is used as the {@code TRAN-ID}
+     * prefix (<code>app/cbl/CBACT04C.cbl:L474-480</code>), mirroring {@code PIC X(10)} field semantics.
+     */
+    private static final int PARM_DATE_WIDTH = 10;
+
+    /**
+     * Exit status returned on invalid command-line usage (wrong argument count, or two output paths
+     * that resolve to the same file). Distinct from the abend status so callers/scripts can tell a
+     * usage error from a processing failure.
      */
     private static final int EXIT_USAGE_ERROR = 2;
 
@@ -145,7 +166,29 @@ public final class InterestCalculator {
         // requires all seven positional arguments. A bad invocation is a usage error, NOT an abend,
         // so it exits with a distinct status and never throws an uncaught exception (no NPE/AIOOBE).
         if (args == null || args.length != EXPECTED_ARG_COUNT) {
-            printUsage(args == null ? 0 : args.length);
+            System.err.println(
+                    "ERROR: expected " + EXPECTED_ARG_COUNT + " arguments but received "
+                            + (args == null ? 0 : args.length) + ".");
+            System.err.println();
+            printUsage();
+            System.exit(EXIT_USAGE_ERROR);
+            return; // Unreachable after System.exit; retained for compiler clarity.
+        }
+
+        // Output-path safety guard: the INTCALC job maps TRANSACT (350-byte records) and ACCTFILE
+        // (300-byte records) to DISTINCT datasets via separate DD statements, so a single OS file can
+        // never back both DDs on the mainframe. The Java CLI, however, accepts free-form path strings,
+        // so args[4] and args[5] could point at the same file -- and because BOTH output writers open
+        // with TRUNCATE_EXISTING (TransactionWriter / AccountRepository.writeUpdatedAccounts), that
+        // alias lets them truncate and interleave each other's bytes, silently producing a corrupt file
+        // while still exiting 0. Detect the collision BEFORE opening any file and reject it as a usage
+        // error (exit 2), preserving the source's separate-DD invariant (AAP §0.7 minimal-change: the
+        // CLI adapter must honor the DD-to-file contract). This is a usage error, NOT an abend.
+        final String outputPathError = findDuplicateOutputPaths(args);
+        if (outputPathError != null) {
+            System.err.println("ERROR: " + outputPathError);
+            System.err.println();
+            printUsage();
             System.exit(EXIT_USAGE_ERROR);
             return; // Unreachable after System.exit; retained for compiler clarity.
         }
@@ -193,7 +236,11 @@ public final class InterestCalculator {
      * </ol>
      *
      * @param args              the seven positional arguments (see class documentation); the caller
-     *                          is responsible for having validated {@code args.length == 7}
+     *                          is responsible for having validated {@code args.length == 7} and that
+     *                          the two output paths ({@code args[4]}, {@code args[5]}) resolve to
+     *                          different files ({@link #main(String[])} enforces both before calling
+     *                          this seam). {@code args[6]} is coerced here to the {@code PARM-DATE}
+     *                          {@code PIC X(10)} field width before it drives {@code TRAN-ID} assembly.
      * @param timestampSupplier the DB2-timestamp source to inject (production wall-clock supplier
      *                          from {@code main}, or a fixed supplier from the golden-master test);
      *                          must be non-null
@@ -248,6 +295,15 @@ public final class InterestCalculator {
             // The service owns the PERFORM UNTIL END-OF-FILE loop, the account-break logic (L194-206),
             // the DISCGRP key assembly + rate lookup + write-guard (L210-217), and the end-of-file
             // final 1050-UPDATE-ACCOUNT (L219-220). This adapter contributes NO business arithmetic.
+            // PARM-DATE arrives as free-form text but the COBOL LINKAGE field is PARM-DATE PIC X(10)
+            // (app/cbl/CBACT04C.cbl:L177-178), a fixed 10-byte field: a MOVE/receive left-justifies and
+            // space-pads a shorter value and truncates a longer one to 10 bytes. Coerce here -- the Java
+            // analogue of receiving the PARM into that PIC X(10) field -- so the service STRINGs a
+            // guaranteed 10-char prefix in front of the 6-digit suffix to build a well-formed 16-char
+            // TRAN-ID (L474-480). The INTCALC '2022071800' is already 10 chars, so this is byte-neutral
+            // for well-formed input and does not perturb the golden-master output.
+            final String parmDate = toPicX10(args[ARG_PARM_DATE]);
+
             final InterestCalculationService service = new InterestCalculationService();
             service.process(
                     driver,                       // TCATBAL sequential driver (L188-193)
@@ -256,7 +312,7 @@ public final class InterestCalculator {
                     rates,                        // disclosure-group rate lookup (1200)
                     txnWriter,                    // interest-transaction sink (1300-B)
                     timestampSupplier,            // injected DB2 timestamp (Z-GET... L613-626)
-                    args[ARG_PARM_DATE]);         // PARM-DATE, forwarded verbatim (L476-480)
+                    parmDate);                    // PARM-DATE coerced to PIC X(10) (L177-178, L476-480)
 
             // --- Emit the updated account master (300B) ---------------------------------------------
             // Realizes REWRITE FD-ACCTFILE-REC (1050-UPDATE-ACCOUNT L356) and the corresponding
@@ -278,15 +334,15 @@ public final class InterestCalculator {
     }
 
     /**
-     * Prints a clear usage message to {@code System.err} enumerating all seven positional arguments.
-     * Called only on an argument-count mismatch; the caller then exits with {@link #EXIT_USAGE_ERROR}.
-     *
-     * @param actualCount the number of arguments actually supplied (for the diagnostic line)
+     * Prints the usage body (invocation syntax + the seven positional arguments) to
+     * {@code System.err}. This is the reusable tail shared by every usage-error path; each caller is
+     * responsible for first printing its own specific {@code ERROR: ...} line describing WHY the
+     * invocation was rejected (a wrong argument count, or two output paths that collide). Keeping the
+     * cause line at the call site avoids emitting a self-contradictory message such as "expected 7
+     * arguments but received 7" when the real fault is a duplicate output path rather than the count.
+     * The caller exits with {@link #EXIT_USAGE_ERROR} after this returns.
      */
-    private static void printUsage(int actualCount) {
-        System.err.println(
-                "ERROR: expected " + EXPECTED_ARG_COUNT + " arguments but received " + actualCount + ".");
-        System.err.println();
+    private static void printUsage() {
         System.err.println("Usage:");
         System.err.println(
                 "  java -jar interest-calculation-1.0.0.jar \\");
@@ -303,5 +359,72 @@ public final class InterestCalculator {
         System.err.println("  5) interest-transactions-out  generated transactions (350-byte records)");
         System.err.println("  6) updated-accounts-out       rewritten accounts     (300-byte records)");
         System.err.println("  7) PARM-DATE                  e.g. 2022071800 (10-char TRAN-ID prefix)");
+    }
+
+    /**
+     * Checks that the two <em>output</em> paths ({@code args[4]} = interest-transactions,
+     * {@code args[5]} = updated-accounts) resolve to different files.
+     *
+     * <p><strong>Why this guard exists.</strong> On the mainframe the {@code INTCALC} job assigns
+     * {@code TRANSACT} and {@code ACCTFILE} to two separate datasets via distinct DD statements, so a
+     * single physical file can never back both DDs. The Java CLI instead accepts two free-form path
+     * strings, so a caller can accidentally point both at the same file. That is unsafe: the two
+     * writers use incompatible layouts (350-byte transaction records vs. 300-byte account records) and
+     * both open with {@code TRUNCATE_EXISTING} ({@link com.blitzy.carddemo.interest.io.TransactionWriter}
+     * and {@link com.blitzy.carddemo.interest.io.AccountRepository#writeUpdatedAccounts(Path)}), so
+     * writing both to one path truncates/interleaves their bytes and yields a corrupt file. Rejecting
+     * the collision up front restores the source's separate-DD invariant (AAP &sect;0.7 minimal-change:
+     * the CLI adapter must honor the DD-to-file contract) and is a usage error, not a processing abend.</p>
+     *
+     * <p>The two paths are compared after {@link Path#toAbsolutePath()} + {@link Path#normalize()} so
+     * distinct spellings of the same location (e.g. {@code out.txt} vs {@code ./out.txt}) are detected
+     * even before the files exist. This is intentionally limited to the two <em>outputs</em>: it does
+     * not forbid an output from equalling an input, because CBACT04C opens {@code ACCTFILE} I-O (read
+     * then rewrite the same dataset) and {@code AccountRepository} likewise reads the whole account
+     * file into memory before any output is written, so an in-place rewrite is a legitimate,
+     * source-faithful usage.</p>
+     *
+     * @param args the seven positional arguments (already validated to have length 7)
+     * @return a human-readable diagnostic if the two output paths resolve to the same file, or
+     *         {@code null} if they are distinct
+     */
+    private static String findDuplicateOutputPaths(String[] args) {
+        final Path txnOut = Path.of(args[ARG_TXN_OUT]).toAbsolutePath().normalize();
+        final Path acctOut = Path.of(args[ARG_ACCT_OUT]).toAbsolutePath().normalize();
+        if (txnOut.equals(acctOut)) {
+            return "the interest-transactions output (arg 5) and the updated-accounts output (arg 6) "
+                    + "must be different files, but both resolve to: " + txnOut;
+        }
+        return null;
+    }
+
+    /**
+     * Coerces a raw {@code PARM-DATE} argument to the fixed width of the COBOL {@code LINKAGE} field
+     * {@code PARM-DATE PIC X(10)} (<code>app/cbl/CBACT04C.cbl:L177-178</code>).
+     *
+     * <p>A COBOL {@code PIC X(10)} field is fixed at ten bytes: receiving (or {@code MOVE}-ing) a
+     * shorter value left-justifies it and pads the remainder with spaces, and a longer value is
+     * truncated to the leftmost ten bytes. This method reproduces exactly that, so the value the
+     * service {@code STRING}s in front of the six-digit {@code WS-TRANID-SUFFIX} to form the 16-char
+     * {@code TRAN-ID} (<code>app/cbl/CBACT04C.cbl:L474-480</code>) is always exactly ten characters.
+     * A value that is already ten characters (the INTCALC job's {@code '2022071800'}) is returned
+     * unchanged, so the coercion is byte-neutral for well-formed input.</p>
+     *
+     * @param raw the raw {@code args[6]} value; must be non-null (the caller validated the arg count)
+     * @return {@code raw} normalized to exactly {@value #PARM_DATE_WIDTH} characters (space-padded on
+     *         the right if shorter, truncated if longer), matching COBOL {@code PIC X(10)} semantics
+     */
+    private static String toPicX10(String raw) {
+        final int len = raw.length();
+        if (len == PARM_DATE_WIDTH) {
+            // Already the exact field width -> byte-neutral (e.g. the INTCALC PARM '2022071800').
+            return raw;
+        }
+        if (len > PARM_DATE_WIDTH) {
+            // MOVE of a longer sending item into PIC X(10): keep the leftmost 10 bytes (truncate right).
+            return raw.substring(0, PARM_DATE_WIDTH);
+        }
+        // MOVE of a shorter sending item into PIC X(10): left-justify and space-pad to 10 bytes.
+        return raw + " ".repeat(PARM_DATE_WIDTH - len);
     }
 }

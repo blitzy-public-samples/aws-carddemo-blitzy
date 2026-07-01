@@ -8,9 +8,13 @@ and data fixtures) is left completely untouched, and all generated Java lives un
 new directory (`modernized/interest-calculation/`) so the change set stays small and reviewable.
 
 This is a **headless batch module** — there is no user interface. It follows a thin
-*hexagonal-lite* layering: a command-line adapter (`InterestCalculator`) drives a pure,
-side-effect-free service core (`InterestCalculationService`), which is fed by file adapters
-(`io.*`) that frame the fixed-width records. The module depends only on the **JDK** and, for
+*hexagonal-lite* layering: a command-line adapter (`InterestCalculator`) drives a service core
+(`InterestCalculationService`) that performs **no direct file I/O of its own** and holds no file
+or connection state — it is fed by file adapters (`io.*`) that frame the fixed-width records.
+The service is **not** free of side effects, however: faithful to `CBACT04C`, it **mutates** the
+loaded account models (posting accumulated interest to the balance and zeroing the two cycle
+fields, `1050-UPDATE-ACCOUNT`) and **emits** the generated interest transactions through an
+injected writer (`1300-B-WRITE-TX`). The module depends only on the **JDK** and, for
 tests, **JUnit 5** — there is **no** Spring, application server, database, ORM, messaging,
 network, environment variable, or configuration file of any kind. Correctness is a faithful,
 line-traceable port of the source program: each migrated business rule carries a comment
@@ -64,7 +68,7 @@ the `INTCALC` job's DD statements and the program's `FD ... ASSIGN` clauses; the
 | # | Argument | COBOL DD (dataset) | Direction | Description |
 |---|---|---|---|---|
 | `args[0]` | `tcatbal` input | `TCATBALF` (→ `app/data/ASCII/tcatbal.txt`) | in | Transaction-category-balance driver, **50-byte** records |
-| `args[1]` | `cardxref` input | `XREFFILE` (→ `app/data/ASCII/cardxref.txt`) | in | Card cross-reference (account-id alternate key) |
+| `args[1]` | `cardxref` input | `XREFFILE` (→ `app/data/ASCII/cardxref.txt`) | in | Card cross-reference (account-id alternate key), **36-byte** records (36 significant bytes of `CVACT03Y`; see *Fixed-width framing* below) |
 | `args[2]` | `acctdata` input | `ACCTFILE` (→ `app/data/ASCII/acctdata.txt`) | in | Account master, **300-byte** records |
 | `args[3]` | `discgrp` input | `DISCGRP` (→ `app/data/ASCII/discgrp.txt`) | in | Disclosure-group interest rates, **50-byte** records |
 | `args[4]` | interest-transactions output | `TRANSACT` | out | Generated interest transactions, **350-byte** records |
@@ -106,14 +110,27 @@ consequential porting decisions, each traceable to `CBACT04C`.
   **no `COMP-3` and no `REDEFINES`** anywhere in the source). Signed values carry the sign as a
   trailing-byte **overpunch** — `{` = +0, `A`–`I` = +1…+9, `}` = -0, `J`–`R` = -1…-9 — and the
   `V99` is an **implied** (unstored) decimal point.
-- **Fixed-width framing.** Records are framed at their exact copybook widths on both read and
-  write: **50 / 50 / 50 / 300 / 350** bytes for
+- **Fixed-width framing.** Records are framed at fixed widths on both read and write:
+  **50 / 36 / 50 / 300 / 350** bytes for the
   transaction-category-balance / card-xref / disclosure-group / account / transaction records
-  respectively.
+  respectively. Four of the five match their exact copybook widths (`CVTRA01Y` 50, `CVTRA02Y` 50,
+  `CVACT01Y` 300, `CVTRA05Y` 350). The **card-xref** record is the exception: the `CVACT03Y`
+  copybook declares a 50-byte record (`RECLN 50`), but the in-repo ASCII fixture (`cardxref.txt`)
+  stores only the **36 significant bytes** — `XREF-CARD-NUM` X(16) + `XREF-CUST-ID` 9(09) +
+  `XREF-ACCT-ID` 9(11) — and omits the trailing `FILLER X(14)`, so the reader
+  (`CardXrefRepository`) frames card-xref input at **36** bytes to match the fixture.
 - **Determinism.** The 26-character DB2-format timestamp is built from `FUNCTION CURRENT-DATE`
   (`CBACT04C.cbl` L613-626) and is the program's **only** non-deterministic input. It is injected
   through a `Db2TimestampSupplier` seam so golden-master output is stable and reproducible under
-  test.
+  test. In production, `java -jar` binds the wall-clock supplier
+  (`Db2TimestampSupplier.systemDefault()`), so — exactly like the mainframe program reading
+  `FUNCTION CURRENT-DATE` — the `TRAN-ORIG-TS`/`TRAN-PROC-TS` fields of the generated transactions
+  reflect the actual run time and therefore are **not** byte-reproducible across runs. This is the
+  faithful source behavior and is deliberately preserved (AAP §0.7). Byte-exact, deterministic
+  output is a property of the **test** path only: the golden-master test drives the identical
+  pipeline through the public `InterestCalculator.run(String[], Db2TimestampSupplier)` seam with a
+  fixed timestamp, and every other byte of the production output (interest amounts, `TRAN-ID`s,
+  fixed fields, card numbers, and the entire updated-accounts file) is already fully deterministic.
 - **Mutated output.** `ACCTFILE` is the **only** mutated file: it is opened I-O and rewritten
   (`REWRITE` at `CBACT04C.cbl` L356), posting accumulated interest to the current balance and
   zeroing the two cycle fields — this becomes the updated-accounts output (`args[5]`). `TCATBAL`
