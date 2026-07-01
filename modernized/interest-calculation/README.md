@@ -95,8 +95,13 @@ consequential porting decisions, each traceable to `CBACT04C`.
 
 - **Decimal fidelity / truncation.** Every `S9(n)V99` money and rate field is modeled with
   `java.math.BigDecimal` at scale 2. The interest `COMPUTE` in the source carries **no `ROUNDED`
-  clause** (`CBACT04C.cbl` L464-465), so COBOL **truncates**. The port therefore uses
-  `setScale(2, RoundingMode.DOWN)` — **never** `HALF_EVEN` — for the interest result.
+  clause** (`CBACT04C.cbl` L464-465), so COBOL **truncates**. The port therefore computes the
+  interest as `balance.multiply(rate).divide(new BigDecimal("1200"), 2, RoundingMode.DOWN)` —
+  multiplying first, then dividing by `1200` with the scaled `divide(divisor, 2, RoundingMode.DOWN)`
+  form so the quotient truncates to scale 2, and **never** `HALF_EVEN`. The scaled `divide` is used
+  rather than an exact `divide(...)` followed by `setScale(2, RoundingMode.DOWN)`, because the exact
+  form throws `ArithmeticException` on a non-terminating quotient (amounts not evenly divisible by
+  1200); the scaled `divide` truncates safely for every input.
 - **Overpunch zoned decimal.** All numeric fields are `USAGE DISPLAY` zoned decimal (there is
   **no `COMP-3` and no `REDEFINES`** anywhere in the source). Signed values carry the sign as a
   trailing-byte **overpunch** — `{` = +0, `A`–`I` = +1…+9, `}` = -0, `J`–`R` = -1…-9 — and the

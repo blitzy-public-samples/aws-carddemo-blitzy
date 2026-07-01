@@ -1,3 +1,19 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License.
+ */
 package com.blitzy.carddemo.interest.support;
 
 import java.math.BigDecimal;
@@ -115,8 +131,27 @@ public final class ZonedDecimal {
         final int lastDigit = signAndDigit[0];
         final int sign = signAndDigit[1];
 
+        // Validate the leading bytes BEFORE constructing BigInteger. In a COBOL USAGE DISPLAY
+        // zoned-decimal field (every S9(n)V99 field in this module -- app/cpy/*.cpy: DIS-INT-RATE
+        // S9(04)V99, TRAN-CAT-BAL/TRAN-AMT S9(09)V99, ACCT money S9(10)V99) the sign is overpunched
+        // ONLY onto the trailing byte, so every leading byte must be a plain ASCII digit '0'-'9'
+        // (BR-18; AAP 0.6.2). This explicit guard is required because new BigInteger(String) would
+        // otherwise silently accept a leading '+'/'-' sign (e.g. "-00150" -> -150, "+00150" -> 150)
+        // and misinterpret a corrupted fixed-width record instead of failing fast (CWE-20). The
+        // message reports only the offending index/char -- never the full record -- to avoid leaking
+        // record content.
+        for (int i = 0; i < length - 1; i++) {
+            final char lead = raw.charAt(i);
+            if (lead < '0' || lead > '9') {
+                throw new IllegalArgumentException(
+                        "Invalid zoned-decimal leading byte at index " + i + ": '" + lead
+                                + "' (every leading byte must be an ASCII digit '0'-'9')");
+            }
+        }
+
         // Reassemble the unsigned digit run: (length-1) plain leading digits + the decoded last digit.
-        // BigInteger correctly handles the leading zeros that pad every canonical COBOL field.
+        // BigInteger correctly handles the leading zeros that pad every canonical COBOL field. The
+        // leading run is guaranteed digit-only by the guard above, so BigInteger never sees a sign.
         final String digits = raw.substring(0, length - 1) + lastDigit;
         BigInteger unscaled = new BigInteger(digits);
 

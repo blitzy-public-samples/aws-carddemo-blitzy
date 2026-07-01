@@ -20,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.math.BigDecimal;
 
@@ -316,6 +317,37 @@ public class ZonedDecimalTest {
     @DisplayName("BR-18 guard: invalid overpunch char '*' -> IllegalArgumentException")
     void decodeRejectsInvalidOverpunchChar() {
         assertThrows(IllegalArgumentException.class, () -> ZonedDecimal.decode("00150*", 2));
+    }
+
+    /**
+     * BR-18 / CWE-20: every <em>leading</em> byte of a COBOL {@code USAGE DISPLAY} zoned-decimal
+     * field must be a plain ASCII digit {@code '0'..'9'} &mdash; the sign is overpunched onto the
+     * <em>trailing</em> byte only. {@code decode} must therefore reject any malformed leading byte
+     * fail-fast with {@link IllegalArgumentException}.
+     *
+     * <p>The critical regression vectors are a leading {@code '+'} or {@code '-'}: {@code BigInteger}'s
+     * {@code (String)} constructor <strong>silently accepts</strong> a leading sign
+     * (e.g. {@code "-00150"}&rarr;{@code -150}, {@code "+00150"}&rarr;{@code 150}), so without the
+     * explicit digit-only guard a corrupted fixed-width record would be misinterpreted instead of
+     * rejected. This suite also covers a leading space, upper/lower-case letters, a non-digit in the
+     * middle of the leading run, and the exact {@code '/'} (0x2F) / {@code ':'} (0x3A) boundary
+     * characters just outside {@code '0'..'9'} to lock the range check.</p>
+     */
+    @ParameterizedTest
+    @DisplayName("BR-18/CWE-20 guard: non-digit leading byte (+,-,space,alpha,boundary) -> IllegalArgumentException")
+    @ValueSource(strings = {
+        "+0015{",   // leading '+'  -- BigInteger(String) would silently accept this (CWE-20 vector)
+        "-0015{",   // leading '-'  -- BigInteger(String) would decode to a negative value (CWE-20 vector)
+        " 0015{",   // leading space
+        "A0015{",   // leading upper-case letter
+        "z0015{",   // leading lower-case letter
+        "00 15{",   // non-digit (space) INSIDE the leading run
+        "00+15{",   // non-digit ('+')  INSIDE the leading run
+        "0/015{",   // '/' == 0x2F, immediately BELOW '0' (lower boundary)
+        "00:15{"    // ':' == 0x3A, immediately ABOVE '9' (upper boundary)
+    })
+    void decodeRejectsNonDigitLeadingByte(String malformed) {
+        assertThrows(IllegalArgumentException.class, () -> ZonedDecimal.decode(malformed, 2));
     }
 
     /**
