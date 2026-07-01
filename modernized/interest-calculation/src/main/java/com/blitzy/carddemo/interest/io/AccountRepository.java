@@ -55,10 +55,15 @@ import com.blitzy.carddemo.interest.model.Account;
  * fields that {@code 1050-UPDATE-ACCOUNT} mutates
  * ({@code ACCT-CURR-BAL}, {@code ACCT-CURR-CYC-CREDIT}, {@code ACCT-CURR-CYC-DEBIT})
  * back onto that raw line, leaving every other byte — dates, limits, {@code addrZip},
- * the blank {@code groupId}, and the {@code FILLER} — verbatim. Because
- * {@code support.ZonedDecimal.encode} is the exact inverse of {@code decode}, an
- * account the service never mutates re-encodes to its original bytes, so the overlay
- * is always safe to apply to all three fields (see {@link #writeUpdatedAccounts}).
+ * the blank {@code groupId}, and the {@code FILLER} — verbatim. Moreover each mutable
+ * field is re-encoded ONLY when its live value actually differs from the value
+ * originally read; an unmutated field keeps its original raw bytes verbatim. This is
+ * required for strict sign fidelity: {@code support.ZonedDecimal.encode} canonicalizes
+ * zero to a positive {@code '{'} overpunch, so blindly re-encoding an untouched field
+ * that stored a degenerate negative-zero {@code '}'} (which decodes to {@code 0.00})
+ * would change a byte; preserving the original bytes when the value is unchanged keeps a
+ * no-mutation load&rarr;write byte-identical for <em>every</em> valid zoned-decimal input
+ * (see {@link #writeUpdatedAccounts} and {@link #overlayMutableField}).
  *
  * <h2>Mutation discipline</h2>
  * <p>This class performs NO interest arithmetic and NO cycle-field zeroing. The
@@ -247,13 +252,15 @@ public final class AccountRepository {
      * <p>REWRITE FD-ACCTFILE-REC FROM ACCOUNT-RECORD (L356): overlay
      * {@code currBal}/{@code currCycCredit}/{@code currCycDebit} on the original 300
      * bytes; all other bytes verbatim. For each loaded account the original raw line is
-     * taken and only the three {@code 1050-UPDATE-ACCOUNT}-mutated field slices are
-     * replaced (re-encoded from the in-memory model via
-     * {@code FixedWidthCodec.encodeNumeric(value, 12, 2)}); dates, limits, {@code addrZip},
-     * the blank {@code groupId}, and the trailing {@code FILLER} are copied unchanged.
-     * Because the zoned-decimal encode is the exact inverse of decode, overlaying all
-     * three fields is byte-safe even for accounts the service never touched (they
-     * re-encode to their original bytes).
+     * taken and each of the three {@code 1050-UPDATE-ACCOUNT}-mutated field slices is
+     * re-encoded from the in-memory model (via
+     * {@code FixedWidthCodec.encodeNumeric(value, 12, 2)}) ONLY when its live value differs
+     * from the value originally read; an unchanged field keeps its original raw bytes
+     * verbatim (see {@link #overlayMutableField}). Dates, limits, {@code addrZip}, the blank
+     * {@code groupId}, and the trailing {@code FILLER} are always copied unchanged.
+     * Overlaying only genuinely-changed fields preserves every valid overpunch encoding
+     * (including a stored negative-zero {@code '}'}) for accounts the service never touched,
+     * so a no-mutation load&rarr;write round-trips byte-for-byte.
      *
      * <p><b>Order &amp; completeness:</b> CBACT04C only {@code REWRITE}s accounts that
      * appear in the TCATBAL driver, but the module contract (AAP §0.3.1) is to emit ALL
@@ -283,16 +290,22 @@ public final class AccountRepository {
                 final Account account = entry.getValue();
                 final String original = rawById.get(entry.getKey());
 
-                // Overlay ONLY the three fields mutated by 1050-UPDATE-ACCOUNT (L352-354);
-                // every other byte stays exactly as read. encodeNumeric is the inverse of
-                // decodeNumeric, so untouched values reproduce their original bytes.
+                // 1050-UPDATE-ACCOUNT mutates ONLY three fields (L352-354): ACCT-CURR-BAL,
+                // ACCT-CURR-CYC-CREDIT, ACCT-CURR-CYC-DEBIT. Overlay a field's slice ONLY when the
+                // live in-memory value actually differs from the value originally read; otherwise keep
+                // the ORIGINAL raw bytes verbatim (see overlayMutableField). This preserves every valid
+                // overpunch encoding for fields the service never touched -- including a stored
+                // negative-zero '}' that decodes to 0.00 (which ZonedDecimal.encode would otherwise
+                // canonicalize to positive '{') -- so a no-mutation load->write round-trips
+                // byte-for-byte (R1 sign fidelity). The pre-image is always decoded from `original`
+                // (never the partially-overlaid `record`), and the three fields are non-overlapping.
                 String record = original;
                 record = replace(record, CURR_BAL_OFFSET,
-                        FixedWidthCodec.encodeNumeric(account.getCurrBal(), MONEY_DIGITS, MONEY_SCALE));
+                        overlayMutableField(original, CURR_BAL_OFFSET, account.getCurrBal()));
                 record = replace(record, CURR_CYC_CREDIT_OFFSET,
-                        FixedWidthCodec.encodeNumeric(account.getCurrCycCredit(), MONEY_DIGITS, MONEY_SCALE));
+                        overlayMutableField(original, CURR_CYC_CREDIT_OFFSET, account.getCurrCycCredit()));
                 record = replace(record, CURR_CYC_DEBIT_OFFSET,
-                        FixedWidthCodec.encodeNumeric(account.getCurrCycDebit(), MONEY_DIGITS, MONEY_SCALE));
+                        overlayMutableField(original, CURR_CYC_DEBIT_OFFSET, account.getCurrCycDebit()));
 
                 writer.write(record);
                 writer.write("\n"); // LF-only record terminator, matching the fixtures.
@@ -365,6 +378,41 @@ public final class AccountRepository {
                 currCycDebit,
                 addrZip,
                 groupId);
+    }
+
+    /**
+     * Returns the {@value #MONEY_DIGITS}-char field text to write at {@code offset} for one of the
+     * three mutable money fields, realizing the byte-exact overlay rule of {@code REWRITE
+     * FD-ACCTFILE-REC} (app/cbl/CBACT04C.cbl:L356) with strict sign fidelity.
+     *
+     * <p>The field is re-encoded from the live in-memory {@code current} value ONLY when it actually
+     * differs from the value originally read (numeric comparison via {@link BigDecimal#compareTo});
+     * otherwise the <em>original raw bytes</em> of that slice are returned unchanged. This matters
+     * because {@code support.ZonedDecimal.encode} canonicalizes zero to a positive {@code '{'}
+     * overpunch: a field the service never mutated whose stored value is a degenerate negative-zero
+     * {@code '}'} (which decodes to {@code 0.00}) must be preserved byte-for-byte, not rewritten to
+     * {@code '{'}. Overlaying only genuinely-changed fields therefore keeps a no-mutation
+     * load&rarr;write round-trip byte-identical for <em>every</em> valid zoned-decimal input (R1 sign
+     * fidelity), while a field the service did change (e.g. {@code ACCT-CURR-BAL} after posting
+     * interest, or a cycle field zeroed by {@code 1050-UPDATE-ACCOUNT} L352-354) is re-encoded from the
+     * mutated value via {@link FixedWidthCodec#encodeNumeric(BigDecimal, int, int)}.</p>
+     *
+     * @param original the untouched original 300-char record (pre-image source of value and bytes)
+     * @param offset   the 0-based start of the money field within the record
+     * @param current  the live, possibly-mutated in-memory value of that field
+     * @return the original raw slice when {@code current} is unchanged, else the re-encoded field
+     */
+    private static String overlayMutableField(String original, int offset, BigDecimal current) {
+        // Pre-image value as originally read (decoded from the retained raw bytes at this offset).
+        final BigDecimal originalValue =
+                FixedWidthCodec.decodeNumeric(original, offset, MONEY_DIGITS, MONEY_SCALE);
+        if (current.compareTo(originalValue) == 0) {
+            // Unchanged by the service -> keep the ORIGINAL bytes verbatim (do NOT re-encode; this
+            // preserves e.g. a stored negative-zero '}' that encode() would canonicalize to '{').
+            return original.substring(offset, offset + MONEY_DIGITS);
+        }
+        // Changed by 1050-UPDATE-ACCOUNT (L352-354) -> re-encode from the mutated in-memory value.
+        return FixedWidthCodec.encodeNumeric(current, MONEY_DIGITS, MONEY_SCALE);
     }
 
     /**

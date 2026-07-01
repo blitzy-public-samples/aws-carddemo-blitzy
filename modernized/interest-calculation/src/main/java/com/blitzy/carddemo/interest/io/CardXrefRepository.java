@@ -94,6 +94,16 @@ public final class CardXrefRepository {
     private static final int ACCT_ID_WIDTH = 11;
 
     /**
+     * Number of <em>significant</em> bytes stored per {@code CARD-XREF-RECORD} in the ASCII fixture.
+     * The CVACT03Y copybook declares RECLN 50, but {@code app/data/ASCII/cardxref.txt} omits the
+     * trailing {@code FILLER X(14)} and stores only the 36 significant bytes
+     * ({@code XREF-CARD-NUM 16 + XREF-CUST-ID 9 + XREF-ACCT-ID 11}); every real record MUST be exactly
+     * this width. A short/long line is malformed fixed-width input and is rejected up-front (CWE-20) so
+     * a record missing the {@code XREF-ACCT-ID} key can never silently mis-frame (see {@link #load(Path)}).
+     */
+    private static final int RECORD_LENGTH = 36;
+
+    /**
      * Card cross-references keyed by account id (XREF-ACCT-ID, the alternate
      * index). Populated once in {@link #load(Path)}; never mutated afterwards.
      */
@@ -131,14 +141,21 @@ public final class CardXrefRepository {
      * unreadable input aborts the job (there is no meaningful recovery from an
      * absent cross-reference file).</p>
      *
+     * <p>Input is validated as it is read: every real record must be exactly the 36 significant
+     * {@code CARD-XREF-RECORD} bytes (see {@link #RECORD_LENGTH}). A mid-file blank line or a
+     * short/long record is malformed fixed-width input and is rejected as a fatal framing error with
+     * the offending line number (only a single terminal blank line, a trailing-newline artifact, is
+     * tolerated). This prevents a truncated record from silently mis-framing and deferring failure to
+     * a later lookup (CWE-20).</p>
+     *
      * @param path the path to the fixed-width {@code cardxref.txt} fixture
      *             (36-byte lines; see the class Javadoc)
      * @return a repository whose map is keyed by account id (XREF-ACCT-ID)
      * @throws UncheckedIOException if the file cannot be read
-     * @throws IllegalArgumentException if a non-empty line is shorter than the
-     *             36 significant bytes (propagated from
-     *             {@link FixedWidthCodec#slice(String, int, int)}), surfacing a
-     *             truncated/malformed fixture as a fatal framing error
+     * @throws IllegalArgumentException if a real record is not exactly the 36 significant bytes, or a
+     *             non-terminal blank line is encountered &mdash; surfacing a truncated/malformed
+     *             fixture as a fatal framing error (the message reports the line number and
+     *             expected/actual width but never the record content)
      */
     public static CardXrefRepository load(Path path) {
         // LinkedHashMap preserves the file's record order for deterministic
@@ -148,13 +165,34 @@ public final class CardXrefRepository {
             // US-ASCII: char index == COBOL byte offset, so FixedWidthCodec.slice
             // frames each copybook field by its exact byte position.
             final List<String> lines = Files.readAllLines(path, StandardCharsets.US_ASCII);
-            for (final String line : lines) {
-                // Tolerate a stray trailing/blank empty line (e.g. from an extra
-                // newline): an empty line carries no CARD-XREF-RECORD. All real
-                // records are exactly 36 chars, so this never skips data.
+            final int lineCount = lines.size();
+            for (int index = 0; index < lineCount; index++) {
+                final String line = lines.get(index);
+                final int lineNumber = index + 1; // 1-based for human-readable diagnostics.
+
                 if (line.isEmpty()) {
-                    continue;
+                    // Tolerate ONLY a single zero-length FINAL line (a trailing-newline artifact): it
+                    // carries no CARD-XREF-RECORD. A mid-file blank line is malformed fixed-width input
+                    // and must NOT be silently skipped (that would hide corruption and defer failure to
+                    // a later lookup); reject it as a fatal framing error (CWE-20).
+                    if (index == lineCount - 1) {
+                        break;
+                    }
+                    throw new IllegalArgumentException(
+                            "Malformed CARD-XREF-RECORD: unexpected empty record at line " + lineNumber
+                                    + " of " + path + " (expected " + RECORD_LENGTH + " chars)");
                 }
+
+                // Enforce the significant CVACT03Y width (36 bytes) BEFORE slicing so a record
+                // truncated before/within the XREF-ACCT-ID key -- or otherwise mis-sized -- cannot
+                // parse successfully and silently accept malformed input (CWE-20). The diagnostic
+                // reports only the line number and expected/actual width, never the record content.
+                if (line.length() != RECORD_LENGTH) {
+                    throw new IllegalArgumentException(
+                            "Malformed CARD-XREF-RECORD at line " + lineNumber + " of " + path
+                                    + ": expected " + RECORD_LENGTH + " chars but was " + line.length());
+                }
+
                 final CardXref xref = parse(line);
                 // Key by the alternate index (XREF-ACCT-ID). Last-wins on a
                 // duplicate key (see method Javadoc; not expected in the fixture).

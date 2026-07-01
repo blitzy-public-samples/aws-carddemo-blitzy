@@ -111,6 +111,15 @@ public final class TransactionCategoryBalanceReader
     private static final int BALANCE_SCALE = 2;
 
     /**
+     * Authoritative fixed record width of a {@code TRAN-CAT-BAL-RECORD} &mdash; CVTRA01Y RECLN 50
+     * (app/cpy/CVTRA01Y.cpy:L4-L10; the 50-byte fixture is verified in {@code app/data/ASCII/tcatbal.txt}).
+     * Every real driver record MUST be exactly this many characters; a short/long line is malformed
+     * fixed-width input and is rejected up-front (CWE-20) so a record truncated before {@code FILLER
+     * [28,50)} can never silently mis-frame (see {@link #readAll()}).
+     */
+    private static final int RECORD_LENGTH = 50;
+
+    /**
      * The TCATBAL input file path. The Java analogue of {@code OPEN INPUT TCATBAL-FILE}: recording
      * the path is the "open"; the actual sequential read happens on demand in {@link #readAll()}.
      */
@@ -152,18 +161,37 @@ public final class TransactionCategoryBalanceReader
 
         for (int index = 0; index < lineCount; index++) {
             final String line = lines.get(index);
+            final int lineNumber = index + 1; // 1-based for human-readable diagnostics.
 
-            // COBOL status '10' = end of file -> clean stop, no abend (L330, L339-340).
-            // The natural end of the line list IS end-of-file. Additionally tolerate a single
-            // zero-length FINAL line produced by a trailing newline: skip it WITHOUT masking
-            // mid-file corruption -- only the last line may be skipped, and only when it is empty.
-            // (The in-repo fixtures are clean: 50 records, no trailing blank; a mid-file blank line
-            //  is NOT skipped and instead fails framing below, exactly like a COBOL read error.)
-            if (line.isEmpty() && index == lineCount - 1) {
-                break;
+            if (line.isEmpty()) {
+                // COBOL status '10' = end of file -> clean stop, no abend (L330, L339-340).
+                // Tolerate ONLY a single zero-length FINAL line (a trailing-newline artifact): it
+                // carries no TRAN-CAT-BAL-RECORD, so reaching it is the clean-EOF analogue.
+                if (index == lineCount - 1) {
+                    break;
+                }
+                // A mid-file blank line is malformed fixed-width input, NOT end-of-file. Do NOT skip
+                // it silently (that would mask corruption); fail like a COBOL read error (CWE-20).
+                // other status -> 9999-ABEND-PROGRAM equivalent: fatal RuntimeException (L342-345).
+                throw new RuntimeException(
+                        "ERROR READING TRANSACTION CATEGORY FILE: unexpected empty record at line "
+                                + lineNumber + " of " + path + " (expected a " + RECORD_LENGTH
+                                + "-char TRAN-CAT-BAL-RECORD)");
             }
 
-            records.add(parseRecord(line));
+            // Enforce the authoritative CVTRA01Y record width (RECLN 50) BEFORE slicing so a record
+            // truncated before FILLER [28,50) -- or otherwise mis-sized -- cannot parse successfully
+            // and silently accept malformed input (CWE-20). The diagnostic reports the line number and
+            // the expected/actual width but NEVER the record content (avoids leaking PII/account data).
+            if (line.length() != RECORD_LENGTH) {
+                // other status -> 9999-ABEND-PROGRAM equivalent: fatal RuntimeException (L342-345).
+                throw new RuntimeException(
+                        "ERROR READING TRANSACTION CATEGORY FILE: malformed TRAN-CAT-BAL-RECORD at line "
+                                + lineNumber + " of " + path + ": expected " + RECORD_LENGTH
+                                + " chars but was " + line.length());
+            }
+
+            records.add(parseRecord(line, lineNumber));
         }
 
         return records;
@@ -192,17 +220,24 @@ public final class TransactionCategoryBalanceReader
     }
 
     /**
-     * Frames and decodes a single 50-byte line into a {@link TransactionCategoryBalance}.
+     * Frames and decodes a single {@value #RECORD_LENGTH}-byte line into a
+     * {@link TransactionCategoryBalance}.
      *
      * <p>Field offsets cite CVTRA01Y {@code TRAN-CAT-BAL-RECORD} (app/cpy/CVTRA01Y.cpy:L4-L10). Only
      * the signed {@code balance} is routed through the zoned-decimal codec; the three key components
-     * are raw fixed-width substrings that preserve leading zeros.</p>
+     * are raw fixed-width substrings that preserve leading zeros. The caller ({@link #readAll()}) has
+     * already validated that the line is exactly {@value #RECORD_LENGTH} characters, so the only
+     * residual failure here is invalid numeric content (a bad overpunch/digit byte in
+     * {@code TRAN-CAT-BAL}).</p>
      *
-     * @param record the raw de-newlined fixed-width record line
+     * @param record     the raw de-newlined fixed-width record line (already length-validated)
+     * @param lineNumber the 1-based line number of {@code record}, for diagnostics only
      * @return the parsed immutable record
-     * @throws RuntimeException if the line is malformed (too short, bad overpunch, etc.) &mdash; fatal
+     * @throws RuntimeException if the record's numeric field cannot be decoded (bad overpunch/digit)
+     *                          &mdash; fatal; the message reports the line number but NEVER the record
+     *                          content (avoids leaking PII/account data)
      */
-    private TransactionCategoryBalance parseRecord(String record) {
+    private TransactionCategoryBalance parseRecord(String record, int lineNumber) {
         try {
             // CVTRA01Y TRAN-CAT-BAL-RECORD offsets (0-based, half-open); app/cpy/CVTRA01Y.cpy:L4-L10.
             // [0,11)  TRANCAT-ACCT-ID 9(11)     -> String (preserve leading zeros; key, not arithmetic).
@@ -218,11 +253,14 @@ public final class TransactionCategoryBalanceReader
             return new TransactionCategoryBalance(acctId, typeCd, catCd, balance);
         } catch (RuntimeException e) {
             // other status -> 9999-ABEND-PROGRAM equivalent: fatal RuntimeException (L342-345).
-            // A malformed/short record (slice/decode failure) is a hard error, exactly like the COBOL
-            // read-error path: DISPLAY 'ERROR READING TRANSACTION CATEGORY FILE' then abend.
+            // A decode failure is a hard error, exactly like the COBOL read-error path: DISPLAY
+            // 'ERROR READING TRANSACTION CATEGORY FILE' then abend. The message reports only the line
+            // number and path (NOT the raw record) to avoid leaking account id / balance PII; the
+            // chained cause pinpoints the offending field/byte (e.g. ZonedDecimal reports only the
+            // failing index/char) without echoing the record content.
             throw new RuntimeException(
-                    "ERROR READING TRANSACTION CATEGORY FILE: malformed TRAN-CAT-BAL-RECORD in "
-                            + path + ": \"" + record + "\"", e);
+                    "ERROR READING TRANSACTION CATEGORY FILE: malformed TRAN-CAT-BAL-RECORD at line "
+                            + lineNumber + " of " + path, e);
         }
     }
 

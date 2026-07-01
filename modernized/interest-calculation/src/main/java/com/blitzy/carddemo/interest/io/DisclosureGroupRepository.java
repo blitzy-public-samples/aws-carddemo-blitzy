@@ -95,6 +95,15 @@ public final class DisclosureGroupRepository {
     private static final int INT_RATE_SCALE = 2;
 
     /**
+     * Authoritative fixed record width of a {@code DIS-GROUP-RECORD} &mdash; CVTRA02Y RECLN 50
+     * (app/cpy/CVTRA02Y.cpy; the 50-byte fixture is verified in {@code app/data/ASCII/discgrp.txt}).
+     * Every real record MUST be exactly this many characters; a short/long line is malformed
+     * fixed-width input in the rate table and is rejected up-front (CWE-20) so a record truncated
+     * before {@code FILLER [22,50)} can never silently mis-frame (see {@link #load(Path)}).
+     */
+    private static final int RECORD_LENGTH = 50;
+
+    /**
      * The literal group id used for the fallback re-read
      * ({@code MOVE 'DEFAULT' TO FD-DIS-ACCT-GROUP-ID}, {@code app/cbl/CBACT04C.cbl:L437}). Held as the
      * bare 7-character literal; {@link #key(String, String, String)} space-pads it to the 10-char
@@ -129,11 +138,23 @@ public final class DisclosureGroupRepository {
      * {@link #key(String, String, String)} helper used at lookup time, so build-time and lookup-time
      * keys are guaranteed identical.</p>
      *
+     * <p>Input is validated as it is read: every real record must be exactly the CVTRA02Y record
+     * width ({@link #RECORD_LENGTH} = 50 chars). A mid-file blank line or a short/long record is
+     * malformed fixed-width input in the rate table and is rejected as a fatal framing error with the
+     * offending line number (only a single terminal blank line, a trailing-newline artifact, is
+     * tolerated). This prevents a truncated record missing its {@code FILLER}/rate bytes from silently
+     * mis-framing (CWE-20).</p>
+     *
      * @param path the path to the fixed-width DISCGRP file (e.g. {@code discgrp.txt}); each line is a
      *             de-newlined 50-byte record. Must be non-null and readable.
      * @return a fully populated, ready-to-query {@code DisclosureGroupRepository}
      * @throws UncheckedIOException if the file cannot be read (a fatal condition &mdash; the COBOL job
      *                              cannot proceed without its rate table)
+     * @throws IllegalArgumentException if a real record is not exactly {@link #RECORD_LENGTH} chars, or
+     *                              a non-terminal blank line is encountered &mdash; surfacing a
+     *                              malformed rate table as a fatal framing error (the message reports
+     *                              the line number and expected/actual width but never the record
+     *                              content)
      */
     public static DisclosureGroupRepository load(Path path) {
         // LinkedHashMap => deterministic build order matching the fixture's physical record order.
@@ -141,11 +162,34 @@ public final class DisclosureGroupRepository {
         try {
             // US-ASCII fixtures (1 byte == 1 char); readAllLines strips the LF record terminators.
             final List<String> lines = Files.readAllLines(path, StandardCharsets.US_ASCII);
-            for (final String line : lines) {
-                // Defensive: skip a possible trailing/blank empty line; every real record is 50 chars.
+            final int lineCount = lines.size();
+            for (int index = 0; index < lineCount; index++) {
+                final String line = lines.get(index);
+                final int lineNumber = index + 1; // 1-based for human-readable diagnostics.
+
                 if (line.isEmpty()) {
-                    continue;
+                    // Tolerate ONLY a single zero-length FINAL line (a trailing-newline artifact): it
+                    // carries no DIS-GROUP-RECORD. A mid-file blank line in a fixed-width rate table is
+                    // malformed input and must NOT be silently skipped (that would hide corruption);
+                    // reject it as a fatal framing error with its line number (CWE-20).
+                    if (index == lineCount - 1) {
+                        break;
+                    }
+                    throw new IllegalArgumentException(
+                            "Malformed DIS-GROUP-RECORD: unexpected empty record at line " + lineNumber
+                                    + " of " + path + " (expected " + RECORD_LENGTH + " chars)");
                 }
+
+                // Enforce the authoritative CVTRA02Y record width (RECLN 50) BEFORE slicing so a record
+                // truncated before FILLER [22,50) -- or otherwise mis-sized -- cannot parse successfully
+                // and silently accept malformed input (CWE-20). The diagnostic reports only the line
+                // number and expected/actual width, never the record content.
+                if (line.length() != RECORD_LENGTH) {
+                    throw new IllegalArgumentException(
+                            "Malformed DIS-GROUP-RECORD at line " + lineNumber + " of " + path
+                                    + ": expected " + RECORD_LENGTH + " chars but was " + line.length());
+                }
+
                 // Three key fields are raw fixed-width substrings (leading zeros preserved).
                 final String groupId = FixedWidthCodec.slice(line, GROUP_ID_OFFSET, GROUP_ID_WIDTH);
                 final String tranTypeCd = FixedWidthCodec.slice(line, TYPE_CD_OFFSET, TYPE_CD_WIDTH);
