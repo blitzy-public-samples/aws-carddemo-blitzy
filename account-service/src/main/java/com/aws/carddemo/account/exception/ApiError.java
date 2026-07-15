@@ -39,7 +39,7 @@ import java.util.Map;
  *   "status": 400,
  *   "error": "Bad Request",
  *   "message": "activeStatus must be 'Y' or 'N'",
- *   "path": "/api/v1/accounts/00000000001",
+ *   "path": "/api/v1/accounts/{accountId}",
  *   "fieldErrors": {
  *     "activeStatus": "must be 'Y' or 'N'"
  *   }
@@ -67,6 +67,13 @@ import java.util.Map;
  *       account/card numbers. Callers are responsible for passing already-sanitized strings
  *       so that sensitive data (full account numbers, balances, credit limits) never leaks
  *       into an error payload or the logs.</li>
+ *   <li><b>Sanitized path (AAP &sect;0.6.6).</b> The {@link #path} is expected to be the
+ *       sanitized request-mapping route template (for example {@code /api/v1/accounts/{accountId}}),
+ *       <em>not</em> the raw request URI. The 11-digit account id is classified sensitive
+ *       "full account number" data; supplying the template rather than the concrete URI keeps
+ *       the id out of the serialized error body and out of any log that captures it
+ *       (CWE-209 / CWE-532). The producing {@code GlobalExceptionHandler} is responsible for
+ *       passing the template; this container neither derives nor rewrites the value.</li>
  * </ul>
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -84,7 +91,11 @@ public class ApiError {
     /** Human-readable, already-sanitized description of the error condition. */
     private final String message;
 
-    /** Request URI that produced the error (for example {@code /api/v1/accounts/00000000001}). */
+    /**
+     * Sanitized request path that produced the error — the request-mapping route template
+     * (for example {@code /api/v1/accounts/{accountId}}), never the raw URI, so the sensitive
+     * 11-digit account id is not stored or serialized here (AAP &sect;0.6.6).
+     */
     private final String path;
 
     /**
@@ -101,7 +112,8 @@ public class ApiError {
      * @param status  numeric HTTP status code
      * @param error   HTTP reason phrase
      * @param message human-readable, already-sanitized error message
-     * @param path    request URI that produced the error
+     * @param path    sanitized request path (route template, e.g. {@code /api/v1/accounts/{accountId}}),
+     *                never the raw URI containing the account id
      */
     public ApiError(int status, String error, String message, String path) {
         this(status, error, message, path, null);
@@ -117,7 +129,8 @@ public class ApiError {
      * @param status      numeric HTTP status code
      * @param error       HTTP reason phrase
      * @param message     human-readable, already-sanitized error message
-     * @param path        request URI that produced the error
+     * @param path        sanitized request path (route template, e.g.
+     *                    {@code /api/v1/accounts/{accountId}}), never the raw URI containing the account id
      * @param fieldErrors optional field-to-message map for validation failures; may be {@code null}
      */
     public ApiError(int status, String error, String message, String path,
@@ -161,7 +174,8 @@ public class ApiError {
     }
 
     /**
-     * @return the request URI that produced the error
+     * @return the sanitized request path (route template) that produced the error;
+     *         does not contain the raw account id
      */
     public String getPath() {
         return path;

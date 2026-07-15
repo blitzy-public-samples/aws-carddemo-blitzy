@@ -1,3 +1,19 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License.
+ */
 package com.aws.carddemo.account.domain;
 
 import jakarta.persistence.Column;
@@ -173,8 +189,13 @@ public class Account {
 
     /**
      * Account group identifier, migrated from {@code ACCT-GROUP-ID PIC X(10)}
-     * ({@code CVACT01Y.cpy:L16}). Treated as read-only at the API boundary (the update DTO omits
-     * it), consistent with its display-only role in the legacy screens; maps to {@code VARCHAR(10)}.
+     * ({@code CVACT01Y.cpy:L16}); maps to {@code VARCHAR(10)}. Treated as read-only at the API
+     * boundary — the update DTO ({@code AccountUpdateRequest}) omits it, so no update can change it.
+     * This is an <strong>intentional security hardening</strong> (AAP &sect;0.7.2), <em>not</em> a
+     * reproduction of legacy behavior: the legacy {@code COACTUP} BMS map defined the group-id field
+     * as {@code UNPROT} (editable) and {@code COACTUPC.cbl} persisted a changed group id on rewrite.
+     * The migration deliberately tightens it to display-only to satisfy the documented
+     * "Account ID and group ID immutable" requirement.
      */
     @Column(name = "group_id", length = 10, nullable = false)
     private String groupId;
@@ -421,8 +442,16 @@ public class Account {
     }
 
     /**
-     * Sets the optimistic-locking version. Normally managed by Hibernate; a setter is provided so
-     * callers can supply the last-read version for optimistic-lock conflict detection on update.
+     * Sets the optimistic-locking version.
+     *
+     * <p><strong>Persistence/test plumbing only.</strong> This setter exists so JPA/Hibernate can
+     * hydrate the field on load and so tests can construct entities in a known state; the
+     * {@code version} value is otherwise owned and incremented by the persistence provider. The
+     * service layer MUST NOT implement conflict detection by assigning a stale value to a managed
+     * entity's version — mutating a managed instance's version is not a reliable optimistic lock.
+     * Instead the service must explicitly compare the client-supplied request version against the
+     * loaded entity's version (or use a proven detached/merge pattern) and surface a mismatch as
+     * HTTP 409 (see {@link #version}).</p>
      *
      * @param version the version
      */

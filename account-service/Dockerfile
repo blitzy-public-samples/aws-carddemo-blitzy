@@ -27,9 +27,12 @@
 #             account-service:local
 #
 # SECURITY: No credentials or datasource URLs are ever baked into the image
-# (AAP section 0.6.6). The container runs with the "docker" Spring profile, which
-# reads the datasource strictly from environment variables supplied at runtime,
-# and the application process runs as an unprivileged (non-root) user.
+# (AAP section 0.6.6). The container DEFAULTS to the "docker" Spring profile. The
+# PLANNED application-docker.yml (not yet added at this checkpoint) will make that
+# profile read the datasource STRICTLY from environment variables with no local
+# fallback; until it exists the image inherits application.yml's local-dev
+# fallbacks, so the SPRING_DATASOURCE_* env vars must be supplied at runtime. The
+# application process runs as an unprivileged (non-root) user.
 # =============================================================================
 
 
@@ -80,11 +83,15 @@ LABEL org.opencontainers.image.title="account-service" \
 
 WORKDIR /app
 
-# Create an unprivileged system user to run the application (defense-in-depth -
-# the JVM must never run as root). `-r` marks it a system account and `-u 1001`
-# pins a stable UID; `|| true` keeps the build idempotent if the UID or name
-# already exists in the base image.
-RUN useradd -r -u 1001 spring || true
+# Create a dedicated, unprivileged group and user to run the application
+# (defense-in-depth - the JVM must never run as root). The fixed GID/UID 1001 keeps
+# ownership stable across rebuilds and matches the `--chown=1001:1001` COPY and the
+# `USER 1001` directive below. This step is intentionally FAIL-CLOSED: there is no
+# `|| true`, so any failure to create the identity (for example a UID/GID collision
+# introduced by a future base image) aborts the build rather than silently shipping
+# an image whose runtime user is undefined.
+RUN groupadd --gid 1001 spring \
+ && useradd --uid 1001 --gid 1001 --no-create-home --shell /usr/sbin/nologin spring
 
 # Copy ONLY the finished executable jar from the build stage - the build
 # toolchain and all intermediate output stay behind and never reach this image.
@@ -95,13 +102,14 @@ RUN useradd -r -u 1001 spring || true
 COPY --from=build --chown=1001:1001 /build/target/*.jar /app/app.jar
 
 # Drop root privileges for everything that follows (i.e. the running container).
-# The numeric form holds even if account creation above was skipped by `|| true`.
+# Uses the numeric UID of the "spring" identity deterministically created above.
 USER 1001
 
-# Default to the "docker" Spring profile so the container reads its datasource
-# configuration from environment variables (see application-docker.yml). This is
-# only a DEFAULT and can be overridden at `docker run` time; no secrets or
-# connection URLs are baked into the image.
+# Default to the "docker" Spring profile. Once the PLANNED application-docker.yml
+# is added (see the SECURITY note above; it is NOT present at this checkpoint), that
+# profile will read the datasource strictly from environment variables. This is only
+# a DEFAULT and can be overridden at `docker run` time; no secrets or connection URLs
+# are baked into the image.
 ENV SPRING_PROFILES_ACTIVE=docker
 
 # The embedded Tomcat server listens on HTTP port 8080 (AAP section 0.4.1).

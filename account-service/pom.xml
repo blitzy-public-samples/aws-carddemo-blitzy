@@ -22,7 +22,50 @@
     <properties>
         <java.version>17</java.version>
         <springdoc.version>2.8.17</springdoc.version>
+
+        <!--
+          Security dependency overrides (centrally managed).
+          These properties override the versions the spring-boot-starter-parent:3.5.16
+          BOM would otherwise resolve, pinning each affected library to a fixed-or-newer
+          release that remediates known published vulnerabilities. They are parent-
+          compatible patch/minor bumps within the same line, so they do not change any
+          API used by the module. Reviewed and bumped as a set; revisit on each Boot/BOM
+          upgrade so the overrides never silently mask a newer managed fix.
+            * tomcat.version        10.1.55 -> 10.1.57  (embedded Tomcat, via spring-boot-starter-web)
+            * jackson-bom.version   2.21.4  -> 2.21.5   (whole Jackson BOM incl. jackson-databind)
+            * postgresql.version    42.7.11 -> 42.7.12  (pgJDBC driver)
+            * commons-lang3.version 3.17.0  -> 3.18.0   (transitive via spring-core/tomcat)
+            * logback.version       1.5.34  -> 1.5.36   (logback-core + logback-classic)
+          The test-scope commons-compress override is applied via <dependencyManagement>
+          below because it is NOT a spring-boot-starter-parent managed property.
+        -->
+        <tomcat.version>10.1.57</tomcat.version>
+        <jackson-bom.version>2.21.5</jackson-bom.version>
+        <postgresql.version>42.7.12</postgresql.version>
+        <commons-lang3.version>3.18.0</commons-lang3.version>
+        <logback.version>1.5.36</logback.version>
     </properties>
+
+    <!--
+      Centrally managed version overrides for transitive dependencies that are NOT
+      exposed as spring-boot-starter-parent properties. Declaring them here forces the
+      chosen version everywhere they appear in the graph, regardless of scope.
+
+      commons-compress: Testcontainers (test scope) pulls in commons-compress 1.24.0,
+      which is affected by CVE-2024-25710 and CVE-2024-26308 (archive-processing
+      denial-of-service). Apache fixes these in 1.26.0; we pin 1.27.1 (the current
+      stable line, >= the 1.26.0 fix) which remains API-compatible with Testcontainers
+      1.21.4's archive handling.
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-compress</artifactId>
+                <version>1.27.1</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <dependency>

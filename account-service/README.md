@@ -1,7 +1,22 @@
 ## account-service — CardDemo Account Management (Feature F-003)
 
-A standalone **Java 17 / Spring Boot 3.5.16** REST microservice that migrates the **Account Management vertical slice (Feature F-003)** of the CardDemo application off the legacy COBOL / CICS / VSAM stack. It re-expresses the *account inquiry* and *account update* capabilities as a clean, layered Spring Boot service backed by PostgreSQL, while preserving the exact business behavior of the two legacy programs it replaces.
+A standalone **Java 17 / Spring Boot 3.5.16** REST microservice that migrates the **Account Management vertical slice (Feature F-003)** of the CardDemo application off the legacy COBOL / CICS / VSAM stack. Its goal is to re-express the *account inquiry* and *account update* capabilities as a clean, layered Spring Boot service backed by PostgreSQL, while preserving the exact business behavior of the two legacy programs it replaces.
 
+> **⚠️ Implementation status — this README documents the _target_ design.**
+> The module is being delivered incrementally. As of the current checkpoint
+> (**Foundation, Contracts, Schema & Runtime Baseline**) the Maven build, the
+> `Account` entity, the V1 schema, the DTOs, the error types, the OpenAPI config,
+> the base `application.yml`, and the container build are in place and the
+> application boots — but the **`GET`/`PUT` endpoints and their
+> controller/service/validator/repository/mapper/global-handler layers are not
+> implemented yet**, **no tests run yet**, the 50-row **V2 seed** and the
+> **`docker`/`test` profiles do not exist yet**, and the behavioral-parity and
+> performance claims are **not yet verified**. See
+> [Current Implementation Status](#current-implementation-status) for the exact
+> implemented-vs-planned breakdown. Everything below describes the target design;
+> not-yet-implemented items are called out inline with a **_Status:_** note.
+
+- [Current Implementation Status](#current-implementation-status)
 - [Overview](#overview)
 - [Technologies Used](#technologies-used)
 - [Architecture](#architecture)
@@ -30,9 +45,37 @@ A standalone **Java 17 / Spring Boot 3.5.16** REST microservice that migrates th
 
 <br/>
 
+## Current Implementation Status
+
+This module is delivered incrementally across checkpoints. **This section is the authoritative statement of what is implemented _now_ versus what is _planned_**; every other section of this README describes the overall *target* design and should be read with this status in mind.
+
+**Checkpoint:** Foundation, Contracts, Schema & Runtime Baseline.
+
+### Implemented and verified in this checkpoint
+
+- **Standalone Maven module** (`pom.xml`) — builds and packages an executable Spring Boot jar on Java 17.
+- **Application bootstrap** (`AccountServiceApplication`) — the Spring context starts and `GET /actuator/health` returns `UP`.
+- **JPA entity `Account`** and the **V1** Flyway migration (`V1__create_accounts_table.sql`) — the `accounts` table is created and validated by Hibernate (`ddl-auto=validate`) against PostgreSQL at startup.
+- **DTOs** `AccountResponse` and `AccountUpdateRequest` (the request DTO structurally omits `accountId` and `groupId`).
+- **Structured error types** `ApiError`, `AccountNotFoundException`, and `ValidationException`.
+- **OpenAPI metadata** (`OpenApiConfig`) — Swagger UI and `v3/api-docs` are served, currently with **no operation paths** because the endpoints are not implemented yet.
+- **Base configuration** (`application.yml`) and the multi-stage **`Dockerfile`** (+ `.dockerignore`) — the image builds and runs as a non-root user.
+
+### Planned — not yet implemented
+
+- **REST endpoints** `GET` / `PUT /api/v1/accounts/{accountId}` and their layers: `AccountController`, `AccountService`, `AccountValidator`, `AccountRepository`, `AccountMapper`, and `GlobalExceptionHandler`. Until these land, no account operation is served and OpenAPI exposes no paths.
+- **`V2__seed_accounts.sql`** — the 50-row seed migrated from `acctdata.txt`.
+- **`docker` and `test` profiles** — `application-docker.yml` (strict env-var datasource) and `application-test.yml` (Testcontainers datasource).
+- **The test suite** — the unit, controller-slice, and Testcontainers integration tests. **No tests exist or run yet.**
+- **Behavioral-parity, error-semantics (400 / 404 / 409), security-at-rest, and the ≤ 2-second performance target** — these are goals and are **not yet verified**; they will be validated once the endpoints and tests exist.
+
+> Throughout the sections below, functionality that falls under "Planned" above is annotated with a **_Status:_** note so the target design is never mistaken for delivered behavior.
+
+<br/>
+
 ## Overview
 
-`account-service` is a net-new, self-contained Maven module that reproduces the account-management behavior of two legacy CardDemo COBOL programs as an idiomatic Spring Boot 3.x REST service. The CICS 3270 screen contract is replaced by a JSON contract, the 300-byte VSAM `ACCTFILE` record becomes a JPA-managed relational row, and every legacy business rule (active-status domain, monetary range and precision, date validity, field immutability, and optimistic concurrency) is reproduced *behaviorally* rather than ported verbatim.
+`account-service` is a net-new, self-contained Maven module that reproduces the account-management behavior of two legacy CardDemo COBOL programs as an idiomatic Spring Boot 3.x REST service. The CICS 3270 screen contract is replaced by a JSON contract, the 300-byte VSAM `ACCTFILE` record becomes a JPA-managed relational row, and every legacy business rule (active-status domain, monetary range and precision, date validity, field immutability, and optimistic concurrency) is to be reproduced *behaviorally* rather than ported verbatim. (See [Current Implementation Status](#current-implementation-status) for what is delivered so far.)
 
 The module replaces the following two legacy transactions:
 
@@ -66,6 +109,8 @@ This service is introduced as a **new sibling of the legacy `app/` tree**. Under
 
 ## Architecture
 
+> _Status:_ This describes the **target** layered design. At the current checkpoint the `Account` entity, the `AccountResponse` / `AccountUpdateRequest` DTOs, and the error types exist; **`AccountController`, `AccountService`, `AccountValidator`, `AccountRepository`, `AccountMapper`, and `GlobalExceptionHandler` are planned and not yet implemented** (see [Current Implementation Status](#current-implementation-status)).
+
 The service applies a clean **layered architecture** that separates concerns the legacy program interleaves across screen-handling and edit paragraphs. Dependencies flow in one direction — Controller → Service (+ Validator) → Repository → Entity — with `AccountMapper` bridging the entity and DTO boundaries. **Constructor injection** is used throughout, and all classes live under the base package `com.aws.carddemo.account`.
 
 - **`AccountController`** — HTTP and JSON serialization; maps requests to service calls and exceptions to status codes.
@@ -94,6 +139,8 @@ PostgreSQL  ──▶  accounts  table
 <br/>
 
 ## API Reference
+
+> _Status:_ **Planned — not yet implemented.** The two endpoints below are the **target** REST contract; they are **not served yet** (OpenAPI currently exposes no operation paths). The request/response shapes and status codes documented here are the intended contract that the controller/service layers will fulfill.
 
 The service exposes exactly two endpoints, both under the base path `/api/v1/accounts`. All payloads are JSON. Monetary fields are exact decimals with a fixed scale of 2 (`BigDecimal` / `NUMERIC(12,2)`) rendered in plain (non-scientific) notation, and dates use the ISO `YYYY-MM-DD` format.
 
@@ -149,7 +196,7 @@ The service exposes exactly two endpoints, both under the base path `/api/v1/acc
 }
 ```
 
-`AccountUpdateRequest` intentionally **omits `accountId` and `groupId`** — both are read-only (display-only in the legacy screens), so the request body structurally cannot change them. The request **includes `version`**: the client must send the `version` it last read so the server can detect a concurrent modification. On success the response is the updated `AccountResponse` with an incremented `version`.
+`AccountUpdateRequest` intentionally **omits `accountId` and `groupId`** so the request body structurally cannot change them. The account id is genuinely immutable (it is the record key). Making `groupId` read-only, however, is an **intentional security hardening** (AAP §0.7.2), **not** a reproduction of legacy behavior: the legacy `COACTUP` BMS map actually defined the group-id field as unprotected (`UNPROT`/editable) and `COACTUPC` persisted a changed group id on rewrite. This migration deliberately tightens it to display-only. The request **includes `version`**: the client must send the `version` it last read so the server can detect a concurrent modification. On success the response is the updated `AccountResponse` with an incremented `version`.
 
 ### Status Codes
 
@@ -208,7 +255,7 @@ All commands below are run from the `account-service/` module directory unless n
 mvn clean package
 ```
 
-This compiles the sources, runs the unit and controller-slice tests, and produces the executable jar `target/account-service-0.0.1-SNAPSHOT.jar`.
+This compiles the sources and produces the executable jar `target/account-service-0.0.1-SNAPSHOT.jar`. _(Status: no tests run yet — the test suite is planned; see [Testing](#testing) and [Current Implementation Status](#current-implementation-status).)_
 
 ### Run Locally
 
@@ -224,7 +271,7 @@ or, after a build:
 java -jar target/account-service-0.0.1-SNAPSHOT.jar
 ```
 
-The datasource is configured through the following environment variables, which override the datasource for every profile and are the mechanism used by the `docker` profile:
+The datasource is configured through the following environment variables, which override the datasource for every profile and are the mechanism the planned `docker` profile will use (see [Configuration Profiles](#configuration-profiles)):
 
 | Environment variable | Purpose |
 |----------------------|---------|
@@ -236,11 +283,13 @@ The service listens on port **8080** by default (Swagger UI at `/swagger-ui.html
 
 ### Configuration Profiles
 
+> _Status:_ Only the `default` profile exists at this checkpoint. The `docker` and `test` profiles below are **planned** — `application-docker.yml` and `application-test.yml` are not present yet, so a container currently inherits the local-development datasource settings (and `SPRING_DATASOURCE_*` overrides) from `application.yml`.
+
 | Profile | Purpose |
 |---------|---------|
 | `default` | Local development against a locally running PostgreSQL. |
-| `docker` | Container deployment; the datasource is supplied entirely through the `SPRING_DATASOURCE_*` environment variables. |
-| `test` | Integration tests; the datasource is provided by a disposable Testcontainers PostgreSQL instance. |
+| `docker` | _(planned)_ Container deployment; the datasource is supplied entirely through the `SPRING_DATASOURCE_*` environment variables. |
+| `test` | _(planned)_ Integration tests; the datasource is provided by a disposable Testcontainers PostgreSQL instance. |
 
 ### Docker
 
@@ -260,14 +309,16 @@ docker run -p 8080:8080 \
 
 Schema and data are managed by **Flyway**, which runs automatically at application startup and applies, in order:
 
-- `V1__create_accounts_table.sql` — DDL for the `accounts` table (derived from the record layout and the VSAM key definition).
-- `V2__seed_accounts.sql` — 50 seed rows migrated from `acctdata.txt`, with the 12-character zoned-decimal-with-overpunch monetary encoding parsed to `NUMERIC` and account ids preserved zero-padded.
+- `V1__create_accounts_table.sql` — DDL for the `accounts` table (derived from the record layout and the VSAM key definition). **_Present now._**
+- `V2__seed_accounts.sql` — **_(planned — not yet present)_** 50 seed rows migrated from `acctdata.txt`, with the 12-character zoned-decimal-with-overpunch monetary encoding parsed to `NUMERIC` and account ids preserved zero-padded.
 
 Because Flyway owns the schema, Hibernate is configured with `ddl-auto=validate`; it validates the mapping against the Flyway-created tables and never issues DDL of its own.
 
 <br/>
 
 ## Testing
+
+> _Status:_ **Planned — not yet implemented.** No test classes exist yet and `mvn test` currently runs zero tests. The three-layer layout below is the **target** test suite (see [Current Implementation Status](#current-implementation-status)).
 
 The test suite is organized in three layers under `src/test/java/com/aws/carddemo/account/`:
 
@@ -297,6 +348,8 @@ Interactive API documentation is generated by springdoc-openapi:
 - **Swagger UI** — `http://localhost:8080/swagger-ui.html`
 - **OpenAPI JSON** — `http://localhost:8080/v3/api-docs`
 
+> _Status:_ Both endpoints are served now, but because the account operations are not implemented yet the document currently lists **no operation paths** — only the OpenAPI metadata. Paths will appear once the controller is added.
+
 ### Health and Metrics
 
 Operational endpoints are provided by Spring Boot Actuator:
@@ -305,6 +358,8 @@ Operational endpoints are provided by Spring Boot Actuator:
 
 ### Behavioral Parity
 
+> _Status:_ **Target — not yet verified.** The parity points below describe the intended behavior; they depend on the not-yet-implemented endpoints and test suite, and the ≤ 2-second performance target will be measured once those exist.
+
 The service is designed for behavioral parity with the legacy programs rather than mere feature similarity:
 
 - Validation outcomes (accept / reject and the resulting status code) match the legacy field edits.
@@ -312,6 +367,8 @@ The service is designed for behavioral parity with the legacy programs rather th
 - Both operations preserve the documented **≤ 2-second** response target.
 
 ### Security Deviations
+
+> _Status:_ These describe the **intended** security posture. Encryption at rest is an infrastructure (Amazon RDS) concern; parameterized queries hold by construction once the JPA repository/service exist; and the no-sensitive-data-in-logs guarantee will be enforced and verified as part of the not-yet-implemented service and global exception handler.
 
 The following three security improvements are **intentional deviations** from strict legacy parity (the legacy baseline is demonstration-grade with no encryption). They are documented so the change is explicit:
 

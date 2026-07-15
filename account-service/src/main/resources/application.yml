@@ -2,12 +2,15 @@
 # account-service — Base (default-profile) Spring Boot configuration
 # CardDemo Feature F-003 (Account inquiry + update) — Java 17 / Spring Boot 3.5.16
 # -----------------------------------------------------------------------------
-# This is the DEFAULT configuration loaded in every environment. Profile-specific
-# files override ONLY what differs:
-#   * application-docker.yml   -> container datasource (env-vars, no local fallback)
-#   * src/test/.../application-test.yml -> Testcontainers datasource for the suite
-# The active profile is chosen EXTERNALLY (docker via Dockerfile ENV, none for
-# local dev, test for the test suite); this base file never pins one.
+# This is the DEFAULT configuration loaded in every environment. At the current
+# checkpoint it is the ONLY Spring configuration file present. The following
+# profile-specific overrides are PLANNED for a later checkpoint and DO NOT EXIST
+# YET; each will override only what differs once added:
+#   * application-docker.yml   -> (planned) container datasource (env-vars, no local fallback)
+#   * src/test/.../application-test.yml -> (planned) Testcontainers datasource for the test suite
+# The active profile is chosen EXTERNALLY (docker via the Dockerfile ENV once the
+# docker profile exists; none for local dev; test for the future test suite); this
+# base file never pins one.
 #
 # Authority: AAP 0.3.1, 0.4.2, 0.6.2 (exact-precision money), 0.6.6 (security).
 # All properties below wire together dependencies already declared in pom.xml
@@ -23,9 +26,11 @@ spring:
   # ---------------------------------------------------------------------------
   # Datasource (PostgreSQL). Env-var placeholders with obviously-local dev
   # defaults so NO real credentials are ever hard-coded (security parity, 0.6.6).
-  # The localhost/carddemo defaults are for local development ONLY; the docker
-  # profile removes the fallbacks and REQUIRES the env vars. The production
-  # datastore is Amazon RDS PostgreSQL (AAP 0.1.1 / 3.7.2).
+  # The localhost/carddemo defaults are for local development ONLY. The PLANNED
+  # docker profile (application-docker.yml — not yet added) will remove these
+  # fallbacks and REQUIRE the env vars; until that profile exists these defaults
+  # currently apply under every profile. The production datastore is Amazon RDS
+  # PostgreSQL (AAP 0.1.1 / 3.7.2).
   # ---------------------------------------------------------------------------
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
@@ -50,10 +55,11 @@ spring:
     # NOTE: no Hibernate dialect is set — Spring Boot 3.x auto-detects PostgreSQL.
 
   # ---------------------------------------------------------------------------
-  # Flyway migrations. Applies V1__create_accounts_table.sql then
-  # V2__seed_accounts.sql at startup, using the primary datasource above.
-  # Requires flyway-core + flyway-database-postgresql (Flyway 10+ splits the
-  # per-engine module out of core).
+  # Flyway migrations. At this checkpoint only V1__create_accounts_table.sql is
+  # present and is applied at startup using the primary datasource above.
+  # V2__seed_accounts.sql (the 50-row seed) is PLANNED for a later checkpoint and
+  # is NOT yet present. Requires flyway-core + flyway-database-postgresql
+  # (Flyway 10+ splits the per-engine module out of core).
   # ---------------------------------------------------------------------------
   flyway:
     enabled: true
