@@ -1,0 +1,29 @@
+# =============================================================================
+# account-service — `docker` profile OVERRIDE (container datasource)
+# CardDemo Feature F-003 (Account inquiry + update) — Java 17 / Spring Boot 3.5.16
+# -----------------------------------------------------------------------------
+# This file is loaded ONLY when the `docker` Spring profile is active. Because the
+# filename is `application-docker.yml`, Spring Boot scopes it to that profile
+# AUTOMATICALLY — there is deliberately NO `spring.config.activate.on-profile`
+# key (that key is only for multi-document application.yml files split by `---`).
+# The module Dockerfile activates it via `ENV SPRING_PROFILES_ACTIVE=docker`.
+#
+# It is a MINIMAL override: it supplies ONLY the datasource, and INHERITS
+# everything else (JPA ddl-auto=validate, Flyway, Jackson, actuator, server.port,
+# logging, spring.application.name) from the base `application.yml`.
+#
+# SECURITY (AAP 0.6.6): the connection URL, username, and password come STRICTLY
+# from environment variables and carry NO default fallback — unlike the base
+# file's local-dev defaults. A container MUST be pointed at its external database
+# (e.g. the Amazon RDS PostgreSQL endpoint) via these env vars; if any is missing
+# the application fails fast at startup rather than silently connecting to a
+# wrong/local database. No credentials, secrets, or URLs are ever committed here.
+# =============================================================================
+spring:
+  datasource:
+    # Required at runtime — NO default (fail fast if the container is misconfigured).
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    # Restated for clarity (also inherited from the base application.yml).
+    driver-class-name: org.postgresql.Driver
