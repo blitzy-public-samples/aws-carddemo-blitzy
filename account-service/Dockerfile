@@ -27,12 +27,10 @@
 #             account-service:local
 #
 # SECURITY: No credentials or datasource URLs are ever baked into the image
-# (AAP section 0.6.6). The container DEFAULTS to the "docker" Spring profile. The
-# PLANNED application-docker.yml (not yet added at this checkpoint) will make that
-# profile read the datasource STRICTLY from environment variables with no local
-# fallback; until it exists the image inherits application.yml's local-dev
-# fallbacks, so the SPRING_DATASOURCE_* env vars must be supplied at runtime. The
-# application process runs as an unprivileged (non-root) user.
+# (AAP section 0.6.6). The container runs with the "docker" Spring profile, which
+# reads the datasource strictly from environment variables supplied at runtime
+# (see application-docker.yml), and the application process runs as an
+# unprivileged (non-root) user.
 # =============================================================================
 
 
@@ -105,11 +103,10 @@ COPY --from=build --chown=1001:1001 /build/target/*.jar /app/app.jar
 # Uses the numeric UID of the "spring" identity deterministically created above.
 USER 1001
 
-# Default to the "docker" Spring profile. Once the PLANNED application-docker.yml
-# is added (see the SECURITY note above; it is NOT present at this checkpoint), that
-# profile will read the datasource strictly from environment variables. This is only
-# a DEFAULT and can be overridden at `docker run` time; no secrets or connection URLs
-# are baked into the image.
+# Default to the "docker" Spring profile so the container reads its datasource
+# configuration from environment variables (see application-docker.yml). This is
+# only a DEFAULT and can be overridden at `docker run` time; no secrets or
+# connection URLs are baked into the image.
 ENV SPRING_PROFILES_ACTIVE=docker
 
 # The embedded Tomcat server listens on HTTP port 8080 (AAP section 0.4.1).
