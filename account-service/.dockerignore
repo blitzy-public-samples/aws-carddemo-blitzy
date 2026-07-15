@@ -1,0 +1,46 @@
+# .dockerignore - Docker build-context exclusions for the account-service module
+#
+# Purpose:
+#   Keep the Docker build context small and prevent host-side build artifacts and
+#   version-control metadata from being uploaded to the Docker daemon or leaking
+#   into image layers. The multi-stage Dockerfile compiles and packages the
+#   application FRESH inside the Maven build stage, so nothing produced on the host
+#   should ever be shipped into the context or the resulting image.
+#
+# Semantics:
+#   Patterns are matched relative to the build-context root (the account-service/
+#   directory, i.e. `docker build account-service/`). One glob pattern per line;
+#   lines beginning with `#` are comments.
+#
+# IMPORTANT - do NOT add `pom.xml` or `src/` to this file: the Maven build stage
+# in the Dockerfile requires both to resolve dependencies, compile, and package
+# the executable jar. Excluding them would break the image build.
+
+# --- Maven build output (recompiled fresh inside the build stage) ---
+target/
+
+# --- Version-control metadata ---
+.git
+.gitignore
+.gitattributes
+
+# --- IDE / editor project files ---
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# --- OS-generated files ---
+.DS_Store
+
+# --- Logs and transient output ---
+*.log
+
+# --- Docker artifacts (not needed as build inputs) ---
+Dockerfile
+.dockerignore
+
+# --- Documentation not required for the build ---
+README.md
