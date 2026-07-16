@@ -15,6 +15,7 @@
  */
 package com.aws.carddemo.account.controller;
 
+import com.aws.carddemo.account.config.JacksonConfig;
 import com.aws.carddemo.account.dto.AccountResponse;
 import com.aws.carddemo.account.dto.AccountUpdateRequest;
 import com.aws.carddemo.account.exception.AccountNotFoundException;
@@ -24,6 +25,7 @@ import com.aws.carddemo.account.service.AccountService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -39,8 +41,10 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -54,17 +58,27 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>This is a pure {@link WebMvcTest @WebMvcTest} slice: it bootstraps ONLY the MVC
  * infrastructure for {@link AccountController} plus the auto-detected
  * {@code @RestControllerAdvice} ({@code GlobalExceptionHandler}), Jackson, and Bean Validation.
- * The {@link AccountService} collaborator is replaced by a Mockito mock via
- * {@link MockitoBean @MockitoBean}, so <strong>no</strong> database, Hibernate, Flyway, or
- * Testcontainers is involved. The tests therefore verify the controller wiring in isolation:</p>
+ * {@link JacksonConfig} is additionally {@link Import @Import}ed because a {@code @WebMvcTest}
+ * slice does not component-scan arbitrary {@code @Configuration} classes; importing it activates
+ * the strict numeric-coercion policy so the {@code version}/money token-typing cases below exercise
+ * the same {@code ObjectMapper} the running application uses. The {@link AccountService} collaborator
+ * is replaced by a Mockito mock via {@link MockitoBean @MockitoBean}, so <strong>no</strong> database,
+ * Hibernate, Flyway, or Testcontainers is involved. The tests therefore verify the controller wiring
+ * in isolation:</p>
  * <ul>
  *   <li>HTTP method/path routing for {@code GET}/{@code PUT} {@code /api/v1/accounts/{accountId}};</li>
  *   <li>request-body (de)serialization and JSON response shape/formatting (scale-2 money rendered in
  *       plain, non-scientific notation; ISO {@code yyyy-MM-dd} dates; 11-digit zero-padded id);</li>
+ *   <li>strict numeric input typing &mdash; a fractional, string, or object {@code version} token and a
+ *       string monetary token are rejected rather than coerced (config/JacksonConfig);</li>
  *   <li>structural path-variable validation ({@code @Pattern("\\d{11}")} on the {@code @Validated}
  *       controller);</li>
- *   <li>and the central mapping of domain/framework exceptions to HTTP <strong>200/400/404/409</strong>
- *       performed by {@code GlobalExceptionHandler}.</li>
+ *   <li>the framework error contract &mdash; malformed/empty body, unsupported method, unsupported
+ *       media type, and an unknown route each return the uniform {@code ApiError};</li>
+ *   <li>and the central mapping of domain/framework exceptions to HTTP
+ *       <strong>200/400/404/405/409/415</strong> performed by {@code GlobalExceptionHandler}, whose
+ *       {@code path} is the sanitized route template {@code /api/v1/accounts/{accountId}} (never the
+ *       raw URI carrying the id).</li>
  * </ul>
  *
  * <p>Business logic (validation rules, persistence, optimistic-lock decision) is intentionally
@@ -90,6 +104,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * MockMvc matchers. There is no {@code System.out} and no logger in this class.</p>
  */
 @WebMvcTest(AccountController.class)
+@Import(JacksonConfig.class)
 class AccountControllerTest {
 
     /**
@@ -238,7 +253,9 @@ class AccountControllerTest {
                 .andExpect(jsonPath("$.status").value(404))
                 .andExpect(jsonPath("$.error").value("Not Found"))
                 .andExpect(jsonPath("$.message").value("Account not found in Acct Master file."))
-                .andExpect(jsonPath("$.path").value("/api/v1/accounts/00000000002"));
+                // Path is the SANITIZED route template, never the raw URI carrying the account id
+                // (AAP 0.6.6 / CWE-209/532) — see GlobalExceptionHandler#resolvePath.
+                .andExpect(jsonPath("$.path").value("/api/v1/accounts/{accountId}"));
     }
 
     /**
@@ -431,5 +448,167 @@ class AccountControllerTest {
                         .content(overPostBody))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accountId").value("00000000001"));
+    }
+
+    // ------------------------------------------------------------------
+    // Framework error contract — malformed/empty body, strict numeric
+    // coercion, unsupported method/media type, unknown route (M1/M2/M8/N1)
+    // ------------------------------------------------------------------
+
+    /**
+     * PUT malformed JSON body: an unparseable payload raises {@code HttpMessageNotReadableException},
+     * which {@code GlobalExceptionHandler} maps to a sanitized HTTP&nbsp;400 carrying the fixed generic
+     * summary and the route-template {@code path} (never parser detail, never the raw URI). The service
+     * is never invoked.
+     */
+    @Test
+    void updateAccount_malformedJsonBody_returns400Sanitized() throws Exception {
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{ this is not valid json"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.error").value("Bad Request"))
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"))
+                .andExpect(jsonPath("$.path").value("/api/v1/accounts/{accountId}"));
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    /**
+     * PUT empty body: a required-but-absent request body also surfaces as
+     * {@code HttpMessageNotReadableException} &rarr; sanitized HTTP&nbsp;400. The service is never invoked.
+     */
+    @Test
+    void updateAccount_emptyBody_returns400Sanitized() throws Exception {
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(""))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    /**
+     * PUT with an OBJECT {@code version} token ({@code {}}): Jackson cannot map a JSON object onto a
+     * {@code Long}, so binding fails with {@code HttpMessageNotReadableException} &rarr; sanitized 400.
+     * (This holds independently of the strict-coercion policy.) The service is never invoked.
+     */
+    @Test
+    void updateAccount_objectVersionToken_returns400() throws Exception {
+        String body = validRequestJson().replace("\"version\": 0", "\"version\": {}");
+
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    /**
+     * PUT with a FRACTIONAL {@code version} token ({@code 0.5}): the strict numeric-coercion policy
+     * (config/JacksonConfig) refuses to truncate a floating-point literal into the {@code Long version},
+     * so binding fails &rarr; sanitized 400. Silent truncation would corrupt the optimistic-lock
+     * comparison. The service is never invoked.
+     */
+    @Test
+    void updateAccount_fractionalVersionToken_returns400() throws Exception {
+        String body = validRequestJson().replace("\"version\": 0", "\"version\": 0.5");
+
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    /**
+     * PUT with a STRING {@code version} token ({@code "0"}): the strict policy refuses to parse a quoted
+     * string into the {@code Long version} &rarr; sanitized 400. The service is never invoked.
+     */
+    @Test
+    void updateAccount_stringVersionToken_returns400() throws Exception {
+        String body = validRequestJson().replace("\"version\": 0", "\"version\": \"0\"");
+
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    /**
+     * PUT with a STRING monetary token ({@code "194.00"}): the strict policy refuses to parse a quoted
+     * string into a {@code BigDecimal} money field &rarr; sanitized 400 (genuine JSON numbers remain
+     * valid, as the happy-path tests show). The service is never invoked.
+     */
+    @Test
+    void updateAccount_stringMoneyToken_returns400() throws Exception {
+        String body = validRequestJson().replace("\"currentBalance\": 194.00", "\"currentBalance\": \"194.00\"");
+
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    /**
+     * Unsupported HTTP method: {@code POST} to the account resource (which exposes only {@code GET} and
+     * {@code PUT}) raises {@code HttpRequestMethodNotSupportedException} &rarr; HTTP&nbsp;405 in the
+     * uniform {@code ApiError} shape. The service is never touched.
+     */
+    @Test
+    void account_unsupportedMethod_returns405Sanitized() throws Exception {
+        mockMvc.perform(post("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validRequestJson()))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(jsonPath("$.status").value(405))
+                .andExpect(jsonPath("$.message").value("Request method not supported"));
+
+        verifyNoInteractions(accountService);
+    }
+
+    /**
+     * Unsupported media type: a {@code PUT} with {@code Content-Type: text/plain} cannot be read into
+     * the JSON DTO, raising {@code HttpMediaTypeNotSupportedException} &rarr; HTTP&nbsp;415 in the
+     * uniform {@code ApiError} shape. The service is never touched.
+     */
+    @Test
+    void updateAccount_unsupportedMediaType_returns415Sanitized() throws Exception {
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("plain text body"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.status").value(415))
+                .andExpect(jsonPath("$.message").value("Request content type is not supported"));
+
+        verifyNoInteractions(accountService);
+    }
+
+    /**
+     * Unknown route: a request path that matches no controller mapping raises the framework
+     * {@code NoResourceFoundException} &rarr; HTTP&nbsp;404 in the uniform {@code ApiError} shape with
+     * the fixed generic summary (distinct from the id-free account-not-found message). The service is
+     * never touched.
+     */
+    @Test
+    void unknownRoute_returns404Sanitized() throws Exception {
+        mockMvc.perform(get("/api/v1/does-not-exist"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.message").value("Requested resource was not found"));
+
+        verifyNoInteractions(accountService);
     }
 }

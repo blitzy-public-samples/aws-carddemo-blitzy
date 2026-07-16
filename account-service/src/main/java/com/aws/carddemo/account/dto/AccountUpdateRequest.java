@@ -17,7 +17,6 @@ package com.aws.carddemo.account.dto;
 
 import java.math.BigDecimal;
 
-import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
@@ -52,10 +51,18 @@ import jakarta.validation.constraints.Size;
  *
  * <h2>Types and validation strategy</h2>
  * <ul>
- *   <li><strong>Monetary fields</strong> use {@link java.math.BigDecimal} with a
- *       structural {@link Digits}{@code (integer = 10, fraction = 2)} guard matching
- *       the legacy {@code PIC S9(10)V99} shape. {@code float}/{@code double} are never
- *       used, preserving exact decimal precision.</li>
+ *   <li><strong>Monetary fields</strong> use {@link java.math.BigDecimal} and carry
+ *       only a structural {@link NotNull} presence guard. The exact
+ *       {@code PIC S9(10)V99} shape &mdash; the &plusmn;9,999,999,999.99 range and the
+ *       scale-2 limit &mdash; is <strong>authoritatively enforced by</strong>
+ *       {@code service/AccountValidator} (legacy paragraph {@code 1250-EDIT-SIGNED-9V2}),
+ *       not by a DTO {@code @Digits} constraint. This is deliberate: a {@code @Digits}
+ *       guard fires during the unordered controller-level {@code @Valid} pass and would
+ *       preempt the validator, emitting a generic Bean Validation message and defeating
+ *       the legacy fail-fast field ordering. Removing it lets every monetary range/scale
+ *       violation surface through {@code AccountValidator} with the exact legacy-parity
+ *       message, in the correct interleaved edit order. {@code float}/{@code double} are
+ *       never used, preserving exact decimal precision.</li>
  *   <li><strong>Date fields</strong> are intentionally declared as {@link String}
  *       (not {@code java.time.LocalDate}). The authoritative strict date validation
  *       (calendar validity plus the year 1900&ndash;2099 range) is performed by
@@ -92,24 +99,27 @@ public class AccountUpdateRequest {
     /**
      * Current account balance. Legacy {@code ACCT-CURR-BAL PIC S9(10)V99}.
      * The exact signed range (&plusmn;9,999,999,999.99, scale 2) is enforced by
-     * {@code AccountValidator} (legacy paragraph {@code 1250-EDIT-SIGNED-9V2}).
+     * {@code AccountValidator} (legacy paragraph {@code 1250-EDIT-SIGNED-9V2}) &mdash;
+     * intentionally not by a DTO {@code @Digits} guard, so the legacy-parity message
+     * surfaces in the correct edit order rather than being preempted by Bean Validation.
      */
     @NotNull
-    @Digits(integer = 10, fraction = 2)
     private BigDecimal currentBalance;
 
     /**
      * Credit limit. Legacy {@code ACCT-CREDIT-LIMIT PIC S9(10)V99}.
+     * Range/scale enforced authoritatively by {@code AccountValidator}
+     * ({@code 1250-EDIT-SIGNED-9V2}); no DTO {@code @Digits} guard (see class Javadoc).
      */
     @NotNull
-    @Digits(integer = 10, fraction = 2)
     private BigDecimal creditLimit;
 
     /**
      * Cash credit limit. Legacy {@code ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99}.
+     * Range/scale enforced authoritatively by {@code AccountValidator}
+     * ({@code 1250-EDIT-SIGNED-9V2}); no DTO {@code @Digits} guard (see class Javadoc).
      */
     @NotNull
-    @Digits(integer = 10, fraction = 2)
     private BigDecimal cashCreditLimit;
 
     /**
@@ -139,16 +149,18 @@ public class AccountUpdateRequest {
 
     /**
      * Current cycle credit total. Legacy {@code ACCT-CURR-CYC-CREDIT PIC S9(10)V99}.
+     * Range/scale enforced authoritatively by {@code AccountValidator}
+     * ({@code 1250-EDIT-SIGNED-9V2}); no DTO {@code @Digits} guard (see class Javadoc).
      */
     @NotNull
-    @Digits(integer = 10, fraction = 2)
     private BigDecimal currentCycleCredit;
 
     /**
      * Current cycle debit total. Legacy {@code ACCT-CURR-CYC-DEBIT PIC S9(10)V99}.
+     * Range/scale enforced authoritatively by {@code AccountValidator}
+     * ({@code 1250-EDIT-SIGNED-9V2}); no DTO {@code @Digits} guard (see class Javadoc).
      */
     @NotNull
-    @Digits(integer = 10, fraction = 2)
     private BigDecimal currentCycleDebit;
 
     /**

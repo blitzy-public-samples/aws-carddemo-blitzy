@@ -31,7 +31,20 @@
 # reads the datasource strictly from environment variables supplied at runtime
 # (see application-docker.yml), and the application process runs as an
 # unprivileged (non-root) user.
+#
+# The runtime stage applies OS security patches (apt-get upgrade) on the mandated
+# eclipse-temurin:17-jre base and exposes a RUNTIME_BASE build argument for digest
+# pinning. Release pipelines MUST scan the final image (e.g. Trivy / Grype / ECR
+# image scanning) and pin the remediated digest, iterating until no applicable
+# unresolved OS or JRE vulnerability remains. See the runtime stage below.
 # =============================================================================
+
+# RUNTIME_BASE is a GLOBAL build argument: it MUST be declared before the first FROM
+# so it can be consumed by the runtime stage's FROM below (an ARG used in a FROM has
+# to be global). It lets a release pipeline pin the scanned/remediated runtime base
+# image by digest while defaulting to the AAP-mandated eclipse-temurin:17-jre family.
+# See the runtime stage for the digest-pinning example.
+ARG RUNTIME_BASE=eclipse-temurin:17-jre
 
 
 # -----------------------------------------------------------------------------
@@ -71,7 +84,19 @@ RUN mvn -B -q clean package -DskipTests
 # eclipse-temurin:17-jre is the MANDATED runtime base (AAP section 0.4.1 /
 # section 0.5.1): a JRE-only image (no compiler, no Maven) that keeps the shipped
 # image small and reduces the attack surface.
-FROM eclipse-temurin:17-jre AS runtime
+#
+# SUPPLY-CHAIN / DIGEST PINNING: the base is exposed as the RUNTIME_BASE build
+# argument so a release pipeline can pin the exact *scanned and remediated* image
+# by digest while keeping the AAP-mandated eclipse-temurin:17-jre family as the
+# default, e.g.:
+#     docker build \
+#       --build-arg RUNTIME_BASE=eclipse-temurin:17-jre@sha256:<remediated-digest> \
+#       -t account-service:release account-service/
+# Because a moving tag can resolve to an unpatched digest, releases SHOULD pin the
+# digest of an image that has passed a vulnerability scan (see the OS security
+# patching step below and the SECURITY note at the top of this file). RUNTIME_BASE
+# is declared as a global build arg near the top of this file.
+FROM ${RUNTIME_BASE} AS runtime
 
 # OCI image metadata (informational only; does not affect runtime behavior).
 LABEL org.opencontainers.image.title="account-service" \
@@ -80,6 +105,25 @@ LABEL org.opencontainers.image.title="account-service" \
       org.opencontainers.image.source="https://github.com/aws-samples/aws-mainframe-modernization-carddemo"
 
 WORKDIR /app
+
+# OS SECURITY PATCHING (remediates M9): the mandated eclipse-temurin:17-jre base is
+# an Ubuntu image whose published layers can lag behind the distribution's security
+# updates, so a freshly pulled tag may still contain vulnerable OS package versions
+# (e.g. tar, gzip, curl-family, wget) even though fixes already exist in the Ubuntu
+# archive. Running `apt-get upgrade` at build time pulls those patched versions
+# regardless of the (possibly unchanged) base-image digest -- the one thing that
+# rebuilding the same tag alone cannot do. `wget` is additionally purged because the
+# runtime never fetches over HTTP (the entrypoint is only `java -jar`), trimming the
+# attack surface per "remove unnecessary utilities where possible"; `--auto-remove`
+# drops any now-orphaned dependencies. The apt lists are deleted afterwards to keep
+# the image minimal. This runs as root, before privileges are dropped below.
+# NOTE: this requires network egress to the Ubuntu package archive at build time
+# (available in CI); on an already fully patched base it is simply a no-op upgrade.
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && apt-get purge -y --auto-remove wget \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 
 # Create a dedicated, unprivileged group and user to run the application
 # (defense-in-depth - the JVM must never run as root). The fixed GID/UID 1001 keeps

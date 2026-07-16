@@ -18,6 +18,13 @@
 # (e.g. the Amazon RDS PostgreSQL endpoint) via these env vars; if any is missing
 # the application fails fast at startup rather than silently connecting to a
 # wrong/local database. No credentials, secrets, or URLs are ever committed here.
+#
+# FAIL-FAST PREFLIGHT: DockerDatasourceEnvironmentPostProcessor (registered in
+# META-INF/spring/org.springframework.boot.env.EnvironmentPostProcessor.imports)
+# validates SPRING_DATASOURCE_URL/USERNAME/PASSWORD are present and non-blank
+# BEFORE the datasource bean is created, so a misconfigured container gets a clear
+# message naming only the missing variable(s) — never a value — instead of a
+# cryptic unresolved-placeholder error buried in a Hikari BeanCreationException.
 # =============================================================================
 spring:
   datasource:

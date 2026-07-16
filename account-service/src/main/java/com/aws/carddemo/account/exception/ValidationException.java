@@ -31,14 +31,21 @@ import java.util.Map;
  *   <li>Active status that is neither {@code Y} nor {@code N}
  *       (legacy paragraph {@code 1220-EDIT-YESNO}).</li>
  *   <li>Monetary amount outside the signed range
- *       &plusmn;9,999,999,999.99 or carrying a scale other than {@code 2}
+ *       &plusmn;9,999,999,999.99, or carrying more than two fraction digits
+ *       (a scale greater than {@code 2}). A value with a scale of {@code 0},
+ *       {@code 1}, or {@code 2} is accepted and normalized to scale {@code 2}
  *       (legacy paragraph {@code 1250-EDIT-SIGNED-9V2}).</li>
  *   <li>Invalid date failing the month, day, leap-year or century checks
  *       (legacy date edits reimplemented with {@code java.time}).</li>
  *   <li>Account identifier that is not an 11-digit non-zero number
  *       (legacy paragraph {@code 1210-EDIT-ACCOUNT}).</li>
- *   <li>Mismatch between the path {@code accountId} and the request body.</li>
  * </ul>
+ *
+ * <p>The account identifier is supplied <em>solely</em> through the URL path
+ * variable of {@code PUT /api/v1/accounts/{accountId}}; the update request body
+ * intentionally omits {@code accountId} (and {@code groupId}), so there is no
+ * body identifier to reconcile against the path and therefore no path/body
+ * mismatch condition.</p>
  *
  * <p>This type does <em>not</em> perform any of the checks itself; it merely
  * carries the failure message and, optionally, a structured collection of

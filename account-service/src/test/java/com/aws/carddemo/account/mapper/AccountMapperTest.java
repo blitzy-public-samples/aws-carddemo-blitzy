@@ -138,7 +138,7 @@ class AccountMapperTest {
     // ---------- applyUpdate: date parsing + money scaling ----------
 
     @Test
-    @DisplayName("applyUpdate parses string dates to LocalDate and scales money to 2")
+    @DisplayName("applyUpdate parses string dates to LocalDate and scales ALL five money fields to 2")
     void applyUpdateParsesDatesAndScalesMoney() {
         Account account = seedAccount();
         AccountUpdateRequest request = seedUpdateRequest();
@@ -149,9 +149,19 @@ class AccountMapperTest {
         assertThat(account.getOpenDate()).isEqualTo(LocalDate.of(2020, 1, 15));
         assertThat(account.getExpirationDate()).isEqualTo(LocalDate.of(2025, 5, 20));
         assertThat(account.getReissueDate()).isEqualTo(LocalDate.of(2025, 5, 20));
+        // Assert EVERY monetary field against its own DISTINCT expected value at scale 2, so an
+        // omitted or cross-wired assignment in applyUpdate is caught (N5). The distinct pre-scale
+        // inputs (scale 0/2/1 and a negative) also prove per-field scaling to exactly 2 decimals.
         assertThat(account.getCurrentBalance().scale()).isEqualTo(2);
         assertThat(account.getCurrentBalance().toPlainString()).isEqualTo("500.00");
+        assertThat(account.getCreditLimit().scale()).isEqualTo(2);
         assertThat(account.getCreditLimit().toPlainString()).isEqualTo("9999999999.99");
+        assertThat(account.getCashCreditLimit().scale()).isEqualTo(2);
+        assertThat(account.getCashCreditLimit().toPlainString()).isEqualTo("1500.50");
+        assertThat(account.getCurrentCycleCredit().scale()).isEqualTo(2);
+        assertThat(account.getCurrentCycleCredit().toPlainString()).isEqualTo("250.25");
+        assertThat(account.getCurrentCycleDebit().scale()).isEqualTo(2);
+        assertThat(account.getCurrentCycleDebit().toPlainString()).isEqualTo("-375.75");
         assertThat(account.getAddressZip()).isEqualTo("B111111111");
     }
 
@@ -227,14 +237,18 @@ class AccountMapperTest {
     private AccountUpdateRequest seedUpdateRequest() {
         AccountUpdateRequest request = new AccountUpdateRequest();
         request.setActiveStatus("N");
-        request.setCurrentBalance(new BigDecimal("500"));
-        request.setCreditLimit(new BigDecimal("9999999999.99"));
-        request.setCashCreditLimit(new BigDecimal("1500.5"));
+        // Every monetary field carries a DISTINCT value (and a distinct pre-scale form) so that a
+        // field-copy or omission bug in applyUpdate cannot pass unnoticed: each field is asserted
+        // against its own unique expected value, and the pre-scale inputs exercise scale 0, 2, 1,
+        // and a negative to prove per-field scaling to exactly 2 decimals.
+        request.setCurrentBalance(new BigDecimal("500"));             // scale 0  -> 500.00
+        request.setCreditLimit(new BigDecimal("9999999999.99"));      // max, scale 2
+        request.setCashCreditLimit(new BigDecimal("1500.5"));         // scale 1  -> 1500.50
         request.setOpenDate("2020-01-15");
         request.setExpirationDate("2025-05-20");
         request.setReissueDate("2025-05-20");
-        request.setCurrentCycleCredit(new BigDecimal("0"));
-        request.setCurrentCycleDebit(new BigDecimal("0"));
+        request.setCurrentCycleCredit(new BigDecimal("250.25"));      // distinct, scale 2
+        request.setCurrentCycleDebit(new BigDecimal("-375.75"));      // distinct, negative
         request.setAddressZip("B111111111");
         request.setVersion(3L);
         return request;

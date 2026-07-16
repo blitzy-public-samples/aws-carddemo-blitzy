@@ -393,11 +393,16 @@ class AccountValidatorTest {
 
     // ------------------------------------------------------------------
     // validate(AccountUpdateRequest) — orchestration & fail-fast ordering
-    // Order: activeStatus -> currentBalance, creditLimit, cashCreditLimit,
-    //        currentCycleCredit, currentCycleDebit -> openDate, expirationDate,
-    //        reissueDate -> addressZip. addressZip is validated LAST (presence check
-    //        keeping the request contract consistent with the NOT NULL column).
-    //        accountId/groupId/version are NOT validated here.
+    //
+    // Authoritative interleaved order, reproducing COACTUPC 1200-EDIT-MAP-INPUTS
+    // [app/cbl/COACTUPC.cbl:L1469-L1529] — dates are INTERLEAVED between the money
+    // fields, NOT "all money then all dates":
+    //   1 activeStatus  2 openDate      3 creditLimit   4 expirationDate
+    //   5 cashCreditLimit  6 reissueDate  7 currentBalance
+    //   8 currentCycleCredit  9 currentCycleDebit  -> addressZip (LAST)
+    // The first field (in this order) that fails is the one whose message surfaces,
+    // so the order is behaviorally observable. The adjacent-pair tests below prove
+    // every link of the chain. accountId/groupId/version are NOT validated here.
     // ------------------------------------------------------------------
 
     /** A fully valid request passes every rule. */
@@ -437,33 +442,106 @@ class AccountValidatorTest {
                 .hasMessage("openDate must be a valid date in yyyy-MM-dd format.");
     }
 
-    /**
-     * Fail-fast ordering: when BOTH the active status AND a monetary field are
-     * invalid, the STATUS message wins, proving active status is validated before
-     * the monetary fields.
+    /*
+     * Fail-fast ordering — adjacent-pair chain proving the authoritative interleaved
+     * edit order of COACTUPC 1200-EDIT-MAP-INPUTS [app/cbl/COACTUPC.cbl:L1469-L1529].
+     * Each test invalidates two ADJACENT fields in the chain and asserts the EARLIER
+     * field's message wins, thereby proving that specific link. Chaining all links
+     * proves the full sequence:
+     *   activeStatus < openDate < creditLimit < expirationDate < cashCreditLimit
+     *     < reissueDate < currentBalance < currentCycleCredit < currentCycleDebit
+     *     < addressZip
+     * The critical links are the interleaved ones (e.g. openDate BEFORE creditLimit and
+     * expirationDate BEFORE cashCreditLimit), which the previous "all money then all
+     * dates" order got wrong.
      */
+
+    /** Link 1: activeStatus is validated before openDate. */
     @Test
-    void validate_failsFastOnActiveStatusBeforeAmounts() {
+    void validate_failsFast_activeStatusBeforeOpenDate() {
         AccountUpdateRequest request = validRequest();
         request.setActiveStatus("X");
-        request.setCurrentBalance(null);
+        request.setOpenDate("2023-02-29");
         assertThatThrownBy(() -> validator.validate(request))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("activeStatus must be Y or N.");
     }
 
-    /**
-     * Fail-fast ordering: when BOTH a monetary field AND a date are invalid, the
-     * MONETARY message wins, proving amounts are validated before dates.
-     */
+    /** Link 2 (interleaved): openDate is validated before creditLimit. */
     @Test
-    void validate_failsFastOnAmountsBeforeDates() {
+    void validate_failsFast_openDateBeforeCreditLimit() {
+        AccountUpdateRequest request = validRequest();
+        request.setOpenDate("2023-02-29");
+        request.setCreditLimit(null);
+        assertThatThrownBy(() -> validator.validate(request))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("openDate must be a valid date in yyyy-MM-dd format.");
+    }
+
+    /** Link 3 (interleaved): creditLimit is validated before expirationDate. */
+    @Test
+    void validate_failsFast_creditLimitBeforeExpirationDate() {
+        AccountUpdateRequest request = validRequest();
+        request.setCreditLimit(null);
+        request.setExpirationDate("2023-02-29");
+        assertThatThrownBy(() -> validator.validate(request))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("creditLimit must be supplied.");
+    }
+
+    /** Link 4 (interleaved): expirationDate is validated before cashCreditLimit. */
+    @Test
+    void validate_failsFast_expirationDateBeforeCashCreditLimit() {
+        AccountUpdateRequest request = validRequest();
+        request.setExpirationDate("2023-02-29");
+        request.setCashCreditLimit(null);
+        assertThatThrownBy(() -> validator.validate(request))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("expirationDate must be a valid date in yyyy-MM-dd format.");
+    }
+
+    /** Link 5 (interleaved): cashCreditLimit is validated before reissueDate. */
+    @Test
+    void validate_failsFast_cashCreditLimitBeforeReissueDate() {
         AccountUpdateRequest request = validRequest();
         request.setCashCreditLimit(null);
-        request.setOpenDate("2023-02-29");
+        request.setReissueDate("2023-02-29");
         assertThatThrownBy(() -> validator.validate(request))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("cashCreditLimit must be supplied.");
+    }
+
+    /** Link 6 (interleaved): reissueDate is validated before currentBalance. */
+    @Test
+    void validate_failsFast_reissueDateBeforeCurrentBalance() {
+        AccountUpdateRequest request = validRequest();
+        request.setReissueDate("2023-02-29");
+        request.setCurrentBalance(null);
+        assertThatThrownBy(() -> validator.validate(request))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("reissueDate must be a valid date in yyyy-MM-dd format.");
+    }
+
+    /** Link 7: currentBalance is validated before currentCycleCredit. */
+    @Test
+    void validate_failsFast_currentBalanceBeforeCurrentCycleCredit() {
+        AccountUpdateRequest request = validRequest();
+        request.setCurrentBalance(null);
+        request.setCurrentCycleCredit(null);
+        assertThatThrownBy(() -> validator.validate(request))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("currentBalance must be supplied.");
+    }
+
+    /** Link 8: currentCycleCredit is validated before currentCycleDebit. */
+    @Test
+    void validate_failsFast_currentCycleCreditBeforeCurrentCycleDebit() {
+        AccountUpdateRequest request = validRequest();
+        request.setCurrentCycleCredit(null);
+        request.setCurrentCycleDebit(null);
+        assertThatThrownBy(() -> validator.validate(request))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("currentCycleCredit must be supplied.");
     }
 
     /**
@@ -547,18 +625,19 @@ class AccountValidatorTest {
     }
 
     /**
-     * Fail-fast ordering: when BOTH a date AND the address ZIP are invalid, the DATE
-     * message wins, proving the address ZIP is validated last (after the dates), in
-     * agreement with the mapper's field-application order.
+     * Link 9 (final): the address ZIP is validated LAST — after the last legacy money
+     * field (currentCycleDebit). When BOTH currentCycleDebit and addressZip are invalid,
+     * the currentCycleDebit message wins, proving addressZip never preempts a legacy
+     * field's message and is applied last (matching the mapper's field-application order).
      */
     @Test
-    void validate_failsFastOnDatesBeforeAddressZip() {
+    void validate_failsFast_currentCycleDebitBeforeAddressZip() {
         AccountUpdateRequest request = validRequest();
-        request.setReissueDate("2023-02-29");
+        request.setCurrentCycleDebit(null);
         request.setAddressZip(null);
         assertThatThrownBy(() -> validator.validate(request))
                 .isInstanceOf(ValidationException.class)
-                .hasMessage("reissueDate must be a valid date in yyyy-MM-dd format.");
+                .hasMessage("currentCycleDebit must be supplied.");
     }
 
     // ------------------------------------------------------------------

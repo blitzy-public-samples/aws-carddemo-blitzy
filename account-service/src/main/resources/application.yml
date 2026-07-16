@@ -63,6 +63,11 @@ spring:
   # Jackson. CRITICAL (0.6.2): serialize BigDecimal as plain decimal text, never
   # scientific notation, so monetary values (balances/limits, BigDecimal scale 2)
   # render exactly in API responses.
+  # NOTE: strict INPUT typing (reject fractional/string `version` tokens and
+  # string money tokens rather than silently coercing them) is configured in
+  # code — see config/JacksonConfig.java — because it uses Jackson coercion
+  # configuration that has no YAML equivalent. A rejected token becomes a
+  # sanitized 400 via GlobalExceptionHandler (HttpMessageNotReadableException).
   # ---------------------------------------------------------------------------
   jackson:
     generator:

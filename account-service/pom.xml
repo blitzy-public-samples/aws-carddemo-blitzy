@@ -125,6 +125,53 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
+
+            <!--
+              Surefire runs the FAST tests during `mvn test`: plain unit tests and
+              @WebMvcTest slices. It EXCLUDES *IntegrationTest so the Testcontainers-backed
+              @SpringBootTest integration test (which requires a Docker daemon) does NOT run
+              in the ordinary `test` phase. Surefire's default include (**/*Test.java) would
+              otherwise pick up AccountApiIntegrationTest and force every `mvn test` (and
+              every `mvn package`) to require Docker. Version is managed by
+              spring-boot-starter-parent.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>**/*IntegrationTest.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+
+            <!--
+              Failsafe runs the SLOW integration tests during `mvn verify` (integration-test
+              then verify goals). It INCLUDES *IntegrationTest (the AAP-named convention,
+              AAP section 0.3.1), which Failsafe's default *IT / IT* / *ITCase patterns do
+              NOT match, so `mvn verify` executes the Surefire suite PLUS
+              AccountApiIntegrationTest against a real PostgreSQL provisioned by Testcontainers.
+              The bound `verify` goal fails the build if any integration test failed. Version
+              is managed by spring-boot-starter-parent.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <includes>
+                        <include>**/*IntegrationTest.java</include>
+                    </includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>integration-tests</id>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 

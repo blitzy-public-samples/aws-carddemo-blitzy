@@ -22,9 +22,10 @@ A standalone **Java 17 / Spring Boot 3.5.16** REST microservice that migrates th
 - [Testing](#testing)
 - [API Docs, Health, Parity, and Security](#api-docs-health-parity-and-security)
   - [API Documentation](#api-documentation)
-  - [Health and Metrics](#health-and-metrics)
+  - [Health](#health)
   - [Behavioral Parity](#behavioral-parity)
   - [Security Deviations](#security-deviations)
+  - [Authentication and Authorization Posture](#authentication-and-authorization-posture)
 - [Legacy Lineage](#legacy-lineage)
 - [License](#license)
 
@@ -57,7 +58,7 @@ This service is introduced as a **new sibling of the legacy `app/` tree**. Under
 | PostgreSQL | 16 / 17 (Amazon RDS PostgreSQL migration target); `org.postgresql:postgresql` JDBC driver |
 | Flyway | `flyway-core` + `flyway-database-postgresql` (versioned schema migrations at startup) |
 | springdoc-openapi | 2.8.17 — OpenAPI 3 generation + Swagger UI (`springdoc-openapi-starter-webmvc-ui`) |
-| Spring Boot Actuator | `/actuator/health` and metrics (`spring-boot-starter-actuator`) |
+| Spring Boot Actuator | `spring-boot-starter-actuator`; only the `/actuator/health` endpoint is exposed (liveness/readiness) |
 | Maven | Build and repackage to an executable jar (`spring-boot-maven-plugin`) |
 | Docker | Multi-stage build; runtime base image `eclipse-temurin:17-jre` |
 | Testing | JUnit 5, Mockito, AssertJ, Spring MockMvc (`spring-boot-starter-test`); Testcontainers PostgreSQL (`org.testcontainers:postgresql` + `junit-jupiter`) |
@@ -69,7 +70,7 @@ This service is introduced as a **new sibling of the legacy `app/` tree**. Under
 The service applies a clean **layered architecture** that separates concerns the legacy program interleaves across screen-handling and edit paragraphs. Dependencies flow in one direction — Controller → Service (+ Validator) → Repository → Entity — with `AccountMapper` bridging the entity and DTO boundaries. **Constructor injection** is used throughout, and all classes live under the base package `com.aws.carddemo.account`.
 
 - **`AccountController`** — HTTP and JSON serialization; maps requests to service calls and exceptions to status codes.
-- **`AccountService`** — `@Transactional` business logic: read, validate, and update; enforces path/body id agreement and field immutability.
+- **`AccountService`** — `@Transactional` business logic: read, validate, and update. The account id is taken solely from the URL path (the request body carries no id), and the service enforces field immutability — the account id and group id are never writable.
 - **`AccountValidator`** — reproduces the legacy field edits (active status `Y`/`N`, signed decimal range and scale, strict date validity).
 - **`AccountRepository`** — Spring Data JPA `JpaRepository<Account, String>`; `findById` corresponds to the legacy `READ` by key and `save` to the `REWRITE`.
 - **`Account`** — JPA `@Entity` mapped to the `accounts` table, with a `@Version` column for optimistic locking.
@@ -149,14 +150,14 @@ The service exposes exactly two endpoints, both under the base path `/api/v1/acc
 }
 ```
 
-`AccountUpdateRequest` intentionally **omits `accountId` and `groupId`** — both are read-only (display-only in the legacy screens), so the request body structurally cannot change them. The request **includes `version`**: the client must send the `version` it last read so the server can detect a concurrent modification. On success the response is the updated `AccountResponse` with an incremented `version`.
+`AccountUpdateRequest` intentionally **omits `accountId` and `groupId`**, so the request body structurally cannot change them. The account id is immutable in the legacy system as well. The **group id, however, is an intentional modern tightening**: on the legacy `COACTUP` BMS map the group-id field is *unprotected* (`UNPROT`) and the legacy `COACTUPC` rewrite path does persist a changed group id — but this migration makes it **read-only**, per AAP §0.7.2, which documents the account id and group id as display-only / PROTECTED for the modernized service. This deviation is called out here so the hardening is explicit. The request **includes `version`**: the client must send the `version` it last read so the server can detect a concurrent modification. On success the response is the updated `AccountResponse` with an incremented `version`.
 
 ### Status Codes
 
 | Status | Meaning |
 |--------|---------|
 | `200 OK` | Read succeeded, or update applied successfully (response carries the current/updated `AccountResponse`). |
-| `400 Bad Request` | Validation failure — e.g. `activeStatus` not `Y`/`N`, a monetary value out of range or with the wrong scale, an invalid date, an `{accountId}` that is not 11-digit numeric, or a mismatch between the path id and the body. |
+| `400 Bad Request` | Validation failure — e.g. `activeStatus` not `Y`/`N`, a monetary value out of range or carrying more than two decimal places, an invalid date, or an `{accountId}` that is not 11-digit numeric. The account id is taken solely from the URL path (the body carries no id), so there is no path/body id to reconcile. A malformed or mis-typed JSON body is likewise rejected as `400`. |
 | `404 Not Found` | No account exists for the supplied `{accountId}` (maps the legacy `NOTFND` path). |
 | `409 Conflict` | Optimistic-lock / version conflict — the supplied `version` is stale. The response body message is: `Record updated by another user - please retry`. |
 
@@ -275,14 +276,16 @@ The test suite is organized in three layers under `src/test/java/com/aws/carddem
 |-------|-------|-------|
 | Unit | `AccountValidatorTest`, `AccountServiceTest`, `AccountMapperTest` | Business rules, service logic with a mocked repository, and entity↔DTO formatting parity. |
 | Controller slice | `AccountControllerTest` (`@WebMvcTest`) | HTTP status codes and JSON shape with the web layer only. |
-| Integration | `AccountApiIntegrationTest` (`@SpringBootTest` + Testcontainers) | End-to-end against a real PostgreSQL container: happy path, `404`, `400`, `409`, and seed parity. |
+| Integration | `AccountApiIntegrationTest` (`@SpringBootTest` + Testcontainers) | End-to-end against a real PostgreSQL container: happy path, `404`, `400` (business validation plus malformed / strict-typed body), `409` (stale version and a concurrent-writer race), version semantics (a committed increment on a real change and on an accepted no-op), and 50-row seed parity. |
 
 Commands:
 
 ```shell
-mvn test      # unit + controller-slice tests
-mvn verify    # adds the Testcontainers integration tests (requires a running Docker daemon)
+mvn test      # unit + controller-slice tests only (fast; no Docker required)
+mvn verify    # also runs the Testcontainers integration tests (requires a running Docker daemon)
 ```
+
+This split is configured explicitly, so the documented lifecycle matches the actual behavior: the Surefire plugin **excludes** `**/*IntegrationTest.java` (so `mvn test` — and therefore `mvn package` — never require Docker), while the Failsafe plugin **includes** `**/*IntegrationTest.java` and binds the `integration-test` and `verify` goals. `AccountApiIntegrationTest` therefore runs — and can fail the build — only during `mvn verify`, which requires a running Docker daemon for Testcontainers.
 
 Test coverage is traceable to the legacy validation rules, including: active status `Y`/`N`; signed monetary range `±9,999,999,999.99` at scale 2; strict date validity (month `01`–`12`, valid day-for-month, the Gregorian leap-year rule for `29 February`, and the year range `1900`–`2099`); not-found on read → `404`; concurrent-change conflict → `409`; and immutability of the account id and group id.
 
@@ -297,11 +300,13 @@ Interactive API documentation is generated by springdoc-openapi:
 - **Swagger UI** — `http://localhost:8080/swagger-ui.html`
 - **OpenAPI JSON** — `http://localhost:8080/v3/api-docs`
 
-### Health and Metrics
+### Health
 
-Operational endpoints are provided by Spring Boot Actuator:
+Spring Boot Actuator is on the classpath, but only the **health** endpoint is exposed:
 
-- **Health** — `http://localhost:8080/actuator/health`
+- **Health** — `http://localhost:8080/actuator/health` (includes the `liveness` and `readiness` groups)
+
+Other actuator endpoints — for example `/actuator/metrics` — are **not** exposed and return `404`. Exposing a metrics (or any other) actuator endpoint would be a deliberate, separately secured configuration change and is out of scope for this slice.
 
 ### Behavioral Parity
 
@@ -318,6 +323,12 @@ The following three security improvements are **intentional deviations** from st
 - **Encryption at rest** — sensitive financial data relies on Amazon RDS encryption at rest (transparent data encryption with AWS KMS-managed keys), rather than the plaintext VSAM storage of the legacy system.
 - **Parameterized queries** — all persistence flows through Spring Data JPA / JPQL with bound parameters, eliminating SQL-injection exposure by construction (no string-concatenated SQL).
 - **No sensitive data in logs** — the full account number and monetary values are never written to logs in plaintext.
+
+### Authentication and Authorization Posture
+
+This proof-of-concept service is **intentionally unauthenticated**: it implements no application-level authentication or authorization, and both endpoints are open to any caller that can reach the process. This is a deliberate scope decision for the migration slice — the legacy CICS sign-on / RACF surface is **not** reproduced here, and no authentication subsystem is added.
+
+Access control is therefore the responsibility of the **deployment boundary**: in a real deployment this service is expected to sit behind an authenticating and authorizing edge (for example an API gateway, a service mesh, or a network policy) and must not be exposed directly to an untrusted network. Adding an in-process authentication/authorization subsystem is out of scope for this slice and would require separate design and approval.
 
 <br/>
 

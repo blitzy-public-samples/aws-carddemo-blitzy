@@ -15,6 +15,8 @@
  */
 package com.aws.carddemo.account.service;
 
+import jakarta.persistence.EntityManager;
+
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -119,22 +121,34 @@ public class AccountService {
     private final AccountValidator validator;
 
     /**
+     * JPA entity manager, used only on the update path to (a) force exactly one optimistic-version
+     * increment for an accepted <em>no-op</em> rewrite and (b) refresh the managed entity so the
+     * mapped response carries the committed {@code version}. Supplied by constructor injection as the
+     * transaction-aware shared {@link EntityManager} proxy that Spring Data JPA registers.
+     */
+    private final EntityManager entityManager;
+
+    /**
      * Creates the service with its collaborators.
      *
-     * <p>All three dependencies are required and retained as {@code final} fields. Because this is the
+     * <p>All four dependencies are required and retained as {@code final} fields. Because this is the
      * only constructor, the Spring container injects the managed {@link AccountRepository},
-     * {@link AccountMapper} and {@link AccountValidator} beans automatically.</p>
+     * {@link AccountMapper}, {@link AccountValidator} and (transaction-aware) {@link EntityManager}
+     * beans automatically.</p>
      *
-     * @param repository the account persistence repository
-     * @param mapper     the entity&nbsp;&harr;&nbsp;DTO mapper
-     * @param validator  the account business-rule validator
+     * @param repository    the account persistence repository
+     * @param mapper        the entity&nbsp;&harr;&nbsp;DTO mapper
+     * @param validator     the account business-rule validator
+     * @param entityManager the transaction-aware JPA entity manager (update-path version control)
      */
     public AccountService(final AccountRepository repository,
                           final AccountMapper mapper,
-                          final AccountValidator validator) {
+                          final AccountValidator validator,
+                          final EntityManager entityManager) {
         this.repository = repository;
         this.mapper = mapper;
         this.validator = validator;
+        this.entityManager = entityManager;
     }
 
     /**
@@ -205,11 +219,24 @@ public class AccountService {
      *   <li><strong>Apply editable fields</strong> &mdash; the mapper copies only the ten editable
      *       fields onto the managed entity and never touches {@code accountId}, {@code groupId} or
      *       {@code version}, enforcing identifier/group immutability at the mapping layer.</li>
-     *   <li><strong>Persist</strong> &mdash; the {@code REWRITE}; Hibernate increments {@code @Version}
-     *       at flush, and a genuinely concurrent modification surfaces as
-     *       {@link ObjectOptimisticLockingFailureException} &rarr; HTTP&nbsp;409 (backstop).</li>
-     *   <li><strong>Return</strong> &mdash; map the saved entity so the client receives the updated
-     *       resource, including the newly incremented {@code version}.</li>
+     *   <li><strong>Persist and flush</strong> &mdash; the {@code REWRITE}. The entity is saved and
+     *       flushed <em>within this transaction and before mapping</em> ({@code saveAndFlush}), so the
+     *       {@code @Version} increment is materialized and the response carries the committed token
+     *       rather than a pre-flush value. A genuinely concurrent modification detected at flush
+     *       surfaces as {@link ObjectOptimisticLockingFailureException} &rarr; HTTP&nbsp;409, which
+     *       also translates the load-to-flush race for a changed rewrite.</li>
+     *   <li><strong>Guarantee token advancement for a no-op rewrite</strong> &mdash; the legacy program
+     *       performs an unconditional {@code REWRITE} on an accepted update, so <em>every</em> accepted
+     *       PUT must advance the optimistic-lock token. When the submitted representation is identical
+     *       to the stored row, Hibernate detects no dirty state and emits no {@code UPDATE}, leaving the
+     *       version unchanged. In that case exactly one increment is forced with a guarded conditional
+     *       update ({@code WHERE account_id = :id AND version = :version}); a zero row count means the
+     *       row was advanced concurrently and yields {@link ObjectOptimisticLockingFailureException}
+     *       &rarr; HTTP&nbsp;409. The managed entity is then refreshed so the mapped response reflects
+     *       the committed version. A changed rewrite has already advanced the token in the previous step
+     *       and skips this branch, so the token advances by <em>exactly one</em> in either case.</li>
+     *   <li><strong>Return</strong> &mdash; map the flushed/refreshed entity so the client receives the
+     *       updated resource, including the newly incremented {@code version}.</li>
      * </ol>
      *
      * <p>None of the raised exceptions are caught here; each propagates to
@@ -239,17 +266,41 @@ public class AccountService {
         // 4. Explicit before-image comparison (9700-CHECK-CHANGE-IN-REC) -> 409 on a stale version.
         //    The loaded entity carries the CURRENT DB version, so this deterministic check — not
         //    Hibernate's flush-time check alone — is what detects a client-submitted stale version.
-        if (!account.getVersion().equals(request.getVersion())) {
+        final Long expectedVersion = account.getVersion();
+        if (!expectedVersion.equals(request.getVersion())) {
             throw new ObjectOptimisticLockingFailureException(Account.class, accountId);
         }
 
         // 5. Apply only the editable fields; accountId, groupId and version are never mutated here.
         mapper.applyUpdate(request, account);
 
-        // 6. Persist (legacy REWRITE); flush increments @Version and provides the concurrency backstop.
-        final Account saved = repository.save(account);
+        // 6. Persist AND FLUSH within this transaction, before mapping (C1). For a changed rewrite the
+        //    dirty UPDATE increments @Version to expectedVersion + 1 and that value is visible on the
+        //    managed entity immediately; a concurrent modification detected at flush surfaces as
+        //    ObjectOptimisticLockingFailureException -> 409 (load-to-flush race translation).
+        repository.saveAndFlush(account);
 
-        // 7. Return the updated resource, including the newly incremented version.
-        return mapper.toResponse(saved);
+        // 7. Guarantee token advancement for an accepted NO-OP rewrite (M10). If the submitted
+        //    representation was identical to the stored row, Hibernate emitted no UPDATE and the version
+        //    is unchanged (still expectedVersion). Force exactly one increment with a guarded
+        //    conditional update, then refresh so the mapped response reflects the committed version.
+        //    A changed rewrite already advanced the token in step 6 and skips this branch, so the token
+        //    advances by exactly one in either case.
+        if (account.getVersion().equals(expectedVersion)) {
+            final int rows = entityManager.createQuery(
+                            "update Account a set a.version = a.version + 1 "
+                                    + "where a.accountId = :id and a.version = :version")
+                    .setParameter("id", accountId)
+                    .setParameter("version", expectedVersion)
+                    .executeUpdate();
+            if (rows == 0) {
+                // The row was advanced by a concurrent writer between load and this update.
+                throw new ObjectOptimisticLockingFailureException(Account.class, accountId);
+            }
+            entityManager.refresh(account);
+        }
+
+        // 8. Return the updated resource, including the newly incremented version.
+        return mapper.toResponse(account);
     }
 }

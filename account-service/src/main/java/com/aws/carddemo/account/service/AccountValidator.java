@@ -153,8 +153,21 @@ public class AccountValidator {
 
     /**
      * Validates every editable business field of an account-update request, in the
-     * same order the legacy program applies its edits, and throws on the first
+     * exact order the legacy program applies its edits, and throws on the first
      * violation encountered (fail-fast, single-message semantics).
+     *
+     * <p><strong>Edit order (behavioral parity).</strong> The legacy
+     * {@code 1200-EDIT-MAP-INPUTS} paragraph [app/cbl/COACTUPC.cbl:L1429-L1529]
+     * <em>interleaves</em> the account date edits between the monetary edits &mdash; it
+     * is <em>not</em> "all money then all dates". Although the COBOL runs every edit and
+     * accumulates flags, each edit paragraph sets the on-screen message only while the
+     * message line is still off, so the <em>first</em> field (in edit order) that fails
+     * is the one whose message surfaces. To reproduce which single message a user sees
+     * when multiple fields are invalid, this orchestrator validates in the identical
+     * interleaved sequence: active status &rarr; open date &rarr; credit limit &rarr;
+     * expiration date &rarr; cash credit limit &rarr; reissue date &rarr; current
+     * balance &rarr; current cycle credit &rarr; current cycle debit, with the
+     * {@code addressZip} presence check applied last.</p>
      *
      * <p>The account identifier and group id are intentionally not validated here:
      * {@link AccountUpdateRequest} structurally omits both (read-only tightening,
@@ -177,23 +190,42 @@ public class AccountValidator {
             throw new ValidationException("request must be supplied.");
         }
 
-        // Active status: 1220-EDIT-YESNO.
+        // Interleaved account-field edit order, reproducing COACTUPC 1200-EDIT-MAP-INPUTS
+        // [app/cbl/COACTUPC.cbl:L1469-L1529] exactly. Dates are interleaved between the
+        // monetary edits; the first failing field (in this order) is the one whose
+        // message surfaces, so the sequence is load-bearing for behavioral parity.
+
+        // 1. Account Status: 1220-EDIT-YESNO.
         validateActiveStatus(request.getActiveStatus());
 
-        // Monetary fields: 1250-EDIT-SIGNED-9V2 (all five PIC S9(10)V99 amounts).
-        validateAmount(request.getCurrentBalance(), "currentBalance");
-        validateAmount(request.getCreditLimit(), "creditLimit");
-        validateAmount(request.getCashCreditLimit(), "cashCreditLimit");
-        validateAmount(request.getCurrentCycleCredit(), "currentCycleCredit");
-        validateAmount(request.getCurrentCycleDebit(), "currentCycleDebit");
-
-        // Date fields: EDIT-DATE-CCYYMMDD chain.
+        // 2. Open Date: EDIT-DATE-CCYYMMDD.
         validateDate(request.getOpenDate(), "openDate");
+
+        // 3. Credit Limit: 1250-EDIT-SIGNED-9V2.
+        validateAmount(request.getCreditLimit(), "creditLimit");
+
+        // 4. Expiry Date: EDIT-DATE-CCYYMMDD.
         validateDate(request.getExpirationDate(), "expirationDate");
+
+        // 5. Cash Credit Limit: 1250-EDIT-SIGNED-9V2.
+        validateAmount(request.getCashCreditLimit(), "cashCreditLimit");
+
+        // 6. Reissue Date: EDIT-DATE-CCYYMMDD.
         validateDate(request.getReissueDate(), "reissueDate");
 
-        // Address ZIP: presence check keeping the request contract consistent with the
-        // NOT NULL persisted column (applied last, matching the mapper's field order).
+        // 7. Current Balance: 1250-EDIT-SIGNED-9V2.
+        validateAmount(request.getCurrentBalance(), "currentBalance");
+
+        // 8. Current Cycle Credit: 1250-EDIT-SIGNED-9V2.
+        validateAmount(request.getCurrentCycleCredit(), "currentCycleCredit");
+
+        // 9. Current Cycle Debit: 1250-EDIT-SIGNED-9V2.
+        validateAmount(request.getCurrentCycleDebit(), "currentCycleDebit");
+
+        // Address ZIP: modern presence check (no legacy account-field edit; the ZIP
+        // edited in 1200 is the out-of-scope customer ZIP). Applied last so it never
+        // preempts a legacy field's message; keeps the request contract consistent with
+        // the NOT NULL persisted column and matches the mapper's field-application order.
         validateAddressZip(request.getAddressZip());
     }
 

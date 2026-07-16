@@ -24,11 +24,16 @@ import java.util.Map;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.HandlerMapping;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Centralized REST exception handling for the Account Management service (Feature F-003).
@@ -69,7 +74,33 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *     <td>{@code 409 Conflict}</td>
  *     <td>{@code COACTUPC} {@code 9700-CHECK-CHANGE-IN-REC} before-image comparison</td>
  *   </tr>
+ *   <tr>
+ *     <td>{@link HttpMessageNotReadableException}</td>
+ *     <td>{@code 400 Bad Request}</td>
+ *     <td>Malformed, empty, or type-incoercible JSON request body (framework)</td>
+ *   </tr>
+ *   <tr>
+ *     <td>{@link HttpRequestMethodNotSupportedException}</td>
+ *     <td>{@code 405 Method Not Allowed}</td>
+ *     <td>HTTP method not mapped for the account resource (framework)</td>
+ *   </tr>
+ *   <tr>
+ *     <td>{@link HttpMediaTypeNotSupportedException}</td>
+ *     <td>{@code 415 Unsupported Media Type}</td>
+ *     <td>Request {@code Content-Type} is not {@code application/json} (framework)</td>
+ *   </tr>
+ *   <tr>
+ *     <td>{@link NoResourceFoundException}</td>
+ *     <td>{@code 404 Not Found}</td>
+ *     <td>No route matches the request path (framework)</td>
+ *   </tr>
  * </table>
+ *
+ * <p>These four framework mappings ensure that <em>every</em> error a REST client can provoke
+ * &mdash; not just the domain conditions &mdash; is returned in the uniform {@link ApiError}
+ * shape rather than Spring Boot's default (and less controlled) error representation. Each
+ * emits a fixed, generic summary message and never echoes parser detail or any submitted
+ * value (AAP &sect;0.6.6).</p>
  *
  * <h2>Concurrency mapping</h2>
  * <p>The legacy update path took an exclusive record lock
@@ -89,14 +120,18 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * <h2>Sanitization contract (AAP &sect;0.6.6)</h2>
  * <p>No handler logs or embeds sensitive data. Full account/card numbers and monetary
  * values (balance, credit limit, cash credit limit, cycle credit/debit) are never written
- * to logs or copied into an error body in plaintext. The domain exceptions
- * ({@link ValidationException}, {@link AccountNotFoundException}) already carry only the
- * field/condition name or the account key that is itself part of the request URI, and this
- * advice never reads submitted values from framework exceptions
- * ({@code getInvalidValue()} is intentionally ignored). For the concurrency case a fixed
- * constant is emitted rather than the Hibernate exception message, which could otherwise
- * leak entity or row detail. Consistent with that contract, expected {@code 4xx}
- * conditions are not logged with stack traces.</p>
+ * to logs or copied into an error body in plaintext. Every response records the sanitized
+ * request-mapping route template (for example {@code /api/v1/accounts/{accountId}}) as its
+ * {@code path} &mdash; never the raw request URI &mdash; so the 11-digit account id (classified
+ * sensitive "full account number" data) is kept out of the serialized body and out of any log
+ * that captures it (derived by {@link #resolvePath}; CWE-209 / CWE-532). The domain exceptions
+ * ({@link ValidationException}, {@link AccountNotFoundException}) carry only a field/condition
+ * name or a fixed, id-free message, and this advice never reads submitted values from framework
+ * exceptions ({@code getInvalidValue()} is intentionally ignored; the malformed-body, method,
+ * media-type, and no-route handlers emit fixed, generic summaries rather than parser text or the
+ * offending token). For the concurrency case a fixed constant is emitted rather than the
+ * Hibernate exception message, which could otherwise leak entity or row detail. Consistent with
+ * that contract, expected {@code 4xx} conditions are not logged with stack traces.</p>
  *
  * <h2>Wiring</h2>
  * <p>The component scan rooted at {@code AccountServiceApplication}
@@ -104,10 +139,13 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * is required. Because it is a plain {@code @RestControllerAdvice} (it does not extend
  * {@code ResponseEntityExceptionHandler}), its explicit
  * {@code @ExceptionHandler(MethodArgumentNotValidException.class)} takes precedence over
- * Spring Boot's default handling for this module's controllers. The advice is loaded by
- * {@code @WebMvcTest} slices (exercising the 404/400 mappings) and by the full
- * {@code @SpringBootTest} + Testcontainers integration test (exercising the 409 path against
- * real PostgreSQL).</p>
+ * Spring Boot's default handling for this module's controllers. The advice is loaded and
+ * exercised by the {@code @WebMvcTest} slice ({@code AccountControllerTest} &mdash; covering the
+ * 400/404/405/415 and malformed-body / strict-coercion mappings) and, under {@code mvn verify},
+ * by the full {@code @SpringBootTest} + Testcontainers integration test
+ * ({@code AccountApiIntegrationTest} &mdash; covering the 404/400/409 and malformed / strict-token
+ * paths against a real PostgreSQL). Per the module's Surefire/Failsafe split the integration test
+ * runs in the {@code verify} phase (it requires a Docker daemon), not in {@code mvn test}.</p>
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -132,16 +170,34 @@ public class GlobalExceptionHandler {
     private static final String CONFLICT_MESSAGE = "Record updated by another user - please retry";
 
     /**
+     * Fixed, generic summary for a malformed, empty, or type-incoercible JSON request body.
+     * Deliberately carries no parser detail and no fragment of the submitted payload, so the
+     * offending token can never leak into the error body or logs (AAP &sect;0.6.6).
+     */
+    private static final String MALFORMED_BODY_MESSAGE = "Malformed or unreadable request body";
+
+    /** Fixed summary for an HTTP method that is not mapped for the account resource. */
+    private static final String METHOD_NOT_ALLOWED_MESSAGE = "Request method not supported";
+
+    /** Fixed summary for a request whose {@code Content-Type} is not a supported media type. */
+    private static final String UNSUPPORTED_MEDIA_TYPE_MESSAGE = "Request content type is not supported";
+
+    /** Fixed summary for a request path that matches no route. */
+    private static final String NO_RESOURCE_MESSAGE = "Requested resource was not found";
+
+    /**
      * Maps {@link AccountNotFoundException} to {@code 404 Not Found}.
      *
      * <p>Reproduces the {@code DFHRESP(NOTFND)} branch of {@code COACTVWC}'s
      * {@code 9300-GETACCTDATA-BYACCT} paragraph ({@code app/cbl/COACTVWC.cbl:L786-L807}). The
-     * exception already carries the REST-friendly, sanitized message
-     * {@code "Account: {id} not found in Acct Master file."} (only the account key &mdash;
-     * which is part of the request URI &mdash; is embedded), so it is passed through verbatim.</p>
+     * exception carries a fixed, id-free message ({@code "Account not found in Acct Master file."})
+     * &mdash; it embeds no account identifier &mdash; so it is passed through verbatim, while the
+     * sensitive id is kept out of the body by the route-template {@code path} (see
+     * {@link #resolvePath}).</p>
      *
      * @param ex      the not-found signal raised by the service layer
-     * @param request the current request, used only to record its URI in the error body
+     * @param request the current request, used only to derive the sanitized route template
+     *                recorded in the error body
      * @return a {@code 404} response whose body is a fully populated {@link ApiError}
      */
     @ExceptionHandler(AccountNotFoundException.class)
@@ -152,7 +208,7 @@ public class GlobalExceptionHandler {
                 status.value(),
                 status.getReasonPhrase(),
                 ex.getMessage(),
-                request.getRequestURI());
+                resolvePath(request));
         return ResponseEntity.status(status).body(body);
     }
 
@@ -161,14 +217,15 @@ public class GlobalExceptionHandler {
      *
      * <p>Represents the service-layer business edits migrated from {@code COACTUPC}
      * (active-status {@code Y}/{@code N}, signed decimal range and scale, strict date rules,
-     * 11-digit account-id domain, and path/body agreement). The exception's summary message
+     * and the 11-digit account-id domain). The exception's summary message
      * and its optional field&rarr;message detail are copied into the {@link ApiError} body;
      * when the detail map is {@code null} the {@code ApiError} contract omits it from the
      * JSON. Every string carried here already references only the field or condition, never a
      * submitted value.</p>
      *
      * @param ex      the business-rule failure raised by the service/validator layer
-     * @param request the current request, used only to record its URI in the error body
+     * @param request the current request, used only to derive the sanitized route template
+     *                recorded in the error body
      * @return a {@code 400} response whose body is a fully populated {@link ApiError},
      *         including {@code fieldErrors} when the exception supplies them
      */
@@ -180,7 +237,7 @@ public class GlobalExceptionHandler {
                 status.value(),
                 status.getReasonPhrase(),
                 ex.getMessage(),
-                request.getRequestURI(),
+                resolvePath(request),
                 ex.getFieldErrors());
         return ResponseEntity.status(status).body(body);
     }
@@ -196,7 +253,8 @@ public class GlobalExceptionHandler {
      * submitted (potentially sensitive) value is never read.</p>
      *
      * @param ex      the binding failure raised by the framework for the request body
-     * @param request the current request, used only to record its URI in the error body
+     * @param request the current request, used only to derive the sanitized route template
+     *                recorded in the error body
      * @return a {@code 400} response whose body is an {@link ApiError} with a
      *         {@code fieldErrors} map and the generic {@value #VALIDATION_FAILED_MESSAGE}
      *         summary
@@ -213,7 +271,7 @@ public class GlobalExceptionHandler {
                 status.value(),
                 status.getReasonPhrase(),
                 VALIDATION_FAILED_MESSAGE,
-                request.getRequestURI(),
+                resolvePath(request),
                 fieldErrors);
         return ResponseEntity.status(status).body(body);
     }
@@ -230,7 +288,8 @@ public class GlobalExceptionHandler {
      * be sensitive.</p>
      *
      * @param ex      the constraint-violation failure raised by the validation runtime
-     * @param request the current request, used only to record its URI in the error body
+     * @param request the current request, used only to derive the sanitized route template
+     *                recorded in the error body
      * @return a {@code 400} response whose body is an {@link ApiError} with a
      *         {@code fieldErrors} map and the generic {@value #VALIDATION_FAILED_MESSAGE}
      *         summary
@@ -246,7 +305,7 @@ public class GlobalExceptionHandler {
                 status.value(),
                 status.getReasonPhrase(),
                 VALIDATION_FAILED_MESSAGE,
-                request.getRequestURI(),
+                resolvePath(request),
                 fieldErrors);
         return ResponseEntity.status(status).body(body);
     }
@@ -263,7 +322,8 @@ public class GlobalExceptionHandler {
      *
      * @param ex      the optimistic-lock failure raised by the persistence layer on a stale
      *                {@code @Version}
-     * @param request the current request, used only to record its URI in the error body
+     * @param request the current request, used only to derive the sanitized route template
+     *                recorded in the error body
      * @return a {@code 409} response whose body is an {@link ApiError} carrying the exact
      *         modernized conflict message
      */
@@ -275,7 +335,147 @@ public class GlobalExceptionHandler {
                 status.value(),
                 status.getReasonPhrase(),
                 CONFLICT_MESSAGE,
-                request.getRequestURI());
+                resolvePath(request));
         return ResponseEntity.status(status).body(body);
+    }
+
+    /**
+     * Maps {@link HttpMessageNotReadableException} to {@code 400 Bad Request}.
+     *
+     * <p>Raised by Spring MVC when the request body cannot be read or bound: malformed or
+     * truncated JSON, an empty body where one is required, or a token that the strict Jackson
+     * coercion policy ({@code config/JacksonConfig}) refuses to reshape (a fractional or quoted
+     * {@code version}, or a quoted monetary value). Only a fixed, generic summary
+     * ({@value #MALFORMED_BODY_MESSAGE}) is returned; the framework exception message &mdash;
+     * which can quote the offending token, byte offset, or a fragment of the payload &mdash; is
+     * deliberately never read, so no submitted value can leak into the body or logs
+     * (AAP &sect;0.6.6).</p>
+     *
+     * @param ex      the framework body-read failure (parser detail intentionally ignored)
+     * @param request the current request, used only to derive the sanitized route template
+     *                recorded in the error body
+     * @return a {@code 400} response whose body is a sanitized {@link ApiError}
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiError> handleNotReadable(final HttpMessageNotReadableException ex,
+                                                      final HttpServletRequest request) {
+        final HttpStatus status = HttpStatus.BAD_REQUEST;
+        final ApiError body = new ApiError(
+                status.value(),
+                status.getReasonPhrase(),
+                MALFORMED_BODY_MESSAGE,
+                resolvePath(request));
+        return ResponseEntity.status(status).body(body);
+    }
+
+    /**
+     * Maps {@link HttpRequestMethodNotSupportedException} to {@code 405 Method Not Allowed}.
+     *
+     * <p>Raised when a request targets a mapped account path with an HTTP method the controller
+     * does not expose (for example {@code POST} or {@code DELETE} on
+     * {@code /api/v1/accounts/{accountId}}, which supports only {@code GET} and {@code PUT}). A
+     * fixed generic summary is returned in the uniform {@link ApiError} shape rather than Spring
+     * Boot's default error body.</p>
+     *
+     * @param ex      the framework method-not-supported signal
+     * @param request the current request, used only to derive the sanitized route template
+     *                recorded in the error body
+     * @return a {@code 405} response whose body is a sanitized {@link ApiError}
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ApiError> handleMethodNotSupported(final HttpRequestMethodNotSupportedException ex,
+                                                             final HttpServletRequest request) {
+        final HttpStatus status = HttpStatus.METHOD_NOT_ALLOWED;
+        final ApiError body = new ApiError(
+                status.value(),
+                status.getReasonPhrase(),
+                METHOD_NOT_ALLOWED_MESSAGE,
+                resolvePath(request));
+        return ResponseEntity.status(status).body(body);
+    }
+
+    /**
+     * Maps {@link HttpMediaTypeNotSupportedException} to {@code 415 Unsupported Media Type}.
+     *
+     * <p>Raised when the request {@code Content-Type} is not one the controller can consume
+     * (the update endpoint consumes {@code application/json}). A fixed generic summary is
+     * returned in the uniform {@link ApiError} shape.</p>
+     *
+     * @param ex      the framework media-type-not-supported signal
+     * @param request the current request, used only to derive the sanitized route template
+     *                recorded in the error body
+     * @return a {@code 415} response whose body is a sanitized {@link ApiError}
+     */
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ApiError> handleMediaTypeNotSupported(final HttpMediaTypeNotSupportedException ex,
+                                                                final HttpServletRequest request) {
+        final HttpStatus status = HttpStatus.UNSUPPORTED_MEDIA_TYPE;
+        final ApiError body = new ApiError(
+                status.value(),
+                status.getReasonPhrase(),
+                UNSUPPORTED_MEDIA_TYPE_MESSAGE,
+                resolvePath(request));
+        return ResponseEntity.status(status).body(body);
+    }
+
+    /**
+     * Maps {@link NoResourceFoundException} to {@code 404 Not Found}.
+     *
+     * <p>Raised by Spring MVC (Boot 3.2+) when no route matches the request path &mdash; an
+     * unknown URL rather than a known account that is absent from the store (that case is
+     * {@link AccountNotFoundException}). Returning the uniform {@link ApiError} keeps even
+     * unmatched-route 404s consistent with the rest of the API. The {@code path} is the
+     * digit-masked request path (see {@link #resolvePath}), so a numeric segment cannot leak.</p>
+     *
+     * @param ex      the framework no-route signal
+     * @param request the current request, used only to derive the sanitized route template
+     *                recorded in the error body
+     * @return a {@code 404} response whose body is a sanitized {@link ApiError}
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiError> handleNoResourceFound(final NoResourceFoundException ex,
+                                                          final HttpServletRequest request) {
+        final HttpStatus status = HttpStatus.NOT_FOUND;
+        final ApiError body = new ApiError(
+                status.value(),
+                status.getReasonPhrase(),
+                NO_RESOURCE_MESSAGE,
+                resolvePath(request));
+        return ResponseEntity.status(status).body(body);
+    }
+
+    /**
+     * Derives the sanitized {@code path} value for an {@link ApiError} body: the request-mapping
+     * route template (for example {@code /api/v1/accounts/{accountId}}) rather than the raw
+     * request URI, so the sensitive 11-digit account id is never serialized or logged
+     * (AAP &sect;0.6.6; CWE-209 / CWE-532).
+     *
+     * <p>When the request was matched to a controller method, Spring MVC exposes the best-matching
+     * pattern under {@link HandlerMapping#BEST_MATCHING_PATTERN_ATTRIBUTE}; that template is used
+     * verbatim. When no handler matched (for example a {@link NoResourceFoundException}, or certain
+     * {@code 405}/{@code 415} dispatch failures) the attribute is absent, so a defensive fallback
+     * masks every all-digit path segment with the {@code {accountId}} placeholder. Either way, no
+     * concrete numeric identifier reaches the error body.</p>
+     *
+     * @param request the current request
+     * @return the sanitized route template, or a digit-masked request path when no template is available
+     */
+    private static String resolvePath(final HttpServletRequest request) {
+        final Object bestMatch = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
+        if (bestMatch instanceof String pattern && !pattern.isBlank()) {
+            return pattern;
+        }
+        final String uri = request.getRequestURI();
+        if (uri == null || uri.isEmpty()) {
+            return uri;
+        }
+        final String[] segments = uri.split("/", -1);
+        for (int i = 0; i < segments.length; i++) {
+            final String segment = segments[i];
+            if (!segment.isEmpty() && segment.chars().allMatch(Character::isDigit)) {
+                segments[i] = "{accountId}";
+            }
+        }
+        return String.join("/", segments);
     }
 }

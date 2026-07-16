@@ -19,14 +19,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.Optional;
 
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -43,13 +49,23 @@ import com.aws.carddemo.account.repository.AccountRepository;
  * Pure Mockito unit tests for {@link AccountService}, verifying the <em>orchestration</em> of the
  * account inquiry and update use cases in isolation from Spring, JPA, and any database.
  *
- * <p>The service's three collaborators &mdash; {@link AccountRepository}, {@link AccountMapper},
- * and {@link AccountValidator} &mdash; are replaced with Mockito mocks and injected through the
- * single 3-argument constructor via {@link InjectMocks}. Mocking the validator and mapper
- * deliberately bypasses their real behavior so these tests focus solely on the control flow of the
- * service (the sequencing, the not-found handling, the optimistic-concurrency decision, and the
- * write/no-write outcome). Real validation parity is covered by {@code AccountValidatorTest} and
- * formatting parity by {@code AccountMapperTest}; this class does not duplicate them.</p>
+ * <p>The service's four collaborators &mdash; {@link AccountRepository}, {@link AccountMapper},
+ * {@link AccountValidator}, and the JPA {@link EntityManager} &mdash; are replaced with Mockito mocks
+ * and injected through the single 4-argument constructor via {@link InjectMocks}. Mocking the
+ * validator and mapper deliberately bypasses their real behavior so these tests focus solely on the
+ * control flow of the service (the sequencing, the not-found handling, the optimistic-concurrency
+ * decision, and the persist/flush and forced-increment interaction). Real validation parity is
+ * covered by {@code AccountValidatorTest} and formatting parity by {@code AccountMapperTest}; this
+ * class does not duplicate them.</p>
+ *
+ * <p><strong>What a pure-Mockito test can and cannot prove here.</strong> Because
+ * {@code repository.saveAndFlush} is a mock, it does not run Hibernate and does not itself advance the
+ * {@code @Version}. These tests therefore verify the <em>ordered orchestration</em> of the update
+ * flow &mdash; id validation, field validation, load, persist/flush, the conditional forced increment,
+ * refresh, and mapping &mdash; and drive both branches by stubbing whether the flushed entity's version
+ * advanced. The <em>actual</em> provider version behavior (a changed rewrite advancing by exactly one,
+ * an identical rewrite still advancing by one, and load-to-flush races) is proven on real PostgreSQL by
+ * {@code AccountApiIntegrationTest} (AAP&nbsp;&sect;0.6.5).</p>
  *
  * <h2>Legacy behavior proven (extraction-by-reference; the COBOL is a read-only oracle)</h2>
  * <ul>
@@ -101,7 +117,22 @@ class AccountServiceTest {
     @Mock
     AccountValidator validator;
 
-    /** Class under test; Mockito injects the three mocks via the single 3-arg constructor. */
+    /**
+     * Mocked JPA entity manager. On the update path the service uses it to force a version increment
+     * for an accepted no-op rewrite and to refresh the entity before mapping; here its interactions
+     * are stubbed/verified to prove the orchestration without a real persistence context.
+     */
+    @Mock
+    EntityManager entityManager;
+
+    /**
+     * Mocked JPA {@link Query} returned by {@code entityManager.createQuery(...)} on the no-op
+     * forced-increment path. Stubbed to return a configurable row count from {@code executeUpdate()}.
+     */
+    @Mock
+    Query query;
+
+    /** Class under test; Mockito injects the four mocks via the single 4-arg constructor. */
     @InjectMocks
     AccountService service;
 
@@ -155,28 +186,107 @@ class AccountServiceTest {
     // ------------------------------------------------------------------
 
     /**
-     * Success path (matching version): the loaded entity's version equals the client's submitted
-     * version, so the edits are applied and the record is rewritten. Verifies the full
-     * validate&rarr;apply&rarr;save sequence and that the mapper's projection of the saved entity is
-     * returned.
+     * Success path &mdash; CHANGED rewrite (matching version, dirty entity). The loaded entity's version
+     * equals the client's submitted version, so the edits are applied and the record is flushed. Here
+     * {@code saveAndFlush} is stubbed to advance the entity's version (simulating the dirty
+     * {@code @Version} increment Hibernate performs on a real database), so the service detects that the
+     * token already advanced and <em>skips</em> the forced-increment branch. Verifies the exact ordered
+     * orchestration id-validate&rarr;field-validate&rarr;load&rarr;apply&rarr;saveAndFlush&rarr;map, that
+     * no forced increment is issued, and that the mapper's projection of the flushed entity is returned.
      */
     @Test
-    void updateAccount_whenVersionMatches_appliesEditsAndSaves() {
+    void updateAccount_changedRewrite_flushesAndReturnsWithoutForcedIncrement() {
         final AccountUpdateRequest request = requestWithVersion(0L);
         final Account account = accountWithVersion(0L);
         final AccountResponse response = new AccountResponse();
         when(repository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
-        // save returns the same managed instance; Account uses identity equality so the matcher hits.
-        when(repository.save(account)).thenReturn(account);
+        // Simulate a real dirty flush: the version advances to expectedVersion + 1 on the managed entity.
+        when(repository.saveAndFlush(account)).thenAnswer(invocation -> {
+            account.setVersion(1L);
+            return account;
+        });
         when(mapper.toResponse(account)).thenReturn(response);
 
         final AccountResponse result = service.updateAccount(ACCOUNT_ID, request);
 
         assertThat(result).isSameAs(response);
-        // The editable-field validation, the field copy, and the rewrite all occur exactly once.
-        verify(validator).validate(request);
-        verify(mapper).applyUpdate(request, account);
-        verify(repository).save(account);
+
+        // Ordered orchestration: id edit -> field edits -> load -> apply -> persist/flush -> map.
+        final InOrder ordered = inOrder(validator, repository, mapper);
+        ordered.verify(validator).validateAccountId(ACCOUNT_ID);
+        ordered.verify(validator).validate(request);
+        ordered.verify(repository).findById(ACCOUNT_ID);
+        ordered.verify(mapper).applyUpdate(request, account);
+        ordered.verify(repository).saveAndFlush(account);
+        ordered.verify(mapper).toResponse(account);
+
+        // A changed rewrite already advanced the token at flush, so NO forced increment is issued.
+        verify(entityManager, never()).createQuery(anyString());
+        verify(entityManager, never()).refresh(any());
+    }
+
+    /**
+     * Success path &mdash; NO-OP rewrite (matching version, identical representation). The submitted
+     * representation equals the stored row, so a real Hibernate flush would emit no {@code UPDATE} and
+     * leave the version unchanged. Here {@code saveAndFlush} is stubbed to leave the version at
+     * {@code expectedVersion}, so the service enters the forced-increment branch: it issues the guarded
+     * conditional version update (row count 1 = success) and refreshes the entity before mapping. This
+     * reproduces the legacy unconditional-{@code REWRITE} token advancement (M10). Verifies the exact
+     * ordered orchestration including the forced increment and refresh.
+     */
+    @Test
+    void updateAccount_noOpRewrite_forcesIncrementAndRefreshesBeforeMapping() {
+        final AccountUpdateRequest request = requestWithVersion(0L);
+        final Account account = accountWithVersion(0L);
+        final AccountResponse response = new AccountResponse();
+        when(repository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
+        // Simulate an identical (no-op) flush: no dirty UPDATE, version stays at expectedVersion.
+        when(repository.saveAndFlush(account)).thenReturn(account);
+        when(entityManager.createQuery(anyString())).thenReturn(query);
+        when(query.setParameter(anyString(), any())).thenReturn(query);
+        when(query.executeUpdate()).thenReturn(1);
+        when(mapper.toResponse(account)).thenReturn(response);
+
+        final AccountResponse result = service.updateAccount(ACCOUNT_ID, request);
+
+        assertThat(result).isSameAs(response);
+
+        // Ordered orchestration: id edit -> field edits -> load -> apply -> flush -> forced increment
+        // -> refresh -> map.
+        final InOrder ordered = inOrder(validator, repository, mapper, entityManager);
+        ordered.verify(validator).validateAccountId(ACCOUNT_ID);
+        ordered.verify(validator).validate(request);
+        ordered.verify(repository).findById(ACCOUNT_ID);
+        ordered.verify(mapper).applyUpdate(request, account);
+        ordered.verify(repository).saveAndFlush(account);
+        ordered.verify(entityManager).createQuery(anyString());
+        ordered.verify(entityManager).refresh(account);
+        ordered.verify(mapper).toResponse(account);
+    }
+
+    /**
+     * Forced-increment race on a NO-OP rewrite: between the load and the guarded conditional version
+     * update, a concurrent writer advanced the row, so the update matches zero rows. The service
+     * translates that into {@link ObjectOptimisticLockingFailureException} (HTTP&nbsp;409) and never
+     * refreshes or maps. This retains load-to-flush race translation for the identical-representation
+     * path (C1/M10).
+     */
+    @Test
+    void updateAccount_noOpRewrite_whenForcedIncrementMatchesNoRows_throwsConflict() {
+        final AccountUpdateRequest request = requestWithVersion(0L);
+        final Account account = accountWithVersion(0L);
+        when(repository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
+        when(repository.saveAndFlush(account)).thenReturn(account);
+        when(entityManager.createQuery(anyString())).thenReturn(query);
+        when(query.setParameter(anyString(), any())).thenReturn(query);
+        when(query.executeUpdate()).thenReturn(0); // concurrent advance -> zero rows
+
+        assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, request))
+                .isInstanceOf(ObjectOptimisticLockingFailureException.class);
+
+        // The conflict aborts before any refresh or response mapping.
+        verify(entityManager, never()).refresh(any());
+        verify(mapper, never()).toResponse(any());
     }
 
     /**
@@ -200,8 +310,9 @@ class AccountServiceTest {
         assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, request))
                 .isInstanceOf(ObjectOptimisticLockingFailureException.class);
 
-        // Write is aborted on a stale version — this is the before-image parity guarantee.
-        verify(repository, never()).save(any());
+        // Write is aborted on a stale version — this is the before-image parity guarantee. Neither the
+        // flush nor the mapper's field copy occurs.
+        verify(repository, never()).saveAndFlush(any());
         verify(mapper, never()).applyUpdate(any(), any());
     }
 
@@ -220,7 +331,7 @@ class AccountServiceTest {
                 .isInstanceOf(AccountNotFoundException.class)
                 .hasMessage("Account not found in Acct Master file.");
 
-        verify(repository, never()).save(any());
+        verify(repository, never()).saveAndFlush(any());
         verify(mapper, never()).applyUpdate(any(), any());
     }
 
