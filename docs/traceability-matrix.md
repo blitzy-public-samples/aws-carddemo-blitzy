@@ -2,7 +2,9 @@
 
 > Bidirectional source-construct -> target mapping for the AWS CardDemo re-platforming (COBOL / CICS / VSAM / JCL -> Java 25 + Spring Boot 3.x + PostgreSQL 16).
 
-This document satisfies the **Explainability** rule (AAP Section 0.8.2) and the traceability validation criteria (AAP Section 0.9.4 / 0.9.6). It maps **100% of the COBOL PROCEDURE DIVISION paragraphs across all 28 programs** to their target Java implementations **with no gaps**, and it is **bidirectional**: Section 4 maps every COBOL paragraph to its Java target, and Section 5 maps every major Java artifact back to the COBOL program(s), paragraph(s), and copybook(s) it derives from.
+This document satisfies the **Explainability** rule (AAP Section 0.8.2) and the traceability validation criteria (AAP Section 0.9.4 / 0.9.6). Its **primary, exhaustive** coverage is **paragraph-level**: it maps **100% of the COBOL PROCEDURE DIVISION paragraphs across all 28 programs (527 unique paragraphs)** to their target Java implementations **with no gaps**. This paragraph-level mapping is **bidirectional** — Section 4 maps every COBOL paragraph to its Java target, and Section 5 maps every major Java artifact back to the COBOL program(s), paragraph(s), and copybook(s) it derives from.
+
+The matrix additionally provides coverage at two further granularities, each **complete at its own level of detail** (and labelled as such where it appears, rather than under a single blanket "100%"): **screen field-level** traceability for all 17 BMS maps and their 441 fields plus per-program action-key (AID) handling (Section 3), and **data-artifact-level** traceability for the seed/reference data files — 9 ASCII, 12 EBCDIC, and the VSAM catalog listing (Section 8). Where a source construct is intentionally **not** mapped one-to-one (for example a source-only CSD entry with no program, a reference-only JCL member, or an application-enforced relationship that cannot become a database constraint), it is **explicitly classified** rather than silently omitted, so "no gaps" means *nothing is undocumented*, not that every construct becomes a like-for-like target.
 
 - **Scope:** 28 COBOL programs, **527 unique PROCEDURE DIVISION paragraphs**, 11 data entities/tables, 17 online screens, 11 Spring Batch jobs, plus JCL/PROC/CTL/CSD orchestration.
 - **Legacy source location:** the original COBOL is retained read-only under `legacy/**` (relocated from `app/**`); all source references below point at `legacy/**`.
@@ -51,15 +53,15 @@ One row per COBOL program: its type, unique PROCEDURE DIVISION paragraph count, 
 
 ## 2. Data-Tier Traceability (copybook -> JPA entity -> table)
 
-Each VSAM KSDS becomes a PostgreSQL 16 table; the unique key becomes the primary key; each alternate index (AIX) becomes a B-tree index; application-enforced relationships become real foreign keys (a documented improvement, not a behavior change). COMP-3 monetary fields become `DECIMAL(x,2)` / `BigDecimal`. See [architecture](./architecture.md) and AAP Section 0.4.3.
+Each VSAM KSDS becomes a PostgreSQL 16 table; the unique key becomes the primary key; each alternate index (AIX) becomes a B-tree index; application-enforced relationships become real foreign keys **where the parent key is genuinely unique** (a documented improvement, not a behavior change). The one relationship whose parent key is **not** unique — `account.group_id` against the composite-keyed `disclosure_group` — is **not** a foreign key; it is modeled as a plain grouping attribute resolved by a composite `(group_id, type_cd, cat_cd)` application-level lookup (see decision **D8** and the note below). COMP-3 monetary fields become `DECIMAL(x,2)` / `BigDecimal`. See [architecture](./architecture.md) and AAP Section 0.4.3.
 
 | Copybook (`legacy/cpy/**`) | JPA entity (`domain/`) | Table | Primary key | Indexes / foreign keys |
 |----------------------------|------------------------|-------|-------------|------------------------|
 | `CVCUS01Y.cpy` | `domain/Customer.java` | `customer` | `cust_id` | - |
-| `CVACT01Y.cpy` | `domain/Account.java` | `account` | `acct_id` | FK group_id -> disclosure_group |
+| `CVACT01Y.cpy` | `domain/Account.java` | `account` | `acct_id` | `group_id` = grouping attribute (**no FK**; `disclosure_group` PK is composite — see note) |
 | `CVACT02Y.cpy` | `domain/Card.java` | `card` | `card_num` | index acct_id (=CARDDATA.VSAM.AIX); FK acct_id -> account |
 | `CVACT03Y.cpy` | `domain/CardXref.java` | `card_xref` | `xref_card_num` | index acct_id (=CARDXREF.VSAM.AIX); FK cust_id -> customer, acct_id -> account |
-| `CVTRA05Y.cpy` | `domain/Transaction.java` | `transaction` | `tran_id (16-char)` | index orig_ts (=TRANSACT.VSAM.AIX); FK card_num, type_cd, cat_cd |
+| `CVTRA05Y.cpy` | `domain/Transaction.java` | `transaction` | `tran_id (16-char)` | index proc_ts (=TRANSACT.VSAM.AIX, KEYLEN=26 @ AXRKP=304); FK card_num -> card, type_cd -> transaction_type, composite (type_cd, cat_cd) -> transaction_category |
 | `CVTRA06Y.cpy` | `domain/DailyTransaction.java` | `daily_transaction` | `staging key` | - (posting staging) |
 | `CSUSR01Y.cpy` | `domain/UserSecurity.java` | `user_security` | `sec_usr_id` | - (role A/U) |
 | `CVTRA03Y.cpy` | `domain/TransactionType.java` | `transaction_type` | `type_cd` | - |
@@ -67,7 +69,11 @@ Each VSAM KSDS becomes a PostgreSQL 16 table; the unique key becomes the primary
 | `CVTRA02Y.cpy` | `domain/DisclosureGroup.java` | `disclosure_group` | `(group_id, type_cd, cat_cd)` | int_rate DECIMAL(6,2) |
 | `CVTRA01Y.cpy` | `domain/TransactionCategoryBalance.java` | `tran_cat_balance` | `(acct_id, type_cd, cat_cd)` | bal DECIMAL(11,2) |
 
-**Reference-only copybooks (no separate entity):** `CVTRA07Y.cpy`, `CVCRD01Y.cpy`, and `CUSTREC*` are used to reconcile field semantics only. **Alternate indexes formalized:** `CARDDATA.VSAM.AIX`, `CARDXREF.VSAM.AIX`, and `TRANSACT.VSAM.AIX` become ordinary B-tree indexes preserving the card-to-account, xref-to-account, and chronological-transaction browse patterns.
+**Reference-only copybooks (no separate entity):** `CVTRA07Y.cpy`, `CVCRD01Y.cpy`, and `CUSTREC*` are used to reconcile field semantics only. **Alternate indexes formalized:** `CARDDATA.VSAM.AIX` (→ index on `card.acct_id`), `CARDXREF.VSAM.AIX` (→ index on `card_xref.acct_id`), and `TRANSACT.VSAM.AIX` (→ index on `transaction.proc_ts`) become ordinary B-tree indexes preserving the card-to-account, xref-to-account, and chronological-transaction browse patterns.
+
+> **AIX key disambiguation (`TRANSACT.VSAM.AIX` → `proc_ts`, not `orig_ts`):** the transaction record (`CVTRA05Y`) defines **two** 26-character timestamps — `TRAN-ORIG-TS` (origination) at offset **278** and `TRAN-PROC-TS` (processing) at offset **304**. The VSAM catalog listing (`legacy/catlg/LISTCAT.txt`) shows `TRANSACT.VSAM.AIX` with `KEYLEN=26` beginning at `AXRKP=304` — i.e. the alternate key is `TRAN-PROC-TS`, which maps to the `proc_ts` column. The chronological transaction browse therefore orders by `proc_ts`; ordering by `orig_ts` would not reproduce the legacy browse order.
+
+> **`account.group_id` is a grouping attribute, not a foreign key (source-faithful deviation):** `disclosure_group` has a **composite** primary key (`group_id`, `type_cd`, `cat_cd`), so a group id **alone is not unique** and cannot be a foreign-key target. Rather than invent a synthetic single-column parent the legacy never had, `account.group_id` is retained as a plain grouping attribute, and the applicable disclosure/interest row is resolved by a composite `(group_id, type_cd, cat_cd)` lookup at the application layer — exactly the access path `legacy/cbl/CBACT04C.cbl` used against `DISCGRP`. Recorded as decision **D8**.
 
 ### 2.1 Complete Copybook Crosswalk (all 28 copybooks)
 
@@ -114,7 +120,9 @@ Notes on reading this table:
 
 ## 3. Screen / UI-Contract Traceability (BMS -> request/response DTOs)
 
-Each of the 17 online screens maps its BMS map definition and symbolic copybook to a request/response DTO pair under `dto/`, preserving field names, lengths, PIC-derived types, edit rules, and PF-key actions (PF3=back, PF7/PF8=page, Enter=submit). No terminal emulator is produced (AAP Section 0.3.3).
+Each of the 17 online screens maps its BMS map definition and symbolic copybook to a request/response DTO pair under `dto/`, preserving field names, lengths, PIC-derived types, edit rules, and the full per-program **action-key (AID)** set. No terminal emulator is produced (AAP Section 0.3.3). This section provides three levels of traceability: **3.1** the screen-to-DTO summary (17 rows), **3.2** field-level traceability (all **441** named BMS fields with attributes and edit contracts), and **3.3** the complete per-program AID map (including PF4/PF5/PF12).
+
+### 3.1 Screen-to-DTO summary
 
 | Screen | BMS map (`legacy/bms/**`) | Symbolic copybook (`legacy/cpy-bms/**`) | Program | Controller | Request DTO | Response DTO |
 |--------|---------------------------|------------------------------------------|---------|------------|-------------|--------------|
@@ -135,6 +143,564 @@ Each of the 17 online screens maps its BMS map definition and symbolic copybook 
 | User Add | `COUSR01.bms` | `COUSR01.CPY` | `COUSR01C` | `web/UserAddController.java` | `dto/UserAddRequest.java` | `dto/UserAddResponse.java` |
 | User Update | `COUSR02.bms` | `COUSR02.CPY` | `COUSR02C` | `web/UserUpdateController.java` | `dto/UserUpdateRequest.java` | `dto/UserUpdateResponse.java` |
 | User Delete | `COUSR03.bms` | `COUSR03.CPY` | `COUSR03C` | `web/UserDeleteController.java` | `dto/UserDeleteRequest.java` | `dto/UserDeleteResponse.java` |
+
+### 3.2 Field-level traceability (441 fields)
+
+One row per **named** `DFHMDF` field across all 17 BMS maps (441 fields total; static screen-literal `DFHMDF` entries without a field name are not data-contract fields and are omitted). Each row preserves the field's **length**, **screen position** (`POS=(row,col)`), **`ATTRB`** byte semantics, **`COLOR`**, and any **edit contract** (`PICIN`/`PICOUT` numeric-edit masks, `VALIDN`, `HILIGHT`, `JUSTIFY`), and maps it to its DTO field and direction. Field direction is derived from `ATTRB`: `UNPROT`/`IC` fields are **input (request)**, `PROT`/`ASKIP` fields are **output (response)**.
+
+**`ATTRB` / attribute legend:** `ASKIP` = autoskip (protected, cursor skips) → output; `PROT` = protected → output; `UNPROT` = unprotected → **input**; `NORM` = normal intensity; `BRT` = bright; `DRK` = dark/non-display (e.g. password/CVV); `FSET` = modified-data-tag preset; `IC` = insert-cursor (initial cursor position). `HILIGHT=UNDERLINE` marks an input field's edit box; `VALIDN` carries MUSTFILL/MUSTENTER validation; `PICIN`/`PICOUT` carry the numeric edit mask reproduced by the DTO's Bean-Validation/format rules; `JUSTIFY=RIGHT` right-justifies numeric entry.
+
+#### 3.2.1 Account Update — `COACTUP.bms` -> `dto/AccountUpdateRequest.java` / `dto/AccountUpdateResponse.java` (54 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `ACCTSID` | 11 | 5,38 | IC,UNPROT | - | HILIGHT=UNDERLINE | `acctsid` (input (request)) |
+| `ACSTTUS` | 1 | 5,70 | UNPROT | - | HILIGHT=UNDERLINE | `acsttus` (input (request)) |
+| `OPNYEAR` | 4 | 6,17 | FSET,UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `opnyear` (input (request)) |
+| `OPNMON` | 2 | 6,24 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `opnmon` (input (request)) |
+| `OPNDAY` | 2 | 6,29 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `opnday` (input (request)) |
+| `ACRDLIM` | 15 | 6,61 | FSET,UNPROT | - | HILIGHT=UNDERLINE | `acrdlim` (input (request)) |
+| `EXPYEAR` | 4 | 7,17 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `expyear` (input (request)) |
+| `EXPMON` | 2 | 7,24 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `expmon` (input (request)) |
+| `EXPDAY` | 2 | 7,29 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `expday` (input (request)) |
+| `ACSHLIM` | 15 | 7,61 | FSET,UNPROT | - | HILIGHT=UNDERLINE | `acshlim` (input (request)) |
+| `RISYEAR` | 4 | 8,17 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `risyear` (input (request)) |
+| `RISMON` | 2 | 8,24 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `rismon` (input (request)) |
+| `RISDAY` | 2 | 8,29 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `risday` (input (request)) |
+| `ACURBAL` | 15 | 8,61 | FSET,UNPROT | - | HILIGHT=UNDERLINE | `acurbal` (input (request)) |
+| `ACRCYCR` | 15 | 9,61 | FSET,UNPROT | - | HILIGHT=UNDERLINE | `acrcycr` (input (request)) |
+| `AADDGRP` | 10 | 10,23 | UNPROT | - | HILIGHT=UNDERLINE | `aaddgrp` (input (request)) |
+| `ACRCYDB` | 15 | 10,61 | FSET,UNPROT | - | HILIGHT=UNDERLINE | `acrcydb` (input (request)) |
+| `ACSTNUM` | 9 | 12,23 | UNPROT | - | HILIGHT=UNDERLINE | `acstnum` (input (request)) |
+| `ACTSSN1` | 3 | 12,55 | UNPROT | - | HILIGHT=UNDERLINE | `actssn1` (input (request)) |
+| `ACTSSN2` | 2 | 12,61 | UNPROT | - | HILIGHT=UNDERLINE | `actssn2` (input (request)) |
+| `ACTSSN3` | 4 | 12,66 | UNPROT | - | HILIGHT=UNDERLINE | `actssn3` (input (request)) |
+| `DOBYEAR` | 4 | 13,23 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `dobyear` (input (request)) |
+| `DOBMON` | 2 | 13,30 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `dobmon` (input (request)) |
+| `DOBDAY` | 2 | 13,35 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `dobday` (input (request)) |
+| `ACSTFCO` | 3 | 13,62 | UNPROT | - | HILIGHT=UNDERLINE | `acstfco` (input (request)) |
+| `ACSFNAM` | 25 | 15,1 | UNPROT | - | HILIGHT=UNDERLINE | `acsfnam` (input (request)) |
+| `ACSMNAM` | 25 | 15,28 | UNPROT | - | HILIGHT=UNDERLINE | `acsmnam` (input (request)) |
+| `ACSLNAM` | 25 | 15,55 | UNPROT | - | HILIGHT=UNDERLINE | `acslnam` (input (request)) |
+| `ACSADL1` | 50 | 16,10 | UNPROT | - | HILIGHT=UNDERLINE | `acsadl1` (input (request)) |
+| `ACSSTTE` | 2 | 16,73 | UNPROT | - | HILIGHT=UNDERLINE | `acsstte` (input (request)) |
+| `ACSADL2` | 50 | 17,10 | UNPROT | - | HILIGHT=UNDERLINE | `acsadl2` (input (request)) |
+| `ACSZIPC` | 5 | 17,73 | UNPROT | - | HILIGHT=UNDERLINE | `acszipc` (input (request)) |
+| `ACSCITY` | 50 | 18,10 | UNPROT | - | HILIGHT=UNDERLINE | `acscity` (input (request)) |
+| `ACSCTRY` | 3 | 18,73 | UNPROT | - | HILIGHT=UNDERLINE | `acsctry` (input (request)) |
+| `ACSPH1A` | 3 | 19,10 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `acsph1a` (input (request)) |
+| `ACSPH1B` | 3 | 19,14 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `acsph1b` (input (request)) |
+| `ACSPH1C` | 4 | 19,18 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `acsph1c` (input (request)) |
+| `ACSGOVT` | 20 | 19,58 | UNPROT | - | HILIGHT=UNDERLINE | `acsgovt` (input (request)) |
+| `ACSPH2A` | 3 | 20,10 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `acsph2a` (input (request)) |
+| `ACSPH2B` | 3 | 20,14 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `acsph2b` (input (request)) |
+| `ACSPH2C` | 4 | 20,18 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `acsph2c` (input (request)) |
+| `ACSEFTC` | 10 | 20,41 | UNPROT | - | HILIGHT=UNDERLINE | `acseftc` (input (request)) |
+| `ACSPFLG` | 1 | 20,78 | UNPROT | - | HILIGHT=UNDERLINE | `acspflg` (input (request)) |
+| `INFOMSG` | 45 | 22,23 | ASKIP | NEUTRAL | HILIGHT=OFF | `infomsg` (output (response)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+| `FKEYS` | 21 | 24,1 | ASKIP,NORM | YELLOW | alnum | `fkeys` (output (response)) |
+| `FKEY05` | 7 | 24,23 | ASKIP,DRK | YELLOW | alnum | `fkey05` (output (response)) |
+| `FKEY12` | 10 | 24,31 | ASKIP,DRK | YELLOW | alnum | `fkey12` (output (response)) |
+
+#### 3.2.2 Account View — `COACTVW.bms` -> `dto/AccountViewRequest.java` / `dto/AccountViewResponse.java` (37 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `ACCTSID` | 11 | 5,38 | FSET,IC,NORM,UNPROT | GREEN | PICIN=99999999999; VALIDN=MUSTFILL; HILIGHT=UNDERLINE | `acctsid` (input (request)) |
+| `ACSTTUS` | 1 | 5,70 | ASKIP | - | HILIGHT=UNDERLINE | `acsttus` (output (response)) |
+| `ADTOPEN` | 10 | 6,17 | - | - | HILIGHT=UNDERLINE | `adtopen` (output (response)) |
+| `ACRDLIM` | 15 | 6,61 | - | - | PICOUT=+ZZZ,ZZZ,ZZZ.99; HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `acrdlim` (output (response)) |
+| `AEXPDT` | 10 | 7,17 | - | - | HILIGHT=UNDERLINE | `aexpdt` (output (response)) |
+| `ACSHLIM` | 15 | 7,61 | - | - | PICOUT=+ZZZ,ZZZ,ZZZ.99; HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `acshlim` (output (response)) |
+| `AREISDT` | 10 | 8,17 | - | - | HILIGHT=UNDERLINE | `areisdt` (output (response)) |
+| `ACURBAL` | 15 | 8,61 | - | - | PICOUT=+ZZZ,ZZZ,ZZZ.99; HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `acurbal` (output (response)) |
+| `ACRCYCR` | 15 | 9,61 | - | - | PICOUT=+ZZZ,ZZZ,ZZZ.99; HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `acrcycr` (output (response)) |
+| `AADDGRP` | 10 | 10,23 | - | - | HILIGHT=UNDERLINE | `aaddgrp` (output (response)) |
+| `ACRCYDB` | 15 | 10,61 | - | - | PICOUT=+ZZZ,ZZZ,ZZZ.99; HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `acrcydb` (output (response)) |
+| `ACSTNUM` | 9 | 12,23 | - | - | HILIGHT=UNDERLINE | `acstnum` (output (response)) |
+| `ACSTSSN` | 12 | 12,54 | - | - | HILIGHT=UNDERLINE | `acstssn` (output (response)) |
+| `ACSTDOB` | 10 | 13,23 | - | - | HILIGHT=UNDERLINE | `acstdob` (output (response)) |
+| `ACSTFCO` | 3 | 13,61 | - | - | HILIGHT=UNDERLINE | `acstfco` (output (response)) |
+| `ACSFNAM` | 25 | 15,1 | - | - | HILIGHT=UNDERLINE | `acsfnam` (output (response)) |
+| `ACSMNAM` | 25 | 15,28 | - | - | HILIGHT=UNDERLINE | `acsmnam` (output (response)) |
+| `ACSLNAM` | 25 | 15,55 | - | - | HILIGHT=UNDERLINE | `acslnam` (output (response)) |
+| `ACSADL1` | 50 | 16,10 | - | - | HILIGHT=UNDERLINE | `acsadl1` (output (response)) |
+| `ACSSTTE` | 2 | 16,73 | - | - | HILIGHT=UNDERLINE | `acsstte` (output (response)) |
+| `ACSADL2` | 50 | 17,10 | - | - | HILIGHT=UNDERLINE | `acsadl2` (output (response)) |
+| `ACSZIPC` | 5 | 17,73 | - | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `acszipc` (output (response)) |
+| `ACSCITY` | 50 | 18,10 | - | - | HILIGHT=UNDERLINE | `acscity` (output (response)) |
+| `ACSCTRY` | 3 | 18,73 | - | - | HILIGHT=UNDERLINE | `acsctry` (output (response)) |
+| `ACSPHN1` | 13 | 19,10 | - | - | HILIGHT=UNDERLINE | `acsphn1` (output (response)) |
+| `ACSGOVT` | 20 | 19,58 | - | - | HILIGHT=UNDERLINE | `acsgovt` (output (response)) |
+| `ACSPHN2` | 13 | 20,10 | - | - | HILIGHT=UNDERLINE | `acsphn2` (output (response)) |
+| `ACSEFTC` | 10 | 20,41 | - | - | HILIGHT=UNDERLINE | `acseftc` (output (response)) |
+| `ACSPFLG` | 1 | 20,78 | - | - | HILIGHT=UNDERLINE | `acspflg` (output (response)) |
+| `INFOMSG` | 45 | 22,23 | PROT | NEUTRAL | HILIGHT=OFF | `infomsg` (output (response)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+#### 3.2.3 Admin Menu — `COADM01.bms` -> `dto/AdminMenuRequest.java` / `dto/AdminMenuResponse.java` (20 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,FSET,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,FSET,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,FSET,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `OPTN001` | 40 | 6,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn001` (output (response)) |
+| `OPTN002` | 40 | 7,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn002` (output (response)) |
+| `OPTN003` | 40 | 8,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn003` (output (response)) |
+| `OPTN004` | 40 | 9,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn004` (output (response)) |
+| `OPTN005` | 40 | 10,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn005` (output (response)) |
+| `OPTN006` | 40 | 11,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn006` (output (response)) |
+| `OPTN007` | 40 | 12,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn007` (output (response)) |
+| `OPTN008` | 40 | 13,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn008` (output (response)) |
+| `OPTN009` | 40 | 14,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn009` (output (response)) |
+| `OPTN010` | 40 | 15,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn010` (output (response)) |
+| `OPTN011` | 40 | 16,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn011` (output (response)) |
+| `OPTN012` | 40 | 17,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn012` (output (response)) |
+| `OPTION` | 2 | 20,41 | FSET,IC,NORM,NUM,UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT,ZERO | `option` (input (request)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+#### 3.2.4 Bill Payment — `COBIL00.bms` -> `dto/BillPaymentRequest.java` / `dto/BillPaymentResponse.java` (10 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,FSET,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,FSET,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,FSET,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `ACTIDIN` | 11 | 6,21 | FSET,IC,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `actidin` (input (request)) |
+| `CURBAL` | 14 | 11,32 | ASKIP,FSET,NORM | BLUE | alnum | `curbal` (output (response)) |
+| `CONFIRM` | 1 | 15,60 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `confirm` (input (request)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+#### 3.2.5 Card List — `COCRDLI.bms` -> `dto/CardListRequest.java` / `dto/CardListResponse.java` (45 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `PAGENO` | 3 | 4,76 | - | - | alnum | `pageno` (output (response)) |
+| `ACCTSID` | 11 | 6,44 | FSET,IC,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `acctsid` (input (request)) |
+| `CARDSID` | 16 | 7,44 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `cardsid` (input (request)) |
+| `CRDSEL1` | 1 | 11,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel1` (output (response)) |
+| `ACCTNO1` | 11 | 11,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno1` (output (response)) |
+| `CRDNUM1` | 16 | 11,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum1` (output (response)) |
+| `CRDSTS1` | 1 | 11,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts1` (output (response)) |
+| `CRDSEL2` | 1 | 12,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel2` (output (response)) |
+| `CRDSTP2` | 1 | 12,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp2` (output (response)) |
+| `ACCTNO2` | 11 | 12,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno2` (output (response)) |
+| `CRDNUM2` | 16 | 12,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum2` (output (response)) |
+| `CRDSTS2` | 1 | 12,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts2` (output (response)) |
+| `CRDSEL3` | 1 | 13,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel3` (output (response)) |
+| `CRDSTP3` | 1 | 13,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp3` (output (response)) |
+| `ACCTNO3` | 11 | 13,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno3` (output (response)) |
+| `CRDNUM3` | 16 | 13,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum3` (output (response)) |
+| `CRDSTS3` | 1 | 13,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts3` (output (response)) |
+| `CRDSEL4` | 1 | 14,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel4` (output (response)) |
+| `CRDSTP4` | 1 | 14,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp4` (output (response)) |
+| `ACCTNO4` | 11 | 14,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno4` (output (response)) |
+| `CRDNUM4` | 16 | 14,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum4` (output (response)) |
+| `CRDSTS4` | 1 | 14,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts4` (output (response)) |
+| `CRDSEL5` | 1 | 15,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel5` (output (response)) |
+| `CRDSTP5` | 1 | 15,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp5` (output (response)) |
+| `ACCTNO5` | 11 | 15,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno5` (output (response)) |
+| `CRDNUM5` | 16 | 15,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum5` (output (response)) |
+| `CRDSTS5` | 1 | 15,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts5` (output (response)) |
+| `CRDSEL6` | 1 | 16,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel6` (output (response)) |
+| `CRDSTP6` | 1 | 16,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp6` (output (response)) |
+| `ACCTNO6` | 11 | 16,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno6` (output (response)) |
+| `CRDNUM6` | 16 | 16,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum6` (output (response)) |
+| `CRDSTS6` | 1 | 16,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts6` (output (response)) |
+| `CRDSEL7` | 1 | 17,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel7` (output (response)) |
+| `CRDSTP7` | 1 | 17,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp7` (output (response)) |
+| `ACCTNO7` | 11 | 17,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno7` (output (response)) |
+| `CRDNUM7` | 16 | 17,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum7` (output (response)) |
+| `CRDSTS7` | 1 | 17,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts7` (output (response)) |
+| `INFOMSG` | 45 | 20,19 | PROT | NEUTRAL | HILIGHT=OFF | `infomsg` (output (response)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+#### 3.2.6 Card View — `COCRDSL.bms` -> `dto/CardViewRequest.java` / `dto/CardViewResponse.java` (15 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `ACCTSID` | 11 | 7,45 | FSET,IC,NORM,UNPROT | DEFAULT | HILIGHT=UNDERLINE | `acctsid` (input (request)) |
+| `CARDSID` | 16 | 8,45 | FSET,NORM,UNPROT | DEFAULT | HILIGHT=UNDERLINE | `cardsid` (input (request)) |
+| `CRDNAME` | 50 | 11,25 | - | - | HILIGHT=UNDERLINE | `crdname` (output (response)) |
+| `CRDSTCD` | 1 | 13,25 | ASKIP | - | HILIGHT=UNDERLINE | `crdstcd` (output (response)) |
+| `EXPMON` | 2 | 15,25 | ASKIP | - | HILIGHT=UNDERLINE | `expmon` (output (response)) |
+| `EXPYEAR` | 4 | 15,30 | ASKIP | - | HILIGHT=UNDERLINE | `expyear` (output (response)) |
+| `INFOMSG` | 40 | 20,25 | PROT | NEUTRAL | HILIGHT=OFF | `infomsg` (output (response)) |
+| `ERRMSG` | 80 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+| `FKEYS` | 75 | 24,1 | ASKIP,NORM | YELLOW | alnum | `fkeys` (output (response)) |
+
+#### 3.2.7 Card Update — `COCRDUP.bms` -> `dto/CardUpdateRequest.java` / `dto/CardUpdateResponse.java` (17 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `ACCTSID` | 11 | 7,45 | FSET,IC,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `acctsid` (output (response)) |
+| `CARDSID` | 16 | 8,45 | FSET,NORM,UNPROT | DEFAULT | HILIGHT=UNDERLINE | `cardsid` (input (request)) |
+| `CRDNAME` | 50 | 11,25 | UNPROT | - | HILIGHT=UNDERLINE | `crdname` (input (request)) |
+| `CRDSTCD` | 1 | 13,25 | UNPROT | - | HILIGHT=UNDERLINE | `crdstcd` (input (request)) |
+| `EXPMON` | 2 | 15,25 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `expmon` (input (request)) |
+| `EXPYEAR` | 4 | 15,30 | UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `expyear` (input (request)) |
+| `EXPDAY` | 2 | 15,36 | DRK,FSET,PROT | - | HILIGHT=OFF; JUSTIFY=RIGHT | `expday` (output (response)) |
+| `INFOMSG` | 40 | 20,25 | PROT | NEUTRAL | HILIGHT=OFF | `infomsg` (output (response)) |
+| `ERRMSG` | 80 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+| `FKEYS` | 21 | 24,1 | ASKIP,NORM | YELLOW | alnum | `fkeys` (output (response)) |
+| `FKEYSC` | 18 | 24,23 | ASKIP,DRK | YELLOW | alnum | `fkeysc` (output (response)) |
+
+#### 3.2.8 Main Menu — `COMEN01.bms` -> `dto/MainMenuRequest.java` / `dto/MainMenuResponse.java` (20 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,FSET,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,FSET,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,FSET,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `OPTN001` | 40 | 6,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn001` (output (response)) |
+| `OPTN002` | 40 | 7,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn002` (output (response)) |
+| `OPTN003` | 40 | 8,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn003` (output (response)) |
+| `OPTN004` | 40 | 9,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn004` (output (response)) |
+| `OPTN005` | 40 | 10,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn005` (output (response)) |
+| `OPTN006` | 40 | 11,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn006` (output (response)) |
+| `OPTN007` | 40 | 12,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn007` (output (response)) |
+| `OPTN008` | 40 | 13,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn008` (output (response)) |
+| `OPTN009` | 40 | 14,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn009` (output (response)) |
+| `OPTN010` | 40 | 15,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn010` (output (response)) |
+| `OPTN011` | 40 | 16,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn011` (output (response)) |
+| `OPTN012` | 40 | 17,20 | ASKIP,FSET,NORM | BLUE | alnum | `optn012` (output (response)) |
+| `OPTION` | 2 | 20,41 | FSET,IC,NORM,NUM,UNPROT | - | HILIGHT=UNDERLINE; JUSTIFY=RIGHT,ZERO | `option` (input (request)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+#### 3.2.9 Transaction Report — `CORPT00.bms` -> `dto/TransactionReportRequest.java` / `dto/TransactionReportResponse.java` (17 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,FSET,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,FSET,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,FSET,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `MONTHLY` | 1 | 7,10 | FSET,IC,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `monthly` (input (request)) |
+| `YEARLY` | 1 | 9,10 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `yearly` (input (request)) |
+| `CUSTOM` | 1 | 11,10 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `custom` (input (request)) |
+| `SDTMM` | 2 | 13,29 | FSET,NORM,NUM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sdtmm` (input (request)) |
+| `SDTDD` | 2 | 13,34 | FSET,NORM,NUM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sdtdd` (input (request)) |
+| `SDTYYYY` | 4 | 13,39 | FSET,NORM,NUM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sdtyyyy` (input (request)) |
+| `EDTMM` | 2 | 14,29 | FSET,NORM,NUM,UNPROT | GREEN | HILIGHT=UNDERLINE | `edtmm` (input (request)) |
+| `EDTDD` | 2 | 14,34 | FSET,NORM,NUM,UNPROT | GREEN | HILIGHT=UNDERLINE | `edtdd` (input (request)) |
+| `EDTYYYY` | 4 | 14,39 | FSET,NORM,NUM,UNPROT | GREEN | HILIGHT=UNDERLINE | `edtyyyy` (input (request)) |
+| `CONFIRM` | 1 | 19,66 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `confirm` (input (request)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+#### 3.2.10 Sign-on — `COSGN00.bms` -> `dto/SignonRequest.java` / `dto/SignonResponse.java` (11 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,8 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,FSET,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,8 | FSET,NORM,PROT | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 9 | 2,71 | FSET,NORM,PROT | BLUE | alnum | `curtime` (output (response)) |
+| `APPLID` | 8 | 3,8 | FSET,NORM,PROT | BLUE | alnum | `applid` (output (response)) |
+| `SYSID` | 8 | 3,71 | FSET,NORM,PROT | BLUE | alnum | `sysid` (output (response)) |
+| `USERID` | 8 | 19,43 | FSET,IC,NORM,UNPROT | GREEN | HILIGHT=OFF | `userid` (input (request)) |
+| `PASSWD` | 8 | 20,43 | DRK,FSET,UNPROT | GREEN | HILIGHT=OFF | `passwd` (input (request)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+#### 3.2.11 Transaction List — `COTRN00.bms` -> `dto/TransactionListRequest.java` / `dto/TransactionListResponse.java` (59 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,FSET,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,FSET,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,FSET,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `PAGENUM` | 8 | 4,71 | ASKIP,FSET,NORM | BLUE | alnum | `pagenum` (output (response)) |
+| `TRNIDIN` | 16 | 6,21 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `trnidin` (input (request)) |
+| `SEL0001` | 1 | 10,3 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0001` (input (request)) |
+| `TRNID01` | 16 | 10,8 | ASKIP,FSET,NORM | BLUE | alnum | `trnid01` (output (response)) |
+| `TDATE01` | 8 | 10,27 | ASKIP,FSET,NORM | BLUE | alnum | `tdate01` (output (response)) |
+| `TDESC01` | 26 | 10,38 | ASKIP,FSET,NORM | BLUE | alnum | `tdesc01` (output (response)) |
+| `TAMT001` | 12 | 10,67 | ASKIP,FSET,NORM | BLUE | alnum | `tamt001` (output (response)) |
+| `SEL0002` | 1 | 11,3 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0002` (input (request)) |
+| `TRNID02` | 16 | 11,8 | ASKIP,FSET,NORM | BLUE | alnum | `trnid02` (output (response)) |
+| `TDATE02` | 8 | 11,27 | ASKIP,FSET,NORM | BLUE | alnum | `tdate02` (output (response)) |
+| `TDESC02` | 26 | 11,38 | ASKIP,FSET,NORM | BLUE | alnum | `tdesc02` (output (response)) |
+| `TAMT002` | 12 | 11,67 | ASKIP,FSET,NORM | BLUE | alnum | `tamt002` (output (response)) |
+| `SEL0003` | 1 | 12,3 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0003` (input (request)) |
+| `TRNID03` | 16 | 12,8 | ASKIP,FSET,NORM | BLUE | alnum | `trnid03` (output (response)) |
+| `TDATE03` | 8 | 12,27 | ASKIP,FSET,NORM | BLUE | alnum | `tdate03` (output (response)) |
+| `TDESC03` | 26 | 12,38 | ASKIP,FSET,NORM | BLUE | alnum | `tdesc03` (output (response)) |
+| `TAMT003` | 12 | 12,67 | ASKIP,FSET,NORM | BLUE | alnum | `tamt003` (output (response)) |
+| `SEL0004` | 1 | 13,3 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0004` (input (request)) |
+| `TRNID04` | 16 | 13,8 | ASKIP,FSET,NORM | BLUE | alnum | `trnid04` (output (response)) |
+| `TDATE04` | 8 | 13,27 | ASKIP,FSET,NORM | BLUE | alnum | `tdate04` (output (response)) |
+| `TDESC04` | 26 | 13,38 | ASKIP,FSET,NORM | BLUE | alnum | `tdesc04` (output (response)) |
+| `TAMT004` | 12 | 13,67 | ASKIP,FSET,NORM | BLUE | alnum | `tamt004` (output (response)) |
+| `SEL0005` | 1 | 14,3 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0005` (input (request)) |
+| `TRNID05` | 16 | 14,8 | ASKIP,FSET,NORM | BLUE | alnum | `trnid05` (output (response)) |
+| `TDATE05` | 8 | 14,27 | ASKIP,FSET,NORM | BLUE | alnum | `tdate05` (output (response)) |
+| `TDESC05` | 26 | 14,38 | ASKIP,FSET,NORM | BLUE | alnum | `tdesc05` (output (response)) |
+| `TAMT005` | 12 | 14,67 | ASKIP,FSET,NORM | BLUE | alnum | `tamt005` (output (response)) |
+| `SEL0006` | 1 | 15,3 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0006` (input (request)) |
+| `TRNID06` | 16 | 15,8 | ASKIP,FSET,NORM | BLUE | alnum | `trnid06` (output (response)) |
+| `TDATE06` | 8 | 15,27 | ASKIP,FSET,NORM | BLUE | alnum | `tdate06` (output (response)) |
+| `TDESC06` | 26 | 15,38 | ASKIP,FSET,NORM | BLUE | alnum | `tdesc06` (output (response)) |
+| `TAMT006` | 12 | 15,67 | ASKIP,FSET,NORM | BLUE | alnum | `tamt006` (output (response)) |
+| `SEL0007` | 1 | 16,3 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0007` (input (request)) |
+| `TRNID07` | 16 | 16,8 | ASKIP,FSET,NORM | BLUE | alnum | `trnid07` (output (response)) |
+| `TDATE07` | 8 | 16,27 | ASKIP,FSET,NORM | BLUE | alnum | `tdate07` (output (response)) |
+| `TDESC07` | 26 | 16,38 | ASKIP,FSET,NORM | BLUE | alnum | `tdesc07` (output (response)) |
+| `TAMT007` | 12 | 16,67 | ASKIP,FSET,NORM | BLUE | alnum | `tamt007` (output (response)) |
+| `SEL0008` | 1 | 17,3 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0008` (input (request)) |
+| `TRNID08` | 16 | 17,8 | ASKIP,FSET,NORM | BLUE | alnum | `trnid08` (output (response)) |
+| `TDATE08` | 8 | 17,27 | ASKIP,FSET,NORM | BLUE | alnum | `tdate08` (output (response)) |
+| `TDESC08` | 26 | 17,38 | ASKIP,FSET,NORM | BLUE | alnum | `tdesc08` (output (response)) |
+| `TAMT008` | 12 | 17,67 | ASKIP,FSET,NORM | BLUE | alnum | `tamt008` (output (response)) |
+| `SEL0009` | 1 | 18,3 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0009` (input (request)) |
+| `TRNID09` | 16 | 18,8 | ASKIP,FSET,NORM | BLUE | alnum | `trnid09` (output (response)) |
+| `TDATE09` | 8 | 18,27 | ASKIP,FSET,NORM | BLUE | alnum | `tdate09` (output (response)) |
+| `TDESC09` | 26 | 18,38 | ASKIP,FSET,NORM | BLUE | alnum | `tdesc09` (output (response)) |
+| `TAMT009` | 12 | 18,67 | ASKIP,FSET,NORM | BLUE | alnum | `tamt009` (output (response)) |
+| `SEL0010` | 1 | 19,3 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0010` (input (request)) |
+| `TRNID10` | 16 | 19,8 | ASKIP,FSET,NORM | BLUE | alnum | `trnid10` (output (response)) |
+| `TDATE10` | 8 | 19,27 | ASKIP,FSET,NORM | BLUE | alnum | `tdate10` (output (response)) |
+| `TDESC10` | 26 | 19,38 | ASKIP,FSET,NORM | BLUE | alnum | `tdesc10` (output (response)) |
+| `TAMT010` | 12 | 19,67 | ASKIP,FSET,NORM | BLUE | alnum | `tamt010` (output (response)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+#### 3.2.12 Transaction View — `COTRN01.bms` -> `dto/TransactionViewRequest.java` / `dto/TransactionViewResponse.java` (21 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,FSET,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,FSET,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,FSET,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `TRNIDIN` | 16 | 6,21 | FSET,IC,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `trnidin` (input (request)) |
+| `TRNID` | 16 | 10,22 | ASKIP,NORM | BLUE | alnum | `trnid` (output (response)) |
+| `CARDNUM` | 16 | 10,58 | ASKIP,NORM | BLUE | alnum | `cardnum` (output (response)) |
+| `TTYPCD` | 2 | 12,15 | ASKIP,NORM | BLUE | alnum | `ttypcd` (output (response)) |
+| `TCATCD` | 4 | 12,36 | ASKIP,NORM | BLUE | alnum | `tcatcd` (output (response)) |
+| `TRNSRC` | 10 | 12,54 | ASKIP,NORM | BLUE | alnum | `trnsrc` (output (response)) |
+| `TDESC` | 60 | 14,19 | ASKIP,NORM | BLUE | alnum | `tdesc` (output (response)) |
+| `TRNAMT` | 12 | 16,14 | ASKIP,NORM | BLUE | alnum | `trnamt` (output (response)) |
+| `TORIGDT` | 10 | 16,42 | ASKIP,NORM | BLUE | alnum | `torigdt` (output (response)) |
+| `TPROCDT` | 10 | 16,68 | ASKIP,NORM | BLUE | alnum | `tprocdt` (output (response)) |
+| `MID` | 9 | 18,19 | ASKIP,NORM | BLUE | alnum | `mid` (output (response)) |
+| `MNAME` | 30 | 18,48 | ASKIP,NORM | BLUE | alnum | `mname` (output (response)) |
+| `MCITY` | 25 | 20,21 | ASKIP,NORM | BLUE | alnum | `mcity` (output (response)) |
+| `MZIP` | 10 | 20,67 | ASKIP,NORM | BLUE | alnum | `mzip` (output (response)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+#### 3.2.13 Transaction Add — `COTRN02.bms` -> `dto/TransactionAddRequest.java` / `dto/TransactionAddResponse.java` (21 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,FSET,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,FSET,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,FSET,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `ACTIDIN` | 11 | 6,21 | FSET,IC,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `actidin` (input (request)) |
+| `CARDNIN` | 16 | 6,55 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `cardnin` (input (request)) |
+| `TTYPCD` | 2 | 10,15 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `ttypcd` (input (request)) |
+| `TCATCD` | 4 | 10,36 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `tcatcd` (input (request)) |
+| `TRNSRC` | 10 | 10,54 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `trnsrc` (input (request)) |
+| `TDESC` | 60 | 12,19 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `tdesc` (input (request)) |
+| `TRNAMT` | 12 | 14,14 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `trnamt` (input (request)) |
+| `TORIGDT` | 10 | 14,42 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `torigdt` (input (request)) |
+| `TPROCDT` | 10 | 14,68 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `tprocdt` (input (request)) |
+| `MID` | 9 | 16,19 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `mid` (input (request)) |
+| `MNAME` | 30 | 16,48 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `mname` (input (request)) |
+| `MCITY` | 25 | 18,21 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `mcity` (input (request)) |
+| `MZIP` | 10 | 18,67 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `mzip` (input (request)) |
+| `CONFIRM` | 1 | 21,63 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `confirm` (input (request)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+#### 3.2.14 List Users — `COUSR00.bms` -> `dto/UserListRequest.java` / `dto/UserListResponse.java` (59 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,FSET,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,FSET,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,FSET,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `PAGENUM` | 8 | 4,71 | ASKIP,FSET,NORM | BLUE | alnum | `pagenum` (output (response)) |
+| `USRIDIN` | 8 | 6,21 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `usridin` (input (request)) |
+| `SEL0001` | 1 | 10,6 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0001` (input (request)) |
+| `USRID01` | 8 | 10,12 | ASKIP,FSET,NORM | BLUE | alnum | `usrid01` (output (response)) |
+| `FNAME01` | 20 | 10,24 | ASKIP,FSET,NORM | BLUE | alnum | `fname01` (output (response)) |
+| `LNAME01` | 20 | 10,48 | ASKIP,FSET,NORM | BLUE | alnum | `lname01` (output (response)) |
+| `UTYPE01` | 1 | 10,73 | ASKIP,FSET,NORM | BLUE | alnum | `utype01` (output (response)) |
+| `SEL0002` | 1 | 11,6 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0002` (input (request)) |
+| `USRID02` | 8 | 11,12 | ASKIP,FSET,NORM | BLUE | alnum | `usrid02` (output (response)) |
+| `FNAME02` | 20 | 11,24 | ASKIP,FSET,NORM | BLUE | alnum | `fname02` (output (response)) |
+| `LNAME02` | 20 | 11,48 | ASKIP,FSET,NORM | BLUE | alnum | `lname02` (output (response)) |
+| `UTYPE02` | 1 | 11,73 | ASKIP,FSET,NORM | BLUE | alnum | `utype02` (output (response)) |
+| `SEL0003` | 1 | 12,6 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0003` (input (request)) |
+| `USRID03` | 8 | 12,12 | ASKIP,FSET,NORM | BLUE | alnum | `usrid03` (output (response)) |
+| `FNAME03` | 20 | 12,24 | ASKIP,FSET,NORM | BLUE | alnum | `fname03` (output (response)) |
+| `LNAME03` | 20 | 12,48 | ASKIP,FSET,NORM | BLUE | alnum | `lname03` (output (response)) |
+| `UTYPE03` | 1 | 12,73 | ASKIP,FSET,NORM | BLUE | alnum | `utype03` (output (response)) |
+| `SEL0004` | 1 | 13,6 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0004` (input (request)) |
+| `USRID04` | 8 | 13,12 | ASKIP,FSET,NORM | BLUE | alnum | `usrid04` (output (response)) |
+| `FNAME04` | 20 | 13,24 | ASKIP,FSET,NORM | BLUE | alnum | `fname04` (output (response)) |
+| `LNAME04` | 20 | 13,48 | ASKIP,FSET,NORM | BLUE | alnum | `lname04` (output (response)) |
+| `UTYPE04` | 1 | 13,73 | ASKIP,FSET,NORM | BLUE | alnum | `utype04` (output (response)) |
+| `SEL0005` | 1 | 14,6 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0005` (input (request)) |
+| `USRID05` | 8 | 14,12 | ASKIP,FSET,NORM | BLUE | alnum | `usrid05` (output (response)) |
+| `FNAME05` | 20 | 14,24 | ASKIP,FSET,NORM | BLUE | alnum | `fname05` (output (response)) |
+| `LNAME05` | 20 | 14,48 | ASKIP,FSET,NORM | BLUE | alnum | `lname05` (output (response)) |
+| `UTYPE05` | 1 | 14,73 | ASKIP,FSET,NORM | BLUE | alnum | `utype05` (output (response)) |
+| `SEL0006` | 1 | 15,6 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0006` (input (request)) |
+| `USRID06` | 8 | 15,12 | ASKIP,FSET,NORM | BLUE | alnum | `usrid06` (output (response)) |
+| `FNAME06` | 20 | 15,24 | ASKIP,FSET,NORM | BLUE | alnum | `fname06` (output (response)) |
+| `LNAME06` | 20 | 15,48 | ASKIP,FSET,NORM | BLUE | alnum | `lname06` (output (response)) |
+| `UTYPE06` | 1 | 15,73 | ASKIP,FSET,NORM | BLUE | alnum | `utype06` (output (response)) |
+| `SEL0007` | 1 | 16,6 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0007` (input (request)) |
+| `USRID07` | 8 | 16,12 | ASKIP,FSET,NORM | BLUE | alnum | `usrid07` (output (response)) |
+| `FNAME07` | 20 | 16,24 | ASKIP,FSET,NORM | BLUE | alnum | `fname07` (output (response)) |
+| `LNAME07` | 20 | 16,48 | ASKIP,FSET,NORM | BLUE | alnum | `lname07` (output (response)) |
+| `UTYPE07` | 1 | 16,73 | ASKIP,FSET,NORM | BLUE | alnum | `utype07` (output (response)) |
+| `SEL0008` | 1 | 17,6 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0008` (input (request)) |
+| `USRID08` | 8 | 17,12 | ASKIP,FSET,NORM | BLUE | alnum | `usrid08` (output (response)) |
+| `FNAME08` | 20 | 17,24 | ASKIP,FSET,NORM | BLUE | alnum | `fname08` (output (response)) |
+| `LNAME08` | 20 | 17,48 | ASKIP,FSET,NORM | BLUE | alnum | `lname08` (output (response)) |
+| `UTYPE08` | 1 | 17,73 | ASKIP,FSET,NORM | BLUE | alnum | `utype08` (output (response)) |
+| `SEL0009` | 1 | 18,6 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0009` (input (request)) |
+| `USRID09` | 8 | 18,12 | ASKIP,FSET,NORM | BLUE | alnum | `usrid09` (output (response)) |
+| `FNAME09` | 20 | 18,24 | ASKIP,FSET,NORM | BLUE | alnum | `fname09` (output (response)) |
+| `LNAME09` | 20 | 18,48 | ASKIP,FSET,NORM | BLUE | alnum | `lname09` (output (response)) |
+| `UTYPE09` | 1 | 18,73 | ASKIP,FSET,NORM | BLUE | alnum | `utype09` (output (response)) |
+| `SEL0010` | 1 | 19,6 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `sel0010` (input (request)) |
+| `USRID10` | 8 | 19,12 | ASKIP,FSET,NORM | BLUE | alnum | `usrid10` (output (response)) |
+| `FNAME10` | 20 | 19,24 | ASKIP,FSET,NORM | BLUE | alnum | `fname10` (output (response)) |
+| `LNAME10` | 20 | 19,48 | ASKIP,FSET,NORM | BLUE | alnum | `lname10` (output (response)) |
+| `UTYPE10` | 1 | 19,73 | ASKIP,FSET,NORM | BLUE | alnum | `utype10` (output (response)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+#### 3.2.15 Add User — `COUSR01.bms` -> `dto/UserAddRequest.java` / `dto/UserAddResponse.java` (12 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,FSET,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,FSET,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,FSET,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `FNAME` | 20 | 8,18 | FSET,IC,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `fname` (input (request)) |
+| `LNAME` | 20 | 8,56 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `lname` (input (request)) |
+| `USERID` | 8 | 11,15 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `userid` (input (request)) |
+| `PASSWD` | 8 | 11,55 | DRK,FSET,UNPROT | GREEN | HILIGHT=UNDERLINE | `passwd` (input (request)) |
+| `USRTYPE` | 1 | 14,17 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `usrtype` (input (request)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+#### 3.2.16 Update User — `COUSR02.bms` -> `dto/UserUpdateRequest.java` / `dto/UserUpdateResponse.java` (12 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,FSET,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,FSET,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,FSET,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `USRIDIN` | 8 | 6,21 | FSET,IC,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `usridin` (input (request)) |
+| `FNAME` | 20 | 11,18 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `fname` (input (request)) |
+| `LNAME` | 20 | 11,56 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `lname` (input (request)) |
+| `PASSWD` | 8 | 13,16 | DRK,FSET,UNPROT | GREEN | HILIGHT=UNDERLINE | `passwd` (input (request)) |
+| `USRTYPE` | 1 | 15,17 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `usrtype` (input (request)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+#### 3.2.17 Delete User — `COUSR03.bms` -> `dto/UserDeleteRequest.java` / `dto/UserDeleteResponse.java` (11 fields)
+
+| BMS field | Len | Pos | ATTRB | Color | Type / edit | DTO field (direction) |
+|-----------|----:|-----|-------|-------|-------------|-----------------------|
+| `TRNNAME` | 4 | 1,7 | ASKIP,FSET,NORM | BLUE | alnum | `trnname` (output (response)) |
+| `TITLE01` | 40 | 1,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title01` (output (response)) |
+| `CURDATE` | 8 | 1,71 | ASKIP,FSET,NORM | BLUE | alnum | `curdate` (output (response)) |
+| `PGMNAME` | 8 | 2,7 | ASKIP,FSET,NORM | BLUE | alnum | `pgmname` (output (response)) |
+| `TITLE02` | 40 | 2,21 | ASKIP,FSET,NORM | YELLOW | alnum | `title02` (output (response)) |
+| `CURTIME` | 8 | 2,71 | ASKIP,FSET,NORM | BLUE | alnum | `curtime` (output (response)) |
+| `USRIDIN` | 8 | 6,21 | FSET,IC,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `usridin` (input (request)) |
+| `FNAME` | 20 | 11,18 | ASKIP,FSET,NORM | BLUE | HILIGHT=UNDERLINE | `fname` (output (response)) |
+| `LNAME` | 20 | 13,18 | ASKIP,FSET,NORM | BLUE | HILIGHT=UNDERLINE | `lname` (output (response)) |
+| `USRTYPE` | 1 | 15,17 | ASKIP,FSET,NORM | BLUE | HILIGHT=UNDERLINE | `usrtype` (output (response)) |
+| `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+### 3.3 Action-key (AID) traceability
+
+Every online program's **action-key (AID) handling** is preserved as explicit action fields/enums on the request DTO. The full per-program AID set is below — including **PF4, PF5, and PF12**, which the screen-level summary above does not enumerate. Programs handle the AID either by a direct `EVALUATE EIBAID` (`DFHENTER`/`DFHPFnn` from the `DFHAID` copybook) or via the shared `CCARD-AID-*` condition names (also populated from `EIBAID` through the `DFHAID` copybook); both are equivalent AID branches and neither is a silent omission.
+
+| Program | Screen | Action keys (AIDs) handled | Mechanism |
+|---------|--------|----------------------------|-----------|
+| `COSGN00C` | Sign-on | ENTER, PF3 | direct EVALUATE EIBAID (DFHENTER/DFHPF3) |
+| `COMEN01C` | Main Menu | ENTER, PF3 | direct EVALUATE EIBAID |
+| `COADM01C` | Admin Menu | ENTER, PF3 | direct EVALUATE EIBAID |
+| `COACTVWC` | Account View | ENTER, PF3 | shared DFHAID + CCARD-AID-* condition names |
+| `COACTUPC` | Account Update | ENTER, PF3, PF5, PF12 | shared DFHAID + CCARD-AID-* (PF5=confirm, PF12=cancel) |
+| `COCRDLIC` | Card List | ENTER, PF3, PF7, PF8 | shared DFHAID + CCARD-AID-* (PF7/PF8 page) |
+| `COCRDSLC` | Card View | ENTER, PF3 | shared DFHAID + CCARD-AID-* |
+| `COCRDUPC` | Card Update | ENTER, PF3, PF5, PF12 | shared DFHAID + CCARD-AID-* (PF5=confirm, PF12=cancel) |
+| `COTRN00C` | Transaction List | ENTER, PF3, PF7, PF8 | direct EVALUATE EIBAID (PF7/PF8 page) |
+| `COTRN01C` | Transaction View | ENTER, PF3, PF4, PF5 | direct EVALUATE EIBAID |
+| `COTRN02C` | Transaction Add | ENTER, PF3, PF4, PF5 | direct EVALUATE EIBAID |
+| `CORPT00C` | Transaction Report | ENTER, PF3 | direct EVALUATE EIBAID |
+| `COBIL00C` | Bill Payment | ENTER, PF3, PF4 | direct EVALUATE EIBAID |
+| `COUSR00C` | List Users | ENTER, PF3, PF7, PF8 | direct EVALUATE EIBAID (PF7/PF8 page) |
+| `COUSR01C` | Add User | ENTER, PF3, PF4 | direct EVALUATE EIBAID |
+| `COUSR02C` | Update User | ENTER, PF3, PF4, PF5, PF12 | direct EVALUATE EIBAID |
+| `COUSR03C` | Delete User | ENTER, PF3, PF4, PF5, PF12 | direct EVALUATE EIBAID |
+
+**AID semantics (preserved):** `ENTER` = submit/confirm current screen; `PF3` = back/exit to the calling screen; `PF4` = clear/prompt (context-specific, e.g. Bill Payment, Transaction View/Add, user maintenance); `PF5` = save/confirm changes (account/card update, transaction, user update/delete); `PF7` = page up / previous page (list screens); `PF8` = page down / next page (list screens); `PF12` = cancel/return without saving (account/card update, user update/delete). Any AID a program does not list is treated as invalid and reproduces the legacy "invalid key" message path.
 
 ## 4. Paragraph-Level Traceability (the core)
 
@@ -914,8 +1480,8 @@ This section provides the reverse direction required for bidirectional traceabil
 | batch/CardMasterPrintJob | CBACT02C |
 | batch/XrefPrintJob | CBACT03C |
 | batch/CustomerMasterPrintJob | CBCUS01C |
-| batch/TransactionCombineJob | COMBTRAN.jcl (SORT) + REPROCT.ctl |
-| batch/TransactionBackupJob | TRANBKP.jcl (IDCAMS REPRO) + REPROC.prc |
+| batch/TransactionCombineJob | COMBTRAN.jcl (inline `PGM=SORT` cards) |
+| batch/TransactionBackupJob | TRANBKP.jcl (IDCAMS REPRO) + REPROC.prc + REPROCT.ctl (IDCAMS REPRO control) |
 | batch/reader, batch/processor, batch/writer | Fixed-width DALYTRAN/DALYREJS/statement/report layouts |
 | common/util/IdGenerator | COTRN02C ADD-TRANSACTION / COPY-LAST-TRAN-DATA (max+1) [L444-L451] |
 | common/util/FixedWidthCodec | DALYTRAN / DALYREJS / statement / report fixed-width record layouts |
@@ -942,7 +1508,7 @@ The COBOL/mainframe runtime services have no paragraph-level representation; the
 
 ## 7. Non-Paragraph Orchestration: JCL / PROC / CTL / CSD
 
-The 29 JCL jobs, 2 PROCs, 1 SORT control member, and the CICS resource-definition file have no PROCEDURE DIVISION paragraphs; they map to Spring Batch jobs/steps, Flyway migrations/seed data, or CI/CD scheduling. Batch-program JCL triggers map to the Spring Batch jobs in Section 1; utility IDCAMS/IEBGENER/IEFBR14 jobs map to Flyway schema/seed and DB-backup steps.
+The 29 JCL jobs, 2 PROCs, 1 IDCAMS `REPRO` control member (`REPROCT.ctl`), and the CICS resource-definition file have no PROCEDURE DIVISION paragraphs; they map to Spring Batch jobs/steps, Flyway migrations/seed data, or CI/CD scheduling. Batch-program JCL triggers map to the Spring Batch jobs in Section 1; utility IDCAMS/IEBGENER/IEFBR14 jobs map to Flyway schema/seed and DB-backup steps. Section 7.1 is the artifact-level map; **Section 7.1.1 adds step-level detail** (step order, DD/GDG dependencies, `COND`/`MAXCC` gating, SORT/INCLUDE/OUTREC cards, and return codes) for the multi-step and utility jobs, and **Section 7.1.2 classifies the reference-only and anomalous members** that are not one-to-one executable migrations.
 
 ### 7.1 JCL jobs (`legacy/jcl/**`, 29)
 
@@ -959,13 +1525,13 @@ The 29 JCL jobs, 2 PROCs, 1 SORT control member, and the CICS resource-definitio
 | `READXREF.jcl` | JCL (batch) | batch/XrefPrintJob (CBACT03C) |
 | `READCUST.jcl` | JCL (batch) | batch/CustomerMasterPrintJob (CBCUS01C) |
 | `PRTCATBL.jcl` | JCL (batch) | Category-balance print step (tran_cat_balance reporting) |
-| `CBADMCDJ.jcl` | JCL (batch admin) | Admin/utility batch step (CI/CD job) |
+| `CBADMCDJ.jcl` | JCL (batch admin) | **Reference/historical-only** — stale alternate-CSD catalog loader; **not** a CI/CD job (see Section 7.1.2) |
 | `ACCTFILE.jcl` | JCL (IDCAMS define/load) | Flyway V1 schema (account) + db/seed/account.csv |
 | `CARDFILE.jcl` | JCL (IDCAMS define/load) | Flyway V1 schema (card) + db/seed/card.csv |
 | `CUSTFILE.jcl` | JCL (IDCAMS define/load) | Flyway V1 schema (customer) + db/seed/customer.csv |
 | `XREFFILE.jcl` | JCL (IDCAMS define/load) | Flyway V1 schema (card_xref) + db/seed/card_xref.csv |
 | `TRANFILE.jcl` | JCL (IDCAMS define/load) | Flyway V1 schema (transaction) + db/seed/transaction.csv |
-| `TRANIDX.jcl` | JCL (IDCAMS AIX/index) | Flyway B-tree index on transaction.orig_ts |
+| `TRANIDX.jcl` | JCL (IDCAMS AIX/index) | Flyway B-tree index on transaction.proc_ts (=TRANSACT.VSAM.AIX, `AXRKP=304`) |
 | `DISCGRP.jcl` | JCL (IDCAMS define/load) | Flyway V2 reference-data (disclosure_group) |
 | `TRANCATG.jcl` | JCL (IDCAMS define/load) | Flyway V2 reference-data (transaction_category) |
 | `TRANTYPE.jcl` | JCL (IDCAMS define/load) | Flyway V2 reference-data (transaction_type) |
@@ -978,14 +1544,127 @@ The 29 JCL jobs, 2 PROCs, 1 SORT control member, and the CICS resource-definitio
 | `CLOSEFIL.jcl` | JCL (utility) | Batch stream close (no-op) / backup step ordering |
 | `DEFGDGB.jcl` | JCL (define GDG base) | DB backup retention policy (scheduled backups) |
 
+#### 7.1.1 Step-level detail for multi-step and utility jobs
+
+The artifact-level rows in Section 7.1 map each job to its Spring target. The tables below add the step-level contract that the migration must preserve: step order, the executed program/utility, the DD inputs/outputs (including GDG generations), `COND`/`MAXCC`/`LASTCC` gating, embedded SORT/`REPRO` control cards, and the resulting return-code semantics. Only the multi-step jobs, the backup/GDG chain, and one representative IDCAMS define/load job are expanded; the remaining single-step batch-trigger jobs in Section 7.1 are already one-to-one (one `EXEC PGM=` mapping to one Spring Batch `Job`).
+
+**`POSTTRAN.jcl` (single step, but a governing external-file contract).** Source: `legacy/jcl/POSTTRAN.jcl` L23-L42.
+
+| Step | Program | DD → dataset (DISP) | Contract preserved |
+|------|---------|---------------------|--------------------|
+| `STEP15` | `CBTRN02C` | `TRANFILE`→TRANSACT.VSAM.KSDS (SHR); `DALYTRAN`→DALYTRAN.PS (SHR); `XREFFILE`→CARDXREF.VSAM.KSDS (SHR); `ACCTFILE`→ACCTDATA.VSAM.KSDS (SHR); `TCATBALF`→TCATBALF.VSAM.KSDS (SHR); `DALYREJS`→DALYREJS(+1) GDG **`DCB=(RECFM=F,LRECL=430,BLKSIZE=0)`** (NEW,CATLG,DELETE) | `DALYREJS` output is **fixed RECFM=F, LRECL=430** (350-byte transaction image + 80-byte validation trailer — see D16 / CF1); posting reads inputs SHR and appends the reject GDG generation. Reject writer preserves the 430-byte layout; RC=4 when any record is rejected. |
+
+**`COMBTRAN.jcl` (two steps: inline SORT → IDCAMS REPRO reload).** Source: `legacy/jcl/COMBTRAN.jcl` L22-L48.
+
+| Step | Program | DD / control cards | Target semantics |
+|------|---------|--------------------|------------------|
+| `STEP05R` | `SORT` | `SORTIN`=TRANSACT.BKUP(0) **concatenated with** SYSTRAN(0) (both SHR); `SYMNAMES`: `TRAN-ID,1,16,CH`; `SYSIN`: `SORT FIELDS=(TRAN-ID,A)`; `SORTOUT`=TRANSACT.COMBINED(+1) GDG (NEW,CATLG,DELETE, `DCB=(*.SORTIN)`) | Merge current + system-generated transactions and sort ascending by `TRAN-ID` (offset 1, len 16) → Java `Comparator.comparing(tranId)` / `ORDER BY tran_id ASC` in `TransactionCombineJob`. |
+| `STEP10` | `IDCAMS` | `SYSIN`: `REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM)` where `TRANSACT`=COMBINED(+1), `TRANVSAM`=TRANSACT.VSAM.KSDS | Load the sorted combined generation into the transaction master (bulk upsert). Runs unconditionally (no `COND`). |
+
+**Backup / redefine chain: `CLOSEFIL.jcl` → `TRANBKP.jcl` → `OPENFIL.jcl`, with GDG bases from `DEFGDGB.jcl`.**
+
+`TRANBKP.jcl` (three steps). Source: `legacy/jcl/TRANBKP.jcl` L23-L67; PROC `legacy/proc/REPROC.prc` L21-L28; control `legacy/ctl/REPROCT.ctl` L15.
+
+| Step | Program / PROC | DD / control cards | `COND`/`MAXCC` gating | Target semantics |
+|------|----------------|--------------------|-----------------------|------------------|
+| `STEP05R` | `PROC=REPROC` (→ `PGM=IDCAMS`) | `PRC001.FILEIN`=TRANSACT.VSAM.KSDS (SHR); `PRC001.FILEOUT`=TRANSACT.BKUP(+1) GDG `DCB=(LRECL=350,RECFM=FB)`; `SYSIN`=`&CNTLLIB(REPROCT)` → `REPRO INFILE(FILEIN) OUTFILE(FILEOUT)` | none | Copy/unload master → new GDG backup generation (IDCAMS `REPRO`, **not** SORT). |
+| `STEP05` | `IDCAMS` | `DELETE …TRANSACT.VSAM.KSDS CLUSTER`; `IF MAXCC LE 08 THEN SET MAXCC = 0`; `DELETE …TRANSACT.VSAM.AIX ALTERNATEINDEX`; `IF MAXCC LE 08 THEN SET MAXCC = 0` | `MAXCC` reset to 0 after each delete so a not-found (RC≤8) does not fail the job | Drop the cluster and its alternate index tolerantly (idempotent teardown). |
+| `STEP10` | `IDCAMS` | `DEFINE CLUSTER …KEYS(16 0) RECORDSIZE(350 350) INDEXED` + explicit `DATA`/`INDEX` names | **`COND=(4,LT)`** — skip this step if `4 < prior RC` (i.e. run only when RC≤4) | Recreate the empty master (16-byte key at offset 0, 350-byte records) only if the teardown succeeded. |
+
+`CLOSEFIL.jcl` — `CLCIFIL EXEC PGM=SDSF` issues `CEMT SET FIL(...) CLO` for `TRANSACT`, `CCXREF`, `ACCTDAT`, `CXACAIX`, `USRSEC` (source L4-L12) → quiesce online files before backup. `OPENFIL.jcl` — reverse (re-enable) after backup (job-name anomaly noted in 7.1.2). In the Java target these CICS file open/close operations have **no runtime equivalent** (there is no long-running CICS file-owning region); they map to backup-step **ordering guarantees** in the scheduled DB-backup workflow.
+
+`DEFGDGB.jcl` (`STEP05 EXEC PGM=IDCAMS`, source L21-L59) defines six generation-data groups — `TRANSACT.BKUP`, `TRANSACT.DALY`, `TRANREPT`, `TCATBALF.BKUP`, `SYSTRAN`, `TRANSACT.COMBINED` — each `LIMIT(5) SCRATCH`, each guarded by `IF LASTCC=12 THEN SET MAXCC=0` (tolerate already-exists). Target: a **backup retention policy of 5 generations** per stream in the scheduled DB-backup configuration (not a runtime code path).
+
+**Representative IDCAMS define/load job (`ACCTFILE.jcl` pattern, shared by `CARDFILE`/`CUSTFILE`/`XREFFILE`/`TRANFILE`/`DISCGRP`/`TRANCATG`/`TRANTYPE`/`TCATBALF`/`DUSRSECJ`).** Three ordered steps: (1) `IDCAMS DELETE … CLUSTER` with `IF MAXCC LE 08 THEN SET MAXCC = 0` (tolerant drop); (2) `IDCAMS DEFINE CLUSTER (… KEYS(…) RECORDSIZE(…) INDEXED)` (must succeed); (3) `IDCAMS REPRO INFILE(seq) OUTFILE(ksds)` loading the EBCDIC/ASCII seed into the KSDS (must succeed). Target: step (1)+(2) → Flyway `V1__schema.sql` (V2 for the reference tables) `CREATE TABLE` + PK; step (3) → `db/seed/*.csv` load. `TRANIDX.jcl` adds an `IDCAMS DEFINE ALTERNATEINDEX` + `BLDINDEX` over TRANSACT keyed at `AXRKP=304` → Flyway B-tree index on `transaction.proc_ts` (=TRANSACT.VSAM.AIX; see CF2). Return-code semantics: the DELETE tolerates not-found (RC reset to 0); DEFINE and REPRO must return 0, else the job fails (mapped to a failed Flyway migration / failed seed load).
+
+#### 7.1.2 Reference-only and anomalous members (classified, not edited)
+
+The members below are **not** clean one-to-one executable migrations. Per the Explainability rule and the "no legacy edits" constraint, each is classified here and the **authoritative behavior** the Java target implements is stated explicitly; the immutable legacy bytes are left unchanged (see also `docs/decision-log.md` D14 and CF7/CF8).
+
+| Member | Anomaly (source evidence) | Classification | Authoritative behavior chosen for the migration |
+|--------|---------------------------|----------------|--------------------------------------------------|
+| `CREASTMT.JCL` | The **only uppercase** `.JCL`; `STMTFILE` DD continuation is garbled at ~L90 — `SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS` (a copy/paste corruption spliced into the SPACE parameter) | Migrate from the **clean** portions + `CBSTM03A`/`CBSTM03B` logic; treat the garbled fragment as corruption, not a contract | `StatementGenerationJob` writes `STMTFILE` = plain-text statement `LRECL=80, RECFM=FB` and `HTMLFILE` = `LRECL=100, RECFM=FB` (the intact DDs); the corrupted token is **not** reproduced. |
+| `TRANREPT.jcl` | **Duplicate step name** `//STEP05R` used twice (L23 `EXEC PROC=REPROC`, then L37 `EXEC PGM=SORT`); a third step `STEP10R EXEC PGM=CBTRN03C` follows | Source label collision; on z/OS the second identically-named step is still executed in sequence | Treat as **three ordered steps** — (a) unload master via `REPROC`, (b) filter-by-parm-date + sort by `TRAN-CARD-NUM` (offset 263) then `TRAN-PROC-DT` (offset 305), (c) `CBTRN03C` report — realized as `TransactionReportJob`; the duplicate label is irrelevant in Java (steps are named uniquely). |
+| `OPENFIL.jcl` | Job name is `//OEPNFIL` (transposed typo for `OPENFIL`); functional body re-opens the CICS files closed by `CLOSEFIL` | Cosmetic job-name defect; no dependency on the job name | Functional intent = re-enable file access after backup → backup-step **ordering** in the scheduled workflow (see 7.1.1); the misspelled job name has no Java analog. |
+| `DEFCUST.jcl` | **Duplicate step name** `//STEP05` (L22 `DELETE`, L32 `DEFINE`) **and obsolete HLQ** — `AWS.CCDA.CUSTDATA.CLUSTER` / `AWS.CUSTDATA.CLUSTER` instead of the canonical `AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS` | Stale/alternate customer definer with non-canonical dataset names | **Not authoritative** for the customer table; the canonical customer define+load is `CUSTFILE.jcl` (correct HLQ). `DEFCUST.jcl` is **reference-only**; the Java `customer` table/seed derives from `CUSTFILE.jcl` + `CVCUS01Y`. |
+| `TRANREPT.prc` | Declares `//REPROC PROC` — **same PROC name** as `REPROC.prc` — and is invoked by `TRANREPT.jcl` | Two same-named PROCs disambiguated only by JCLLIB/library search order at runtime | Both same-named PROCs fold into **one** shared unload/`REPRO` step template; the report-specific wiring lives in `TransactionReportJob`. No behavioral divergence in the Java target. |
+| `CBADMCDJ.jcl` | Loads a **stale alternate CSD** catalog (superseded by `CARDDEMO.CSD`) | **Historical/reference-only** — see CF7 | **Not** a CI/CD job and **not** migrated to a Spring Batch job; retained under `legacy/jcl/` for reference only. |
+
 ### 7.2 PROCs (`legacy/proc/**`, 2), CTL (`legacy/ctl/**`, 1), CSD (`legacy/csd/**`, 1)
 
 | Member | Kind | Target |
 |--------|------|--------|
 | `REPROC.prc` | PROC (IDCAMS REPRO) | Shared backup/copy step (used by TransactionBackupJob) |
 | `TRANREPT.prc` | PROC (report) | TransactionReportJob step template (CBTRN03C) |
-| `REPROCT.ctl` | CTL (SORT control) | Comparator / ORDER BY specification for combine & report jobs |
-| `CARDDEMO.CSD` | CSD (CICS resource defs) | REFERENCE registry (18 TRANSACTION, 18 PROGRAM, 17 MAPSET, 8 FILE) informing controller/txn-id mapping; not a migration target |
+| `REPROCT.ctl` | CTL (**IDCAMS `REPRO`** control) | Copy/unload/backup control (`REPRO INFILE(...) OUTFILE(...)`) — shared copy/backup step, **not** a SORT specification; inline `PGM=SORT` card sequences (e.g. `COMBTRAN`) are traced separately as sort steps |
+| `CARDDEMO.CSD` | CSD (CICS resource defs) | REFERENCE registry (18 TRANSACTION, 18 PROGRAM, 17 MAPSET, 8 FILE); **17 production surfaces + 1 source-only** (see Section 7.2.1); informs controller/txn-id mapping; not a migration target |
+
+#### 7.2.1 CSD source-only and non-program resource definitions
+
+`legacy/csd/CARDDEMO.CSD` defines 18 `TRANSACTION`, 18 `PROGRAM`, 17 `MAPSET`, and 8 `FILE` resources. Seventeen of the transaction/program pairs correspond to the 17 online surfaces migrated to controllers in Section 4 (COSGN00C … COUSR03C). The remaining definitions have **no executable COBOL behind them** in `legacy/cbl/**` and are therefore classified as **source-only / reference-only** registry entries — they inform naming and cataloging but are not migration targets (CF6).
+
+| CSD definition (source line) | Backing artifact | Classification | Rationale |
+|------------------------------|------------------|----------------|-----------|
+| `TRANSACTION(CDV1)` → `PROGRAM(COCRDSEC)` (L388-L390; program declared L211) | **No `COCRDSEC.cbl`** exists in `legacy/cbl/**` | **Source-only** (18th transaction/program pair) | The transaction and program are catalogued but the program source was never shipped; there is nothing to migrate. Recorded so the "18 TRANSACTION / 18 PROGRAM" count reconciles to **17 production surfaces + 1 source-only**. |
+| `LIBRARY(CARDDLIB)` (L489) | CICS program-library (LIBRARY) resource | **Reference-only** | A DFHRPL-style load-library definition; it is CICS runtime plumbing with no COBOL logic and no Java analog (the JVM classpath replaces it). |
+| `LIBRARY(COM2DOLL)` (L494) | CICS program-library (LIBRARY) resource | **Reference-only** | Same as above — a second load-library entry; nothing behavioral to migrate. |
+| `TDQUEUE(JOBS)` (L499) | CICS transient-data queue (TDQUEUE) | **Reference-only** | A transient-data-queue definition used for internal-reader job submission; no CardDemo business logic depends on it, so it is not reconstructed. |
+
+**Net reconciliation:** 17 production transaction/program pairs → 17 controllers (Section 4); 1 source-only pair (`CDV1`/`COCRDSEC`); the 3 non-program resource definitions above are CICS infrastructure with no migration target. The 17 `MAPSET` and 8 `FILE` definitions are consumed as the field-contract / dataset reference for Sections 3 and 8 respectively.
+
+## 8. Data-Artifact Traceability (seed & reference datasets)
+
+The paragraph-, screen-, and orchestration-level maps above cover executable constructs. This section closes the remaining artifact class: the **physical data files** that seed and back the datastore. Every ASCII seed file, every EBCDIC physical-sequential dataset, and the VSAM catalog listing is traced bidirectionally to its Java/PostgreSQL target, with the width, record count, and content hash recorded so the migration is reproducible and auditable (CF4/CF14). All widths below are the **fixed record width** (COBOL copybook `RECLN`); the ASCII files are **fixed-width, headerless** — not delimited/CSV (CF4). SHA-256 values are truncated to the first 8 hex characters for reference; the `.gitattributes` entries created in this checkpoint keep these files byte-exact under Git (CF13).
+
+### 8.1 ASCII seed files (`legacy/data/ASCII/**`, 9) → `db/seed/*.csv` + Flyway loads
+
+Each line is one fixed-width record terminated by a newline; byte size therefore equals `rows × (width + 1)`. Parsing uses fixed column positions with space padding for text and zero padding for numerics; there is **no header row and no delimiter**.
+
+| ASCII file | Width (RECLN) | Rows | Bytes | SHA-256 | Source copybook | Target |
+|------------|---------------|------|-------|---------|-----------------|--------|
+| `acctdata.txt` | 300 | 50 | 15050 | `c2a97b6a` | `CVACT01Y` | `account` table → `db/seed/account.csv` |
+| `carddata.txt` | 150 | 50 | 7550 | `da217240` | `CVACT02Y` | `card` table → `db/seed/card.csv` |
+| `cardxref.txt` | 36 (visible) | 50 | 1850 | `efec3825` | `CVACT03Y` | `card_xref` table → `db/seed/card_xref.csv` (EBCDIC image carries a 14-byte trailing filler to 50; see 8.2) |
+| `custdata.txt` | 500 | 50 | 25050 | `d8cfa5b7` | `CVCUS01Y` | `customer` table → `db/seed/customer.csv` |
+| `dailytran.txt` | 350 | 300 | 105300 | `1605206d` | `CVTRA06Y` | `daily_transaction` staging → posting input fixture |
+| `discgrp.txt` | 50 | 51 | 2601 | `dfdd3832` | `CVTRA02Y` | `disclosure_group` → Flyway `V2__reference_data.sql` |
+| `tcatbal.txt` | 50 | 50 | 2550 | `2c45817e` | `CVTRA01Y` | `tran_cat_balance` → seed |
+| `trancatg.txt` | 60 | 18 | 1098 | `80040907` | `CVTRA04Y` | `transaction_category` → Flyway `V2__reference_data.sql` |
+| `trantype.txt` | 60 | 7 | 427 | `3e0ae004` | `CVTRA03Y` | `transaction_type` → Flyway `V2__reference_data.sql` |
+
+There is **no `usrsec.txt`** in the ASCII set (CF4); user-security seed rows derive from the EBCDIC `USRSEC.PS` dataset (8.2) via `CSUSR01Y`.
+
+### 8.2 EBCDIC physical-sequential datasets (`legacy/data/EBCDIC/**`, 12) → layout & seed reference
+
+These are the on-mainframe images (fixed width, no newline; byte size = `rows × width`). They are the **encoding reference** for the fixed-width record layouts and, for `USRSEC`, the authoritative seed source. The Java/PostgreSQL target stores native types, so these preserve the documented layout rather than the EBCDIC/`COMP-3` on-disk encoding (see M2 in the specification).
+
+| EBCDIC dataset | Bytes | Width×Rows | SHA-256 | Role / target |
+|----------------|-------|------------|---------|---------------|
+| `AWS.M2.CARDDEMO.ACCTDATA.PS` | 15000 | 300×50 | `23167cdf` | **Authoritative** account image → `account` |
+| `AWS.M2.CARDDEMO.ACCDATA.PS` | 15000 | 300×50 | `23167cdf` | **Byte-exact alias** of `ACCTDATA.PS` (identical hash) — reference-only duplicate; only `ACCTDATA` is authoritative (CF14) |
+| `AWS.M2.CARDDEMO.CARDDATA.PS` | 7500 | 150×50 | `b5d968b6` | Card image → `card` |
+| `AWS.M2.CARDDEMO.CARDXREF.PS` | 2500 | 50×50 | `b07ab2e5` | Cross-reference image → `card_xref` (width 50 = 36 visible + 14-byte filler; ASCII trims the filler) |
+| `AWS.M2.CARDDEMO.CUSTDATA.PS` | 25000 | 500×50 | `0435915c` | Customer image → `customer` |
+| `AWS.M2.CARDDEMO.DALYTRAN.PS` | 105000 | 350×300 | `479b1f99` | Daily-transaction image → posting input |
+| `AWS.M2.CARDDEMO.DALYTRAN.PS.INIT` | 350 | 350×1 | `aef36e51` | Single-record initialized daily-transaction seed (the 12th dataset) → posting fixture bootstrap |
+| `AWS.M2.CARDDEMO.DISCGRP.PS` | 2550 | 50×51 | `722df789` | Disclosure-group image → `disclosure_group` |
+| `AWS.M2.CARDDEMO.TCATBALF.PS` | 2500 | 50×50 | `725dbe47` | Category-balance image → `tran_cat_balance` |
+| `AWS.M2.CARDDEMO.TRANCATG.PS` | 1080 | 60×18 | `3c171c53` | Transaction-category image → `transaction_category` |
+| `AWS.M2.CARDDEMO.TRANTYPE.PS` | 420 | 60×7 | `97735eb6` | Transaction-type image → `transaction_type` |
+| `AWS.M2.CARDDEMO.USRSEC.PS` | 800 | 80×10 | `8608d4b8` | **Authoritative** user-security image (10 users) → `user_security` seed (`CSUSR01Y`); no ASCII counterpart |
+
+### 8.3 VSAM catalog listing (`legacy/catlg/**`, 1) → schema/index reference
+
+| File | Bytes | SHA-256 | Role |
+|------|-------|---------|------|
+| `LISTCAT.txt` | 195621 | `d2079119` | IDCAMS `LISTCAT` output — authoritative source for cluster/AIX attributes: `KEYLEN`, `RKP`, and the alternate-index `AXRKP` values (e.g. `AXRKP=304` fixing TRANSACT.VSAM.AIX → `proc_ts`, CF2). Reference-only; drives the Flyway PK/index design, not seeded. |
+
+### 8.4 Seed-vs-live and alias reconciliation (documented deviations)
+
+- **`ACCDATA.PS` = `ACCTDATA.PS`** — identical byte content and hash (`23167cdf`). Only `ACCTDATA.VSAM.KSDS`/`ACCTDATA.PS` is treated as authoritative; `ACCDATA.PS` is a duplicate alias retained for reference and **not** loaded a second time (CF14).
+- **Snapshot semantics** — the ASCII seed files and the EBCDIC images are **point-in-time snapshots** and can differ in row counts (e.g. the daily-transaction ASCII fixture is 300 rows; live/GDG-driven runs vary). The migration seeds from the documented snapshot and does not assume the two encodings are row-count-identical for the transactional (non-reference) datasets (CF14).
+- **`cardxref` width** — ASCII visible width 36 vs EBCDIC width 50: the 14-byte difference is trailing filler present in the fixed 50-byte VSAM record and trimmed in the ASCII extract; both map to the same `card_xref` columns (`CVACT03Y`).
+- **Reference tables** — `disclosure_group` (51 rows), `transaction_category` (18), `transaction_type` (7), and `tran_cat_balance` (50) load identically from either encoding into Flyway `V2__reference_data.sql` / seed; row counts match across ASCII and EBCDIC.
 
 ## Appendix A - Authoritative Paragraph Inventory (527 unique)
 

@@ -260,7 +260,7 @@
         <div class="kpi-grid" style="margin-top:16px;">
           <div class="kpi"><div class="num">29</div><div class="lbl">JCL Jobs</div><div class="sub">plus 2 PROCs and 1 control member</div></div>
           <div class="kpi"><div class="num">10</div><div class="lbl">VSAM Datasets</div><div class="sub">plus 3 alternate indexes</div></div>
-          <div class="kpi"><div class="num">17</div><div class="lbl">Online Transactions</div></div>
+          <div class="kpi"><div class="num">17</div><div class="lbl">Online Transactions</div><div class="sub">production surfaces; CSD registers an 18th source-only (CDV1/COCRDSEC)</div></div>
           <div class="kpi"><div class="num">311</div><div class="lbl">Seed Transactions</div><div class="sub">with 50 customers, accounts, and cards</div></div>
         </div>
         <div class="slide-footer">Prepared by <b>Blitzy</b></div>
@@ -331,10 +331,10 @@ flowchart LR
           <thead><tr><th>VSAM Dataset</th><th>PostgreSQL Table</th><th>Key / Index / FK</th></tr></thead>
           <tbody>
             <tr><td>CUSTDATA.KSDS</td><td>customer</td><td>PK cust_id</td></tr>
-            <tr><td>ACCTDATA.KSDS</td><td>account</td><td>PK acct_id; FK group_id</td></tr>
+            <tr><td>ACCTDATA.KSDS</td><td>account</td><td>PK acct_id; group_id grouping attribute (no FK &mdash; disclosure_group PK is composite)</td></tr>
             <tr><td>CARDDATA.KSDS</td><td>card</td><td>PK card_num; index acct_id (AIX); FK acct_id</td></tr>
             <tr><td>CARDXREF.KSDS</td><td>card_xref</td><td>PK xref_card_num; index acct_id (AIX); FK cust_id, acct_id</td></tr>
-            <tr><td>TRANSACT.KSDS</td><td>transaction</td><td>PK tran_id; index orig_ts (AIX); FK card_num, type_cd, cat_cd</td></tr>
+            <tr><td>TRANSACT.KSDS</td><td>transaction</td><td>PK tran_id; index proc_ts (AIX, AXRKP=304); FK card_num, type_cd, composite (type_cd, cat_cd)</td></tr>
             <tr><td>USRSEC.KSDS</td><td>user_security</td><td>PK sec_usr_id</td></tr>
             <tr><td>TRANTYPE</td><td>transaction_type</td><td>PK type_cd</td></tr>
             <tr><td>TRANCATG</td><td>transaction_category</td><td>PK (type_cd, cat_cd)</td></tr>
@@ -342,7 +342,7 @@ flowchart LR
             <tr><td>TCATBALF</td><td>tran_cat_balance</td><td>PK (acct_id, type_cd, cat_cd); bal DECIMAL(11,2)</td></tr>
           </tbody>
         </table>
-        <p class="note">3 alternate indexes become B-tree indexes; application-enforced relationships become real foreign keys; every COMP-3 field becomes <span class="mono">DECIMAL(x,2)</span>.</p>
+        <p class="note">3 alternate indexes become B-tree indexes (the transaction AIX keys on the processing timestamp, <span class="mono">proc_ts</span>); application-enforced relationships become real foreign keys <em>where the parent key is unique</em> &mdash; account.group_id stays a grouping attribute resolved by composite lookup; every COMP-3 field becomes <span class="mono">DECIMAL(x,2)</span>.</p>
         <div class="slide-footer">Prepared by <b>Blitzy</b></div>
       </section>
 
@@ -466,7 +466,7 @@ flowchart LR
       <!-- ================= SLIDE 15 — OBSERVABILITY ================= -->
       <section>
         <span class="kicker">Operational Readiness</span>
-        <h2>Observability built in from day one</h2>
+        <h2>Observability designed in from day one</h2>
         <div class="cols w-60-40">
           <pre class="mermaid">
 flowchart LR
@@ -479,11 +479,12 @@ flowchart LR
 </pre>
           <div>
             <ul class="clean">
-              <li>Structured logs carry a correlation ID across service and batch boundaries</li>
-              <li>Distributed traces exported via OTLP and viewable locally</li>
-              <li>Health and readiness probes via Spring Boot Actuator</li>
-              <li>Grafana dashboard verified against the local docker-compose stack</li>
+              <li>Structured logs designed to carry a correlation ID across service and batch boundaries</li>
+              <li>Distributed traces configured to export via OTLP for local viewing</li>
+              <li>Health and readiness probes configured via Spring Boot Actuator</li>
+              <li>Grafana dashboard template provided for the local docker-compose stack</li>
             </ul>
+            <p class="note" style="margin-top:10px;">Configured as part of the migration design; exercised once the application modules land.</p>
           </div>
         </div>
         <div class="slide-footer">Prepared by <b>Blitzy</b></div>
@@ -496,7 +497,7 @@ flowchart LR
         <div class="kpi-grid cols-3">
           <div class="kpi"><div class="num">100%</div><div class="lbl">Paragraph Traceability</div><div class="sub">Bidirectional source-to-target matrix</div></div>
           <div class="kpi"><div class="num"><i data-lucide="book-open"></i></div><div class="lbl">Decision Log</div><div class="sub">Every non-trivial choice recorded</div></div>
-          <div class="kpi"><div class="num"><i data-lucide="rocket"></i></div><div class="lbl">Onboarding Docs</div><div class="sub">Clean machine to running app</div></div>
+          <div class="kpi"><div class="num"><i data-lucide="rocket"></i></div><div class="lbl">Onboarding Docs</div><div class="sub">Clean machine toward a buildable, runnable app</div></div>
         </div>
         <h3 style="margin-top:22px;">Roadmap &mdash; candidates beyond this migration</h3>
         <div class="icon-row" style="flex-wrap:wrap;">

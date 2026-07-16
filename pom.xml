@@ -88,9 +88,63 @@
         <dependency-check.version>12.2.2</dependency-check.version>
         <jacoco.version>0.8.15</jacoco.version>
 
+        <!--
+          SECURITY OVERRIDE (CVE remediation). Spring Boot 3.5.16 manages the embedded
+          Tomcat via the `tomcat.version` property; its default (10.1.55) is affected by
+          CVE-2026-55956 (Improper Authorization: security constraints for the default
+          servlet ignore the configured HTTP method / method-omission), fixed in 10.1.56,
+          plus the low-severity CVE-2026-55955 / CVE-2026-55276 addressed in the same line.
+          Pin the managed embedded-Tomcat coordinate forward to the current patched 10.1.x
+          release (10.1.57). This overrides only the transitive Tomcat coordinate; the
+          Spring Boot 3.x line itself remains frozen at 3.5.16 (see docs/decision-log.md D2).
+        -->
+        <tomcat.version>10.1.57</tomcat.version>
+
         <!-- Minimum combined (unit + integration) line-coverage ratio enforced by JaCoCo. -->
         <jacoco.coverage.minimum>0.80</jacoco.coverage.minimum>
     </properties>
+
+    <!--
+      ==========================================================================
+      SECURITY OVERRIDES (transitive-dependency CVE remediation).
+      ==========================================================================
+      These entries pin vulnerable TRANSITIVE dependencies forward to their
+      first fixed release. They do NOT add new direct dependencies; each artifact
+      already enters the graph transitively (Spring Boot / springdoc / Testcontainers),
+      and dependencyManagement forces the safe version across every scope, including
+      the test scope now surfaced by the OWASP scan (see the dependency-check
+      <skipTestScope>false</skipTestScope> setting below). Rationale is recorded in
+      docs/decision-log.md; the SCA gate (failBuildOnCVSS=7) enforces the outcome.
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <!--
+              Apache Commons Compress: the Spring Boot 3.5.16 BOM lands 1.24.0 on the
+              graph (pulled in transitively via the Testcontainers stack, test scope).
+              1.24.0 is affected by CVE-2024-25710 (infinite loop / DoS) and
+              CVE-2024-26308 (allocation-of-excessive-memory / DoS), both fixed in
+              1.26.0. Pin forward to the current patched 1.27.1.
+            -->
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-compress</artifactId>
+                <version>1.27.1</version>
+            </dependency>
+
+            <!--
+              Apache Commons Lang3: resolved to 3.17.0 on the graph (via springdoc /
+              Spring transitive use). 3.17.0 is affected by CVE-2025-48924
+              (uncontrolled recursion / StackOverflowError DoS in ClassUtils.getClass),
+              fixed in 3.18.0. Pin forward to 3.20.0 (the version springdoc 2.8.x
+              itself requests), keeping the graph internally consistent.
+            -->
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-lang3</artifactId>
+                <version>3.20.0</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <!-- ==========================================================
@@ -345,6 +399,17 @@
                 <version>${dependency-check.version}</version>
                 <configuration>
                     <failBuildOnCVSS>7</failBuildOnCVSS>
+                    <!--
+                      Scan the TEST scope too. dependency-check-maven skips the test
+                      scope by default (skipTestScope=true), which silently hid the
+                      vulnerable test-scope commons-compress from the gate. Scanning
+                      all scopes ensures no critical/high CVE reaches the build in any
+                      scope; the vulnerable transitive versions are already pinned
+                      forward in <dependencyManagement> above.
+                    -->
+                    <skipTestScope>false</skipTestScope>
+                    <skipProvidedScope>false</skipProvidedScope>
+                    <skipRuntimeScope>false</skipRuntimeScope>
                     <formats>
                         <format>HTML</format>
                         <format>JSON</format>

@@ -219,24 +219,33 @@ and uniform:
 - Each VSAM KSDS dataset → a PostgreSQL **table**.
 - Each dataset's unique key → the table's **primary key** (single or compound).
 - Each VSAM **alternate index (AIX)** → an ordinary **B-tree index**.
-- Each relationship previously enforced only in application code → a real **foreign-key constraint**.
+- Each relationship previously enforced only in application code **whose parent key is genuinely
+  unique** → a real **foreign-key constraint**. One relationship that *cannot* be expressed as a
+  single-column foreign key — `account.group_id` → `disclosure_group` — is instead modeled as a plain
+  grouping attribute (see [Alternate Indexes and Referential Integrity](#alternate-indexes-and-referential-integrity)
+  and decision **D8**).
 - Each `COMP-3` packed-decimal (monetary) field → a `DECIMAL(x,2)` column, mapped to `BigDecimal`.
 
 The schema is created by **Flyway** migrations: `V1__schema.sql` builds the ten tables, their
 indexes, and the foreign-key constraints; `V2__reference_data.sql` loads the reference data (types,
-categories, disclosure groups). Seed rows are derived from the delimited ASCII files under
-`legacy/data/ASCII/**` (formerly `app/data/ASCII`) and materialized as seed CSVs under
-`src/main/resources/db/seed/`.
+categories, disclosure groups). Seed rows are derived from the **fixed-width, headerless** ASCII files
+under `legacy/data/ASCII/**` (formerly `app/data/ASCII`) — parsed by **fixed column positions** per the
+governing copybook, not as CSV/delimited — and materialized as seed CSVs under
+`src/main/resources/db/seed/`. Each file's record width equals its copybook record length
+(`custdata` 500, `acctdata` 300, `carddata` 150, `cardxref` 36-visible/50-with-filler, `dailytran` 350,
+`discgrp` 50, `tcatbal` 50, `trancatg` 60, `trantype` 60), with space-padded alphanumeric and
+zero-padded numeric fields; there is no `usrsec.txt`, so `user_security` seeds from the EBCDIC `USRSEC`
+dataset.
 
 ### Dataset-to-Table Mapping
 
 | VSAM Dataset | PostgreSQL Table | Primary Key | Indexes / Foreign Keys | Source Copybook |
 |--------------|------------------|-------------|------------------------|-----------------|
 | CUSTDATA.VSAM.KSDS | `customer` | `cust_id` | — | `legacy/cpy/CVCUS01Y.cpy` |
-| ACCTDATA.VSAM.KSDS | `account` | `acct_id` | FK `group_id`→`disclosure_group` | `legacy/cpy/CVACT01Y.cpy` |
+| ACCTDATA.VSAM.KSDS | `account` | `acct_id` | `group_id` = grouping attribute (**no FK** — `disclosure_group` PK is composite; see note) | `legacy/cpy/CVACT01Y.cpy` |
 | CARDDATA.VSAM.KSDS | `card` | `card_num` | index `acct_id` (=CARDDATA.VSAM.AIX); FK `acct_id` | `legacy/cpy/CVACT02Y.cpy` |
 | CARDXREF.VSAM.KSDS | `card_xref` | `xref_card_num` | index `acct_id` (=CARDXREF.VSAM.AIX); FK `cust_id`, `acct_id` | `legacy/cpy/CVACT03Y.cpy` |
-| TRANSACT.VSAM.KSDS | `transaction` | `tran_id` | index `orig_ts` (=TRANSACT.VSAM.AIX); FK `card_num`, `type_cd`, `cat_cd` | `legacy/cpy/CVTRA05Y.cpy` |
+| TRANSACT.VSAM.KSDS | `transaction` | `tran_id` | index `proc_ts` (=TRANSACT.VSAM.AIX, `AXRKP=304`); FK `card_num`, `type_cd`, composite (`type_cd`,`cat_cd`)→`transaction_category` | `legacy/cpy/CVTRA05Y.cpy` |
 | USRSEC.VSAM.KSDS | `user_security` | `sec_usr_id` | — | `legacy/cpy/CSUSR01Y.cpy` |
 | TRANTYPE (reference) | `transaction_type` | `type_cd` | — | `legacy/cpy/CVTRA03Y.cpy` |
 | TRANCATG (reference) | `transaction_category` | (`type_cd`,`cat_cd`) | — | `legacy/cpy/CVTRA04Y.cpy` |
@@ -248,10 +257,28 @@ categories, disclosure groups). Seed rows are derived from the delimited ASCII f
 
 The **three alternate indexes** become ordinary B-tree indexes that formalize the browse patterns
 they previously supported: **card → account** lookups (`card.acct_id`), **cross-reference → account**
-lookups (`card_xref.acct_id`), and **chronological transaction retrieval** (`transaction.orig_ts`).
+lookups (`card_xref.acct_id`), and **chronological transaction retrieval** (`transaction.proc_ts`).
+The chronological index is keyed on the **processing** timestamp, not the origination timestamp: the
+transaction record (`CVTRA05Y`) carries two 26-character timestamps — `TRAN-ORIG-TS` at offset 278 and
+`TRAN-PROC-TS` at offset 304 — and the VSAM catalog (`legacy/catlg/LISTCAT.txt`) shows
+`TRANSACT.VSAM.AIX` with `KEYLEN=26` at `AXRKP=304`, i.e. `TRAN-PROC-TS` → the `proc_ts` column. All
+"list transactions" queries therefore order by `proc_ts`.
+
 Because the relationships between customers, accounts, cards, cross-references, and transactions were
-previously enforced only in application logic, expressing them as **real foreign-key constraints** is
-a **documented improvement rather than a behavior change**; see [`./decision-log.md`](./decision-log.md).
+previously enforced only in application logic, expressing them as **real foreign-key constraints** —
+**where the parent key is genuinely unique** — is a **documented improvement rather than a behavior
+change**; see [`./decision-log.md`](./decision-log.md).
+
+**One relationship is deliberately *not* a foreign key.** `account.group_id` cannot reference
+`disclosure_group`, because `disclosure_group` has a **composite** primary key
+(`group_id`, `type_cd`, `cat_cd`) and a group id **alone is not unique**. Rather than invent a
+synthetic single-column parent the legacy never had, `account.group_id` is kept as a **plain grouping
+attribute**, and the applicable disclosure/interest row is resolved with a composite
+`(group_id, type_cd, cat_cd)` lookup at the application layer — exactly the access path the COBOL
+interest program (`CBACT04C`) used against the `DISCGRP` file. This source-faithful deviation is
+recorded in decision **D8** of [`./decision-log.md`](./decision-log.md). Consequently the
+`transaction → transaction_category` reference is likewise a **composite** foreign key
+(`type_cd`, `cat_cd`), matching `transaction_category`'s compound primary key.
 
 ### Concurrency: Read-Update-Rewrite
 
@@ -346,7 +373,7 @@ reproduce sequential processing with restartability. The orchestration semantics
 | `DailyTransactionValidateJob` | CBTRN01C | (daily validate) |
 | `DailyTransactionPostingJob` | CBTRN02C | `POSTTRAN.jcl` |
 | `InterestCalculationJob` | CBACT04C | `INTCALC.jcl` |
-| `StatementGenerationJob` | CBSTM03A.CBL + CBSTM03B.CBL | `CREASTMT.jcl` |
+| `StatementGenerationJob` | CBSTM03A.CBL + CBSTM03B.CBL | `CREASTMT.JCL` (uppercase; the only uppercase `.JCL`) |
 | `TransactionReportJob` | CBTRN03C | `TRANREPT.prc` |
 | `AccountMasterPrintJob` | CBACT01C | (master print) |
 | `CardMasterPrintJob` | CBACT02C | (master print) |
@@ -426,14 +453,20 @@ CICS `RESP`/`RESP2` values; the target maps these as follows:
 
 ### Cross-Cutting Concerns
 
-**Observability** (`observability/` + `config/ObservabilityConfig`). The application ships with
-structured **Logback** logs carrying **correlation IDs** injected by a `CorrelationIdFilter`,
-**distributed tracing** via **Micrometer + OpenTelemetry** exported over **OTLP** to Tempo,
-**Prometheus** metrics exposed through Spring Boot Actuator at `/actuator/prometheus`, and
-**health/readiness** checks at `/actuator/health` and `/actuator/health/readiness`. A Grafana
-dashboard template at [`./observability/grafana-dashboard.json`](./observability/grafana-dashboard.json)
-renders against the local `docker-compose` observability stack. See
-[`./onboarding/getting-started.md`](./onboarding/getting-started.md) for how to run it locally.
+**Observability** (`observability/` + `config/ObservabilityConfig`). The application is **designed to
+ship** with structured **Logback** logs carrying **correlation IDs** injected by a
+`CorrelationIdFilter`, **distributed tracing** via **Micrometer + OpenTelemetry** exported over
+**OTLP** to Tempo, **Prometheus** metrics exposed through Spring Boot Actuator at
+`/actuator/prometheus`, and **health/readiness** checks at `/actuator/health` and
+`/actuator/health/readiness`. A Grafana dashboard **template** at
+[`./observability/grafana-dashboard.json`](./observability/grafana-dashboard.json) is provided for the
+`docker-compose` observability stack. **Delivery status:** at this checkpoint the observability
+configuration and the dashboard template are **planned/authored deliverables** — they have **not yet
+been exercised against a running application**, because the application modules and the
+`docker-compose` stack land in a later checkpoint; local runtime verification (correlation-id
+propagation, traces, metrics, dashboard rendering) is a tracked next task. See
+[`./onboarding/getting-started.md`](./onboarding/getting-started.md) and
+[`./decision-log.md`](./decision-log.md) (decision **D23**) for the planned-vs-delivered detail.
 
 **Security** (`security/` + `config/SecurityConfig`). A `UserDetailsService` over the `user_security`
 table authenticates users and maps role **`A` → ADMIN** and **`U` → USER**. All credentials are
@@ -484,6 +517,15 @@ imports are not permitted.
 
 All configuration — including the datasource URL, username, and password — resolves from environment
 variables; **no credentials are hardcoded**. The commands below use env-var placeholders.
+
+> **Checkpoint status.** This section describes the **target** build-and-run flow. At the current
+> checkpoint the repository contains the build manifest (`pom.xml`) and this documentation; the
+> application modules (`src/**`), the `mvnw`/`mvnw.cmd` wrapper, `docker-compose.yml`, and the CI
+> workflow are delivered in subsequent checkpoints per the migration plan. Commands that require those
+> artifacts (`./mvnw …`, `docker-compose up`, `spring-boot:run`, `java -jar …`) become runnable once
+> they land; what is verifiable **today** (`mvn validate`, `mvn dependency:tree`, the OWASP scan) is
+> covered in [`./onboarding/getting-started.md`](./onboarding/getting-started.md), which labels each
+> command **available now** or **target**.
 
 Build, test, and verify (zero-warning compile under Java 25, unit + Testcontainers integration tests,
 JaCoCo ≥80% gate, and the OWASP dependency-check scan):

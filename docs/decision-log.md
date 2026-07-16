@@ -99,11 +99,20 @@ its Java target, while this log explains the reasoning behind the design those m
 - **Rationale:** The platform does not unilaterally deviate from an explicit user version pin. Honoring
   the 3.x request with its final, most-patched release (3.5.16) delivers the newest bug/security fixes
   available *within the requested line* and keeps the dependency set internally consistent.
-- **Risk & mitigation:** The open-source support lifecycle of the 3.5 line ends relatively soon, after
-  which security patches require a commercial arrangement or an upgrade. *Mitigation:* this risk is
-  recorded here with **Spring Boot 4.x captured as the forward-looking upgrade path**; the BOM-managed
-  dependency strategy (see [D20](#d20--code-style-constraints-constructor-injection-jakarta-no-wildcards-zero-warning))
-  keeps transitive versions aligned so a future major upgrade is a contained, reviewable change.
+- **Risk & mitigation:** The open-source support lifecycle of the 3.5 line **has already ended**.
+  Spring Boot **3.5.16 was released 2026-06-25** (the final open-source 3.5.x patch), and **free
+  open-source support for the 3.5 line ended 2026-07-16**. Consequently this pin currently receives
+  **no further open-source security patches**: continued patching requires either a **commercial
+  support arrangement (Spring/VMware Tanzu Enterprise/Broadcom extended support)** or an **upgrade off
+  the 3.5 line before any production deployment**. *Mitigation:* the pin is retained to honor the
+  explicit user "Spring Boot 3.x (latest stable)" request at the most-patched 3.5 release, but this
+  entry records the ended-support status as a **must-resolve-before-production** item, with
+  **Spring Boot 4.x captured as the forward-looking upgrade path**; the BOM-managed dependency strategy
+  (see [D20](#d20--code-style-constraints-constructor-injection-jakarta-no-wildcards-zero-warning))
+  keeps transitive versions aligned so that major upgrade is a contained, reviewable change. Until then,
+  the [OWASP dependency-check gate (D5)](#d5--owasp-dependency-check-1222-with-failbuildoncvss) and the
+  explicit `<dependencyManagement>` CVE overrides recorded in that entry provide the interim
+  compensating control for known transitive vulnerabilities.
 
 ### D3 — Maven 3.9+ over Gradle 8.x
 
@@ -160,6 +169,25 @@ its Java target, while this log explains the reasoning behind the design those m
   network access to vulnerability feeds can slow or destabilize CI. *Mitigation:* the plugin version is
   pinned; the CVSS threshold is explicit and reviewable; and the gate runs in CI where a fresh advisory
   is surfaced as an actionable failure with a clear upgrade target.
+- **Transitive-CVE overrides (applied in `pom.xml`):** because the frozen Spring Boot 3.5.16 BOM (see
+  [D2](#d2--spring-boot-3516-honoring-the-3x-pin)) pulls transitive dependencies that carry known
+  critical/high advisories, an explicit `<dependencyManagement>` block and a Tomcat version property
+  pin the *managed* versions upward to the patched releases **without moving off the 3.x line**. These
+  are deliberate, reviewable overrides, each tied to a specific advisory:
+  - **`org.apache.commons:commons-compress` → 1.27.1** — remediates **CVE-2024-25710** (infinite loop /
+    DoS) and **CVE-2024-26308** (memory exhaustion), both fixed in 1.26.0; the vulnerable 1.24.0 was
+    reaching the build only through **test scope**, which is why the scan configuration change below is
+    required for it to be seen.
+  - **`org.apache.commons:commons-lang3` → 3.20.0** — remediates **CVE-2025-48924** (uncontrolled
+    recursion / DoS in `ClassUtils`), fixed in 3.18.0.
+  - **`tomcat.version` property → 10.1.57** — remediates **CVE-2026-55956** (and related advisories),
+    fixed in the 10.1.56+ line; the Spring Boot BOM honors the `tomcat.version` property so the embedded
+    Tomcat is upgraded while Spring Boot itself stays pinned at 3.5.16.
+  - **`<skipTestScope>false</skipTestScope>`** (plus `skipProvidedScope`/`skipRuntimeScope` set false)
+    on the dependency-check plugin — the analyzer skips test-scope artifacts by default, which had
+    hidden the vulnerable test-scope `commons-compress`; disabling the skip ensures **all** resolved
+    scopes are scanned. Resolution of the safe versions is proven by `mvn dependency:tree`
+    (`tomcat-embed-core:10.1.57`, `commons-compress:1.27.1`, `commons-lang3:3.20.0`).
 
 ### D6 — Externalized credentials, no hardcoded secrets
 
@@ -214,21 +242,48 @@ its Java target, while this log explains the reasoning behind the design those m
 - **Status:** Accepted
 - **Type:** **Intentional improvement (deviation from literal COBOL)**
 - **AAP references:** §0.2.3, §0.4.3, §0.7.1 (H5)
-- **Decision:** Enforce the previously application-only relationships as **real PostgreSQL foreign-key
-  constraints**: `account.group_id → disclosure_group`; `card.acct_id → account`;
-  `card_xref.cust_id → customer` and `card_xref.acct_id → account`; and `transaction.card_num → card`,
-  `transaction.type_cd → transaction_type`, `transaction.cat_cd → transaction_category`.
-- **Alternatives:** Keep referential integrity enforced **only in application code**, exactly as the
-  COBOL programs did against VSAM (the literal behavior).
-- **Rationale:** In VSAM these relationships existed but were enforced solely by program logic; the
-  relational target can enforce them **declaratively** at the database. This strengthens data integrity
-  without altering any observable business behavior, and it makes the data model self-documenting. This
-  is explicitly an **intentional improvement, not a behavioral change.**
-- **Risk & mitigation:** A foreign key could reject an insert or delete that the looser COBOL code would
-  have tolerated, which — if unmanaged — could look like a regression. *Mitigation:* seed and load order
-  respects dependency order (parents before children); the change is labelled here as a deliberate
-  integrity improvement so it is **never mistaken for a regression**; and cross-referenced with
+- **Decision:** Enforce, as **real PostgreSQL foreign-key constraints**, exactly those
+  previously application-only relationships whose parent key is genuinely **unique** in the source
+  layouts:
+  - `card.acct_id → account(acct_id)`
+  - `card_xref.cust_id → customer(cust_id)` and `card_xref.acct_id → account(acct_id)`
+  - `transaction.card_num → card(card_num)`
+  - `transaction.type_cd → transaction_type(type_cd)`
+  - **composite** `(transaction.type_cd, transaction.cat_cd) → transaction_category(type_cd, cat_cd)`
+    — `transaction_category` has a **compound** primary key (`CVTRA04Y`: `TRAN-TYPE-CD` X(02) +
+    `TRAN-CAT-CD` 9(04)), so the child reference must also be the full pair, not `cat_cd` alone.
+
+  **Explicitly NOT enforced as a foreign key:** `account.group_id → disclosure_group`. This relationship
+  is **structurally impossible** to express as a single-column foreign key and is therefore modeled
+  differently (see the deviation note below).
+- **Alternatives:** (a) Keep *all* referential integrity enforced **only in application code**, exactly
+  as the COBOL programs did against VSAM (the literal behavior). (b) Force a
+  `account.group_id → disclosure_group` FK anyway by **inventing a synthetic single-column parent table**
+  of distinct group ids that the legacy never had. Alternative (b) was rejected: fabricating a parent
+  entity absent from the source would be an unfaithful structural change, not an integrity improvement.
+- **Rationale:** In VSAM these relationships existed but were enforced solely by program logic; where the
+  parent key is truly unique, the relational target can enforce them **declaratively** at the database,
+  strengthening integrity without altering any observable behavior and making the model
+  self-documenting. This is explicitly an **intentional improvement, not a behavioral change.**
+- **Deviation — `account.group_id` is a grouping attribute, not a foreign key (source-faithful):** the
+  disclosure-group record (`CVTRA02Y`, 50-byte) has a **composite** primary key —
+  `DIS-ACCT-GROUP-ID` X(10) + `DIS-TRAN-TYPE-CD` X(02) + `DIS-TRAN-CAT-CD` 9(04). An account
+  (`CVACT01Y`, 300-byte) carries only `ACCT-GROUP-ID` X(10). Because a group id **alone is not unique**
+  in `disclosure_group` (many rows share one group id, one per type/category), it **cannot** be the
+  target of a foreign key. The faithful model therefore keeps `account.group_id` as a **plain grouping
+  attribute** and resolves the applicable disclosure/interest row with a **composite
+  `(group_id, type_cd, cat_cd)` lookup at the application layer** — precisely the access path the COBOL
+  interest program (`CBACT04C`) used against the `DISCGRP` file. This deviation is recorded so it is
+  never mistaken for a missing constraint; it is the correct, source-faithful representation.
+- **Risk & mitigation:** (1) An enforced foreign key could reject an insert or delete that the looser
+  COBOL code would have tolerated, which — if unmanaged — could look like a regression. *Mitigation:*
+  seed and load order respects dependency order (parents before children); the change is labelled here
+  as a deliberate integrity improvement; and it is cross-referenced with
   [D11](#d11--flyway-for-schema-and-reference-data-migrations) where the constraints are created.
+  (2) Modeling `group_id` without a foreign key could be misread as an omission. *Mitigation:* the
+  deviation note above makes the composite-key reasoning explicit, and the composite disclosure lookup is
+  captured in the [traceability matrix](./traceability-matrix.md) so the relationship remains visible
+  and testable even though it is not a database constraint.
 
 ### D9 — `BigDecimal` scale-2 `Money` value object
 
@@ -259,15 +314,27 @@ its Java target, while this log explains the reasoning behind the design those m
 - **Status:** Accepted
 - **Type:** Behavior preservation
 - **AAP references:** §0.4.3, §0.7.1 (H5)
-- **Decision:** Formalize the three VSAM **alternate indexes as ordinary B-tree indexes** (card→account,
-  cross-reference→account, transaction→timestamp) and re-express **VSAM browse** (`STARTBR` /
-  `READNEXT` / `READPREV` / `ENDBR`) as **sorted, paged repository queries** ordered by key. The
+- **Decision:** Formalize the three VSAM **alternate indexes as ordinary B-tree indexes**
+  — card→account, cross-reference→account, and **transaction→processing-timestamp** — and re-express
+  **VSAM browse** (`STARTBR` / `READNEXT` / `READPREV` / `ENDBR`) as **sorted, paged repository queries**
+  ordered by key. The chronological transaction browse (alternate index `TRANSACT.VSAM.AIX`) is ordered
+  by the **processing timestamp** column `proc_ts` (see the disambiguation note below). The
   transaction-ID generator's reverse browse — `MOVE HIGH-VALUES`, `STARTBR`, `READPREV`, `ENDBR`, then
   `ADD 1` in `ADD-TRANSACTION` (`legacy/cbl/COTRN02C.cbl`) — becomes a **repository max-key lookup plus
   one**.
 - **Alternatives:** Emulate a stateful VSAM cursor across requests to mimic browse position literally;
   or generate transaction identifiers with a database sequence (which would diverge from the observed
-  max-key-plus-one values).
+  max-key-plus-one values); or order the chronological browse by the **origination** timestamp
+  (`orig_ts`) — rejected because it is not the field the alternate index is keyed on (see below).
+- **Disambiguation — the transaction alternate index is keyed on `proc_ts`, not `orig_ts`
+  (Explainability):** the transaction record (`CVTRA05Y`) defines **two** 26-character timestamps —
+  `TRAN-ORIG-TS` (origination) at offset **278** and `TRAN-PROC-TS` (processing) at offset **304**. The
+  VSAM catalog listing (`legacy/catlg/LISTCAT.txt`) shows `TRANSACT.VSAM.AIX` with `KEYLEN=26` at
+  `AXRKP=304`, i.e. the alternate key begins at offset 304 — **`TRAN-PROC-TS`**. The chronological
+  browse therefore orders by the **processing** timestamp, which maps to the `proc_ts` column; ordering
+  by `orig_ts` would not reproduce the legacy browse order. This choice is applied consistently across
+  the [architecture overview](./architecture.md), the [traceability matrix](./traceability-matrix.md),
+  and the repository query definitions.
 - **Rationale:** Forward browse maps naturally to `Pageable` queries ordered by the unique key; the
   alternate-index access paths map to database indexes that preserve the same retrieval order; and the
   reverse-browse-from-`HIGH-VALUES` idiom is exactly a "largest existing key, then increment" operation.
@@ -285,18 +352,30 @@ its Java target, while this log explains the reasoning behind the design those m
 - **AAP references:** §0.4.3, §0.5.5
 - **Decision:** Create and evolve the database with **Flyway** versioned migrations —
   `V1__schema.sql` (ten tables, three indexes, foreign-key constraints) and `V2__reference_data.sql`
-  (reference tables) — seeded from the delimited ASCII data under `legacy/data/ASCII/**`.
+  (reference tables) — seeded from the **fixed-width, headerless ASCII data** under
+  `legacy/data/ASCII/**`, parsed by **fixed column positions** per the governing copybook.
 - **Alternatives:** Hibernate `ddl-auto` schema generation from entities; Liquibase; or hand-run SQL
   scripts applied outside the application lifecycle.
 - **Rationale:** Versioned, checksum-validated migrations give a deterministic, auditable schema history
   that runs identically in every environment, which is essential for reproducing the exact table shapes
   the copybooks describe. Entity-driven `ddl-auto` is unsuitable for a system where the schema is a
   preserved external contract rather than a by-product of the code.
+- **Seed-format note — fixed-width, not delimited (Explainability):** the files under
+  `legacy/data/ASCII/**` are **fixed-width and headerless**; they are **not** CSV/delimited and contain
+  no header row. Each record's byte width equals the record length of its governing copybook, so the
+  loader parses by **fixed column offsets** and preserves the copybook padding conventions
+  (space-padded alphanumeric, zero-padded numeric). The per-file widths and row counts are:
+  `custdata` 500 (50), `acctdata` 300 (50), `carddata` 150 (50), `cardxref` 36-visible/50-with-filler
+  (50), `dailytran` 350 (300), `discgrp` 50 (51), `tcatbal` 50 (50), `trancatg` 60 (18), `trantype`
+  60 (7). There is **no `usrsec.txt`** in the ASCII set — the `user_security` table seeds from the
+  EBCDIC `USRSEC` dataset (10 rows) instead. Exact widths, counts, and content hashes for every artifact
+  are catalogued in the [traceability matrix](./traceability-matrix.md); treating these files as
+  delimited would silently misalign every field.
 - **Risk & mitigation:** An edited-after-the-fact migration would fail Flyway's checksum validation, and
   seed order must respect the new foreign keys from [D8](#d8--real-foreign-key-constraints).
   *Mitigation:* migrations are treated as immutable once merged (fixes go in new versions); seed inserts
-  are ordered parents-before-children; and the reference-data load counts are asserted by integration
-  tests.
+  are ordered parents-before-children; the fixed-width parse is asserted against copybook offsets; and
+  the reference-data load counts are asserted by integration tests.
 
 
 ---
@@ -332,16 +411,26 @@ its Java target, while this log explains the reasoning behind the design those m
 - **AAP references:** §0.1.3, §0.3.3, §0.7.1 (H2)
 - **Decision:** Re-express each of the 17 BMS maps and their symbolic copybooks as a **request/response
   DTO pair** that preserves every field's **name, maximum length, PIC-derived type, and edit rules**, and
-  turn **PF-key semantics** (PF3 = back, PF7/PF8 = page, Enter = submit) into **explicit action fields /
-  enums**. No terminal emulator and no pixel-level 3270 rendering are produced.
+  turn each program's **PF-key (AID) semantics** into **explicit action fields / enums**. No terminal
+  emulator and no pixel-level 3270 rendering are produced.
 - **Alternatives:** Build a 3270 terminal emulator or a faithful screen renderer; or design a brand-new
   web UI for the screens.
 - **Rationale:** No design system was supplied and the migration forbids feature expansion, so the
   observable contract to preserve is the **field-level data contract and key semantics**, not a rendered
   screen. DTOs capture that contract precisely and keep it reviewable field-by-field. Rendering a new UI
   or an emulator would be feature expansion.
-- **Risk & mitigation:** Dropping a field-level edit rule or a PF-key path would be a behavior regression.
-  *Mitigation:* every field and every PF-key path appears as a one-to-one row in the traceability matrix,
+- **AID coverage note — the action set is per-program, not a fixed three (Explainability):** PF3 = back,
+  PF7/PF8 = page, and Enter = submit are the *common* actions, but they are **not** the full set. The
+  action-key handling is **program-specific** and includes **PF4, PF5, and PF12** where the source uses
+  them — e.g. `COUSR02C`/`COUSR03C` handle `{ENTER, PF3, PF4, PF5, PF12}`, `COTRN01C`/`COTRN02C` handle
+  `{ENTER, PF3, PF4, PF5}`, `COBIL00C`/`COUSR01C` handle `{ENTER, PF3, PF4}`, and the list/paged screens
+  (`COTRN00C`, `COUSR00C`) add `{PF7, PF8}`. A further five programs (`COACTUPC`, `COACTVWC`,
+  `COCRDLIC`, `COCRDSLC`, `COCRDUPC`) contain **no direct `EIBAID` branch** and drive navigation via
+  `ENTER` + shared logic; these are classified as "ENTER + navigation per source; no direct EIBAID
+  branch". The complete per-program AID set is enumerated one row at a time in the
+  [traceability matrix](./traceability-matrix.md) so no action path is silently dropped.
+- **Risk & mitigation:** Dropping a field-level edit rule or an AID path would be a behavior regression.
+  *Mitigation:* every field and every AID path appears as a one-to-one row in the traceability matrix,
   and Bean Validation rules on the DTOs reproduce the COBOL edit paragraphs.
 
 ### D14 — Chunk-oriented Spring Batch; scheduling moves to CI/CD
@@ -351,17 +440,36 @@ its Java target, while this log explains the reasoning behind the design those m
 - **AAP references:** §0.4.4, §0.7.2 (M4)
 - **Decision:** Re-express each JCL-triggered batch program as a **chunk-oriented Spring Batch**
   `Job` composed of `ItemReader`/`ItemProcessor`/`ItemWriter` `Step`s. Job-to-job DD dependencies become
-  **step/flow ordering**; `SORT`/`MERGE` utilities become **Java `Comparator`s or `ORDER BY` queries**;
-  GDG-based backups become a **scheduled database-backup step**; and **job scheduling moves to the CI/CD
-  workflow** (`.github/workflows/ci.yml`) rather than an in-application scheduler.
+  **step/flow ordering**; **inline `SORT`/`MERGE`** utility steps become **Java `Comparator`s or
+  `ORDER BY` queries**; **IDCAMS `REPRO`** copy/unload/backup steps become **file/table copy or backup
+  steps**; GDG-based backups become a **scheduled database-backup step**; and **job scheduling moves to
+  the CI/CD workflow** (`.github/workflows/ci.yml`) rather than an in-application scheduler.
 - **Alternatives:** An in-application scheduler (for example `@Scheduled` or Quartz); a single monolithic
   batch runner; or a standalone external workflow orchestrator.
 - **Rationale:** Chunk-oriented steps reproduce the sequential, restartable nature of the COBOL batch
   programs while giving explicit control over commit intervals and return codes. Moving the *trigger* to
   CI/CD matches the JCL scheduler's role without embedding scheduling concerns in the application.
+- **JCL-semantics note — utilities, gating, and non-1:1 mappings (Explainability):** the JCL corpus is
+  **not** a uniform set of one-program-per-job triggers, and the migration captures the following at
+  **step level** in the [traceability matrix](./traceability-matrix.md) rather than collapsing them:
+  - **Utility vs. program steps.** `REPROCT.ctl` is an **IDCAMS `REPRO`** control member
+    (`REPRO INFILE(...) OUTFILE(...)`, i.e. copy/unload/backup) — **not** a SORT control member; inline
+    `PGM=SORT` card sequences (e.g. within `COMBTRAN`) are traced **separately** as sort steps.
+    Allocation/utility jobs (`IDCAMS DEFINE`, `IEBGENER`, `IEFBR14`) are classified as
+    schema/allocation equivalents, not business logic.
+  - **Return-code gating.** `COND=`/`IF MAXCC`/`MAXCC` conditions between steps map to Spring Batch
+    **flow transitions on exit status** (return codes 0/4/8); these are recorded per step, not inferred.
+  - **GDG snapshots.** Generation-data-group backup rotation (e.g. `CLOSEFIL → TRANBKP → OPENFIL`) maps
+    to a scheduled backup step; the snapshot semantics are documented, not silently dropped.
+  - **Non-executable / anomalous members.** Some members are historical or contain source-level
+    anomalies (e.g. `CBADMCDJ.jcl` is a stale alternate-CSD loader classified **reference-only**;
+    `OPENFIL.jcl` carries a misspelled `//OEPNFIL` job card; `DEFCUST.jcl` and `TRANREPT.jcl` contain
+    duplicate step names). These are **classified and left byte-unchanged** in `legacy/**`; the matrix
+    records the authoritative behavior chosen for each without editing the source.
 - **Risk & mitigation:** Reordering steps, or a different chunk-commit boundary, could change outputs or
   restart behavior. *Mitigation:* step and flow ordering mirrors the JCL DD dependencies; comparators
-  preserve the exact sort keys; and golden-file tests compare batch outputs row-for-row (see
+  preserve the exact sort keys; return-code gating is modeled explicitly; and golden-file tests compare
+  batch outputs row-for-row (see
   [D21](#d21--testing-strategy-testcontainers-jacoco-80-golden-file-parity)).
 
 ### D15 — Typed exception hierarchy for FILE STATUS / CICS RESP
@@ -393,8 +501,21 @@ its Java target, while this log explains the reasoning behind the design those m
 - **AAP references:** §0.7.2 (M2)
 - **Decision:** Provide a **`FixedWidthCodec`** used by Spring Batch `FlatFileItemReader`/`Writer`
   components that preserves the **exact column positions and lengths** of the external fixed-width record
-  contracts — the daily-transaction input (`DALYTRAN`), the reject output (`DALYREJS`, a 350-byte record),
-  and the statement/report outputs.
+  contracts — the daily-transaction input (`DALYTRAN`, 350-byte records), the reject output
+  (`DALYREJS`, a **430-byte record**), and the statement/report outputs.
+- **`DALYREJS` layout — 430 bytes, not 350 (contract detail):** the reject record written by the posting
+  program (`legacy/cbl/CBTRN02C.cbl`) is **430 bytes = a 350-byte transaction image + an 80-byte
+  validation trailer** (`FD-REJECT-RECORD` is `PIC X(350)` holding the `CVTRA05Y` transaction record,
+  followed by `FD-VALIDATION-TRAILER PIC X(80)` carrying the reject reason). The `POSTTRAN.jcl` job's
+  `DALYREJS` DD confirms `RECFM=F,LRECL=430`. Sizing the reject record at 350 bytes (the transaction
+  image alone) would drop the 80-byte trailer and break the external file contract, so the codec and its
+  golden-file fixtures use **430**.
+- **Reject-write semantics (preserved):** rejected records are written to `DALYREJS` **in read order**,
+  with a **running reject count** maintained, and the posting job returns **`RC=4`** when any reject
+  occurs (a clean run returns `RC=0`). The four validation reject reasons and their fixed evaluation
+  order — **100** cross-reference not found → **101** account not found → **102** over credit limit →
+  **103** transaction after account expiration — are preserved exactly; see the reject-code handling in
+  the [traceability matrix](./traceability-matrix.md).
 - **Alternatives:** Emit CSV/JSON for the external file exchanges; or reproduce the legacy on-disk EBCDIC
   encoding with binary `COMP-3` fields.
 - **Rationale:** The real external contract is the **fixed-width record layout**, so that layout is what
@@ -402,9 +523,11 @@ its Java target, while this log explains the reasoning behind the design those m
   target preserves the **documented external layout on exchange** rather than the legacy on-disk
   EBCDIC/`COMP-3` encoding — the observable file contract is identical while the storage representation
   modernizes.
-- **Risk & mitigation:** A single-column offset or length error would corrupt every downstream consumer
-  of these files. *Mitigation:* column positions and lengths are declared once in the codec and asserted
-  by golden-file tests that compare produced records against fixtures derived from the legacy layouts.
+- **Risk & mitigation:** A single-column offset or length error (or a wrong overall record length such
+  as 350 vs 430) would corrupt every downstream consumer of these files. *Mitigation:* column positions
+  and total lengths are declared once in the codec and asserted by golden-file tests that compare
+  produced records against fixtures derived from the legacy layouts, including the full 430-byte reject
+  record and the `RC=4`-on-reject behavior.
 
 ### D17 — LE services to JVM/`java.time`; `CALL` to injected beans
 
@@ -565,10 +688,40 @@ its Java target, while this log explains the reasoning behind the design those m
 - **AAP references:** §0.8.2, §0.8.4, §0.9.5
 - **Decision:** Ship a framework-native observability stack: **Logback** structured logging carrying a
   **correlation ID** that propagates across service and batch boundaries; **Micrometer + OpenTelemetry**
-  distributed tracing exported over **OTLP** (viewable locally in Tempo); a **Prometheus** metrics
-  endpoint and **health/readiness** checks via **Spring Boot Actuator**; and a **Grafana dashboard**
-  template (`docs/observability/grafana-dashboard.json`). All of it is verified to work in the local
-  `docker-compose` environment.
+  distributed tracing exported over **OTLP** (intended to be viewed locally in Tempo); a **Prometheus**
+  metrics endpoint and **health/readiness** checks via **Spring Boot Actuator**; and a **Grafana
+  dashboard** template (`docs/observability/grafana-dashboard.json`). The stack is **designed and
+  configured** to run in a local `docker-compose` environment (PostgreSQL + Prometheus + Tempo +
+  Grafana).
+- **Delivery status at this checkpoint (Explainability):** the observability configuration
+  (dependencies in `pom.xml`, the planned `logback-spring.xml`, Actuator/Micrometer/OTLP settings in
+  `application.yml`) and the **Grafana dashboard template** are **planned/authored deliverables**. They
+  have **not yet been exercised against a running application**, because the application modules and the
+  `docker-compose` stack land in a later checkpoint. Wording throughout the documentation is therefore
+  **"planned/designed"**, not "verified locally"; the move to *verified* is a tracked next task (stand up
+  the stack, confirm correlation-id propagation, traces, metrics, and dashboard rendering) recorded in
+  [docs/onboarding/extending.md](./onboarding/extending.md).
+- **Per-job batch observability contract (planned):** each Spring Batch job (see
+  [D14](#d14--chunk-oriented-spring-batch-scheduling-moves-to-cicd) and the
+  [traceability matrix](./traceability-matrix.md)) emits a consistent set of signals — job/step
+  `BatchStatus` + `ExitStatus`, `spring_batch_job_seconds` timers, `spring_batch_item_read/write/skip`
+  counters, and a correlation id on every log line — and maps its outcome to a batch **return code**
+  (0 = clean, 4 = completed-with-rejects/warnings, 8 = failed):
+
+| # | Spring Batch Job | Source program(s) | Key metrics / status | Failure & return-code contract |
+|---|------------------|-------------------|----------------------|--------------------------------|
+| 1 | `DailyTransactionValidateJob` | CBTRN01C | read/validate counts; job timer | validation errors → RC=4; hard I/O failure → RC=8 |
+| 2 | `DailyTransactionPostingJob` | CBTRN02C | read/write/reject counters; running reject count | any reject → **RC=4**; unrecoverable error → RC=8 |
+| 3 | `InterestCalculationJob` | CBACT04C | accounts processed; interest total | arithmetic/lookup failure → RC=8 |
+| 4 | `StatementGenerationJob` | CBSTM03A + CBSTM03B | statements written; file-service call count | file-service failure → RC=8 |
+| 5 | `TransactionReportJob` | CBTRN03C | report rows; page count | source-read failure → RC=8 |
+| 6 | `AccountMasterPrintJob` | CBACT01C | records read/printed | read failure → RC=8 |
+| 7 | `CardMasterPrintJob` | CBACT02C | records read/printed | read failure → RC=8 |
+| 8 | `XrefPrintJob` | CBACT03C | records read/printed | read failure → RC=8 |
+| 9 | `CustomerMasterPrintJob` | CBCUS01C | records read/printed | read failure → RC=8 |
+| 10 | `TransactionCombineJob` | COMBTRAN (inline SORT) | items sorted/merged; sort timer | sort/merge failure → RC=8 |
+| 11 | `TransactionBackupJob` | TRANBKP (IDCAMS REPRO) | rows copied; backup timer | backup/copy failure → RC=8 |
+
 - **Alternatives:** Ship no observability (closest to the legacy system, which had none); rely on plain
   unstructured logging only; or defer observability to a later, separate initiative.
 - **Rationale:** CardDemo has no prior observability stack, so this is delivered as **new,
@@ -578,8 +731,9 @@ its Java target, while this log explains the reasoning behind the design those m
 - **Risk & mitigation:** Tracing/metrics export can add overhead or, if misconfigured, leak sensitive
   data into logs. *Mitigation:* the tracing exporter endpoint is supplied via environment variable and is
   optional for local runs; the CVV is never logged and passwords are never logged (see
-  [D22](#d22--password-hashing-and-cvv-hardening)); and the full stack is validated locally against the
-  bundled `docker-compose` observability services.
+  [D22](#d22--password-hashing-and-cvv-hardening)); and **local runtime verification** of the full stack
+  against the bundled `docker-compose` observability services is a **planned validation step** that
+  accompanies the application modules (it is not yet claimed as done).
 
 ### D24 — MQ / RACF / 3270 emulation and AWS M2 runtime out of scope
 
