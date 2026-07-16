@@ -69,6 +69,49 @@ Each VSAM KSDS becomes a PostgreSQL 16 table; the unique key becomes the primary
 
 **Reference-only copybooks (no separate entity):** `CVTRA07Y.cpy`, `CVCRD01Y.cpy`, and `CUSTREC*` are used to reconcile field semantics only. **Alternate indexes formalized:** `CARDDATA.VSAM.AIX`, `CARDXREF.VSAM.AIX`, and `TRANSACT.VSAM.AIX` become ordinary B-tree indexes preserving the card-to-account, xref-to-account, and chronological-transaction browse patterns.
 
+### 2.1 Complete Copybook Crosswalk (all 28 copybooks)
+
+The table in Section 2 above covers only the data-tier copybooks that produce JPA entities. This subsection extends that to a **complete crosswalk of every one of the 28 ordinary copybooks** under `legacy/cpy/**` (`*.cpy` and `*.CPY`), so that no data/session/message/date/menu/UI/PF-key/lookup/validation authority is omitted. Each copybook is classified and mapped to its target Java artifact, and copybooks that are **genuinely unused** or **reference-only** (no separate target) are called out explicitly.
+
+Notes on reading this table:
+
+- **Classification legend:** *Entity* = produces a JPA entity/table (see Section 2); *Reference-only* = record/work layout reused to reconcile field semantics, no separate target; *Session* = COMMAREA/flow-and-navigation context; *Date* = date helper folded into `common/util/DateUtils` / `service/DateValidationService`; *Menu* = menu-option table folded into `service/MenuService`; *Message* = shared message text constants; *UI title* = shared screen-title constants surfaced through response DTO headers; *UI attribute* = field edit-state / attribute logic folded into `service/rule` and DTO field state; *PF-key* = AID-to-PF-key action mapping folded into PF-key action enums/handlers; *Lookup* = static reference data backing edit rules; *Statement/report layout* = fixed-width external-file record; *Unused* = not referenced by any program and not migrated.
+- The **Target** column names the **planned** Java artifact per AAP Section 0.5 (the copybooks themselves are retained unchanged under `legacy/cpy/**`); it does not assert that the target already exists at this checkpoint.
+- **Used by** counts refer to programs under `legacy/cbl/**` that `COPY` the member (some via the quoted `COPY 'NAME'` form).
+
+| # | Copybook (`legacy/cpy/**`) | 01-level / purpose | Classification | Used by (legacy programs) | Target Java artifact (planned, AAP §0.5) |
+|---:|----------------------------|--------------------|----------------|---------------------------|------------------------------------------|
+| 1 | `CVCUS01Y.cpy` | `CUSTOMER-RECORD` (500-byte customer layout) | Entity | 6 (COACTVWC, COACTUPC, CBCUS01C, COCRDUPC, CBTRN01C, COCRDSLC) | `domain/Customer.java` -> `customer` |
+| 2 | `CVACT01Y.cpy` | `ACCOUNT-RECORD` (300-byte account layout) | Entity | 11 (account consumers, online + batch) | `domain/Account.java` -> `account` |
+| 3 | `CVACT02Y.cpy` | `CARD-RECORD` (150-byte card layout) | Entity | 6 (card programs + CBACT02C) | `domain/Card.java` -> `card` |
+| 4 | `CVACT03Y.cpy` | `CARD-XREF-RECORD` (50-byte cross-reference) | Entity | 12 (xref consumers, online + batch) | `domain/CardXref.java` -> `card_xref` |
+| 5 | `CVTRA05Y.cpy` | `TRAN-RECORD` (350-byte transaction layout) | Entity | 9 (transaction consumers) | `domain/Transaction.java` -> `transaction` |
+| 6 | `CVTRA06Y.cpy` | `DALYTRAN-RECORD` (350-byte posting staging layout) | Entity | 2 (CBTRN01C, CBTRN02C) | `domain/DailyTransaction.java` -> `daily_transaction` |
+| 7 | `CSUSR01Y.cpy` | `SEC-USER-DATA` (80-byte user/security, role A/U) | Entity | 12 (online consumers) | `domain/UserSecurity.java` -> `user_security` |
+| 8 | `CVTRA03Y.cpy` | `TRAN-TYPE-RECORD` (transaction-type reference) | Entity | 1 (CBTRN03C) | `domain/TransactionType.java` -> `transaction_type` |
+| 9 | `CVTRA04Y.cpy` | `TRAN-CAT-RECORD` (compound-key category reference) | Entity | 1 (CBTRN03C) | `domain/TransactionCategory.java` -> `transaction_category` |
+| 10 | `CVTRA02Y.cpy` | `DIS-GROUP-RECORD` (disclosure group; `DIS-INT-RATE`) | Entity | 1 (CBACT04C) | `domain/DisclosureGroup.java` -> `disclosure_group` |
+| 11 | `CVTRA01Y.cpy` | `TRAN-CAT-BAL-RECORD` (category balance) | Entity | 2 (CBACT04C, CBTRN02C) | `domain/TransactionCategoryBalance.java` -> `tran_cat_balance` |
+| 12 | `CVTRA07Y.cpy` | `REPORT-NAME-HEADER` (report header/name work layout) | Reference-only (no entity) | 1 (CBTRN03C) | none -- report-output reference for `batch/TransactionReportJob` |
+| 13 | `CVCRD01Y.cpy` | `CC-WORK-AREAS` (card-screen work areas) | Reference-only (no entity) | 5 (COACTVWC, COACTUPC, COCRDLIC, COCRDUPC, COCRDSLC) | none -- reconciles field semantics for `domain/Card` + card DTOs |
+| 14 | `CUSTREC.cpy` | `CUSTOMER-RECORD` (alternate customer layout) | Reference-only (no entity) | 1 (CBSTM03A) | none -- reconciles field semantics for `domain/Customer`; statement input |
+| 15 | `COCOM01Y.cpy` | `CARDDEMO-COMMAREA` (session/navigation + role 88-levels A=ADMIN/U=USER) | Session | 17 (all online programs) | server-side flow/session context; `security/*` + `config/SecurityConfig` role mapping |
+| 16 | `CSDAT01Y.cpy` | `WS-DATE-TIME` (date/time work fields) | Date | 17 (all online programs) | `common/util/DateUtils` |
+| 17 | `CSUTLDPY.cpy` | date-validation PROCEDURE copybook (called for date edits) | Date | 1 (COACTUPC) | `common/util/DateUtils` + `service/DateValidationService` |
+| 18 | `CSUTLDWY.cpy` | date-validation WORKING-STORAGE copybook | Date | 1 (COACTUPC) | `common/util/DateUtils` |
+| 19 | `COADM02Y.cpy` | `CARDDEMO-ADMIN-MENU-OPTIONS` (admin menu option table) | Menu | 1 (COADM01C) | `service/MenuService` (admin-menu routing) |
+| 20 | `COMEN02Y.cpy` | `CARDDEMO-MAIN-MENU-OPTIONS` (main menu option table) | Menu | 1 (COMEN01C) | `service/MenuService` (main-menu routing) |
+| 21 | `COTTL01Y.cpy` | `CCDA-SCREEN-TITLE` (screen title/header constants) | UI title | 17 (all online programs) | shared title constants surfaced in response DTO headers |
+| 22 | `CSMSG01Y.cpy` | `CCDA-COMMON-MESSAGES` (thank-you / invalid-key text) | Message | 17 (all online programs) | shared message constants (`common/`), surfaced via DTO/error responses |
+| 23 | `CSMSG02Y.cpy` | `ABEND-DATA` (CABENDD abend work areas) | Message | 5 (COACTVWC, COACTUPC, COCRDLIC, COCRDUPC, COCRDSLC) | `exception/*` abend context -> `GlobalExceptionHandler` / batch failure |
+| 24 | `CSSETATY.cpy` | field-attribute set logic (error highlight; `DFHRED` / `*`) | UI attribute | 1 (COACTUPC; `COPY CSSETATY ... REPLACING`) | field edit-state / attribute handling in `service/rule` + DTO field state |
+| 25 | `CSSTRPFY.cpy` | `YYYY-STORE-PFKEY` (EIBAID -> PF-key mapping into COMMAREA) | PF-key | 5 (COACTVWC, COACTUPC, COCRDLIC, COCRDUPC, COCRDSLC; quoted `COPY 'CSSTRPFY'`) | PF-key/AID action enum + handling in controllers/DTOs (Enter/PF3/PF7/PF8 ...) |
+| 26 | `CSLKPCDY.cpy` | lookup repository (US phone area codes, state codes, state + ZIP) | Lookup | 1 (COACTUPC) | address-validation reference data in `service/rule` (state/ZIP/phone edits) |
+| 27 | `COSTM01.CPY` | `TRNX-RECORD` (altered transaction layout for statement/report output) | Statement/report layout | 1 (CBSTM03A) | `batch/StatementGenerationJob` + `common/util/FixedWidthCodec` (statement/report record) |
+| 28 | `UNUSED1Y.cpy` | `UNUSED-DATA` (id/name/password/type/filler stub) | **Unused (genuinely unused)** | none (0 `COPY` references) | **none -- not migrated; retained under `legacy/cpy/**` for reference only** |
+
+**Copybook coverage assertion:** all **28/28** ordinary copybooks under `legacy/cpy/**` are represented above. The ten members previously absent from this matrix (`COADM02Y`, `COMEN02Y`, `COSTM01`, `COTTL01Y`, `CSLKPCDY`, `CSMSG01Y`, `CSMSG02Y`, `CSSETATY`, `CSSTRPFY`, `UNUSED1Y`) are now included and classified. `UNUSED1Y.cpy` is confirmed **genuinely unused** (zero `COPY` references across `legacy/cbl/**`) and is intentionally not migrated; `CVTRA07Y.cpy`, `CVCRD01Y.cpy`, and `CUSTREC.cpy` are **reference-only** authorities with no separate target entity.
+
 ## 3. Screen / UI-Contract Traceability (BMS -> request/response DTOs)
 
 Each of the 17 online screens maps its BMS map definition and symbolic copybook to a request/response DTO pair under `dto/`, preserving field names, lengths, PIC-derived types, edit rules, and PF-key actions (PF3=back, PF7/PF8=page, Enter=submit). No terminal emulator is produced (AAP Section 0.3.3).
