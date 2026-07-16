@@ -33,6 +33,7 @@ import com.aws.carddemo.account.dto.AccountUpdateRequest;
 import com.aws.carddemo.account.repository.AccountRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -139,13 +140,16 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  *   <li>The sequential conflict scenario mutates account {@code 00000000020} (version &rarr; 1).</li>
  *   <li>The concurrent repository race mutates account {@code 00000000030} (version &rarr; 1).</li>
  *   <li>The concurrent HTTP race mutates account {@code 00000000040} (version &rarr; 1).</li>
+ *   <li>The identifier/group immutability regression ({@code 4.9a}) issues a no-op editable rewrite on
+ *       account {@code 00000000045} (version &rarr; 1; no editable column changes), proving that extra
+ *       {@code accountId}/{@code groupId} JSON fields are ignored and cannot mutate those columns.</li>
  *   <li>Bad-input {@code PUT}s target account {@code 00000000001} but never persist, because the
  *       service validates <em>before</em> loading/saving; the row is left untouched.</li>
  * </ul>
  * <p>Consequently the seed row count stays exactly 50 regardless of method execution order, and the
  * seed-parity oracle ({@code 4.7}) verifies every immutable column on all 50 rows while skipping only
  * the two genuinely order-dependent columns ({@code version} and, for the balance-mutating accounts,
- * {@code current_balance}) on the four mutating accounts.</p>
+ * {@code current_balance}) on the mutating accounts.</p>
  *
  * <h2>Coverage &mdash; AAP &sect;0.6.5 traceability</h2>
  * <p>The scenarios exercise: happy read with an exact scale-2/ISO field check, not-found (404),
@@ -204,7 +208,7 @@ class AccountApiIntegrationTest {
      * order-independent way; it verifies every <em>immutable</em> column for them instead.
      */
     private static final Set<String> VERSION_MUTATING_ACCOUNTS =
-            Set.of("00000000010", "00000000020", "00000000030", "00000000040");
+            Set.of("00000000010", "00000000020", "00000000030", "00000000040", "00000000045");
 
     /**
      * Accounts whose {@code current_balance} is changed by a mutating scenario (the happy update to
@@ -757,6 +761,87 @@ class AccountApiIntegrationTest {
 
         // Exactly one of the two concurrent writers committed, advancing the version once.
         assertThat(currentVersion(id)).as("exactly one concurrent PUT must commit").isEqualTo(1L);
+    }
+
+    // ------------------------------------------------------------------
+    // 4.9a Identifier/group immutability — CONFIRMED-BY-DESIGN regression (account 00000000045)
+    // ------------------------------------------------------------------
+
+    /**
+     * Permanent regression guard for the <strong>confirmed</strong> design decision (Refine-PR
+     * directive; Technical Specification &sect;2.2.3.2 / &sect;4.2.3.2) that {@code accountId} and
+     * {@code groupId} are read-only and can never be mutated through
+     * {@code PUT /api/v1/accounts/{accountId}}. It asserts <em>current behavior only</em> and does not
+     * change it: {@link AccountUpdateRequest} structurally omits both fields, so any {@code accountId}
+     * or {@code groupId} present in a request body is an unknown property that Jackson ignores.
+     *
+     * <p>The body echoes every editable field of seed account {@code 00000000045} <strong>unchanged</strong>
+     * (so no editable column is modified) and additionally carries two <strong>tampered, structurally
+     * unknown</strong> JSON properties: an {@code accountId} pointing at a different key
+     * ({@code 99999999999}) and a changed {@code groupId} ({@code "HACKGRP"}). The update is therefore an
+     * accepted no-op rewrite (HTTP&nbsp;200, version&nbsp;0&nbsp;&rarr;&nbsp;1). The test then proves,
+     * in the response projection, on an independent HTTP re-read, and by direct JDBC inspection, that:</p>
+     * <ul>
+     *   <li>the row's {@code account_id} is still {@code 00000000045} (the path key), never the tampered id;</li>
+     *   <li>no row was created under the tampered id {@code 99999999999};</li>
+     *   <li>the row's {@code group_id} remains its original seed value, never {@code "HACKGRP"}.</li>
+     * </ul>
+     * <p>The version increment (a forced single bump for an accepted no-op rewrite, mirroring the
+     * legacy {@code REWRITE}) is why account {@code 00000000045} is a member of
+     * {@link #VERSION_MUTATING_ACCOUNTS}; every other column stays at its seed value, so the 50-row
+     * seed-parity oracle ({@code 4.7}) still verifies this row's {@code account_id} and {@code group_id}.</p>
+     */
+    @Test
+    @DisplayName("4.9a PUT with tampered accountId/groupId -> both remain immutable by design (account 00000000045)")
+    void accountIdAndGroupIdRemainImmutable_confirmedByDesign() throws Exception {
+        final String id = "00000000045";
+        final String tamperedAccountId = "99999999999";
+        final String tamperedGroupId = "HACKGRP";
+
+        JsonNode before = getAccountJson(id);
+        assertThat(before.get("version").asLong())
+                .as("account %s must start at seed version 0", id).isEqualTo(0L);
+        final String originalGroupId = before.get("groupId").asText();
+        assertThat(tamperedGroupId)
+                .as("test must genuinely attempt to change the group id").isNotEqualTo(originalGroupId);
+        assertThat(tamperedAccountId)
+                .as("test must genuinely attempt to change the account id").isNotEqualTo(id);
+
+        // Echo every editable field unchanged, then inject two structurally-unknown, tampered fields.
+        AccountUpdateRequest request = validRequestFrom(before);
+        ObjectNode tampered = objectMapper.valueToTree(request);
+        tampered.put("accountId", tamperedAccountId);
+        tampered.put("groupId", tamperedGroupId);
+
+        // The tampered fields are ignored (read-only by omission); the no-op rewrite is accepted (200).
+        String putBody = mockMvc.perform(put(BASE + id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(tampered)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value(id))
+                .andExpect(jsonPath("$.groupId").value(originalGroupId))
+                .andExpect(jsonPath("$.version").value(1))
+                .andReturn().getResponse().getContentAsString();
+        // The response never echoes the tampered identifier/group values.
+        assertThat(putBody).doesNotContain(tamperedAccountId, tamperedGroupId);
+
+        // Independent HTTP re-read: identifier and group id are unchanged and durably committed.
+        mockMvc.perform(get(BASE + id).accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value(id))
+                .andExpect(jsonPath("$.groupId").value(originalGroupId))
+                .andExpect(jsonPath("$.version").value(1));
+
+        // Database-level proof: the key and group id are untouched, and no row exists under the tampered id.
+        Map<String, Object> row = jdbcTemplate.queryForMap(
+                "SELECT account_id, group_id, version FROM accounts WHERE account_id = ?", id);
+        assertThat(row.get("account_id")).as("account_id must be immutable").isEqualTo(id);
+        assertThat(row.get("group_id")).as("group_id must be immutable").isEqualTo(originalGroupId);
+        assertThat(((Number) row.get("version")).longValue())
+                .as("accepted no-op rewrite advances version exactly once").isEqualTo(1L);
+        Integer tamperedRows = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM accounts WHERE account_id = ?", Integer.class, tamperedAccountId);
+        assertThat(tamperedRows).as("no row may be created under the tampered account id").isZero();
     }
 
     // ------------------------------------------------------------------

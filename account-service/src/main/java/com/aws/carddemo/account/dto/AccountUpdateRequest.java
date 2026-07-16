@@ -39,9 +39,18 @@ import jakarta.validation.constraints.Size;
  * request body, and the group id is treated as display-only. Because neither field
  * exists here (no field, getter, setter, or constructor parameter), the account
  * identifier and group id can never be mutated through this endpoint, which
- * structurally prevents over-posting. This is a deliberate hardening relative to
- * the legacy BMS map, where the group-id field is {@code UNPROT} and the COBOL
- * rewrite path persists a changed group id.</p>
+ * structurally prevents over-posting. Historically the legacy BMS map defined the
+ * group-id field as {@code UNPROT} and the COBOL rewrite path persisted a changed group
+ * id, but that 3270 screen layer is fully retired and not carried forward.</p>
+ *
+ * <p><strong>Design decision — CONFIRMED (finalized; not pending).</strong> Excluding both
+ * {@code accountId} and {@code groupId} from this request is a settled, deliberate decision,
+ * not an open question. The governing authority is the business-rule intent in Technical
+ * Specification &sect;2.2.3.2 ("Account ID and group ID immutable — display only"), reaffirmed
+ * in &sect;4.2.3.2 (both PROTECTED during update). Because the editable-field BMS screen contract
+ * is retired, there is no legacy screen behavior left to preserve, and the business rule governs.
+ * This is verified by the permanent regression test
+ * {@code AccountApiIntegrationTest#accountIdAndGroupIdRemainImmutable_confirmedByDesign}.</p>
  *
  * <h2>Optimistic concurrency ({@code version})</h2>
  * <p>The mandatory {@link #version} field mirrors the JPA {@code @Version} column of

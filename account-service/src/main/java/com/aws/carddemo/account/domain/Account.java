@@ -191,11 +191,13 @@ public class Account {
      * Account group identifier, migrated from {@code ACCT-GROUP-ID PIC X(10)}
      * ({@code CVACT01Y.cpy:L16}); maps to {@code VARCHAR(10)}. Treated as read-only at the API
      * boundary — the update DTO ({@code AccountUpdateRequest}) omits it, so no update can change it.
-     * This is an <strong>intentional security hardening</strong> (AAP &sect;0.7.2), <em>not</em> a
-     * reproduction of legacy behavior: the legacy {@code COACTUP} BMS map defined the group-id field
-     * as {@code UNPROT} (editable) and {@code COACTUPC.cbl} persisted a changed group id on rewrite.
-     * The migration deliberately tightens it to display-only to satisfy the documented
-     * "Account ID and group ID immutable" requirement.
+     * <p><strong>This read-only treatment is a CONFIRMED design decision (finalized; not pending
+     * sign-off).</strong> The governing authority is the business-rule intent in Technical
+     * Specification &sect;2.2.3.2 ("Account ID and group ID immutable — display only"), reaffirmed in
+     * &sect;4.2.3.2 (PROTECTED during update). The legacy {@code COACTUP} BMS map defined the group-id
+     * field as {@code UNPROT} (editable) and {@code COACTUPC.cbl} persisted a changed group id on
+     * rewrite, but that 3270 screen layer is fully retired and not carried forward; with no legacy
+     * screen contract left to preserve, the business rule governs and the field remains display-only.</p>
      */
     @Column(name = "group_id", length = 10, nullable = false)
     private String groupId;

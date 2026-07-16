@@ -76,11 +76,17 @@ import com.aws.carddemo.account.repository.AccountRepository;
  *
  * <h2>Immutability of identifier and group id</h2>
  * <p>{@link AccountUpdateRequest} structurally omits {@code accountId} and {@code groupId}
- * (read-only tightening), so there is no body id to reconcile against the path: the authoritative
+ * (read-only by design), so there is no body id to reconcile against the path: the authoritative
  * key is the URL path variable, validated via {@link AccountValidator#validateAccountId(String)}
  * (the realized form of the legacy {@code 1210-EDIT-ACCOUNT} edit). {@link AccountMapper#applyUpdate}
  * writes only the editable fields and never touches {@code accountId}, {@code groupId} or
  * {@code version}, so no code path in this service can mutate them.</p>
+ * <p><strong>This is a CONFIRMED design decision (finalized; not pending sign-off):</strong> the
+ * business-rule intent in Technical Specification &sect;2.2.3.2 ("Account ID and group ID immutable —
+ * display only"), reaffirmed in &sect;4.2.3.2, governs; the editable-field 3270 BMS screen layer is
+ * retired and not carried forward, so there is no legacy screen contract left to preserve. The
+ * invariant is verified end-to-end by
+ * {@code AccountApiIntegrationTest#accountIdAndGroupIdRemainImmutable_confirmedByDesign}.</p>
  *
  * <h2>Scope</h2>
  * <p>This service touches the <strong>account record only</strong>. The customer-record handling

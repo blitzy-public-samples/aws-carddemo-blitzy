@@ -89,6 +89,10 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>{@link AccountUpdateRequest} structurally omits {@code accountId} and {@code groupId}, so there is
  * no body id to reconcile against the path; the URL path variable is the authoritative key and is
  * validated by the service. Consequently the controller performs no path/body id-mismatch check.</p>
+ * <p><strong>CONFIRMED design decision (finalized; not pending sign-off):</strong> keeping {@code accountId}
+ * and {@code groupId} out of the update contract is a settled decision governed by the business-rule intent
+ * in Technical Specification &sect;2.2.3.2 (immutable / display-only), reaffirmed in &sect;4.2.3.2; the
+ * editable-field 3270 BMS screen layer is retired and not carried forward.</p>
  *
  * <h2>Security (Technical Specification &sect;0.6.6)</h2>
  * <p>This controller performs <strong>no logging</strong>, so the full account number and monetary
