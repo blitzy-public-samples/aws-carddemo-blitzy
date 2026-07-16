@@ -20,6 +20,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import java.math.BigDecimal;
 
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -235,11 +236,20 @@ public class AccountUpdateRequest {
      * {@code @Version} column of the persisted entity. Required so the service can
      * detect a concurrent modification and respond with HTTP 409 Conflict.
      * There is no legacy record equivalent; it replaces the legacy before-image check.
+     *
+     * <p><strong>Non-negative domain (F-07).</strong> A persisted {@code @Version} is only ever
+     * assigned monotonically increasing non-negative values by Hibernate, so a negative token can
+     * never match a real row version &mdash; it is a malformed input, not a genuine concurrency
+     * conflict. The {@link PositiveOrZero} guard rejects it structurally as an HTTP 400 (Bad Request)
+     * during the {@code @Valid} pass, rather than letting it fall through to the optimistic-lock
+     * comparison and be misreported as an HTTP 409 Conflict.</p>
      */
     @NotNull
+    @PositiveOrZero
     @Schema(description = "Optimistic-locking token echoed from the last read (maps to the JPA @Version "
-            + "column). A stale value yields HTTP 409 Conflict. No legacy record equivalent; it replaces "
-            + "the legacy before-image check.",
+            + "column). Must be zero or positive; a negative value is rejected as 400 (not 409). A stale "
+            + "value yields HTTP 409 Conflict. No legacy record equivalent; it replaces the legacy "
+            + "before-image check.",
             type = "integer", format = "int64", minimum = "0", example = "0",
             requiredMode = Schema.RequiredMode.REQUIRED)
     private Long version;

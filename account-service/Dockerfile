@@ -124,11 +124,26 @@ WORKDIR /app
 # (e.g. tar, gzip, curl-family, wget) even though fixes already exist in the Ubuntu
 # archive. Running `apt-get upgrade` at build time pulls those patched versions
 # regardless of the (possibly unchanged) base-image digest -- the one thing that
-# rebuilding the same tag alone cannot do. `wget` is additionally purged because the
-# runtime never fetches over HTTP (the entrypoint is only `java -jar`), trimming the
-# attack surface per "remove unnecessary utilities where possible"; `--auto-remove`
-# drops any now-orphaned dependencies. The apt lists are deleted afterwards to keep
-# the image minimal. This runs as root, before privileges are dropped below.
+# rebuilding the same tag alone cannot do.
+#
+# PEBBLE REMOVAL (remediates F-06): the eclipse-temurin (Ubuntu 26.04) base ships a
+# dormant Canonical "pebble" service-manager binary at /usr/bin/pebble (with state
+# under /var/lib/pebble). It is a ~10 MB statically linked Go executable that a fresh
+# Trivy scan flags for FIVE FIXABLE HIGH vulnerabilities (four golang.org/x/net CVEs
+# plus one Go standard-library CVE), yet it is NEVER executed here: this container's
+# only process is the JVM (see the exec-form ENTRYPOINT ["java","-jar",...] below).
+# Because the binary is NOT owned by any dpkg package (`dpkg -S /usr/bin/pebble` finds
+# no owner), apt cannot remove it -- it is deleted directly with `rm`. Removing the
+# unused vulnerable executable eliminates all five HIGH findings at the source (rather
+# than waiting on an upstream Go rebuild) and shrinks the attack surface, with zero
+# effect on the Java-only runtime.
+#
+# HTTP-CLIENT MINIMIZATION: the image intentionally keeps EXACTLY ONE HTTP client --
+# `curl` -- which the HEALTHCHECK below uses to probe the Actuator liveness endpoint
+# over loopback. The redundant `wget` client is purged (`--auto-remove` drops any
+# now-orphaned dependencies) per "remove unnecessary utilities where possible". The
+# apt lists are deleted afterwards to keep the image minimal. All of this runs as root,
+# before privileges are dropped below.
 # NOTE: this requires network egress to the Ubuntu package archive at build time
 # (available in CI); on an already fully patched base it is simply a no-op upgrade.
 #
@@ -143,7 +158,29 @@ RUN export DEBIAN_FRONTEND=noninteractive \
  && apt-get upgrade -y \
  && apt-get purge -y --auto-remove wget \
  && apt-get clean \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && rm -f /usr/bin/pebble \
+ && rm -rf /var/lib/pebble
+
+# BASE-IMAGE RESIDUAL VULNERABILITY DISPOSITION -- VEX / RISK ACCEPTANCE (F-15):
+# After the apt-get upgrade and pebble removal above, a fresh Trivy scan of the final
+# image still reports 60 MEDIUM and 6 LOW *distro* (Ubuntu 26.04) findings that have NO
+# fixed version published upstream at build time ("no-fix"/"will_not_fix"/"affected").
+# They cannot be remediated from this Dockerfile -- there is no patched package to
+# install -- so they are formally RISK-ACCEPTED under the following VEX rationale:
+#   * Severity ceiling: only MEDIUM/LOW remain. Every FIXABLE HIGH finding is removed
+#     (F-06 pebble deletion + apt-get upgrade). No fixable HIGH/CRITICAL is accepted.
+#   * Reachability: the runtime executes a single Java process (`java -jar`) as a
+#     non-root user (UID 1001). Most flagged packages back OS utilities that are never
+#     invoked at runtime, so the vulnerable code paths are not reachable in this image.
+#   * Exposure: the container listens only on 8080 behind the deployment TLS edge; this
+#     image starts no shell, no extra network daemon, and no scheduler.
+# REBUILD / RE-SCAN CADENCE: this image MUST be rebuilt and re-scanned on a recurring
+# schedule (and on every release) so these no-fix findings are eliminated automatically
+# as soon as Ubuntu publishes fixed versions; releases pin the scanned/remediated
+# RUNTIME_BASE digest (see the build-arg note near the top of this file). The current
+# adjudicated VEX/risk-acceptance record is maintained in README.md ("Container image
+# security"), which reviewers should consult as the source of truth.
 
 # Create a dedicated, unprivileged group and user to run the application
 # (defense-in-depth - the JVM must never run as root). The fixed GID/UID 1001 keeps
@@ -175,6 +212,25 @@ ENV SPRING_PROFILES_ACTIVE=docker
 
 # The embedded Tomcat server listens on HTTP port 8080 (AAP section 0.4.1).
 EXPOSE 8080
+
+# CONTAINER HEALTHCHECK (remediates F-09 / Trivy DS-0026): probe the Spring Boot
+# Actuator LIVENESS endpoint so `docker inspect` (and any orchestrator that honors an
+# image-declared healthcheck) can report container health instead of seeing a null
+# Healthcheck. LIVENESS is used deliberately in preference to the aggregate `health`
+# endpoint or the READINESS group: liveness reflects only whether the JVM/application
+# is running, so a transient database outage -- which correctly drives READINESS DOWN
+# (see the management.health config in application.yml, F-05) -- does NOT mark the
+# container unhealthy and therefore cannot trigger a restart loop while the app itself
+# is healthy. The liveness/readiness probe endpoints are enabled in application.yml
+# (management.endpoint.health.probes.enabled=true, also part of F-05).
+# The probe uses `curl` (the single retained HTTP client; see the runtime-patching step
+# above) against loopback: `-f` makes curl exit non-zero on any HTTP status >= 400 and
+# `-sS` keeps it quiet except for genuine errors, so a non-2xx liveness response fails
+# the check. Timings: a 60s start-period covers JVM boot + Flyway migration + schema
+# validation before failures count; thereafter it probes every 30s with a 3s timeout
+# and reports unhealthy only after 3 consecutive failures.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=60s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8080/actuator/health/liveness || exit 1
 
 # Exec-form entrypoint so the JVM runs as PID 1 and receives OS signals
 # (e.g. SIGTERM) directly, enabling graceful shutdown.

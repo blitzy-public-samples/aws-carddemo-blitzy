@@ -16,9 +16,12 @@
 package com.aws.carddemo.account.integration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -55,6 +58,8 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -174,16 +179,17 @@ class AccountApiIntegrationTest {
     /**
      * Exact HTTP&nbsp;404 body message produced for a missing account.
      *
-     * <p><strong>Contract note (intentional deviation from the file brief's example literal).</strong>
-     * The brief illustrated the not-found message as {@code "Account: {id} not found in Acct Master
-     * file."}, but the authoritative, committed production contract deliberately omits the account id:
-     * {@code AccountNotFoundException} carries the fixed, id-free constant
-     * {@code "Account not found in Acct Master file."}, and {@code GlobalExceptionHandler} passes it
-     * through verbatim while masking the id out of the {@code path}. That id-free wording is the
-     * security-hardened behavior mandated by AAP&nbsp;&sect;0.6.6 ("never log/return full account
-     * numbers"). This test asserts the <em>actual</em> API behavior, which is the higher authority.</p>
+     * <p><strong>Contract note (legacy parity, QA finding F-01).</strong> The not-found message
+     * reproduces the legacy {@code COACTVWC} text and names the requested account:
+     * {@code AccountNotFoundException} builds {@code "Account: <id> not found in Acct Master file."}
+     * ({@code app/cbl/COACTVWC.cbl:L796-L805}, modernized to drop the CICS {@code Resp:}/{@code Reas:}
+     * diagnostics), and {@code GlobalExceptionHandler} passes it through verbatim. The embedded id is
+     * the very key the client supplied on the path, echoed only to that caller in the response body.
+     * AAP&nbsp;&sect;0.6.6 ("never <em>log</em> full account numbers") is upheld independently: the 404
+     * handler does not log, and the {@code path} field remains the digit-masked route template. This
+     * constant is the not-found message for the id used by the not-found scenario ({@code 00000000099}).</p>
      */
-    private static final String NOT_FOUND_MESSAGE = "Account not found in Acct Master file.";
+    private static final String NOT_FOUND_MESSAGE = "Account: 00000000099 not found in Acct Master file.";
 
     /**
      * Exact HTTP&nbsp;409 body message, owned by {@code GlobalExceptionHandler} and mandated by
@@ -266,6 +272,10 @@ class AccountApiIntegrationTest {
     /** Real-HTTP client (bound to the RANDOM_PORT server) for the concurrent HTTP race (4.9). */
     @Autowired
     private TestRestTemplate restTemplate;
+
+    /** The startup schema-integrity guard (F-04), re-invoked against the real container schema. */
+    @Autowired
+    private com.aws.carddemo.account.config.SchemaIntegrityValidator schemaIntegrityValidator;
 
     /**
      * Hermeticity guard (CQ-CONFIG-1): before every test, assert that the live JDBC connection points
@@ -471,6 +481,77 @@ class AccountApiIntegrationTest {
                 .andExpect(jsonPath("$.version").value(1))
                 .andReturn().getResponse().getContentAsString();
         assertThat(afterBody).contains("\"currentBalance\":250.00");
+    }
+
+    // ------------------------------------------------------------------
+    // 4.5a JSON input hardening — control chars (F-08) and oversized body (F-10),
+    //      exercised end-to-end through the real servlet filter chain + PostgreSQL.
+    // ------------------------------------------------------------------
+
+    /**
+     * F-08: a {@code PUT} whose {@code addressZip} carries an embedded {@code NUL} (U+0000) &mdash; an
+     * ISO control character PostgreSQL cannot store in a {@code text}/{@code varchar} column &mdash; is
+     * rejected cleanly by {@code AccountValidator} as HTTP&nbsp;400 <em>before</em> persistence, rather
+     * than reaching the driver and surfacing as an ungraceful HTTP&nbsp;500. The sanitized message
+     * names the field only (never the raw value; AAP &sect;0.6.6), and the target account is not
+     * mutated. The value ({@code "1234\u00005678"}, 9 chars) satisfies the DTO's {@code @Size(max=10)}
+     * and {@code @NotNull}, so only the business well-formedness guard can reject it.
+     */
+    @Test
+    @DisplayName("4.5a PUT addressZip with NUL control char -> 400 (not 500), no mutation")
+    void putAddressZipWithControlChar_returns400NotServerError() throws Exception {
+        final String id = "00000000005";
+        JsonNode current = getAccountJson(id);
+        long versionBefore = current.get("version").asLong();
+
+        AccountUpdateRequest badZip = validRequestFrom(current);
+        badZip.setAddressZip("1234\u00005678");
+
+        mockMvc.perform(put(BASE + id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(badZip)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.message").value("addressZip must not contain control characters."));
+
+        // The rejection precedes persistence: the account is unchanged.
+        assertThat(currentVersion(id)).isEqualTo(versionBefore);
+    }
+
+    /**
+     * F-10: a {@code PUT} carrying an otherwise-valid body plus a large <em>unknown</em> string
+     * property is now rejected by {@code RequestBodySizeLimitFilter} once the total body exceeds the
+     * 64&nbsp;KiB byte cap &mdash; closing the gap where a skipped/unknown value of 65,536 or 70,000
+     * characters previously slipped past the intended limit and returned HTTP&nbsp;200. Both the
+     * 65,536- and 70,000-character cases (each pushing the total body over the cap) now return
+     * HTTP&nbsp;400 with the uniform sanitized malformed-body envelope, before deserialization and
+     * before the service is reached, so the target account is never mutated.
+     */
+    @ParameterizedTest
+    @ValueSource(ints = {65536, 70000})
+    @DisplayName("4.5b PUT with large unknown string over the 64 KiB cap -> 400 (filter), no mutation")
+    void putOversizedUnknownString_returns400(int junkLength) throws Exception {
+        final String id = "00000000006";
+        JsonNode current = getAccountJson(id);
+        long versionBefore = current.get("version").asLong();
+
+        // Build a valid body, then splice in a large unknown "junk" string so the *total* body
+        // exceeds the cap. The filter rejects on raw byte count before any parsing/binding occurs.
+        String valid = objectMapper.writeValueAsString(validRequestFrom(current));
+        String oversized = valid.substring(0, valid.length() - 1)
+                + ",\"junk\":\"" + "x".repeat(junkLength) + "\"}";
+        assertThat(oversized.getBytes(java.nio.charset.StandardCharsets.UTF_8).length)
+                .isGreaterThan(64 * 1024);
+
+        mockMvc.perform(put(BASE + id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(oversized))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
+
+        // The size rejection precedes the service: the account is unchanged.
+        assertThat(currentVersion(id)).isEqualTo(versionBefore);
     }
 
     // ------------------------------------------------------------------
@@ -877,6 +958,173 @@ class AccountApiIntegrationTest {
         assertThat(errProps.path("timestamp").path("format").asText()).isEqualTo("date-time");
         assertThat(errProps.path("path").path("type").asText()).isEqualTo("string");
         assertThat(errProps.has("fieldErrors")).as("ApiError must document the fieldErrors property").isTrue();
+    }
+
+    // ------------------------------------------------------------------
+    // 4.12 Security response headers (finding F-11)
+    // ------------------------------------------------------------------
+
+    /**
+     * A successful account read carries the baseline security headers and, because it returns
+     * sensitive financial data, the full cache-suppression set. Exercised through the real filter
+     * chain (the {@code @SpringBootTest} MockMvc runs every registered servlet {@code Filter},
+     * including {@code SecurityHeadersFilter}).
+     *
+     * <p>{@code X-Content-Type-Options: nosniff} and {@code X-Frame-Options: DENY} are the universal
+     * pair; {@code Cache-Control: no-store}, {@code Pragma: no-cache}, and {@code Expires: 0} are the
+     * account-data cache suppressors that keep balances/limits out of any shared or browser cache
+     * (AAP &sect;0.6.6).</p>
+     */
+    @Test
+    @DisplayName("4.12 GET account carries nosniff + frame-deny + no-store cache suppression (F-11)")
+    void getAccount_carriesSecurityHeaders() throws Exception {
+        mockMvc.perform(get(BASE + "00000000001").accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+                .andExpect(header().string("X-Frame-Options", "DENY"))
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string(HttpHeaders.PRAGMA, "no-cache"))
+                .andExpect(header().string(HttpHeaders.EXPIRES, "0"));
+    }
+
+    /**
+     * A non-account surface (the OpenAPI document) still receives the universal {@code nosniff} /
+     * frame-deny headers, but is deliberately left cacheable &mdash; the {@code no-store} directive is
+     * scoped to the account-data API only, so documentation assets are not needlessly made
+     * non-cacheable.
+     */
+    @Test
+    @DisplayName("4.13 Non-account surface gets nosniff/frame-deny but NOT no-store (F-11 scoping)")
+    void nonAccountSurface_getsUniversalHeadersOnly() throws Exception {
+        mockMvc.perform(get("/v3/api-docs").accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+                .andExpect(header().string("X-Frame-Options", "DENY"))
+                .andExpect(header().doesNotExist(HttpHeaders.CACHE_CONTROL));
+    }
+
+    // ------------------------------------------------------------------
+    // 4.14 Uniform ApiError envelope for container/servlet error dispatches (finding F-13)
+    // ------------------------------------------------------------------
+
+    /**
+     * An unmatched route requested with {@code Accept: text/html} previously fell through to Spring
+     * Boot's Whitelabel HTML error page (the {@code ApiError} the advice produced cannot be rendered
+     * as {@code text/html}, so the container re-dispatches to {@code /error}). With the custom
+     * {@code ApiErrorController} owning {@code /error}, the final envelope is the uniform sanitized
+     * {@link com.aws.carddemo.account.exception.ApiError} JSON &mdash; a {@code 404} whose body carries
+     * a generic message and the digit-masked path, never HTML.
+     */
+    @Test
+    @DisplayName("4.14 Unknown route with Accept: text/html now yields ApiError JSON, not Whitelabel HTML (F-13)")
+    void unknownRoute_htmlAccept_yieldsApiErrorJson() throws Exception {
+        // Exercised through the REAL embedded Tomcat (TestRestTemplate on the RANDOM_PORT server) so
+        // the genuine servlet error dispatch that produced the Whitelabel page is executed.
+        HttpHeaders headers = new HttpHeaders();
+        headers.setAccept(List.of(MediaType.TEXT_HTML));
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/api/v1/nonexistent", HttpMethod.GET, new HttpEntity<>(headers), String.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(404);
+        assertThat(response.getHeaders().getContentType())
+                .as("error envelope must be JSON, not Whitelabel HTML")
+                .isNotNull()
+                .matches(mt -> mt.isCompatibleWith(MediaType.APPLICATION_JSON));
+        assertThat(response.getBody()).as("must not be the Whitelabel HTML page")
+                .doesNotContain("Whitelabel");
+        JsonNode body = objectMapper.readTree(response.getBody());
+        assertThat(body.path("status").asInt()).isEqualTo(404);
+        assertThat(body.path("error").asText()).isEqualTo("Not Found");
+        assertThat(body.path("message").asText()).isEqualTo("Requested resource was not found");
+        assertThat(body.path("timestamp").isMissingNode()).isFalse();
+    }
+
+    /**
+     * A direct hit on {@code /error} (no error attributes present) mirrors Boot's own default of
+     * {@code 500} but renders the uniform {@link com.aws.carddemo.account.exception.ApiError} JSON
+     * envelope with a generic, sanitized message &mdash; not the Whitelabel HTML page. The path is the
+     * masked {@code /error} literal. Verified through the real embedded Tomcat.
+     */
+    @Test
+    @DisplayName("4.15 Direct GET /error yields sanitized ApiError JSON (F-13)")
+    void directError_yieldsApiErrorJson() throws Exception {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setAccept(List.of(MediaType.TEXT_HTML));
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/error", HttpMethod.GET, new HttpEntity<>(headers), String.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(500);
+        assertThat(response.getHeaders().getContentType())
+                .isNotNull()
+                .matches(mt -> mt.isCompatibleWith(MediaType.APPLICATION_JSON));
+        assertThat(response.getBody()).doesNotContain("Whitelabel");
+        JsonNode body = objectMapper.readTree(response.getBody());
+        assertThat(body.path("status").asInt()).isEqualTo(500);
+        assertThat(body.path("message").asText())
+                .isEqualTo("An unexpected error occurred while processing the request");
+        assertThat(body.path("path").asText()).isEqualTo("/error");
+        assertThat(body.path("message").asText())
+                .as("sanitized: no exception detail may leak").doesNotContain("Exception");
+    }
+
+    /**
+     * Regression guard: the JSON-accept unmatched-route path is unchanged &mdash; it is still handled
+     * by {@code GlobalExceptionHandler#handleNoResourceFound} (the advice, not {@code /error}) and
+     * returns the same {@code 404} {@link com.aws.carddemo.account.exception.ApiError} JSON as before
+     * the F-13 fix.
+     */
+    @Test
+    @DisplayName("4.16 Unknown route with Accept: application/json still 404 ApiError via advice (F-13 regression guard)")
+    void unknownRoute_jsonAccept_stillAdviceHandled() throws Exception {
+        mockMvc.perform(get("/api/v1/nonexistent").accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.message").value("Requested resource was not found"));
+    }
+
+    // ------------------------------------------------------------------
+    // 4.17 Schema-integrity startup guard passes on the correct schema (finding F-04)
+    // ------------------------------------------------------------------
+
+    /**
+     * The {@code SchemaIntegrityValidator} runs at context startup; the very fact this
+     * {@code @SpringBootTest} context loaded proves it accepted the Flyway-migrated schema. This test
+     * re-invokes it against the live Testcontainers database to assert explicitly that the correct
+     * {@code NUMERIC(12,2) NOT NULL} money columns and {@code BIGINT NOT NULL} version pass without a
+     * fail-fast (the negative precision/scale/nullability drift cases are covered by the isolated
+     * {@code SchemaIntegrityValidatorTest}, and end-to-end startup-abort-on-drift is verified at
+     * runtime).
+     */
+    @Test
+    @DisplayName("4.17 SchemaIntegrityValidator accepts the correct NUMERIC(12,2)/BIGINT schema (F-04)")
+    void schemaIntegrityValidator_passesOnCorrectSchema() {
+        assertThat(schemaIntegrityValidator).as("F-04 guard must be a registered bean").isNotNull();
+        assertThatCode(schemaIntegrityValidator::afterPropertiesSet)
+                .as("correct migrated schema must pass the precision/scale/nullability check")
+                .doesNotThrowAnyException();
+    }
+
+    // ------------------------------------------------------------------
+    // 4.18 Kubernetes-style health probes are exposed and UP (finding F-05)
+    // ------------------------------------------------------------------
+
+    /**
+     * With {@code management.endpoint.health.probes.enabled=true}, both probe endpoints are exposed
+     * in every environment and report UP while the database is reachable. The readiness group now
+     * includes the {@code db} indicator (F-05), so a healthy database yields readiness UP; the runtime
+     * outage test verifies the DOWN transition. {@code show-details=never} keeps the body free of any
+     * datasource internals.
+     */
+    @Test
+    @DisplayName("4.18 /actuator/health/readiness and /liveness are exposed and UP (F-05)")
+    void healthProbes_areExposedAndUp() throws Exception {
+        mockMvc.perform(get("/actuator/health/liveness"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
+        mockMvc.perform(get("/actuator/health/readiness"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
     }
 
     // ------------------------------------------------------------------

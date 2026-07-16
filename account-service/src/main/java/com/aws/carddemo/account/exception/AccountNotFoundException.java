@@ -30,14 +30,19 @@ package com.aws.carddemo.account.exception;
  * chain.</p>
  *
  * <h2>Sensitive-data handling (AAP &sect;0.6.6)</h2>
- * <p>The account identifier is treated as sensitive "full account number" data that must
- * never be written to logs in plaintext. Because an exception's message is routinely
- * captured by application, framework, and access logs (CWE-532) and echoed in error
- * responses (CWE-209), this exception deliberately carries a <strong>generic, id-free
- * message</strong> and stores <strong>no account identifier</strong>. Callers that need to
- * report which account was requested must do so from the already-known request path
- * variable, applying masking as appropriate — never by reading it back off this exception.
- * No account id, monetary value, or card number ever enters this type.</p>
+ * <p>The message reproduces the legacy {@code COACTVWC} not-found text, which interpolates the
+ * requested account identifier: {@code "Account: <id> not found in Acct Master file."}
+ * ({@code app/cbl/COACTVWC.cbl:L796-L805}, modernized to drop the CICS {@code Resp:}/{@code Reas:}
+ * diagnostics). Restoring the id in the <em>response</em> is behavioral parity (QA finding F-01):
+ * the identifier echoed back is the very value the client supplied in the request path, returned
+ * only to that same caller, so this is not a disclosure to a third party.</p>
+ * <p>AAP &sect;0.6.6 is a <strong>logging</strong> constraint — the full account number must never be
+ * written to logs in plaintext (CWE-532). That contract is upheld independently of this message:
+ * {@code GlobalExceptionHandler#handleNotFound} maps this exception to a {@code 404} and
+ * <strong>does not log</strong> it (only the catch-all {@code 500} handler logs, and it records the
+ * sanitized route template — never the raw URI or id). The {@code path} field of the error body also
+ * remains the digit-masked route template. Thus the id appears only in the {@code message} of the
+ * {@code 404} body and never in any log line. No monetary value or card number ever enters this type.</p>
  */
 public class AccountNotFoundException extends RuntimeException {
 
@@ -49,21 +54,28 @@ public class AccountNotFoundException extends RuntimeException {
     private static final long serialVersionUID = 1L;
 
     /**
-     * Fixed, id-free not-found message. Kept as a single constant so the wording stays
-     * stable and is guaranteed never to interpolate an account identifier.
+     * Message prefix preceding the account identifier. Kept as constants so the wording stays
+     * stable and is asserted against a single source in the test suite.
      */
-    private static final String MESSAGE = "Account not found in Acct Master file.";
+    private static final String MESSAGE_PREFIX = "Account: ";
+
+    /** Message suffix following the account identifier (modernized, without CICS Resp/Reas codes). */
+    private static final String MESSAGE_SUFFIX = " not found in Acct Master file.";
 
     /**
-     * Creates a new not-found exception with a generic, id-free message.
+     * Creates a new not-found exception whose message names the requested account, reproducing the
+     * legacy {@code COACTVWC} {@code NOTFND} text {@code "Account: <id> not found in Acct Master file."}
+     * ({@code app/cbl/COACTVWC.cbl:L796-L805}).
      *
-     * <p>No account identifier is accepted or retained: the 404 outcome is independent of
-     * the specific key, and omitting the id guarantees it can never leak into logs or error
-     * payloads through this exception (AAP &sect;0.6.6). Throw this only for a confirmed
-     * absent record; a data-access or infrastructure failure is a different condition and
-     * must not be represented as a missing row.</p>
+     * <p>The {@code accountId} passed here is the same 11-digit key the client supplied in the request
+     * path; it is embedded in the {@code 404} response message (behavioral parity, QA finding F-01) but
+     * never written to any log (the not-found handler does not log; AAP &sect;0.6.6 log-hygiene is
+     * preserved). Throw this only for a confirmed absent record; a data-access or infrastructure failure
+     * is a different condition and must not be represented as a missing row.</p>
+     *
+     * @param accountId the zero-padded 11-digit account key that was not found (as supplied on the path)
      */
-    public AccountNotFoundException() {
-        super(MESSAGE);
+    public AccountNotFoundException(final String accountId) {
+        super(MESSAGE_PREFIX + accountId + MESSAGE_SUFFIX);
     }
 }

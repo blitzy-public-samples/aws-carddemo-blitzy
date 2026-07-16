@@ -391,6 +391,51 @@ class AccountValidatorTest {
                 .doesNotThrowAnyException();
     }
 
+    /**
+     * F-08: an address ZIP containing an ISO control character &mdash; most importantly the
+     * {@code NUL} byte (U+0000), which PostgreSQL rejects for a {@code text}/{@code varchar} value
+     * &mdash; is rejected cleanly at the validation boundary as a 400, rather than passing the
+     * presence check, flowing through the mapper into the {@code NOT NULL} {@code address_zip}
+     * column, and aborting the {@code INSERT}/{@code UPDATE} at the driver level as an ungraceful
+     * HTTP 500. The message names the field only and never echoes the offending value (AAP
+     * &sect;0.6.6). Representative control characters across the C0 ({@code \u0000}, {@code \t},
+     * {@code \n}) and C1 ({@code \u007F}, {@code \u0085}) ranges are covered.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"\u0000", "1234\u00005678", "A000\t0000", "A0000000\n", "\u007F", "AB\u0085CD"})
+    void validateAddressZip_rejectsControlCharacters(String addressZip) {
+        assertThatThrownBy(() -> validator.validateAddressZip(addressZip))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("addressZip must not contain control characters.");
+    }
+
+    /**
+     * F-03: an address ZIP containing an <em>unpaired</em> UTF-16 surrogate code unit &mdash; a high
+     * surrogate not followed by a low surrogate, or a lone low surrogate &mdash; is not a valid
+     * Unicode scalar value and cannot be stored losslessly by PostgreSQL. It is rejected at the
+     * validation boundary as a 400 rather than being echoed back at 200 while the database silently
+     * substitutes a replacement character, which would break read-back fidelity. The message names
+     * the field only (AAP &sect;0.6.6).
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"\uD83D", "AB\uD83DCD", "\uDE00", "AB\uDE00", "\uDE00\uD83D"})
+    void validateAddressZip_rejectsUnpairedSurrogates(String addressZip) {
+        assertThatThrownBy(() -> validator.validateAddressZip(addressZip))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("addressZip must be valid Unicode text.");
+    }
+
+    /**
+     * F-03: a <em>well-formed</em> supplementary-plane character (a correctly paired high+low
+     * surrogate, here U+1F600) is valid Unicode and is accepted, confirming the surrogate guard
+     * rejects only malformed/unpaired sequences rather than all non-BMP text.
+     */
+    @Test
+    void validateAddressZip_acceptsPairedSurrogate() {
+        assertThatCode(() -> validator.validateAddressZip("\uD83D\uDE00"))
+                .doesNotThrowAnyException();
+    }
+
     // ------------------------------------------------------------------
     // validate(AccountUpdateRequest) — orchestration & fail-fast ordering
     //

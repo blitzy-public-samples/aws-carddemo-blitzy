@@ -32,6 +32,29 @@ spring:
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}
     password: ${SPRING_DATASOURCE_PASSWORD:carddemo}
     driver-class-name: org.postgresql.Driver
+    # -------------------------------------------------------------------------
+    # Connection-pool + driver timeouts (F-05). Bound how long a request may block
+    # when PostgreSQL is unreachable so a database outage fails fast (a few seconds)
+    # instead of the HikariCP default of 30 s. Together with the `db` readiness-group
+    # membership below, an outage makes readiness report DOWN and API calls fail
+    # promptly rather than hanging.
+    # -------------------------------------------------------------------------
+    hikari:
+      # Max wait to acquire a pooled connection before throwing (default 30000 ms -> 3 s).
+      connection-timeout: 3000
+      # Max wait for the pool's connection-validation probe; MUST be < connection-timeout.
+      validation-timeout: 2000
+      # Retain startup fail-fast: a non-negative value makes Hikari validate the very first
+      # connection at pool initialization, so the app still refuses to start if the database
+      # is unreachable at boot. 1 ms keeps that fail-fast without adding measurable delay.
+      initialization-fail-timeout: 1
+      # PostgreSQL JDBC driver socket-level timeouts (SECONDS). connectTimeout bounds the TCP
+      # connect, socketTimeout bounds a blocked read on an established socket, loginTimeout
+      # bounds authentication. These cap the worst-case block below the Hikari ceiling.
+      data-source-properties:
+        connectTimeout: 2
+        socketTimeout: 10
+        loginTimeout: 2
 
   # ---------------------------------------------------------------------------
   # JPA / Hibernate. Flyway is the single source of truth for the schema, so
@@ -92,6 +115,22 @@ management:
   endpoint:
     health:
       show-details: never
+      # Expose Kubernetes-style probe endpoints in EVERY environment (not only when
+      # Kubernetes is auto-detected): /actuator/health/liveness and
+      # /actuator/health/readiness. (F-05)
+      probes:
+        enabled: true
+      # F-05: place the datasource (`db`) health indicator in the READINESS group so that,
+      # when PostgreSQL is unreachable, /actuator/health/readiness reports DOWN (HTTP 503)
+      # and an orchestrator stops routing traffic to this instance (the only business
+      # capability — account read/update — is unavailable without the database).
+      # Liveness deliberately does NOT include `db`: a transient DB outage must not cause a
+      # pod restart loop, only a readiness (traffic) withdrawal. show-details stays `never`,
+      # so the group still rolls up the db state into UP/DOWN without exposing datasource
+      # internals (endpoint URL, pool details) in the body.
+      group:
+        readiness:
+          include: readinessState,db
 
 # -----------------------------------------------------------------------------
 # Sanitized logging (0.6.6): NEVER log account numbers or monetary values in

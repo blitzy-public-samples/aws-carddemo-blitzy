@@ -15,7 +15,9 @@
  */
 package com.aws.carddemo.account;
 
+import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.StreamReadConstraints;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.cfg.CoercionAction;
 import com.fasterxml.jackson.databind.cfg.CoercionInputShape;
 import com.fasterxml.jackson.databind.type.LogicalType;
@@ -50,10 +52,12 @@ import org.springframework.context.annotation.Bean;
  * <p>Beyond bootstrapping, this class declares a single infrastructure bean &mdash; a
  * {@link Jackson2ObjectMapperBuilderCustomizer} (see {@link #jsonHardeningCustomizer()}) that hardens
  * JSON <em>input</em> parsing: strict numeric coercion (so a fractional or quoted {@code version}
- * token and a quoted monetary token are rejected rather than silently reshaped) plus conservative
- * {@link StreamReadConstraints stream-read limits} (bounded document length, string length, nesting
- * depth, and number length) that refuse an oversized or deeply nested payload during parsing
- * (SEC-INPUT-1). All other concerns &mdash; datasource, JPA, Flyway, Actuator, logging, and the
+ * token and a quoted monetary token are rejected rather than silently reshaped), strict textual
+ * coercion (F-07; a numeric or boolean scalar is rejected where a {@code String} field is expected),
+ * strict structural parsing (F-03; trailing tokens and duplicate field names are rejected), plus
+ * conservative {@link StreamReadConstraints stream-read limits} (bounded document length, string
+ * length, nesting depth, and number length) that refuse an oversized or deeply nested payload during
+ * parsing (SEC-INPUT-1). All other concerns &mdash; datasource, JPA, Flyway, Actuator, logging, and the
  * {@code write-bigdecimal-as-plain} JSON <em>output</em> setting &mdash; are configured declaratively
  * in {@code application.yml}, and OpenAPI metadata is defined in {@code config.OpenApiConfig}; no
  * other beans, runners or business logic are declared here.</p>
@@ -96,18 +100,27 @@ public class AccountServiceApplication {
      * {@code ObjectMapper}. Exposed as a {@code public static} factory so the web-slice tests can
      * apply the <em>identical</em> policy without duplicating it (a single source of truth).
      *
-     * <p>Two concerns are combined, both mapping a rejected payload to a sanitized {@code 400}
+     * <p>Four concerns are combined, all mapping a rejected payload to a sanitized {@code 400}
      * (via {@code GlobalExceptionHandler}'s {@code HttpMessageNotReadableException} handler):</p>
      * <ul>
      *   <li><strong>Strict numeric coercion</strong> &mdash; the {@code Long version} token rejects a
      *       fractional ({@code 0.5}) or quoted-string ({@code "0"}) input, and the {@code BigDecimal}
      *       money tokens reject a quoted-string ({@code "194.00"}) input, so a mistyped token cannot
      *       be silently reshaped and corrupt the optimistic-lock comparison or a monetary value.</li>
+     *   <li><strong>Strict textual coercion (F-07)</strong> &mdash; a {@code String} field (for example
+     *       {@code addressZip}) rejects a numeric ({@code 12345}) or boolean ({@code true}) scalar rather
+     *       than silently stringifying it, so a wrong-typed text token is refused instead of being
+     *       coerced into a lossy value.</li>
+     *   <li><strong>Strict structural parsing (F-03)</strong> &mdash; {@code FAIL_ON_TRAILING_TOKENS}
+     *       rejects any content after the single top-level value (no second smuggled document), and
+     *       {@code STRICT_DUPLICATE_DETECTION} rejects a duplicated field name (no silent last-one-wins
+     *       override), so the body must be exactly one well-formed object with unique keys.</li>
      *   <li><strong>Stream read constraints (SEC-INPUT-1)</strong> &mdash; bounded document length,
      *       string length, nesting depth, and number length on the shared {@code JsonFactory}, so an
      *       oversized or deeply nested payload is refused <em>during</em> parsing (a
      *       {@code StreamConstraintsException}) instead of being fully buffered and parsed. This is the
-     *       primary guard against JSON resource-exhaustion.</li>
+     *       primary guard against JSON resource-exhaustion. A complementary hard byte cap is enforced
+     *       even earlier, before deserialization, by {@code config.RequestBodySizeLimitFilter} (F-10).</li>
      * </ul>
      *
      * <p>The customizer runs as a {@code postConfigurer}, so it augments &mdash; rather than replaces
@@ -126,13 +139,35 @@ public class AccountServiceApplication {
                     .setCoercion(CoercionInputShape.String, CoercionAction.Fail);
             mapper.coercionConfigFor(LogicalType.Float)
                     .setCoercion(CoercionInputShape.String, CoercionAction.Fail);
-            // Conservative stream-read constraints (SEC-INPUT-1) on the shared parser factory.
-            mapper.getFactory().setStreamReadConstraints(StreamReadConstraints.builder()
-                    .maxDocumentLength(MAX_JSON_DOCUMENT_LENGTH)
-                    .maxStringLength(MAX_JSON_STRING_LENGTH)
-                    .maxNestingDepth(MAX_JSON_NESTING_DEPTH)
-                    .maxNumberLength(MAX_JSON_NUMBER_LENGTH)
-                    .build());
+            // Strict textual coercion (F-07): reject a numeric or boolean scalar supplied where a
+            // String field is expected (for example a numeric or boolean `addressZip`) rather than
+            // silently stringifying it (Jackson's default would accept 12345 or true as "12345"/
+            // "true"). A mistyped String token is thus surfaced as a sanitized 400
+            // (HttpMessageNotReadableException) instead of corrupting a text field with a coerced value.
+            mapper.coercionConfigFor(LogicalType.Textual)
+                    .setCoercion(CoercionInputShape.Integer, CoercionAction.Fail)
+                    .setCoercion(CoercionInputShape.Float, CoercionAction.Fail)
+                    .setCoercion(CoercionInputShape.Boolean, CoercionAction.Fail);
+            // Strict structural parsing (F-03): a request body must be exactly one well-formed JSON
+            // document with unique field names.
+            //  * FAIL_ON_TRAILING_TOKENS rejects any content after the top-level value, so a client
+            //    cannot smuggle a second document (for example `{...}{...}` or `{...} garbage`) past
+            //    the parser; without it Jackson binds only the first value and silently ignores the rest.
+            //  * STRICT_DUPLICATE_DETECTION rejects a duplicated field name (for example two
+            //    `version` keys), closing the last-one-wins override where a benign key is shadowed by
+            //    a second occurrence. It is enabled on the shared JsonFactory alongside the stream-read
+            //    constraints below.
+            // Both violations map to a sanitized 400 via GlobalExceptionHandler#handleNotReadable.
+            mapper.enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+            mapper.getFactory()
+                    .configure(JsonParser.Feature.STRICT_DUPLICATE_DETECTION, true)
+                    // Conservative stream-read constraints (SEC-INPUT-1) on the shared parser factory.
+                    .setStreamReadConstraints(StreamReadConstraints.builder()
+                            .maxDocumentLength(MAX_JSON_DOCUMENT_LENGTH)
+                            .maxStringLength(MAX_JSON_STRING_LENGTH)
+                            .maxNestingDepth(MAX_JSON_NESTING_DEPTH)
+                            .maxNumberLength(MAX_JSON_NUMBER_LENGTH)
+                            .build());
         });
     }
 

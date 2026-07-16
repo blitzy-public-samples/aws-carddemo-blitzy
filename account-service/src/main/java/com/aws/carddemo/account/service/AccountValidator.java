@@ -377,15 +377,54 @@ public class AccountValidator {
      * is rejected. Maximum length is bounded structurally by the DTO's
      * {@code @Size(max = 10)} and the {@code VARCHAR(10)} column.</p>
      *
-     * <p>The error message references the field name only and never echoes the raw value,
-     * matching the sanitized-message posture of the other edits (AAP &sect;0.6.6).</p>
+     * <p><strong>Well-formedness guard (F-03, F-08).</strong> After the presence check, the value is
+     * verified to be safe, well-formed Unicode text <em>before</em> it can reach the {@code NOT NULL}
+     * {@code address_zip} column and surface as an ungraceful HTTP 500. Two classes of malformed
+     * content are rejected here with a clean field-level {@link ValidationException} &rarr; HTTP 400:</p>
+     * <ul>
+     *   <li><strong>ISO control characters</strong> (U+0000&ndash;U+001F and U+007F&ndash;U+009F),
+     *       including the {@code NUL} byte (F-08). PostgreSQL rejects a {@code NUL} in a {@code text}/
+     *       {@code varchar} value ("invalid byte sequence for encoding ... 0x00"), so without this guard
+     *       a {@code "\u0000"} in {@code addressZip} passes the presence check, flows through the mapper,
+     *       and aborts the {@code INSERT}/{@code UPDATE} at the driver level as a 500.</li>
+     *   <li><strong>Unpaired UTF-16 surrogate code units</strong> (F-03): a high surrogate not
+     *       immediately followed by a low surrogate, or a lone low surrogate. These are not valid
+     *       Unicode scalar values; PostgreSQL cannot store them and Jackson/JDBC would otherwise
+     *       persist a lossy replacement ({@code '?'}) while the response still echoes the original,
+     *       breaking read-back fidelity.</li>
+     * </ul>
+     *
+     * <p>Blank-fill tolerance is unaffected: the space character (U+0020) is not an ISO control
+     * character, so an empty or all-blank value is still accepted. The error message references the
+     * field name only and never echoes the raw value, matching the sanitized-message posture of the
+     * other edits (AAP &sect;0.6.6).</p>
      *
      * @param addressZip the candidate address ZIP value
-     * @throws ValidationException if the value is {@code null} (absent)
+     * @throws ValidationException if the value is {@code null} (absent), contains an ISO control
+     *                             character, or contains an unpaired UTF-16 surrogate
      */
     public void validateAddressZip(String addressZip) {
         if (addressZip == null) {
             throw new ValidationException("addressZip must be supplied.");
+        }
+        // Well-formedness guard (F-03, F-08): reject ISO control characters (incl. NUL) and unpaired
+        // UTF-16 surrogates before the value reaches the NOT NULL text column. Field-name-only message.
+        final int length = addressZip.length();
+        for (int i = 0; i < length; i++) {
+            final char ch = addressZip.charAt(i);
+            if (Character.isISOControl(ch)) {
+                throw new ValidationException("addressZip must not contain control characters.");
+            }
+            if (Character.isHighSurrogate(ch)) {
+                // A high surrogate is valid only when immediately paired with a following low surrogate.
+                if (i + 1 >= length || !Character.isLowSurrogate(addressZip.charAt(i + 1))) {
+                    throw new ValidationException("addressZip must be valid Unicode text.");
+                }
+                i++; // consume the paired low surrogate
+            } else if (Character.isLowSurrogate(ch)) {
+                // A low surrogate with no preceding high surrogate is unpaired.
+                throw new ValidationException("addressZip must be valid Unicode text.");
+            }
         }
     }
 }

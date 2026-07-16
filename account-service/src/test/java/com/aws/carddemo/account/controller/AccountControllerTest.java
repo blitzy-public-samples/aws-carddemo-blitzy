@@ -100,10 +100,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <ul>
  *   <li>Not-found ({@code 404}) reproduces {@code COACTVWC} {@code 9300-GETACCTDATA-BYACCT}
  *       {@code DFHRESP(NOTFND)} (L786&ndash;L807). The legacy 3270 text
- *       {@code "Account:{id} not found in Acct Master file.Resp:{r} Reas:{r2}"} is deliberately
- *       normalized by the migrated {@code AccountNotFoundException} to the id-free
- *       {@code "Account not found in Acct Master file."} (Technical Specification &sect;0.6.6 &mdash;
- *       the full account number must never leak into logs or error payloads).</li>
+ *       {@code "Account:{id} not found in Acct Master file.Resp:{r} Reas:{r2}"} is reproduced by the
+ *       migrated {@code AccountNotFoundException} as {@code "Account: {id} not found in Acct Master
+ *       file."} (QA finding F-01: the requested id is restored for behavioral parity, modernized to
+ *       drop the CICS {@code Resp:}/{@code Reas:} diagnostics). The id appears only in the response
+ *       body message and is never logged (Technical Specification &sect;0.6.6 is a logging constraint;
+ *       the {@code 404} handler does not log and the {@code path} stays digit-masked).</li>
  *   <li>Conflict ({@code 409}) reproduces {@code COACTUPC} {@code 9700-CHECK-CHANGE-IN-REC}
  *       (L4109&ndash;L4193). The legacy literal {@code "Record changed by some one else. Please review"}
  *       is deliberately modernized to {@code "Record updated by another user - please retry"}
@@ -265,21 +267,22 @@ class AccountControllerTest {
      * GET not-found: the mocked service raises {@link AccountNotFoundException}, which
      * {@code GlobalExceptionHandler} maps to HTTP&nbsp;404 with the structured {@code ApiError} body.
      *
-     * <p>The migrated exception carries a deliberately generic, id-free message
-     * ({@code "Account not found in Acct Master file."}) per &sect;0.6.6 &mdash; it does NOT
-     * interpolate the account id and carries no {@code Resp:}/{@code Reas:} CICS diagnostics from the
-     * legacy 3270 text. The exception exposes only a no-argument constructor, so it is thrown as
-     * {@code new AccountNotFoundException()}.</p>
+     * <p>The migrated exception carries the legacy-parity message that names the requested account
+     * ({@code "Account: 00000000002 not found in Acct Master file."}) &mdash; QA finding F-01 restores
+     * the id for behavioral parity with {@code COACTVWC}, modernized to drop the {@code Resp:}/{@code Reas:}
+     * CICS diagnostics. The id is echoed only in the response body and is never logged (&sect;0.6.6 is a
+     * logging constraint; this 404 path does not log and the {@code path} stays digit-masked). The
+     * exception is thrown as {@code new AccountNotFoundException(MISSING_ID)}.</p>
      */
     @Test
     void getAccount_notFound_returns404WithExactMessage() throws Exception {
-        when(accountService.getAccount(MISSING_ID)).thenThrow(new AccountNotFoundException());
+        when(accountService.getAccount(MISSING_ID)).thenThrow(new AccountNotFoundException(MISSING_ID));
 
         mockMvc.perform(get("/api/v1/accounts/{accountId}", MISSING_ID))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.status").value(404))
                 .andExpect(jsonPath("$.error").value("Not Found"))
-                .andExpect(jsonPath("$.message").value("Account not found in Acct Master file."))
+                .andExpect(jsonPath("$.message").value("Account: 00000000002 not found in Acct Master file."))
                 // Path is the SANITIZED route template, never the raw URI carrying the account id
                 // (AAP 0.6.6 / CWE-209/532) — see GlobalExceptionHandler#resolvePath.
                 .andExpect(jsonPath("$.path").value("/api/v1/accounts/{accountId}"));
@@ -438,20 +441,19 @@ class AccountControllerTest {
 
     /**
      * PUT not-found: the (mocked) service raises {@link AccountNotFoundException} for the missing key,
-     * mapped to HTTP&nbsp;404 with the id-free message. Reproduces the legacy {@code COACTUPC}
-     * {@code 9600} {@code READ ... UPDATE} {@code NOTFND} path. The exception exposes only a no-argument
-     * constructor.
+     * mapped to HTTP&nbsp;404 with the legacy-parity message naming the requested id (QA finding F-01).
+     * Reproduces the legacy {@code COACTUPC} {@code 9600} {@code READ ... UPDATE} {@code NOTFND} path.
      */
     @Test
     void updateAccount_notFound_returns404() throws Exception {
         when(accountService.updateAccount(eq(MISSING_ID), any(AccountUpdateRequest.class)))
-                .thenThrow(new AccountNotFoundException());
+                .thenThrow(new AccountNotFoundException(MISSING_ID));
 
         mockMvc.perform(put("/api/v1/accounts/{accountId}", MISSING_ID)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(validRequestJson()))
                 .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.message").value("Account not found in Acct Master file."));
+                .andExpect(jsonPath("$.message").value("Account: 00000000002 not found in Acct Master file."));
     }
 
     /**
@@ -595,6 +597,101 @@ class AccountControllerTest {
     @Test
     void updateAccount_stringMoneyToken_returns400() throws Exception {
         String body = validRequestJson().replace("\"currentBalance\": 194.00", "\"currentBalance\": \"194.00\"");
+
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    /**
+     * F-07: a NEGATIVE {@code version} token ({@code -1}) is rejected by the DTO's
+     * {@code @PositiveOrZero} guard during the {@code @Valid} pass &rarr; HTTP&nbsp;400
+     * {@code "Validation failed"} with {@code fieldErrors.version}. A persisted {@code @Version} is
+     * only ever non-negative, so a negative token is malformed input, not a genuine concurrency
+     * conflict; rejecting it as 400 prevents it from being misreported as a 409. The service is never
+     * invoked.
+     */
+    @Test
+    void updateAccount_negativeVersion_returns400ValidationFailed() throws Exception {
+        String body = validRequestJson().replace("\"version\": 0", "\"version\": -1");
+
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.message").value("Validation failed"))
+                .andExpect(jsonPath("$.fieldErrors.version").exists());
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    /**
+     * F-07: a NUMERIC token supplied for the {@code String addressZip} field ({@code 12345}) is
+     * rejected by the strict textual-coercion policy rather than silently stringified to
+     * {@code "12345"} &rarr; sanitized 400. The service is never invoked.
+     */
+    @Test
+    void updateAccount_numericAddressZipToken_returns400() throws Exception {
+        String body = validRequestJson().replace("\"addressZip\": \"A000000000\"", "\"addressZip\": 12345");
+
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    /**
+     * F-07: a BOOLEAN token supplied for the {@code String addressZip} field ({@code true}) is
+     * rejected by the strict textual-coercion policy rather than silently stringified to
+     * {@code "true"} &rarr; sanitized 400. The service is never invoked.
+     */
+    @Test
+    void updateAccount_booleanAddressZipToken_returns400() throws Exception {
+        String body = validRequestJson().replace("\"addressZip\": \"A000000000\"", "\"addressZip\": true");
+
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    /**
+     * F-03: content AFTER the single top-level JSON value (a second smuggled object) is rejected by
+     * {@code FAIL_ON_TRAILING_TOKENS} &rarr; sanitized 400, so a client cannot append a second
+     * document that binding would otherwise ignore. The service is never invoked.
+     */
+    @Test
+    void updateAccount_trailingTokensAfterBody_returns400() throws Exception {
+        String body = validRequestJson() + "{\"smuggled\":true}";
+
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    /**
+     * F-03: a DUPLICATE field name (two {@code version} keys) is rejected by
+     * {@code STRICT_DUPLICATE_DETECTION} &rarr; sanitized 400, closing the last-one-wins override
+     * where a second occurrence silently shadows the first. The service is never invoked.
+     */
+    @Test
+    void updateAccount_duplicateFieldName_returns400() throws Exception {
+        String body = validRequestJson().replace("\"version\": 0", "\"version\": 0,\n  \"version\": 1");
 
         mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
                         .contentType(MediaType.APPLICATION_JSON)

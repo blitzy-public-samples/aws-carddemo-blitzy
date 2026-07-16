@@ -230,10 +230,12 @@ public class GlobalExceptionHandler {
      *
      * <p>Reproduces the {@code DFHRESP(NOTFND)} branch of {@code COACTVWC}'s
      * {@code 9300-GETACCTDATA-BYACCT} paragraph ({@code app/cbl/COACTVWC.cbl:L786-L807}). The
-     * exception carries a fixed, id-free message ({@code "Account not found in Acct Master file."})
-     * &mdash; it embeds no account identifier &mdash; so it is passed through verbatim, while the
-     * sensitive id is kept out of the body by the route-template {@code path} (see
-     * {@link #resolvePath}).</p>
+     * exception carries the legacy-parity message {@code "Account: <id> not found in Acct Master
+     * file."} (QA finding F-01), which names the requested account; it is passed through verbatim.
+     * The embedded id is the key the client supplied on the path, echoed only back to that caller.
+     * This handler <strong>does not log</strong>, so the id never reaches a log line (AAP
+     * &sect;0.6.6 is a logging constraint); the {@code path} field remains the digit-masked route
+     * template (see {@link #resolvePath}), so the concrete URI is still never serialized there.</p>
      *
      * @param ex      the not-found signal raised by the service layer
      * @param request the current request, used only to derive the sanitized route template

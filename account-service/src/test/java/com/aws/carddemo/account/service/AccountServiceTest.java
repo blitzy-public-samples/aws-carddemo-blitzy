@@ -164,9 +164,11 @@ class AccountServiceTest {
      * [app/cbl/COACTVWC.cbl:L786-L807] and yields {@link AccountNotFoundException} (HTTP&nbsp;404).
      *
      * <p>The message is asserted verbatim against the confirmed collaborator contract. The migrated
-     * exception carries a deliberately generic, id-free message (AAP&nbsp;&sect;0.6.6 &mdash; the full
-     * account number must never leak into logs or error payloads), so it does <em>not</em> interpolate
-     * the account id and contains no {@code Resp:}/{@code Reas:} suffix from the legacy 3270 text.</p>
+     * exception reproduces the legacy {@code COACTVWC} not-found text and names the requested account
+     * ({@code "Account: 00000000001 not found in Acct Master file."}) &mdash; QA finding F-01 restores
+     * the id for behavioral parity, modernized to drop the {@code Resp:}/{@code Reas:} CICS suffix. The
+     * id is surfaced only in the response message and never logged (AAP&nbsp;&sect;0.6.6 is a logging
+     * constraint; the 404 handler does not log).</p>
      */
     @Test
     void getAccount_whenRecordMissing_throwsAccountNotFound() {
@@ -174,7 +176,7 @@ class AccountServiceTest {
 
         assertThatThrownBy(() -> service.getAccount(ACCOUNT_ID))
                 .isInstanceOf(AccountNotFoundException.class)
-                .hasMessage("Account not found in Acct Master file.");
+                .hasMessage("Account: 00000000001 not found in Acct Master file.");
 
         // The mapper is never reached when the record is absent (STRICT_STUBS: not stubbed above).
         verify(mapper, never()).toResponse(any());
@@ -319,8 +321,9 @@ class AccountServiceTest {
     /**
      * Not-found on update: an absent record reproduces the {@code READ ... UPDATE} miss and yields
      * {@link AccountNotFoundException} (HTTP&nbsp;404) before any concurrency check or write. The
-     * id-free message is asserted verbatim (AAP&nbsp;&sect;0.6.6), and neither {@code applyUpdate} nor
-     * {@code save} is invoked.
+     * legacy-parity message naming the requested id is asserted verbatim (QA finding F-01; the id is
+     * echoed only in the response and never logged, preserving AAP&nbsp;&sect;0.6.6 log-hygiene), and
+     * neither {@code applyUpdate} nor {@code save} is invoked.
      */
     @Test
     void updateAccount_whenRecordMissing_throwsAccountNotFoundAndDoesNotWrite() {
@@ -329,7 +332,7 @@ class AccountServiceTest {
 
         assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, request))
                 .isInstanceOf(AccountNotFoundException.class)
-                .hasMessage("Account not found in Acct Master file.");
+                .hasMessage("Account: 00000000001 not found in Acct Master file.");
 
         verify(repository, never()).saveAndFlush(any());
         verify(mapper, never()).applyUpdate(any(), any());

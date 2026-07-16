@@ -195,9 +195,11 @@ public class AccountService {
         // 1210-EDIT-ACCOUNT: reject a malformed key before touching persistence (-> 400).
         validator.validateAccountId(accountId);
 
-        // Keyed READ of ACCTFILE; empty Optional reproduces DFHRESP(NOTFND) (-> 404).
+        // Keyed READ of ACCTFILE; empty Optional reproduces DFHRESP(NOTFND) (-> 404). The
+        // requested id is carried into the not-found message ("Account: <id> not found in Acct
+        // Master file.", F-01 legacy parity); it is echoed only to the caller and never logged.
         final Account account = repository.findById(accountId)
-                .orElseThrow(AccountNotFoundException::new);
+                .orElseThrow(() -> new AccountNotFoundException(accountId));
 
         // Read projection: mapper echoes/formats the account fields for the client.
         return mapper.toResponse(account);
@@ -272,9 +274,11 @@ public class AccountService {
         // 2. Field edits (1200-EDIT-* chain) -> 400 on the first invalid field.
         validator.validate(request);
 
-        // 3. Load the managed entity (legacy READ ... UPDATE, 9600) -> 404 if absent.
+        // 3. Load the managed entity (legacy READ ... UPDATE, 9600) -> 404 if absent. The requested
+        //    id is carried into the not-found message (F-01 legacy parity); echoed only to the
+        //    caller and never logged.
         final Account account = repository.findById(accountId)
-                .orElseThrow(AccountNotFoundException::new);
+                .orElseThrow(() -> new AccountNotFoundException(accountId));
 
         // 4. Explicit before-image comparison (9700-CHECK-CHANGE-IN-REC) -> 409 on a stale version.
         //    The loaded entity carries the CURRENT DB version, so this deterministic check — not

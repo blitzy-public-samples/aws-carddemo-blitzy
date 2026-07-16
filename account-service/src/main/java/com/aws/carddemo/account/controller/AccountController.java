@@ -23,6 +23,7 @@ import com.aws.carddemo.account.service.AccountService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.ExampleObject;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
@@ -31,6 +32,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Pattern;
 
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -120,6 +122,53 @@ public class AccountController {
      */
     private static final String ACCOUNT_ID_MESSAGE = "accountId must be an 11-digit number";
 
+    // ------------------------------------------------------------------------------------------------
+    // OpenAPI example payloads (F-12). springdoc renders one example per response media type; without
+    // an explicit per-status @ExampleObject it reuses the ApiError schema's single (400-flavored)
+    // sample for the 404 and 409 responses too. These constants supply an accurate, status-specific
+    // ApiError example for each documented error code so the generated /v3/api-docs and Swagger UI show
+    // the correct shape and message under 400, 404, and 409. They are compile-time constant Strings so
+    // they can be referenced from the annotation attributes below.
+    // ------------------------------------------------------------------------------------------------
+
+    /** Example ApiError body for a 400 caused by a malformed path id (GET). */
+    private static final String EXAMPLE_400_ID = "{\n"
+            + "  \"timestamp\": \"2026-07-15T20:09:30.123456Z\",\n"
+            + "  \"status\": 400,\n"
+            + "  \"error\": \"Bad Request\",\n"
+            + "  \"message\": \"Validation failed\",\n"
+            + "  \"path\": \"/api/v1/accounts/{accountId}\",\n"
+            + "  \"fieldErrors\": { \"accountId\": \"accountId must be an 11-digit number\" }\n"
+            + "}";
+
+    /** Example ApiError body for a 400 caused by an invalid update body (PUT). */
+    private static final String EXAMPLE_400_BODY = "{\n"
+            + "  \"timestamp\": \"2026-07-15T20:09:30.123456Z\",\n"
+            + "  \"status\": 400,\n"
+            + "  \"error\": \"Bad Request\",\n"
+            + "  \"message\": \"Validation failed\",\n"
+            + "  \"path\": \"/api/v1/accounts/{accountId}\",\n"
+            + "  \"fieldErrors\": { \"activeStatus\": \"must be 'Y' or 'N'\" }\n"
+            + "}";
+
+    /** Example ApiError body for a 404 (account absent); message reproduces the legacy COACTVWC text. */
+    private static final String EXAMPLE_404 = "{\n"
+            + "  \"timestamp\": \"2026-07-15T20:09:30.123456Z\",\n"
+            + "  \"status\": 404,\n"
+            + "  \"error\": \"Not Found\",\n"
+            + "  \"message\": \"Account: 00000000099 not found in Acct Master file.\",\n"
+            + "  \"path\": \"/api/v1/accounts/{accountId}\"\n"
+            + "}";
+
+    /** Example ApiError body for a 409 (stale optimistic-lock version). */
+    private static final String EXAMPLE_409 = "{\n"
+            + "  \"timestamp\": \"2026-07-15T20:09:30.123456Z\",\n"
+            + "  \"status\": 409,\n"
+            + "  \"error\": \"Conflict\",\n"
+            + "  \"message\": \"Record updated by another user - please retry\",\n"
+            + "  \"path\": \"/api/v1/accounts/{accountId}\"\n"
+            + "}";
+
     /**
      * The single application-service collaborator. The controller knows only the service; it never
      * references the repository, mapper, validator, or any exception type for control flow.
@@ -159,12 +208,14 @@ public class AccountController {
                             schema = @Schema(implementation = AccountResponse.class))),
             @ApiResponse(responseCode = "400", description = "Malformed account id (not 11 digits)",
                     content = @Content(mediaType = "application/json",
-                            schema = @Schema(implementation = ApiError.class))),
+                            schema = @Schema(implementation = ApiError.class),
+                            examples = @ExampleObject(name = "malformedId", value = EXAMPLE_400_ID))),
             @ApiResponse(responseCode = "404", description = "Account not found",
                     content = @Content(mediaType = "application/json",
-                            schema = @Schema(implementation = ApiError.class)))
+                            schema = @Schema(implementation = ApiError.class),
+                            examples = @ExampleObject(name = "notFound", value = EXAMPLE_404)))
     })
-    @GetMapping("/{accountId}")
+    @GetMapping(value = "/{accountId}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<AccountResponse> getAccount(
             @Parameter(description = "Zero-padded 11-digit account identifier", example = "00000000001")
             @PathVariable
@@ -183,6 +234,15 @@ public class AccountController {
      * HTTP&nbsp;400; a missing account becomes HTTP&nbsp;404; and a stale {@code version} becomes
      * HTTP&nbsp;409 &mdash; all via the central exception handler.</p>
      *
+     * <p><strong>Content negotiation before the transaction (F-02).</strong> The declared
+     * {@code consumes}/{@code produces = application/json} make the {@code Content-Type} and
+     * {@code Accept} checks part of handler <em>mapping</em>: an unacceptable {@code Accept}
+     * (&rarr; {@code HttpMediaTypeNotAcceptableException}, 406) or an unsupported {@code Content-Type}
+     * (&rarr; {@code HttpMediaTypeNotSupportedException}, 415) is raised <em>before</em> this method is
+     * invoked, so the {@code @Transactional} service &mdash; and any state/version mutation &mdash; is
+     * never reached. This closes the defect where a 406 was returned only after the update had already
+     * been committed.</p>
+     *
      * @param accountId the zero-padded 11-digit account key from the request path
      * @param request   the editable account fields plus the client's last-seen {@code version}
      * @return HTTP&nbsp;200 with the updated {@link AccountResponse}
@@ -197,15 +257,20 @@ public class AccountController {
                             schema = @Schema(implementation = AccountResponse.class))),
             @ApiResponse(responseCode = "400", description = "Invalid account id or request body",
                     content = @Content(mediaType = "application/json",
-                            schema = @Schema(implementation = ApiError.class))),
+                            schema = @Schema(implementation = ApiError.class),
+                            examples = @ExampleObject(name = "invalidBody", value = EXAMPLE_400_BODY))),
             @ApiResponse(responseCode = "404", description = "Account not found",
                     content = @Content(mediaType = "application/json",
-                            schema = @Schema(implementation = ApiError.class))),
+                            schema = @Schema(implementation = ApiError.class),
+                            examples = @ExampleObject(name = "notFound", value = EXAMPLE_404))),
             @ApiResponse(responseCode = "409", description = "Concurrent modification (stale version)",
                     content = @Content(mediaType = "application/json",
-                            schema = @Schema(implementation = ApiError.class)))
+                            schema = @Schema(implementation = ApiError.class),
+                            examples = @ExampleObject(name = "staleVersion", value = EXAMPLE_409)))
     })
-    @PutMapping("/{accountId}")
+    @PutMapping(value = "/{accountId}",
+            consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<AccountResponse> updateAccount(
             @Parameter(description = "Zero-padded 11-digit account identifier", example = "00000000001")
             @PathVariable
