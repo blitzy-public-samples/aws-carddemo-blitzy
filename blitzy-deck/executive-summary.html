@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CardDemo Modernization — Executive Summary</title>
+
+  <!-- Pinned CDN: reveal.js 5.1.0 core stylesheets (cdnjs). No reveal theme is linked; the Blitzy theme is inlined below. -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reset.min.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reveal.min.css" />
+
+  <!-- ============================================================= -->
+  <!-- INLINED BLITZY BRAND THEME (self-contained; zero local deps)  -->
+  <!-- ============================================================= -->
+  <style>
+    :root {
+      --bg: #0A0E17;
+      --bg-2: #0D1425;
+      --surface: #121A2B;
+      --surface-2: #16203A;
+      --border: #24304B;
+      --text: #E7ECF5;
+      --text-dim: #9DB0CC;
+      --accent: #5B8DEF;
+      --accent-2: #8B5CF6;
+      --accent-3: #22D3EE;
+      --grad: linear-gradient(90deg, #5B8DEF 0%, #8B5CF6 100%);
+      --grad-soft: linear-gradient(135deg, rgba(91,141,239,.16), rgba(139,92,246,.16));
+      --success: #34D399;
+      --warn: #FBBF24;
+      --danger: #F87171;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    }
+
+    html, body { background: var(--bg); }
+
+    .reveal {
+      font-family: var(--sans);
+      color: var(--text);
+      font-size: 30px;
+    }
+    .reveal .slides {
+      text-align: left;
+    }
+    .reveal .slides > section {
+      background:
+        radial-gradient(1200px 700px at 12% -10%, rgba(91,141,239,.10), transparent 60%),
+        radial-gradient(1100px 700px at 100% 0%, rgba(139,92,246,.10), transparent 55%),
+        linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+      padding: 42px 60px 64px 60px;
+      height: 100%;
+      box-sizing: border-box;
+      border-radius: 4px;
+    }
+
+    .reveal h1, .reveal h2, .reveal h3 { color: var(--text); font-weight: 700; letter-spacing: -0.01em; text-transform: none; }
+    .reveal h1 { font-size: 2.1em; line-height: 1.08; }
+    .reveal h2 { font-size: 1.35em; margin: 0 0 .55em 0; padding-bottom: .28em; position: relative; }
+    .reveal h2::after {
+      content: ""; position: absolute; left: 0; bottom: 0;
+      width: 92px; height: 4px; border-radius: 3px; background: var(--grad);
+    }
+    .reveal h3 { font-size: 1.02em; color: var(--text); margin: .2em 0 .4em; }
+    .reveal p { line-height: 1.4; color: var(--text-dim); }
+    .reveal strong { color: var(--text); }
+    .reveal em { color: var(--accent-3); font-style: normal; }
+
+    .kicker {
+      text-transform: uppercase; letter-spacing: .22em; font-size: .5em; font-weight: 700;
+      color: var(--accent); margin: 0 0 .5em 0; display: inline-block;
+    }
+
+    .lead { font-size: .82em; color: var(--text-dim); max-width: 26em; }
+
+    /* ---- KPI cards ---- */
+    .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 10px; }
+    .kpi-grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+    .kpi-grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+    .kpi {
+      background: linear-gradient(180deg, var(--surface-2), var(--surface));
+      border: 1px solid var(--border); border-radius: 14px; padding: 18px 18px 16px;
+    }
+    .kpi .num {
+      font-size: 1.7em; font-weight: 800; line-height: 1;
+      background: var(--grad); -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent; color: var(--accent);
+    }
+    .kpi .lbl { margin-top: 8px; font-size: .5em; letter-spacing: .12em; text-transform: uppercase; color: var(--text-dim); }
+    .kpi .sub { margin-top: 6px; font-size: .5em; color: var(--text-dim); line-height: 1.3; }
+
+    /* ---- ribbon (compact KPI strip) ---- */
+    .ribbon { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 22px; }
+    .ribbon .cell { border: 1px solid var(--border); background: rgba(255,255,255,.02); border-radius: 12px; padding: 12px 18px; }
+    .ribbon .cell b { display: block; font-size: 1.15em; color: var(--text);
+      background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .ribbon .cell span { font-size: .5em; text-transform: uppercase; letter-spacing: .12em; color: var(--text-dim); }
+
+    /* ---- icon rows / grids ---- */
+    .icon-row { display: flex; align-items: center; gap: 18px; margin: 8px 0 4px; color: var(--text-dim); }
+    .icon-row .sep { color: var(--accent); opacity: .8; }
+    .chip { display: inline-flex; align-items: center; gap: 10px; padding: 9px 14px;
+      border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,.02); font-size: .62em; color: var(--text); }
+    .icon-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 12px; }
+    .feature {
+      display: flex; gap: 14px; align-items: flex-start;
+      border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px;
+      background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    }
+    .feature .ic { flex: 0 0 auto; width: 40px; height: 40px; border-radius: 10px;
+      display: grid; place-items: center; background: var(--grad-soft); border: 1px solid var(--border); }
+    .feature h3 { margin: 0 0 3px; font-size: .72em; }
+    .feature p { margin: 0; font-size: .56em; line-height: 1.35; }
+
+    .reveal svg.lucide { width: 22px; height: 22px; stroke: var(--accent); stroke-width: 2; }
+    .feature .ic svg.lucide { width: 22px; height: 22px; stroke: var(--accent); }
+    .chip svg.lucide { width: 16px; height: 16px; }
+    .icon-row svg.lucide { width: 26px; height: 26px; }
+
+    /* ---- tables ---- */
+    .reveal table { width: 100%; border-collapse: collapse; font-size: .58em; margin-top: 6px; }
+    .reveal table.tight { font-size: .52em; }
+    .reveal thead th {
+      text-align: left; color: var(--text); font-weight: 700;
+      background: rgba(91,141,239,.14); border-bottom: 1px solid var(--border);
+      padding: 9px 12px;
+    }
+    .reveal tbody td { padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--text-dim); vertical-align: top; }
+    .reveal tbody tr:nth-child(even) td { background: rgba(255,255,255,.02); }
+    .reveal code, .reveal .mono { font-family: var(--mono); color: var(--accent-3); }
+
+    /* ---- risk pills ---- */
+    .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .82em; font-weight: 700; letter-spacing: .04em; }
+    .risk-high { background: rgba(248,113,113,.16); color: #FCA5A5; border: 1px solid rgba(248,113,113,.4); }
+    .risk-med  { background: rgba(251,191,36,.14);  color: #FCD34D; border: 1px solid rgba(251,191,36,.38); }
+    .risk-low  { background: rgba(52,211,153,.14);  color: #6EE7B7; border: 1px solid rgba(52,211,153,.38); }
+
+    /* ---- code callout ---- */
+    .callout {
+      margin-top: 16px; border: 1px solid var(--border); border-left: 4px solid var(--accent);
+      background: #0B1120; border-radius: 10px; padding: 14px 18px;
+      font-family: var(--mono); font-size: .6em; color: var(--text); overflow-x: auto;
+    }
+    .callout .cmt { color: var(--text-dim); }
+
+    /* ---- two-column ---- */
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; align-items: start; }
+    .cols.w-60-40 { grid-template-columns: 1.5fr 1fr; }
+
+    /* ---- title slide ---- */
+    section.title { }
+    section.title .wrap { display: flex; flex-direction: column; justify-content: center; height: 100%; }
+    section.title h1 { margin: .12em 0 .18em; }
+    section.title .sub { font-size: .72em; color: var(--text-dim); max-width: 24em; }
+
+    /* ---- mermaid sizing ---- */
+    .reveal .mermaid { display: flex; justify-content: center; margin-top: 6px; }
+    .reveal .mermaid svg { max-height: 58vh; width: auto; height: auto; }
+
+    /* ---- footer brand + progress accent ---- */
+    .reveal .slide-footer {
+      position: absolute; left: 60px; bottom: 18px; font-size: .42em; letter-spacing: .14em;
+      text-transform: uppercase; color: var(--text-dim);
+    }
+    .reveal .slide-footer b { color: var(--text);
+      background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .reveal .progress { color: var(--accent-2); height: 4px; }
+    .reveal .controls { color: var(--accent); }
+    .reveal .slide-number { background: transparent; color: var(--text-dim); font-family: var(--mono); }
+
+    .note { font-size: .52em; color: var(--text-dim); margin-top: 12px; }
+    ul.clean { list-style: none; padding-left: 0; }
+    ul.clean li { padding: 6px 0 6px 26px; position: relative; font-size: .62em; color: var(--text-dim); }
+    ul.clean li::before { content: ""; position: absolute; left: 0; top: 14px; width: 10px; height: 10px; border-radius: 3px; background: var(--grad); }
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+      <!-- ================= SLIDE 1 — TITLE ================= -->
+      <section class="title" data-transition="fade">
+        <div class="wrap">
+          <span class="kicker">Executive Briefing</span>
+          <h1>CardDemo Modernization</h1>
+          <p class="sub">Re-platforming the AWS mainframe credit-card management system from COBOL, CICS, VSAM, and JCL to Java 25 LTS and Spring Boot 3.5 &mdash; preserving 100% of business behavior with zero new features.</p>
+          <div class="icon-row">
+            <span class="chip"><i data-lucide="landmark"></i> Mainframe (COBOL / CICS / VSAM)</span>
+            <span class="sep"><i data-lucide="arrow-right"></i></span>
+            <span class="chip"><i data-lucide="coffee"></i> Java 25</span>
+            <span class="chip"><i data-lucide="leaf"></i> Spring Boot 3.5</span>
+          </div>
+          <div class="ribbon">
+            <div class="cell"><b>28</b><span>COBOL Programs</span></div>
+            <div class="cell"><b>~19,254</b><span>Lines of Code</span></div>
+            <div class="cell"><b>100%</b><span>Behavioral Parity</span></div>
+            <div class="cell"><b>0</b><span>New Features</span></div>
+          </div>
+        </div>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 2 — EXECUTIVE SUMMARY ================= -->
+      <section>
+        <span class="kicker">Executive Summary</span>
+        <h2>A like-for-like modernization, not a rewrite</h2>
+        <p class="lead">The migration reconstructs every COBOL program, screen, batch job, and data record as an idiomatic Java / Spring Boot equivalent. Observable behavior is preserved exactly; the business scope is frozen.</p>
+        <div class="kpi-grid">
+          <div class="kpi"><div class="num">1 : 1</div><div class="lbl">Behavioral Parity</div><div class="sub">Every paragraph and computation reproduced</div></div>
+          <div class="kpi"><div class="num">0</div><div class="lbl">New Business Features</div><div class="sub">Scope frozen to existing capability</div></div>
+          <div class="kpi"><div class="num">10 &rarr; 16</div><div class="lbl">VSAM to PostgreSQL</div><div class="sub">Indexed files become relational tables</div></div>
+          <div class="kpi"><div class="num">&ge;80%</div><div class="lbl">Test Coverage Gate</div><div class="sub">Unit plus Testcontainers integration</div></div>
+        </div>
+        <p class="note">Legacy COBOL is retained read-only under <span class="mono">/legacy</span> for reference and audit.</p>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 3 — WHY MODERNIZE ================= -->
+      <section>
+        <span class="kicker">Business Case</span>
+        <h2>Why modernize now</h2>
+        <table>
+          <thead><tr><th style="width:26%">Driver</th><th style="width:37%">Legacy Constraint</th><th>Modernized Outcome</th></tr></thead>
+          <tbody>
+            <tr><td><i data-lucide="users"></i> Talent</td><td>Shrinking pool of COBOL / CICS specialists</td><td>Mainstream Java and Spring engineering talent</td></tr>
+            <tr><td><i data-lucide="trending-down"></i> Cost</td><td>MIPS-based licensing and specialized operations</td><td>Commodity compute, containers, open source</td></tr>
+            <tr><td><i data-lucide="plug"></i> Integration</td><td>Terminal and batch-bound access patterns</td><td>REST APIs and standard relational data access</td></tr>
+            <tr><td><i data-lucide="eye"></i> Transparency</td><td>Opaque, undocumented program logic</td><td>Layered services with 100% traceability</td></tr>
+          </tbody>
+        </table>
+        <p class="note">Modernization preserves proven business rules while removing platform and staffing risk.</p>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 4 — DOMAIN OVERVIEW ================= -->
+      <section>
+        <span class="kicker">What CardDemo Does</span>
+        <h2>Credit-card account management domain</h2>
+        <div class="icon-grid">
+          <div class="feature"><div class="ic"><i data-lucide="wallet"></i></div><div><h3>Account Management</h3><p>Inquiry and update of account master, balances, and limits.</p></div></div>
+          <div class="feature"><div class="ic"><i data-lucide="credit-card"></i></div><div><h3>Card Operations</h3><p>List, view, and update cards linked to accounts.</p></div></div>
+          <div class="feature"><div class="ic"><i data-lucide="arrow-left-right"></i></div><div><h3>Transactions</h3><p>List, view, add, and post transactions to balances.</p></div></div>
+          <div class="feature"><div class="ic"><i data-lucide="receipt"></i></div><div><h3>Billing &amp; Payments</h3><p>Bill payment posting and statement generation.</p></div></div>
+          <div class="feature"><div class="ic"><i data-lucide="bar-chart-3"></i></div><div><h3>Reporting</h3><p>Transaction reports and interest calculation.</p></div></div>
+          <div class="feature"><div class="ic"><i data-lucide="shield-check"></i></div><div><h3>User Administration</h3><p>User CRUD and two roles: Admin (A) and User (U).</p></div></div>
+        </div>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 5 — MIGRATION SCOPE ================= -->
+      <section>
+        <span class="kicker">Migration Inventory</span>
+        <h2>The full scope, quantified</h2>
+        <div class="kpi-grid">
+          <div class="kpi"><div class="num">28</div><div class="lbl">COBOL Programs</div></div>
+          <div class="kpi"><div class="num">~19,254</div><div class="lbl">Lines of Code</div></div>
+          <div class="kpi"><div class="num">28</div><div class="lbl">Copybooks</div></div>
+          <div class="kpi"><div class="num">17</div><div class="lbl">BMS Screen Maps</div></div>
+        </div>
+        <div class="kpi-grid" style="margin-top:16px;">
+          <div class="kpi"><div class="num">29</div><div class="lbl">JCL Jobs</div><div class="sub">plus 2 PROCs and 1 control member</div></div>
+          <div class="kpi"><div class="num">10</div><div class="lbl">VSAM Datasets</div><div class="sub">plus 3 alternate indexes</div></div>
+          <div class="kpi"><div class="num">17</div><div class="lbl">Online Transactions</div></div>
+          <div class="kpi"><div class="num">311</div><div class="lbl">Seed Transactions</div><div class="sub">with 50 customers, accounts, and cards</div></div>
+        </div>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 6 — BEFORE ARCHITECTURE ================= -->
+      <section>
+        <span class="kicker">Before</span>
+        <h2>Source &mdash; mainframe monolith</h2>
+        <pre class="mermaid">
+flowchart TB
+  T["3270 Terminals"] --> CICS["CICS TS<br/>pseudo-conversational"]
+  CICS --> ON["Online COBOL<br/>17 programs (COSGN00C ... COUSR03C)"]
+  JCL["JCL Scheduler"] --> BAT["Batch COBOL<br/>CBTRN02C, CBACT04C, CBSTM03A ..."]
+  ON --> VSAM[("VSAM KSDS<br/>10 datasets + 3 AIX")]
+  BAT --> VSAM
+  BAT --> FILES["Fixed-width files<br/>daily transaction / reject / statements"]
+</pre>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 7 — AFTER ARCHITECTURE ================= -->
+      <section>
+        <span class="kicker">After</span>
+        <h2>Target &mdash; layered Spring Boot application</h2>
+        <pre class="mermaid">
+flowchart LR
+  REST["REST clients<br/>OpenAPI / Swagger UI"] --> WEB["web<br/>@RestController x17"]
+  WEB --> SVC["service<br/>business logic + rules"]
+  SCHED["CI/CD scheduler"] --> BATCH["Spring Batch<br/>Job / Step / chunk"]
+  BATCH --> SVC
+  SVC --> REPO["repository<br/>Spring Data JPA"]
+  REPO --> PG[("PostgreSQL 16<br/>tables + FKs + indexes")]
+  CROSS["observability + security + common"] -.-> WEB
+  CROSS -.-> SVC
+  CROSS -.-> BATCH
+</pre>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 8 — CONSTRUCT MAPPING ================= -->
+      <section>
+        <span class="kicker">Transformation Rules</span>
+        <h2>How each COBOL construct maps to Java</h2>
+        <table>
+          <thead><tr><th style="width:44%">COBOL / Mainframe Construct</th><th>Java / Spring Target</th></tr></thead>
+          <tbody>
+            <tr><td>DATA DIVISION record (copybook)</td><td>POJO / JPA entity / DTO &mdash; decimals as <span class="mono">BigDecimal</span></td></tr>
+            <tr><td>PARAGRAPH / SECTION</td><td>Service or component method (order preserved)</td></tr>
+            <tr><td>COPY / REPLACE</td><td>Single shared class imported by all consumers</td></tr>
+            <tr><td>FILE SECTION (VSAM)</td><td>Spring Data repository / file-I/O service</td></tr>
+            <tr><td>SORT / MERGE</td><td>Java <span class="mono">Comparator</span> / sorted query</td></tr>
+            <tr><td>CALL (static / dynamic)</td><td>Injected Spring bean method invocation</td></tr>
+            <tr><td>JCL job</td><td>Spring Batch Job / Step plus CI/CD</td></tr>
+            <tr><td>FILE STATUS / CICS RESP</td><td>Typed exception mapped to status / return code</td></tr>
+            <tr><td>CICS COMMAREA + XCTL</td><td>Flow / session context + controller navigation</td></tr>
+            <tr><td>COMP-3 packed decimal</td><td><span class="mono">BigDecimal</span> scale 2 + explicit RoundingMode</td></tr>
+          </tbody>
+        </table>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 9 — DATA TIER ================= -->
+      <section>
+        <span class="kicker">Data Tier</span>
+        <h2>VSAM indexed files to PostgreSQL 16</h2>
+        <table class="tight">
+          <thead><tr><th>VSAM Dataset</th><th>PostgreSQL Table</th><th>Key / Index / FK</th></tr></thead>
+          <tbody>
+            <tr><td>CUSTDATA.KSDS</td><td>customer</td><td>PK cust_id</td></tr>
+            <tr><td>ACCTDATA.KSDS</td><td>account</td><td>PK acct_id; FK group_id</td></tr>
+            <tr><td>CARDDATA.KSDS</td><td>card</td><td>PK card_num; index acct_id (AIX); FK acct_id</td></tr>
+            <tr><td>CARDXREF.KSDS</td><td>card_xref</td><td>PK xref_card_num; index acct_id (AIX); FK cust_id, acct_id</td></tr>
+            <tr><td>TRANSACT.KSDS</td><td>transaction</td><td>PK tran_id; index orig_ts (AIX); FK card_num, type_cd, cat_cd</td></tr>
+            <tr><td>USRSEC.KSDS</td><td>user_security</td><td>PK sec_usr_id</td></tr>
+            <tr><td>TRANTYPE</td><td>transaction_type</td><td>PK type_cd</td></tr>
+            <tr><td>TRANCATG</td><td>transaction_category</td><td>PK (type_cd, cat_cd)</td></tr>
+            <tr><td>DISCGRP</td><td>disclosure_group</td><td>PK (group_id, type_cd, cat_cd); int_rate DECIMAL(6,2)</td></tr>
+            <tr><td>TCATBALF</td><td>tran_cat_balance</td><td>PK (acct_id, type_cd, cat_cd); bal DECIMAL(11,2)</td></tr>
+          </tbody>
+        </table>
+        <p class="note">3 alternate indexes become B-tree indexes; application-enforced relationships become real foreign keys; every COMP-3 field becomes <span class="mono">DECIMAL(x,2)</span>.</p>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 10 — ONLINE SCREENS ================= -->
+      <section>
+        <span class="kicker">Online Layer</span>
+        <h2>17 CICS screens become REST endpoints</h2>
+        <div class="cols">
+          <table class="tight">
+            <thead><tr><th>Txn</th><th>Program</th><th>Function</th></tr></thead>
+            <tbody>
+              <tr><td>CC00</td><td>COSGN00C</td><td>Sign-on</td></tr>
+              <tr><td>CM00</td><td>COMEN01C</td><td>Main menu</td></tr>
+              <tr><td>CA00</td><td>COADM01C</td><td>Admin menu</td></tr>
+              <tr><td>CAVW</td><td>COACTVWC</td><td>Account view</td></tr>
+              <tr><td>CAUP</td><td>COACTUPC</td><td>Account update</td></tr>
+              <tr><td>CCLI</td><td>COCRDLIC</td><td>Card list</td></tr>
+              <tr><td>CCDL</td><td>COCRDSLC</td><td>Card view</td></tr>
+              <tr><td>CCUP</td><td>COCRDUPC</td><td>Card update</td></tr>
+              <tr><td>CT00</td><td>COTRN00C</td><td>Transaction list</td></tr>
+            </tbody>
+          </table>
+          <table class="tight">
+            <thead><tr><th>Txn</th><th>Program</th><th>Function</th></tr></thead>
+            <tbody>
+              <tr><td>CT01</td><td>COTRN01C</td><td>Transaction view</td></tr>
+              <tr><td>CT02</td><td>COTRN02C</td><td>Transaction add</td></tr>
+              <tr><td>CR00</td><td>CORPT00C</td><td>Transaction reports</td></tr>
+              <tr><td>CB00</td><td>COBIL00C</td><td>Bill payment</td></tr>
+              <tr><td>CU00</td><td>COUSR00C</td><td>List users</td></tr>
+              <tr><td>CU01</td><td>COUSR01C</td><td>Add user</td></tr>
+              <tr><td>CU02</td><td>COUSR02C</td><td>Update user</td></tr>
+              <tr><td>CU03</td><td>COUSR03C</td><td>Delete user</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">Each screen becomes a controller with request/response DTOs that preserve field names, lengths, edit rules, and PF-key actions &mdash; delivered as REST contracts, not a new UI.</p>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 11 — BATCH LAYER ================= -->
+      <section>
+        <span class="kicker">Batch Layer</span>
+        <h2>JCL jobs become Spring Batch jobs</h2>
+        <table class="tight">
+          <thead><tr><th>Spring Batch Job</th><th>Source Program(s)</th><th>Trigger</th></tr></thead>
+          <tbody>
+            <tr><td>DailyTransactionValidateJob</td><td>CBTRN01C</td><td>daily validate</td></tr>
+            <tr><td>DailyTransactionPostingJob</td><td>CBTRN02C</td><td>POSTTRAN</td></tr>
+            <tr><td>InterestCalculationJob</td><td>CBACT04C</td><td>INTCALC</td></tr>
+            <tr><td>StatementGenerationJob</td><td>CBSTM03A + CBSTM03B</td><td>CREASTMT</td></tr>
+            <tr><td>TransactionReportJob</td><td>CBTRN03C</td><td>TRANREPT</td></tr>
+            <tr><td>AccountMasterPrintJob</td><td>CBACT01C</td><td>master print</td></tr>
+            <tr><td>CardMasterPrintJob</td><td>CBACT02C</td><td>master print</td></tr>
+            <tr><td>XrefPrintJob</td><td>CBACT03C</td><td>master print</td></tr>
+            <tr><td>CustomerMasterPrintJob</td><td>CBCUS01C</td><td>master print</td></tr>
+            <tr><td>TransactionCombineJob</td><td>COMBTRAN (SORT)</td><td>COMBTRAN</td></tr>
+            <tr><td>TransactionBackupJob</td><td>TRANBKP (IDCAMS REPRO)</td><td>backup</td></tr>
+          </tbody>
+        </table>
+        <p class="note">DD dependencies become step / flow ordering; SORT becomes a Java comparator or ORDER BY; scheduling moves to the CI/CD workflow.</p>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 12 — PARITY COMMITMENT ================= -->
+      <section>
+        <span class="kicker">Behavioral Parity</span>
+        <h2>Computations preserved to the cent</h2>
+        <div class="kpi-grid cols-3">
+          <div class="kpi"><div class="num"><i data-lucide="calculator"></i></div><div class="lbl">BigDecimal Money</div><div class="sub">Scale 2, RoundingMode.HALF_UP &mdash; never float</div></div>
+          <div class="kpi"><div class="num">100&ndash;103</div><div class="lbl">Posting Reject Codes</div><div class="sub">Exact validation order preserved</div></div>
+          <div class="kpi"><div class="num"><i data-lucide="git-compare"></i></div><div class="lbl">Golden-file Tests</div><div class="sub">Batch output compared row-for-row</div></div>
+        </div>
+        <div class="callout">
+          <span class="cmt">// Interest computation preserved exactly (CBACT04C)</span><br/>
+          monthlyInterest = tranCatBal.multiply(intRate)<br/>
+          &nbsp;&nbsp;&nbsp;&nbsp;.divide(BigDecimal.valueOf(1200), 2, RoundingMode.HALF_UP);
+        </div>
+        <p class="note">Reject codes: 100 = cross-reference not found, 101 = account not found, 102 = over credit limit, 103 = after account expiration.</p>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 13 — RISK REGISTER ================= -->
+      <section>
+        <span class="kicker">Parity Risk Register</span>
+        <h2>Hotspots and how each is contained</h2>
+        <table class="tight">
+          <thead><tr><th>ID</th><th style="width:32%">Hotspot</th><th>Level</th><th>Mitigation</th></tr></thead>
+          <tbody>
+            <tr><td>H1</td><td>CICS pseudo-conversational model</td><td><span class="pill risk-high">High</span></td><td>Explicit server-side flow / session context</td></tr>
+            <tr><td>H2</td><td>BMS field-level UI contract</td><td><span class="pill risk-high">High</span></td><td>Field-preserving DTOs; PF-keys as actions</td></tr>
+            <tr><td>H3</td><td>COMP-3 monetary fidelity</td><td><span class="pill risk-high">High</span></td><td>BigDecimal Money value object; golden files</td></tr>
+            <tr><td>H4</td><td>Batch posting reject semantics</td><td><span class="pill risk-high">High</span></td><td>RejectCode enum; exact evaluation order</td></tr>
+            <tr><td>H5</td><td>VSAM browse semantics</td><td><span class="pill risk-high">High</span></td><td>Paged, sorted queries; max-key + 1 for IDs</td></tr>
+            <tr><td>H6</td><td>Read-Update-Rewrite concurrency</td><td><span class="pill risk-high">High</span></td><td>JPA optimistic locking (@Version)</td></tr>
+            <tr><td>M1</td><td>FILE STATUS / CICS RESP mapping</td><td><span class="pill risk-med">Med</span></td><td>Typed exceptions to HTTP / return codes</td></tr>
+            <tr><td>M2</td><td>Fixed-width file contracts</td><td><span class="pill risk-med">Med</span></td><td>FixedWidthCodec preserves column layouts</td></tr>
+            <tr><td>M3</td><td>Inter-program CALL graph</td><td><span class="pill risk-med">Med</span></td><td>Constructor-injected Spring beans</td></tr>
+            <tr><td>M4</td><td>JCL orchestration + GDG backup</td><td><span class="pill risk-med">Med</span></td><td>Spring Batch flow + scheduled DB backup</td></tr>
+            <tr><td>L1</td><td>Legacy security anti-patterns</td><td><span class="pill risk-low">Low</span></td><td>Auth parity; documented hardening</td></tr>
+          </tbody>
+        </table>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 14 — QUALITY & SECURITY GATES ================= -->
+      <section>
+        <span class="kicker">Quality &amp; Security</span>
+        <h2>Every build must clear these gates</h2>
+        <div class="icon-grid">
+          <div class="feature"><div class="ic"><i data-lucide="test-tube-diagonal"></i></div><div><h3>&ge;80% Coverage</h3><p>JaCoCo line-coverage gate across unit and integration tests.</p></div></div>
+          <div class="feature"><div class="ic"><i data-lucide="badge-check"></i></div><div><h3>Zero-warning Build</h3><p>Compiles clean on Java 25 via the Maven wrapper.</p></div></div>
+          <div class="feature"><div class="ic"><i data-lucide="shield-alert"></i></div><div><h3>Zero Critical / High CVEs</h3><p>OWASP dependency-check 12.2.2 fails the build otherwise.</p></div></div>
+          <div class="feature"><div class="ic"><i data-lucide="key-round"></i></div><div><h3>No Hardcoded Secrets</h3><p>All credentials resolve from environment variables.</p></div></div>
+          <div class="feature"><div class="ic"><i data-lucide="package-check"></i></div><div><h3>Jakarta Namespace</h3><p>Spring Boot 3.x; no <span class="mono">javax.*</span>, no wildcard imports.</p></div></div>
+          <div class="feature"><div class="ic"><i data-lucide="database"></i></div><div><h3>Testcontainers</h3><p>Integration tests run against real PostgreSQL 16.</p></div></div>
+        </div>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 15 — OBSERVABILITY ================= -->
+      <section>
+        <span class="kicker">Operational Readiness</span>
+        <h2>Observability built in from day one</h2>
+        <div class="cols w-60-40">
+          <pre class="mermaid">
+flowchart LR
+  APP["Spring Boot app"] --> ACT["Actuator<br/>health / readiness"]
+  APP --> MET["Micrometer<br/>metrics"] --> PROM["Prometheus"]
+  APP --> TR["OpenTelemetry<br/>traces"] --> TEMPO["Tempo"]
+  APP --> LOG["Logback<br/>correlation IDs"]
+  PROM --> GRAF["Grafana<br/>dashboard"]
+  TEMPO --> GRAF
+</pre>
+          <div>
+            <ul class="clean">
+              <li>Structured logs carry a correlation ID across service and batch boundaries</li>
+              <li>Distributed traces exported via OTLP and viewable locally</li>
+              <li>Health and readiness probes via Spring Boot Actuator</li>
+              <li>Grafana dashboard verified against the local docker-compose stack</li>
+            </ul>
+          </div>
+        </div>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+      <!-- ================= SLIDE 16 — SUMMARY & ROADMAP ================= -->
+      <section>
+        <span class="kicker">Summary &amp; Outlook</span>
+        <h2>Delivered with governance; positioned for the future</h2>
+        <div class="kpi-grid cols-3">
+          <div class="kpi"><div class="num">100%</div><div class="lbl">Paragraph Traceability</div><div class="sub">Bidirectional source-to-target matrix</div></div>
+          <div class="kpi"><div class="num"><i data-lucide="book-open"></i></div><div class="lbl">Decision Log</div><div class="sub">Every non-trivial choice recorded</div></div>
+          <div class="kpi"><div class="num"><i data-lucide="rocket"></i></div><div class="lbl">Onboarding Docs</div><div class="sub">Clean machine to running app</div></div>
+        </div>
+        <h3 style="margin-top:22px;">Roadmap &mdash; candidates beyond this migration</h3>
+        <div class="icon-row" style="flex-wrap:wrap;">
+          <span class="chip"><i data-lucide="arrow-up-circle"></i> Spring Boot 4.x upgrade</span>
+          <span class="chip"><i data-lucide="cloud"></i> Cloud / Kubernetes deployment</span>
+          <span class="chip"><i data-lucide="message-square"></i> MQ integration (future, not in scope)</span>
+          <span class="chip"><i data-lucide="database-zap"></i> Db2 / IMS exploration</span>
+        </div>
+        <p class="note">Roadmap items are forward-looking options only and are not part of this behavioral-parity migration.</p>
+        <div class="slide-footer">Prepared by <b>Blitzy</b></div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- Pinned CDN: reveal.js 5.1.0 core (cdnjs) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reveal.min.js"></script>
+  <!-- Pinned CDN: Mermaid 11.4.0 (jsDelivr) -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"></script>
+  <!-- Pinned CDN: Lucide 0.460.0 (jsDelivr) -->
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+
+  <script>
+    // Blitzy dark theme variables for Mermaid so diagrams match the deck.
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      themeVariables: {
+        darkMode: true,
+        background: '#0D1425',
+        primaryColor: '#16203A',
+        primaryBorderColor: '#5B8DEF',
+        primaryTextColor: '#E7ECF5',
+        lineColor: '#8B5CF6',
+        secondaryColor: '#121A2B',
+        tertiaryColor: '#121A2B',
+        clusterBkg: '#121A2B',
+        clusterBorder: '#24304B',
+        fontFamily: '-apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+        fontSize: '15px'
+      }
+    });
+
+    // CRITICAL ORDER: render Mermaid and icons BEFORE Reveal initializes so
+    // diagrams are measured while all slides are visible (avoids zero-width
+    // rendering inside hidden slides).
+    document.addEventListener('DOMContentLoaded', async function () {
+      // Mermaid sizes diagrams by measuring text via getBBox(), which returns 0
+      // inside hidden or zero-width containers. reveal.js's stylesheet (already
+      // applied in <head>) hides every non-active slide before Reveal.initialize
+      // runs, so measuring here would collapse each diagram to the 16x16 fallback.
+      // We therefore give the diagram containers a concrete, laid-out width for the
+      // duration of the render, then remove the override before Reveal takes over.
+      // The rendered SVGs keep their correct viewBox/max-width and scale to fit
+      // their final slide via width:100%.
+      var prep = document.createElement('style');
+      prep.id = 'mermaid-prep';
+      prep.textContent =
+        '.reveal .slides{display:block !important;}' +
+        '.reveal .slides > section{display:block !important;position:static !important;' +
+        'visibility:visible !important;opacity:1 !important;height:auto !important;' +
+        'transform:none !important;width:1160px !important;}' +
+        '.reveal .mermaid{width:1160px !important;}';
+      document.head.appendChild(prep);
+      try {
+        await mermaid.run({ querySelector: '.mermaid' });
+      } catch (e) {
+        console.error('Mermaid render error', e);
+      }
+      var prepEl = document.getElementById('mermaid-prep');
+      if (prepEl) { prepEl.remove(); }
+      if (window.lucide && typeof lucide.createIcons === 'function') {
+        lucide.createIcons();
+      }
+      Reveal.initialize({
+        width: 1280,
+        height: 720,
+        margin: 0.045,
+        minScale: 0.2,
+        maxScale: 2.0,
+        hash: true,
+        controls: true,
+        progress: true,
+        center: false,
+        slideNumber: 'c/t',
+        transition: 'slide'
+      });
+    });
+  </script>
+</body>
+</html>
