@@ -102,10 +102,10 @@ The service exposes exactly two endpoints, both under the base path `/api/v1/acc
 
 | Method | Path | Description | Success | Error responses |
 |--------|------|-------------|---------|-----------------|
-| `GET` | `/api/v1/accounts/{accountId}` | Retrieve a single account by its 11-digit id | `200 OK` with `AccountResponse` | `400` (id not 11-digit numeric), `404` (not found) |
+| `GET` | `/api/v1/accounts/{accountId}` | Retrieve a single account by its 11-digit id | `200 OK` with `AccountResponse` | `400` (id not a non-zero 11-digit numeric), `404` (not found) |
 | `PUT` | `/api/v1/accounts/{accountId}` | Update the editable fields of an existing account | `200 OK` with the updated `AccountResponse` | `400` (validation failure), `404` (not found), `409` (version conflict) |
 
-- **`GET /api/v1/accounts/{accountId}`** — reproduces the read-by-key behavior of the legacy view program `COACTVWC` (transaction `CAVW`). Returns `200` with the full account read model, `404` when the id does not exist, and `400` when `{accountId}` is not an 11-digit numeric string.
+- **`GET /api/v1/accounts/{accountId}`** — reproduces the read-by-key behavior of the legacy view program `COACTVWC` (transaction `CAVW`). Returns `200` with the full account read model, `404` when the id does not exist, and `400` when `{accountId}` is not a non-zero 11-digit numeric string (an all-zeros id such as `00000000000` is rejected, reproducing the legacy `1210-EDIT-ACCOUNT` non-zero key check).
 - **`PUT /api/v1/accounts/{accountId}`** — reproduces the edit / validate / lock / rewrite behavior of the legacy update program `COACTUPC` (transaction `CAUP`). Returns `200` with the updated account, `400` on any validation failure, `404` when the id does not exist, and `409` when the supplied `version` is stale (another writer changed the record first).
 
 ### Example Requests and Responses
@@ -157,7 +157,7 @@ The service exposes exactly two endpoints, both under the base path `/api/v1/acc
 | Status | Meaning |
 |--------|---------|
 | `200 OK` | Read succeeded, or update applied successfully (response carries the current/updated `AccountResponse`). |
-| `400 Bad Request` | Validation failure — e.g. `activeStatus` not `Y`/`N`, a monetary value out of range or carrying more than two decimal places, an invalid date, or an `{accountId}` that is not 11-digit numeric. The account id is taken solely from the URL path (the body carries no id), so there is no path/body id to reconcile. A malformed or mis-typed JSON body is likewise rejected as `400`. |
+| `400 Bad Request` | Validation failure — e.g. `activeStatus` not `Y`/`N`, a monetary value out of range or carrying more than two decimal places, an invalid date, or an `{accountId}` that is not a non-zero 11-digit numeric value (an all-zeros id such as `00000000000` is rejected, reproducing the legacy non-zero key check). The account id is taken solely from the URL path (the body carries no id), so there is no path/body id to reconcile. A malformed or mis-typed JSON body is likewise rejected as `400`. |
 | `404 Not Found` | No account exists for the supplied `{accountId}` (maps the legacy `NOTFND` path). |
 | `409 Conflict` | Optimistic-lock / version conflict — the supplied `version` is stale. The response body message is: `Record updated by another user - please retry`. |
 

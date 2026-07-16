@@ -22,9 +22,13 @@ import jakarta.validation.Path;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -418,10 +422,22 @@ public class GlobalExceptionHandler {
      * fixed generic summary is returned in the uniform {@link ApiError} shape rather than Spring
      * Boot's default error body.</p>
      *
-     * @param ex      the framework method-not-supported signal
+     * <p>Per RFC&nbsp;7231&nbsp;&sect;7.4.1 (and RFC&nbsp;9110&nbsp;&sect;15.5.6), a {@code 405}
+     * response SHOULD carry an {@code Allow} header enumerating the methods the target resource
+     * does support. Spring surfaces that set on the exception; it is emitted here in a
+     * deterministic (alphabetically sorted) order so clients (and tests) see a stable value such
+     * as {@code Allow: GET, HEAD, OPTIONS, PUT}. The header lists only framework-derived method
+     * names &mdash; it embeds no submitted value &mdash; so it is consistent with the sanitization
+     * contract (AAP &sect;0.6.6). The set is defensively guarded in the rare case Spring cannot
+     * supply it, in which case the header is simply omitted (the {@code 405} status and body are
+     * unchanged).</p>
+     *
+     * @param ex      the framework method-not-supported signal (also the source of the supported
+     *                methods advertised in the {@code Allow} header)
      * @param request the current request, used only to derive the sanitized route template
      *                recorded in the error body
-     * @return a {@code 405} response whose body is a sanitized {@link ApiError}
+     * @return a {@code 405} response whose body is a sanitized {@link ApiError} and which carries
+     *         an {@code Allow} header when the supported-method set is available
      */
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     public ResponseEntity<ApiError> handleMethodNotSupported(final HttpRequestMethodNotSupportedException ex,
@@ -432,7 +448,18 @@ public class GlobalExceptionHandler {
                 status.getReasonPhrase(),
                 METHOD_NOT_ALLOWED_MESSAGE,
                 resolvePath(request));
-        return ResponseEntity.status(status).body(body);
+        final ResponseEntity.BodyBuilder response = ResponseEntity.status(status);
+        // RFC 7231 §7.4.1: advertise the supported methods via the Allow header, in a
+        // deterministic (sorted) order. Guard against a null/empty set (framework edge case).
+        final Set<HttpMethod> supported = ex.getSupportedHttpMethods();
+        if (supported != null && !supported.isEmpty()) {
+            final String allow = supported.stream()
+                    .map(HttpMethod::name)
+                    .sorted()
+                    .collect(Collectors.joining(", "));
+            response.header(HttpHeaders.ALLOW, allow);
+        }
+        return response.body(body);
     }
 
     /**

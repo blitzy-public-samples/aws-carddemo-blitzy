@@ -52,6 +52,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -674,6 +675,13 @@ class AccountControllerTest {
      * Unsupported HTTP method: {@code POST} to the account resource (which exposes only {@code GET} and
      * {@code PUT}) raises {@code HttpRequestMethodNotSupportedException} &rarr; HTTP&nbsp;405 in the
      * uniform {@code ApiError} shape. The service is never touched.
+     *
+     * <p>Per RFC&nbsp;7231&nbsp;&sect;7.4.1 / RFC&nbsp;9110&nbsp;&sect;15.5.6, a 405 response MUST advertise the
+     * set of methods the resource does support via an {@code Allow} header. This test asserts the header
+     * is present and enumerates both supported methods ({@code GET} and {@code PUT}). The set is emitted
+     * in deterministic (sorted) order by {@code GlobalExceptionHandler}, so {@code GET} precedes
+     * {@code PUT}; the assertions use {@code containsString} to remain robust to any additional supported
+     * methods the framework may surface (e.g. {@code HEAD}/{@code OPTIONS}) without over-specifying.</p>
      */
     @Test
     void account_unsupportedMethod_returns405Sanitized() throws Exception {
@@ -681,6 +689,10 @@ class AccountControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(validRequestJson()))
                 .andExpect(status().isMethodNotAllowed())
+                // RFC 7231 §7.4.1: 405 MUST carry an Allow header advertising the supported methods.
+                .andExpect(header().exists("Allow"))
+                .andExpect(header().string("Allow", containsString("GET")))
+                .andExpect(header().string("Allow", containsString("PUT")))
                 .andExpect(jsonPath("$.status").value(405))
                 .andExpect(jsonPath("$.message").value("Request method not supported"));
 

@@ -130,3 +130,16 @@ logging:
 springdoc:
   api-docs:
     version: openapi_3_0
+  # ---------------------------------------------------------------------------
+  # Swagger UI webjar version (SEC-DEP-1). The pom.xml <dependencyManagement>
+  # block pins org.webjars:swagger-ui to 5.32.8 to remediate the DOMPurify 3.3.2
+  # vulnerability (CVE-2026-41238/41239/41240) that ships in springdoc 2.8.17's
+  # default 5.32.2 webjar. springdoc-openapi-starter-common 2.8.17 hard-codes
+  # `springdoc.swagger-ui.version=5.32.2` in its bundled springdoc.config.properties,
+  # so its `/swagger-ui/**` resource handler would otherwise forward to the now-absent
+  # /webjars/swagger-ui/5.32.2/ path (HTTP 404). Pinning the version here keeps
+  # springdoc's UI path in lockstep with the security-overridden webjar actually on
+  # the classpath, so `/swagger-ui/index.html` continues to serve the fixed assets.
+  # Keep this value equal to the swagger-ui version in pom.xml.
+  swagger-ui:
+    version: 5.32.8

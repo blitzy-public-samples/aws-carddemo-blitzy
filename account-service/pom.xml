@@ -56,6 +56,17 @@
       denial-of-service). Apache fixes these in 1.26.0; we pin 1.27.1 (the current
       stable line, >= the 1.26.0 fix) which remains API-compatible with Testcontainers
       1.21.4's archive handling.
+
+      swagger-ui: springdoc-openapi-starter-webmvc-ui 2.8.17 transitively bundles the
+      org.webjars:swagger-ui 5.32.2 front-end, which embeds DOMPurify 3.3.2. That
+      DOMPurify build is inside the vulnerable range 3.0.1-3.3.3 (CVE-2026-41238 /
+      CVE-2026-41239 / CVE-2026-41240 - prototype-pollution / template-sanitizer
+      bypass XSS; CWE-79 / CWE-1321) and is served on the unauthenticated Swagger UI
+      surface. We pin swagger-ui 5.32.8 (the first 5.32.x patch that bundles DOMPurify
+      >= 3.4.0 - specifically 3.4.11 - remediating all three CVEs). 5.32.8 is the same
+      minor line as 2.8.17's default 5.32.2, so it is a drop-in, API-compatible patch
+      that keeps springdoc pinned at the AAP-mandated 2.8.17 (§0.5.1: the 2.x line for
+      Spring Boot 3.x) while removing the vulnerable component from the runtime jar.
     -->
     <dependencyManagement>
         <dependencies>
@@ -63,6 +74,11 @@
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-compress</artifactId>
                 <version>1.27.1</version>
+            </dependency>
+            <dependency>
+                <groupId>org.webjars</groupId>
+                <artifactId>swagger-ui</artifactId>
+                <version>5.32.8</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
