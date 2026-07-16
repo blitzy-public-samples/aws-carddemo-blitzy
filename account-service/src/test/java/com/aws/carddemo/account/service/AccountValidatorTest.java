@@ -357,10 +357,47 @@ class AccountValidatorTest {
     }
 
     // ------------------------------------------------------------------
+    // validateAddressZip — presence check (contract parity with the
+    // NOT NULL address_zip column). AAP §0.6.5 "Data-field parity incl.
+    // addressZip always-present (§0.7.1)"; legacy ACCT-ADDR-ZIP PIC X(10).
+    // ------------------------------------------------------------------
+
+    /**
+     * A {@code null} (omitted) address ZIP is rejected with the sanitized,
+     * field-name-based message. This keeps the request contract consistent with the
+     * {@code NOT NULL address_zip} column: a null can no longer pass validation, flow
+     * through the mapper into the entity, and surface downstream as an ungraceful
+     * HTTP 500; it is rejected cleanly as a 400 instead.
+     */
+    @Test
+    void validateAddressZip_rejectsNull() {
+        assertThatThrownBy(() -> validator.validateAddressZip(null))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("addressZip must be supplied.");
+    }
+
+    /**
+     * Blank-fill tolerance is preserved. Consistent with the legacy fixed-width
+     * {@code ACCT-ADDR-ZIP PIC X(10)} (an all-spaces value is legitimate) and the DTO's
+     * {@code @NotNull} (which forbids only {@code null}), an empty or whitespace-only
+     * value is accepted; representative present values, including a 10-character
+     * seed-style value ({@code A000000000}), are likewise accepted. Only an absent
+     * ({@code null}) value is rejected.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"", " ", "          ", "12345", "A000000000"})
+    void validateAddressZip_acceptsPresentValuesIncludingBlank(String addressZip) {
+        assertThatCode(() -> validator.validateAddressZip(addressZip))
+                .doesNotThrowAnyException();
+    }
+
+    // ------------------------------------------------------------------
     // validate(AccountUpdateRequest) — orchestration & fail-fast ordering
     // Order: activeStatus -> currentBalance, creditLimit, cashCreditLimit,
     //        currentCycleCredit, currentCycleDebit -> openDate, expirationDate,
-    //        reissueDate. accountId/groupId/version/addressZip are NOT validated.
+    //        reissueDate -> addressZip. addressZip is validated LAST (presence check
+    //        keeping the request contract consistent with the NOT NULL column).
+    //        accountId/groupId/version are NOT validated here.
     // ------------------------------------------------------------------
 
     /** A fully valid request passes every rule. */
@@ -478,6 +515,50 @@ class AccountValidatorTest {
         assertThatThrownBy(() -> validator.validate(reissue))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("reissueDate year must be between 1900 and 2099.");
+    }
+
+    /**
+     * A null address ZIP is rejected by the orchestrator. This is the exact scenario
+     * from the QA finding: a request whose every other field is valid but whose
+     * {@code addressZip} is {@code null} must be rejected at the validation boundary
+     * (HTTP 400), rather than silently passing and later violating the {@code NOT NULL}
+     * column as an ungraceful HTTP 500.
+     */
+    @Test
+    void validate_rejectsNullAddressZip() {
+        AccountUpdateRequest request = validRequest();
+        request.setAddressZip(null);
+        assertThatThrownBy(() -> validator.validate(request))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("addressZip must be supplied.");
+    }
+
+    /**
+     * A blank (present-but-empty) address ZIP is tolerated by the orchestrator,
+     * preserving the legacy fixed-width {@code X(10)} blank-fill semantics: only an
+     * absent ({@code null}) value is rejected.
+     */
+    @Test
+    void validate_acceptsBlankAddressZip() {
+        AccountUpdateRequest request = validRequest();
+        request.setAddressZip("");
+        assertThatCode(() -> validator.validate(request))
+                .doesNotThrowAnyException();
+    }
+
+    /**
+     * Fail-fast ordering: when BOTH a date AND the address ZIP are invalid, the DATE
+     * message wins, proving the address ZIP is validated last (after the dates), in
+     * agreement with the mapper's field-application order.
+     */
+    @Test
+    void validate_failsFastOnDatesBeforeAddressZip() {
+        AccountUpdateRequest request = validRequest();
+        request.setReissueDate("2023-02-29");
+        request.setAddressZip(null);
+        assertThatThrownBy(() -> validator.validate(request))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("reissueDate must be a valid date in yyyy-MM-dd format.");
     }
 
     // ------------------------------------------------------------------

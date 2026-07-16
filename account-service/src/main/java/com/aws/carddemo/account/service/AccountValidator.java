@@ -161,9 +161,13 @@ public class AccountValidator {
      * AAP &sect;0.7.2), so there is no getter for them. The path account id is
      * validated separately via {@link #validateAccountId(String)}, which
      * {@code AccountService} invokes with the URL path variable. The {@code addressZip}
-     * field carries no legacy edit (the DTO's {@code @Size(max = 10)} constraint is
-     * sufficient), and {@code version} is handled by the service's concurrency check;
-     * neither is validated here (Minimal Change Clause, AAP &sect;0.7.1).</p>
+     * field <em>is</em> validated here via {@link #validateAddressZip(String)}: the
+     * legacy fixed-width {@code ACCT-ADDR-ZIP PIC X(10)} field is always present
+     * (blank-filled) and the persisted column is {@code NOT NULL}, so a {@code null}
+     * (omitted) value is rejected as a 400 rather than being allowed to reach a
+     * {@code NOT NULL} column and surface as an ungraceful 500 (AAP &sect;0.7.1
+     * data-field parity). The {@code version} field is handled by the service's
+     * concurrency check and is not validated here.</p>
      *
      * @param request the account-update request to validate; must not be {@code null}
      * @throws ValidationException on the first field that violates a business rule
@@ -187,6 +191,10 @@ public class AccountValidator {
         validateDate(request.getOpenDate(), "openDate");
         validateDate(request.getExpirationDate(), "expirationDate");
         validateDate(request.getReissueDate(), "reissueDate");
+
+        // Address ZIP: presence check keeping the request contract consistent with the
+        // NOT NULL persisted column (applied last, matching the mapper's field order).
+        validateAddressZip(request.getAddressZip());
     }
 
     /**
@@ -314,6 +322,38 @@ public class AccountValidator {
         int year = parsed.getYear();
         if (year < MIN_YEAR || year > MAX_YEAR) {
             throw new ValidationException(fieldName + " year must be between 1900 and 2099.");
+        }
+    }
+
+    /**
+     * Validates the account address ZIP for <em>presence</em>, keeping the request
+     * contract consistent with the persisted schema.
+     *
+     * <p>The legacy {@code ACCT-ADDR-ZIP PIC X(10)} field is a fixed-width record field
+     * that is <em>always present</em> (blank-filled), never absent
+     * [app/cpy/CVACT01Y.cpy:L15]; the migrated column is correspondingly declared
+     * {@code NOT NULL} ({@code address_zip VARCHAR(10) NOT NULL}). This method therefore
+     * rejects a {@code null} (omitted) value so it cannot silently pass validation, flow
+     * through the mapper into a {@code NOT NULL} column, and surface as an ungraceful
+     * HTTP 500; instead it yields a clean {@link ValidationException} &rarr; HTTP 400
+     * (AAP &sect;0.7.1 data-field parity).</p>
+     *
+     * <p><strong>Blank-fill tolerance is preserved.</strong> Consistent with the legacy
+     * fixed-width semantics (an all-spaces {@code X(10)} is a legitimate value) and with
+     * the DTO's {@code @NotNull} (which forbids only {@code null}), an empty or
+     * whitespace-only value is <em>accepted</em> here; only an absent ({@code null}) value
+     * is rejected. Maximum length is bounded structurally by the DTO's
+     * {@code @Size(max = 10)} and the {@code VARCHAR(10)} column.</p>
+     *
+     * <p>The error message references the field name only and never echoes the raw value,
+     * matching the sanitized-message posture of the other edits (AAP &sect;0.6.6).</p>
+     *
+     * @param addressZip the candidate address ZIP value
+     * @throws ValidationException if the value is {@code null} (absent)
+     */
+    public void validateAddressZip(String addressZip) {
+        if (addressZip == null) {
+            throw new ValidationException("addressZip must be supplied.");
         }
     }
 }

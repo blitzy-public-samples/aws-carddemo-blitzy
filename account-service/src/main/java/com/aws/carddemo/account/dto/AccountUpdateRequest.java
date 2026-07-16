@@ -153,9 +153,20 @@ public class AccountUpdateRequest {
 
     /**
      * Account address ZIP. Legacy {@code ACCT-ADDR-ZIP PIC X(10)}.
-     * Not marked {@link NotNull}: the legacy fixed-width {@code X(10)} field tolerates
-     * blanks, so a null/blank value is permitted; only the maximum length is bounded.
+     *
+     * <p>Marked {@link NotNull} to keep this write-model contract consistent with the
+     * persisted entity and schema, where the column is declared {@code NOT NULL}
+     * ({@code Account.addressZip} / {@code address_zip VARCHAR(10) NOT NULL}). The
+     * legacy record is fixed-width {@code X(10)}: the field is <em>always present</em>
+     * (blank-filled), never absent (AAP &sect;0.7.1 data-field parity). A {@code null}
+     * (an omitted value) is therefore rejected as a 400 rather than being allowed to
+     * propagate into a {@code NOT NULL} column and surface as an ungraceful 500.
+     * The legacy blank-fill tolerance is preserved: {@code @NotNull} forbids only
+     * {@code null}, so an empty or all-blank value is still accepted, and
+     * {@link Size}{@code (max = 10)} bounds the maximum length. The authoritative
+     * presence check is reproduced server-side by {@code AccountValidator}.</p>
      */
+    @NotNull
     @Size(max = 10)
     private String addressZip;
 
@@ -193,7 +204,7 @@ public class AccountUpdateRequest {
      * @param reissueDate        card reissue date ({@code yyyy-MM-dd})
      * @param currentCycleCredit current cycle credit total
      * @param currentCycleDebit  current cycle debit total
-     * @param addressZip         account address ZIP (may be {@code null} or blank)
+     * @param addressZip         account address ZIP (must not be {@code null}; may be blank)
      * @param version            optimistic-locking token from the last read
      */
     public AccountUpdateRequest(String activeStatus,
@@ -353,7 +364,7 @@ public class AccountUpdateRequest {
     }
 
     /**
-     * @return the account address ZIP (may be {@code null} or blank)
+     * @return the account address ZIP (non-null per the request contract; may be blank)
      */
     public String getAddressZip() {
         return addressZip;
