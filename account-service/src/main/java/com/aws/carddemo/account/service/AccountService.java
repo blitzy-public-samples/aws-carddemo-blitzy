@@ -89,14 +89,27 @@ import com.aws.carddemo.account.repository.AccountRepository;
  *
  * <h2>Security (AAP &sect;0.6.6)</h2>
  * <p>The service performs <strong>no logging</strong>, so the full account number, balances,
- * credit limits and cycle amounts can never be written to logs in plaintext. All persistence flows
- * through Spring Data JPA ({@code findById}/{@code save}) with bound parameters, so there is no
- * string-concatenated SQL and no SQL-injection surface by construction.</p>
+ * credit limits and cycle amounts can never be written to logs in plaintext. All persistence uses
+ * bound parameters and never string-concatenated SQL: reads and writes flow through Spring Data JPA
+ * ({@code findById} / {@code saveAndFlush}), and the update path additionally issues a
+ * parameterized JPQL {@code UPDATE} through the injected {@code EntityManager} (followed by an
+ * entity {@code refresh}), so there is no SQL-injection surface by construction on either path.</p>
  *
  * <h2>Wiring</h2>
  * <p>Collaborators are supplied by <strong>constructor injection</strong> only (no field
- * {@code @Autowired}); the three dependencies are {@code final}. As this class declares a single
+ * {@code @Autowired}); the four dependencies &mdash; the {@link AccountRepository},
+ * the {@link AccountMapper}, the {@link AccountValidator} and the transaction-aware
+ * {@code EntityManager} &mdash; are all {@code final}. As this class declares a single
  * constructor, Spring auto-wires it without an explicit {@code @Autowired} annotation.</p>
+ *
+ * <h2>Persistence paths</h2>
+ * <p>The service uses <strong>two</strong> complementary persistence mechanisms, both fully
+ * parameterized: (1) the Spring Data JPA {@link AccountRepository} for the keyed read
+ * ({@code findById}, the legacy {@code READ}) and the field rewrite ({@code saveAndFlush}, the
+ * legacy {@code REWRITE}); and (2) the injected {@code EntityManager}, used on the update path to
+ * force exactly one optimistic-version increment for an accepted no-op rewrite (a guarded JPQL
+ * {@code UPDATE}) and to {@code refresh} the managed entity so the mapped response carries the
+ * committed {@code version}.</p>
  */
 @Service
 public class AccountService {

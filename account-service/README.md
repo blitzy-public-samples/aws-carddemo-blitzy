@@ -58,7 +58,7 @@ This service is introduced as a **new sibling of the legacy `app/` tree**. Under
 | PostgreSQL | 16 / 17 (Amazon RDS PostgreSQL migration target); `org.postgresql:postgresql` JDBC driver |
 | Flyway | `flyway-core` + `flyway-database-postgresql` (versioned schema migrations at startup) |
 | springdoc-openapi | 2.8.17 — OpenAPI 3 generation + Swagger UI (`springdoc-openapi-starter-webmvc-ui`) |
-| Spring Boot Actuator | `spring-boot-starter-actuator`; only the `/actuator/health` endpoint is exposed (liveness/readiness) |
+| Spring Boot Actuator | `spring-boot-starter-actuator`; only the `/actuator/health` endpoint is exposed |
 | Maven | Build and repackage to an executable jar (`spring-boot-maven-plugin`) |
 | Docker | Multi-stage build; runtime base image `eclipse-temurin:17-jre` |
 | Testing | JUnit 5, Mockito, AssertJ, Spring MockMvc (`spring-boot-starter-test`); Testcontainers PostgreSQL (`org.testcontainers:postgresql` + `junit-jupiter`) |
@@ -257,6 +257,43 @@ docker run -p 8080:8080 \
   account-service
 ```
 
+#### Reproducible, auditable release builds
+
+The `docker build` above uses **mutable** base-image tags (`maven:3.9-eclipse-temurin-17`
+for the build stage and `eclipse-temurin:17-jre` for the runtime stage) and performs an
+`apt-get upgrade`, so its inputs move over time. That is intentional for day-to-day and
+local builds, but it means identical source does **not** by itself guarantee a
+bit-for-bit identical image. For an auditable release, the pipeline **must** pin inputs
+and capture supply-chain metadata (CQ-INFRA-1). Both base images are exposed as global
+build args — `BUILDER_BASE` and `RUNTIME_BASE` — precisely so they can be pinned by
+digest:
+
+```shell
+# Release CI: pin BOTH bases to a scanned/remediated digest (never a moving tag).
+docker buildx build \
+  --build-arg BUILDER_BASE=maven:3.9-eclipse-temurin-17@sha256:<scanned-builder-digest> \
+  --build-arg RUNTIME_BASE=eclipse-temurin:17-jre@sha256:<scanned-runtime-digest> \
+  --sbom=true --provenance=mode=max \
+  -t account-service:<immutable-release-tag> \
+  --push account-service/
+```
+
+Release policy:
+
+- **Digest-pin both bases.** Release builds MUST supply `BUILDER_BASE` and `RUNTIME_BASE`
+  as `@sha256:` digests (not tags), so the toolchain and the runtime are fixed and
+  auditable end-to-end.
+- **Generate SBOM and provenance.** Emit an SBOM and SLSA provenance for every release
+  image (e.g. `docker buildx --sbom --provenance`, or Syft + in-toto/cosign attestations),
+  and store them alongside the image so the exact contents are attestable.
+- **Require image scanning.** Scan the final image (Trivy / Grype / Amazon ECR scanning)
+  and fail the release on any unresolved applicable OS or JRE vulnerability; re-pin to a
+  remediated digest and rebuild until the scan is clean.
+- **Separate pinned releases from scheduled security rebuilds.** A pinned release is
+  frozen for reproducibility; OS/JRE CVEs discovered later are remediated by a *scheduled*
+  rebuild that re-pulls the latest patched bases (fresh digests) and re-runs the scan,
+  producing a new immutable release tag rather than mutating an existing one.
+
 ### Database Migrations
 
 Schema and data are managed by **Flyway**, which runs automatically at application startup and applies, in order:
@@ -275,8 +312,8 @@ The test suite is organized in three layers under `src/test/java/com/aws/carddem
 | Layer | Tests | Scope |
 |-------|-------|-------|
 | Unit | `AccountValidatorTest`, `AccountServiceTest`, `AccountMapperTest` | Business rules, service logic with a mocked repository, and entity↔DTO formatting parity. |
-| Controller slice | `AccountControllerTest` (`@WebMvcTest`) | HTTP status codes and JSON shape with the web layer only. |
-| Integration | `AccountApiIntegrationTest` (`@SpringBootTest` + Testcontainers) | End-to-end against a real PostgreSQL container: happy path, `404`, `400` (business validation plus malformed / strict-typed body), `409` (stale version and a concurrent-writer race), version semantics (a committed increment on a real change and on an accepted no-op), and 50-row seed parity. |
+| Controller slice | `AccountControllerTest` (`@WebMvcTest`) | HTTP status codes and the uniform JSON error shape with the web layer only: valid `GET`/`PUT`, path-pattern `400`s (with leaf field-error keys), and — via the shared JSON input-hardening customizer — malformed, oversized, deeply-nested request bodies and strict numeric coercion all rejected as sanitized `400`s, plus the sanitized `500` catch-all, `405`, and `415`. |
+| Integration | `AccountApiIntegrationTest` (`@SpringBootTest(RANDOM_PORT)` + Testcontainers) | End-to-end against a real PostgreSQL container provisioned via a lifecycle-managed `@Container` and wired with `@DynamicPropertySource` (hermetic against ambient `SPRING_DATASOURCE_*`, enforced by a `@BeforeEach` connection guard): happy read with scale-2/ISO field parity, `404`, `400` (business-rule bad date and over-range money, plus Bean-Validation missing version) with no mutation, sequential stale-version `409`, a **deterministic concurrent two-writer race** proven both at the repository flush-time `@Version` backstop and across the full HTTP stack (each yielding exactly one commit and one `409`), a happy update with version increment and committed re-read, the database `CHECK`-constraint enforcement, a **full 50-row field-by-field seed-parity oracle** decoded directly from `app/data/ASCII/acctdata.txt`, and a log-hygiene assertion that the JDBC-URL-bearing loggers are pinned to `WARN`. |
 
 Commands:
 
@@ -304,9 +341,9 @@ Interactive API documentation is generated by springdoc-openapi:
 
 Spring Boot Actuator is on the classpath, but only the **health** endpoint is exposed:
 
-- **Health** — `http://localhost:8080/actuator/health` (includes the `liveness` and `readiness` groups)
+- **Health** — `http://localhost:8080/actuator/health` — reports the aggregate service status (for example `{"status":"UP"}`).
 
-Other actuator endpoints — for example `/actuator/metrics` — are **not** exposed and return `404`. Exposing a metrics (or any other) actuator endpoint would be a deliberate, separately secured configuration change and is out of scope for this slice.
+The configuration exposes only `health` (`management.endpoints.web.exposure.include: health`, `show-details: never`). Kubernetes **liveness/readiness probe groups are not enabled in configuration**, so `/actuator/health/liveness` and `/actuator/health/readiness` return `404` unless the runtime platform auto-detects and enables them (Spring Boot turns them on automatically when it detects a Kubernetes deployment). Other actuator endpoints — for example `/actuator/metrics` — are **not** exposed and return `404`. Enabling probe groups or exposing any other actuator endpoint would be a deliberate, separately secured configuration change and is out of scope for this slice.
 
 ### Behavioral Parity
 

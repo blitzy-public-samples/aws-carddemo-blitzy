@@ -18,10 +18,13 @@ package com.aws.carddemo.account.exception;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.Path;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -100,6 +103,11 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
  *     <td>{@link NoResourceFoundException}</td>
  *     <td>{@code 404 Not Found}</td>
  *     <td>No route matches the request path (framework)</td>
+ *   </tr>
+ *   <tr>
+ *     <td>{@link Exception} (catch-all safety net)</td>
+ *     <td>{@code 500 Internal Server Error}</td>
+ *     <td>Any unexpected server-side fault (e.g. a persistence {@code DataAccessException})</td>
  *   </tr>
  * </table>
  *
@@ -194,6 +202,24 @@ public class GlobalExceptionHandler {
 
     /** Fixed summary for a request path that matches no route. */
     private static final String NO_RESOURCE_MESSAGE = "Requested resource was not found";
+
+    /**
+     * Fixed, generic summary for any unexpected server-side failure mapped to {@code 500}.
+     * Deliberately carries no exception type, framework or database detail, stack frame, SQL, or
+     * submitted value, so an internal fault can never leak implementation detail to the client
+     * (CWE-209; AAP &sect;0.6.6). The specific cause is recorded only in the server-side log.
+     */
+    private static final String UNEXPECTED_ERROR_MESSAGE =
+            "An unexpected error occurred while processing the request";
+
+    /**
+     * SLF4J logger used <em>only</em> by the catch-all {@link #handleUnexpected} handler to record
+     * unexpected server-side failures at {@code ERROR} for operability. The entry is limited to the
+     * sanitized route template (never the raw URI or the 11-digit account id) plus the exception;
+     * request bodies, bound parameters, account numbers, and monetary values are never logged
+     * (AAP &sect;0.6.6 / CWE-532).
+     */
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     /**
      * Maps {@link AccountNotFoundException} to {@code 404 Not Found}.
@@ -292,10 +318,12 @@ public class GlobalExceptionHandler {
      * <p>Raised when method-level constraints fail &mdash; for example a {@code @Pattern} or
      * {@code @Size} declared on a {@code @PathVariable} of a {@code @Validated} controller,
      * such as the 11-digit numeric account-id path segment. Each violation is collected into
-     * an insertion-ordered {@link LinkedHashMap} keyed by its property path, with the
-     * constraint message as the value; the first message wins for any duplicated path. The
-     * offending value ({@code getInvalidValue()}) is intentionally excluded because it could
-     * be sensitive.</p>
+     * an insertion-ordered {@link LinkedHashMap} keyed by its <em>public leaf property name</em>
+     * (for example {@code accountId}), <strong>not</strong> the internal, method-qualified path the
+     * validation runtime produces for method-level constraints (for example {@code getAccount.accountId}
+     * or {@code updateAccount.accountId}); see {@link #leafPropertyName}. The constraint message is the
+     * value; the first message wins for any duplicated key. The offending value
+     * ({@code getInvalidValue()}) is intentionally excluded because it could be sensitive.</p>
      *
      * @param ex      the constraint-violation failure raised by the validation runtime
      * @param request the current request, used only to derive the sanitized route template
@@ -309,7 +337,7 @@ public class GlobalExceptionHandler {
                                                               final HttpServletRequest request) {
         final Map<String, String> fieldErrors = new LinkedHashMap<>();
         ex.getConstraintViolations().forEach(violation ->
-                fieldErrors.putIfAbsent(violation.getPropertyPath().toString(), violation.getMessage()));
+                fieldErrors.putIfAbsent(leafPropertyName(violation.getPropertyPath()), violation.getMessage()));
         final HttpStatus status = HttpStatus.BAD_REQUEST;
         final ApiError body = new ApiError(
                 status.value(),
@@ -353,9 +381,12 @@ public class GlobalExceptionHandler {
      * Maps {@link HttpMessageNotReadableException} to {@code 400 Bad Request}.
      *
      * <p>Raised by Spring MVC when the request body cannot be read or bound: malformed or
-     * truncated JSON, an empty body where one is required, or a token that the strict Jackson
-     * coercion policy ({@code config/JacksonConfig}) refuses to reshape (a fractional or quoted
-     * {@code version}, or a quoted monetary value). Only a fixed, generic summary
+     * truncated JSON, an empty body where one is required, a token that the strict Jackson
+     * coercion policy (the consolidated JSON input-hardening customizer, see
+     * {@code AccountServiceApplication#jsonHardeningCustomizer}) refuses to reshape (a fractional or
+     * quoted {@code version}, or a quoted monetary value), or a payload that violates a stream-read
+     * limit (oversized document, over-long string, or excessive nesting depth &mdash; SEC-INPUT-1).
+     * Only a fixed, generic summary
      * ({@value #MALFORMED_BODY_MESSAGE}) is returned; the framework exception message &mdash;
      * which can quote the offending token, byte offset, or a fragment of the payload &mdash; is
      * deliberately never read, so no submitted value can leak into the body or logs
@@ -482,6 +513,77 @@ public class GlobalExceptionHandler {
                 NO_RESOURCE_MESSAGE,
                 resolvePath(request));
         return ResponseEntity.status(status).body(body);
+    }
+
+    /**
+     * Catch-all mapping for any otherwise-unhandled exception, translating it to a sanitized
+     * {@code 500 Internal Server Error}.
+     *
+     * <p>Every error a REST client can deliberately provoke is already translated by a dedicated
+     * handler above. This final safety net exists so that an <em>unexpected</em> server-side fault
+     * &mdash; for example an {@code org.springframework.dao.DataAccessException} surfacing from the
+     * persistence layer, or any other unchecked {@link RuntimeException} &mdash; is still returned in
+     * the uniform {@link ApiError} shape rather than Spring Boot's default error representation, which
+     * would otherwise expose the concrete request URI (including the 11-digit account id) and internal
+     * framework/database detail (CWE-209 / CWE-532). The body carries only the fixed, generic
+     * {@value #UNEXPECTED_ERROR_MESSAGE} summary and the digit-masked route template (see
+     * {@link #resolvePath}); the raw exception message, type, and stack trace are never serialized to
+     * the client, and no {@code fieldErrors} map is attached.</p>
+     *
+     * <p>Because it targets {@link Exception}, this handler is the least specific in the advice, so
+     * Spring selects it only when no more specific {@code @ExceptionHandler} matches. The failure IS
+     * recorded server-side at {@code ERROR} for operability, but the log entry is limited to the
+     * sanitized route template and the exception object; request bodies, bound parameters, account
+     * numbers, and monetary values are never logged (AAP &sect;0.6.6).</p>
+     *
+     * @param ex      the unexpected failure not matched by any more specific handler
+     * @param request the current request, used only to derive the sanitized route template recorded
+     *                in the error body and log entry
+     * @return a {@code 500} response whose body is a fully sanitized {@link ApiError}
+     */
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ApiError> handleUnexpected(final Exception ex,
+                                                     final HttpServletRequest request) {
+        final String path = resolvePath(request);
+        // Sanitized server-side diagnostic: route template + exception only; never the raw URI,
+        // account id, request body, or bound parameter values (AAP 0.6.6 / CWE-532).
+        log.error("Unexpected error while handling request for path {}", path, ex);
+        final HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
+        final ApiError body = new ApiError(
+                status.value(),
+                status.getReasonPhrase(),
+                UNEXPECTED_ERROR_MESSAGE,
+                path);
+        return ResponseEntity.status(status)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body);
+    }
+
+    /**
+     * Reduces a Bean Validation {@link Path} to its <em>leaf</em> node name so that a
+     * {@code fieldErrors} key is the public parameter/field name the client supplied (for example
+     * {@code accountId}) rather than the internal, method-qualified path the validation runtime
+     * produces for method-level constraints (for example {@code getAccount.accountId} or
+     * {@code updateAccount.accountId}). Exposing the controller method name in the error contract
+     * would leak an internal implementation detail (CWE-209) and make the key unstable across
+     * refactors; the leaf name is the stable, public key.
+     *
+     * <p>The leaf is the last non-blank node name on the path. If the path yields no named node
+     * (which is not expected for property or parameter constraints) the full path string is used as
+     * a defensive fallback, so a violation is never silently dropped.</p>
+     *
+     * @param propertyPath the constraint-violation property path (never {@code null})
+     * @return the leaf node name, or the full path string when no named node is present
+     */
+    private static String leafPropertyName(final Path propertyPath) {
+        String leaf = null;
+        for (final Path.Node node : propertyPath) {
+            final String name = node.getName();
+            if (name != null && !name.isEmpty()) {
+                leaf = name;
+            }
+        }
+        return leaf != null ? leaf : propertyPath.toString();
     }
 
     /**

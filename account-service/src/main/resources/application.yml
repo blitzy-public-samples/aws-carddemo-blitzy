@@ -63,11 +63,14 @@ spring:
   # Jackson. CRITICAL (0.6.2): serialize BigDecimal as plain decimal text, never
   # scientific notation, so monetary values (balances/limits, BigDecimal scale 2)
   # render exactly in API responses.
-  # NOTE: strict INPUT typing (reject fractional/string `version` tokens and
-  # string money tokens rather than silently coercing them) is configured in
-  # code — see config/JacksonConfig.java — because it uses Jackson coercion
-  # configuration that has no YAML equivalent. A rejected token becomes a
-  # sanitized 400 via GlobalExceptionHandler (HttpMessageNotReadableException).
+  # NOTE: JSON INPUT hardening is configured in code via the
+  # AccountServiceApplication#jsonHardeningCustomizer bean (it uses Jackson coercion
+  # + StreamReadConstraints configuration that has no YAML equivalent). It (a) rejects
+  # fractional/string `version` tokens and string money tokens rather than silently
+  # coercing them, and (b) applies conservative stream-read limits — document length,
+  # string length, nesting depth, number length (SEC-INPUT-1). A rejected token or an
+  # oversized/deeply nested body becomes a sanitized 400 via GlobalExceptionHandler
+  # (HttpMessageNotReadableException).
   # ---------------------------------------------------------------------------
   jackson:
     generator:
@@ -105,3 +108,25 @@ logging:
     org.hibernate.orm.jdbc.bind: WARN
     # Hibernate 5-style binder, kept at WARN as defense-in-depth for the same reason.
     org.hibernate.type.descriptor.sql.BasicBinder: WARN
+    # CQ-OBS-1: Flyway's FlywayExecutor logs "Database: <jdbc-url> (PostgreSQL x)" at INFO on every
+    # startup, which would print the datasource endpoint (e.g. the RDS host) into the logs. Pin it to
+    # WARN so that URL is never emitted; migration progress (logged by DbMigrate/DbValidate) stays at
+    # INFO, so operational visibility of applied migrations is preserved.
+    org.flywaydb.core.FlywayExecutor: WARN
+
+# -----------------------------------------------------------------------------
+# OpenAPI / springdoc (CQ-API-1). Pin the generated document to OpenAPI 3.0.1.
+# springdoc 2.8.x defaults to OpenAPI 3.1.0, but under 3.1 this springdoc/swagger-core
+# line mis-renders every scalar property `type` as "string" (numeric `format`s such as
+# int32/int64 and the numeric `minimum`/`maximum`/`multipleOf` facets are still emitted,
+# but the base `type` is wrong). That would publish the monetary BigDecimal fields and the
+# Long `version` as strings even though they serialize on the wire as JSON numbers
+# (e.g. "currentBalance":194.00). OpenAPI 3.0.1 renders them correctly — BigDecimal money
+# as `type: number` and Long/int as `type: integer` — so the published field-level @Schema
+# contract (types, formats, patterns, ranges, enums, examples) matches the actual JSON.
+# The AAP (§0.5.1) mandates "OpenAPI 3" generically; 3.0.1 satisfies that and is the more
+# widely consumed dialect. Integration test 4.11 asserts the generated /v3/api-docs contract.
+# -----------------------------------------------------------------------------
+springdoc:
+  api-docs:
+    version: openapi_3_0

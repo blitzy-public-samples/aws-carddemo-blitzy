@@ -39,21 +39,33 @@
 # unresolved OS or JRE vulnerability remains. See the runtime stage below.
 # =============================================================================
 
-# RUNTIME_BASE is a GLOBAL build argument: it MUST be declared before the first FROM
-# so it can be consumed by the runtime stage's FROM below (an ARG used in a FROM has
-# to be global). It lets a release pipeline pin the scanned/remediated runtime base
-# image by digest while defaulting to the AAP-mandated eclipse-temurin:17-jre family.
-# See the runtime stage for the digest-pinning example.
+# BUILDER_BASE and RUNTIME_BASE are GLOBAL build arguments: they MUST be declared
+# before the first FROM so they can be consumed by the stages' FROM lines below (an
+# ARG used in a FROM has to be global). They let a release pipeline pin BOTH the build
+# toolchain and the runtime base image by *scanned/remediated digest*, while defaulting
+# to the conventional maven:3.9-eclipse-temurin-17 builder and the AAP-mandated
+# eclipse-temurin:17-jre runtime family. Pinning the builder as well as the runtime is
+# what makes a release reproducible end-to-end (CQ-INFRA-1): identical source built with
+# identical, digest-pinned bases yields an auditable, identical release image. See each
+# stage for the digest-pinning example, and README "Docker" for the release-CI policy
+# (digest pins + SBOM/provenance + image scanning, separate from scheduled rebuilds).
+ARG BUILDER_BASE=maven:3.9-eclipse-temurin-17
 ARG RUNTIME_BASE=eclipse-temurin:17-jre
 
 
 # -----------------------------------------------------------------------------
 # Stage 1 - Build: compile and repackage the executable Spring Boot jar.
 # -----------------------------------------------------------------------------
-# maven:3.9-eclipse-temurin-17 provides Apache Maven 3.9.x on an Eclipse Temurin
-# JDK 17 - matching <java.version>17</java.version> declared in pom.xml. A JDK
-# (not a JRE) is required in this stage because compilation (javac) happens here.
-FROM maven:3.9-eclipse-temurin-17 AS build
+# The default BUILDER_BASE (maven:3.9-eclipse-temurin-17) provides Apache Maven 3.9.x
+# on an Eclipse Temurin JDK 17 - matching <java.version>17</java.version> declared in
+# pom.xml. A JDK (not a JRE) is required in this stage because compilation (javac)
+# happens here. BUILDER_BASE is a global build arg (declared near the top) so a release
+# pipeline can pin the exact scanned/remediated builder image by digest, e.g.:
+#     docker build \
+#       --build-arg BUILDER_BASE=maven:3.9-eclipse-temurin-17@sha256:<remediated-digest> \
+#       --build-arg RUNTIME_BASE=eclipse-temurin:17-jre@sha256:<remediated-digest> \
+#       -t account-service:release account-service/
+FROM ${BUILDER_BASE} AS build
 
 # Perform all build work inside an isolated working directory.
 WORKDIR /build
@@ -119,7 +131,15 @@ WORKDIR /app
 # the image minimal. This runs as root, before privileges are dropped below.
 # NOTE: this requires network egress to the Ubuntu package archive at build time
 # (available in CI); on an already fully patched base it is simply a no-op upgrade.
-RUN apt-get update \
+#
+# DEBIAN_FRONTEND=noninteractive is exported ONLY inside this RUN's shell (RT-INFRA-2):
+# it is command-scoped (never a persistent image ENV, which would leak into and possibly
+# break interactive `docker exec` debugging), and the `export` makes it apply to every
+# apt-get invocation in the chain. It suppresses debconf's "unable to initialize
+# frontend: Dialog" warnings and guarantees apt never blocks on an interactive prompt,
+# so the build stays warning-free and cannot hang if a future package adds a prompt.
+RUN export DEBIAN_FRONTEND=noninteractive \
+ && apt-get update \
  && apt-get upgrade -y \
  && apt-get purge -y --auto-remove wget \
  && apt-get clean \

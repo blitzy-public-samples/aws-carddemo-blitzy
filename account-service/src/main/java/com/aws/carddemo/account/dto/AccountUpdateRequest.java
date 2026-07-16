@@ -15,6 +15,8 @@
  */
 package com.aws.carddemo.account.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.math.BigDecimal;
 
 import jakarta.validation.constraints.NotNull;
@@ -94,6 +96,10 @@ public class AccountUpdateRequest {
      */
     @NotNull
     @Size(min = 1, max = 1)
+    @Schema(description = "Account active status (legacy ACCT-ACTIVE-STATUS). Domain enforced by "
+            + "AccountValidator (1220-EDIT-YESNO).",
+            allowableValues = {"Y", "N"}, example = "Y", maxLength = 1, minLength = 1,
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private String activeStatus;
 
     /**
@@ -104,6 +110,10 @@ public class AccountUpdateRequest {
      * surfaces in the correct edit order rather than being preempted by Bean Validation.
      */
     @NotNull
+    @Schema(description = "Current account balance (legacy ACCT-CURR-BAL PIC S9(10)V99). Signed, scale 2, "
+            + "range +/-9,999,999,999.99; range/scale enforced by AccountValidator (1250-EDIT-SIGNED-9V2).",
+            type = "number", minimum = "-9999999999.99", maximum = "9999999999.99", multipleOf = 0.01,
+            example = "194.00", requiredMode = Schema.RequiredMode.REQUIRED)
     private BigDecimal currentBalance;
 
     /**
@@ -112,6 +122,10 @@ public class AccountUpdateRequest {
      * ({@code 1250-EDIT-SIGNED-9V2}); no DTO {@code @Digits} guard (see class Javadoc).
      */
     @NotNull
+    @Schema(description = "Credit limit (legacy ACCT-CREDIT-LIMIT PIC S9(10)V99). Signed, scale 2, "
+            + "range +/-9,999,999,999.99; range/scale enforced by AccountValidator (1250-EDIT-SIGNED-9V2).",
+            type = "number", minimum = "-9999999999.99", maximum = "9999999999.99", multipleOf = 0.01,
+            example = "2020.00", requiredMode = Schema.RequiredMode.REQUIRED)
     private BigDecimal creditLimit;
 
     /**
@@ -120,6 +134,10 @@ public class AccountUpdateRequest {
      * ({@code 1250-EDIT-SIGNED-9V2}); no DTO {@code @Digits} guard (see class Javadoc).
      */
     @NotNull
+    @Schema(description = "Cash credit limit (legacy ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99). Signed, scale 2, "
+            + "range +/-9,999,999,999.99; range/scale enforced by AccountValidator (1250-EDIT-SIGNED-9V2).",
+            type = "number", minimum = "-9999999999.99", maximum = "9999999999.99", multipleOf = 0.01,
+            example = "1020.00", requiredMode = Schema.RequiredMode.REQUIRED)
     private BigDecimal cashCreditLimit;
 
     /**
@@ -129,6 +147,12 @@ public class AccountUpdateRequest {
      * validator with legacy-parity error messages.
      */
     @NotNull
+    @Schema(description = "Account open date, ISO yyyy-MM-dd (legacy ACCT-OPEN-DATE). Pattern expresses the "
+            + "documented domain: year 1900-2099 (EDIT-YEAR-CCYY), month 01-12 (EDIT-MONTH), day 01-31 "
+            + "(EDIT-DAY). Kept as a String so full cross-field calendar validity (leap year, days-per-month) "
+            + "is enforced by AccountValidator with legacy-parity messages.",
+            type = "string", pattern = "^(19|20)\\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$",
+            example = "2014-11-20", requiredMode = Schema.RequiredMode.REQUIRED)
     private String openDate;
 
     /**
@@ -138,6 +162,11 @@ public class AccountUpdateRequest {
      * {@code AccountValidator}.
      */
     @NotNull
+    @Schema(description = "Account expiration date, ISO yyyy-MM-dd (legacy ACCT-EXPIRAION-DATE, corrected "
+            + "spelling). Pattern expresses the documented domain: year 1900-2099, month 01-12, day 01-31. "
+            + "Full cross-field calendar validity is enforced by AccountValidator.",
+            type = "string", pattern = "^(19|20)\\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$",
+            example = "2025-05-20", requiredMode = Schema.RequiredMode.REQUIRED)
     private String expirationDate;
 
     /**
@@ -145,6 +174,11 @@ public class AccountUpdateRequest {
      * Validated by {@code AccountValidator}.
      */
     @NotNull
+    @Schema(description = "Card reissue date, ISO yyyy-MM-dd (legacy ACCT-REISSUE-DATE). Pattern expresses "
+            + "the documented domain: year 1900-2099, month 01-12, day 01-31. Full cross-field calendar "
+            + "validity is enforced by AccountValidator.",
+            type = "string", pattern = "^(19|20)\\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$",
+            example = "2025-05-20", requiredMode = Schema.RequiredMode.REQUIRED)
     private String reissueDate;
 
     /**
@@ -153,6 +187,11 @@ public class AccountUpdateRequest {
      * ({@code 1250-EDIT-SIGNED-9V2}); no DTO {@code @Digits} guard (see class Javadoc).
      */
     @NotNull
+    @Schema(description = "Current cycle credit total (legacy ACCT-CURR-CYC-CREDIT PIC S9(10)V99). Signed, "
+            + "scale 2, range +/-9,999,999,999.99; range/scale enforced by AccountValidator "
+            + "(1250-EDIT-SIGNED-9V2).",
+            type = "number", minimum = "-9999999999.99", maximum = "9999999999.99", multipleOf = 0.01,
+            example = "0.00", requiredMode = Schema.RequiredMode.REQUIRED)
     private BigDecimal currentCycleCredit;
 
     /**
@@ -161,6 +200,11 @@ public class AccountUpdateRequest {
      * ({@code 1250-EDIT-SIGNED-9V2}); no DTO {@code @Digits} guard (see class Javadoc).
      */
     @NotNull
+    @Schema(description = "Current cycle debit total (legacy ACCT-CURR-CYC-DEBIT PIC S9(10)V99). Signed, "
+            + "scale 2, range +/-9,999,999,999.99; range/scale enforced by AccountValidator "
+            + "(1250-EDIT-SIGNED-9V2).",
+            type = "number", minimum = "-9999999999.99", maximum = "9999999999.99", multipleOf = 0.01,
+            example = "0.00", requiredMode = Schema.RequiredMode.REQUIRED)
     private BigDecimal currentCycleDebit;
 
     /**
@@ -180,6 +224,10 @@ public class AccountUpdateRequest {
      */
     @NotNull
     @Size(max = 10)
+    @Schema(description = "Account address ZIP (legacy ACCT-ADDR-ZIP PIC X(10)). Fixed-width X(10): always "
+            + "present (may be blank), never absent; null is rejected. Maximum length 10.",
+            type = "string", maxLength = 10, example = "A000000000",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private String addressZip;
 
     /**
@@ -189,6 +237,11 @@ public class AccountUpdateRequest {
      * There is no legacy record equivalent; it replaces the legacy before-image check.
      */
     @NotNull
+    @Schema(description = "Optimistic-locking token echoed from the last read (maps to the JPA @Version "
+            + "column). A stale value yields HTTP 409 Conflict. No legacy record equivalent; it replaces "
+            + "the legacy before-image check.",
+            type = "integer", format = "int64", minimum = "0", example = "0",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private Long version;
 
     /**

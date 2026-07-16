@@ -15,7 +15,7 @@
  */
 package com.aws.carddemo.account.controller;
 
-import com.aws.carddemo.account.config.JacksonConfig;
+import com.aws.carddemo.account.AccountServiceApplication;
 import com.aws.carddemo.account.dto.AccountResponse;
 import com.aws.carddemo.account.dto.AccountUpdateRequest;
 import com.aws.carddemo.account.exception.AccountNotFoundException;
@@ -24,8 +24,12 @@ import com.aws.carddemo.account.service.AccountService;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.MediaType;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -36,6 +40,7 @@ import java.time.LocalDate;
 import java.util.Map;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -58,10 +63,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>This is a pure {@link WebMvcTest @WebMvcTest} slice: it bootstraps ONLY the MVC
  * infrastructure for {@link AccountController} plus the auto-detected
  * {@code @RestControllerAdvice} ({@code GlobalExceptionHandler}), Jackson, and Bean Validation.
- * {@link JacksonConfig} is additionally {@link Import @Import}ed because a {@code @WebMvcTest}
- * slice does not component-scan arbitrary {@code @Configuration} classes; importing it activates
- * the strict numeric-coercion policy so the {@code version}/money token-typing cases below exercise
- * the same {@code ObjectMapper} the running application uses. The {@link AccountService} collaborator
+ * The application's consolidated JSON input-hardening policy &mdash;
+ * {@link AccountServiceApplication#jsonHardeningCustomizer()} (strict numeric coercion plus
+ * conservative stream-read limits) &mdash; is re-registered here through the nested
+ * {@link JsonHardeningTestConfig} {@link TestConfiguration @TestConfiguration}, which is
+ * {@link Import @Import}ed because a {@code @WebMvcTest} slice does not component-scan arbitrary
+ * {@code @Configuration} classes. This activates the <em>identical</em> policy (a single source of
+ * truth) so the {@code version}/money token-typing and oversized/deep-body cases below exercise the
+ * same {@code ObjectMapper} the running application uses. The {@link AccountService} collaborator
  * is replaced by a Mockito mock via {@link MockitoBean @MockitoBean}, so <strong>no</strong> database,
  * Hibernate, Flyway, or Testcontainers is involved. The tests therefore verify the controller wiring
  * in isolation:</p>
@@ -70,7 +79,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *   <li>request-body (de)serialization and JSON response shape/formatting (scale-2 money rendered in
  *       plain, non-scientific notation; ISO {@code yyyy-MM-dd} dates; 11-digit zero-padded id);</li>
  *   <li>strict numeric input typing &mdash; a fractional, string, or object {@code version} token and a
- *       string monetary token are rejected rather than coerced (config/JacksonConfig);</li>
+ *       string monetary token are rejected rather than coerced (the consolidated JSON input-hardening
+ *       policy on {@link AccountServiceApplication});</li>
  *   <li>structural path-variable validation ({@code @Pattern("\\d{11}")} on the {@code @Validated}
  *       controller);</li>
  *   <li>the framework error contract &mdash; malformed/empty body, unsupported method, unsupported
@@ -104,8 +114,24 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * MockMvc matchers. There is no {@code System.out} and no logger in this class.</p>
  */
 @WebMvcTest(AccountController.class)
-@Import(JacksonConfig.class)
+@Import(AccountControllerTest.JsonHardeningTestConfig.class)
 class AccountControllerTest {
+
+    /**
+     * Re-registers the application's consolidated JSON input-hardening customizer
+     * ({@link AccountServiceApplication#jsonHardeningCustomizer()}) inside the {@code @WebMvcTest}
+     * slice. A slice context does not component-scan the main application class's {@code @Bean}
+     * methods, so this {@link TestConfiguration} supplies the <em>identical</em> customizer instance
+     * (strict numeric coercion + stream-read limits), guaranteeing the slice {@code ObjectMapper}
+     * behaves exactly like the running application's without duplicating the policy.
+     */
+    @TestConfiguration
+    static class JsonHardeningTestConfig {
+        @Bean
+        Jackson2ObjectMapperBuilderCustomizer testJsonHardeningCustomizer() {
+            return AccountServiceApplication.jsonHardeningCustomizer();
+        }
+    }
 
     /**
      * Canonical zero-padded 11-digit account key, mirroring seed record&nbsp;#1
@@ -270,7 +296,15 @@ class AccountControllerTest {
         mockMvc.perform(get("/api/v1/accounts/{accountId}", "123"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
-                .andExpect(jsonPath("$.message").value("Validation failed"));
+                .andExpect(jsonPath("$.message").value("Validation failed"))
+                // CQ-API-2: the fieldErrors key MUST be the public leaf parameter name only.
+                .andExpect(jsonPath("$.fieldErrors.accountId").exists())
+                // Exactly one key, and it is NOT the internal method-qualified path.
+                .andExpect(jsonPath("$.fieldErrors.length()").value(1))
+                .andExpect(jsonPath("$.fieldErrors['getAccount.accountId']").doesNotExist())
+                // No controller method or class name leaks anywhere in the body (CWE-209).
+                .andExpect(content().string(not(containsString("getAccount"))))
+                .andExpect(content().string(not(containsString("AccountController"))));
 
         verify(accountService, never()).getAccount(anyString());
     }
@@ -347,7 +381,14 @@ class AccountControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(validRequestJson()))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("Validation failed"));
+                .andExpect(jsonPath("$.message").value("Validation failed"))
+                // CQ-API-2: the fieldErrors key MUST be the public leaf parameter name only.
+                .andExpect(jsonPath("$.fieldErrors.accountId").exists())
+                .andExpect(jsonPath("$.fieldErrors.length()").value(1))
+                .andExpect(jsonPath("$.fieldErrors['updateAccount.accountId']").doesNotExist())
+                // No controller method or class name leaks anywhere in the body (CWE-209).
+                .andExpect(content().string(not(containsString("updateAccount"))))
+                .andExpect(content().string(not(containsString("AccountController"))));
 
         verify(accountService, never()).updateAccount(anyString(), any());
     }
@@ -510,7 +551,8 @@ class AccountControllerTest {
 
     /**
      * PUT with a FRACTIONAL {@code version} token ({@code 0.5}): the strict numeric-coercion policy
-     * (config/JacksonConfig) refuses to truncate a floating-point literal into the {@code Long version},
+     * (the consolidated JSON input-hardening customizer) refuses to truncate a floating-point literal
+     * into the {@code Long version},
      * so binding fails &rarr; sanitized 400. Silent truncation would corrupt the optimistic-lock
      * comparison. The service is never invoked.
      */
@@ -552,6 +594,72 @@ class AccountControllerTest {
     @Test
     void updateAccount_stringMoneyToken_returns400() throws Exception {
         String body = validRequestJson().replace("\"currentBalance\": 194.00", "\"currentBalance\": \"194.00\"");
+
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    // ------------------------------------------------------------------
+    // JSON input-hardening: oversized / deeply nested payloads (SEC-INPUT-1)
+    // ------------------------------------------------------------------
+
+    /**
+     * SEC-INPUT-1 (document length): a body exceeding the {@code maxDocumentLength} stream-read limit
+     * (64&nbsp;KiB) is refused <em>during parsing</em> with a {@code StreamConstraintsException} that
+     * surfaces as {@code HttpMessageNotReadableException} &rarr; sanitized 400, so a malicious oversized
+     * payload can never be fully buffered/parsed. The large content lives in a skipped unknown field,
+     * forcing the parser to read past the limit. The service is never invoked.
+     */
+    @Test
+    void updateAccount_oversizedBody_returns400() throws Exception {
+        // ~80 KB JSON object (well over the 64 KiB maxDocumentLength); no single string/number is large.
+        String body = "{\"junk\":[" + "0,".repeat(40_000) + "0]}";
+
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    /**
+     * SEC-INPUT-1 (nesting depth): a body nested deeper than the {@code maxNestingDepth} limit (32) is
+     * refused during parsing &rarr; sanitized 400, guarding against stack-exhaustion style payloads.
+     * The deep structure is a skipped unknown field value. The service is never invoked.
+     */
+    @Test
+    void updateAccount_deeplyNestedBody_returns400() throws Exception {
+        // 40 levels of array nesting (> maxNestingDepth 32) as an ignored field value.
+        String body = "{\"junk\":" + "[".repeat(40) + "]".repeat(40) + "}";
+
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Malformed or unreadable request body"));
+
+        verify(accountService, never()).updateAccount(anyString(), any());
+    }
+
+    /**
+     * SEC-INPUT-1 (string length): a single JSON string token longer than the {@code maxStringLength}
+     * limit (20&nbsp;000) is refused during parsing &rarr; sanitized 400, bounding per-token allocation.
+     * The oversized token is the value of the deserialized {@code addressZip} field, so the parser
+     * materializes the string and the stream-read constraint fires before binding completes. (A string
+     * placed in an <em>unknown</em>/skipped field would not be materialized and so would not trip the
+     * limit; the guard protects the tokens the service actually reads.) The service is never invoked.
+     */
+    @Test
+    void updateAccount_oversizedStringToken_returns400() throws Exception {
+        // A 30 000-char string token (> maxStringLength 20 000) as a materialized field value.
+        String body = "{\"addressZip\":\"" + "x".repeat(30_000) + "\"}";
 
         mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -633,5 +741,72 @@ class AccountControllerTest {
                 .andExpect(jsonPath("$.message").value("Requested resource was not found"));
 
         verifyNoInteractions(accountService);
+    }
+
+    // ------------------------------------------------------------------
+    // Unexpected server-side failures -> sanitized 500 (CQ-SEC-1)
+    // ------------------------------------------------------------------
+
+    /**
+     * CQ-SEC-1: an <em>unexpected</em> data-access failure surfacing from the service layer must be
+     * translated by the catch-all handler into a sanitized HTTP&nbsp;500 in the uniform
+     * {@code ApiError} shape &mdash; never Spring Boot's default error body, which would expose the
+     * concrete request URI and internal framework/database detail (CWE-209). The response carries only
+     * the fixed generic summary, the digit-masked route template, and no {@code fieldErrors}; the raw
+     * exception message (which here embeds fake DB topology and an account id) must not appear anywhere
+     * in the body.
+     */
+    @Test
+    void getAccount_unexpectedDataAccessError_returns500Sanitized() throws Exception {
+        when(accountService.getAccount(ACCOUNT_ID))
+                .thenThrow(new DataAccessResourceFailureException(
+                        "could not connect to jdbc:postgresql://secret-host:5432/accountsdb - SQLSTATE 08006"));
+
+        mockMvc.perform(get("/api/v1/accounts/{accountId}", ACCOUNT_ID))
+                .andExpect(status().isInternalServerError())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(500))
+                .andExpect(jsonPath("$.error").value("Internal Server Error"))
+                .andExpect(jsonPath("$.message")
+                        .value("An unexpected error occurred while processing the request"))
+                // Sanitized route template — never the concrete /api/v1/accounts/00000000001 URI.
+                .andExpect(jsonPath("$.path").value("/api/v1/accounts/{accountId}"))
+                // No per-field detail on a 500.
+                .andExpect(jsonPath("$.fieldErrors").doesNotExist())
+                // The raw exception message, DB topology, SQLSTATE, and account id must not leak.
+                .andExpect(content().string(not(containsString("jdbc:postgresql"))))
+                .andExpect(content().string(not(containsString("secret-host"))))
+                .andExpect(content().string(not(containsString("SQLSTATE"))))
+                .andExpect(content().string(not(containsString(ACCOUNT_ID))));
+
+        verify(accountService).getAccount(ACCOUNT_ID);
+    }
+
+    /**
+     * CQ-SEC-1: any other unchecked failure on the update path (here a generic
+     * {@link IllegalStateException}) is likewise mapped to a sanitized HTTP&nbsp;500, confirming the
+     * catch-all is not limited to data-access exceptions and that the internal message never leaks
+     * into the client-facing body.
+     */
+    @Test
+    void updateAccount_unexpectedRuntimeError_returns500Sanitized() throws Exception {
+        when(accountService.updateAccount(eq(ACCOUNT_ID), any()))
+                .thenThrow(new IllegalStateException("internal invariant violated: cache=0xDEADBEEF"));
+
+        mockMvc.perform(put("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validRequestJson()))
+                .andExpect(status().isInternalServerError())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(500))
+                .andExpect(jsonPath("$.error").value("Internal Server Error"))
+                .andExpect(jsonPath("$.message")
+                        .value("An unexpected error occurred while processing the request"))
+                .andExpect(jsonPath("$.path").value("/api/v1/accounts/{accountId}"))
+                .andExpect(jsonPath("$.fieldErrors").doesNotExist())
+                .andExpect(content().string(not(containsString("internal invariant"))))
+                .andExpect(content().string(not(containsString("DEADBEEF"))));
+
+        verify(accountService).updateAccount(eq(ACCOUNT_ID), any());
     }
 }

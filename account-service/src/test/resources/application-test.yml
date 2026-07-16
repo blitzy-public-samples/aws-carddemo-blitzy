@@ -9,16 +9,21 @@
 # CHAR(1), DATE, and the account_id CHECK (~ '^[0-9]{11}$') POSIX-regex operator.
 # NEVER use H2 or any in-memory DB — parity depends on real PostgreSQL
 # (AAP 0.6.2 / 0.6.5). This file loads ON TOP of the base
-# src/main/resources/application.yml (also on the test classpath) and overrides
-# only the datasource, restating the parity-critical settings for robustness.
+# src/main/resources/application.yml (also on the test classpath) and restates
+# the parity-critical JPA/Flyway/Jackson settings for robustness.
+#
+# CQ-CONFIG-1 (hermeticity): the datasource coordinates are DELIBERATELY NOT set
+# here. AccountApiIntegrationTest owns a lifecycle-managed @Container
+# PostgreSQLContainer and publishes spring.datasource.{url,username,password,
+# driver-class-name} via @DynamicPropertySource. Spring's dynamic test properties
+# have HIGHER precedence than the OS environment, so an ambient SPRING_DATASOURCE_*
+# variable can NOT hijack the test onto a different database; the container URL
+# always wins. (A previous revision hard-coded a `jdbc:tc:` URL here, which an
+# ambient SPRING_DATASOURCE_URL DID override — the defect this finding fixes.)
+# A @BeforeEach guard in the test additionally asserts the live connection points
+# at the container's mapped port, failing loudly if that invariant is ever broken.
 # ============================================================================
 spring:
-  # Testcontainers-managed PostgreSQL via the tc: JDBC URL scheme.
-  # Starts a postgres:17-alpine container automatically on first connection;
-  # no @Container / @DynamicPropertySource needed. Tag pinned for reproducibility.
-  datasource:
-    url: jdbc:tc:postgresql:17-alpine:///accountsdb
-    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
   # Flyway owns the schema; Hibernate only validates the Account @Entity.
   jpa:
     hibernate:
@@ -41,3 +46,9 @@ logging:
     org.hibernate.SQL: WARN
     org.hibernate.orm.jdbc.bind: WARN
     org.hibernate.type.descriptor.sql.BasicBinder: WARN
+    # CQ-OBS-1: suppress the JDBC-URL-bearing INFO lines emitted at startup. Flyway's FlywayExecutor
+    # prints "Database: <jdbc-url> ...", and the Testcontainers container logger ("tc.<image>") prints
+    # "Container is started (JDBC URL: <jdbc-url>)". Pin both to WARN so the ephemeral container URL is
+    # never emitted to the test logs. The log-level assertion in AccountApiIntegrationTest enforces this.
+    org.flywaydb.core.FlywayExecutor: WARN
+    tc: WARN

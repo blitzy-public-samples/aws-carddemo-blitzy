@@ -16,6 +16,8 @@
  */
 package com.aws.carddemo.account.exception;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 import java.time.OffsetDateTime;
@@ -80,15 +82,25 @@ import java.util.Map;
 public class ApiError {
 
     /** Instant at which the error body was produced, serialized as an ISO-8601 string. */
+    @Schema(description = "Instant at which the error body was produced (ISO-8601, offset date-time).",
+            type = "string", format = "date-time", example = "2026-07-15T20:09:30.123456Z",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private final OffsetDateTime timestamp;
 
     /** Numeric HTTP status code (for example {@code 400}, {@code 404}, {@code 409}). */
+    @Schema(description = "Numeric HTTP status code.", type = "integer", format = "int32", example = "400",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private final int status;
 
     /** HTTP reason phrase (for example {@code "Bad Request"}, {@code "Not Found"}, {@code "Conflict"}). */
+    @Schema(description = "HTTP reason phrase.", type = "string", example = "Bad Request",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private final String error;
 
     /** Human-readable, already-sanitized description of the error condition. */
+    @Schema(description = "Human-readable, already-sanitized description of the error condition.",
+            type = "string", example = "activeStatus must be 'Y' or 'N'",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private final String message;
 
     /**
@@ -96,12 +108,20 @@ public class ApiError {
      * (for example {@code /api/v1/accounts/{accountId}}), never the raw URI, so the sensitive
      * 11-digit account id is not stored or serialized here (AAP &sect;0.6.6).
      */
+    @Schema(description = "Sanitized request path — the route template (e.g. /api/v1/accounts/{accountId}), "
+            + "never the raw URI; the sensitive 11-digit account id is never included (AAP 0.6.6).",
+            type = "string", example = "/api/v1/accounts/{accountId}",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private final String path;
 
     /**
      * Optional map of field name to validation message, populated for {@code 400} validation
      * failures and {@code null} otherwise. Stored as an unmodifiable, insertion-ordered copy.
      */
+    @Schema(description = "Optional field-name to validation-message map, present only for 400 validation "
+            + "failures and omitted otherwise.",
+            example = "{\"activeStatus\":\"must be 'Y' or 'N'\"}",
+            requiredMode = Schema.RequiredMode.NOT_REQUIRED)
     private final Map<String, String> fieldErrors;
 
     /**

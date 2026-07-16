@@ -16,6 +16,8 @@
  */
 package com.aws.carddemo.account.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
@@ -76,30 +78,50 @@ public class AccountResponse {
      * {@code "00000000001"}); leading zeros are significant and must never be stripped,
      * preserving join compatibility with the card and cross-reference records.
      */
+    @Schema(description = "Account identifier / primary key (legacy ACCT-ID PIC 9(11)). Zero-padded 11-digit "
+            + "numeric string; leading zeros are significant and are never stripped.",
+            type = "string", pattern = "^\\d{11}$", example = "00000000001",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private String accountId;
 
     /**
      * Active status flag. Sourced from {@code ACCT-ACTIVE-STATUS PIC X(01)}.
      * A single character, canonically {@code "Y"} or {@code "N"}.
      */
+    @Schema(description = "Account active status (legacy ACCT-ACTIVE-STATUS PIC X(01)). Single character, "
+            + "canonically Y or N.",
+            allowableValues = {"Y", "N"}, example = "Y", maxLength = 1, minLength = 1,
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private String activeStatus;
 
     /**
      * Current account balance. Sourced from {@code ACCT-CURR-BAL PIC S9(10)V99}.
      * Exact decimal with scale 2; range +/-9,999,999,999.99.
      */
+    @Schema(description = "Current account balance (legacy ACCT-CURR-BAL PIC S9(10)V99). Exact decimal, "
+            + "scale 2; range +/-9,999,999,999.99. Serialized in plain (non-scientific) notation.",
+            type = "number", minimum = "-9999999999.99", maximum = "9999999999.99", multipleOf = 0.01,
+            example = "194.00", requiredMode = Schema.RequiredMode.REQUIRED)
     private BigDecimal currentBalance;
 
     /**
      * Credit limit. Sourced from {@code ACCT-CREDIT-LIMIT PIC S9(10)V99}.
      * Exact decimal with scale 2; range +/-9,999,999,999.99.
      */
+    @Schema(description = "Credit limit (legacy ACCT-CREDIT-LIMIT PIC S9(10)V99). Exact decimal, scale 2; "
+            + "range +/-9,999,999,999.99.",
+            type = "number", minimum = "-9999999999.99", maximum = "9999999999.99", multipleOf = 0.01,
+            example = "2020.00", requiredMode = Schema.RequiredMode.REQUIRED)
     private BigDecimal creditLimit;
 
     /**
      * Cash credit limit. Sourced from {@code ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99}.
      * Exact decimal with scale 2; range +/-9,999,999,999.99.
      */
+    @Schema(description = "Cash credit limit (legacy ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99). Exact decimal, "
+            + "scale 2; range +/-9,999,999,999.99.",
+            type = "number", minimum = "-9999999999.99", maximum = "9999999999.99", multipleOf = 0.01,
+            example = "1020.00", requiredMode = Schema.RequiredMode.REQUIRED)
     private BigDecimal cashCreditLimit;
 
     /**
@@ -107,6 +129,9 @@ public class AccountResponse {
      * Serialized as ISO {@code yyyy-MM-dd}.
      */
     @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
+    @Schema(description = "Account open date (legacy ACCT-OPEN-DATE). Serialized as ISO yyyy-MM-dd.",
+            type = "string", format = "date", example = "2014-11-20",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private LocalDate openDate;
 
     /**
@@ -114,6 +139,10 @@ public class AccountResponse {
      * (legacy spelling corrected). Serialized as ISO {@code yyyy-MM-dd}.
      */
     @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
+    @Schema(description = "Account expiration date (legacy ACCT-EXPIRAION-DATE, corrected spelling). "
+            + "Serialized as ISO yyyy-MM-dd.",
+            type = "string", format = "date", example = "2025-05-20",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private LocalDate expirationDate;
 
     /**
@@ -121,6 +150,9 @@ public class AccountResponse {
      * Serialized as ISO {@code yyyy-MM-dd}.
      */
     @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
+    @Schema(description = "Account reissue date (legacy ACCT-REISSUE-DATE). Serialized as ISO yyyy-MM-dd.",
+            type = "string", format = "date", example = "2025-05-20",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private LocalDate reissueDate;
 
     /**
@@ -128,6 +160,10 @@ public class AccountResponse {
      * {@code ACCT-CURR-CYC-CREDIT PIC S9(10)V99}.
      * Exact decimal with scale 2; range +/-9,999,999,999.99.
      */
+    @Schema(description = "Current cycle credit total (legacy ACCT-CURR-CYC-CREDIT PIC S9(10)V99). Exact "
+            + "decimal, scale 2; range +/-9,999,999,999.99.",
+            type = "number", minimum = "-9999999999.99", maximum = "9999999999.99", multipleOf = 0.01,
+            example = "0.00", requiredMode = Schema.RequiredMode.REQUIRED)
     private BigDecimal currentCycleCredit;
 
     /**
@@ -135,6 +171,10 @@ public class AccountResponse {
      * {@code ACCT-CURR-CYC-DEBIT PIC S9(10)V99}.
      * Exact decimal with scale 2; range +/-9,999,999,999.99.
      */
+    @Schema(description = "Current cycle debit total (legacy ACCT-CURR-CYC-DEBIT PIC S9(10)V99). Exact "
+            + "decimal, scale 2; range +/-9,999,999,999.99.",
+            type = "number", minimum = "-9999999999.99", maximum = "9999999999.99", multipleOf = 0.01,
+            example = "0.00", requiredMode = Schema.RequiredMode.REQUIRED)
     private BigDecimal currentCycleDebit;
 
     /**
@@ -142,12 +182,21 @@ public class AccountResponse {
      * Not displayed on the legacy BMS screen but preserved in the read model because
      * it is present in the record layout and carries real data.
      */
+    @Schema(description = "Account address ZIP (legacy ACCT-ADDR-ZIP PIC X(10)). Not shown on the legacy "
+            + "BMS screen but preserved in the read model; may be blank. Maximum length 10.",
+            type = "string", maxLength = 10, example = "A000000000",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private String addressZip;
 
     /**
      * Account group identifier. Sourced from {@code ACCT-GROUP-ID PIC X(10)}.
      * Included in the read model; treated as read-only (never accepted on update).
      */
+    @Schema(description = "Account group identifier (legacy ACCT-GROUP-ID PIC X(10)). Read-only: present in "
+            + "the read model but never accepted on update (omitted from AccountUpdateRequest). May be blank; "
+            + "maximum length 10.",
+            type = "string", maxLength = 10, example = "", accessMode = Schema.AccessMode.READ_ONLY,
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private String groupId;
 
     /**
@@ -156,6 +205,10 @@ public class AccountResponse {
      * can be round-tripped into the next {@code PUT} request, enabling HTTP 409 conflict
      * detection when another writer has advanced the version in the interim.
      */
+    @Schema(description = "Optimistic-lock version counter (JPA @Version; no legacy equivalent). Echoed so "
+            + "clients can round-trip it into the next PUT to enable HTTP 409 conflict detection.",
+            type = "integer", format = "int64", minimum = "0", example = "0",
+            requiredMode = Schema.RequiredMode.REQUIRED)
     private Long version;
 
     /**

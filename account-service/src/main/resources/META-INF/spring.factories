@@ -1,8 +1,0 @@
-# Spring Boot factory registrations for the Account Management service (Feature F-003).
-#
-# EnvironmentPostProcessor implementations are discovered through this spring.factories key
-# (the META-INF/spring/*.imports resource mechanism applies only to auto-configuration and is
-# NOT consulted for this SPI). Registering the datasource preflight here ensures it participates
-# in environment preparation before any datasource/Flyway/JPA bean is created.
-org.springframework.boot.env.EnvironmentPostProcessor=\
-com.aws.carddemo.account.config.DockerDatasourceEnvironmentPostProcessor

@@ -35,7 +35,7 @@
             * jackson-bom.version   2.21.4  -> 2.21.5   (whole Jackson BOM incl. jackson-databind)
             * postgresql.version    42.7.11 -> 42.7.12  (pgJDBC driver)
             * commons-lang3.version 3.17.0  -> 3.18.0   (transitive via spring-core/tomcat)
-            * logback.version       1.5.34  -> 1.5.36   (logback-core + logback-classic)
+            * logback.version       1.5.36  -> 1.5.38   (logback-core + logback-classic; CVE-2026-13006)
           The test-scope commons-compress override is applied via <dependencyManagement>
           below because it is NOT a spring-boot-starter-parent managed property.
         -->
@@ -43,7 +43,7 @@
         <jackson-bom.version>2.21.5</jackson-bom.version>
         <postgresql.version>42.7.12</postgresql.version>
         <commons-lang3.version>3.18.0</commons-lang3.version>
-        <logback.version>1.5.36</logback.version>
+        <logback.version>1.5.38</logback.version>
     </properties>
 
     <!--
