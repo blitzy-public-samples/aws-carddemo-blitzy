@@ -23,10 +23,12 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -90,13 +92,18 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
  *     <td>Request {@code Content-Type} is not {@code application/json} (framework)</td>
  *   </tr>
  *   <tr>
+ *     <td>{@link HttpMediaTypeNotAcceptableException}</td>
+ *     <td>{@code 406 Not Acceptable}</td>
+ *     <td>Request {@code Accept} header cannot be satisfied by JSON (framework)</td>
+ *   </tr>
+ *   <tr>
  *     <td>{@link NoResourceFoundException}</td>
  *     <td>{@code 404 Not Found}</td>
  *     <td>No route matches the request path (framework)</td>
  *   </tr>
  * </table>
  *
- * <p>These four framework mappings ensure that <em>every</em> error a REST client can provoke
+ * <p>These five framework mappings ensure that <em>every</em> error a REST client can provoke
  * &mdash; not just the domain conditions &mdash; is returned in the uniform {@link ApiError}
  * shape rather than Spring Boot's default (and less controlled) error representation. Each
  * emits a fixed, generic summary message and never echoes parser detail or any submitted
@@ -181,6 +188,9 @@ public class GlobalExceptionHandler {
 
     /** Fixed summary for a request whose {@code Content-Type} is not a supported media type. */
     private static final String UNSUPPORTED_MEDIA_TYPE_MESSAGE = "Request content type is not supported";
+
+    /** Fixed summary for a request whose {@code Accept} header cannot be satisfied by JSON. */
+    private static final String NOT_ACCEPTABLE_MESSAGE = "Not acceptable";
 
     /** Fixed summary for a request path that matches no route. */
     private static final String NO_RESOURCE_MESSAGE = "Requested resource was not found";
@@ -416,6 +426,36 @@ public class GlobalExceptionHandler {
                 UNSUPPORTED_MEDIA_TYPE_MESSAGE,
                 resolvePath(request));
         return ResponseEntity.status(status).body(body);
+    }
+
+    /**
+     * Maps {@link HttpMediaTypeNotAcceptableException} to {@code 406 Not Acceptable}.
+     *
+     * <p>Raised during content negotiation when the request {@code Accept} header cannot be
+     * satisfied by any representation this API produces (it emits {@code application/json}
+     * only). The response {@code Content-Type} is pinned to {@code application/json} so the
+     * message converters serialize the uniform {@link ApiError} body directly instead of
+     * re-entering negotiation and recursing into another {@code 406}. The {@code path} is the
+     * sanitized route template (see {@link #resolvePath}), so no concrete account id is ever
+     * serialized or logged (AAP &sect;0.6.6).</p>
+     *
+     * @param ex      the framework content-negotiation failure
+     * @param request the current request, used only to derive the sanitized route template
+     *                recorded in the error body
+     * @return a {@code 406} response whose body is a sanitized {@link ApiError}
+     */
+    @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
+    public ResponseEntity<ApiError> handleMediaTypeNotAcceptable(final HttpMediaTypeNotAcceptableException ex,
+                                                                 final HttpServletRequest request) {
+        final HttpStatus status = HttpStatus.NOT_ACCEPTABLE;
+        final ApiError body = new ApiError(
+                status.value(),
+                status.getReasonPhrase(),
+                NOT_ACCEPTABLE_MESSAGE,
+                resolvePath(request));
+        return ResponseEntity.status(status)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body);
     }
 
     /**

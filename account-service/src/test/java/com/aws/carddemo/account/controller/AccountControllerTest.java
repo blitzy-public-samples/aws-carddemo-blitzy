@@ -597,6 +597,29 @@ class AccountControllerTest {
     }
 
     /**
+     * Unacceptable {@code Accept} header: a GET whose {@code Accept} cannot be satisfied by the
+     * JSON-only representation this API produces raises the framework
+     * {@code HttpMediaTypeNotAcceptableException} &rarr; HTTP&nbsp;406 in the uniform
+     * {@code ApiError} shape. The handler pins the response to {@code application/json} so the
+     * error body is still serialized as JSON, and {@code $.path} is the sanitized route template
+     * ({@code /api/v1/accounts/&#123;accountId&#125;}) so the concrete account id never leaks
+     * (Technical Specification &sect;0.6.6).
+     */
+    @Test
+    void getAccount_unacceptableAcceptHeader_returns406Sanitized() throws Exception {
+        when(accountService.getAccount(ACCOUNT_ID)).thenReturn(sampleResponse(0L));
+
+        mockMvc.perform(get("/api/v1/accounts/{accountId}", ACCOUNT_ID)
+                        .accept(MediaType.APPLICATION_XML))
+                .andExpect(status().isNotAcceptable())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(406))
+                .andExpect(jsonPath("$.error").value("Not Acceptable"))
+                .andExpect(jsonPath("$.message").value("Not acceptable"))
+                .andExpect(jsonPath("$.path").value("/api/v1/accounts/{accountId}"));
+    }
+
+    /**
      * Unknown route: a request path that matches no controller mapping raises the framework
      * {@code NoResourceFoundException} &rarr; HTTP&nbsp;404 in the uniform {@code ApiError} shape with
      * the fixed generic summary (distinct from the id-free account-not-found message). The service is
