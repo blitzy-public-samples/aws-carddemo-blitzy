@@ -11,14 +11,15 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
   # Nightly cron is the CI/CD home for the recurring JCL batch-job scheduling that previously
-  # ran on the mainframe -- the mapped legacy jobs POSTTRAN(CBTRN02C), INTCALC(CBACT04C),
-  # CREASTMT(CBSTM03A) and COMBTRAN(SORT) are listed here for traceability (AAP 0.4.4 / 0.7.2 M4).
-  # At this checkpoint the scheduled run executes the SAME reproducible build+verify gate as the
-  # push / pull_request triggers; it does NOT yet launch those batch jobs as workflow steps.
-  # The launch mechanism itself exists and is exercised locally: a Spring Batch job is run by name
-  # via `--spring.batch.job.enabled=true --spring.batch.job.name=<job>` (with the process exit code
-  # reflecting the batch return code, 0 == COMPLETED). Per-job scheduled launch steps are added
-  # incrementally as each target batch job is implemented; see docs/decision-log.md
+  # ran on the mainframe (AAP 0.4.4 / 0.7.2 M4). The `scheduled-batch` job below realizes that
+  # scheduling: it provisions a PostgreSQL 16 service, builds the application, and launches every
+  # Spring Batch job implemented at this checkpoint -- accountMasterPrintJob (CBACT01C),
+  # cardMasterPrintJob (CBACT02C), xrefPrintJob (CBACT03C), customerMasterPrintJob (CBCUS01C) and
+  # transactionBackupJob (TRANBKP / IDCAMS REPRO) -- by name via
+  # `--spring.batch.job.enabled=true --spring.batch.job.name=<job>`, asserting a clean COMPLETED /
+  # exit-0 batch return code for each. The remaining JCL-mapped jobs (POSTTRAN/CBTRN02C,
+  # INTCALC/CBACT04C, CREASTMT/CBSTM03A, COMBTRAN/SORT) are appended to the same job's launch list
+  # as each target batch program is implemented. See docs/decision-log.md
   # ("JCL -> CI/CD scheduling") for the rationale and the intended external-scheduler alternative.
   schedule:
     - cron: '0 3 * * *'
@@ -77,3 +78,79 @@ jobs:
             target/surefire-reports/
             target/failsafe-reports/
           if-no-files-found: ignore
+
+  # Realizes the JCL -> CI/CD batch scheduling (AAP 0.4.4 / 0.7.2 M4): the recurring mainframe
+  # batch jobs now run as a scheduled GitHub Actions job that launches each Spring Batch job by
+  # name and asserts a clean COMPLETED / exit-0 return code (0 == COMPLETED, preserving the
+  # legacy "return code 0 = clean" contract). Runs only on the nightly schedule or an explicit
+  # manual dispatch -- never on push / pull_request (those run the build+verify gate above).
+  scheduled-batch:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # PostgreSQL 16 service container the batch jobs read/write (Flyway migrates it on start;
+    # the `local` profile's seed loader populates the demo rows the master-print jobs print).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: carddemo
+          POSTGRES_USER: carddemo
+          POSTGRES_PASSWORD: carddemo_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U carddemo -d carddemo"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Make Maven wrapper executable
+        run: chmod +x mvnw
+
+      - name: Package application (skip tests; the build job runs the full verify gate)
+        run: ./mvnw -B -DskipTests clean package
+
+      - name: Launch batch jobs (JCL-equivalent scheduled run)
+        env:
+          DB_URL: jdbc:postgresql://localhost:5432/carddemo
+          DB_USERNAME: carddemo
+          DB_PASSWORD: carddemo_ci
+          # `local` activates the seed loader so the master-print jobs process real demo rows;
+          # each job is launched with the web server disabled so the process exit code equals the
+          # Spring Batch return code (0 == COMPLETED).
+          SPRING_PROFILES_ACTIVE: local
+        run: |
+          JAR="$(ls target/carddemo-*.jar | head -n1)"
+          echo "Launching Spring Batch jobs from ${JAR}"
+          overall=0
+          for job in accountMasterPrintJob cardMasterPrintJob customerMasterPrintJob xrefPrintJob transactionBackupJob; do
+            echo "::group::Launch ${job}"
+            # A unique, identifying correlationId per launch makes each run a distinct Spring Batch
+            # job instance (the jobs use no JobParametersIncrementer), so nightly re-runs never hit
+            # JobInstanceAlreadyCompleteException; it also propagates as the batch correlation id.
+            cid="ci-${job}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            rc=0
+            java -jar "${JAR}" \
+              --spring.main.web-application-type=none \
+              --spring.batch.job.enabled=true \
+              --spring.batch.job.name="${job}" \
+              "correlationId=${cid}" || rc=$?
+            echo "::endgroup::"
+            if [ "${rc}" -ne 0 ]; then
+              echo "::error::Batch job ${job} returned non-zero exit code ${rc} (batch RC != COMPLETED)"
+              overall=1
+            else
+              echo "Batch job ${job} COMPLETED (exit 0)"
+            fi
+          done
+          exit "${overall}"

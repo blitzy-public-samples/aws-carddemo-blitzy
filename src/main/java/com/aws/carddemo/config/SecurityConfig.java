@@ -66,7 +66,7 @@ import org.springframework.security.web.SecurityFilterChain;
  * <ul>
  *   <li>{@code permitAll} for the sign-on entry point ({@code /api/v1/auth/**}), the springdoc
  *       OpenAPI UI and documents ({@code /swagger-ui/**}, {@code /swagger-ui.html},
- *       {@code /v3/api-docs/**}), and the unauthenticated operational probes / scrape endpoints
+ *       {@code /v3/api-docs/**}, {@code /v3/api-docs.yaml}), and the unauthenticated operational probes / scrape endpoints
  *       ({@code /actuator/health/**}, {@code /actuator/info}, {@code /actuator/prometheus}). Opening
  *       {@code /actuator/prometheus} lets the local Prometheus scrape without credentials; the other
  *       Actuator endpoints (e.g. {@code /actuator/metrics}) remain authenticated by the catch-all
@@ -114,8 +114,13 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 // Sign-on entry point (COSGN00C / CC00) - the only unauthenticated business path.
                 .requestMatchers("/api/v1/auth/**").permitAll()
-                // springdoc OpenAPI UI + document endpoints (paths from application.yml).
-                .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
+                // springdoc OpenAPI UI + document endpoints (paths from application.yml). The
+                // "/v3/api-docs/**" matcher covers the JSON document (/v3/api-docs) and its
+                // sub-paths (e.g. /v3/api-docs/swagger-config); "/v3/api-docs.yaml" is listed
+                // explicitly because the sibling YAML document is not matched by "/v3/api-docs/**"
+                // and serves the same public OpenAPI content as the JSON form.
+                .requestMatchers("/swagger-ui/**", "/swagger-ui.html",
+                                 "/v3/api-docs/**", "/v3/api-docs.yaml").permitAll()
                 // Operational probes + Prometheus scrape endpoint (unauthenticated by design);
                 // other actuator endpoints (e.g. /actuator/metrics) stay behind authentication.
                 .requestMatchers("/actuator/health/**", "/actuator/info", "/actuator/prometheus").permitAll()

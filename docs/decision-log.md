@@ -491,23 +491,29 @@ its Java target, while this log explains the reasoning behind the design those m
     `OPENFIL.jcl` carries a misspelled `//OEPNFIL` job card; `DEFCUST.jcl` and `TRANREPT.jcl` contain
     duplicate step names). These are **classified and left byte-unchanged** in `legacy/**`; the matrix
     records the authoritative behavior chosen for each without editing the source.
-- **Current-state realization of the CI/CD trigger (Explainability).** The nightly `schedule:` cron in
-  `.github/workflows/ci.yml` is the CI/CD home for the recurring JCL batch-lifecycle heritage, but at this
-  checkpoint the scheduled run executes the **same reproducible `./mvnw -B clean verify` build gate** as
-  the `push`/`pull_request` triggers — it does **not** yet launch the batch jobs as workflow steps. This is
-  a deliberate, documented deferral rather than a silent gap: (1) the CI workflow's authoritative scope is a
-  single `build` job running exactly `./mvnw -B clean verify`, with the quality gates (JaCoCo, OWASP
-  dependency-check, zero-warning compile) inherited from `pom.xml`; (2) the batch **launch-by-name mechanism
-  already exists and is exercised locally** — a job runs via `--spring.batch.job.enabled=true
-  --spring.batch.job.name=<job>` (Spring Batch stays disabled at ordinary context start, so no job
-  auto-runs), and the process exit code reflects the batch return code (`0` == `COMPLETED`); and (3) several
-  of the mapped legacy jobs named in the workflow comment (POSTTRAN/CBTRN02C, INTCALC/CBACT04C,
-  CREASTMT/CBSTM03A, COMBTRAN/SORT) are implemented in **later checkpoints**, so wiring their per-job launch
-  steps into the nightly schedule is added **incrementally as each target job lands**. The workflow comment
-  was corrected so that no CI step is claimed to run a batch job today. **Alternative / roadmap:** if
-  per-run isolation or richer orchestration is later required, a dedicated external scheduler — or a
-  separate scheduled workflow that invokes each `JobLauncher` by name and asserts its return code — can host
-  the launches without altering the single reproducible build job.
+- **Current-state realization of the CI/CD trigger (Explainability).** The nightly `schedule:` cron
+  (and an on-demand `workflow_dispatch`) in `.github/workflows/ci.yml` now **realizes** the JCL→CI/CD
+  batch scheduling through a dedicated **`scheduled-batch`** job, so the recurring mainframe batch
+  lifecycle actually runs in CI rather than being deferred: (1) the `build` job is unchanged — it runs
+  exactly `./mvnw -B clean verify` on `push`/`pull_request`/`schedule`, with the quality gates (JaCoCo,
+  OWASP dependency-check, zero-warning compile) inherited from `pom.xml`; (2) the new `scheduled-batch`
+  job runs only on `schedule` or `workflow_dispatch` (never on `push`/`pull_request`), provisions a
+  **PostgreSQL 16** service container (Flyway migrates it; the `local` profile's seed loader populates
+  the demo rows the master-print jobs read), builds the application with `./mvnw -B -DskipTests clean
+  package`, and then **launches each implemented Spring Batch job by name** via
+  `--spring.batch.job.enabled=true --spring.batch.job.name=<job>` with the web server disabled so the
+  **process exit code equals the Spring Batch return code (`0` == `COMPLETED`)**, failing the workflow if
+  any job returns non-zero; (3) the jobs launched at this checkpoint are `accountMasterPrintJob`
+  (CBACT01C), `cardMasterPrintJob` (CBACT02C), `xrefPrintJob` (CBACT03C), `customerMasterPrintJob`
+  (CBCUS01C) and `transactionBackupJob` (TRANBKP / IDCAMS `REPRO`); the remaining mapped legacy jobs
+  (POSTTRAN/CBTRN02C, INTCALC/CBACT04C, CREASTMT/CBSTM03A, COMBTRAN/SORT) are implemented in **later
+  checkpoints** and are appended to the same launch list as each target program lands. Because the jobs
+  use **no `JobParametersIncrementer`**, each launch passes a **unique identifying `correlationId`**
+  parameter so nightly re-runs never hit `JobInstanceAlreadyCompleteException` (the value also propagates
+  as the batch correlation id). This launch-by-name mechanism is exercised locally (all five jobs return
+  `COMPLETED` / exit 0) and is what the CI job invokes. **Alternative / roadmap:** if per-run isolation
+  or richer orchestration is later required, a dedicated external scheduler (e.g. Argo/Airflow/Control-M)
+  can host the launches without altering the reproducible `build` gate.
 - **Risk & mitigation:** Reordering steps, or a different chunk-commit boundary, could change outputs or
   restart behavior. *Mitigation:* step and flow ordering mirrors the JCL DD dependencies; comparators
   preserve the exact sort keys; return-code gating is modeled explicitly; and golden-file tests compare

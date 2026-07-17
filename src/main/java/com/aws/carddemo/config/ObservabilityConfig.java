@@ -17,6 +17,8 @@ package com.aws.carddemo.config;
 
 import java.util.Set;
 
+import com.aws.carddemo.observability.CorrelationIdFilter;
+
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 
@@ -75,6 +77,7 @@ import org.springframework.http.server.observation.ServerRequestObservationConte
  *
  * @see ObservationRegistryCustomizer
  * @see ServerRequestObservationContext
+ * @see com.aws.carddemo.observability.CorrelationIdFilter
  */
 @Configuration
 public class ObservabilityConfig {
@@ -118,24 +121,54 @@ public class ObservabilityConfig {
      * predicate via a method reference. It is package-private to remain directly unit-testable
      * without starting a Spring context.</p>
      *
-     * <p>For HTTP server observations the carrier request URI is inspected: the observation is
-     * suppressed when the URI starts with any {@link #NON_OBSERVED_PREFIXES infrastructure prefix}.
-     * A {@code null} URI (defensive; not expected for a real request) is treated as observable. All
-     * non-HTTP contexts &mdash; for example custom or batch observations &mdash; are always
-     * observed, because this filter is scoped strictly to infrastructure HTTP endpoints.</p>
+     * <p>For HTTP server observations ({@link ServerRequestObservationContext}) the carrier request
+     * URI is inspected directly. For every other observation context &mdash; which does not expose
+     * the request URI, most importantly Spring Security's {@code spring.security.filterchains}
+     * observation whose {@code FilterChainObservationContext} carries only filter metadata &mdash;
+     * the URI captured for the current request thread by
+     * {@link com.aws.carddemo.observability.CorrelationIdFilter#currentRequestPath()} is used
+     * instead. In both cases the observation is suppressed when the resolved URI starts with any
+     * {@link #NON_OBSERVED_PREFIXES infrastructure prefix}; this is what stops the frequent
+     * Prometheus scrape of {@code /actuator/prometheus} from creating an orphan
+     * security-filter-chain root trace on every poll. A {@code null} URI is treated as observable,
+     * so custom or batch observations running on non-request threads (where no path is captured) are
+     * always observed.</p>
      *
      * @param name    the observation name supplied by Micrometer; not used by this predicate but
      *                required by the {@code ObservationPredicate} contract
-     * @param context the observation context; inspected only when it is a
-     *                {@link ServerRequestObservationContext}
+     * @param context the observation context; when it is a
+     *                {@link ServerRequestObservationContext} its carrier request URI is inspected,
+     *                otherwise the request path captured for the current thread is used
      * @return {@code false} to suppress observations for infrastructure HTTP endpoints;
      *         {@code true} otherwise
      */
     boolean isObservable(String name, Observation.Context context) {
         if (context instanceof ServerRequestObservationContext ctx) {
-            String uri = ctx.getCarrier().getRequestURI();
-            return uri == null || NON_OBSERVED_PREFIXES.stream().noneMatch(uri::startsWith);
+            return isObservablePath(ctx.getCarrier().getRequestURI());
         }
-        return true;
+        // Observations whose context does not expose the request URI (most importantly Spring
+        // Security's spring.security.filterchains observation, whose FilterChainObservationContext
+        // carries only filter metadata) are evaluated against the request path captured for the
+        // current thread by CorrelationIdFilter, which runs first at HIGHEST_PRECEDENCE on the same
+        // request thread. On batch (non-request) threads the captured path is null, so batch
+        // observations remain observable.
+        return isObservablePath(CorrelationIdFilter.currentRequestPath());
+    }
+
+    /**
+     * Reports whether observations for the given request URI should be recorded.
+     *
+     * <p>Returns {@code false} when {@code uri} starts with any
+     * {@link #NON_OBSERVED_PREFIXES infrastructure prefix}. A {@code null} URI is treated as
+     * observable: a real infrastructure HTTP request always has a URI, so a {@code null} here means
+     * the observation did not originate from an infrastructure HTTP request (for example, a batch
+     * observation on a worker thread, where no request path is captured).</p>
+     *
+     * @param uri the request URI to evaluate, or {@code null} when unknown
+     * @return {@code false} to suppress observations for infrastructure endpoints; {@code true}
+     *         otherwise
+     */
+    private static boolean isObservablePath(String uri) {
+        return uri == null || NON_OBSERVED_PREFIXES.stream().noneMatch(uri::startsWith);
     }
 }

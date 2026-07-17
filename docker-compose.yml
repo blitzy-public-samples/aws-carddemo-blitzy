@@ -204,8 +204,13 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-${DB_PASSWORD:?Set POSTGRES_PASSWORD (or DB_PASSWORD); see header}}
       # Keep initdb encoding deterministic.
       POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    # F-SEC-1: bind published ports to the loopback interface (127.0.0.1) only,
+    # so these services are never reachable on the host's external/LAN
+    # interfaces. Every published port in this file uses the same 127.0.0.1
+    # prefix; the in-container Tempo OTLP receiver (endpoint: 0.0.0.0:4317/4318
+    # above) intentionally stays 0.0.0.0 so sibling containers can reach it.
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - carddemo-pgdata:/var/lib/postgresql/data
     networks:
@@ -229,7 +234,7 @@ services:
       - source: prometheus_config
         target: /etc/prometheus/prometheus.yml
     ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     # Resolve `host.docker.internal` to the Docker host on Linux so Prometheus
     # can scrape an app running on the HOST (the default APP_SCRAPE_TARGET).
     extra_hosts:
@@ -258,9 +263,9 @@ services:
       - source: tempo_config
         target: /etc/tempo.yaml
     ports:
-      - "${TEMPO_OTLP_GRPC_PORT:-4317}:4317"   # OTLP gRPC receiver
-      - "${TEMPO_OTLP_HTTP_PORT:-4318}:4318"   # OTLP HTTP receiver
-      - "${TEMPO_HTTP_PORT:-3200}:3200"        # Tempo query / API (Grafana datasource)
+      - "127.0.0.1:${TEMPO_OTLP_GRPC_PORT:-4317}:4317"   # OTLP gRPC receiver
+      - "127.0.0.1:${TEMPO_OTLP_HTTP_PORT:-4318}:4318"   # OTLP HTTP receiver
+      - "127.0.0.1:${TEMPO_HTTP_PORT:-3200}:3200"        # Tempo query / API (Grafana datasource)
     networks:
       - carddemo-net
     healthcheck:
@@ -292,7 +297,7 @@ services:
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
     ports:
-      - "${GRAFANA_PORT:-3000}:3000"
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
     configs:
       - source: grafana_datasources
         target: /etc/grafana/provisioning/datasources/datasources.yaml
@@ -342,7 +347,7 @@ services:
       OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://tempo:4318/v1/traces}
       SERVER_PORT: ${SERVER_PORT:-8080}
     ports:
-      - "${APP_PORT:-8080}:8080"
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
     networks:
       - carddemo-net
     healthcheck:

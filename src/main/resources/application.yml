@@ -146,6 +146,21 @@ management:
         # Expose /actuator/prometheus (scraped by the compose Prometheus on :9090).
         enabled: true
   metrics:
+    enable:
+      # Suppress the `spring.batch.job.active` meter. Spring Batch is instrumented
+      # by TWO paths on this JVM: the legacy `BatchMetrics` gauge (tag keys
+      # [application, spring_batch_job_active_name]) and the observation-based
+      # variant (tag keys [application, spring_batch_job_name,
+      # spring_batch_job_status]). Both try to register the SAME meter name
+      # `spring.batch.job.active` with DIFFERENT tag-key sets, so Micrometer
+      # rejects the second registration with a one-time WARN per JVM on the first
+      # batch launch. Denying this meter id makes both registrations resolve to a
+      # no-op, eliminating the collision. PropertiesMeterFilter matches on the
+      # most-specific name prefix, so ONLY `spring.batch.job.active` is denied -
+      # the dashboard-consumed `spring.batch.job` and `spring.batch.step` timers
+      # (spring_batch_job_seconds / spring_batch_step_seconds) are unaffected, and
+      # no Grafana panel queries `spring_batch_job_active`. (QA finding F-OBS-2.)
+      spring.batch.job.active: false
     distribution:
       # Publish http.server.requests as a Prometheus histogram (emits the
       # http_server_requests_seconds_bucket series) so the Grafana

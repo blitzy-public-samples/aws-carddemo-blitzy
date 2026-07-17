@@ -354,12 +354,19 @@ curl http://localhost:8080/actuator/health/liveness
 ```
 
 **Metrics** — the Prometheus scrape endpoint (this is what Prometheus on
-`:9090` reads). Unlike the health probes, `/actuator/prometheus` — together with
-`/actuator/metrics` and `/actuator/info` — requires **HTTP Basic** authentication
-with a valid application user (an unauthenticated request returns `401`):
+`:9090` reads). Like the health probes, `/actuator/prometheus` and `/actuator/info`
+are **public** (no authentication) — the local Prometheus scrapes `/actuator/prometheus`
+without credentials because the Compose scrape config carries no `basic_auth`. Only
+`/actuator/metrics` requires **HTTP Basic** authentication with a valid application
+user (an unauthenticated request returns `401`). This matches `SecurityConfig` and
+§8 below:
 
 ```shell
-curl -u ADMIN001:PASSWORD http://localhost:8080/actuator/prometheus
+# Public — no credentials required:
+curl http://localhost:8080/actuator/prometheus
+curl http://localhost:8080/actuator/info
+# Protected — HTTP Basic required (no credentials returns 401):
+curl -u ADMIN001:PASSWORD http://localhost:8080/actuator/metrics
 ```
 
 **Correlation-ID header** — every HTTP response includes an `X-Correlation-Id`
