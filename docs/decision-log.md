@@ -334,16 +334,24 @@ its Java target, while this log explains the reasoning behind the design those m
   browse therefore orders by the **processing** timestamp, which maps to the `proc_ts` column; ordering
   by `orig_ts` would not reproduce the legacy browse order. This choice is applied consistently across
   the [architecture overview](./architecture.md), the [traceability matrix](./traceability-matrix.md),
-  and the repository query definitions.
+  and the repository query definitions — the browse method
+  `findByCardNumOrderByProcTsAscTranIdAsc` orders by `proc_ts` (with a `tran_id` tie-breaker; see
+  *Risk & mitigation*). Note that the online transaction lister (`legacy/cbl/COTRN00C.cbl`) itself
+  browses on the **primary key** (`STARTBR ... RIDFLD(TRAN-ID)`) and merely *displays* `TRAN-ORIG-TS`;
+  the alternate-index chronological retrieval formalized here is the `proc_ts` browse defined by
+  `legacy/jcl/TRANIDX.jcl` (`KEYS(26 304)`).
 - **Rationale:** Forward browse maps naturally to `Pageable` queries ordered by the unique key; the
   alternate-index access paths map to database indexes that preserve the same retrieval order; and the
   reverse-browse-from-`HIGH-VALUES` idiom is exactly a "largest existing key, then increment" operation.
   This preserves both the retrieval order and the identifier values callers observe.
 - **Risk & mitigation:** A mismatch in key ordering or a pagination-boundary off-by-one would change which
   rows a screen returns, and concurrent inserts could race the max-key-plus-one generator. *Mitigation:*
-  repository queries preserve the exact unique-key ordering; pagination boundaries are covered by tests;
-  and identifier generation is guarded within a transactional boundary (see
-  [D18](#d18--jpa-optimistic-locking-version)) so concurrent adds cannot collide.
+  repository queries preserve the exact unique-key ordering; the chronological browse appends the unique
+  `tran_id` as a secondary sort key (`...OrderByProcTsAscTranIdAsc`) so rows sharing a `proc_ts` never
+  shift across page boundaries — a deterministic-pagination robustness improvement over the non-unique
+  legacy browse key; pagination boundaries are covered by tests; and identifier generation is guarded
+  within a transactional boundary (see [D18](#d18--jpa-optimistic-locking-version)) so concurrent adds
+  cannot collide.
 
 ### D11 — Flyway for schema and reference-data migrations
 

@@ -108,7 +108,7 @@ import org.springframework.stereotype.Component;
  *
  * <h2>Why not a repository method</h2>
  * The {@code TransactionRepository} exposes no processing-date-range query
- * ({@code findByCardNumOrderByOrigTsAsc}, {@code findTopByOrderByTranIdDesc},
+ * ({@code findByCardNumOrderByProcTsAscTranIdAsc}, {@code findTopByOrderByTranIdDesc},
  * {@code findMaxTranId}); rather than inventing one, this reader is self-contained and drives an
  * explicit JPQL string over the shared {@link EntityManagerFactory}.
  *

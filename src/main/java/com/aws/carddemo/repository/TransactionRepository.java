@@ -41,16 +41,20 @@ import com.aws.carddemo.domain.Transaction;
  * {@code (type_cd, cat_cd)} &rarr; {@code transaction_category}. The legacy
  * chronological alternate index is formalized in the schema as
  * {@code idx_transaction_proc_ts}; the transaction-list browse contract exposed
- * here preserves origination-order retrieval by ordering on {@code orig_ts}
- * (AAP &sect;0.4.3).</p>
+ * here preserves chronological retrieval by ordering on the processing
+ * timestamp {@code proc_ts} &mdash; the column on which the legacy alternate
+ * index {@code TRANSACT.VSAM.AIX} is keyed ({@code LISTCAT AXRKP=304};
+ * {@code legacy/jcl/TRANIDX.jcl KEYS(26 304)}) &mdash; with the unique
+ * {@code tran_id} appended as a deterministic secondary sort (see
+ * {@code docs/decision-log.md} D10 and AAP &sect;0.4.3).</p>
  *
  * <p>Access-pattern mapping (COBOL &rarr; Spring Data):</p>
  * <ul>
  *   <li>{@code legacy/cbl/COTRN00C.cbl} &mdash; list transactions; the
  *       forward/backward
  *       {@code STARTBR}/{@code READNEXT}/{@code READPREV}/{@code ENDBR} browse
- *       becomes the chronological {@code findByCardNumOrderByOrigTsAsc} queries
- *       plus {@link Pageable} paging.</li>
+ *       becomes the chronological {@code findByCardNumOrderByProcTsAscTranIdAsc}
+ *       queries plus {@link Pageable} paging.</li>
  *   <li>{@code legacy/cbl/COTRN01C.cbl} &mdash; view a transaction; the keyed
  *       {@code EXEC CICS READ ... RIDFLD(TRAN-ID)} becomes the inherited
  *       {@code findById(String)}.</li>
@@ -79,32 +83,39 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
 
     /**
      * Returns every transaction for a single card in chronological
-     * (origination-timestamp) order.
+     * (processing-timestamp) order.
      *
-     * <p>Reproduces the {@code TRANSACT.VSAM.AIX} chronological browse used by
-     * the transaction-list screen ({@code legacy/cbl/COTRN00C.cbl}) and by the
-     * transaction reports, ordering by {@code orig_ts} ascending
-     * (AAP &sect;0.4.3).</p>
+     * <p>Reproduces the {@code TRANSACT.VSAM.AIX} chronological browse, ordering
+     * by the processing timestamp {@code proc_ts} ascending &mdash; the column on
+     * which the legacy alternate index is keyed ({@code LISTCAT AXRKP=304}) &mdash;
+     * with the unique {@code tran_id} appended as a deterministic secondary sort so
+     * rows sharing a {@code proc_ts} keep a stable, repeatable order (see
+     * {@code docs/decision-log.md} D10 and AAP &sect;0.4.3). The legacy online
+     * lister ({@code legacy/cbl/COTRN00C.cbl}) itself browses on the primary key
+     * ({@code STARTBR ... RIDFLD(TRAN-ID)}) and merely displays the origination
+     * timestamp.</p>
      *
      * @param cardNum the 16-character card number ({@code TRAN-CARD-NUM})
-     * @return the card's transactions ordered by origination timestamp ascending;
-     *         an empty list when the card has none
+     * @return the card's transactions ordered by processing timestamp ascending,
+     *         then by {@code tran_id} ascending; an empty list when the card has none
      */
-    List<Transaction> findByCardNumOrderByOrigTsAsc(String cardNum);
+    List<Transaction> findByCardNumOrderByProcTsAscTranIdAsc(String cardNum);
 
     /**
-     * Paged variant of {@link #findByCardNumOrderByOrigTsAsc(String)} for the
-     * transaction-list screen's forward/backward paging.
+     * Paged variant of {@link #findByCardNumOrderByProcTsAscTranIdAsc(String)}
+     * for the transaction-list screen's forward/backward paging.
      *
      * <p>The COBOL {@code STARTBR}/{@code READNEXT}/{@code READPREV}/{@code ENDBR}
      * browse becomes a {@link Pageable} window while the base result set keeps its
-     * chronological ({@code orig_ts} ascending) ordering.</p>
+     * chronological ({@code proc_ts} ascending, then {@code tran_id} ascending)
+     * ordering. The {@code tran_id} tie-breaker guarantees stable, non-overlapping
+     * pages even when several rows share the same {@code proc_ts}.</p>
      *
      * @param cardNum  the 16-character card number ({@code TRAN-CARD-NUM})
      * @param pageable the paging (and optional additional sort) request
-     * @return a page of the card's transactions in chronological order
+     * @return a page of the card's transactions in chronological, tie-broken order
      */
-    Page<Transaction> findByCardNumOrderByOrigTsAsc(String cardNum, Pageable pageable);
+    Page<Transaction> findByCardNumOrderByProcTsAscTranIdAsc(String cardNum, Pageable pageable);
 
     /**
      * Returns the transaction carrying the highest {@code tran_id} (the
