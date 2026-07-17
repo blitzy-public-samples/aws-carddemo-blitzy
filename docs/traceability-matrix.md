@@ -892,7 +892,7 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 | `1500-A-LOOKUP-XREF` | Lookup card cross-reference; reject 100 if card not found [legacy L385] | PostingService -> CardXrefRepository lookup; RejectCode.CARD_XREF_NOT_FOUND (100) |
 | `1500-B-LOOKUP-ACCT` | Lookup account; 101 not-found, 102 over-limit (ACCT-CREDIT-LIMIT >= WS-TEMP-BAL) [L407], 103 after expiry [L417] | PostingService -> AccountRepository lookup; RejectCode 101/102/103 |
 | `2000-POST-TRANSACTION` | Post a valid transaction (update balances, write txn) | PostingService.post (@Transactional): TransactionRepository.save + balance updates |
-| `2500-WRITE-REJECT-REC` | Write rejected record with reason code + running count | FlatFileItemWriter (reject) -> RejectCode + count; 350-byte layout via FixedWidthCodec |
+| `2500-WRITE-REJECT-REC` | Write rejected record with reason code + running count | FlatFileItemWriter (reject) -> RejectCode + count; 430-byte reject layout (350-byte transaction image + 80-byte validation trailer — see D16 / CF1) via FixedWidthCodec |
 | `2700-UPDATE-TCATBAL` | Update transaction-category balance | PostingService -> TransactionCategoryBalanceRepository (create/update) |
 | `2700-A-CREATE-TCATBAL-REC` | Create category-balance row when absent | TransactionCategoryBalanceRepository.save (insert) |
 | `2700-B-UPDATE-TCATBAL-REC` | Update existing category-balance row | TransactionCategoryBalanceRepository.save (update, @Version) |
