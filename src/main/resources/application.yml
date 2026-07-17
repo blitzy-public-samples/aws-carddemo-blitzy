@@ -57,7 +57,7 @@ spring:
     # Keep default-profile logs quiet; verbose SQL belongs in application-local.yml.
     show-sql: false
     hibernate:
-      # CRITICAL: Flyway creates and owns the schema (10 tables + indexes + FK
+      # CRITICAL: Flyway creates and owns the schema (11 tables + indexes + FK
       # constraints + @Version optimistic-lock columns per AAP 0.4.3). Hibernate
       # must ONLY VALIDATE the entity mapping against that schema - never
       # create/alter it. Do NOT change to update/create/create-drop.
@@ -75,7 +75,7 @@ spring:
 
   # ---------------------------------------------------------------------------
   # Flyway - schema + reference-data migrations
-  # (V1__schema.sql, V2__reference_data.sql, ...).
+  # (V1__schema.sql, V2__reference_data.sql (planned), ...).
   # ---------------------------------------------------------------------------
   flyway:
     enabled: true

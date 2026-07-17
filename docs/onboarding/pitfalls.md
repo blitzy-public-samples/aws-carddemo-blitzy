@@ -286,10 +286,13 @@ alphanumeric, leading zeros for numeric) on both read and write.
 The legacy VSAM datasets stored data in **EBCDIC** with binary **`COMP-3`** packed
 decimals. The Java / PostgreSQL target stores **native types**, and external file
 exchange preserves the documented **record layout** — **not** the on-disk
-EBCDIC / `COMP-3` encoding. Reference data is seeded from the delimited **ASCII**
-files under [`legacy/data/ASCII/`](../../legacy/data/ASCII) (customer 50,
-account 50, card 50, cross-reference 50, transaction 311, user 10, plus the
-reference tables).
+EBCDIC / `COMP-3` encoding. Seed and staging data is loaded from the
+**fixed-width, headerless ASCII** files under
+[`legacy/data/ASCII/`](../../legacy/data/ASCII) (customer 50, account 50,
+card 50, cross-reference 50, daily-transaction 300, plus the reference tables:
+transaction-type 7, transaction-category 18, disclosure-group 51,
+category-balance 50). The 10 **user-security** rows are **not** in ASCII — they
+originate from the **EBCDIC** `USRSEC.PS` dataset (copybook `CSUSR01Y`).
 
 **Pitfall.** Do not confuse **layout preservation** with **byte-for-byte on-disk
 encoding**. The migrated system reproduces field positions, lengths, types, and

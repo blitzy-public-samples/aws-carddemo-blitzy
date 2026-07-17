@@ -159,7 +159,7 @@ so the online and batch surfaces share one implementation.
 
 The database schema is managed by **Flyway** under
 [`src/main/resources/db/migration/`](../../src/main/resources/db/migration) (`V1__schema.sql`,
-`V2__reference_data.sql`, ...). To change the schema:
+with `V2__reference_data.sql` planned, ...). To change the schema:
 
 1. **Add a new versioned migration** — **never edit a migration that has already been applied.**
    Create the next `V*__*.sql` file.

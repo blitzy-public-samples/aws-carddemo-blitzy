@@ -51,6 +51,21 @@ One row per COBOL program: its type, unique PROCEDURE DIVISION paragraph count, 
 
 **Assertion:** 28 programs, **527 unique paragraphs**, **100%** mapped to Java targets with no gaps (verified against `legacy/cbl/**`; see Appendix A and the reconciliation footnote in Section 4.12).
 
+## Cross-Reference / Clarification Notes (CF)
+
+Rows in Sections 4–8 occasionally cite a **CF** code (**CF1**, **CF2**, …) to attach a short, shared clarification without repeating it inline. Each code resolves below. Every fact a CF note annotates has been verified against the cited legacy artifact; these notes complement (and cross-reference) the numbered decision-log entries **D1–D24**.
+
+| Code | Clarification note |
+|------|--------------------|
+| **CF1** | **Reject-record composition (430 bytes).** The DALYREJS reject record = a 350-byte transaction image (`FD-REJECT-RECORD PIC X(350)`) plus an 80-byte validation trailer (`FD-VALIDATION-TRAILER PIC X(80)`), both subordinate to `FD-REJS-RECORD` in `legacy/cbl/CBTRN02C.cbl` (L82–L84). The fixed-width layout is preserved by `FixedWidthCodec` — see decision **D16**. |
+| **CF2** | **The chronological alternate index keys on `proc_ts`, not `orig_ts`.** `TRANSACT.VSAM.AIX` is keyed at `AXRKP=304`, which is `TRAN-PROC-TS` (copybook offset 304) — **not** `TRAN-ORIG-TS` (offset 278). It therefore formalizes to a B-tree index on `transaction.proc_ts`. Evidence: `legacy/jcl/TRANIDX.jcl` `KEYS(26 304)` and `legacy/catlg/LISTCAT.txt`. |
+| **CF4** | **ASCII seed files are fixed-width and headerless** — record images sized by the governing copybook `RECLN`, **not** delimited/CSV. There is also **no** `usrsec.txt` in the ASCII set: user-security seed rows derive from the EBCDIC `USRSEC.PS` dataset via `CSUSR01Y`. |
+| **CF6** | **CSD source-only / reference-only resources.** CSD definitions with no executable COBOL behind them — the 18th transaction/program pair `CDV1`→`COCRDSEC` (no `COCRDSEC.cbl` exists) and the `LIBRARY` load-library entries — are catalogued for naming only and are not migration targets. This reconciles the "18 TRANSACTION / 18 PROGRAM" catalog count to **17 production surfaces + 1 source-only**. |
+| **CF7** | **Historical / reference-only legacy member.** A superseded artifact retained under `legacy/` for reference and **not** migrated to a Spring Batch job — e.g. `CBADMCDJ.jcl`, which loads a stale alternate CSD catalog superseded by `CARDDEMO.CSD`. See decision **D14**. |
+| **CF8** | **"No legacy edits" — a source defect is not a contract.** Where a legacy member carries a defect (the garbled `SPACE=` continuation in `CREASTMT.JCL`, duplicate step labels in `TRANREPT.jcl`/`DEFCUST.jcl`, the transposed `OEPNFIL` job name, the stale HLQ in `DEFCUST.jcl`, or the two same-named `REPROC` PROCs), the immutable legacy bytes are left byte-for-byte unchanged; the migration reproduces the **authoritative behavior** from the clean portions rather than the defect. See decision **D14**. |
+| **CF13** | **`.gitattributes` byte-exactness.** The `.gitattributes` entries added in this checkpoint pin the legacy data/catalog files as binary so Git applies no EOL/encoding normalization, keeping the recorded sizes and SHA-256 hashes byte-exact. |
+| **CF14** | **Snapshot / alias caveats for physical data files.** `ACCDATA.PS` is a byte-exact duplicate alias of `ACCTDATA.PS` (identical hash) — only `ACCTDATA` is authoritative and it is not loaded a second time; and the ASCII vs. EBCDIC images are point-in-time snapshots that can differ in row count for the transactional (non-reference) datasets. |
+
 ## 2. Data-Tier Traceability (copybook -> JPA entity -> table)
 
 Each VSAM KSDS becomes a PostgreSQL 16 table; the unique key becomes the primary key; each alternate index (AIX) becomes a B-tree index; application-enforced relationships become real foreign keys **where the parent key is genuinely unique** (a documented improvement, not a behavior change). The one relationship whose parent key is **not** unique — `account.group_id` against the composite-keyed `disclosure_group` — is **not** a foreign key; it is modeled as a plain grouping attribute resolved by a composite `(group_id, type_cd, cat_cd)` application-level lookup (see decision **D8** and the note below). COMP-3 monetary fields become `DECIMAL(x,2)` / `BigDecimal`. See [architecture](./architecture.md) and AAP Section 0.4.3.
@@ -1575,7 +1590,7 @@ The artifact-level rows in Section 7.1 map each job to its Spring target. The ta
 
 `DEFGDGB.jcl` (`STEP05 EXEC PGM=IDCAMS`, source L21-L59) defines six generation-data groups — `TRANSACT.BKUP`, `TRANSACT.DALY`, `TRANREPT`, `TCATBALF.BKUP`, `SYSTRAN`, `TRANSACT.COMBINED` — each `LIMIT(5) SCRATCH`, each guarded by `IF LASTCC=12 THEN SET MAXCC=0` (tolerate already-exists). Target: a **backup retention policy of 5 generations** per stream in the scheduled DB-backup configuration (not a runtime code path).
 
-**Representative IDCAMS define/load job (`ACCTFILE.jcl` pattern, shared by `CARDFILE`/`CUSTFILE`/`XREFFILE`/`TRANFILE`/`DISCGRP`/`TRANCATG`/`TRANTYPE`/`TCATBALF`/`DUSRSECJ`).** Three ordered steps: (1) `IDCAMS DELETE … CLUSTER` with `IF MAXCC LE 08 THEN SET MAXCC = 0` (tolerant drop); (2) `IDCAMS DEFINE CLUSTER (… KEYS(…) RECORDSIZE(…) INDEXED)` (must succeed); (3) `IDCAMS REPRO INFILE(seq) OUTFILE(ksds)` loading the EBCDIC/ASCII seed into the KSDS (must succeed). Target: step (1)+(2) → Flyway `V1__schema.sql` (V2 for the reference tables) `CREATE TABLE` + PK; step (3) → `db/seed/*.csv` load. `TRANIDX.jcl` adds an `IDCAMS DEFINE ALTERNATEINDEX` + `BLDINDEX` over TRANSACT keyed at `AXRKP=304` → Flyway B-tree index on `transaction.proc_ts` (=TRANSACT.VSAM.AIX; see CF2). Return-code semantics: the DELETE tolerates not-found (RC reset to 0); DEFINE and REPRO must return 0, else the job fails (mapped to a failed Flyway migration / failed seed load).
+**Representative IDCAMS define/load job (`ACCTFILE.jcl` pattern, shared by `CARDFILE`/`CUSTFILE`/`XREFFILE`/`TRANFILE`/`DISCGRP`/`TRANCATG`/`TRANTYPE`/`TCATBALF`/`DUSRSECJ`).** Three ordered steps: (1) `IDCAMS DELETE … CLUSTER` with `IF MAXCC LE 08 THEN SET MAXCC = 0` (tolerant drop); (2) `IDCAMS DEFINE CLUSTER (… KEYS(…) RECORDSIZE(…) INDEXED)` (must succeed); (3) `IDCAMS REPRO INFILE(seq) OUTFILE(ksds)` loading the EBCDIC/ASCII seed into the KSDS (must succeed). Target: step (1)+(2) → Flyway `V1__schema.sql` (plus the planned `V2__reference_data.sql` for the reference tables — currently seeded from `db/seed/*.csv`) `CREATE TABLE` + PK; step (3) → `db/seed/*.csv` load. `TRANIDX.jcl` adds an `IDCAMS DEFINE ALTERNATEINDEX` + `BLDINDEX` over TRANSACT keyed at `AXRKP=304` → Flyway B-tree index on `transaction.proc_ts` (=TRANSACT.VSAM.AIX; see CF2). Return-code semantics: the DELETE tolerates not-found (RC reset to 0); DEFINE and REPRO must return 0, else the job fails (mapped to a failed Flyway migration / failed seed load).
 
 #### 7.1.2 Reference-only and anomalous members (classified, not edited)
 
@@ -1627,10 +1642,10 @@ Each line is one fixed-width record terminated by a newline; byte size therefore
 | `cardxref.txt` | 36 (visible) | 50 | 1850 | `efec3825` | `CVACT03Y` | `card_xref` table → `db/seed/card_xref.csv` (EBCDIC image carries a 14-byte trailing filler to 50; see 8.2) |
 | `custdata.txt` | 500 | 50 | 25050 | `d8cfa5b7` | `CVCUS01Y` | `customer` table → `db/seed/customer.csv` |
 | `dailytran.txt` | 350 | 300 | 105300 | `1605206d` | `CVTRA06Y` | `daily_transaction` staging → posting input fixture |
-| `discgrp.txt` | 50 | 51 | 2601 | `dfdd3832` | `CVTRA02Y` | `disclosure_group` → Flyway `V2__reference_data.sql` |
+| `discgrp.txt` | 50 | 51 | 2601 | `dfdd3832` | `CVTRA02Y` | `disclosure_group` → Flyway `V2__reference_data.sql` (planned; currently `db/seed/disclosure_group.csv`) |
 | `tcatbal.txt` | 50 | 50 | 2550 | `2c45817e` | `CVTRA01Y` | `tran_cat_balance` → seed |
-| `trancatg.txt` | 60 | 18 | 1098 | `80040907` | `CVTRA04Y` | `transaction_category` → Flyway `V2__reference_data.sql` |
-| `trantype.txt` | 60 | 7 | 427 | `3e0ae004` | `CVTRA03Y` | `transaction_type` → Flyway `V2__reference_data.sql` |
+| `trancatg.txt` | 60 | 18 | 1098 | `80040907` | `CVTRA04Y` | `transaction_category` → Flyway `V2__reference_data.sql` (planned; currently `db/seed/transaction_category.csv`) |
+| `trantype.txt` | 60 | 7 | 427 | `3e0ae004` | `CVTRA03Y` | `transaction_type` → Flyway `V2__reference_data.sql` (planned; currently `db/seed/transaction_type.csv`) |
 
 There is **no `usrsec.txt`** in the ASCII set (CF4); user-security seed rows derive from the EBCDIC `USRSEC.PS` dataset (8.2) via `CSUSR01Y`.
 
@@ -1664,7 +1679,7 @@ These are the on-mainframe images (fixed width, no newline; byte size = `rows ×
 - **`ACCDATA.PS` = `ACCTDATA.PS`** — identical byte content and hash (`23167cdf`). Only `ACCTDATA.VSAM.KSDS`/`ACCTDATA.PS` is treated as authoritative; `ACCDATA.PS` is a duplicate alias retained for reference and **not** loaded a second time (CF14).
 - **Snapshot semantics** — the ASCII seed files and the EBCDIC images are **point-in-time snapshots** and can differ in row counts (e.g. the daily-transaction ASCII fixture is 300 rows; live/GDG-driven runs vary). The migration seeds from the documented snapshot and does not assume the two encodings are row-count-identical for the transactional (non-reference) datasets (CF14).
 - **`cardxref` width** — ASCII visible width 36 vs EBCDIC width 50: the 14-byte difference is trailing filler present in the fixed 50-byte VSAM record and trimmed in the ASCII extract; both map to the same `card_xref` columns (`CVACT03Y`).
-- **Reference tables** — `disclosure_group` (51 rows), `transaction_category` (18), `transaction_type` (7), and `tran_cat_balance` (50) load identically from either encoding into Flyway `V2__reference_data.sql` / seed; row counts match across ASCII and EBCDIC.
+- **Reference tables** — `disclosure_group` (51 rows), `transaction_category` (18), `transaction_type` (7), and `tran_cat_balance` (50) load identically from either encoding into the planned Flyway `V2__reference_data.sql` (currently the `db/seed/*.csv` seed); row counts match across ASCII and EBCDIC.
 
 ## Appendix A - Authoritative Paragraph Inventory (527 unique)
 

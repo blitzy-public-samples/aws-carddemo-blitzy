@@ -3,7 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="CardDemo modernization — re-platforming the AWS mainframe credit-card system from COBOL, CICS, and VSAM to Java 25 and Spring Boot 3.5, preserving 100% of business behavior with zero new features." />
   <title>CardDemo Modernization — Executive Summary</title>
+
+  <!-- Self-contained inline SVG favicon (data URI, no local file dependency) — silences the browser's automatic /favicon.ico probe. -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230A0E17'/%3E%3Crect%20x='9'%20y='9'%20width='14'%20height='14'%20rx='3'%20fill='%235B8DEF'/%3E%3C/svg%3E" />
 
   <!-- Pinned CDN: reveal.js 5.1.0 core stylesheets (cdnjs). No reveal theme is linked; the Blitzy theme is inlined below. -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reset.min.css" />
@@ -35,6 +39,17 @@
 
     html, body { background: var(--bg); }
 
+    /* Paint reveal.js's own containers with the dark Blitzy background. reveal's
+       stylesheet (linked above) sets .reveal-viewport (and, in 5.x scroll view,
+       .scroll-page) to white with higher specificity than html/body, exposing a
+       white frame around slides in deck view and a white page behind slides in
+       mobile scroll view. These same-specificity rules are declared after the
+       linked reveal CSS, so they win the cascade and keep every reveal surface dark. */
+    .reveal-viewport,
+    .reveal,
+    .reveal .scroll-page,
+    .reveal .scroll-page-content { background: var(--bg); }
+
     .reveal {
       font-family: var(--sans);
       color: var(--text);
@@ -43,7 +58,12 @@
     .reveal .slides {
       text-align: left;
     }
-    .reveal .slides > section {
+    /* Descendant selector (not the `>` child combinator) so the branded slide
+       gradient paints in BOTH deck view (.slides > section) and reveal 5.x mobile
+       scroll view, where sections are nested as
+       .slides > .scroll-page > .scroll-page-sticky > .scroll-page-content > section.
+       The deck has zero nested/vertical sections, so this cannot double-match. */
+    .reveal .slides section {
       background:
         radial-gradient(1200px 700px at 12% -10%, rgba(91,141,239,.10), transparent 60%),
         radial-gradient(1100px 700px at 100% 0%, rgba(139,92,246,.10), transparent 55%),
@@ -166,7 +186,18 @@
       background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
     .reveal .progress { color: var(--accent-2); height: 4px; }
     .reveal .controls { color: var(--accent); }
-    .reveal .slide-number { background: transparent; color: var(--text-dim); font-family: var(--mono); }
+    /* Slide-number counter. It now sits on the dark viewport (14.5:1 contrast).
+       Give the interactive target a >=24x24px hit area to satisfy WCAG 2.5.8:
+       reveal renders the counter as a link, so size both the container and any
+       inner anchors with min-height + inline-flex centering. */
+    .reveal .slide-number {
+      background: transparent; color: var(--text-dim); font-family: var(--mono);
+      display: inline-flex; align-items: center; min-height: 24px; padding: 2px 6px;
+    }
+    .reveal .slide-number a {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-height: 24px; min-width: 12px; padding: 0 3px; color: inherit; text-decoration: none;
+    }
 
     .note { font-size: .52em; color: var(--text-dim); margin-top: 12px; }
     ul.clean { list-style: none; padding-left: 0; }
@@ -208,7 +239,7 @@
         <div class="kpi-grid">
           <div class="kpi"><div class="num">1 : 1</div><div class="lbl">Behavioral Parity</div><div class="sub">Every paragraph and computation reproduced</div></div>
           <div class="kpi"><div class="num">0</div><div class="lbl">New Business Features</div><div class="sub">Scope frozen to existing capability</div></div>
-          <div class="kpi"><div class="num">10 &rarr; 16</div><div class="lbl">VSAM to PostgreSQL</div><div class="sub">Indexed files become relational tables</div></div>
+          <div class="kpi"><div class="num">10 &rarr; 16</div><div class="lbl">VSAM to PostgreSQL</div><div class="sub">Indexed files become 11 tables plus 5 indexes</div></div>
           <div class="kpi"><div class="num">&ge;80%</div><div class="lbl">Test Coverage Gate</div><div class="sub">Unit plus Testcontainers integration</div></div>
         </div>
         <p class="note">Legacy COBOL is retained read-only under <span class="mono">/legacy</span> for reference and audit.</p>

@@ -351,8 +351,9 @@ its Java target, while this log explains the reasoning behind the design those m
 - **Type:** Tooling selection (behavior-preserving)
 - **AAP references:** §0.4.3, §0.5.5
 - **Decision:** Create and evolve the database with **Flyway** versioned migrations —
-  `V1__schema.sql` (ten tables, three indexes, foreign-key constraints) and `V2__reference_data.sql`
-  (reference tables) — seeded from the **fixed-width, headerless ASCII data** under
+  `V1__schema.sql` (eleven tables — ten core plus one staging — five indexes, foreign-key constraints)
+  and the planned `V2__reference_data.sql` (reference tables; currently seeded via `db/seed/*.csv`)
+  — seeded from the **fixed-width, headerless ASCII data** under
   `legacy/data/ASCII/**`, parsed by **fixed column positions** per the governing copybook.
 - **Alternatives:** Hibernate `ddl-auto` schema generation from entities; Liquibase; or hand-run SQL
   scripts applied outside the application lifecycle.

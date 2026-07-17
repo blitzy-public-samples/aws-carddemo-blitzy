@@ -42,9 +42,10 @@ import jakarta.persistence.Table;
  * must match that DDL exactly. The foreign keys ({@code card_num} &rarr;
  * {@code card}, {@code type_cd} &rarr; {@code transaction_type}, and the
  * composite {@code (type_cd, cat_cd)} &rarr; {@code transaction_category}) and
- * the chronological-retrieval index over {@code orig_ts}
- * ({@code idx_transaction_orig_ts}, derived from the legacy VSAM alternate
- * index) are defined by that migration. The corresponding fields are therefore
+ * the chronological-retrieval index over {@code proc_ts}
+ * ({@code idx_transaction_proc_ts}, derived from the legacy VSAM alternate
+ * index {@code TRANSACT.VSAM.AIX} keyed at {@code AXRKP=304} =
+ * {@code TRAN-PROC-TS}) are defined by that migration. The corresponding fields are therefore
  * kept as plain scalar columns rather than JPA associations, keeping the entity
  * a faithful one-to-one projection of the copybook record.</p>
  *
@@ -107,15 +108,18 @@ public class Transaction {
 
     /**
      * {@code TRAN-ORIG-TS PIC X(26)} &mdash; origination timestamp preserved as
-     * text ({@code YYYY-MM-DD-HH.MM.SS.ffffff}); backed by
-     * {@code idx_transaction_orig_ts} for chronological retrieval.
+     * text ({@code YYYY-MM-DD-HH.MM.SS.ffffff}). Not the chronological-browse
+     * key: the legacy alternate index is keyed on {@code proc_ts}, not this
+     * field (see {@code procTs}).
      */
     @Column(name = "orig_ts", length = 26)
     private String origTs;
 
     /**
      * {@code TRAN-PROC-TS PIC X(26)} &mdash; processing timestamp preserved as
-     * text ({@code YYYY-MM-DD-HH.MM.SS.ffffff}).
+     * text ({@code YYYY-MM-DD-HH.MM.SS.ffffff}); backed by
+     * {@code idx_transaction_proc_ts} for chronological retrieval (legacy
+     * {@code TRANSACT.VSAM.AIX}, {@code AXRKP=304}).
      */
     @Column(name = "proc_ts", length = 26)
     private String procTs;

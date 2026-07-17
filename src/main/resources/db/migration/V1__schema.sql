@@ -203,7 +203,8 @@ CREATE TABLE card_xref (
 -- -----------------------------------------------------------------------------
 -- 8. transaction  <- legacy/cpy/CVTRA05Y.cpy (TRAN-RECORD, RECLN 350)
 --    Posted transactions. tran_amt is DECIMAL(11,2) from PIC S9(09)V99.
---    orig_ts is indexed (formalizes TRANSACT.VSAM.AIX -> chronological browse).
+--    proc_ts is indexed (formalizes TRANSACT.VSAM.AIX -> chronological browse);
+--    the AIX is keyed at LISTCAT AXRKP=304 = TRAN-PROC-TS, not TRAN-ORIG-TS.
 --    NOTE: type_cd participates in TWO foreign keys -- one to transaction_type
 --    and one (with cat_cd) to transaction_category. This is valid.
 --    "transaction" is a NON-RESERVED keyword in PostgreSQL and is a legal
@@ -221,8 +222,8 @@ CREATE TABLE transaction (
     tran_merchant_city   VARCHAR(50),               -- TRAN-MERCHANT-CITY  PIC X(50)
     tran_merchant_zip    VARCHAR(10),               -- TRAN-MERCHANT-ZIP   PIC X(10)
     card_num             VARCHAR(16)    NOT NULL,   -- TRAN-CARD-NUM       PIC X(16)     (FK -> card)
-    orig_ts              VARCHAR(26),               -- TRAN-ORIG-TS        PIC X(26)     (timestamp-as-text; indexed)
-    proc_ts              VARCHAR(26),               -- TRAN-PROC-TS        PIC X(26)     (timestamp-as-text)
+    orig_ts              VARCHAR(26),               -- TRAN-ORIG-TS        PIC X(26)     (timestamp-as-text)
+    proc_ts              VARCHAR(26),               -- TRAN-PROC-TS        PIC X(26)     (timestamp-as-text; indexed -> TRANSACT.VSAM.AIX)
     CONSTRAINT pk_transaction PRIMARY KEY (tran_id),
     CONSTRAINT fk_transaction_card FOREIGN KEY (card_num)
         REFERENCES card (card_num),
@@ -318,9 +319,9 @@ CREATE INDEX idx_card_acct_id ON card (acct_id);
 -- Supports "cross-reference -> account".
 CREATE INDEX idx_card_xref_acct_id ON card_xref (acct_id);
 
--- TRANSACT.VSAM.AIX over TRAN-ORIG-TS.
--- Supports chronological transaction retrieval / paging.
-CREATE INDEX idx_transaction_orig_ts ON transaction (orig_ts);
+-- TRANSACT.VSAM.AIX over TRAN-PROC-TS (LISTCAT KEYLEN=26, AXRKP=304).
+-- Supports chronological transaction retrieval / paging by processing timestamp.
+CREATE INDEX idx_transaction_proc_ts ON transaction (proc_ts);
 
 -- Supporting index for account.group_id (see the app-level RI note below):
 -- there is no DB FK on group_id, so this B-tree index backs disclosure-group

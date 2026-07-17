@@ -19,6 +19,17 @@ Spring Boot 3.5.16** over **PostgreSQL 16**. Business behavior is preserved with
 no feature expansion; the original mainframe source is retained, read-only, under
 [`legacy/`](../../legacy).
 
+> **Checkpoint status.** This guide describes the **target end state**; the commands below become
+> copy-pasteable end-to-end **once the runnable application modules land**. At the current checkpoint
+> the repository ships the Maven project descriptor (`pom.xml`), the relocated **read-only** legacy
+> source under [`legacy/`](../../legacy), and the design/onboarding documentation, with the Java
+> application sources under `src/**` still being assembled. The Maven Wrapper (`./mvnw`, `mvnw.cmd`),
+> `docker-compose.yml`, the `Dockerfile`, `src/main/resources/application-local.yml`, and
+> `.github/workflows/ci.yml` are delivered in the subsequent application-build checkpoints. Until they
+> land, `mvn -B validate` works today (an identically pinned system Maven stands in for `./mvnw`),
+> while the Docker Compose, `./mvnw spring-boot:run`, and container steps below are not yet executable.
+> This mirrors the **Checkpoint status** note in the [root README](../../README.md#build--test).
+
 **Where to go after this guide:**
 
 - [`domain-context.md`](./domain-context.md) — what the application does and where
@@ -314,7 +325,7 @@ Whichever option you pick:
 - It connects to PostgreSQL using the `DB_URL` / `DB_USERNAME` / `DB_PASSWORD`
   variables.
 - On startup, **Flyway** applies the migrations under
-  `src/main/resources/db/migration/**` to create the schema (10 tables, indexes,
+  `src/main/resources/db/migration/**` to create the schema (11 tables — 10 core plus 1 staging — their indexes,
   and foreign keys) and load reference data. Hibernate only **validates** the
   mapping against that schema — it never creates or alters it.
 - **Batch jobs do not run on startup.** They are triggered explicitly (the

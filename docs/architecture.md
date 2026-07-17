@@ -79,7 +79,7 @@ graph TB
         SCHED["CI/CD scheduler"] --> BATCH["Spring Batch<br/>Job / Step / chunk"]
         BATCH --> SVC
         SVC --> REPO["Spring Data JPA repositories"]
-        REPO --> PG[("PostgreSQL 16<br/>10 tables + FKs + indexes")]
+        REPO --> PG[("PostgreSQL 16<br/>11 tables + FKs + indexes")]
         BATCH --> FWC["FixedWidthCodec<br/>preserved record layouts"]
     end
 
@@ -193,7 +193,7 @@ carddemo-java/
 ├── src/main/resources/
 │   ├── application.yml  /  application-local.yml
 │   ├── logback-spring.xml
-│   ├── db/migration/             # Flyway: V1__schema.sql, V2__reference_data.sql, ...
+│   ├── db/migration/             # Flyway: V1__schema.sql, V2__reference_data.sql (planned), ...
 │   ├── db/seed/                  # seed CSVs derived from legacy/data/ASCII
 │   └── static/openapi/
 ├── src/test/java/com/aws/carddemo/   # unit + integration (Testcontainers PostgreSQL)
@@ -226,9 +226,10 @@ and uniform:
   and decision **D8**).
 - Each `COMP-3` packed-decimal (monetary) field → a `DECIMAL(x,2)` column, mapped to `BigDecimal`.
 
-The schema is created by **Flyway** migrations: `V1__schema.sql` builds the ten tables, their
-indexes, and the foreign-key constraints; `V2__reference_data.sql` loads the reference data (types,
-categories, disclosure groups). Seed rows are derived from the **fixed-width, headerless** ASCII files
+The schema is created by **Flyway** migrations: `V1__schema.sql` builds the eleven tables (ten core
+plus one staging), their five indexes (three AIX-derived plus two supporting), and the foreign-key
+constraints; the planned `V2__reference_data.sql` (reference data is currently loaded from
+`db/seed/**`) loads the reference data (types, categories, disclosure groups). Seed rows are derived from the **fixed-width, headerless** ASCII files
 under `legacy/data/ASCII/**` (formerly `app/data/ASCII`) — parsed by **fixed column positions** per the
 governing copybook, not as CSV/delimited — and materialized as seed CSVs under
 `src/main/resources/db/seed/`. Each file's record width equals its copybook record length
@@ -499,7 +500,7 @@ external file **layout** is preserved so downstream file exchange is byte/semant
 | Batch | `spring-boot-starter-batch` | Batch jobs (JCL/batch programs) |
 | Security | `spring-boot-starter-security` | Authentication (USRSEC / role model) |
 | Validation | `spring-boot-starter-validation` | Bean Validation (COBOL edit paragraphs) |
-| Schema migration | Flyway (`flyway-core` + `flyway-database-postgresql`) | `V1__schema.sql`, `V2__reference_data.sql`, ... |
+| Schema migration | Flyway (`flyway-core` + `flyway-database-postgresql`) | `V1__schema.sql`, `V2__reference_data.sql` (planned), ... |
 | API docs | springdoc-openapi 2.8.17 | OpenAPI 3 / Swagger UI (targets Spring Boot 3.x) |
 | Metrics / health | `spring-boot-starter-actuator` + Micrometer Prometheus registry | `/actuator/prometheus`, health/readiness |
 | Tracing | Micrometer tracing bridge (OTel) + OTLP exporter | Distributed tracing over OTLP |
