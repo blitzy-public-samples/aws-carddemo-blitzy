@@ -18,19 +18,36 @@ package com.aws.carddemo.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
 
 /**
  * Security configuration for the CardDemo application.
  *
- * <p>This class supplies the application-wide {@link PasswordEncoder} bean that the
- * authentication collaborators depend on. It is the single, canonical declaration of that
- * bean referenced by {@code com.aws.carddemo.security.CardDemoUserDetailsService} and consumed
- * (via constructor injection) by {@code com.aws.carddemo.service.SignonService} (the {@code CC00}
- * sign-on flow, legacy {@code COSGN00C}) and {@code com.aws.carddemo.service.UserService}
- * (the {@code CU01}/{@code CU02} user-administration flows, legacy {@code COUSR01C}/{@code COUSR02C}).
- * Without it those beans cannot be constructed and the application context cannot start.
+ * <p>This class declares the single, canonical HTTP {@link SecurityFilterChain} and the
+ * application-wide {@link PasswordEncoder} bean, and enables method-level security. Together these
+ * re-express the legacy CICS/COMMAREA authentication and role model (sign-on program
+ * {@code app/cbl/COSGN00C.cbl} and the {@code COCOM01Y} {@code 88}-level condition names
+ * {@code CDEMO-USRTYP-ADMIN VALUE 'A'} / {@code CDEMO-USRTYP-USER VALUE 'U'}) as a Spring Security
+ * filter chain (AAP &sect;0.2.2, &sect;0.5.5, &sect;0.7 hotspot L1).
+ *
+ * <h2>Authentication delegation</h2>
+ * <p>Authentication itself is delegated to the sibling {@code com.aws.carddemo.security} package.
+ * {@code CardDemoUserDetailsService} is the single {@link org.springframework.security.core.userdetails.UserDetailsService}
+ * bean (it loads {@code user_security} rows via {@code UserSecurityRepository} and performs no
+ * password comparison). Because exactly one {@code UserDetailsService} bean and one
+ * {@link PasswordEncoder} bean are present, Spring Security's default global
+ * {@code AuthenticationManager} auto-creates a {@code DaoAuthenticationProvider} from them; this
+ * class therefore intentionally declares no {@code UserDetailsService}, {@code AuthenticationManager},
+ * {@code AuthenticationProvider}, or {@code DaoAuthenticationProvider} of its own, keeping the wiring
+ * standard and warning-free.
  *
  * <h2>Why a hashing encoder (documented deviation, AAP &sect;0.7 hotspot L1)</h2>
  * <p>The legacy mainframe design stored user passwords in the {@code USRSEC} VSAM dataset in
@@ -38,28 +55,88 @@ import org.springframework.security.crypto.password.PasswordEncoder;
  * verbatim would be an insecure regression, so the migration contract records password hashing as
  * an explicit, documented security improvement rather than a silent behavior change: credentials
  * are verified through {@link PasswordEncoder#matches(CharSequence, String)} against a
- * {@link BCryptPasswordEncoder} hash. The observable authentication contract — role {@code A} =
- * Admin and role {@code U} = User, derived from the {@code COCOM01Y} condition names — is preserved
- * unchanged; only the on-storage credential representation is hardened.
+ * {@link BCryptPasswordEncoder} hash (the seed data in {@code db/seed/user_security.csv} stores
+ * BCrypt hashes accordingly). The observable authentication contract &mdash; role {@code A} = Admin
+ * and role {@code U} = User &mdash; is preserved unchanged; only the on-storage credential
+ * representation is hardened. Passwords are never logged.
  *
- * <h2>Scope</h2>
- * <p>This configuration deliberately contributes <strong>only</strong> the {@link PasswordEncoder}
- * bean. It does not declare an HTTP {@code SecurityFilterChain}, so Spring Boot's security
- * auto-configuration remains in effect exactly as before; the encoder is a pure collaborator that
- * carries no connection strings or secrets, honoring the "no hardcoded credentials" constraint
- * (AAP &sect;0.8.1).
+ * <h2>Authorization rules</h2>
+ * <p>The chain is a stateless HTTP Basic API (no browser session, no form login). Rules are evaluated
+ * most-specific-first:
+ * <ul>
+ *   <li>{@code permitAll} for the sign-on entry point ({@code /api/v1/auth/**}), the springdoc
+ *       OpenAPI UI and documents ({@code /swagger-ui/**}, {@code /swagger-ui.html},
+ *       {@code /v3/api-docs/**}), and the unauthenticated operational probes / scrape endpoints
+ *       ({@code /actuator/health/**}, {@code /actuator/info}, {@code /actuator/prometheus}). Opening
+ *       {@code /actuator/prometheus} lets the local Prometheus scrape without credentials; the other
+ *       Actuator endpoints (e.g. {@code /actuator/metrics}) remain authenticated by the catch-all
+ *       rule below (deny-by-default).</li>
+ *   <li>{@code /api/v1/admin/**} requires {@code hasRole("ADMIN")} &mdash; the Admin Menu (CA00) and
+ *       all user-management transactions (CU00&ndash;CU03). Because {@code UserRole} grants the
+ *       {@code ROLE_}-prefixed authorities {@code ROLE_ADMIN}/{@code ROLE_USER}, the rule uses
+ *       {@code hasRole} (which auto-prepends {@code ROLE_}), never {@code hasAuthority}.</li>
+ *   <li>{@code anyRequest().authenticated()} secures every remaining business endpoint.</li>
+ * </ul>
+ *
+ * <p>{@code @EnableMethodSecurity} is enabled so that class/method-level {@code @PreAuthorize}
+ * annotations on the admin controllers are honored (defense-in-depth alongside the URL rule). CSRF
+ * is disabled because this is a stateless API authenticated with HTTP Basic (there is no
+ * browser-managed session or cookie to protect). The session-creation policy is
+ * {@link SessionCreationPolicy#STATELESS}.
+ *
+ * <h2>Cross-cutting</h2>
+ * <p>The {@code observability/CorrelationIdFilter} is a self-registering {@code @Component} at
+ * {@code HIGHEST_PRECEDENCE} and is deliberately not referenced here (adding it to the chain would
+ * double-register it). No connection strings or secrets are declared in this class, honoring the
+ * "no hardcoded credentials" constraint (AAP &sect;0.8.1).
  */
 @Configuration
+@EnableWebSecurity
+@EnableMethodSecurity
 public class SecurityConfig {
 
     /**
-     * The application-wide password encoder used to verify and (for user administration) encode
+     * Declares the single application {@link SecurityFilterChain}: a stateless, CSRF-disabled HTTP
+     * Basic API whose authorization rules are evaluated most-specific-first (public sign-on, OpenAPI
+     * docs, and operational probes/scrape; admin URLs requiring {@code ROLE_ADMIN}; every other
+     * request authenticated).
+     *
+     * @param http the {@link HttpSecurity} builder supplied by Spring Security
+     * @return the built {@link SecurityFilterChain}
+     * @throws Exception if the security configuration cannot be built
+     */
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        http
+            // Stateless API authenticated with HTTP Basic: no browser session/cookie to protect.
+            .csrf(AbstractHttpConfigurer::disable)
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(auth -> auth
+                // Sign-on entry point (COSGN00C / CC00) - the only unauthenticated business path.
+                .requestMatchers("/api/v1/auth/**").permitAll()
+                // springdoc OpenAPI UI + document endpoints (paths from application.yml).
+                .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
+                // Operational probes + Prometheus scrape endpoint (unauthenticated by design);
+                // other actuator endpoints (e.g. /actuator/metrics) stay behind authentication.
+                .requestMatchers("/actuator/health/**", "/actuator/info", "/actuator/prometheus").permitAll()
+                // Admin Menu (CA00) + user-management (CU00-CU03) require the ADMIN role.
+                .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
+                // Every remaining business endpoint requires authentication.
+                .anyRequest().authenticated())
+            .httpBasic(Customizer.withDefaults());
+        return http.build();
+    }
+
+    /**
+     * The application-wide password encoder used to verify (and, for user administration, encode)
      * {@code USRSEC} credentials.
      *
      * <p>A {@link BCryptPasswordEncoder} is used: it applies a per-hash random salt and an adaptive
      * work factor, so equal plaintext passwords produce distinct hashes and verification is
      * performed with {@link PasswordEncoder#matches(CharSequence, String)}. This is the "BCrypt bean"
-     * the authentication collaborators document as their expected dependency.
+     * the authentication collaborators document as their expected dependency; combined with the
+     * single {@code CardDemoUserDetailsService} bean it forms the framework-built
+     * {@code DaoAuthenticationProvider}.
      *
      * @return the singleton {@link BCryptPasswordEncoder} shared across the authentication and
      *         user-administration services

@@ -146,6 +146,15 @@ management:
         # Expose /actuator/prometheus (scraped by the compose Prometheus on :9090).
         enabled: true
   metrics:
+    distribution:
+      # Publish http.server.requests as a Prometheus histogram (emits the
+      # http_server_requests_seconds_bucket series) so the Grafana
+      # "HTTP Latency p95/p99" panel - which runs histogram_quantile() over those
+      # buckets - renders instead of showing "No data". Without this only the
+      # _count/_sum (avg/max) aggregates exist. Scoped to the HTTP server timer to
+      # keep metric cardinality bounded. (QA finding F-4.)
+      percentiles-histogram:
+        http.server.requests: true
     tags:
       # Tag every metric with the service name for Prometheus/Grafana filtering.
       application: ${spring.application.name}

@@ -1557,7 +1557,7 @@
           },
           "editorMode": "code",
           "expr": "spring_batch_job_seconds_max",
-          "legendFormat": "max {{name}}",
+          "legendFormat": "max {{spring_batch_job_name}}",
           "range": true,
           "refId": "A"
         },
@@ -1568,7 +1568,7 @@
           },
           "editorMode": "code",
           "expr": "rate(spring_batch_job_seconds_sum[$__rate_interval]) / rate(spring_batch_job_seconds_count[$__rate_interval])",
-          "legendFormat": "avg {{name}}",
+          "legendFormat": "avg {{spring_batch_job_name}}",
           "range": true,
           "refId": "B"
         }
@@ -1663,8 +1663,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (name, status) (spring_batch_job_seconds_count)",
-          "legendFormat": "{{name}} [{{status}}]",
+          "expr": "sum by (spring_batch_job_name, spring_batch_job_status) (spring_batch_job_seconds_count)",
+          "legendFormat": "{{spring_batch_job_name}} [{{spring_batch_job_status}}]",
           "range": true,
           "refId": "A"
         }
@@ -1760,7 +1760,7 @@
           },
           "editorMode": "code",
           "expr": "spring_batch_step_seconds_max",
-          "legendFormat": "{{name}}",
+          "legendFormat": "{{spring_batch_step_name}}",
           "range": true,
           "refId": "A"
         }

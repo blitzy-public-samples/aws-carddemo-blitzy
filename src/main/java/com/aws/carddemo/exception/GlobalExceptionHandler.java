@@ -21,9 +21,11 @@ import org.slf4j.MDC;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.security.web.firewall.RequestRejectedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import jakarta.persistence.OptimisticLockException;
 import jakarta.validation.ConstraintViolationException;
@@ -60,6 +62,12 @@ import jakarta.validation.ConstraintViolationException;
  *       <td>COBOL edit/validation paragraphs re-expressed as Bean Validation on the request DTO</td></tr>
  *   <tr><td>{@link ConstraintViolationException}</td><td>400 Bad&nbsp;Request</td>
  *       <td>path/query-parameter validation</td></tr>
+ *   <tr><td>{@link RequestRejectedException}</td><td>400 Bad&nbsp;Request</td>
+ *       <td>Spring Security {@code StrictHttpFirewall} rejection of a malformed
+ *           URL/header (a client error, not a server fault)</td></tr>
+ *   <tr><td>{@link NoResourceFoundException}</td><td>404 Not&nbsp;Found</td>
+ *       <td>Spring MVC "no handler/static resource for path" (bots, scanners,
+ *           favicon, path typos)</td></tr>
  *   <tr><td>{@link FileStatusException} (base)</td><td>500 Internal&nbsp;Server&nbsp;Error</td>
  *       <td>non-recoverable I/O, i.e. COBOL {@code 9999-ABEND-PROGRAM}</td></tr>
  *   <tr><td>{@link Exception} (fallback)</td><td>500 Internal&nbsp;Server&nbsp;Error</td>
@@ -93,8 +101,13 @@ import jakarta.validation.ConstraintViolationException;
  * never echoed (only field names and constraint messages are surfaced);
  * optimistic-lock and unexpected-error responses use fixed, safe messages; and
  * the raw message of an unknown exception is logged server-side only, never
- * returned to the client. Client errors (4xx) are logged at {@code WARN};
- * server errors (5xx) are logged at {@code ERROR} with a stack trace. The
+ * returned to the client. Client errors (4xx) are logged at {@code WARN} (or
+ * {@code DEBUG} for a routine {@link NoResourceFoundException}) with no stack
+ * trace; genuine server errors (5xx) are logged at {@code ERROR} with a stack
+ * trace. Framework client-error signals &mdash; {@link NoResourceFoundException}
+ * (404) and {@link RequestRejectedException} (400) &mdash; are handled explicitly
+ * so they can never be mis-mapped to a 5xx by the {@link Exception} catch-all,
+ * which would otherwise corrupt the error-rate metric and alerting. The
  * per-request correlation ID placed into the SLF4J {@link MDC} by the
  * observability {@code CorrelationIdFilter} (MDC key {@code "correlationId"}) is
  * attached to every log line automatically and, when present, is also copied
@@ -249,6 +262,64 @@ public class GlobalExceptionHandler {
         log.error("Unhandled file-status error [status={}]: {}", ex.getFileStatus(), ex.getMessage());
         return problem(HttpStatus.INTERNAL_SERVER_ERROR, "Data Access Error",
                 "A data access error occurred.");
+    }
+
+    /**
+     * Maps Spring MVC's {@link NoResourceFoundException} to HTTP {@code 404 Not
+     * Found}. This is the framework's own "no handler/static resource matched the
+     * request path" signal (bots, scanners, favicon probes, and path typos). Left
+     * to the catch-all it would otherwise be mis-reported as a {@code 500}
+     * &mdash; polluting the ERROR log stream with stack traces and inflating the
+     * {@code http_server_requests} {@code SERVER_ERROR} (5xx) series and
+     * {@code logback_events_total{level="error"}}, producing false server-error
+     * alerts on entirely benign not-found traffic.
+     *
+     * <p>Because a missing resource is a routine <em>client</em> error rather than
+     * a server fault, it is logged at {@code DEBUG} with no stack trace, and a
+     * fixed, non-revealing detail is returned (the request path already appears in
+     * the problem-detail {@code instance}). Declaring this handler explicitly is
+     * equivalent to letting Spring Boot render its default 404 for an unmatched
+     * path, but it keeps the response shape consistent with the rest of this advice
+     * (RFC&nbsp;7807 {@link ProblemDetail} carrying the correlation ID).</p>
+     *
+     * @param ex the not-found signal raised by the {@code DispatcherServlet} when
+     *           no handler or static resource matches the request path
+     * @return a {@link ProblemDetail} with status 404 and title "Resource Not Found"
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ProblemDetail handleNoResourceFound(NoResourceFoundException ex) {
+        log.debug("No resource found for request path: {}", ex.getResourcePath());
+        return problem(HttpStatus.NOT_FOUND, "Resource Not Found",
+                "The requested resource was not found.");
+    }
+
+    /**
+     * Maps Spring Security's {@link RequestRejectedException} to HTTP {@code 400
+     * Bad Request}. The {@code StrictHttpFirewall} raises this when a request's URL
+     * or a header value contains characters it deems potentially malicious (for
+     * example a request carrying a malformed correlation header). This is a
+     * <em>client</em> error: the request never reaches application logic, so
+     * mapping it to a {@code 500} via the catch-all would wrongly log it at ERROR
+     * with a stack trace and count it as a server error in
+     * {@code http_server_requests} and {@code logback_events_total{level="error"}}.
+     *
+     * <p>It is logged at {@code WARN} (a rejected request is worth noticing but is
+     * not a server fault) with <strong>no stack trace and without echoing the
+     * rejected value</strong> &mdash; the offending, client-controlled string
+     * (which the firewall embeds in the exception message) is deliberately kept out
+     * of both the log line and the response body, consistent with this advice's
+     * rule of never surfacing rejected input. A fixed, generic detail is returned
+     * to the client.</p>
+     *
+     * @param ex the firewall rejection raised by Spring Security's
+     *           {@code StrictHttpFirewall}
+     * @return a {@link ProblemDetail} with status 400 and title "Bad Request"
+     */
+    @ExceptionHandler(RequestRejectedException.class)
+    public ProblemDetail handleRequestRejected(RequestRejectedException ex) {
+        log.warn("Request rejected by HTTP firewall: {}", ex.getClass().getSimpleName());
+        return problem(HttpStatus.BAD_REQUEST, "Bad Request",
+                "The request was rejected as malformed.");
     }
 
     /**

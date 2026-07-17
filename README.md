@@ -85,7 +85,7 @@ Maven does **not** need to be installed separately: the repository ships the Mav
 
 ## Build & Test
 
-> **Checkpoint status.** This checkpoint delivers the **complete legacy relocation** (all original COBOL/CICS/VSAM/JCL source under [`legacy/`](./legacy)), the Maven project descriptor (`pom.xml`), and the design/traceability/onboarding documentation. The runnable Java application modules — the `src/**` sources, the `./mvnw` wrapper, `docker-compose.yml`, the `Dockerfile`, and `.github/workflows/ci.yml` — are delivered in the subsequent application-build checkpoints. The commands and target paths in **Build & Test**, **Run locally**, and **Observability** below therefore describe the **intended build-and-run flow**; they become executable end-to-end once those modules land.
+> **Checkpoint status.** The runnable Java application is present and builds and runs now — the `src/**` sources, the `./mvnw` wrapper, `docker-compose.yml`, the `Dockerfile`, and `.github/workflows/ci.yml` — alongside the **complete legacy relocation** (all original COBOL/CICS/VSAM/JCL source under [`legacy/`](./legacy)), the Maven project descriptor (`pom.xml`), and the design/traceability/onboarding documentation. The commands and target paths in **Build & Test**, **Run locally**, and **Observability** below are **executable end-to-end** on the provisioned toolchain (Java 25 + the Maven wrapper + Docker Compose): `./mvnw -B clean verify` produces a zero-warning build, `docker compose up -d` brings up a healthy stack, and `java -jar target/carddemo-*.jar` starts the application. Exhaustive validation of the full observability **signal pipeline** (populated Grafana dashboards, traces landing in Tempo) remains owned by the observability workstream; the application itself and its Actuator/metrics endpoints run and respond locally today.
 
 The build is reproducible, non-interactive, and produces **zero warnings**:
 
@@ -113,7 +113,7 @@ mvnw.cmd -B clean verify
 1. **Start the infrastructure.** Bring up PostgreSQL 16 (plus Prometheus, Tempo, and Grafana for the observability stack) with Docker Compose:
 
    ```shell
-   docker-compose up -d
+   docker compose up -d
    ```
 
 2. **Supply configuration via environment variables.** No credentials are hardcoded — the application reads every secret and connection value from the environment (typically activated through the `local` Spring profile). For example:
@@ -163,19 +163,23 @@ The JCL-triggered batch programs are now **Spring Batch Jobs** (chunk-oriented `
 | `TransactionCombineJob`      | SORT                 | COMBTRAN           |
 | `TransactionBackupJob`       | IDCAMS REPRO         | TRANBKP            |
 
-Job **scheduling** is no longer driven by a JCL scheduler; it moves to the CI/CD workflow at `.github/workflows/ci.yml` (delivered with the application-build checkpoints — see the checkpoint note under [Build & Test](#build--test)). The complete source-construct-to-job mapping is recorded in the [traceability matrix](./docs/traceability-matrix.md).
+Job **scheduling** is no longer driven by a JCL scheduler; it is homed in the CI/CD workflow at `.github/workflows/ci.yml`, where the nightly schedule currently runs the reproducible build-and-verify gate and per-job batch launches are wired in as each batch job is delivered (see [`docs/decision-log.md`](./docs/decision-log.md), decision D14). The complete source-construct-to-job mapping is recorded in the [traceability matrix](./docs/traceability-matrix.md).
 
 <br/>
 
 ## Observability
 
-Operational visibility is **designed into** the target application and configured to run against the local `docker-compose` stack. The capabilities below are specified and configured as part of the migration design; they are exercised once the application modules land (see the checkpoint note under [Build & Test](#build--test)) rather than being runtime-verified at this checkpoint:
+Operational visibility is **built into** the application and runs against the local `docker-compose` stack. The capabilities below are runtime-verifiable today:
 
-* **Health & readiness** — Spring Boot Actuator is configured to expose `/actuator/health` and `/actuator/health/readiness`.
-* **Metrics** — Prometheus-format metrics are configured to publish at `/actuator/prometheus` (Micrometer registry).
-* **Structured logging** — every log line is designed to carry a **correlation ID** that propagates across service and batch boundaries (Logback).
-* **Distributed tracing** — traces are configured to export over **OTLP** to Tempo via Micrometer Tracing + OpenTelemetry.
-* **Dashboard** — a ready-to-import Grafana dashboard **template** is provided at [`docs/observability/grafana-dashboard.json`](./docs/observability/grafana-dashboard.json) for import into the local stack once metrics are flowing.
+* **Health & readiness** — Spring Boot Actuator exposes `/actuator/health` together with the `/actuator/health/liveness` and `/actuator/health/readiness` probes.
+* **Metrics** — Prometheus-format metrics publish at `/actuator/prometheus` (Micrometer registry); HTTP server latency is emitted as a histogram, so the dashboard's p95/p99 latency panels are populated.
+* **Structured logging** — every log line carries a **correlation ID** that propagates across service and batch boundaries (Logback).
+* **Distributed tracing** — traces export over **OTLP** to Tempo via Micrometer Tracing + OpenTelemetry.
+* **Dashboard** — a ready-to-import Grafana dashboard **template** is provided at [`docs/observability/grafana-dashboard.json`](./docs/observability/grafana-dashboard.json).
+
+**Correlation-ID HTTP contract.** Every HTTP response carries an `X-Correlation-Id` header. If the request supplies an `X-Correlation-Id` whose value matches the safe pattern `^[A-Za-z0-9._-]{1,64}$`, that value is adopted for the request's logs, response header, and trace; otherwise — absent, malformed, over-length, or containing out-of-charset characters — the application generates a fresh UUID. The correlation ID is placed in the logging MDC under `correlationId` and appears in every log line as `[cid=...]`. Client-supplied values are validated (never reflected verbatim), so untrusted header content cannot reach the logs, response, or trace.
+
+**Actuator access posture.** The exposure list is pinned to exactly `health,info,metrics,prometheus` (never `*`). `/actuator/health` and its `/actuator/health/liveness` and `/actuator/health/readiness` probes are **public** (no authentication) so container orchestrators can probe them; the remaining exposed endpoints — `/actuator/info`, `/actuator/metrics`, and `/actuator/prometheus` — require **HTTP Basic** authentication with a valid application user.
 
 <br/>
 
@@ -189,7 +193,7 @@ As a documented security improvement over the intentionally insecure legacy demo
 
 ## Onboarding & Documentation
 
-The onboarding guides take a new developer from a clean machine toward a buildable, runnable, and modifiable application (each guide states which steps are executable at the current checkpoint versus which arrive with the application modules):
+The onboarding guides take a new developer from a clean machine to a buildable, runnable, and modifiable application:
 
 * [`docs/onboarding/getting-started.md`](./docs/onboarding/getting-started.md) — clean-machine setup, build, and run
 * [`docs/onboarding/domain-context.md`](./docs/onboarding/domain-context.md) — credit-card domain and business background

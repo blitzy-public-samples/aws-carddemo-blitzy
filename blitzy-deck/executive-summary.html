@@ -434,7 +434,7 @@ flowchart LR
             <tr><td>TransactionBackupJob</td><td>TRANBKP (IDCAMS REPRO)</td><td>backup</td></tr>
           </tbody>
         </table>
-        <p class="note">DD dependencies become step / flow ordering; SORT becomes a Java comparator or ORDER BY; scheduling moves to the CI/CD workflow.</p>
+        <p class="note">DD dependencies become step / flow ordering; SORT becomes a Java comparator or ORDER BY; job scheduling is homed in the CI/CD workflow, with per-job launches wired in as each batch job is delivered.</p>
         <div class="slide-footer">Prepared by <b>Blitzy</b></div>
       </section>
 
@@ -513,9 +513,9 @@ flowchart LR
               <li>Structured logs designed to carry a correlation ID across service and batch boundaries</li>
               <li>Distributed traces configured to export via OTLP for local viewing</li>
               <li>Health and readiness probes configured via Spring Boot Actuator</li>
-              <li>Grafana dashboard template provided for the local docker-compose stack</li>
+              <li>Grafana dashboard template provided for the local Docker Compose stack</li>
             </ul>
-            <p class="note" style="margin-top:10px;">Configured as part of the migration design; exercised once the application modules land.</p>
+            <p class="note" style="margin-top:10px;">Wired into the running application; the Actuator health and Prometheus metrics endpoints respond locally today. Full signal-pipeline validation is owned by the observability workstream.</p>
           </div>
         </div>
         <div class="slide-footer">Prepared by <b>Blitzy</b></div>

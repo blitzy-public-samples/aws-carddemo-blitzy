@@ -10,8 +10,16 @@ on:
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
-  # Nightly run represents the recurring JCL batch-job scheduling that previously ran on
-  # the mainframe: POSTTRAN(CBTRN02C), INTCALC(CBACT04C), CREASTMT(CBSTM03A), COMBTRAN(SORT).
+  # Nightly cron is the CI/CD home for the recurring JCL batch-job scheduling that previously
+  # ran on the mainframe -- the mapped legacy jobs POSTTRAN(CBTRN02C), INTCALC(CBACT04C),
+  # CREASTMT(CBSTM03A) and COMBTRAN(SORT) are listed here for traceability (AAP 0.4.4 / 0.7.2 M4).
+  # At this checkpoint the scheduled run executes the SAME reproducible build+verify gate as the
+  # push / pull_request triggers; it does NOT yet launch those batch jobs as workflow steps.
+  # The launch mechanism itself exists and is exercised locally: a Spring Batch job is run by name
+  # via `--spring.batch.job.enabled=true --spring.batch.job.name=<job>` (with the process exit code
+  # reflecting the batch return code, 0 == COMPLETED). Per-job scheduled launch steps are added
+  # incrementally as each target batch job is implemented; see docs/decision-log.md
+  # ("JCL -> CI/CD scheduling") for the rationale and the intended external-scheduler alternative.
   schedule:
     - cron: '0 3 * * *'
 

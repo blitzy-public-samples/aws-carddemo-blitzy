@@ -461,13 +461,14 @@ ship** with structured **Logback** logs carrying **correlation IDs** injected by
 `/actuator/prometheus`, and **health/readiness** checks at `/actuator/health` and
 `/actuator/health/readiness`. A Grafana dashboard **template** at
 [`./observability/grafana-dashboard.json`](./observability/grafana-dashboard.json) is provided for the
-`docker-compose` observability stack. **Delivery status:** at this checkpoint the observability
-configuration and the dashboard template are **planned/authored deliverables** — they have **not yet
-been exercised against a running application**, because the application modules and the
-`docker-compose` stack land in a later checkpoint; local runtime verification (correlation-id
-propagation, traces, metrics, dashboard rendering) is a tracked next task. See
+Docker Compose observability stack. **Delivery status:** the observability configuration and the
+dashboard template are present, and the application **runs against the local Docker Compose stack
+today** — the Actuator health/readiness and Prometheus endpoints respond locally, and Logback emits
+correlation IDs on every request and batch execution. Exhaustive validation of the full signal pipeline
+(end-to-end correlation-id propagation, traces landing in Tempo, and Grafana dashboard rendering) is
+owned by the observability workstream and tracked as a next task. See
 [`./onboarding/getting-started.md`](./onboarding/getting-started.md) and
-[`./decision-log.md`](./decision-log.md) (decision **D23**) for the planned-vs-delivered detail.
+[`./decision-log.md`](./decision-log.md) (decision **D23**) for the detail.
 
 **Security** (`security/` + `config/SecurityConfig`). A `UserDetailsService` over the `user_security`
 table authenticates users and maps role **`A` → ADMIN** and **`U` → USER**. All credentials are
@@ -519,14 +520,13 @@ imports are not permitted.
 All configuration — including the datasource URL, username, and password — resolves from environment
 variables; **no credentials are hardcoded**. The commands below use env-var placeholders.
 
-> **Checkpoint status.** This section describes the **target** build-and-run flow. At the current
-> checkpoint the repository contains the build manifest (`pom.xml`) and this documentation; the
-> application modules (`src/**`), the `mvnw`/`mvnw.cmd` wrapper, `docker-compose.yml`, and the CI
-> workflow are delivered in subsequent checkpoints per the migration plan. Commands that require those
-> artifacts (`./mvnw …`, `docker-compose up`, `spring-boot:run`, `java -jar …`) become runnable once
-> they land; what is verifiable **today** (`mvn validate`, `mvn dependency:tree`, the OWASP scan) is
-> covered in [`./onboarding/getting-started.md`](./onboarding/getting-started.md), which labels each
-> command **available now** or **target**.
+> **Checkpoint status.** This section describes the build-and-run flow, and it is **runnable now** on
+> the provisioned toolchain: the repository contains the application modules (`src/**`), the
+> `mvnw`/`mvnw.cmd` wrapper, `docker-compose.yml`, the `Dockerfile`, and the CI workflow, in addition to
+> the build manifest (`pom.xml`) and this documentation. The commands below (`./mvnw …`,
+> `docker compose up`, `spring-boot:run`, `java -jar …`) execute **end-to-end today**;
+> [`./onboarding/getting-started.md`](./onboarding/getting-started.md) walks through each step and labels
+> what is verifiable at each stage.
 
 Build, test, and verify (zero-warning compile under Java 25, unit + Testcontainers integration tests,
 JaCoCo ≥80% gate, and the OWASP dependency-check scan):
@@ -539,7 +539,7 @@ Bring up the local infrastructure (PostgreSQL 16 plus the Prometheus + Tempo + G
 stack):
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 Run the application (either via the Maven plugin or the built jar), supplying configuration through
@@ -559,6 +559,28 @@ java -jar target/carddemo-1.0.0.jar
 
 See [`./onboarding/getting-started.md`](./onboarding/getting-started.md) for the full
 clean-machine-to-running-application walkthrough.
+
+## Configuration precedence
+
+Runtime configuration is resolved by Spring Boot with the following precedence (**highest wins**) — a
+value set at a higher layer overrides the same key from every lower layer:
+
+1. **Command-line arguments** — e.g. `--server.port=8080`, `--spring.batch.job.name=<job>`,
+   `--spring.profiles.active=local`.
+2. **OS environment variables** — e.g. `SPRING_PROFILES_ACTIVE`, `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`,
+   `SPRING_DATASOURCE_*`. This is how every credential and connection value enters the application; **no
+   secrets are hardcoded** (see [decision **D6**](./decision-log.md)).
+3. **Profile-specific YAML** — `application-local.yml` when the `local` profile is active; it layers
+   local-development datasource defaults, verbose Actuator exposure, and 100%-sampled tracing on top of
+   the base file.
+4. **Base `application.yml`** — the profile-independent defaults applied when nothing above overrides
+   them.
+
+The **active profile** is selected by `SPRING_PROFILES_ACTIVE` (or `--spring.profiles.active`). The
+`local` profile additionally activates the `LocalSeedDataLoader`, which idempotently loads the
+`db/seed/*.csv` demo data (skipping any already-populated table) and **never runs under the `test` or
+default profiles**. Flyway migrations under `db/migration` run on startup regardless of the active
+profile.
 
 ## Related Documents
 

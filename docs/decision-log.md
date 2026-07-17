@@ -58,6 +58,7 @@ its Java target, while this log explains the reasoning behind the design those m
 | [D22](#d22--password-hashing-and-cvv-hardening) | F. Security | Password hashing and CVV hardening | **Intentional improvement** |
 | [D23](#d23--observability-stack-logs-traces-metrics-dashboard) | G. Observability & Ops | Observability stack (logs, traces, metrics, dashboard) | Non-functional addition |
 | [D24](#d24--mq--racf--3270-emulation-and-aws-m2-runtime-out-of-scope) | G. Observability & Ops | MQ / RACF / 3270 emulation / AWS M2 runtime out of scope | Scope boundary |
+| [D25](#d25--full-pan-and-account-number-in-master-print-output) | G. Observability & Ops | Full PAN / account number in master-print output (SYSOUT parity; PCI hardening deferred) | Behavior preservation (parity) + documented improvement |
 
 ---
 
@@ -196,7 +197,10 @@ its Java target, while this log explains the reasoning behind the design those m
 - **AAP references:** §0.8.1, §0.9.3
 - **Decision:** Resolve **every credential, connection string, and secret from environment variables**
   (for example `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`), with
-  **no secret value committed** to source or configuration.
+  **no secret value committed** to source or configuration. The full resolution order that governs how
+  these values are applied — **command-line arguments > OS environment variables > profile-specific
+  `application-local.yml` > base `application.yml`** — is documented under
+  [Configuration precedence](./architecture.md#configuration-precedence).
 - **Alternatives:** Hardcoding connection details in `application.yml`; committing a populated `.env`
   file; or embedding credentials in the container image.
 - **Rationale:** The prompt forbids hardcoded credentials. Externalized configuration keeps secrets out
@@ -487,6 +491,23 @@ its Java target, while this log explains the reasoning behind the design those m
     `OPENFIL.jcl` carries a misspelled `//OEPNFIL` job card; `DEFCUST.jcl` and `TRANREPT.jcl` contain
     duplicate step names). These are **classified and left byte-unchanged** in `legacy/**`; the matrix
     records the authoritative behavior chosen for each without editing the source.
+- **Current-state realization of the CI/CD trigger (Explainability).** The nightly `schedule:` cron in
+  `.github/workflows/ci.yml` is the CI/CD home for the recurring JCL batch-lifecycle heritage, but at this
+  checkpoint the scheduled run executes the **same reproducible `./mvnw -B clean verify` build gate** as
+  the `push`/`pull_request` triggers — it does **not** yet launch the batch jobs as workflow steps. This is
+  a deliberate, documented deferral rather than a silent gap: (1) the CI workflow's authoritative scope is a
+  single `build` job running exactly `./mvnw -B clean verify`, with the quality gates (JaCoCo, OWASP
+  dependency-check, zero-warning compile) inherited from `pom.xml`; (2) the batch **launch-by-name mechanism
+  already exists and is exercised locally** — a job runs via `--spring.batch.job.enabled=true
+  --spring.batch.job.name=<job>` (Spring Batch stays disabled at ordinary context start, so no job
+  auto-runs), and the process exit code reflects the batch return code (`0` == `COMPLETED`); and (3) several
+  of the mapped legacy jobs named in the workflow comment (POSTTRAN/CBTRN02C, INTCALC/CBACT04C,
+  CREASTMT/CBSTM03A, COMBTRAN/SORT) are implemented in **later checkpoints**, so wiring their per-job launch
+  steps into the nightly schedule is added **incrementally as each target job lands**. The workflow comment
+  was corrected so that no CI step is claimed to run a batch job today. **Alternative / roadmap:** if
+  per-run isolation or richer orchestration is later required, a dedicated external scheduler — or a
+  separate scheduled workflow that invokes each `JobLauncher` by name and asserts its return code — can host
+  the launches without altering the single reproducible build job.
 - **Risk & mitigation:** Reordering steps, or a different chunk-commit boundary, could change outputs or
   restart behavior. *Mitigation:* step and flow ordering mirrors the JCL DD dependencies; comparators
   preserve the exact sort keys; return-code gating is modeled explicitly; and golden-file tests compare
@@ -711,17 +732,16 @@ its Java target, while this log explains the reasoning behind the design those m
   **correlation ID** that propagates across service and batch boundaries; **Micrometer + OpenTelemetry**
   distributed tracing exported over **OTLP** (intended to be viewed locally in Tempo); a **Prometheus**
   metrics endpoint and **health/readiness** checks via **Spring Boot Actuator**; and a **Grafana
-  dashboard** template (`docs/observability/grafana-dashboard.json`). The stack is **designed and
-  configured** to run in a local `docker-compose` environment (PostgreSQL + Prometheus + Tempo +
-  Grafana).
+  dashboard** template (`docs/observability/grafana-dashboard.json`). The stack **runs** in a local
+  Docker Compose environment (PostgreSQL + Prometheus + Tempo + Grafana).
 - **Delivery status at this checkpoint (Explainability):** the observability configuration
-  (dependencies in `pom.xml`, the planned `logback-spring.xml`, Actuator/Micrometer/OTLP settings in
-  `application.yml`) and the **Grafana dashboard template** are **planned/authored deliverables**. They
-  have **not yet been exercised against a running application**, because the application modules and the
-  `docker-compose` stack land in a later checkpoint. Wording throughout the documentation is therefore
-  **"planned/designed"**, not "verified locally"; the move to *verified* is a tracked next task (stand up
-  the stack, confirm correlation-id propagation, traces, metrics, and dashboard rendering) recorded in
-  [docs/onboarding/extending.md](./onboarding/extending.md).
+  (`logback-spring.xml`, Actuator/Micrometer/OTLP settings in `application.yml`) and the **Grafana
+  dashboard template** are present, and the application **runs against the local Docker Compose stack
+  today**: the Actuator health/readiness and Prometheus metrics endpoints respond locally, and Logback
+  emits a correlation id on every request and batch execution. What remains a tracked next task — owned
+  by the observability workstream — is **exhaustive validation of the full signal pipeline** (end-to-end
+  correlation-id propagation, traces landing in Tempo, and Grafana dashboard rendering against live data),
+  recorded in [docs/onboarding/extending.md](./onboarding/extending.md).
 - **Per-job batch observability contract (planned):** each Spring Batch job (see
   [D14](#d14--chunk-oriented-spring-batch-scheduling-moves-to-cicd) and the
   [traceability matrix](./traceability-matrix.md)) emits a consistent set of signals — job/step
@@ -752,9 +772,10 @@ its Java target, while this log explains the reasoning behind the design those m
 - **Risk & mitigation:** Tracing/metrics export can add overhead or, if misconfigured, leak sensitive
   data into logs. *Mitigation:* the tracing exporter endpoint is supplied via environment variable and is
   optional for local runs; the CVV is never logged and passwords are never logged (see
-  [D22](#d22--password-hashing-and-cvv-hardening)); and **local runtime verification** of the full stack
-  against the bundled `docker-compose` observability services is a **planned validation step** that
-  accompanies the application modules (it is not yet claimed as done).
+  [D22](#d22--password-hashing-and-cvv-hardening)); and **exhaustive validation** of the full signal
+  pipeline against the bundled Docker Compose observability services (end-to-end trace propagation into
+  Tempo and Grafana dashboard rendering) is a tracked validation step owned by the observability
+  workstream.
 
 ### D24 — MQ / RACF / 3270 emulation and AWS M2 runtime out of scope
 
@@ -777,6 +798,44 @@ its Java target, while this log explains the reasoning behind the design those m
   otherwise read their absence as an omission. *Mitigation:* they are documented **here** as deliberate
   scope boundaries; MQ is noted as README-roadmap-only; and if any becomes a genuine requirement it would
   be introduced through a new decision entry rather than silently.
+
+### D25 — Full PAN and account number in master-print output
+
+- **Status:** Accepted
+- **Type:** Behavior preservation (parity) with a **documented security improvement (deferred)**
+- **AAP references:** §0.7.3 (L1), §0.8.1, §0.8.3, §0.9.3
+- **Decision:** The batch master-print jobs — `AccountMasterPrintJob` (from `legacy/cbl/CBACT01C.cbl`),
+  `CardMasterPrintJob` (from `legacy/cbl/CBACT02C.cbl`), and `CustomerMasterPrintJob` (from
+  `legacy/cbl/CBCUS01C.cbl`) — reproduce the legacy SYSOUT record dumps. The **full account number**
+  (`ACCT-ID`) and the **full card number / PAN** (`CARD-NUM`) are rendered **verbatim**, preserving the
+  exact observable output of `DISPLAY ACCT-ID` (`legacy/cbl/CBACT01C.cbl` L119) and
+  `DISPLAY CARD-RECORD` (`legacy/cbl/CBACT02C.cbl` L78). Every field the AAP designates as **sensitive**
+  is masked: the card **CVV** is rendered as the fixed mask `***` and is never read
+  (`CardMasterPrintJob.formatCardRecord`, see [D22](#d22--password-hashing-and-cvv-hardening)), and the
+  customer **SSN**, **government-issued id**, and **date of birth** are rendered as `****`
+  (`CustomerMasterPrintJob.formatCustomer`).
+- **Alternatives:** (1) Truncate the PAN to its last four digits and/or mask the account number in the
+  printed output. (2) Route the master-print output to a dedicated, access-controlled report sink outside
+  the operational application log stream. Either option would move the printed report away from strict
+  byte-for-byte parity with the legacy SYSOUT dump.
+- **Rationale:** The AAP mandates **100% behavioral parity** for observable contracts (§0.8.1, §0.8.3),
+  and the master-print SYSOUT dump is one such contract that golden-file, row-for-row parity tests assert
+  against the legacy record layouts. The AAP's sensitive-field set is **exactly** CVV, SSN,
+  government-issued id, and date of birth (§0.7.3 (L1), §0.9.3); the full PAN and full account number are
+  **not** in that set. Masking or truncating the PAN or account number would therefore **deviate from
+  parity** without being mandated by the AAP and would break the master-print golden-file comparison.
+  Rendering them verbatim is the parity-correct choice, while masking the four AAP-designated fields is
+  the sanctioned hardening that preserves the *observable behavior* of the report for every non-sensitive
+  field.
+- **Risk & mitigation:** Emitting a full PAN and full account number into an application log stream is a
+  **PCI-DSS exposure** if those logs are retained or shipped without controls. *Mitigation:* the choice
+  is documented **here** as a deliberate parity decision rather than an oversight; the CVV — the
+  highest-sensitivity card field — is never logged, and SSN / government-issued id / date of birth are
+  masked; and a **forward-looking PCI hardening** (truncate the PAN to last-4 and/or route master-print
+  output to a dedicated report artifact outside the operational log stream) is recorded as the sanctioned
+  future improvement, to be introduced through a new decision entry rather than silently. Operationally,
+  master-print log output should be treated as cardholder data and access-controlled and
+  retention-limited accordingly.
 
 ---
 

@@ -1,0 +1,59 @@
+# =============================================================================
+# CardDemo (COBOL -> Java 25 / Spring Boot 3.5.16) - repository .gitignore
+# =============================================================================
+# Keeps the working tree clean after a build. The Maven wrapper downloads the
+# bootstrap jar on first run and Maven writes all build output under target/;
+# neither belongs in version control. The wrapper SCRIPTS (mvnw, mvnw.cmd), the
+# wrapper PROPERTIES (.mvn/wrapper/maven-wrapper.properties), and .mvn/jvm.config
+# ARE committed and are deliberately NOT ignored here.
+# =============================================================================
+
+# --- Maven build output -------------------------------------------------------
+target/
+
+# --- Maven wrapper bootstrap jar (downloaded on first ./mvnw run) -------------
+# Only the jar is ignored; the committed wrapper properties/scripts are kept.
+.mvn/wrapper/maven-wrapper.jar
+
+# --- Java / JVM byproducts ----------------------------------------------------
+*.class
+hs_err_pid*.log
+replay_pid*.log
+
+# --- IDE / editor metadata ----------------------------------------------------
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+# Eclipse
+.classpath
+.project
+.settings/
+bin/
+# NetBeans
+nbproject/
+nbactions.xml
+# VS Code
+.vscode/
+
+# --- OS metadata --------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+Desktop.ini
+
+# --- Local environment / secrets (never commit credentials) -------------------
+# Local, uncommitted developer env files referenced by the docs (DB_USERNAME /
+# DB_PASSWORD live here for local runs and MUST stay out of version control).
+.env
+.env.local
+*.env
+
+# --- Local tooling / verification evidence ------------------------------------
+# Screenshots and screen recordings captured by local browser-automation /
+# verification tooling. These are transient evidence artifacts, not versioned
+# project deliverables, so they are kept out of the working tree.
+blitzy/

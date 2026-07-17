@@ -19,16 +19,15 @@ Spring Boot 3.5.16** over **PostgreSQL 16**. Business behavior is preserved with
 no feature expansion; the original mainframe source is retained, read-only, under
 [`legacy/`](../../legacy).
 
-> **Checkpoint status.** This guide describes the **target end state**; the commands below become
-> copy-pasteable end-to-end **once the runnable application modules land**. At the current checkpoint
-> the repository ships the Maven project descriptor (`pom.xml`), the relocated **read-only** legacy
-> source under [`legacy/`](../../legacy), and the design/onboarding documentation, with the Java
-> application sources under `src/**` still being assembled. The Maven Wrapper (`./mvnw`, `mvnw.cmd`),
-> `docker-compose.yml`, the `Dockerfile`, `src/main/resources/application-local.yml`, and
-> `.github/workflows/ci.yml` are delivered in the subsequent application-build checkpoints. Until they
-> land, `mvn -B validate` works today (an identically pinned system Maven stands in for `./mvnw`),
-> while the Docker Compose, `./mvnw spring-boot:run`, and container steps below are not yet executable.
-> This mirrors the **Checkpoint status** note in the [root README](../../README.md#build--test).
+> **Checkpoint status.** This guide is **runnable now** on the provisioned toolchain. The repository
+> ships the Maven project descriptor (`pom.xml`), the Java application sources under `src/**`, the Maven
+> Wrapper (`./mvnw`, `mvnw.cmd`), `docker-compose.yml`, the `Dockerfile`,
+> `src/main/resources/application-local.yml`, and `.github/workflows/ci.yml`, alongside the relocated
+> **read-only** legacy source under [`legacy/`](../../legacy) and the design/onboarding documentation.
+> Every command below executes end-to-end: `./mvnw -B clean verify` builds with zero warnings,
+> `docker compose up -d` brings up a healthy stack, and `./mvnw spring-boot:run` / `java -jar …` start the
+> application. (An identically pinned system Maven can stand in for `./mvnw` if preferred.) This mirrors
+> the **Checkpoint status** note in the [root README](../../README.md#build--test).
 
 **Where to go after this guide:**
 
@@ -132,14 +131,12 @@ logs, metrics, and traces visible. Bring the whole stack up with Docker Compose
 from the repository root:
 
 ```shell
-docker-compose up -d
+docker compose up -d
 ```
 
-> On newer Docker installations the command is the Compose **plugin** form:
->
-> ```shell
-> docker compose up -d
-> ```
+> This uses the Docker Compose **plugin** (`docker compose`), which is what the provisioned toolchain
+> provides. If your environment only has the older standalone binary, the equivalent is the hyphenated
+> `docker-compose up -d`.
 
 The stack provides the following services:
 
@@ -158,7 +155,7 @@ Check that the containers started and, in particular, that PostgreSQL reports
 healthy **before you build or run** (the database must accept connections):
 
 ```shell
-docker-compose ps
+docker compose ps
 ```
 
 Wait until the PostgreSQL service shows a healthy/running status. If it never
@@ -260,7 +257,7 @@ mvnw.cmd -B clean verify
 
 > **Docker must be running for `verify`.** The integration tests use
 > Testcontainers, which starts its **own** PostgreSQL 16 container — you do **not**
-> need `docker-compose up` for the tests, but the **Docker daemon must be
+> need `docker compose up` for the tests, but the **Docker daemon must be
 > available**. If Docker is not running, the integration tests fail; see
 > [Troubleshooting](#9-troubleshooting).
 
@@ -347,18 +344,35 @@ http://localhost:8080/swagger-ui.html
 
 The raw OpenAPI 3 document is at `http://localhost:8080/v3/api-docs`.
 
-**Health and readiness** (Spring Boot Actuator) — both should report `UP`:
+**Health and readiness** (Spring Boot Actuator) — these probes are **public** (no
+authentication) so container orchestrators can reach them; each should report `UP`:
 
 ```shell
 curl http://localhost:8080/actuator/health
 curl http://localhost:8080/actuator/health/readiness
+curl http://localhost:8080/actuator/health/liveness
 ```
 
 **Metrics** — the Prometheus scrape endpoint (this is what Prometheus on
-`:9090` reads):
+`:9090` reads). Unlike the health probes, `/actuator/prometheus` — together with
+`/actuator/metrics` and `/actuator/info` — requires **HTTP Basic** authentication
+with a valid application user (an unauthenticated request returns `401`):
 
+```shell
+curl -u ADMIN001:PASSWORD http://localhost:8080/actuator/prometheus
 ```
-http://localhost:8080/actuator/prometheus
+
+**Correlation-ID header** — every HTTP response includes an `X-Correlation-Id`
+header. Supply your own to correlate a request across its logs, response, and
+trace; if you omit it (or send a value outside the safe pattern
+`^[A-Za-z0-9._-]{1,64}$`) the application generates a fresh UUID instead of
+reflecting the untrusted value:
+
+```shell
+# A well-formed id you send is echoed back on the response:
+curl -si http://localhost:8080/actuator/health -H 'X-Correlation-Id: demo-123' | grep -i x-correlation-id
+# Absent or malformed -> the response carries a freshly generated UUID:
+curl -si http://localhost:8080/actuator/health | grep -i x-correlation-id
 ```
 
 **Grafana dashboard and traces:**
@@ -382,8 +396,17 @@ For the rationale behind the observability design, see
 
 ## 8. Demo logins (legacy seed data)
 
-The `user_security` table is seeded with the original demo accounts so you can
-explore the application immediately:
+When the application starts under the **`local` profile** (the default for the
+local `docker compose` stack and the documented `./mvnw spring-boot:run`
+workflow), the `user_security` table — together with the other demonstration
+tables (customers, accounts, cards, cross-references, transactions, and
+transaction-category balances) — is seeded **automatically** from the CSV
+fixtures under `src/main/resources/db/seed/**` by `LocalSeedDataLoader`, a
+`local`-profile `ApplicationRunner`. The load is **idempotent**: it runs once
+against a fresh database and is skipped on subsequent starts, and it never runs
+under the `test` profile or any production profile (so it cannot inject demo
+data outside local development). This gives you the original demo accounts so
+you can explore the application immediately:
 
 | User ID | Role | Type code | Demo password |
 |---------|------|-----------|---------------|
@@ -407,17 +430,30 @@ same authorization boundaries as the legacy application — **`A` = Admin** and
 **Admin** account such as `ADMIN001`; a regular user such as `USER0001` can reach
 the back-office functions but not the admin-only ones.
 
-Conceptually, you authenticate as a demo user and then call a protected endpoint.
-For example, using HTTP Basic against a protected resource (browse the exact
-paths and request bodies in [Swagger UI](#7-verify-it-works)):
+You authenticate with HTTP Basic and then call a **protected** endpoint. The
+documentation and probe endpoints (`/swagger-ui.html`, `/v3/api-docs`,
+`/actuator/health`, `/actuator/info`, `/actuator/prometheus`) are intentionally
+public, so to actually exercise a login use a secured endpoint such as
+`/actuator/metrics` (every non-public request requires authentication):
 
 ```shell
-# USER0001 can reach user-level endpoints; ADMIN001 is required for admin-only ones.
-curl -u ADMIN001:PASSWORD http://localhost:8080/actuator/health
+# No credentials -> 401 (the endpoint is protected):
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/actuator/metrics
+# Seeded demo credentials -> 200 (authenticated):
+curl -s -o /dev/null -w '%{http_code}\n' -u ADMIN001:PASSWORD http://localhost:8080/actuator/metrics
+# A regular user authenticates too (any authenticated user may read /actuator/metrics):
+curl -s -o /dev/null -w '%{http_code}\n' -u USER0001:PASSWORD http://localhost:8080/actuator/metrics
 ```
 
+Authorization boundaries still apply to the business API: admin-only paths (for
+example, user management under `/api/v1/admin/**`) require an **Admin** account
+such as `ADMIN001`, while a regular user such as `USER0001` is limited to the
+non-admin functions. Browse the exact paths and request bodies in
+[Swagger UI](#7-verify-it-works).
+
 Use [Swagger UI](http://localhost:8080/swagger-ui.html) to discover the precise
-endpoint paths, required roles, and DTO shapes for each of the 17 screens.
+endpoint paths, required roles, and DTO shapes for the REST screens as they are
+implemented.
 
 ---
 
@@ -428,9 +464,9 @@ endpoint paths, required roles, and DTO shapes for each of the 17 screens.
 | `./mvnw -B clean verify` fails during integration tests with a Docker/Testcontainers error | The Docker daemon is not running. Start Docker and re-run. Testcontainers needs the daemon even though it manages its own PostgreSQL container. |
 | App or containers fail to bind a port | A **port conflict** on `5432` (PostgreSQL), `8080` (app), `3000` (Grafana), `9090` (Prometheus), or `4318` (Tempo OTLP). Stop the conflicting process, or change the mapped port (for the app, set `SERVER_PORT`). |
 | App exits immediately at startup complaining about the datasource | **Missing environment variables.** `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD` are required and have no fallback. Confirm they are exported and that `SPRING_PROFILES_ACTIVE=local` is set. |
-| PostgreSQL never becomes healthy in `docker-compose ps` | Give it a few more seconds on first start; if it still fails, check `docker-compose logs` for the DB service and confirm `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` are set and consistent with `DB_*`. |
+| PostgreSQL never becomes healthy in `docker compose ps` | Give it a few more seconds on first start; if it still fails, check `docker compose logs` for the DB service and confirm `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` are set and consistent with `DB_*`. |
 | Build fails with a Java version / `release 25` error | **Java version mismatch.** `java -version` must report **25**. Install Temurin 25 and point `JAVA_HOME` at it. |
-| Flyway reports a migration or validation error on startup | The database already contains an incompatible schema. Recreate the local database (for example, `docker-compose down -v` then `docker-compose up -d`) so Flyway can apply the migrations from a clean state. |
+| Flyway reports a migration or validation error on startup | The database already contains an incompatible schema. Recreate the local database (for example, `docker compose down -v` then `docker compose up -d`) so Flyway can apply the migrations from a clean state. |
 | OWASP dependency-check is slow or fails to update its CVE database offline | The scan downloads the NVD data set on first run. Provide an `NVD_API_KEY` to speed up and stabilize the download, or run once online to warm the local NVD cache. This is a **build/CI** concern, not a runtime credential — see the note in [`pom.xml`](../../pom.xml) and [D5](../decision-log.md#d5--owasp-dependency-check-1222-with-failbuildoncvss). |
 
 ---

@@ -17,6 +17,7 @@ package com.aws.carddemo.observability;
 
 import java.io.IOException;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 import org.slf4j.MDC;
 import org.springframework.core.Ordered;
@@ -46,10 +47,22 @@ import jakarta.servlet.http.HttpServletResponse;
  *
  * <p><strong>Header contract.</strong> If the inbound request already carries an
  * {@value #CORRELATION_ID_HEADER} header (for example, set by an upstream gateway, a calling
- * service, or an integration test), that value is honored verbatim so a single logical operation
- * keeps one identifier end to end. Otherwise a fresh {@link UUID} is generated. The resolved
- * identifier is always echoed back on the response under the same header so that clients and tests
- * can capture it.</p>
+ * service, or an integration test) <em>and that value is safe</em>, it is honored so a single
+ * logical operation keeps one identifier end to end. Otherwise &mdash; when the header is absent,
+ * blank, or fails validation &mdash; a fresh {@link UUID} is generated. The resolved identifier is
+ * always echoed back on the response under the same header so that clients and tests can capture
+ * it.</p>
+ *
+ * <p><strong>Sanitization.</strong> A supplied correlation ID is only honored when it matches a
+ * conservative allow-list &mdash; {@value #CORRELATION_ID_MAX_LENGTH} characters at most, drawn
+ * solely from ASCII letters, digits, and the separators {@code . _ -} (regex
+ * {@code ^[A-Za-z0-9._-]{1,64}$}). Any value that is too long or contains any other character
+ * (whitespace, brackets, quotes, control characters, or non-ASCII code points) is rejected and a
+ * fresh {@link UUID} is substituted. This keeps the identifier a bounded, opaque token everywhere
+ * it flows &mdash; the SLF4J {@link MDC}, every log line, the echoed response header, the
+ * {@code ProblemDetail} body, and the trace/span attribute &mdash; so an untrusted client cannot
+ * inject markup, delimiters, oversize payloads, or forged log fields through this header. A
+ * UUID produced by {@link UUID#randomUUID()} always satisfies the allow-list.</p>
  *
  * <p><strong>Ordering.</strong> The filter is registered at {@link Ordered#HIGHEST_PRECEDENCE} so
  * it runs before the Spring Security filter chain and before Spring Boot's HTTP server observation
@@ -89,12 +102,33 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
     public static final String CORRELATION_ID_MDC_KEY = "correlationId";
 
     /**
+     * Maximum number of characters accepted from an inbound correlation ID. Values longer than
+     * this are rejected and replaced with a generated {@link UUID}. Sixty-four comfortably
+     * accommodates a canonical 36-character UUID plus any short upstream prefix while bounding the
+     * amount of client-controlled text that can enter logs, headers, and span attributes.
+     */
+    public static final int CORRELATION_ID_MAX_LENGTH = 64;
+
+    /**
+     * Allow-list pattern an inbound correlation ID must fully match to be honored: 1&ndash;{@value
+     * #CORRELATION_ID_MAX_LENGTH} characters drawn only from ASCII letters, digits, and the
+     * separators {@code .}, {@code _}, and {@code -}. This excludes whitespace, brackets, quotes,
+     * control characters, and all non-ASCII code points, so the resolved identifier is always a
+     * bounded, opaque token that is safe to place in the {@link MDC}, log lines, the response
+     * header, the {@code ProblemDetail} body, and trace/span attributes. A value that does not
+     * match is discarded in favor of a generated {@link UUID} (which always matches).
+     */
+    private static final Pattern CORRELATION_ID_PATTERN =
+            Pattern.compile("^[A-Za-z0-9._-]{1," + CORRELATION_ID_MAX_LENGTH + "}$");
+
+    /**
      * Resolves the correlation ID for the current request, publishes it to both the logging context
      * and the response, invokes the remainder of the filter chain, and finally clears the
      * correlation ID from the {@link MDC} so it does not leak onto a pooled thread.
      *
      * @param request     the current HTTP request; its {@value #CORRELATION_ID_HEADER} header is
-     *                    honored when present and non-blank
+     *                    honored only when present and matching the {@link #CORRELATION_ID_PATTERN}
+     *                    allow-list, otherwise a fresh {@link UUID} is generated
      * @param response    the current HTTP response; the resolved identifier is echoed on its
      *                    {@value #CORRELATION_ID_HEADER} header before the chain runs
      * @param filterChain the remainder of the filter chain to execute
@@ -105,10 +139,7 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
-        String correlationId = request.getHeader(CORRELATION_ID_HEADER);
-        if (!StringUtils.hasText(correlationId)) {
-            correlationId = UUID.randomUUID().toString();
-        }
+        String correlationId = resolveCorrelationId(request.getHeader(CORRELATION_ID_HEADER));
         MDC.put(CORRELATION_ID_MDC_KEY, correlationId);
         response.setHeader(CORRELATION_ID_HEADER, correlationId);
         try {
@@ -116,5 +147,29 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
         } finally {
             MDC.remove(CORRELATION_ID_MDC_KEY);
         }
+    }
+
+    /**
+     * Resolves the effective correlation ID from the raw inbound header value, enforcing the
+     * sanitization contract documented on this class.
+     *
+     * <p>The supplied value is honored only when it is non-blank <em>and</em> fully matches the
+     * {@link #CORRELATION_ID_PATTERN} allow-list (bounded length, ASCII letters/digits and
+     * {@code . _ -} only). In every other case &mdash; the header is missing, blank, too long, or
+     * contains any disallowed character (whitespace, markup, quotes, control characters, or
+     * non-ASCII code points) &mdash; a fresh {@link UUID} is generated instead. This guarantees the
+     * returned identifier is always a bounded, opaque token, so an untrusted client cannot inject
+     * markup, delimiters, oversize payloads, or forged log fields through this header.</p>
+     *
+     * @param headerValue the raw {@value #CORRELATION_ID_HEADER} request-header value, which may be
+     *                    {@code null}, blank, or arbitrary untrusted text
+     * @return a validated inbound correlation ID, or a newly generated {@link UUID} string when the
+     *         input is absent or fails validation; never {@code null} or blank
+     */
+    private static String resolveCorrelationId(String headerValue) {
+        if (StringUtils.hasText(headerValue) && CORRELATION_ID_PATTERN.matcher(headerValue).matches()) {
+            return headerValue;
+        }
+        return UUID.randomUUID().toString();
     }
 }
