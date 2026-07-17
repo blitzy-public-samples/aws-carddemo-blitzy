@@ -1,0 +1,374 @@
+# =============================================================================
+# CardDemo - local development & observability stack (docker-compose.yml)
+# -----------------------------------------------------------------------------
+# Functionally-equivalent Java 25 (LTS) + Spring Boot 3.5.x re-platform of the
+# AWS CardDemo mainframe application. This Compose file stands up the LOCAL
+# development dependencies and the "verified-locally" observability backbone
+# required by the Observability rule (AAP 0.4.1 / 0.8.2 / 0.9.5):
+#
+#   * postgres   - PostgreSQL 16 relational store (replaces the legacy VSAM KSDS)
+#   * prometheus - scrapes the app's /actuator/prometheus metrics endpoint
+#   * tempo      - receives distributed traces over OTLP (gRPC 4317 / HTTP 4318)
+#   * grafana    - dashboards over Prometheus + Tempo; auto-provisions the
+#                  ready-made docs/observability/grafana-dashboard.json
+#   * app        - OPTIONAL: the CardDemo application itself, built from the
+#                  repository Dockerfile (enabled with the "app" profile)
+#
+# QUICK START (from the repository root):
+#   1. Export the local-only, NON-PRODUCTION credentials (see "SECRETS" below),
+#      e.g. via an UNCOMMITTED .env file or your shell.
+#   2. Bring up the four core services:
+#          docker compose up -d
+#   3. (recommended dev flow) run the application on the HOST so code changes
+#      iterate fast - it reaches Postgres on localhost:5432 and pushes traces to
+#      Tempo on localhost:4318:
+#          SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run
+#      ...or run the app INSIDE this stack instead:
+#          APP_SCRAPE_TARGET=app:8080 docker compose --profile app up -d
+#   4. Grafana:     http://localhost:3000  (dashboard: "CardDemo - Application
+#                   Observability")
+#      Prometheus:  http://localhost:9090
+#      App/Actuator http://localhost:8080/actuator/health , /actuator/prometheus
+#
+# -----------------------------------------------------------------------------
+# SECRETS - NO HARDCODED CREDENTIALS (AAP 0.8.1 / 0.9.3)
+# -----------------------------------------------------------------------------
+# Every credential below is supplied via ENVIRONMENT-VARIABLE INTERPOLATION -
+# there are NO literal secrets committed in this file. Passwords use the
+# fail-fast form ${VAR:?message}: an unset value aborts `docker compose` with a
+# clear error rather than silently falling back to an insecure baked-in default
+# (mirroring the app's own datasource fail-fast policy in application.yml).
+#
+# All example values are LOCAL-ONLY, NON-PRODUCTION placeholders. NEVER commit
+# real secrets; production values come from your environment or a secret store.
+#
+# The stack accepts EITHER the container-native names OR the application's DB_*
+# names (kept consistent by the onboarding guide); the former win when both are
+# set, courtesy of nested-default interpolation:
+#
+#   Database (either naming style; keep the values consistent with the app):
+#     POSTGRES_DB       | DB_NAME       database name        (default: carddemo)
+#     POSTGRES_USER     | DB_USERNAME   database user        (REQUIRED)
+#     POSTGRES_PASSWORD | DB_PASSWORD   database password    (REQUIRED)
+#   Grafana admin:
+#     GF_SECURITY_ADMIN_USER            admin login          (default: admin)
+#     GF_SECURITY_ADMIN_PASSWORD        admin password       (REQUIRED)
+#
+# Example (macOS/Linux; local-only, non-production placeholders):
+#     export POSTGRES_USER=carddemo
+#     export POSTGRES_PASSWORD=change-me-locally
+#     export GF_SECURITY_ADMIN_PASSWORD=change-me-locally
+#
+# -----------------------------------------------------------------------------
+# PORTS & PARALLEL ISOLATION
+# -----------------------------------------------------------------------------
+# Published host ports default to the conventional values (Postgres 5432,
+# Prometheus 9090, Tempo 4317/4318/3200, Grafana 3000, app 8080) but are each
+# overridable (e.g. POSTGRES_PORT) so multiple stacks can run side by side. To
+# run fully isolated parallel stacks, combine a unique project name with port
+# overrides, e.g.:
+#     COMPOSE_PROJECT_NAME=carddemo-1 POSTGRES_PORT=5433 GRAFANA_PORT=3001 \
+#       docker compose up -d
+# The network and named volumes are intentionally left UNNAMED at the top level
+# so Compose scopes them to the project name (no cross-project collisions).
+#
+# -----------------------------------------------------------------------------
+# SELF-CONTAINED CONFIG
+# -----------------------------------------------------------------------------
+# Prometheus, Tempo, and Grafana are configured entirely INLINE via the
+# top-level `configs:` block (no extra prometheus.yml / tempo.yaml files at the
+# repository root). The ONLY external file consumed is the already-provided
+# Grafana dashboard JSON, bind-mounted read-only for provisioning.
+#
+# NOTE: the top-level `version:` key is intentionally omitted - it is obsolete
+# in the current Compose Specification and only emits a warning if present.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Inline configuration (self-contained; interpolated by Compose at `up` time)
+# -----------------------------------------------------------------------------
+configs:
+
+  # Prometheus scrape configuration. Mounted at Prometheus's default config path
+  # (/etc/prometheus/prometheus.yml) so the image's default command consumes it.
+  prometheus_config:
+    content: |
+      # CardDemo - Prometheus scrape config (managed inline by docker-compose.yml)
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+        external_labels:
+          stack: carddemo-local
+      scrape_configs:
+        # The CardDemo Spring Boot application (Micrometer/Actuator Prometheus
+        # registry). The default target is the HOST-run app
+        # (./mvnw spring-boot:run); set APP_SCRAPE_TARGET=app:8080 when running
+        # the app INSIDE this stack (docker compose --profile app up).
+        - job_name: carddemo
+          metrics_path: /actuator/prometheus
+          static_configs:
+            - targets: ['${APP_SCRAPE_TARGET:-host.docker.internal:8080}']
+              labels:
+                application: carddemo
+        # Prometheus scraping itself (so the dashboard's "up" panel also shows
+        # the monitoring target).
+        - job_name: prometheus
+          static_configs:
+            - targets: ['localhost:9090']
+
+  # Tempo single-binary configuration: enable the OTLP receiver (gRPC + HTTP) so
+  # the app can export spans via opentelemetry-exporter-otlp, with simple local
+  # block storage. Passed to Tempo via `-config.file=/etc/tempo.yaml`.
+  tempo_config:
+    content: |
+      # CardDemo - Grafana Tempo config (managed inline by docker-compose.yml)
+      server:
+        http_listen_port: 3200
+      distributor:
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+                endpoint: 0.0.0.0:4317
+              http:
+                endpoint: 0.0.0.0:4318
+      ingester:
+        max_block_duration: 5m
+      storage:
+        trace:
+          backend: local
+          wal:
+            path: /var/tempo/wal
+          local:
+            path: /var/tempo/blocks
+
+  # Grafana datasource provisioning. The dashboard JSON references two datasource
+  # template variables whose saved values are the datasource NAMES "Prometheus"
+  # and "Tempo"; naming the datasources exactly so (Prometheus as default) lets
+  # the provisioned dashboard resolve them with no manual selection.
+  grafana_datasources:
+    content: |
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          uid: carddemo-prometheus
+          type: prometheus
+          access: proxy
+          url: http://prometheus:9090
+          isDefault: true
+          jsonData:
+            httpMethod: POST
+        - name: Tempo
+          uid: carddemo-tempo
+          type: tempo
+          access: proxy
+          url: http://tempo:3200
+          jsonData:
+            httpMethod: GET
+
+  # Grafana dashboard provider: load every dashboard JSON found under
+  # /var/lib/grafana/dashboards (the CardDemo dashboard is bind-mounted there).
+  grafana_dashboards_provider:
+    content: |
+      apiVersion: 1
+      providers:
+        - name: CardDemo
+          orgId: 1
+          type: file
+          disableDeletion: false
+          allowUiUpdates: true
+          updateIntervalSeconds: 30
+          options:
+            path: /var/lib/grafana/dashboards
+            foldersFromFilesStructure: false
+
+# -----------------------------------------------------------------------------
+# Services
+# -----------------------------------------------------------------------------
+services:
+
+  # ===========================================================================
+  # PostgreSQL 16 - relational store (replaces the legacy VSAM KSDS data tier).
+  # Exactly `postgres:16` per the target platform (AAP 0.4 / 0.6.1).
+  # ===========================================================================
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      # Credentials via env interpolation ONLY - no literals. Accepts the
+      # container-native POSTGRES_* names or the app's DB_* names (POSTGRES_*
+      # wins). DB name defaults to carddemo (non-secret); user/password are
+      # REQUIRED and fail fast if unset.
+      POSTGRES_DB: ${POSTGRES_DB:-${DB_NAME:-carddemo}}
+      POSTGRES_USER: ${POSTGRES_USER:-${DB_USERNAME:?Set POSTGRES_USER (or DB_USERNAME); see SECRETS in header}}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-${DB_PASSWORD:?Set POSTGRES_PASSWORD (or DB_PASSWORD); see header}}
+      # Keep initdb encoding deterministic.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - carddemo-pgdata:/var/lib/postgresql/data
+    networks:
+      - carddemo-net
+    healthcheck:
+      # `$$` escapes Compose interpolation so the container shell expands the
+      # POSTGRES_USER / POSTGRES_DB env vars at runtime.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB -h 127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ===========================================================================
+  # Prometheus - scrapes the application's /actuator/prometheus endpoint.
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    restart: unless-stopped
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    # Resolve `host.docker.internal` to the Docker host on Linux so Prometheus
+    # can scrape an app running on the HOST (the default APP_SCRAPE_TARGET).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - carddemo-prometheus-data:/prometheus
+    networks:
+      - carddemo-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ===========================================================================
+  # Tempo - distributed-tracing backend; OTLP receiver (gRPC 4317 / HTTP 4318).
+  # Runs with EPHEMERAL local storage (no volume) to avoid non-root-uid volume
+  # permission issues; local trace data need not survive a restart.
+  # ===========================================================================
+  tempo:
+    image: grafana/tempo:2.6.1
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yaml"]
+    configs:
+      - source: tempo_config
+        target: /etc/tempo.yaml
+    ports:
+      - "${TEMPO_OTLP_GRPC_PORT:-4317}:4317"   # OTLP gRPC receiver
+      - "${TEMPO_OTLP_HTTP_PORT:-4318}:4318"   # OTLP HTTP receiver
+      - "${TEMPO_HTTP_PORT:-3200}:3200"        # Tempo query / API (Grafana datasource)
+    networks:
+      - carddemo-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3200/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+  # ===========================================================================
+  # Grafana - dashboards over Prometheus + Tempo. Datasources and the CardDemo
+  # dashboard are auto-provisioned; admin credentials come from env vars.
+  # ===========================================================================
+  grafana:
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    environment:
+      # Admin login via env interpolation. The user defaults to the conventional
+      # "admin" (non-secret); the PASSWORD is REQUIRED and fails fast if unset.
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?Set GF_SECURITY_ADMIN_PASSWORD; see SECRETS in header}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Keep telemetry/update checks off for a quiet local stack.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    configs:
+      - source: grafana_datasources
+        target: /etc/grafana/provisioning/datasources/datasources.yaml
+      - source: grafana_dashboards_provider
+        target: /etc/grafana/provisioning/dashboards/dashboards.yaml
+    volumes:
+      - carddemo-grafana-data:/var/lib/grafana
+      # The ready-made dashboard (the ONLY external file this stack references).
+      - ./docs/observability/grafana-dashboard.json:/var/lib/grafana/dashboards/carddemo-observability.json:ro
+    networks:
+      - carddemo-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ===========================================================================
+  # CardDemo application (OPTIONAL) - built from the repository Dockerfile.
+  # Disabled by default; the recommended local flow runs the app on the HOST
+  # (./mvnw spring-boot:run). Enable it inside the stack with the "app" profile:
+  #     APP_SCRAPE_TARGET=app:8080 docker compose --profile app up -d
+  # ===========================================================================
+  app:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: carddemo:1.0.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      tempo:
+        condition: service_started
+    environment:
+      # All configuration/credentials via env interpolation (no literals). The
+      # DB_* names are what the app reads; they default to the POSTGRES_* values
+      # so a single set of variables configures both the DB and the app. Inside
+      # the stack the DB host is `postgres` and traces go to `tempo`.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-local}
+      DB_URL: ${DB_URL:-jdbc:postgresql://postgres:5432/${POSTGRES_DB:-${DB_NAME:-carddemo}}}
+      DB_USERNAME: ${DB_USERNAME:-${POSTGRES_USER:?Set DB_USERNAME (or POSTGRES_USER); see header}}
+      DB_PASSWORD: ${DB_PASSWORD:-${POSTGRES_PASSWORD:?Set DB_PASSWORD (or POSTGRES_PASSWORD); see header}}
+      # Export spans to the in-stack Tempo OTLP/HTTP receiver.
+      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://tempo:4318/v1/traces}
+      SERVER_PORT: ${SERVER_PORT:-8080}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    networks:
+      - carddemo-net
+    healthcheck:
+      # The slim JRE runtime image ships no curl/wget; use a bash /dev/tcp probe
+      # to confirm the HTTP port is accepting connections.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/8080' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+# -----------------------------------------------------------------------------
+# Networks - a single user-defined bridge so services resolve each other by name
+# (postgres, prometheus, tempo, grafana, app). Left unnamed so Compose scopes it
+# to the project (parallel-stack safe).
+# -----------------------------------------------------------------------------
+networks:
+  carddemo-net:
+    driver: bridge
+
+# -----------------------------------------------------------------------------
+# Named volumes - persist Postgres data and the Prometheus TSDB / Grafana state
+# across restarts. Left unnamed at the top level so Compose scopes them to the
+# project. (Tempo intentionally uses ephemeral in-container storage.)
+# -----------------------------------------------------------------------------
+volumes:
+  carddemo-pgdata:
+  carddemo-prometheus-data:
+  carddemo-grafana-data:

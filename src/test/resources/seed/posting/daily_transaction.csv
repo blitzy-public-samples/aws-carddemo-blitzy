@@ -1,0 +1,5 @@
+dalytran_id,type_cd,cat_cd,source,description,amount,merchant_id,merchant_name,merchant_city,merchant_zip,card_num,orig_ts,proc_ts
+"9990000000000001",01,1,POS TERM,Purchase valid,100.00,800000001,Posting Merchant One,Testville,75001,"9000000000000001",2025-01-15 10:00:00.000000,
+"9990000000000002",01,1,POS TERM,Purchase unknown card,50.00,800000002,Posting Merchant Two,Testville,75001,"9999999999999999",2025-01-15 10:05:00.000000,
+"9990000000000003",01,1,POS TERM,Purchase over limit,500.00,800000003,Posting Merchant Three,Testville,75001,"9000000000000002",2025-01-15 10:10:00.000000,
+"9990000000000004",01,1,POS TERM,Purchase expired acct,10.00,800000004,Posting Merchant Four,Testville,75001,"9000000000000003",2025-01-15 10:15:00.000000,

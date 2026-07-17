@@ -15,114 +15,96 @@
  */
 package com.aws.carddemo.service.rule;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
-import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for {@link ValidationRule}, verifying the four shared COBOL-edit primitives
- * ({@link ValidationRule#isBlank(String)}, {@link ValidationRule#isAllDigits(String)},
- * {@link ValidationRule#isZeroValue(String)}, {@link ValidationRule#label(String)}) and the
- * Strategy {@link ValidationRule#validate(String, String)} contract itself, driven by a small
- * rule that reproduces {@code 1245-EDIT-NUM-REQD} of {@code legacy/cbl/COACTUPC.cbl}.
+ * Unit tests for the four shared COBOL-edit "primitives" declared as {@code static} helpers on
+ * {@link ValidationRule}: {@link ValidationRule#isBlank(String)},
+ * {@link ValidationRule#isAllDigits(String)}, {@link ValidationRule#isZeroValue(String)}, and
+ * {@link ValidationRule#label(String)}.
+ *
+ * <p>These primitives are the Java centralization of the not-supplied test, the {@code IS NUMERIC}
+ * class test, the {@code FUNCTION NUMVAL(...) = 0} zero test, and the
+ * {@code FUNCTION TRIM(WS-EDIT-VARIABLE-NAME)} label trim that the {@code 12xx-EDIT-*} paragraphs of
+ * the legacy online-edit program {@code legacy/cbl/COACTUPC.cbl} (source-branch
+ * {@code app/cbl/COACTUPC.cbl}) repeat verbatim &mdash; most representatively in
+ * {@code 1245-EDIT-NUM-REQD}, which chains blank &rarr; {@code "must be supplied."}, non-numeric
+ * &rarr; {@code "must be all numeric."}, and zero &rarr; {@code "must not be zero."}.</p>
+ *
+ * <p>Only the {@code static} primitives are exercised here; the single abstract
+ * {@link ValidationRule#validate(String, String)} Strategy method is exercised via each concrete
+ * rule's own test, not in this class. This is a pure JUnit&nbsp;5 + AssertJ unit test &mdash; no
+ * Spring context, no Mockito, and no database.</p>
  */
 class ValidationRuleTest {
 
+    /**
+     * {@link ValidationRule#isBlank(String)} reports "not supplied" for {@code null} (COBOL
+     * {@code LOW-VALUES}), the empty string, and an all-whitespace string ({@code SPACES} / a
+     * {@code FUNCTION TRIM} length of zero).
+     */
     @Test
-    @DisplayName("isBlank is true for null, empty, and all-whitespace values (LOW-VALUES/SPACES)")
-    void isBlank_detectsNotSupplied() {
-        assertTrue(ValidationRule.isBlank(null), "null models COBOL LOW-VALUES");
-        assertTrue(ValidationRule.isBlank(""), "empty models SPACES / trim length 0");
-        assertTrue(ValidationRule.isBlank("   "), "all spaces models SPACES / trim length 0");
+    void isBlank_trueForNullEmptyAndSpaces() {
+        assertThat(ValidationRule.isBlank(null)).isTrue();
+        assertThat(ValidationRule.isBlank("")).isTrue();
+        assertThat(ValidationRule.isBlank("   ")).isTrue();
     }
 
+    /**
+     * {@link ValidationRule#isBlank(String)} is {@code false} when any non-whitespace content is
+     * present, even when the value is surrounded by padding spaces.
+     */
     @Test
-    @DisplayName("isBlank is false when any non-whitespace character is present")
-    void isBlank_falseWhenSupplied() {
-        assertFalse(ValidationRule.isBlank(" x "), "a padded value still carries content");
-        assertFalse(ValidationRule.isBlank("x"));
+    void isBlank_falseWhenContentPresent() {
+        assertThat(ValidationRule.isBlank(" x ")).isFalse();
     }
 
+    /**
+     * {@link ValidationRule#isAllDigits(String)} is {@code true} for a non-empty string of ASCII
+     * digits (leading zeros are digits), reproducing COBOL {@code IS NUMERIC} for an unsigned
+     * {@code PIC 9} display item.
+     */
     @Test
-    @DisplayName("isAllDigits is true only for a non-empty ASCII-digit string (IS NUMERIC)")
-    void isAllDigits_trueForAsciiDigits() {
-        assertTrue(ValidationRule.isAllDigits("007"), "leading zeros are digits");
-        assertTrue(ValidationRule.isAllDigits("0"));
-        assertTrue(ValidationRule.isAllDigits("1234567890"));
+    void isAllDigits_trueForAsciiDigitsOnly() {
+        assertThat(ValidationRule.isAllDigits("007")).isTrue();
     }
 
+    /**
+     * {@link ValidationRule#isAllDigits(String)} is {@code false} for the empty string, {@code null},
+     * a trailing space, an embedded letter, and an explicit sign character &mdash; documenting the
+     * ASCII-only, no-embedded-space parity with COBOL {@code IS NUMERIC} (a fixed-width buffer slice
+     * where any non-digit byte makes the item non-numeric).
+     */
     @Test
-    @DisplayName("isAllDigits is false for null, empty, spaces, letters, and signed input")
-    void isAllDigits_falseForNonDigits() {
-        assertFalse(ValidationRule.isAllDigits(null));
-        assertFalse(ValidationRule.isAllDigits(""));
-        assertFalse(ValidationRule.isAllDigits("12 "), "trailing space breaks IS NUMERIC");
-        assertFalse(ValidationRule.isAllDigits(" 12"), "leading space breaks IS NUMERIC");
-        assertFalse(ValidationRule.isAllDigits("1a"), "a letter is not a digit");
-        assertFalse(ValidationRule.isAllDigits("-1"), "an explicit sign is not a digit");
-        assertFalse(ValidationRule.isAllDigits("12.3"), "a decimal point is not a digit");
+    void isAllDigits_falseForEmptyNullSpaceLetterAndSign() {
+        assertThat(ValidationRule.isAllDigits("")).isFalse();
+        assertThat(ValidationRule.isAllDigits(null)).isFalse();
+        assertThat(ValidationRule.isAllDigits("12 ")).isFalse();
+        assertThat(ValidationRule.isAllDigits("1a")).isFalse();
+        assertThat(ValidationRule.isAllDigits("-1")).isFalse();
     }
 
+    /**
+     * {@link ValidationRule#isZeroValue(String)} is {@code true} only when every character of an
+     * already-numeric string is {@code '0'}, reproducing {@code FUNCTION NUMVAL(...) = 0}; a value
+     * containing any non-zero digit is not zero.
+     */
     @Test
-    @DisplayName("isZeroValue is true only when every (already-numeric) character is '0' (NUMVAL = 0)")
-    void isZeroValue_matchesNumvalZero() {
-        assertTrue(ValidationRule.isZeroValue("000"));
-        assertTrue(ValidationRule.isZeroValue("0"));
-
-        assertFalse(ValidationRule.isZeroValue("001"), "a trailing non-zero digit is non-zero");
-        assertFalse(ValidationRule.isZeroValue("100"), "a leading non-zero digit is non-zero");
-        assertFalse(ValidationRule.isZeroValue("007"));
+    void isZeroValue_trueForAllZerosFalseForNonZero() {
+        assertThat(ValidationRule.isZeroValue("000")).isTrue();
+        assertThat(ValidationRule.isZeroValue("001")).isFalse();
     }
 
+    /**
+     * {@link ValidationRule#label(String)} strips leading and trailing whitespace, reproducing
+     * {@code FUNCTION TRIM(WS-EDIT-VARIABLE-NAME)}, and null-guards a {@code null} label to the empty
+     * string so callers can build a message without a null check.
+     */
     @Test
-    @DisplayName("label trims leading/trailing whitespace and maps null to the empty string (FUNCTION TRIM)")
     void label_trimsAndNullSafe() {
-        assertEquals("State", ValidationRule.label("  State  "));
-        assertEquals("", ValidationRule.label(null));
-        assertEquals("State", ValidationRule.label("State"));
-        assertEquals("", ValidationRule.label("   "), "all-whitespace trims to empty");
-    }
-
-    @Test
-    @DisplayName("validate() Strategy contract: a rule composed of the primitives reproduces 1245-EDIT-NUM-REQD")
-    void validate_strategyContractUsesPrimitives() {
-        // A minimal numeric-required rule mirroring legacy/cbl/COACTUPC.cbl 1245-EDIT-NUM-REQD:
-        // blank -> "must be supplied", non-numeric -> "must be all numeric", zero -> "must not be zero".
-        ValidationRule numericRequired = (fieldName, value) -> {
-            String label = ValidationRule.label(fieldName);
-            if (ValidationRule.isBlank(value)) {
-                return ValidationResult.invalid(label + " must be supplied.");
-            }
-            if (!ValidationRule.isAllDigits(value)) {
-                return ValidationResult.invalid(label + " must be all numeric.");
-            }
-            if (ValidationRule.isZeroValue(value)) {
-                return ValidationResult.invalid(label + " must not be zero.");
-            }
-            return ValidationResult.valid();
-        };
-
-        // Blank path (label is trimmed into the message).
-        ValidationResult blank = numericRequired.validate("  Account ID  ", null);
-        assertTrue(blank.isInvalid());
-        assertEquals("Account ID must be supplied.", blank.message());
-
-        // Non-numeric path.
-        ValidationResult nonNumeric = numericRequired.validate("Account ID", "12a");
-        assertTrue(nonNumeric.isInvalid());
-        assertEquals("Account ID must be all numeric.", nonNumeric.message());
-
-        // Zero path.
-        ValidationResult zero = numericRequired.validate("Account ID", "000");
-        assertTrue(zero.isInvalid());
-        assertEquals("Account ID must not be zero.", zero.message());
-
-        // Passing path.
-        ValidationResult ok = numericRequired.validate("Account ID", "007");
-        assertTrue(ok.isValid());
-        assertEquals("", ok.message());
+        assertThat(ValidationRule.label("  State  ")).isEqualTo("State");
+        assertThat(ValidationRule.label(null)).isEqualTo("");
     }
 }

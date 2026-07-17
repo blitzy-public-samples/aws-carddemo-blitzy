@@ -470,6 +470,18 @@ its Java target, while this log explains the reasoning behind the design those m
     **flow transitions on exit status** (return codes 0/4/8); these are recorded per step, not inferred.
   - **GDG snapshots.** Generation-data-group backup rotation (e.g. `CLOSEFIL → TRANBKP → OPENFIL`) maps
     to a scheduled backup step; the snapshot semantics are documented, not silently dropped.
+  - **`TRANBKP` REPRO export vs. VSAM storage management (`TransactionBackupJob`).** `TRANBKP.jcl`
+    (via `REPROC.prc` + `REPROCT.ctl` = `REPRO INFILE(FILEIN) OUTFILE(FILEOUT)`) runs three steps:
+    `STEP05R` copies `TRANSACT.VSAM.KSDS` → `TRANSACT.BKUP(+1)` (a new GDG generation,
+    `LRECL=350 RECFM=FB`), then `STEP05` (`IDCAMS DELETE ... CLUSTER` / `DELETE ... ALTERNATEINDEX`)
+    and `STEP10` (`IDCAMS DEFINE CLUSTER ... KEYS(16 0) RECORDSIZE(350 350)`) drop and recreate the
+    empty cluster. **Only the `STEP05R` REPRO export is reproduced** — as a **timestamped 350-byte
+    fixed-width backup file** (the timestamp is the relational analog of the GDG `(+1)` generation),
+    written via `common/util/FixedWidthCodec` so the external file contract is byte/semantically
+    preserved. **The `DELETE`/`DEFINE CLUSTER` storage-management steps are intentionally NOT
+    replicated:** those steps exist only to reclaim and re-initialize VSAM storage, and a relational
+    backup export never drops and recreates the `transaction` table (that would be destructive and has
+    no relational equivalent). This omission is documented here rather than silently dropped.
   - **Non-executable / anomalous members.** Some members are historical or contain source-level
     anomalies (e.g. `CBADMCDJ.jcl` is a stale alternate-CSD loader classified **reference-only**;
     `OPENFIL.jcl` carries a misspelled `//OEPNFIL` job card; `DEFCUST.jcl` and `TRANREPT.jcl` contain
