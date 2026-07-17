@@ -23,6 +23,8 @@ import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.repository.AccountRepository;
 import com.aws.carddemo.repository.CardXrefRepository;
 import com.aws.carddemo.repository.CustomerRepository;
+import com.aws.carddemo.service.rule.UsSsnRule;
+import com.aws.carddemo.service.rule.ValidationResult;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -174,8 +176,6 @@ public class AccountService {
     private static final String SFX_MUST_NOT_BE_ZERO = " must not be zero.";
     private static final String SFX_IS_NOT_VALID = " is not valid";
 
-    private static final String SFX_SSN_PART1_INVALID =
-            ": should not be 000, 666, or between 900 and 999";
     private static final String SFX_STATE_INVALID = ": is not a valid state code";
     private static final String SFX_FICO_RANGE = ": should be between 300 and 850";
     private static final String MSG_ZIP_FOR_STATE_INVALID = "Invalid zip code for state";
@@ -217,9 +217,6 @@ public class AccountService {
     private static final String FLD_CURRENT_BALANCE = "Current Balance";
     private static final String FLD_CURR_CYC_CREDIT = "Current Cycle Credit Limit";
     private static final String FLD_CURR_CYC_DEBIT = "Current Cycle Debit Limit";
-    private static final String FLD_SSN_PART1 = "SSN: First 3 chars";
-    private static final String FLD_SSN_PART2 = "SSN 4th & 5th chars";
-    private static final String FLD_SSN_PART3 = "SSN Last 4 chars";
     private static final String FLD_DOB = "Date of Birth";
     private static final String FLD_FICO = "FICO Score";
     private static final String FLD_FIRST_NAME = "First Name";
@@ -279,6 +276,14 @@ public class AccountService {
     private final DateValidationService dateValidationService;
 
     /**
+     * The SSN edit rule (Java reproduction of COBOL {@code 1265-EDIT-US-SSN}), injected and reused
+     * as the single Strategy implementation of the three-part SSN edit rather than being
+     * re-implemented inline &mdash; matching {@code 1200-EDIT-MAP-INPUTS}, which delegates the SSN
+     * field to this rule.
+     */
+    private final UsSsnRule usSsnRule;
+
+    /**
      * Creates the service with its required collaborators.
      *
      * @param accountRepository     repository for the {@code account} table (VSAM
@@ -291,15 +296,20 @@ public class AccountService {
      *                              {@link CardXrefRepository#findFirstByAcctIdOrderByXrefCardNumAsc(Long)})
      * @param dateValidationService the re-platform of {@code CSUTLDTC}, used for the calendar
      *                              validity of every entered date
+     * @param usSsnRule             the SSN edit rule (Java reproduction of COBOL
+     *                              {@code 1265-EDIT-US-SSN}); the {@code 1200-EDIT-MAP-INPUTS}
+     *                              SSN field delegates to this shared rule component
      */
     public AccountService(AccountRepository accountRepository,
                           CustomerRepository customerRepository,
                           CardXrefRepository cardXrefRepository,
-                          DateValidationService dateValidationService) {
+                          DateValidationService dateValidationService,
+                          UsSsnRule usSsnRule) {
         this.accountRepository = accountRepository;
         this.customerRepository = customerRepository;
         this.cardXrefRepository = cardXrefRepository;
         this.dateValidationService = dateValidationService;
+        this.usSsnRule = usSsnRule;
     }
 
     // ====================================================================================
@@ -1314,28 +1324,32 @@ public class AccountService {
     }
 
     /**
-     * COBOL {@code 1265-EDIT-US-SSN}: each of the three SSN parts is validated with the numeric
-     * edit; when the first part is numeric-valid, the reserved-value exclusions (000, 666, and
-     * 900-999) are additionally applied. The SSN value is sensitive and never appears in a message.
+     * COBOL {@code 1265-EDIT-US-SSN}: edits the three SSN parts in order and latches the first
+     * failing part's message. This delegates to the injected {@link UsSsnRule} Strategy component
+     * (the single Java reproduction of {@code 1265-EDIT-US-SSN}) rather than re-implementing the
+     * three-part edit here: the rule reuses the numeric-required edit for each part, applies the
+     * {@code INVALID-SSN-PART1} reserved-value exclusions (000, 666, 900-999) only when part 1 is
+     * numeric-valid, enforces the fixed-width digit count of each part (so a short, space-padded
+     * entry fails the {@code IS NUMERIC} test exactly as it does in the legacy program), and
+     * returns the first failing part's exact COBOL screen message. The failing message is latched
+     * into the shared {@link EditState} through {@link EditState#latch(String)}, preserving the
+     * first-message-wins ({@code WS-RETURN-MSG-OFF}) and {@code INPUT-ERROR} semantics.
+     *
+     * <p>The SSN is sensitive: the parts are passed straight through to the rule and never logged,
+     * and every rule message is built solely from fixed field labels plus fixed text, so no SSN
+     * digit can escape through a message.</p>
      *
      * @param state the edit accumulator
      * @param ssn   the submitted SSN parts (may be {@code null})
      */
-    private static void editSsn(EditState state, SsnParts ssn) {
-        String part1 = ssn == null ? "" : trim(ssn.part1());
-        String part2 = ssn == null ? "" : trim(ssn.part2());
-        String part3 = ssn == null ? "" : trim(ssn.part3());
-
-        // Part 1 — 1245-EDIT-NUM-REQD then INVALID-SSN-PART1 exclusions.
-        if (editNumRequired(state, FLD_SSN_PART1, part1)) {
-            int value = Integer.parseInt(part1);
-            if (value == 0 || value == 666 || (value >= 900 && value <= 999)) {
-                state.latch(FLD_SSN_PART1 + SFX_SSN_PART1_INVALID);
-            }
+    private void editSsn(EditState state, SsnParts ssn) {
+        ValidationResult result = usSsnRule.validate(
+                ssn == null ? null : ssn.part1(),
+                ssn == null ? null : ssn.part2(),
+                ssn == null ? null : ssn.part3());
+        if (result.isInvalid()) {
+            state.latch(result.message());
         }
-        // Part 2 and Part 3 — 1245-EDIT-NUM-REQD.
-        editNumRequired(state, FLD_SSN_PART2, part2);
-        editNumRequired(state, FLD_SSN_PART3, part3);
     }
 
     /**
