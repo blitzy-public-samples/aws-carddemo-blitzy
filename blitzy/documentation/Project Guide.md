@@ -1,10 +1,8 @@
-# Blitzy Project Guide — Account Management Service (Feature F-003)
+# Blitzy Project Guide — account-service (Feature F-003)
 
-> **Project:** CardDemo modernization — Account Management vertical slice
-> **Migration:** COBOL / CICS / VSAM → Java 17 / Spring Boot 3.5.16 / Spring Data JPA / PostgreSQL
-> **Module:** `account-service/`
-> **Branch:** `blitzy-968ceb22-a2fe-4323-84ae-2d42315d4a1b` · **HEAD:** `ba013222`
-> **Brand legend:** <span style="color:#5B39F3">■</span> Completed / AI Work = **Dark Blue `#5B39F3`** · <span style="color:#B23AF2">■</span> Remaining / Not Completed = **White `#FFFFFF`**
+> **Legacy → Modern migration:** COBOL/CICS/VSAM Account Management slice → Java 17 / Spring Boot 3.5.16 REST service on PostgreSQL
+> **Branch:** `blitzy-968ceb22-a2fe-4323-84ae-2d42315d4a1b` · **HEAD:** `06a32ed2` · **Module:** `account-service/`
+> **Brand color legend:** ■ Completed / AI Work = **Dark Blue `#5B39F3`** · □ Remaining / Not Completed = **White `#FFFFFF`**
 
 ---
 
@@ -12,71 +10,67 @@
 
 ### 1.1 Project Overview
 
-This project migrates the Account Management vertical slice (Feature F-003) of the AWS CardDemo application — the *account inquiry* and *account update* capabilities — from a legacy COBOL/CICS/VSAM mainframe implementation to a standalone Java 17 / Spring Boot 3.5.16 REST service backed by PostgreSQL. It reproduces the exact business behavior of legacy programs `COACTVWC` (view, transaction `CAVW`) and `COACTUPC` (update, transaction `CAUP`), replacing 3270 screens with a JSON contract and the 300-byte VSAM `ACCTFILE` record with a relational `accounts` table. Target users are internal API consumers and downstream modernization teams. The slice establishes a repeatable, reference-quality pattern for subsequent CardDemo migration slices while leaving the legacy tree untouched.
+This project migrates the **Account Management vertical slice (Feature F-003)** — the account *inquiry* and *account update* capabilities — from the legacy AWS CardDemo COBOL/CICS/VSAM stack to a standalone **Java 17 / Spring Boot 3.5.16** REST service backed by **PostgreSQL**. It faithfully reproduces the behavior of the legacy view program `COACTVWC` (transaction CAVW) and update program `COACTUPC` (transaction CAUP): read-by-key retrieval, field/date/monetary validation, record locking, and rewrite. The service targets application modernization teams as a reference-quality pattern for subsequent CardDemo slices. It is delivered as an isolated Maven module (`account-service/`) sibling to the untouched legacy `app/` tree, so no COBOL, BMS, JCL, or CICS artifact is modified.
 
 ### 1.2 Completion Status
 
-The project is **77.7% complete** measured against AAP-scoped and path-to-production work. All AAP code deliverables are implemented, tested, and validated; the remaining 42 hours are entirely path-to-production activities and one stakeholder sign-off.
-
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': {'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieOuterStrokeColor':'#B23AF2','pieTitleTextSize':'16px','pieSectionTextSize':'14px'}}}%%
-pie title Completion Status — 77.7% Complete
-    "Completed Work (hrs)" : 146
-    "Remaining Work (hrs)" : 42
+%%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieTitleTextSize':'16px','pieSectionTextColor':'#B23AF2','pieOuterStrokeColor':'#B23AF2'}}}%%
+pie showData title Completion — 79.0% (158 of 200 hours)
+    "Completed Work (h)" : 158
+    "Remaining Work (h)" : 42
 ```
 
 | Metric | Value |
 |--------|-------|
-| **Total Hours** | **188** |
-| **Completed Hours (AI + Manual)** | **146** |
-| **Remaining Hours** | **42** |
-| **Percent Complete** | **77.7%** |
+| **Total Hours** | **200** |
+| Completed Hours (AI + Manual) | 158 (158 AI autonomous + 0 manual) |
+| Remaining Hours | 42 |
+| **Percent Complete** | **79.0%** |
 
-> Formula: 146 completed ÷ (146 completed + 42 remaining) = 146 ÷ 188 = **77.66% → 77.7%**
+> Completion % = Completed Hours ÷ Total Hours = 158 ÷ 200 = **79.0%** (AAP-scoped + path-to-production universe only). All AAP-scoped application code is 100% delivered, tested, and runtime-validated; the remaining 42 hours are exclusively path-to-production activities requiring cloud credentials and a target environment.
 
 ### 1.3 Key Accomplishments
 
-- ✅ **Two REST endpoints delivered** — `GET /api/v1/accounts/{accountId}` and `PUT /api/v1/accounts/{accountId}` reproducing legacy `CAVW`/`CAUP` behavior.
-- ✅ **Clean layered architecture** — Controller → Service → Repository → Entity with DTO boundary, mapper, and centralized exception handling.
-- ✅ **Relational persistence** — 300-byte VSAM record migrated to `accounts` table; zero-padded `VARCHAR(11)` primary key preserves join-compatibility with COBOL card/cross-reference records.
-- ✅ **Exact-precision monetary handling** — `BigDecimal` scale-2 / `NUMERIC(12,2)` throughout; zero `float`/`double` in the money path.
-- ✅ **Full legacy-parity validation** — Y/N status, signed-decimal range ±9,999,999,999.99, strict `java.time` date rules with year 1900–2099 guard.
-- ✅ **Optimistic concurrency** — JPA `@Version` maps stale-version detection to HTTP 409.
-- ✅ **Flyway migrations** — V1 DDL + V2 seed decoding all 50 legacy records from zoned-decimal-with-overpunch encoding.
-- ✅ **Security hardening** — parameterized JPA/JPQL, no sensitive data in logs, security response headers, CVE-remediating dependency overrides.
-- ✅ **180/180 automated tests pass** — 159 unit + 21 Testcontainers integration; zero failures.
-- ✅ **Legacy tree untouched** — 0 COBOL/copybook/BMS/JCL files modified (Minimal Change Clause honored).
+- ✅ **Both endpoints delivered** — `GET /api/v1/accounts/{accountId}` and `PUT /api/v1/accounts/{accountId}` reproduce CAVW / CAUP behavior including 404 / 400 / 409 semantics.
+- ✅ **Relational persistence** — 300-byte VSAM `ACCTFILE` record mapped to the `accounts` table (13 columns + `@Version`); zero-padded `VARCHAR(11)` primary key with an 11-digit `CHECK` constraint; `address_zip` preserved; `FILLER` dropped.
+- ✅ **Data migration** — Flyway `V1` DDL and `V2` seed of all 50 records, decoded from zoned-decimal-with-overpunch (§0.6.2) with exact `NUMERIC(12,2)` precision.
+- ✅ **Full business-rule parity** — Y/N status, `BigDecimal` money (±9,999,999,999.99, scale 2, no float/double), strict `java.time` date validation (leap-year + 1900–2099 window), 11-digit id domain.
+- ✅ **Optimistic concurrency** — JPA `@Version` → HTTP 409 with the exact message "Record updated by another user - please retry".
+- ✅ **Security hardening (§0.6.6)** — parameterized queries, no sensitive data in logs, security-headers and request-body-size filters, schema-integrity validator.
+- ✅ **183/183 automated tests pass** — 159 unit/web-slice + 24 integration/performance (Testcontainers), zero skipped.
+- ✅ **Runtime validated** — jar boots in 4.3 s, Flyway applies 2 migrations, `/actuator/health` UP; performance p95 well under the ≤ 2 s SLA (GET 108–113 ms, PUT 134–149 ms).
+- ✅ **Clean build** — `mvn clean verify` BUILD SUCCESS with zero errors and zero warnings; legacy `app/` tree unchanged.
 
 ### 1.4 Critical Unresolved Issues
 
-> These are **production-launch gating** items — none are code defects or compilation blockers. The module compiles, tests, and runs cleanly today.
+There are **no unresolved defects** in the delivered code. Every item below is a standard path-to-production gap (not a code defect) that requires a target environment and/or credentials Blitzy cannot access autonomously.
 
 | Issue | Impact | Owner | ETA |
 |-------|--------|-------|-----|
-| Encryption-at-rest is a documented posture, not module-enforced | Sensitive financial data unprotected until managed DB provisioned | Platform / DBA | 6h (with R1) |
-| No authentication/authorization layer (by-design POC) | API open; must be fronted before external exposure | Security / Platform | 5h (R3) |
-| No provisioned production database or externalized secrets | Cannot deploy to production; creds currently defaulted | Platform / DevOps | 6h + 4h (R1, R2) |
-| Stakeholder sign-off pending: `group_id` read-only tightening (§0.7.2) & Spring Boot 3.5.16 EOL forward path | Intentional behavioral deviation + framework past OSS EOL 2026-06-30 | Product / Architecture | 2h (R4) |
+| No API authentication/authorization or TLS ingress | Endpoints are open; legacy CICS sign-on is not reproduced in this slice | Platform / Security | 1 day |
+| Encryption-at-rest depends on unprovisioned managed DB (RDS/KMS) | Sensitive financial data would be plaintext if deployed to a non-encrypted store | Platform / DBA | 1 day |
+| Database credentials use dev defaults (`carddemo`/`carddemo`) via env fallback | Must be externalized to a secrets manager before any non-local deploy | Platform | 0.5 day |
+| `group_id` read-only tightening awaits stakeholder confirmation (§0.7.2) | Intentional deviation from legacy BMS `UNPROT`; needs product sign-off | Product Owner | 0.5 day |
 
 ### 1.5 Access Issues
 
-Autonomous validation encountered **no blocking access issues** — the repository, Maven Central (pre-warmed `~/.m2`), and the Docker daemon were all available, enabling full dependency resolution, compilation, unit tests, and Testcontainers integration tests. The items below are access provisions required for **production deployment**, not blockers encountered during validation.
+| System / Resource | Type of Access | Issue Description | Resolution Status | Owner |
+|-------------------|----------------|-------------------|-------------------|-------|
+| Managed PostgreSQL (Amazon RDS) | Cloud provisioning / IAM | No target DB instance or KMS key available in the autonomous environment | Open — human provisioning required | Platform / DBA |
+| Secrets manager (AWS Secrets Manager / Vault) | Credential store | No secrets backend to hold production DB credentials | Open — human setup required | Platform |
+| Container registry (e.g., ECR) & deploy target (k8s/ECS) | Push / deploy | No registry credentials or cluster access | Open — human setup required | DevOps |
+| CI/CD system | Pipeline configuration | No pipeline credentials/integration in the autonomous environment | Open — human setup required | DevOps |
 
-| System/Resource | Type of Access | Issue Description | Resolution Status | Owner |
-|-----------------|----------------|-------------------|-------------------|-------|
-| Amazon RDS PostgreSQL | Database provisioning + network | No production database instance exists yet | Pending (R1) | Platform / DBA |
-| AWS Secrets Manager / SSM | Read secrets at runtime | Datasource credentials not yet externalized | Pending (R2) | DevOps |
-| AWS KMS | Key management for encryption-at-rest | Encryption relies on managed DB configuration | Pending (R1) | Security / Platform |
-| Container registry (ECR/registry) | Push/pull image | No pipeline publishes the container image yet | Pending (R5, R6) | DevOps |
-| API gateway / IdP (OAuth2/mTLS) | Configure authn/authz | No auth layer configured for the endpoints | Pending (R3) | Security |
+> Local development and the full automated test suite (including Testcontainers integration/performance tests) run without any of the above — the Docker daemon is available and was used to validate all 183 tests.
 
 ### 1.6 Recommended Next Steps
 
-1. **[High]** Provision managed PostgreSQL (Amazon RDS) with encryption-at-rest (AWS KMS), run Flyway V1+V2, and verify the 50 seeded rows and CHECK constraint. *(R1 — 6h)*
-2. **[High]** Externalize datasource credentials to AWS Secrets Manager/SSM and wire `SPRING_DATASOURCE_*`. *(R2 — 4h)*
-3. **[High]** Complete a production security review and front the API with authentication/authorization (API gateway / OAuth2 / mTLS) plus TLS ingress. *(R3 — 5h)*
-4. **[High]** Obtain stakeholder sign-off on the `group_id` read-only tightening (§0.7.2) and the Spring Boot 3.5.16 EOL forward path. *(R4 — 2h)*
-5. **[Medium]** Stand up a CI/CD pipeline (`mvn verify` with Docker-in-Docker), build/publish the image, and add deployment manifests + observability. *(R5–R7 — 21h)*
+1. **[High]** Provision managed PostgreSQL (RDS) with encryption-at-rest (KMS) and automated backups; apply Flyway `V1`/`V2` (HT-1).
+2. **[High]** Externalize database credentials to a secrets manager, replacing the dev defaults (HT-2).
+3. **[High]** Front the service with authentication/authorization and TLS ingress (API gateway / OAuth2 / mTLS) (HT-3).
+4. **[Medium]** Stand up CI/CD (build → test → dependency & image scan → gated deploy) and publish the container image to a registry with environment manifests (HT-4, HT-5).
+5. **[Medium]** Complete a production security review/scan sign-off and wire observability, then deploy to staging for smoke/UAT (HT-6, HT-7, HT-8).
 
 ---
 
@@ -84,203 +78,206 @@ Autonomous validation encountered **no blocking access issues** — the reposito
 
 ### 2.1 Completed Work Detail
 
-Every completed component traces to an AAP requirement. The Hours column totals to the Completed Hours in Section 1.2.
+Each completed component traces to a specific AAP requirement. Column total = **158 hours** (= Completed Hours in §1.2).
 
 | Component | Hours | Description |
-|-----------|-------|-------------|
-| Build & container infrastructure | 8 | `pom.xml` (Spring Boot parent 3.5.16, Java 17, CVE-remediating overrides), multi-stage `Dockerfile`, `.dockerignore` |
-| Bootstrap & configuration profiles | 6 | `AccountServiceApplication`, `application.yml` / `-docker.yml` / `-test.yml` (datasource, JPA `ddl-auto=validate`, Flyway, actuator, sanitized logging) |
-| Domain entity & repository | 9 | `Account` `@Entity` (12 fields + `@Version`), `AccountRepository` (`JpaRepository<Account,String>`) |
-| Database migrations | 10 | `V1__create_accounts_table.sql` (DDL + `CHECK ^[0-9]{11}$`), `V2__seed_accounts.sql` (50-row zoned-decimal-with-overpunch decode) |
-| DTOs & mapper | 12 | `AccountResponse`, `AccountUpdateRequest` (omits `accountId`/`groupId`), `AccountMapper` (`+ZZZ,ZZZ,ZZZ.99` currency, ISO dates) |
-| Validation layer | 14 | `AccountValidator` — Y/N status, signed-decimal range/scale, strict `java.time` dates + year 1900–2099 guard (native `CSUTLDTC` reimplementation) |
-| Service layer | 8 | `AccountService` `@Transactional` read/validate/update, id path/body agreement, immutability enforcement |
-| REST controller | 6 | `AccountController` — `GET`/`PUT`, status mapping 200/400/404/409 |
-| Exception handling | 9 | `GlobalExceptionHandler` (`@RestControllerAdvice`), `ApiError`, `AccountNotFoundException`, `ValidationException` |
-| Security & operational hardening | 12 | `SecurityHeadersFilter`, `RequestBodySizeLimitFilter`, `SchemaIntegrityValidator`, `ApiErrorController`, `OpenApiConfig` |
-| Unit tests | 18 | 159 tests across `AccountValidatorTest`, `AccountControllerTest`, `AccountMapperTest`, `AccountServiceTest`, `SchemaIntegrityValidatorTest` |
-| Integration tests | 16 | 21 Testcontainers tests (`AccountApiIntegrationTest`) incl. 50-row seed-parity oracle + concurrency (repo & HTTP) |
-| Documentation | 4 | `README.md` (451 lines): build/run/API usage |
-| QA / code-review hardening cycles | 14 | 50+ findings resolved across 4+ autonomous review rounds |
-| **Total Completed** | **146** | |
+|-----------|------:|-------------|
+| Maven module, build & container setup | 10 | `pom.xml` (parent Spring Boot 3.5.16, Java 17), multi-stage `Dockerfile`, `.dockerignore`, `AccountServiceApplication`, `OpenApiConfig`, `README.md`; dependency curation + security overrides [AAP §0.3.1, §0.5.1] |
+| Domain entity & schema DDL | 12 | `Account` `@Entity` (13 columns + `@Version`), `AccountRepository`, `V1__create_accounts_table.sql` (PK + `CHECK` 11-digit) [AAP §0.3.1, §0.6.1] |
+| Data migration & 50-row seed | 10 | `V2__seed_accounts.sql`; zoned-decimal-with-overpunch decode to exact `NUMERIC(12,2)`; zero-padded ids preserved [AAP §0.6.2] |
+| Business-rule validator | 16 | `AccountValidator`: Y/N, signed money range/scale, strict `java.time` dates, leap-year, year 1900–2099, 11-digit id [AAP §0.6.3, §0.6.5] |
+| Service layer & optimistic concurrency | 14 | `AccountService`: `@Transactional` read/validate/update, `@Version` stale-check → 409, id/path authority, immutability [AAP §0.6.4, §0.3.3] |
+| Controller, DTOs & mapper | 14 | `AccountController` (GET/PUT), `AccountResponse`, `AccountUpdateRequest` (11 editable fields), `AccountMapper` currency/date formatting parity [AAP §0.3.1, §0.3.3] |
+| Centralized error handling | 10 | `GlobalExceptionHandler` (400/404/409), `ApiError`, `AccountNotFoundException`, `ValidationException`; legacy-parity messages [AAP §0.7.1, §0.6.4] |
+| Security hardening (§0.6.6) | 12 | `SecurityHeadersFilter`, `RequestBodySizeLimitFilter`, `ApiErrorController`, `SchemaIntegrityValidator`; parameterized queries; log hygiene [AAP §0.6.6] |
+| Runtime configuration & profiles | 6 | `application.yml` / `application-docker.yml` / `application-test.yml`: Flyway, JPA `validate`, actuator health, sanitized logging [AAP §0.3.1] |
+| Unit & web-slice test suite (159 tests) | 24 | `AccountValidatorTest` (106), `AccountControllerTest` (30), `AccountMapperTest` (9), `AccountServiceTest` (8), `SchemaIntegrityValidatorTest` (6) [AAP §0.6.5] |
+| Integration & performance test suite (24 tests) | 18 | `AccountApiIntegrationTest` (22) + `AccountPerformanceTest` (2), Testcontainers `postgres:17-alpine`, ≤ 2 s SLA assertions [AAP §0.6.5, §0.7.1] |
+| Code-review, QA remediation & final validation | 12 | Three documented review rounds (19 + 16 + 15 findings) + QA acceptance gate + Refine PR finalization |
+| **Total** | **158** | |
 
 ### 2.2 Remaining Work Detail
 
-Each remaining category traces to a path-to-production need or a stakeholder decision. The Hours column totals to the Remaining Hours in Section 1.2. These map 1:1 to human tasks HT-1…HT-8.
+Every remaining category is a **path-to-production** activity (no AAP application code is outstanding). Column total = **42 hours** (= Remaining Hours in §1.2 and §7). Grouped by priority.
 
 | Category | Hours | Priority |
-|----------|-------|----------|
-| Provision managed PostgreSQL (RDS) + encryption-at-rest (KMS) + run Flyway V1+V2 + verify 50 rows/CHECK (R1) | 6 | High |
-| Externalize datasource credentials to AWS Secrets Manager/SSM; wire `SPRING_DATASOURCE_*` (R2) | 4 | High |
-| Production security review; front API with authn/authz (API gateway/OAuth2/mTLS) + TLS ingress (R3) | 5 | High |
-| Stakeholder sign-off: `group_id` read-only tightening (§0.7.2) & Spring Boot 3.5.16 EOL forward path (R4) | 2 | High |
-| CI/CD pipeline (`mvn verify` with Docker-in-Docker for 21 ITs; build + publish image; deploy) (R5) | 10 | Medium |
-| Publish container image to registry + deployment manifests (K8s/ECS, wire actuator probes) (R6) | 6 | Medium |
-| Production observability (log aggregation, Micrometer→Prometheus/CloudWatch, dashboards + alerts) (R7) | 5 | Medium |
-| Load / performance test confirming ≤2s response target under concurrency (R8) | 4 | Low |
-| **Total Remaining** | **42** | |
+|----------|------:|----------|
+| Provision managed PostgreSQL (RDS) + encryption-at-rest (KMS) + backups + apply Flyway (HT-1) | 6 | High |
+| Externalize DB credentials to a secrets manager (HT-2) | 4 | High |
+| API authentication/authorization + TLS ingress (HT-3) | 8 | High |
+| CI/CD pipeline: build/test/scan/publish (HT-4) | 6 | Medium |
+| Container registry + environment deployment manifests (HT-5) | 5 | Medium |
+| Production security review + dependency/image scan sign-off (HT-6) | 5 | Medium |
+| Observability wiring to real infrastructure (HT-7) | 4 | Medium |
+| Staging deployment + smoke/UAT + pool tuning + load test (HT-8) | 3 | Medium |
+| Stakeholder confirmation of `group_id` read-only tightening §0.7.2 (HT-9) | 1 | Low |
+| **Total** | **42** | High 18 · Medium 23 · Low 1 |
 
-**Priority distribution:** High = 17h · Medium = 21h · Low = 4h · **Total = 42h**
+### 2.3 Hours Summary
 
-### 2.3 Reconciliation
+| Bucket | Hours | % of Total |
+|--------|------:|-----------:|
+| Completed (§2.1) | 158 | 79.0% |
+| Remaining (§2.2) | 42 | 21.0% |
+| **Total Project** | **200** | **100%** |
 
-| Bucket | Hours |
-|--------|-------|
-| Completed (Section 2.1) | 146 |
-| Remaining (Section 2.2) | 42 |
-| **Total Project Hours** | **188** |
-| **Percent Complete** | 146 ÷ 188 = **77.7%** |
-
-Cross-section integrity: Section 2.1 (146) + Section 2.2 (42) = 188 = Total Hours in Section 1.2. Remaining (42) is identical in Sections 1.2, 2.2, and the Section 7 pie chart.
+> Integrity: §2.1 (158) + §2.2 (42) = 200 = Total in §1.2. Remaining (42) is identical in §1.2, §2.2, and the §7 pie chart.
 
 ---
 
 ## 3. Test Results
 
-All results below originate from Blitzy's autonomous validation logs — Maven **Surefire** (unit) and **Failsafe** (integration, real PostgreSQL via Testcontainers) reports captured during the final validation run. Totals: **180 tests, 180 passed, 0 failed, 0 errors, 0 skipped.**
+All figures below originate from Blitzy's autonomous validation logs (`mvn clean verify` → BUILD SUCCESS): Surefire and Failsafe reports under `account-service/target/`. Grand total **183 tests, 100% pass, 0 skipped / 0 disabled / 0 flakes**.
 
 | Test Category | Framework | Total Tests | Passed | Failed | Coverage % | Notes |
-|---------------|-----------|-------------|--------|--------|-----------|-------|
-| Unit — Validation | JUnit 5 (Surefire) | 106 | 106 | 0 | Full rule matrix | `AccountValidatorTest`: Y/N status; money ±9,999,999,999.99 scale-2 boundaries/over-range/wrong-scale; month 01–12; day-valid-for-month; leap-year 29-Feb (2000/2024 accept, 2023/1900 reject); year 1900–2099; 11-digit id |
-| Unit — Controller | JUnit 5 + MockMvc (`@WebMvcTest`) | 30 | 30 | 0 | Status + JSON shape | `AccountControllerTest`: 200/400/404/409/405 status codes and JSON body shape |
-| Unit — Mapper | JUnit 5 (Surefire) | 9 | 9 | 0 | Formatting parity | `AccountMapperTest`: currency `+ZZZ,ZZZ,ZZZ.99` & ISO date parity |
-| Unit — Service | JUnit 5 + Mockito | 8 | 8 | 0 | Branch coverage | `AccountServiceTest`: found / not-found / conflict / path-body mismatch |
-| Unit — Schema | JUnit 5 (Surefire) | 6 | 6 | 0 | DDL drift | `SchemaIntegrityValidatorTest`: NUMERIC(12,2)/BIGINT/DDL drift checks |
-| Integration — API | JUnit 5 + Testcontainers (Failsafe) | 21 | 21 | 0 | AAP §0.6.5 traceability | `AccountApiIntegrationTest`: GET 200 seed-parity/scale-2/ISO; GET 404; PUT 400 no-mutation; PUT stale-version 409; PUT 200 version-increment; control-char/oversized-body→400; DB CHECK non-numeric id; 50-row seed-parity oracle; concurrent repo & HTTP optimistic-lock; log hygiene; OpenAPI completeness; security headers; actuator readiness+liveness |
-| **Total** | **JUnit 5 / Surefire + Failsafe** | **180** | **180** | **0** | — | 0 skipped, 0 blocked |
+|---------------|-----------|------------:|-------:|-------:|-----------:|-------|
+| Unit — Validation rules | JUnit 5 (Surefire) | 106 | 106 | 0 | Every rule (valid + invalid) | `AccountValidatorTest`: Y/N, money range/scale, strict dates, leap-year, year window, id |
+| Unit — Service logic | JUnit 5 + Mockito | 8 | 8 | 0 | Found / not-found / conflict / immutability | `AccountServiceTest` |
+| Unit — Mapper | JUnit 5 | 9 | 9 | 0 | Currency `+ZZZ,ZZZ,ZZZ.99` + ISO date parity | `AccountMapperTest` |
+| Unit — Schema integrity | JUnit 5 | 6 | 6 | 0 | Entity↔DDL column/type checks | `SchemaIntegrityValidatorTest` |
+| Web slice — Controller | `@WebMvcTest` + MockMvc | 30 | 30 | 0 | Status codes + JSON shape | `AccountControllerTest` |
+| Integration — API | `@SpringBootTest` + Testcontainers | 22 | 22 | 0 | Happy / 404 / 400 / 409 / seed parity / immutability | `AccountApiIntegrationTest` (`postgres:17-alpine`) |
+| Performance | Testcontainers + concurrency harness | 2 | 2 | 0 | GET p95 108–113 ms, PUT 134–149 ms (≤ 2000 ms) | `AccountPerformanceTest` (60 GET / 50 PUT concurrent) |
+| **Total** | — | **183** | **183** | **0** | — | 159 Surefire + 24 Failsafe |
 
 ---
 
 ## 4. Runtime Validation & UI Verification
 
-Exercised live against a fresh isolated PostgreSQL during autonomous validation (shared DB left intact). Status legend: ✅ Operational · ⚠ Partial · ❌ Failing.
+Runtime validation was performed against a live PostgreSQL (`postgres:17-alpine`) using the executable fat jar. There is no graphical UI in this slice (the 3270/BMS layer is retired); the "interface" is the REST/JSON contract, documented via springdoc Swagger UI.
 
-**Application lifecycle**
-- ✅ Boots in ~5s; clean shutdown; **0 ERROR/SEVERE log lines**
-- ✅ Flyway applies V1 + V2 from an empty database
-- ✅ Hibernate `ddl-auto=validate` passes — no schema drift
+**Application health & startup**
+- ✅ **Operational** — Boots in ~4.3 s on port 8080 (Spring Boot 3.5.16 fat jar).
+- ✅ **Operational** — Flyway "Successfully validated 2 migrations" (schema at V2, up to date).
+- ✅ **Operational** — `GET /actuator/health` → `{"status":"UP"}` (200).
 
-**API endpoints**
-- ✅ `GET /api/v1/accounts/00000000001` → **200**: zero-padded id, `currentBalance` 194.00 (plain decimal), ISO dates, `addressZip` "A000000000" preserved, `version` 0
-- ✅ `GET` unknown id → **404** with legacy-parity message (CICS Resp/Reas codes dropped)
-- ✅ `PUT` invalid payload → **400** with field message, no mutation
-- ✅ `PUT` stale `version` → **409** "Record updated by another user - please retry"
-- ✅ `PUT` happy path → **200**, `version` → 1, change persisted (verified via re-GET)
+**API behavior (parity with legacy CAVW / CAUP)**
+- ✅ **Operational** — `GET /api/v1/accounts/00000000001` → 200 with full 13-field JSON (scale-2 currency in plain notation, ISO dates, `addressZip` preserved).
+- ✅ **Operational** — `GET` unknown id → 404 (legacy NOTFND parity).
+- ✅ **Operational** — `PUT` valid → 200 with `@Version` increment.
+- ✅ **Operational** — `PUT` stale `version` → 409 "Record updated by another user - please retry".
+- ✅ **Operational** — `PUT` `activeStatus='X'` → 400; `PUT` `2023-02-29` → 400 (strict `java.time` date validation).
+- ✅ **Operational** — `PUT` tampering `accountId`/`groupId` → 200 but those fields unchanged; no phantom row created (immutability by design).
+- ✅ **Operational** — All-zeros id `00000000000` rejected 400 (non-zero 11-digit key check).
 
-**Operational endpoints**
-- ✅ `GET /actuator/health` + `/health/readiness` + `/health/liveness` = **UP**
-- ✅ OpenAPI 3.0.1 `/v3/api-docs` → **200** (GET + PUT documented)
-- ✅ Swagger UI `/swagger-ui/index.html` → **200**
+**API documentation & schema**
+- ✅ **Operational** — `GET /v3/api-docs` → 200; Swagger UI at `/swagger-ui.html` (springdoc 2.8.17).
+- ✅ **Operational** — DB `CHECK` constraint `ck_accounts_account_id_numeric` present (11-digit key domain).
 
-**Persistence layer**
-- ✅ 50 seeded rows; zero-padded ids; `NUMERIC(12,2)` money; `DATE` columns; `address_zip` preserved
-- ✅ `ck_accounts_account_id_numeric` CHECK constraint present and enforced
+**Performance**
+- ✅ **Operational** — p95 well within the ≤ 2 s SLA: GET 108–113 ms, PUT 134–149 ms across independent runs.
 
-**UI Verification**
-- ⚠ Not applicable — the 3270 BMS terminal layer is fully retired and no replacement graphical/web UI is in scope for this slice. The "interface" is the REST/JSON contract, documented interactively via Swagger UI (verified operational above).
+**Production runtime concerns (not yet wired)**
+- ⚠ **Partial** — Observability limited to `/actuator/health`; log aggregation, metrics dashboards, alerts, and tracing are not yet connected to infrastructure (HT-7).
+- ❌ **Failing/absent** — No API authentication/authorization or TLS termination in front of the service (HT-3).
 
 ---
 
 ## 5. Compliance & Quality Review
 
-AAP deliverables cross-mapped to Blitzy quality/compliance benchmarks. Fixes applied during autonomous validation are noted; all listed items passed.
+Cross-map of AAP deliverables to quality/compliance benchmarks. All application-code items are complete; fixes were applied autonomously across three code-review rounds and a QA gate.
 
-| # | AAP Deliverable / Benchmark | Status | Evidence / Notes |
-|---|------------------------------|--------|------------------|
-| 1 | GET endpoint reproduces `COACTVWC`/`CAVW` read-by-key | ✅ Pass | `AccountController#getAccount`; integration GET 200/404 |
-| 2 | PUT endpoint reproduces `COACTUPC`/`CAUP` edit/validate/lock/rewrite | ✅ Pass | `AccountController#updateAccount`; integration PUT 200/400/409 |
-| 3 | 300-byte VSAM record → relational `accounts` table | ✅ Pass | `Account` entity + V1 DDL; 12 fields + `@Version` |
-| 4 | `ACCT-ADDR-ZIP` preserved (AAP-flagged omission) | ✅ Pass | `address_zip VARCHAR(10)`; runtime shows "A000000000" |
-| 5 | `FILLER` dropped; `EXPIRAION` typo corrected | ✅ Pass | Entity has no filler; `expiration_date` column |
-| 6 | Account id = zero-padded `VARCHAR(11)` PK | ✅ Pass | PK + `CHECK (account_id ~ '^[0-9]{11}$')` |
-| 7 | Exact-precision money (`BigDecimal`/`NUMERIC(12,2)`, no float/double) | ✅ Pass | Float/double scan = **0 matches** in money path; plain-decimal serialization |
-| 8 | Money range ±9,999,999,999.99, scale 2 | ✅ Pass | `AccountValidator` boundary + over-range + wrong-scale tests |
-| 9 | Strict date validation + year 1900–2099 (native reimpl.) | ✅ Pass | `ResolverStyle.STRICT` + year guard; leap-year tests |
-| 10 | Optimistic concurrency `@Version` → HTTP 409 | ✅ Pass | Concurrent repo & HTTP tests; exact conflict message |
-| 11 | `accountId` & `groupId` read-only (§0.7.2 tightening) | ⚠ Pass (sign-off pending) | Both omitted from `AccountUpdateRequest`; awaiting stakeholder confirmation (R4) |
-| 12 | Error semantics 404 / 409 / 400 | ✅ Pass | `GlobalExceptionHandler`; `ApiError` JSON (no Whitelabel) |
-| 13 | Flyway owns schema; Hibernate `ddl-auto=validate` | ✅ Pass | V1+V2 applied; no drift; `SchemaIntegrityValidator` |
-| 14 | Security: parameterized queries, no sensitive data in logs | ✅ Pass | JPA/JPQL bound params; 0 log leaks verified |
-| 15 | Dependency CVEs remediated | ✅ Pass | Overrides: springdoc 2.8.17, tomcat 10.1.57, jackson-databind 2.21.5, postgresql 42.7.12, logback 1.5.38, commons-lang3 3.18.0, swagger-ui 5.32.8, commons-compress 1.27.1 |
-| 16 | Legacy `app/` tree unchanged (Minimal Change Clause) | ✅ Pass | `git diff` = 0 legacy files changed |
+| AAP Deliverable / Benchmark | Requirement | Status | Evidence / Notes |
+|-----------------------------|-------------|--------|------------------|
+| GET endpoint (CAVW parity) | Read-by-key + 404 | ✅ Pass | `AccountController#getAccount`; integration + controller tests |
+| PUT endpoint (CAUP parity) | Edit/validate/lock/rewrite; 400/404/409 | ✅ Pass | `AccountController#updateAccount`; integration tests |
+| Field parity (300-byte record) | 12 fields incl. `address_zip`; `FILLER` dropped | ✅ Pass | `Account` entity + `V1` DDL (13 cols with `@Version`) |
+| Identifier type decision (§0.6.1) | Zero-padded `VARCHAR(11)` + 11-digit CHECK | ✅ Pass | `Account.accountId`; `ck_accounts_account_id_numeric` |
+| Monetary precision (§0.6.2) | `BigDecimal`/`NUMERIC(12,2)`, no float/double | ✅ Pass | Entity + validator + mapper; Jackson plain-decimal |
+| Date validation (§0.6.3) | Strict `java.time`, leap-year, 1900–2099 | ✅ Pass | `AccountValidator`; 106 validator tests |
+| Optimistic concurrency (§0.6.4) | `@Version` → 409 + exact message | ✅ Pass | `AccountService` + `GlobalExceptionHandler` |
+| Read-only `accountId` | Immutable | ✅ Pass | Omitted from `AccountUpdateRequest`; runtime-verified |
+| Read-only `groupId` (§0.7.2) | Tightened vs legacy `UNPROT` | ✅ Pass (code) / ⏳ sign-off | Implemented; awaits stakeholder confirmation (HT-9) |
+| Error semantics | 404/400/409 + structured `ApiError` | ✅ Pass | `@RestControllerAdvice`; controller/integration tests |
+| Security — parameterized queries (§0.6.6) | No string-concatenated SQL | ✅ Pass | Spring Data JPA / JPQL bound params |
+| Security — no sensitive data in logs (§0.6.6) | Mask account no./balances | ✅ Pass | Sanitized logging; log-hygiene test |
+| Security — encryption at rest (§0.6.6) | KMS-managed | ⏳ Infra | Code-ready; requires RDS/KMS (HT-1) |
+| Standalone operability | Own build/run/migrate/test | ✅ Pass | `mvn verify` 183/183; jar boots independently |
+| Performance (≤ 2 s) | Both operations | ✅ Pass | p95 108–149 ms |
+| Minimal Change Clause | Legacy tree untouched | ✅ Pass | `git diff app/` empty |
+| Build quality | Zero errors/warnings | ✅ Pass | `mvn clean verify` BUILD SUCCESS |
 
 ---
 
 ## 6. Risk Assessment
 
-Risks categorized per technical / security / operational / integration. Severity and probability are qualitative; "→Rn" links a risk to its remediating remaining task in Section 2.2.
-
-| # | Risk | Category | Severity | Probability | Mitigation | Status |
-|---|------|----------|----------|-------------|------------|--------|
-| T1 | Spring Boot 3.5.16 past OSS EOL (2026-06-30) | Technical | Medium | High | Migrate to 4.1.x (Java-17 compatible) or obtain commercial support; requires sign-off | Open →R4 |
-| T2 | Schema drift between Flyway DDL and entity | Technical | Low | Low | `ddl-auto=validate` + `SchemaIntegrityValidator` fail-fast at startup | Mitigated |
-| T3 | ≤2s response target not load-tested | Technical | Low | Low | Add load/performance test under concurrency | Open →R8 |
-| S1 | Encryption-at-rest is documented posture, not module-enforced | Security | High | Medium | Rely on RDS encryption-at-rest (AWS KMS) when DB is provisioned | Open →R1 |
-| S2 | No authentication/authorization on endpoints | Security | High | Medium | Front with API gateway / OAuth2 / mTLS (by-design POC gap) | Open →R3 |
-| S3 | Datasource credentials via env/defaults | Security | Medium | Medium | Externalize to AWS Secrets Manager/SSM | Open →R2 |
-| S4 | SQL injection / dependency CVEs / log leakage | Security | Low | Low | SQLi eliminated by construction (bound params); CVEs remediated; log hygiene verified | Mitigated ✅ |
-| O1 | No CI/CD pipeline | Operational | Medium | High | Build `mvn verify` (Docker-in-Docker) + deploy pipeline | Open →R5 |
-| O2 | No production observability beyond actuator | Operational | Medium | Medium | Log aggregation + Micrometer→Prometheus/CloudWatch + alerts | Open →R7 |
-| O3 | No provisioned production database | Operational | Medium | High | Provision managed PostgreSQL (RDS) | Open →R1 |
-| I1 | Integration tests require a Docker daemon | Integration | Low | Medium | Provide Docker-in-Docker in CI | Open →R5 |
-| I2 | Real Amazon RDS never exercised | Integration | Low | Low | Smoke-test against provisioned RDS | Open →R1 |
-| I3 | `account_id` join-compat with COBOL card/xref not cross-module tested | Integration | Low | Low | `VARCHAR(11)` + CHECK preserves key; cross-module test deferred | Deferred |
-| I4 | `group_id` read-only tightening needs sign-off | Integration | Low | Low | Stakeholder confirmation of intentional deviation | Open →R4 |
+| Risk | Category | Severity | Probability | Mitigation | Status |
+|------|----------|----------|-------------|------------|--------|
+| T1 — Spring Boot 3.5.16 reached open-source EOL (2026-06-30) | Technical | Medium | High | Planned upgrade window to 4.1.x (Java-17 compatible); dependencies pinned with security overrides | Accepted / Documented (§0.7.2) |
+| T2 — Untuned HikariCP pool; only micro p95 test (no load/soak) | Technical | Medium | Medium | Load/soak test and pool tuning during staging (HT-8) | Open |
+| T3 — Schema drift detected only at startup (`ddl-auto=validate`) | Technical | Low | Low | Flyway owns schema; validate fails fast on mismatch | Mitigated |
+| S1 — No API authentication/authorization (endpoints open) | Security | High | High | API gateway + OAuth2/mTLS + TLS ingress (HT-3) | Open |
+| S2 — Encryption-at-rest is an infra assumption, not yet provisioned | Security | High | Medium | Enable RDS encryption / KMS before prod (HT-1) | Open |
+| S3 — DB credentials use dev defaults via env fallback | Security | High | High (if unaddressed) | Externalize to secrets manager (HT-2) | Open |
+| O1 — No CI/CD (manual build/deploy) | Operational | Medium | Medium | Establish pipeline with gates (HT-4) | Open |
+| O2 — Observability limited to `/actuator/health` | Operational | Medium | Medium | Wire logs/metrics/alerts/tracing (HT-7) | Open |
+| O3 — No backup/DR for the new datastore | Operational | Medium | Low | Enable RDS automated backups/PITR (part of HT-1) | Open |
+| I1 — `VARCHAR(11)` join-compat with still-COBOL CARDFILE/XREFFILE untested vs live files | Integration | Low–Medium | Low | Cross-file reconciliation when those slices migrate | Deferred |
+| I2 — `group_id` read-only deviates from legacy BMS `UNPROT`; upstream updates silently no-op | Integration | Low | Low | Stakeholder confirmation (HT-9) | Open |
+| I3 — 50-row POC seed only; full VSAM→PG ETL is a separate effort | Integration | Medium | Medium (for cutover) | Build full ETL + reconciliation beyond POC | Deferred / Out-of-scope this slice |
 
 ---
 
 ## 7. Visual Project Status
 
-**Project hours breakdown** — Completed (`#5B39F3`) vs Remaining (`#FFFFFF`):
+**Hours breakdown** (Completed = Dark Blue `#5B39F3`, Remaining = White `#FFFFFF`):
 
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': {'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieOuterStrokeColor':'#B23AF2'}}}%%
-pie title Project Hours Breakdown — 77.7% Complete
-    "Completed Work" : 146
+%%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieSectionTextColor':'#B23AF2','pieOuterStrokeColor':'#B23AF2'}}}%%
+pie showData title Project Hours Breakdown (Total 200h)
+    "Completed Work" : 158
     "Remaining Work" : 42
 ```
 
-**Remaining hours by priority** (from Section 2.2):
+**Remaining hours by priority** (all 42 remaining hours are path-to-production):
 
 ```mermaid
-%%{init: {'theme':'base'}}%%
-xychart-beta
-    title "Remaining Hours by Priority"
-    x-axis ["High", "Medium", "Low"]
-    y-axis "Hours" 0 --> 25
-    bar [17, 21, 4]
+%%{init: {'theme':'base','themeVariables':{'pie1':'#5B39F3','pie2':'#A8FDD9','pie3':'#FFFFFF','pieStrokeColor':'#B23AF2','pieStrokeWidth':'2px','pieSectionTextColor':'#B23AF2'}}}%%
+pie showData title Remaining Work by Priority (42h)
+    "High" : 18
+    "Medium" : 23
+    "Low" : 1
 ```
 
-| Priority | Hours | Share of Remaining |
-|----------|-------|--------------------|
-| High | 17 | 40.5% |
-| Medium | 21 | 50.0% |
-| Low | 4 | 9.5% |
-| **Total** | **42** | **100%** |
+**Remaining hours per category (Section 2.2)**
 
-> Integrity: "Remaining Work" = **42** here equals Remaining Hours in Section 1.2 and the sum of the Section 2.2 Hours column.
+| Category (HT) | Hours | Bar |
+|---------------|------:|-----|
+| API authN/authZ + TLS (HT-3) | 8 | ████████ |
+| RDS + encryption (HT-1) | 6 | ██████ |
+| CI/CD pipeline (HT-4) | 6 | ██████ |
+| Registry + deploy (HT-5) | 5 | █████ |
+| Security review/sign-off (HT-6) | 5 | █████ |
+| Secrets management (HT-2) | 4 | ████ |
+| Observability (HT-7) | 4 | ████ |
+| Staging + UAT (HT-8) | 3 | ███ |
+| `group_id` sign-off (HT-9) | 1 | █ |
+| **Total** | **42** | |
+
+> Integrity: §7 "Remaining Work" (42) = §1.2 Remaining (42) = §2.2 total (42). §7 "Completed Work" (158) = §1.2 Completed (158).
 
 ---
 
 ## 8. Summary & Recommendations
 
-**Achievements.** The Account Management vertical slice (F-003) has been fully migrated from COBOL/CICS/VSAM to an idiomatic Java 17 / Spring Boot 3.5.16 REST service. Both endpoints reproduce legacy behavior exactly, all business rules (status domain, monetary precision and range, strict date validity, field immutability, optimistic concurrency) are enforced in a testable service layer, and the 300-byte VSAM record is faithfully represented as a relational entity — including the AAP-flagged `ACCT-ADDR-ZIP` field. The legacy tree remains byte-for-byte pristine.
+**Achievements.** The account-service module delivers a complete, behavior-faithful migration of the CardDemo Account Management slice (F-003). All AAP-scoped application code — both endpoints, the relational schema and data migration, every legacy business rule, optimistic concurrency, error semantics, and the three intentional security deviations — is implemented, exercised by **183/183 passing tests**, and validated at runtime against live PostgreSQL. The build is clean (zero errors/warnings), performance is well within the ≤ 2 s SLA, and the legacy COBOL tree is untouched.
 
-**Quality posture.** The module is **77.7% complete** and production-ready at the code level: **180/180 automated tests pass** (159 unit + 21 Testcontainers integration), compilation is warning-free under `-Xlint:all`, live runtime is clean, and dependency CVEs are remediated via explicit overrides. Final validation required **zero source modifications** — the module was already complete and correct.
+**Completion.** The project is **79.0% complete** (158 of 200 hours). This figure reflects the AAP-scoped-plus-path-to-production work universe: 100% of the application code is done, and the remaining **42 hours (21.0%)** are exclusively deployment/operations activities that require cloud credentials and a target environment Blitzy cannot access autonomously.
 
-**Remaining gaps & critical path.** The remaining **42 hours** are entirely path-to-production, not code defects. The critical path to production is: (1) provision managed PostgreSQL with encryption-at-rest and externalize secrets; (2) front the API with authentication/authorization and TLS; (3) obtain stakeholder sign-off on the intentional `group_id` read-only tightening and the Spring Boot 3.5.16 EOL forward path; (4) stand up CI/CD, image publishing, deployment manifests, and production observability; (5) confirm the ≤2s performance target under load.
+**Critical path to production.** (1) Provision managed PostgreSQL with encryption-at-rest and externalize credentials → (2) add authentication/authorization and TLS in front of the service → (3) establish CI/CD and publish the container image → (4) security sign-off, observability, and staging/UAT. The single non-infrastructure item is a product-owner confirmation of the `group_id` read-only tightening (§0.7.2, 1 h).
 
-**Success metrics.** Behavioral parity verified against the 50-record seed oracle; error semantics (404/409/400) confirmed; concurrency conflict detection validated at both repository and HTTP layers; schema integrity guarded at startup.
+**Success metrics.** Behavioral parity verified (status codes, messages, formatting, immutability, concurrency); exact monetary precision (no float/double); strict date validation; performance p95 108–149 ms.
 
-**Production readiness assessment.** **Code-complete and validated; not yet production-deployed.** Recommend proceeding with the High-priority path-to-production tasks (R1–R4, 17h) as the immediate next sprint, followed by the Medium-priority deployment/observability tasks (R5–R7, 21h) and the Low-priority load test (R8, 4h).
+**Production readiness assessment.** The code is **production-ready**; the *deployment* is not yet productionized. With the High-priority items (18 h) addressed, the service is deployable to a secured environment; the full 42 hours brings it to a fully operationalized production posture.
 
-| Dimension | Status |
-|-----------|--------|
-| AAP code deliverables | ✅ Complete (100%) |
-| Automated tests | ✅ 180/180 pass |
-| Runtime validation | ✅ Clean |
-| Path-to-production | ⚠ 42h remaining |
-| Overall (AAP-scoped) | **77.7% complete** |
+| Assessment Dimension | Status |
+|----------------------|--------|
+| Functional completeness (AAP) | ✅ 100% of code delivered |
+| Test coverage & pass rate | ✅ 183/183 (0 skipped) |
+| Runtime validation | ✅ Verified against live PostgreSQL |
+| Build & dependency health | ✅ Zero errors/warnings |
+| Deployment readiness | ⏳ 42 h path-to-production remaining |
+| Overall completion | **79.0%** |
 
 ---
 
@@ -288,235 +285,219 @@ xychart-beta
 
 ### 9.1 System Prerequisites
 
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| JDK | Java 17 (LTS) | Compile & runtime baseline (Spring Boot 3.x minimum). Validated with OpenJDK 17.0.19 |
-| Apache Maven | 3.9.x | Validated with 3.9.9; `spring-boot-maven-plugin` version managed by parent |
-| PostgreSQL | 16 or 17 | Aligned with Amazon RDS PostgreSQL target |
-| Docker | Engine 20.10+ | **Required only for the 21 Testcontainers integration tests** |
-| OS | Linux/macOS/WSL2 | Any JDK-17-capable platform |
+| Tool | Version (verified) | Notes |
+|------|--------------------|-------|
+| Java (JDK) | 17 (validated 17.0.19) | `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64` |
+| Apache Maven | 3.9.9 | No Maven wrapper is present — use the system `mvn` |
+| Docker | 28.5.2 (daemon running) | Required for integration/performance tests (Testcontainers) and optional local DB |
+| PostgreSQL | 16 or 17 | Local via Docker `postgres:17-alpine` (matches the Testcontainers tag) |
 
 ### 9.2 Environment Setup
 
-The service reads its datasource from environment variables (with local defaults). Three Spring profiles exist: `default` (local), `docker` (container — **requires** env vars, fail-fast, no defaults), and `test` (Testcontainers).
+```bash
+# From the repository root
+cd account-service
+
+# Ensure Java 17 is active
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+java -version    # expect: openjdk version "17..."
+```
+
+Start a local PostgreSQL that matches the application defaults (Flyway will create/seed the schema on first boot):
 
 ```bash
-# Local development defaults (used if unset)
-export SPRING_DATASOURCE_URL="jdbc:postgresql://localhost:5432/carddemo"
-export SPRING_DATASOURCE_USERNAME="carddemo"
-export SPRING_DATASOURCE_PASSWORD="carddemo"
-
-# Optional: start a local PostgreSQL quickly
-docker run -d --name carddemo-pg \
+docker run -d --name carddemo-postgres \
   -e POSTGRES_DB=carddemo \
   -e POSTGRES_USER=carddemo \
   -e POSTGRES_PASSWORD=carddemo \
-  -p 5432:5432 postgres:17-alpine
+  -p 5432:5432 \
+  postgres:17-alpine
 ```
 
-### 9.3 Dependency Installation
+Default datasource (overridable via environment variables):
+
+| Property | Env var | Default |
+|----------|---------|---------|
+| URL | `SPRING_DATASOURCE_URL` | `jdbc:postgresql://localhost:5432/carddemo` |
+| Username | `SPRING_DATASOURCE_USERNAME` | `carddemo` |
+| Password | `SPRING_DATASOURCE_PASSWORD` | `carddemo` |
+| HTTP port | `SERVER_PORT` | `8080` |
+
+### 9.3 Dependency Installation & Build
 
 ```bash
-# Load Java 17 onto PATH (container helper) and enter the module
-source /etc/profile.d/java_home.sh
-cd account-service
+# Resolve dependencies + compile (offline-friendly)
+mvn -B clean compile
 
-# Resolve dependencies (offline against a pre-warmed ~/.m2; drop -o if online)
-mvn -o -B -ntp validate        # verified this session: BUILD SUCCESS (~0.25s)
+# Unit + web-slice tests only (NO Docker required) — 159 tests
+mvn -B test
+
+# Full verification incl. integration + performance (Docker REQUIRED) — 183 tests
+mvn -B clean verify
+
+# Build the executable jar
+mvn -B clean package    # -> target/account-service-0.0.1-SNAPSHOT.jar
 ```
 
-### 9.4 Build & Test
+Expected: `BUILD SUCCESS`; Surefire `Tests run: 159, Failures: 0, Errors: 0, Skipped: 0`; Failsafe `Tests run: 24, Failures: 0, Errors: 0, Skipped: 0`.
+
+### 9.4 Application Startup
 
 ```bash
-cd account-service
-
-# Compile (verified this session: BUILD SUCCESS ~1.8s)
-mvn -o -B -ntp clean compile
-
-# Full verification: compile + 159 unit + 21 integration tests (Docker required for ITs)
-mvn -B -ntp clean verify
-
-# Package an executable jar (skips ITs)
-mvn -B -ntp package
-# → target/account-service-0.0.1-SNAPSHOT.jar
-```
-
-### 9.5 Application Startup
-
-```bash
-cd account-service
-
-# Option A — run the packaged jar (uses local datasource defaults)
+# Ensure carddemo-postgres is running (see 9.2), then:
 java -jar target/account-service-0.0.1-SNAPSHOT.jar
+# Boots on http://localhost:8080 ; Flyway applies V1 + V2 on first start
+```
 
-# Option B — run via Maven
-mvn spring-boot:run
+Container image (multi-stage build → `eclipse-temurin:17-jre`, runs as non-root, exposes 8080):
 
-# Option C — Docker (docker profile REQUIRES datasource env vars)
-docker build -t account-service:local .
-docker run -p 8080:8080 \
+```bash
+docker build -t account-service:local ./account-service
+
+docker run --rm -p 8080:8080 \
   -e SPRING_PROFILES_ACTIVE=docker \
-  -e SPRING_DATASOURCE_URL="jdbc:postgresql://host.docker.internal:5432/carddemo" \
-  -e SPRING_DATASOURCE_USERNAME="carddemo" \
-  -e SPRING_DATASOURCE_PASSWORD="carddemo" \
+  -e SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/carddemo \
+  -e SPRING_DATASOURCE_USERNAME=carddemo \
+  -e SPRING_DATASOURCE_PASSWORD=carddemo \
   account-service:local
 ```
 
-The application listens on **port 8080** and boots in ~5s; Flyway applies migrations `V1` and `V2` automatically on first start.
+> Note: the `docker` profile (`application-docker.yml`) has **no datasource defaults** — the three `SPRING_DATASOURCE_*` env vars are mandatory.
 
-### 9.6 Verification Steps
-
-```bash
-# Health (expect {"status":"UP"})
-curl -s http://localhost:8080/actuator/health
-
-# Fetch a seeded account (expect HTTP 200)
-curl -s http://localhost:8080/api/v1/accounts/00000000001
-
-# OpenAPI docs (expect HTTP 200)
-curl -s http://localhost:8080/v3/api-docs | head -c 200
-# Swagger UI in a browser: http://localhost:8080/swagger-ui/index.html
-```
-
-Expected `GET /api/v1/accounts/00000000001` response (abridged):
-
-```json
-{
-  "accountId": "00000000001",
-  "activeStatus": "Y",
-  "currentBalance": "194.00",
-  "openDate": "2014-11-20",
-  "addressZip": "A000000000",
-  "version": 0
-}
-```
-
-### 9.7 Example Usage
+### 9.5 Verification Steps
 
 ```bash
-# Update an account — supply the version last read (optimistic concurrency)
+# Health
+curl -s http://localhost:8080/actuator/health          # {"status":"UP"}
+
+# Retrieve a seeded account (expect 200 + 13-field JSON)
+curl -s http://localhost:8080/api/v1/accounts/00000000001 | python3 -m json.tool
+
+# Not found (expect 404)
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/api/v1/accounts/99999999999
+
+# OpenAPI docs (expect 200)
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/v3/api-docs
+# Swagger UI: http://localhost:8080/swagger-ui.html
+```
+
+### 9.6 Example Usage — Update (PUT)
+
+```bash
+# 1) Read current state to obtain the current `version`
+curl -s http://localhost:8080/api/v1/accounts/00000000001 | python3 -m json.tool
+
+# 2) Update editable fields (send the version you just read)
 curl -s -X PUT http://localhost:8080/api/v1/accounts/00000000001 \
-  -H "Content-Type: application/json" \
+  -H 'Content-Type: application/json' \
   -d '{
         "activeStatus": "Y",
-        "currentBalance": "195.00",
+        "currentBalance": "1000.00",
         "creditLimit": "5000.00",
-        "cashCreditLimit": "1000.00",
+        "cashCreditLimit": "2000.00",
         "openDate": "2014-11-20",
-        "expirationDate": "2025-11-20",
-        "reissueDate": "2022-11-20",
+        "expirationDate": "2027-11-20",
+        "reissueDate": "2024-11-20",
         "currentCycleCredit": "0.00",
         "currentCycleDebit": "0.00",
         "addressZip": "A000000000",
         "version": 0
-      }'
-# → 200 OK, version increments to 1. Re-submitting version 0 → 409 Conflict.
+      }' | python3 -m json.tool
+# Success -> 200 with incremented version; stale version -> 409;
+# invalid field/date -> 400. Note: accountId & groupId are NOT accepted in the body.
 ```
 
-### 9.8 Troubleshooting
+### 9.7 Troubleshooting
 
 | Symptom | Likely Cause | Resolution |
 |---------|--------------|------------|
-| `relation "accounts" does not exist` | Flyway did not run / wrong DB | Confirm datasource points at the target DB; check startup log for Flyway `V1`/`V2` |
-| Startup fails with schema-validation error | Hibernate `ddl-auto=validate` detected drift | Ensure Flyway migrations applied; do not hand-edit the schema |
-| Integration tests error: cannot connect to Docker | Docker daemon not running | Start Docker; ITs use Testcontainers (`postgres:17-alpine`) |
-| Container exits immediately on `docker` profile | Datasource env vars unset (fail-fast by design) | Provide `SPRING_DATASOURCE_URL/USERNAME/PASSWORD` |
-| `GET /api/v1/accounts/00000000000` → 404/400 | All-zeros id rejected by CHECK / not seeded | Use a valid seeded id, e.g. `00000000001` |
-| `PUT` returns 409 unexpectedly | Stale `version` in request body | Re-`GET` the account and resubmit with the current `version` |
+| App exits at startup with a Flyway/schema validation error | Entity ↔ migration drift (`ddl-auto=validate`) | Fix or add a Flyway migration so the DB schema matches the entity; never let Hibernate own the schema |
+| Startup fails within ~3 s with a connection error | PostgreSQL not reachable (HikariCP `connection-timeout=3000ms`) | Ensure `carddemo-postgres` is running and `SPRING_DATASOURCE_URL` is correct |
+| `mvn verify` fails at the integration phase | Docker daemon not available for Testcontainers | Start Docker; re-run `mvn -B verify` (image `postgres:17-alpine`) |
+| `PUT` returns 409 | Stale `version` (record changed by another writer) | Re-read the account, resubmit with the current `version` |
+| `PUT` returns 400 for a valid-looking date | Strict date rule (e.g., `2023-02-29`, or year outside 1900–2099) | Send a valid calendar date within the allowed year window |
+| Wrong Java version at build | `JAVA_HOME` points to non-17 JDK | `export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64` |
 
 ---
 
 ## 10. Appendices
 
-### Appendix A — Command Reference
+### A. Command Reference
 
-| Command | Purpose |
+| Purpose | Command |
 |---------|---------|
-| `source /etc/profile.d/java_home.sh` | Put Java 17 on PATH (container) |
-| `mvn -o -B -ntp validate` | Offline dependency/validation check |
-| `mvn -o -B -ntp clean compile` | Compile main sources |
-| `mvn -B -ntp clean verify` | Compile + 159 unit + 21 integration tests (Docker required) |
-| `mvn -B -ntp package` | Build executable jar |
-| `java -jar target/account-service-0.0.1-SNAPSHOT.jar` | Run the service |
-| `mvn spring-boot:run` | Run via Maven |
-| `docker build -t account-service:local .` | Build container image |
+| Compile | `mvn -B clean compile` |
+| Unit + slice tests (no Docker) | `mvn -B test` |
+| Full verify (Docker) | `mvn -B clean verify` |
+| Build jar | `mvn -B clean package` |
+| Run jar | `java -jar target/account-service-0.0.1-SNAPSHOT.jar` |
+| Build image | `docker build -t account-service:local ./account-service` |
+| Local DB | `docker run -d --name carddemo-postgres -e POSTGRES_DB=carddemo -e POSTGRES_USER=carddemo -e POSTGRES_PASSWORD=carddemo -p 5432:5432 postgres:17-alpine` |
+| Health check | `curl -s http://localhost:8080/actuator/health` |
 
-### Appendix B — Port Reference
+### B. Port Reference
 
 | Port | Service | Notes |
 |------|---------|-------|
-| 8080 | HTTP (REST API, actuator, Swagger UI) | `EXPOSE 8080` in Dockerfile |
-| 5432 | PostgreSQL | Datasource target (local or RDS) |
+| 8080 | account-service HTTP | `server.port` (override `SERVER_PORT`); Docker `EXPOSE 8080` |
+| 5432 | PostgreSQL | Local dev DB / RDS target |
 
-### Appendix C — Key File Locations
+### C. Key File Locations
 
-| Path | Role |
-|------|------|
-| `account-service/pom.xml` | Maven module (parent 3.5.16, Java 17, CVE overrides) |
+| Path | Purpose |
+|------|---------|
+| `account-service/pom.xml` | Maven build (Spring Boot 3.5.16 parent, Java 17) |
 | `account-service/Dockerfile` | Multi-stage build → `eclipse-temurin:17-jre` |
-| `.../domain/Account.java` | `@Entity` (12 fields + `@Version`) |
-| `.../repository/AccountRepository.java` | `JpaRepository<Account, String>` |
-| `.../service/AccountService.java` | `@Transactional` read/validate/update |
-| `.../service/AccountValidator.java` | Legacy edit-rule parity |
-| `.../controller/AccountController.java` | `GET`/`PUT` endpoints |
-| `.../mapper/AccountMapper.java` | Entity↔DTO + currency/date formatting |
-| `.../dto/AccountResponse.java`, `AccountUpdateRequest.java` | Read model / editable-fields DTO |
-| `.../exception/GlobalExceptionHandler.java`, `ApiError.java` | Centralized 400/404/409 handling |
-| `.../resources/db/migration/V1__create_accounts_table.sql` | Table DDL + CHECK |
-| `.../resources/db/migration/V2__seed_accounts.sql` | 50-row seed (zoned-decimal decode) |
-| `.../resources/application.yml` (+ `-docker.yml`, `-test.yml`) | Configuration profiles |
-| `account-service/README.md` | Module build/run/API docs (451 lines) |
+| `.../domain/Account.java` | `@Entity` (13 columns + `@Version`) |
+| `.../service/AccountService.java` | Read/validate/update + optimistic locking |
+| `.../service/AccountValidator.java` | Y/N, money, strict date rules |
+| `.../controller/AccountController.java` | `GET`/`PUT` `/api/v1/accounts/{accountId}` |
+| `.../exception/GlobalExceptionHandler.java` | 400 / 404 / 409 mapping |
+| `.../resources/application.yml` | Datasource, JPA, Flyway, actuator |
+| `.../resources/db/migration/V1__create_accounts_table.sql` | Schema DDL + `CHECK` |
+| `.../resources/db/migration/V2__seed_accounts.sql` | 50-row seed |
 
-### Appendix D — Technology Versions
+### D. Technology Versions
 
 | Component | Version |
 |-----------|---------|
-| Java (OpenJDK) | 17.0.19 |
-| Apache Maven | 3.9.9 |
+| Java (JDK) | 17 |
 | Spring Boot (parent) | 3.5.16 |
-| springdoc-openapi (webmvc-ui/api/common) | 2.8.17 |
-| Flyway (core + database-postgresql) | 11.7.2 |
-| Testcontainers (`org.testcontainers:postgresql`) | 1.21.4 |
-| Testcontainers DB image | `postgres:17-alpine` |
-| jackson-databind (override) | 2.21.5 |
-| tomcat-embed-core (override) | 10.1.57 |
-| logback-classic (override) | 1.5.38 |
-| postgresql JDBC (override) | 42.7.12 |
-| commons-lang3 / commons-compress / swagger-ui (overrides) | 3.18.0 / 1.27.1 / 5.32.8 |
-| Docker builder / runtime images | `maven:3.9-eclipse-temurin-17` / `eclipse-temurin:17-jre` |
+| springdoc-openapi | 2.8.17 |
+| Flyway | 11.7.2 (`flyway-core` + `flyway-database-postgresql`) |
+| PostgreSQL JDBC | 42.7.12 |
+| Testcontainers | 1.21.4 (`postgres:17-alpine`) |
+| Security overrides | tomcat 10.1.57 · jackson-databind 2.21.5 · logback-core 1.5.38 · commons-compress 1.27.1 · commons-lang3 3.18.0 · swagger-ui 5.32.8 |
 
-### Appendix E — Environment Variable Reference
+### E. Environment Variable Reference
 
-| Variable | Default (local) | Required in `docker` profile |
-|----------|-----------------|------------------------------|
+| Variable | Default (default profile) | Required (docker profile) |
+|----------|---------------------------|---------------------------|
 | `SPRING_DATASOURCE_URL` | `jdbc:postgresql://localhost:5432/carddemo` | Yes (no default) |
 | `SPRING_DATASOURCE_USERNAME` | `carddemo` | Yes (no default) |
 | `SPRING_DATASOURCE_PASSWORD` | `carddemo` | Yes (no default) |
-| `SPRING_PROFILES_ACTIVE` | `default` | Set to `docker` in container |
+| `SPRING_PROFILES_ACTIVE` | (default) | set to `docker` in containers |
+| `SERVER_PORT` | `8080` | optional |
 
-### Appendix F — Developer Tools Guide
+### F. Developer Tools Guide
 
-| Tool | Endpoint / Usage |
-|------|------------------|
-| Actuator health | `GET /actuator/health` (+ `/readiness`, `/liveness`) |
-| OpenAPI spec | `GET /v3/api-docs` (OpenAPI 3.0.1) |
-| Swagger UI | `GET /swagger-ui/index.html` |
-| Surefire reports | `account-service/target/surefire-reports/` (unit) |
-| Failsafe reports | `account-service/target/failsafe-reports/` (integration) |
+- **Swagger UI:** `http://localhost:8080/swagger-ui.html` — interactive endpoint exploration.
+- **OpenAPI JSON:** `http://localhost:8080/v3/api-docs`.
+- **Actuator:** `http://localhost:8080/actuator/health` (only the health endpoint is exposed; readiness group includes DB).
+- **Testcontainers:** integration/performance tests spin up disposable `postgres:17-alpine`; requires a running Docker daemon.
 
-### Appendix G — Glossary
+### G. Glossary
 
-| Term | Definition |
-|------|------------|
-| VSAM | Virtual Storage Access Method — IBM mainframe file storage; source `ACCTFILE` was a KSDS |
-| KSDS | Key-Sequenced Data Set — VSAM organization keyed here on the 11-digit account id |
-| COBOL | Common Business-Oriented Language — the legacy implementation language |
-| CICS | Customer Information Control System — mainframe transaction monitor hosting `CAVW`/`CAUP` |
-| BMS | Basic Mapping Support — 3270 screen definitions (`COACTVW.bms`, `COACTUP.bms`), now retired |
-| COMMAREA | CICS communication area carrying pseudo-conversational state (discarded for stateless HTTP) |
-| Copybook | Reusable COBOL data-layout include (e.g., `CVACT01Y.cpy` = 300-byte account record) |
-| Zoned decimal (overpunch) | `USAGE DISPLAY` numeric encoding where the sign is punched onto the trailing byte; decoded by the V2 seed loader |
-| Optimistic locking / `@Version` | Concurrency strategy detecting stale writes via a version column → HTTP 409 |
-| Flyway | Versioned database migration tool applying `V1`/`V2` at startup |
-| Testcontainers | Library launching disposable Docker containers (PostgreSQL) for integration tests |
-| DTO | Data Transfer Object — API boundary type distinct from the persisted entity |
+| Term | Meaning |
+|------|---------|
+| CAVW / CAUP | Legacy CICS transaction ids for account view / update |
+| `COACTVWC` / `COACTUPC` | Legacy COBOL view / update programs (behavioral source) |
+| `ACCTFILE` | Legacy 300-byte VSAM KSDS account record (`CVACT01Y.cpy`) |
+| Overpunch | Zoned-decimal sign encoding on the trailing byte (decoded in `V2`) |
+| Optimistic locking | `@Version`-based concurrency; stale version → HTTP 409 |
+| Path-to-production | Deployment/ops activities beyond application code (the 42 remaining hours) |
+| Minimal Change Clause | Constraint that the legacy `app/` tree is not modified |
+
+---
+
+*Numerical integrity confirmed: §2.1 (158) + §2.2 (42) = 200 = Total (§1.2). Remaining = 42 across §1.2, §2.2, §7. Completion = 158 ÷ 200 = 79.0% across §1.2, §7, §8. All 183 tests originate from Blitzy's autonomous validation logs. Colors: Completed `#5B39F3`, Remaining `#FFFFFF`.*
