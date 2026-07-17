@@ -85,11 +85,21 @@ class CardXrefRepositoryTest {
      * Shared PostgreSQL&nbsp;16 container for the whole test class. {@link Container} on a
      * {@code static} field starts it once for all methods; {@link ServiceConnection}
      * publishes its JDBC coordinates to Spring Boot's auto-configured datasource.
+     *
+     * <p>The image is pinned by its <strong>immutable content digest</strong> instead of
+     * the floating {@code postgres:16-alpine} tag, so every run uses one byte-identical
+     * image and cannot silently drift across patch or base-OS updates (reproducible build,
+     * AAP&nbsp;0.9.1). The pinned digest resolves to <strong>PostgreSQL&nbsp;16.14-alpine</strong>
+     * (the {@code postgres:16.14-alpine} tag points to this same manifest digest),
+     * preserving the PostgreSQL&nbsp;16 integration contract (AAP&nbsp;0.9.2). Testcontainers
+     * parses the {@code postgres@sha256:...} form with the repository resolving to
+     * {@code postgres}, so the {@link PostgreSQLContainer} compatibility check is satisfied.</p>
      */
     @Container
     @ServiceConnection
     static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>(DockerImageName.parse("postgres:16-alpine"));
+            new PostgreSQLContainer<>(DockerImageName.parse(
+                    "postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"));
 
     /** Repository under test. */
     private final CardXrefRepository repository;
