@@ -263,6 +263,17 @@
             <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Spring Boot <-> Testcontainers bridge: supplies @ServiceConnection so a
+             @Container PostgreSQL instance auto-configures the test datasource
+             (JDBC url/username/password injected dynamically at runtime). This keeps
+             integration tests free of @DynamicPropertySource wiring and of any
+             hardcoded credentials (AAP 0.8.1 / 0.9.3). Version BOM-managed by the
+             spring-boot-starter-parent. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- Testcontainers: real PostgreSQL 16 for integration tests. -->
         <dependency>
             <groupId>org.testcontainers</groupId>

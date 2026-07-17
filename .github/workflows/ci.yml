@@ -1,0 +1,71 @@
+# CardDemo CI - GitHub Actions workflow (JCL-scheduling equivalent; AAP 0.4.1, 0.6).
+# Replaces the z/OS JCL scheduler that orchestrated the CardDemo build/batch lifecycle.
+# Quality gates (JaCoCo >= 80% line coverage, OWASP dependency-check on high/critical
+# CVEs, zero-warning compile) live in pom.xml and are inherited by running `verify`.
+name: CardDemo CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+  # Nightly run represents the recurring JCL batch-job scheduling that previously ran on
+  # the mainframe: POSTTRAN(CBTRN02C), INTCALC(CBACT04C), CREASTMT(CBSTM03A), COMBTRAN(SORT).
+  schedule:
+    - cron: '0 3 * * *'
+
+# Least-privilege token: the build only needs to read repository contents (AAP 0.8).
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # ubuntu-latest ships a running Docker daemon required by the Testcontainers
+    # PostgreSQL 16 integration tests (no extra Docker/service setup needed).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Make Maven wrapper executable
+        run: chmod +x mvnw
+
+      - name: Build and verify (CI == local reproducible build)
+        run: ./mvnw -B clean verify
+        env:
+          # Optional: speeds up the OWASP NVD data feed if the secret is set; harmless if unset.
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+
+      - name: Upload JaCoCo coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+          if-no-files-found: ignore
+
+      - name: Upload OWASP dependency-check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: target/dependency-check-report.html
+          if-no-files-found: ignore
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+          if-no-files-found: ignore

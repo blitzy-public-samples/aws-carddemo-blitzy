@@ -1,0 +1,2 @@
+acct_id,active_status,curr_bal,credit_limit,cash_credit_limit,open_date,expiration_date,reissue_date,curr_cyc_credit,curr_cyc_debit,addr_zip,group_id
+90000000010,Y,0.00,5000.00,2000.00,2020-01-01,2099-12-31,2020-01-01,0.00,0.00,75010,DEFAULT
