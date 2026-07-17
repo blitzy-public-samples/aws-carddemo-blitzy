@@ -1,0 +1,1934 @@
+# CardDemo REST API - OpenAPI 3.0.3 contract
+# Hand-authored static artifact (see info.description).
+# Faithful re-expression of the 17 legacy CICS/BMS online screens; no feature expansion.
+openapi: 3.0.3
+info:
+  title: CardDemo REST API
+  version: 1.0.0
+  description: |-
+    REST re-expression of the 17 legacy AWS CardDemo BMS/CICS 3270 online screens (credit-card account management). This is a faithful, no-feature-expansion migration of the COBOL/CICS online programs to JSON request/response contracts: it is NOT a web UI, NOT a terminal emulator, and NOT a 3270 renderer.
+
+    Key conventions:
+    - Monetary values are decimal strings (BigDecimal scale 2), never floating point, mirroring COBOL COMP-3 / PIC S9(n)V99.
+    - Fixed-width numeric identifiers (account, card, user, transaction) are strings to preserve width and leading zeros.
+    - Terminal PF-key semantics are modeled as an explicit PfKeyAction enum.
+    - Every schema property documents its source BMS field and PIC clause; every operation cites its CICS transaction id and program for bidirectional traceability.
+
+    This static, checked-in contract complements the live springdoc-generated specification at /v3/api-docs (Swagger UI at /swagger-ui.html).
+
+    Derived from AWS CardDemo (Copyright Amazon.com, Inc. or its affiliates).
+  contact:
+    name: CardDemo Migration Team
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+- url: http://localhost:8080
+  description: Local development server
+- url: /
+  description: Relative to the serving host
+tags:
+- name: Signon
+  description: User signon. CC00 / COSGN00C.
+- name: Main Menu
+  description: Main menu routing. CM00 / COMEN01C.
+- name: Admin Menu
+  description: Admin menu routing (role A). CA00 / COADM01C.
+- name: Account View
+  description: Account inquiry. CAVW / COACTVWC.
+- name: Account Update
+  description: Account update. CAUP / COACTUPC.
+- name: Card List
+  description: Card list browse. CCLI / COCRDLIC.
+- name: Card View
+  description: Card detail inquiry. CCDL / COCRDSLC.
+- name: Card Update
+  description: Card update. CCUP / COCRDUPC.
+- name: Transaction List
+  description: Transaction list browse. CT00 / COTRN00C.
+- name: Transaction View
+  description: Transaction detail inquiry. CT01 / COTRN01C.
+- name: Transaction Add
+  description: Add transaction. CT02 / COTRN02C.
+- name: Transaction Report
+  description: Request transaction report. CR00 / CORPT00C.
+- name: Bill Payment
+  description: Bill payment. CB00 / COBIL00C.
+- name: User List
+  description: User list browse (role A). CU00 / COUSR00C.
+- name: User Add
+  description: Add user (role A). CU01 / COUSR01C.
+- name: User Update
+  description: Update user (role A). CU02 / COUSR02C.
+- name: User Delete
+  description: Delete user (role A). CU03 / COUSR03C.
+security:
+- basicAuth: []
+paths:
+  /api/v1/signon:
+    post:
+      tags:
+      - Signon
+      operationId: signon
+      summary: Authenticate a user (signon)
+      description: 'Authenticates a user and returns the routing target menu. CC00 / COSGN00C. Public
+        endpoint: establishes the authenticated session against the user_security table.'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignonRequest'
+      responses:
+        '200':
+          description: Authentication succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignonResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/menu/main:
+    get:
+      tags:
+      - Main Menu
+      operationId: getMainMenu
+      summary: Retrieve the main menu
+      description: Returns the main menu options. CM00 / COMEN01C.
+      responses:
+        '200':
+          description: Main menu returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MainMenuResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+      - Main Menu
+      operationId: submitMainMenu
+      summary: Submit a main menu selection
+      description: Submits a main menu option and returns the routing target. CM00 / COMEN01C.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MainMenuRequest'
+      responses:
+        '200':
+          description: Menu selection processed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MainMenuResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/menu/admin:
+    get:
+      tags:
+      - Admin Menu
+      operationId: getAdminMenu
+      summary: Retrieve the admin menu
+      description: Returns the admin menu options. CA00 / COADM01C. Requires role A (Admin).
+      responses:
+        '200':
+          description: Admin menu returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminMenuResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+      - Admin Menu
+      operationId: submitAdminMenu
+      summary: Submit an admin menu selection
+      description: Submits an admin menu option and returns the routing target. CA00 / COADM01C. Requires
+        role A (Admin).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminMenuRequest'
+      responses:
+        '200':
+          description: Menu selection processed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminMenuResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/accounts/{accountId}:
+    get:
+      tags:
+      - Account View
+      operationId: getAccount
+      summary: View account details
+      description: Returns account and associated customer detail. CAVW / COACTVWC.
+      parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      responses:
+        '200':
+          description: Account found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountViewResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags:
+      - Account Update
+      operationId: updateAccount
+      summary: Update account details
+      description: Validates and updates account/customer detail. CAUP / COACTUPC.
+      parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountUpdateRequest'
+      responses:
+        '200':
+          description: Account updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountUpdateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/cards:
+    get:
+      tags:
+      - Card List
+      operationId: listCards
+      summary: List cards (paged)
+      description: Returns a paged list of cards, optionally filtered by account or card number. CCLI
+        / COCRDLIC.
+      parameters:
+      - name: accountId
+        in: query
+        required: false
+        description: Optional account-id filter (BMS ACCTSID).
+        schema:
+          $ref: '#/components/schemas/AccountId'
+      - name: cardNumber
+        in: query
+        required: false
+        description: Optional card-number filter (BMS CARDSID).
+        schema:
+          $ref: '#/components/schemas/CardNumber'
+      - name: page
+        in: query
+        required: false
+        description: Requested page number (BMS PAGENO, PIC X(3)).
+        schema:
+          type: string
+          maxLength: 3
+          pattern: ^[0-9]{1,3}$
+      responses:
+        '200':
+          description: Card page returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/cards/{cardNumber}:
+    get:
+      tags:
+      - Card View
+      operationId: getCard
+      summary: View card details
+      description: Returns card detail. CCDL / COCRDSLC.
+      parameters:
+      - $ref: '#/components/parameters/CardNumberPath'
+      - name: accountId
+        in: query
+        required: false
+        description: Optional account-id context (BMS ACCTSID).
+        schema:
+          $ref: '#/components/schemas/AccountId'
+      responses:
+        '200':
+          description: Card found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardViewResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags:
+      - Card Update
+      operationId: updateCard
+      summary: Update card details
+      description: Validates and updates card detail. CCUP / COCRDUPC.
+      parameters:
+      - $ref: '#/components/parameters/CardNumberPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CardUpdateRequest'
+      responses:
+        '200':
+          description: Card updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardUpdateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/transactions:
+    get:
+      tags:
+      - Transaction List
+      operationId: listTransactions
+      summary: List transactions (paged)
+      description: Returns a paged list of transactions, optionally starting from a given transaction
+        id. CT00 / COTRN00C.
+      parameters:
+      - name: transactionId
+        in: query
+        required: false
+        description: Optional start-from transaction id (BMS TRNIDIN).
+        schema:
+          $ref: '#/components/schemas/TransactionId'
+      - name: page
+        in: query
+        required: false
+        description: Requested page number (BMS PAGENUM, PIC X(8)).
+        schema:
+          type: string
+          maxLength: 8
+          pattern: ^[0-9]{1,8}$
+      responses:
+        '200':
+          description: Transaction page returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+      - Transaction Add
+      operationId: addTransaction
+      summary: Add a transaction
+      description: Adds a transaction. The transaction id is server-generated (increment-from-max). CT02
+        / COTRN02C.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionAddRequest'
+      responses:
+        '201':
+          description: Transaction created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionAddResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/transactions/{transactionId}:
+    get:
+      tags:
+      - Transaction View
+      operationId: getTransaction
+      summary: View transaction details
+      description: Returns transaction detail. CT01 / COTRN01C.
+      parameters:
+      - $ref: '#/components/parameters/TransactionIdPath'
+      responses:
+        '200':
+          description: Transaction found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionViewResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/reports/transactions:
+    post:
+      tags:
+      - Transaction Report
+      operationId: requestTransactionReport
+      summary: Request a transaction report
+      description: Requests generation of a transaction report (monthly, yearly, or a custom date range).
+        The report is produced by the batch layer. CR00 / CORPT00C.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionReportRequest'
+      responses:
+        '200':
+          description: Report request accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionReportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/v1/accounts/{accountId}/bill-payment:
+    post:
+      tags:
+      - Bill Payment
+      operationId: payBill
+      summary: Pay the full account balance
+      description: Submits a full-balance bill payment for the account. CB00 / COBIL00C.
+      parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillPaymentRequest'
+      responses:
+        '200':
+          description: Bill payment processed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillPaymentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/users:
+    get:
+      tags:
+      - User List
+      operationId: listUsers
+      summary: List users (paged)
+      description: Returns a paged list of users, optionally starting from a given user id. CU00 / COUSR00C.
+        Requires role A (Admin).
+      parameters:
+      - name: userId
+        in: query
+        required: false
+        description: Optional start-from user id (BMS USRIDIN).
+        schema:
+          $ref: '#/components/schemas/UserId'
+      - name: page
+        in: query
+        required: false
+        description: Requested page number (BMS PAGENUM, PIC X(8)).
+        schema:
+          type: string
+          maxLength: 8
+          pattern: ^[0-9]{1,8}$
+      responses:
+        '200':
+          description: User page returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+      - User Add
+      operationId: addUser
+      summary: Add a user
+      description: Creates a new user. CU01 / COUSR01C. Requires role A (Admin).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserAddRequest'
+      responses:
+        '201':
+          description: User created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserAddResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/v1/users/{userId}:
+    get:
+      tags:
+      - User Update
+      operationId: getUser
+      summary: Fetch a user for update
+      description: Returns a user's detail (without password) to prefill the update form. CU02 / COUSR02C.
+        Requires role A (Admin).
+      parameters:
+      - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '200':
+          description: User found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags:
+      - User Update
+      operationId: updateUser
+      summary: Update a user
+      description: Updates a user. CU02 / COUSR02C. Requires role A (Admin).
+      parameters:
+      - $ref: '#/components/parameters/UserIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
+      responses:
+        '200':
+          description: User updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserUpdateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags:
+      - User Delete
+      operationId: deleteUser
+      summary: Delete a user
+      description: Deletes a user and returns the deleted user's display fields. CU03 / COUSR03C. Requires
+        role A (Admin).
+      parameters:
+      - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '200':
+          description: User deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDeleteResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: HTTP Basic authentication handled by Spring Security against the user_security table
+        (role A=Admin, U=User).
+  parameters:
+    AccountIdPath:
+      name: accountId
+      in: path
+      required: true
+      description: 11-digit account identifier (BMS ACCTSID/ACTIDIN).
+      schema:
+        $ref: '#/components/schemas/AccountId'
+    CardNumberPath:
+      name: cardNumber
+      in: path
+      required: true
+      description: 16-digit card number (BMS CARDSID/CRDNUM).
+      schema:
+        $ref: '#/components/schemas/CardNumber'
+    TransactionIdPath:
+      name: transactionId
+      in: path
+      required: true
+      description: 16-character transaction identifier (BMS TRNID).
+      schema:
+        $ref: '#/components/schemas/TransactionId'
+    UserIdPath:
+      name: userId
+      in: path
+      required: true
+      description: 8-character user identifier (BMS USERID/USRIDIN).
+      schema:
+        $ref: '#/components/schemas/UserId'
+  schemas:
+    ScreenMetadata:
+      type: object
+      description: Common BMS screen header/chrome fields (display metadata) present on every CardDemo
+        3270 screen. All fields are output-only.
+      properties:
+        transactionName:
+          type: string
+          maxLength: 4
+          readOnly: true
+          description: CICS transaction identifier shown in the screen header. Maps BMS field TRNNAME
+            (PIC X(4)) of mapset common.
+          example: CC00
+        title01:
+          type: string
+          maxLength: 40
+          readOnly: true
+          description: First screen title line. Maps BMS field TITLE01 (PIC X(40)) of mapset common.
+        title02:
+          type: string
+          maxLength: 40
+          readOnly: true
+          description: Second screen title line. Maps BMS field TITLE02 (PIC X(40)) of mapset common.
+        currentDate:
+          type: string
+          maxLength: 8
+          readOnly: true
+          description: Current date as displayed by the screen (MM/DD/YY). Maps BMS field CURDATE (PIC
+            X(8)) of mapset common.
+        currentTime:
+          type: string
+          maxLength: 9
+          readOnly: true
+          description: Current time as displayed by the screen (HH:MM:SS). Maps BMS field CURTIME (PIC
+            X(9)) of mapset common.
+        programName:
+          type: string
+          maxLength: 8
+          readOnly: true
+          description: Name of the COBOL program servicing the screen. Maps BMS field PGMNAME (PIC X(8))
+            of mapset common.
+          example: COSGN00C
+    MessageArea:
+      type: object
+      description: Message area carrying mapped FILE STATUS / CICS RESP / validation messages surfaced
+        by GlobalExceptionHandler. Output-only.
+      properties:
+        errorMessage:
+          type: string
+          maxLength: 80
+          readOnly: true
+          description: Error message text (X(78) on most screens, X(80) on card screens; widest length
+            used). Maps BMS field ERRMSG (PIC X(80)) of mapset common.
+        infoMessage:
+          type: string
+          maxLength: 45
+          readOnly: true
+          description: Informational message text (X(45)/X(40) depending on screen; widest length used).
+            Maps BMS field INFOMSG (PIC X(45)) of mapset common.
+    PfKeyAction:
+      type: string
+      enum:
+      - ENTER
+      - PF3
+      - PF4
+      - PF5
+      - PF7
+      - PF8
+      - PF12
+      description: Explicit re-expression of 3270 PF-key semantics (per legacy/cpy/CSSTRPFY.cpy). ENTER=submit/primary
+        action; PF3=back/exit; PF4=clear; PF5=save/confirm; PF7=page backward; PF8=page forward; PF12=cancel.
+      example: ENTER
+    UserType:
+      type: string
+      enum:
+      - A
+      - U
+      maxLength: 1
+      description: User role. A=Admin, U=User (from COMMAREA condition names in copybook COCOM01Y).
+      example: A
+    ConfirmFlag:
+      type: string
+      enum:
+      - Y
+      - N
+      maxLength: 1
+      description: Confirmation flag. Y=yes/confirm, N=no.
+      example: Y
+    AccountId:
+      type: string
+      maxLength: 11
+      pattern: ^[0-9]{1,11}$
+      description: 11-digit account identifier. Modeled as a numeric string to preserve fixed width and
+        leading zeros. Maps BMS fields ACCTSID/ACTIDIN (PIC 9(11)/X(11)).
+      example: '00000000011'
+    CardNumber:
+      type: string
+      maxLength: 16
+      pattern: ^[0-9]{1,16}$
+      description: 16-digit card number. Modeled as a numeric string to preserve fixed width and leading
+        zeros. Maps BMS fields CARDSID/CRDNUM/CARDNIN (PIC X(16)).
+      example: '4111111111111111'
+    TransactionId:
+      type: string
+      maxLength: 16
+      description: 16-character transaction identifier. Maps BMS fields TRNID/TRNIDIN (PIC X(16)).
+      example: '0000000000000001'
+    UserId:
+      type: string
+      maxLength: 8
+      description: 8-character user identifier. Maps BMS fields USERID/USRIDIN/USRID (PIC X(8)).
+      example: ADMIN001
+    MoneyAmount:
+      type: string
+      pattern: ^-?[0-9]+\.[0-9]{2}$
+      description: Monetary amount as a decimal string; BigDecimal scale 2; never floating point. Mirrors
+        COBOL COMP-3 / PIC S9(n)V99.
+      example: '-100.00'
+    ErrorResponse:
+      type: object
+      description: Generic problem payload emitted by GlobalExceptionHandler for mapped FILE STATUS /
+        CICS RESP / validation failures.
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          readOnly: true
+          description: Instant the error was produced.
+        status:
+          type: integer
+          format: int32
+          readOnly: true
+          description: HTTP status code.
+          example: 404
+        error:
+          type: string
+          readOnly: true
+          description: HTTP reason phrase.
+          example: Not Found
+        message:
+          type: string
+          readOnly: true
+          description: Human-readable error detail.
+        path:
+          type: string
+          readOnly: true
+          description: Request path that produced the error.
+    MenuOption:
+      type: object
+      description: A single selectable menu option line.
+      properties:
+        optionNumber:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          readOnly: true
+          description: Derived 1-based option number (position of the option on the menu; not a distinct
+            BMS field).
+          example: '01'
+        optionText:
+          type: string
+          maxLength: 40
+          readOnly: true
+          description: Menu option display text. Maps BMS field OPTN00x (PIC X(40)) of mapset COMEN01/COADM01.
+    SignonRequest:
+      type: object
+      description: Signon request. CC00 / COSGN00C.
+      properties:
+        userId:
+          allOf:
+          - $ref: '#/components/schemas/UserId'
+          description: User identifier. Maps BMS field USERID (PIC X(8)) of mapset COSGN00.
+          example: ADMIN001
+        password:
+          type: string
+          maxLength: 8
+          writeOnly: true
+          description: User password; accepted on signon only, never returned. Maps BMS field PASSWD (PIC
+            X(8)) of mapset COSGN00.
+          example: '********'
+      required:
+      - userId
+      - password
+    SignonResponse:
+      description: Signon result including the routing target menu. CC00 / COSGN00C.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - type: object
+        properties:
+          userType:
+            allOf:
+            - $ref: '#/components/schemas/UserType'
+            readOnly: true
+            description: Derived authenticated user role (from user_security lookup; not a direct BMS
+              field).
+          nextTransaction:
+            type: string
+            maxLength: 4
+            readOnly: true
+            description: Derived routing target transaction id set by COSGN00C (CM00 for standard users,
+              CA00 for admins); not a direct BMS field.
+            example: CM00
+    MainMenuResponse:
+      description: Main menu contents and (after POST) the selected routing target. CM00 / COMEN01C.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - type: object
+        properties:
+          options:
+            type: array
+            maxItems: 12
+            readOnly: true
+            description: Menu option lines OPTN001..OPTN012 (PIC X(40) each).
+            items:
+              $ref: '#/components/schemas/MenuOption'
+          selectedTransaction:
+            type: string
+            maxLength: 4
+            readOnly: true
+            description: Derived routing target for the chosen option (set by COMEN01C; not a direct BMS
+              field).
+            example: CAVW
+    MainMenuRequest:
+      type: object
+      description: Main menu selection. CM00 / COMEN01C.
+      properties:
+        option:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Selected menu option number. Maps BMS field OPTION (PIC X(2)) of mapset COMEN01.
+          example: '01'
+        pfKey:
+          allOf:
+          - $ref: '#/components/schemas/PfKeyAction'
+          description: 'Terminal PF-key action submitted with this request (re-expresses 3270 PF-key semantics;
+            not a rendered terminal). Supported on this screen: ENTER=Continue, PF3=Exit.'
+          example: ENTER
+    AdminMenuResponse:
+      description: Admin menu contents and (after POST) the selected routing target. CA00 / COADM01C.
+        Requires role A (Admin).
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - type: object
+        properties:
+          options:
+            type: array
+            maxItems: 12
+            readOnly: true
+            description: Admin menu option lines OPTN001..OPTN012 (PIC X(40) each).
+            items:
+              $ref: '#/components/schemas/MenuOption'
+          selectedTransaction:
+            type: string
+            maxLength: 4
+            readOnly: true
+            description: Derived routing target for the chosen option (set by COADM01C; not a direct BMS
+              field).
+            example: CU00
+    AdminMenuRequest:
+      type: object
+      description: Admin menu selection. CA00 / COADM01C. Requires role A (Admin).
+      properties:
+        option:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Selected menu option number. Maps BMS field OPTION (PIC X(2)) of mapset COADM01.
+          example: '01'
+        pfKey:
+          allOf:
+          - $ref: '#/components/schemas/PfKeyAction'
+          description: 'Terminal PF-key action submitted with this request (re-expresses 3270 PF-key semantics;
+            not a rendered terminal). Supported on this screen: ENTER=Continue, PF3=Exit.'
+          example: ENTER
+    AccountDetail:
+      type: object
+      description: Account and associated customer detail. Output-only projection derived from mapset
+        COACTVW.
+      properties:
+        accountId:
+          allOf:
+          - $ref: '#/components/schemas/AccountId'
+          readOnly: true
+          description: Account identifier. Maps BMS field ACCTSID (PIC 9(11)) of mapset COACTVW.
+          example: '00000000011'
+        accountStatus:
+          type: string
+          maxLength: 1
+          readOnly: true
+          description: Account active status flag. Maps BMS field ACSTTUS (PIC X(1)) of mapset COACTVW.
+        openDate:
+          type: string
+          format: date
+          readOnly: true
+          description: Account open date. Maps BMS field ADTOPEN (PIC X(10)) of mapset COACTVW.
+        creditLimit:
+          allOf:
+          - $ref: '#/components/schemas/MoneyAmount'
+          readOnly: true
+          description: Credit limit. Maps BMS field ACRDLIM (PIC X(15)) of mapset COACTVW. Monetary amount,
+            BigDecimal scale 2; never floating point.
+        expirationDate:
+          type: string
+          format: date
+          readOnly: true
+          description: Account expiration date. Maps BMS field AEXPDT (PIC X(10)) of mapset COACTVW.
+        cashLimit:
+          allOf:
+          - $ref: '#/components/schemas/MoneyAmount'
+          readOnly: true
+          description: Cash credit limit. Maps BMS field ACSHLIM (PIC X(15)) of mapset COACTVW. Monetary
+            amount, BigDecimal scale 2; never floating point.
+        reissueDate:
+          type: string
+          format: date
+          readOnly: true
+          description: Card reissue date. Maps BMS field AREISDT (PIC X(10)) of mapset COACTVW.
+        currentBalance:
+          allOf:
+          - $ref: '#/components/schemas/MoneyAmount'
+          readOnly: true
+          description: Current account balance. Maps BMS field ACURBAL (PIC X(15)) of mapset COACTVW.
+            Monetary amount, BigDecimal scale 2; never floating point.
+        currentCycleCredit:
+          allOf:
+          - $ref: '#/components/schemas/MoneyAmount'
+          readOnly: true
+          description: Current cycle credit total. Maps BMS field ACRCYCR (PIC X(15)) of mapset COACTVW.
+            Monetary amount, BigDecimal scale 2; never floating point.
+        groupId:
+          type: string
+          maxLength: 10
+          readOnly: true
+          description: Account group / disclosure group id. Maps BMS field AADDGRP (PIC X(10)) of mapset
+            COACTVW.
+        currentCycleDebit:
+          allOf:
+          - $ref: '#/components/schemas/MoneyAmount'
+          readOnly: true
+          description: Current cycle debit total. Maps BMS field ACRCYDB (PIC X(15)) of mapset COACTVW.
+            Monetary amount, BigDecimal scale 2; never floating point.
+        customerId:
+          type: string
+          maxLength: 9
+          pattern: ^[0-9]{1,9}$
+          readOnly: true
+          description: Customer identifier. Maps BMS field ACSTNUM (PIC X(9)) of mapset COACTVW.
+        ssn:
+          type: string
+          maxLength: 12
+          readOnly: true
+          description: 'Customer social security number. Maps BMS field ACSTSSN (PIC X(12)) of mapset
+            COACTVW. SENSITIVE: masked/redacted and never logged; never returned in full.'
+        dateOfBirth:
+          type: string
+          format: date
+          readOnly: true
+          description: 'Customer date of birth. Maps BMS field ACSTDOB (PIC X(10)) of mapset COACTVW.
+            SENSITIVE: masked/redacted and never logged; never returned in full.'
+        ficoScore:
+          type: string
+          maxLength: 3
+          pattern: ^[0-9]{1,3}$
+          readOnly: true
+          description: Customer FICO score. Maps BMS field ACSTFCO (PIC X(3)) of mapset COACTVW.
+        firstName:
+          type: string
+          maxLength: 25
+          readOnly: true
+          description: Customer first name. Maps BMS field ACSFNAM (PIC X(25)) of mapset COACTVW.
+        middleName:
+          type: string
+          maxLength: 25
+          readOnly: true
+          description: Customer middle name. Maps BMS field ACSMNAM (PIC X(25)) of mapset COACTVW.
+        lastName:
+          type: string
+          maxLength: 25
+          readOnly: true
+          description: Customer last name. Maps BMS field ACSLNAM (PIC X(25)) of mapset COACTVW.
+        addressLine1:
+          type: string
+          maxLength: 50
+          readOnly: true
+          description: Customer address line 1. Maps BMS field ACSADL1 (PIC X(50)) of mapset COACTVW.
+        stateCode:
+          type: string
+          maxLength: 2
+          readOnly: true
+          description: Customer state code. Maps BMS field ACSSTTE (PIC X(2)) of mapset COACTVW.
+        addressLine2:
+          type: string
+          maxLength: 50
+          readOnly: true
+          description: Customer address line 2. Maps BMS field ACSADL2 (PIC X(50)) of mapset COACTVW.
+        zipCode:
+          type: string
+          maxLength: 5
+          readOnly: true
+          description: Customer ZIP code. Maps BMS field ACSZIPC (PIC X(5)) of mapset COACTVW.
+        city:
+          type: string
+          maxLength: 50
+          readOnly: true
+          description: Customer city. Maps BMS field ACSCITY (PIC X(50)) of mapset COACTVW.
+        countryCode:
+          type: string
+          maxLength: 3
+          readOnly: true
+          description: Customer country code. Maps BMS field ACSCTRY (PIC X(3)) of mapset COACTVW.
+        phone1:
+          type: string
+          maxLength: 13
+          readOnly: true
+          description: Customer primary phone. Maps BMS field ACSPHN1 (PIC X(13)) of mapset COACTVW.
+        governmentId:
+          type: string
+          maxLength: 20
+          readOnly: true
+          description: 'Customer government-issued id. Maps BMS field ACSGOVT (PIC X(20)) of mapset COACTVW.
+            SENSITIVE: masked/redacted and never logged; never returned in full.'
+        phone2:
+          type: string
+          maxLength: 13
+          readOnly: true
+          description: Customer secondary phone. Maps BMS field ACSPHN2 (PIC X(13)) of mapset COACTVW.
+        eftAccountId:
+          type: string
+          maxLength: 10
+          readOnly: true
+          description: EFT account identifier. Maps BMS field ACSEFTC (PIC X(10)) of mapset COACTVW.
+        primaryCardHolderFlag:
+          type: string
+          maxLength: 1
+          readOnly: true
+          description: Primary card holder flag. Maps BMS field ACSPFLG (PIC X(1)) of mapset COACTVW.
+    AccountViewResponse:
+      description: Account inquiry result. CAVW / COACTVWC.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - $ref: '#/components/schemas/AccountDetail'
+    AccountUpdateRequest:
+      type: object
+      description: Account update request. CAUP / COACTUPC (largest online program; extensive edit rules).
+        BMS PF-key legend fields FKEYS (X(21)), FKEY05 (X(7)) and FKEY12 (X(10)) are display chrome and
+        are represented by the pfKey enum, not as literal fields.
+      properties:
+        accountStatus:
+          type: string
+          maxLength: 1
+          description: Account active status flag. Maps BMS field ACSTTUS (PIC X(1)) of mapset COACTUP.
+        openYear:
+          type: string
+          maxLength: 4
+          pattern: ^[0-9]{1,4}$
+          description: Account open date year (composes ISO date with month/day). Maps BMS field OPNYEAR
+            (PIC X(4)) of mapset COACTUP.
+        openMonth:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Account open date month. Maps BMS field OPNMON (PIC X(2)) of mapset COACTUP.
+        openDay:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Account open date day. Maps BMS field OPNDAY (PIC X(2)) of mapset COACTUP.
+        creditLimit:
+          allOf:
+          - $ref: '#/components/schemas/MoneyAmount'
+          description: Credit limit. Maps BMS field ACRDLIM (PIC X(15)) of mapset COACTUP. Monetary amount,
+            BigDecimal scale 2; never floating point.
+        expiryYear:
+          type: string
+          maxLength: 4
+          pattern: ^[0-9]{1,4}$
+          description: Expiration date year. Maps BMS field EXPYEAR (PIC X(4)) of mapset COACTUP.
+        expiryMonth:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Expiration date month. Maps BMS field EXPMON (PIC X(2)) of mapset COACTUP.
+        expiryDay:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Expiration date day. Maps BMS field EXPDAY (PIC X(2)) of mapset COACTUP.
+        cashLimit:
+          allOf:
+          - $ref: '#/components/schemas/MoneyAmount'
+          description: Cash credit limit. Maps BMS field ACSHLIM (PIC X(15)) of mapset COACTUP. Monetary
+            amount, BigDecimal scale 2; never floating point.
+        reissueYear:
+          type: string
+          maxLength: 4
+          pattern: ^[0-9]{1,4}$
+          description: Reissue date year. Maps BMS field RISYEAR (PIC X(4)) of mapset COACTUP.
+        reissueMonth:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Reissue date month. Maps BMS field RISMON (PIC X(2)) of mapset COACTUP.
+        reissueDay:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Reissue date day. Maps BMS field RISDAY (PIC X(2)) of mapset COACTUP.
+        currentBalance:
+          allOf:
+          - $ref: '#/components/schemas/MoneyAmount'
+          description: Current account balance. Maps BMS field ACURBAL (PIC X(15)) of mapset COACTUP.
+            Monetary amount, BigDecimal scale 2; never floating point.
+        currentCycleCredit:
+          allOf:
+          - $ref: '#/components/schemas/MoneyAmount'
+          description: Current cycle credit total. Maps BMS field ACRCYCR (PIC X(15)) of mapset COACTUP.
+            Monetary amount, BigDecimal scale 2; never floating point.
+        groupId:
+          type: string
+          maxLength: 10
+          description: Account group / disclosure group id. Maps BMS field AADDGRP (PIC X(10)) of mapset
+            COACTUP.
+        currentCycleDebit:
+          allOf:
+          - $ref: '#/components/schemas/MoneyAmount'
+          description: Current cycle debit total. Maps BMS field ACRCYDB (PIC X(15)) of mapset COACTUP.
+            Monetary amount, BigDecimal scale 2; never floating point.
+        customerId:
+          type: string
+          maxLength: 9
+          pattern: ^[0-9]{1,9}$
+          description: Customer identifier. Maps BMS field ACSTNUM (PIC X(9)) of mapset COACTUP.
+        ssnArea:
+          type: string
+          maxLength: 3
+          pattern: ^[0-9]{1,3}$
+          writeOnly: true
+          description: 'SSN area (first 3 digits). Maps BMS field ACTSSN1 (PIC X(3)) of mapset COACTUP.
+            SENSITIVE: masked/redacted and never logged; never returned in full.'
+        ssnGroup:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          writeOnly: true
+          description: 'SSN group (middle 2 digits). Maps BMS field ACTSSN2 (PIC X(2)) of mapset COACTUP.
+            SENSITIVE: masked/redacted and never logged; never returned in full.'
+        ssnSerial:
+          type: string
+          maxLength: 4
+          pattern: ^[0-9]{1,4}$
+          writeOnly: true
+          description: 'SSN serial (last 4 digits). Maps BMS field ACTSSN3 (PIC X(4)) of mapset COACTUP.
+            SENSITIVE: masked/redacted and never logged; never returned in full.'
+        dobYear:
+          type: string
+          maxLength: 4
+          pattern: ^[0-9]{1,4}$
+          description: 'Date-of-birth year. Maps BMS field DOBYEAR (PIC X(4)) of mapset COACTUP. SENSITIVE:
+            masked/redacted and never logged; never returned in full.'
+        dobMonth:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: 'Date-of-birth month. Maps BMS field DOBMON (PIC X(2)) of mapset COACTUP. SENSITIVE:
+            masked/redacted and never logged; never returned in full.'
+        dobDay:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: 'Date-of-birth day. Maps BMS field DOBDAY (PIC X(2)) of mapset COACTUP. SENSITIVE:
+            masked/redacted and never logged; never returned in full.'
+        ficoScore:
+          type: string
+          maxLength: 3
+          pattern: ^[0-9]{1,3}$
+          description: Customer FICO score. Maps BMS field ACSTFCO (PIC X(3)) of mapset COACTUP.
+        firstName:
+          type: string
+          maxLength: 25
+          description: Customer first name. Maps BMS field ACSFNAM (PIC X(25)) of mapset COACTUP.
+        middleName:
+          type: string
+          maxLength: 25
+          description: Customer middle name. Maps BMS field ACSMNAM (PIC X(25)) of mapset COACTUP.
+        lastName:
+          type: string
+          maxLength: 25
+          description: Customer last name. Maps BMS field ACSLNAM (PIC X(25)) of mapset COACTUP.
+        addressLine1:
+          type: string
+          maxLength: 50
+          description: Customer address line 1. Maps BMS field ACSADL1 (PIC X(50)) of mapset COACTUP.
+        stateCode:
+          type: string
+          maxLength: 2
+          description: Customer state code. Maps BMS field ACSSTTE (PIC X(2)) of mapset COACTUP.
+        addressLine2:
+          type: string
+          maxLength: 50
+          description: Customer address line 2. Maps BMS field ACSADL2 (PIC X(50)) of mapset COACTUP.
+        zipCode:
+          type: string
+          maxLength: 5
+          description: Customer ZIP code. Maps BMS field ACSZIPC (PIC X(5)) of mapset COACTUP.
+        city:
+          type: string
+          maxLength: 50
+          description: Customer city. Maps BMS field ACSCITY (PIC X(50)) of mapset COACTUP.
+        countryCode:
+          type: string
+          maxLength: 3
+          description: Customer country code. Maps BMS field ACSCTRY (PIC X(3)) of mapset COACTUP.
+        phone1Area:
+          type: string
+          maxLength: 3
+          pattern: ^[0-9]{1,3}$
+          description: Primary phone area code. Maps BMS field ACSPH1A (PIC X(3)) of mapset COACTUP.
+        phone1Prefix:
+          type: string
+          maxLength: 3
+          pattern: ^[0-9]{1,3}$
+          description: Primary phone prefix. Maps BMS field ACSPH1B (PIC X(3)) of mapset COACTUP.
+        phone1Line:
+          type: string
+          maxLength: 4
+          pattern: ^[0-9]{1,4}$
+          description: Primary phone line number. Maps BMS field ACSPH1C (PIC X(4)) of mapset COACTUP.
+        phone2Area:
+          type: string
+          maxLength: 3
+          pattern: ^[0-9]{1,3}$
+          description: Secondary phone area code. Maps BMS field ACSPH2A (PIC X(3)) of mapset COACTUP.
+        phone2Prefix:
+          type: string
+          maxLength: 3
+          pattern: ^[0-9]{1,3}$
+          description: Secondary phone prefix. Maps BMS field ACSPH2B (PIC X(3)) of mapset COACTUP.
+        phone2Line:
+          type: string
+          maxLength: 4
+          pattern: ^[0-9]{1,4}$
+          description: Secondary phone line number. Maps BMS field ACSPH2C (PIC X(4)) of mapset COACTUP.
+        governmentId:
+          type: string
+          maxLength: 20
+          description: 'Customer government-issued id. Maps BMS field ACSGOVT (PIC X(20)) of mapset COACTUP.
+            SENSITIVE: masked/redacted and never logged; never returned in full.'
+        eftAccountId:
+          type: string
+          maxLength: 10
+          description: EFT account identifier. Maps BMS field ACSEFTC (PIC X(10)) of mapset COACTUP.
+        primaryCardHolderFlag:
+          type: string
+          maxLength: 1
+          description: Primary card holder flag. Maps BMS field ACSPFLG (PIC X(1)) of mapset COACTUP.
+        pfKey:
+          allOf:
+          - $ref: '#/components/schemas/PfKeyAction'
+          description: 'Terminal PF-key action submitted with this request (re-expresses 3270 PF-key semantics;
+            not a rendered terminal). Supported on this screen: ENTER=Process (validate), PF5=Save (commit),
+            PF12=Cancel, PF3=Exit.'
+          example: ENTER
+    AccountUpdateResponse:
+      description: Account update result echoing the updated account. CAUP / COACTUPC.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - $ref: '#/components/schemas/AccountDetail'
+    CardListRow:
+      type: object
+      description: A single card row in the paged card list. Derived from mapset COCRDLI.
+      properties:
+        selected:
+          type: string
+          maxLength: 1
+          enum:
+          - Y
+          - N
+          - ' '
+          readOnly: true
+          description: Row selection flag. Maps BMS field CRDSEL (PIC X(1)) of mapset COCRDLI.
+        accountId:
+          allOf:
+          - $ref: '#/components/schemas/AccountId'
+          readOnly: true
+          description: Account identifier. Maps BMS field ACCTNO (PIC X(11)) of mapset COCRDLI.
+        cardNumber:
+          allOf:
+          - $ref: '#/components/schemas/CardNumber'
+          readOnly: true
+          description: Card number. Maps BMS field CRDNUM (PIC X(16)) of mapset COCRDLI.
+        cardStatus:
+          type: string
+          maxLength: 1
+          readOnly: true
+          description: Card active status flag. Maps BMS field CRDSTS (PIC X(1)) of mapset COCRDLI.
+    CardListResponse:
+      description: Paged card list. CCLI / COCRDLIC. The 7-row page size is the preserved BMS browse page
+        size.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - type: object
+        properties:
+          pageNumber:
+            type: string
+            maxLength: 3
+            pattern: ^[0-9]{1,3}$
+            readOnly: true
+            description: Current page number. Maps BMS field PAGENO (PIC X(3)) of mapset COCRDLI.
+            example: '001'
+          cards:
+            type: array
+            maxItems: 7
+            readOnly: true
+            description: Card rows for the current page (fixed BMS page size 7).
+            items:
+              $ref: '#/components/schemas/CardListRow'
+    CardDetail:
+      type: object
+      description: Card detail. Output-only projection derived from mapset COCRDSL.
+      properties:
+        accountId:
+          allOf:
+          - $ref: '#/components/schemas/AccountId'
+          readOnly: true
+          description: Account identifier. Maps BMS field ACCTSID (PIC X(11)) of mapset COCRDSL.
+        cardNumber:
+          allOf:
+          - $ref: '#/components/schemas/CardNumber'
+          readOnly: true
+          description: Card number. Maps BMS field CARDSID (PIC X(16)) of mapset COCRDSL.
+        nameOnCard:
+          type: string
+          maxLength: 50
+          readOnly: true
+          description: Embossed name on card. Maps BMS field CRDNAME (PIC X(50)) of mapset COCRDSL.
+        cardStatus:
+          type: string
+          maxLength: 1
+          readOnly: true
+          description: Card active status code. Maps BMS field CRDSTCD (PIC X(1)) of mapset COCRDSL.
+        expiryMonth:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          readOnly: true
+          description: Card expiry month. Maps BMS field EXPMON (PIC X(2)) of mapset COCRDSL.
+        expiryYear:
+          type: string
+          maxLength: 4
+          pattern: ^[0-9]{1,4}$
+          readOnly: true
+          description: Card expiry year. Maps BMS field EXPYEAR (PIC X(4)) of mapset COCRDSL.
+    CardViewResponse:
+      description: Card detail inquiry result. CCDL / COCRDSLC.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - $ref: '#/components/schemas/CardDetail'
+    CardUpdateRequest:
+      type: object
+      description: Card update request. CCUP / COCRDUPC.
+      properties:
+        accountId:
+          allOf:
+          - $ref: '#/components/schemas/AccountId'
+          description: Account identifier. Maps BMS field ACCTSID (PIC X(11)) of mapset COCRDUP.
+        nameOnCard:
+          type: string
+          maxLength: 50
+          description: Embossed name on card. Maps BMS field CRDNAME (PIC X(50)) of mapset COCRDUP.
+        cardStatus:
+          type: string
+          maxLength: 1
+          description: Card active status code. Maps BMS field CRDSTCD (PIC X(1)) of mapset COCRDUP.
+        expiryMonth:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Card expiry month. Maps BMS field EXPMON (PIC X(2)) of mapset COCRDUP.
+        expiryYear:
+          type: string
+          maxLength: 4
+          pattern: ^[0-9]{1,4}$
+          description: Card expiry year. Maps BMS field EXPYEAR (PIC X(4)) of mapset COCRDUP.
+        expiryDay:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Card expiry day. Maps BMS field EXPDAY (PIC X(2)) of mapset COCRDUP.
+        pfKey:
+          allOf:
+          - $ref: '#/components/schemas/PfKeyAction'
+          description: 'Terminal PF-key action submitted with this request (re-expresses 3270 PF-key semantics;
+            not a rendered terminal). Supported on this screen: ENTER=Process, PF5=Save, PF12=Cancel,
+            PF3=Exit.'
+          example: ENTER
+    CardUpdateResponse:
+      description: Card update result echoing the updated card. CCUP / COCRDUPC.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - $ref: '#/components/schemas/CardDetail'
+    TransactionListRow:
+      type: object
+      description: A single transaction row in the paged transaction list. Derived from mapset COTRN00.
+      properties:
+        selected:
+          type: string
+          maxLength: 1
+          readOnly: true
+          description: Row selection flag. Maps BMS field SEL (PIC X(1)) of mapset COTRN00.
+        transactionId:
+          allOf:
+          - $ref: '#/components/schemas/TransactionId'
+          readOnly: true
+          description: Transaction identifier. Maps BMS field TRNID (PIC X(16)) of mapset COTRN00.
+        date:
+          type: string
+          maxLength: 8
+          readOnly: true
+          description: Transaction date. Maps BMS field TDATE (PIC X(8)) of mapset COTRN00.
+        description:
+          type: string
+          maxLength: 26
+          readOnly: true
+          description: Transaction description. Maps BMS field TDESC (PIC X(26)) of mapset COTRN00.
+        amount:
+          allOf:
+          - $ref: '#/components/schemas/MoneyAmount'
+          readOnly: true
+          description: Transaction amount. Maps BMS field TAMT (PIC X(12)) of mapset COTRN00. Monetary
+            amount, BigDecimal scale 2; never floating point.
+    TransactionListResponse:
+      description: Paged transaction list. CT00 / COTRN00C. The 10-row page size is the preserved BMS
+        browse page size.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - type: object
+        properties:
+          pageNumber:
+            type: string
+            maxLength: 8
+            pattern: ^[0-9]{1,8}$
+            readOnly: true
+            description: Current page number. Maps BMS field PAGENUM (PIC X(8)) of mapset COTRN00.
+            example: '00000001'
+          transactions:
+            type: array
+            maxItems: 10
+            readOnly: true
+            description: Transaction rows for the current page (fixed BMS page size 10).
+            items:
+              $ref: '#/components/schemas/TransactionListRow'
+    TransactionDetail:
+      type: object
+      description: Transaction detail. Output-only projection derived from mapset COTRN01 (the same field
+        set is echoed by Transaction Add / COTRN02).
+      properties:
+        transactionId:
+          allOf:
+          - $ref: '#/components/schemas/TransactionId'
+          readOnly: true
+          description: Transaction identifier (server-generated on add). Maps BMS field TRNID (PIC X(16))
+            of mapset COTRN01.
+        cardNumber:
+          allOf:
+          - $ref: '#/components/schemas/CardNumber'
+          readOnly: true
+          description: Card number. Maps BMS field CARDNUM (PIC X(16)) of mapset COTRN01.
+        typeCode:
+          type: string
+          maxLength: 2
+          readOnly: true
+          description: Transaction type code. Maps BMS field TTYPCD (PIC X(2)) of mapset COTRN01.
+        categoryCode:
+          type: string
+          maxLength: 4
+          readOnly: true
+          description: Transaction category code. Maps BMS field TCATCD (PIC X(4)) of mapset COTRN01.
+        source:
+          type: string
+          maxLength: 10
+          readOnly: true
+          description: Transaction source. Maps BMS field TRNSRC (PIC X(10)) of mapset COTRN01.
+        description:
+          type: string
+          maxLength: 60
+          readOnly: true
+          description: Transaction description. Maps BMS field TDESC (PIC X(60)) of mapset COTRN01.
+        amount:
+          allOf:
+          - $ref: '#/components/schemas/MoneyAmount'
+          readOnly: true
+          description: Transaction amount. Maps BMS field TRNAMT (PIC X(12)) of mapset COTRN01. Monetary
+            amount, BigDecimal scale 2; never floating point.
+        originationDate:
+          type: string
+          format: date
+          readOnly: true
+          description: Transaction origination date. Maps BMS field TORIGDT (PIC X(10)) of mapset COTRN01.
+        processingDate:
+          type: string
+          format: date
+          readOnly: true
+          description: Transaction processing date. Maps BMS field TPROCDT (PIC X(10)) of mapset COTRN01.
+        merchantId:
+          type: string
+          maxLength: 9
+          pattern: ^[0-9]{1,9}$
+          readOnly: true
+          description: Merchant identifier. Maps BMS field MID (PIC X(9)) of mapset COTRN01.
+        merchantName:
+          type: string
+          maxLength: 30
+          readOnly: true
+          description: Merchant name. Maps BMS field MNAME (PIC X(30)) of mapset COTRN01.
+        merchantCity:
+          type: string
+          maxLength: 25
+          readOnly: true
+          description: Merchant city. Maps BMS field MCITY (PIC X(25)) of mapset COTRN01.
+        merchantZip:
+          type: string
+          maxLength: 10
+          readOnly: true
+          description: Merchant ZIP code. Maps BMS field MZIP (PIC X(10)) of mapset COTRN01.
+    TransactionViewResponse:
+      description: Transaction detail inquiry result. CT01 / COTRN01C.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - $ref: '#/components/schemas/TransactionDetail'
+    TransactionAddRequest:
+      type: object
+      description: Add-transaction request. CT02 / COTRN02C. The transaction id is server-generated (increment-from-max)
+        and is NOT accepted here.
+      properties:
+        accountId:
+          allOf:
+          - $ref: '#/components/schemas/AccountId'
+          description: Account identifier. Maps BMS field ACTIDIN (PIC X(11)) of mapset COTRN02.
+        cardNumber:
+          allOf:
+          - $ref: '#/components/schemas/CardNumber'
+          description: Card number. Maps BMS field CARDNIN (PIC X(16)) of mapset COTRN02.
+        typeCode:
+          type: string
+          maxLength: 2
+          description: Transaction type code. Maps BMS field TTYPCD (PIC X(2)) of mapset COTRN02.
+        categoryCode:
+          type: string
+          maxLength: 4
+          description: Transaction category code. Maps BMS field TCATCD (PIC X(4)) of mapset COTRN02.
+        source:
+          type: string
+          maxLength: 10
+          description: Transaction source. Maps BMS field TRNSRC (PIC X(10)) of mapset COTRN02.
+        description:
+          type: string
+          maxLength: 60
+          description: Transaction description. Maps BMS field TDESC (PIC X(60)) of mapset COTRN02.
+        amount:
+          allOf:
+          - $ref: '#/components/schemas/MoneyAmount'
+          description: Transaction amount (BMS hint -99999999.99). Maps BMS field TRNAMT (PIC X(12)) of
+            mapset COTRN02. Monetary amount, BigDecimal scale 2; never floating point.
+          example: '-100.00'
+        originationDate:
+          type: string
+          format: date
+          description: Transaction origination date (BMS hint YYYY-MM-DD). Maps BMS field TORIGDT (PIC
+            X(10)) of mapset COTRN02.
+        processingDate:
+          type: string
+          format: date
+          description: Transaction processing date. Maps BMS field TPROCDT (PIC X(10)) of mapset COTRN02.
+        merchantId:
+          type: string
+          maxLength: 9
+          pattern: ^[0-9]{1,9}$
+          description: Merchant identifier. Maps BMS field MID (PIC X(9)) of mapset COTRN02.
+        merchantName:
+          type: string
+          maxLength: 30
+          description: Merchant name. Maps BMS field MNAME (PIC X(30)) of mapset COTRN02.
+        merchantCity:
+          type: string
+          maxLength: 25
+          description: Merchant city. Maps BMS field MCITY (PIC X(25)) of mapset COTRN02.
+        merchantZip:
+          type: string
+          maxLength: 10
+          description: Merchant ZIP code. Maps BMS field MZIP (PIC X(10)) of mapset COTRN02.
+        confirm:
+          allOf:
+          - $ref: '#/components/schemas/ConfirmFlag'
+          description: Confirmation flag. Maps BMS field CONFIRM (PIC X(1)) of mapset COTRN02.
+        pfKey:
+          allOf:
+          - $ref: '#/components/schemas/PfKeyAction'
+          description: 'Terminal PF-key action submitted with this request (re-expresses 3270 PF-key semantics;
+            not a rendered terminal). Supported on this screen: ENTER=Continue, PF4=Clear, PF5=Copy Last,
+            PF3=Back.'
+          example: ENTER
+    TransactionAddResponse:
+      description: Add-transaction result echoing the created transaction, including the server-generated
+        transaction id. CT02 / COTRN02C.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - $ref: '#/components/schemas/TransactionDetail'
+    TransactionReportRequest:
+      type: object
+      description: Transaction report request. CR00 / CORPT00C. The report itself is produced by the batch
+        layer; this endpoint requests it (no feature expansion).
+      properties:
+        reportType:
+          type: string
+          enum:
+          - MONTHLY
+          - YEARLY
+          - CUSTOM
+          description: Report type derived from the three mutually-exclusive BMS radio flags MONTHLY (X(1)),
+            YEARLY (X(1)) and CUSTOM (X(1)) of mapset CORPT00.
+          example: MONTHLY
+        startMonth:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Custom range start month. Maps BMS field SDTMM (PIC X(2)) of mapset CORPT00.
+        startDay:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Custom range start day. Maps BMS field SDTDD (PIC X(2)) of mapset CORPT00.
+        startYear:
+          type: string
+          maxLength: 4
+          pattern: ^[0-9]{1,4}$
+          description: Custom range start year. Maps BMS field SDTYYYY (PIC X(4)) of mapset CORPT00.
+        endMonth:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Custom range end month. Maps BMS field EDTMM (PIC X(2)) of mapset CORPT00.
+        endDay:
+          type: string
+          maxLength: 2
+          pattern: ^[0-9]{1,2}$
+          description: Custom range end day. Maps BMS field EDTDD (PIC X(2)) of mapset CORPT00.
+        endYear:
+          type: string
+          maxLength: 4
+          pattern: ^[0-9]{1,4}$
+          description: Custom range end year. Maps BMS field EDTYYYY (PIC X(4)) of mapset CORPT00.
+        confirm:
+          allOf:
+          - $ref: '#/components/schemas/ConfirmFlag'
+          description: Confirmation flag. Maps BMS field CONFIRM (PIC X(1)) of mapset CORPT00.
+        pfKey:
+          allOf:
+          - $ref: '#/components/schemas/PfKeyAction'
+          description: 'Terminal PF-key action submitted with this request (re-expresses 3270 PF-key semantics;
+            not a rendered terminal). Supported on this screen: ENTER=Continue, PF3=Back.'
+          example: ENTER
+    TransactionReportResponse:
+      description: Transaction report submission status. CR00 / CORPT00C.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+    BillPaymentRequest:
+      type: object
+      description: Bill payment request. CB00 / COBIL00C.
+      properties:
+        confirm:
+          allOf:
+          - $ref: '#/components/schemas/ConfirmFlag'
+          description: Confirmation flag. Maps BMS field CONFIRM (PIC X(1)) of mapset COBIL00.
+        pfKey:
+          allOf:
+          - $ref: '#/components/schemas/PfKeyAction'
+          description: 'Terminal PF-key action submitted with this request (re-expresses 3270 PF-key semantics;
+            not a rendered terminal). Supported on this screen: ENTER=Continue, PF4=Clear, PF3=Back.'
+          example: ENTER
+    BillPaymentResponse:
+      description: Bill payment result. CB00 / COBIL00C.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - type: object
+        properties:
+          currentBalance:
+            allOf:
+            - $ref: '#/components/schemas/MoneyAmount'
+            readOnly: true
+            description: Current account balance after payment. Maps BMS field CURBAL (PIC X(14)) of mapset
+              COBIL00. Monetary amount, BigDecimal scale 2; never floating point.
+    UserDetail:
+      type: object
+      description: User detail (never includes the password). Output-only projection.
+      properties:
+        userId:
+          allOf:
+          - $ref: '#/components/schemas/UserId'
+          readOnly: true
+          description: User identifier. Maps BMS field USRID (PIC X(8)) of mapset COUSR02.
+        firstName:
+          type: string
+          maxLength: 20
+          readOnly: true
+          description: User first name. Maps BMS field FNAME (PIC X(20)) of mapset COUSR02.
+        lastName:
+          type: string
+          maxLength: 20
+          readOnly: true
+          description: User last name. Maps BMS field LNAME (PIC X(20)) of mapset COUSR02.
+        userType:
+          allOf:
+          - $ref: '#/components/schemas/UserType'
+          readOnly: true
+          description: User role. Maps BMS field USRTYPE (PIC X(1)) of mapset COUSR02.
+    UserResponse:
+      description: User detail for prefill/display (no password). CU02 / COUSR02C.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - $ref: '#/components/schemas/UserDetail'
+    UserListRow:
+      type: object
+      description: A single user row in the paged user list. Derived from mapset COUSR00.
+      properties:
+        selected:
+          type: string
+          maxLength: 1
+          readOnly: true
+          description: Row selection flag. Maps BMS field SEL (PIC X(1)) of mapset COUSR00.
+        userId:
+          allOf:
+          - $ref: '#/components/schemas/UserId'
+          readOnly: true
+          description: User identifier. Maps BMS field USRID (PIC X(8)) of mapset COUSR00.
+        firstName:
+          type: string
+          maxLength: 20
+          readOnly: true
+          description: User first name. Maps BMS field FNAME (PIC X(20)) of mapset COUSR00.
+        lastName:
+          type: string
+          maxLength: 20
+          readOnly: true
+          description: User last name. Maps BMS field LNAME (PIC X(20)) of mapset COUSR00.
+        userType:
+          allOf:
+          - $ref: '#/components/schemas/UserType'
+          readOnly: true
+          description: User role. Maps BMS field UTYPE (PIC X(1)) of mapset COUSR00.
+    UserListResponse:
+      description: Paged user list. CU00 / COUSR00C. Requires role A (Admin). The 10-row page size is
+        the preserved BMS browse page size.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - type: object
+        properties:
+          pageNumber:
+            type: string
+            maxLength: 8
+            pattern: ^[0-9]{1,8}$
+            readOnly: true
+            description: Current page number. Maps BMS field PAGENUM (PIC X(8)) of mapset COUSR00.
+            example: '00000001'
+          users:
+            type: array
+            maxItems: 10
+            readOnly: true
+            description: User rows for the current page (fixed BMS page size 10).
+            items:
+              $ref: '#/components/schemas/UserListRow'
+    UserAddRequest:
+      type: object
+      description: Add-user request. CU01 / COUSR01C. Requires role A (Admin).
+      properties:
+        firstName:
+          type: string
+          maxLength: 20
+          description: User first name. Maps BMS field FNAME (PIC X(20)) of mapset COUSR01.
+        lastName:
+          type: string
+          maxLength: 20
+          description: User last name. Maps BMS field LNAME (PIC X(20)) of mapset COUSR01.
+        userId:
+          allOf:
+          - $ref: '#/components/schemas/UserId'
+          description: User identifier. Maps BMS field USERID (PIC X(8)) of mapset COUSR01.
+          example: USER0001
+        password:
+          type: string
+          maxLength: 8
+          writeOnly: true
+          description: User password; accepted on create only, never returned. Maps BMS field PASSWD (PIC
+            X(8)) of mapset COUSR01.
+          example: '********'
+        userType:
+          allOf:
+          - $ref: '#/components/schemas/UserType'
+          description: User role. Maps BMS field USRTYPE (PIC X(1)) of mapset COUSR01.
+        pfKey:
+          allOf:
+          - $ref: '#/components/schemas/PfKeyAction'
+          description: 'Terminal PF-key action submitted with this request (re-expresses 3270 PF-key semantics;
+            not a rendered terminal). Supported on this screen: ENTER=Add, PF4=Clear, PF3=Back.'
+          example: ENTER
+      required:
+      - firstName
+      - lastName
+      - userId
+      - password
+      - userType
+    UserAddResponse:
+      description: Add-user result echoing the created user (without password). CU01 / COUSR01C.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - $ref: '#/components/schemas/UserDetail'
+    UserUpdateRequest:
+      type: object
+      description: Update-user request. CU02 / COUSR02C. Requires role A (Admin). Password is optional
+        and supplied only when changing it.
+      properties:
+        firstName:
+          type: string
+          maxLength: 20
+          description: User first name. Maps BMS field FNAME (PIC X(20)) of mapset COUSR02.
+        lastName:
+          type: string
+          maxLength: 20
+          description: User last name. Maps BMS field LNAME (PIC X(20)) of mapset COUSR02.
+        password:
+          type: string
+          maxLength: 8
+          writeOnly: true
+          description: New password; accepted only when changing, never returned. Maps BMS field PASSWD
+            (PIC X(8)) of mapset COUSR02.
+          example: '********'
+        userType:
+          allOf:
+          - $ref: '#/components/schemas/UserType'
+          description: User role. Maps BMS field USRTYPE (PIC X(1)) of mapset COUSR02.
+        pfKey:
+          allOf:
+          - $ref: '#/components/schemas/PfKeyAction'
+          description: 'Terminal PF-key action submitted with this request (re-expresses 3270 PF-key semantics;
+            not a rendered terminal). Supported on this screen: ENTER=Fetch, PF5=Save, PF4=Clear, PF12=Cancel,
+            PF3=Back.'
+          example: ENTER
+    UserUpdateResponse:
+      description: Update-user result echoing the updated user (without password). CU02 / COUSR02C.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - $ref: '#/components/schemas/UserDetail'
+    UserDeleteResponse:
+      description: Delete-user result showing the deleted user's display fields. CU03 / COUSR03C.
+      allOf:
+      - $ref: '#/components/schemas/ScreenMetadata'
+      - $ref: '#/components/schemas/MessageArea'
+      - type: object
+        properties:
+          firstName:
+            type: string
+            maxLength: 20
+            readOnly: true
+            description: User first name. Maps BMS field FNAME (PIC X(20)) of mapset COUSR03.
+          lastName:
+            type: string
+            maxLength: 20
+            readOnly: true
+            description: User last name. Maps BMS field LNAME (PIC X(20)) of mapset COUSR03.
+          userType:
+            allOf:
+            - $ref: '#/components/schemas/UserType'
+            readOnly: true
+            description: User role. Maps BMS field USRTYPE (PIC X(1)) of mapset COUSR03.
+  responses:
+    BadRequest:
+      description: Validation failed (mapped from COBOL edit rules).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Authentication required or credentials invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Requested record was not found (FILE STATUS '23').
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Duplicate key or optimistic-lock conflict (FILE STATUS '22' / concurrent REWRITE).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

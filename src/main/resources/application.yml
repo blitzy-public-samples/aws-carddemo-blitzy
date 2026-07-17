@@ -1,0 +1,189 @@
+# =============================================================================
+# CardDemo - Base (default-profile) Spring Boot configuration
+# =============================================================================
+# This file is the ENVIRONMENT-AGNOSTIC base configuration applied to ALL Spring
+# profiles. It is safe to commit because it contains NO secrets.
+#
+#   * NO credentials are stored here. The database URL, username, and password
+#     resolve EXCLUSIVELY from environment variables (DB_URL, DB_USERNAME,
+#     DB_PASSWORD) with no literal fallback default - see the datasource block.
+#     Every secret and connection value comes from the environment (documented
+#     in README.md and the root docker-compose.yml / Dockerfile).
+#
+#   * Profile-specific overrides live in the sibling file `application-local.yml`,
+#     activated at runtime with `SPRING_PROFILES_ACTIVE=local` (as set by the
+#     docker-compose stack and the local developer workflow). That profile relaxes
+#     log verbosity and points the datasource / OTLP endpoint at the local stack.
+#
+#   * `spring.profiles.active` is deliberately NOT set here: the active profile is
+#     chosen at runtime via the environment variable so this base stays neutral.
+#
+# Target platform: Java 25 (LTS) + Spring Boot 3.5.16, PostgreSQL 16, Flyway,
+# Spring Batch, Spring Security, Actuator, Micrometer + OpenTelemetry (OTLP),
+# Prometheus, and springdoc / Swagger UI.
+# =============================================================================
+
+spring:
+  # Service identity - used as the tracing/metrics service name and therefore
+  # surfaces in Tempo (traces), Prometheus (metrics), and Grafana (dashboards).
+  application:
+    name: carddemo
+
+  # ---------------------------------------------------------------------------
+  # Datasource (PostgreSQL 16) - 100% environment-driven; NO hardcoded secrets.
+  # DB_URL / DB_USERNAME / DB_PASSWORD are REQUIRED at runtime and intentionally
+  # have NO literal fallback default: a missing value must fail fast rather than
+  # silently fall back to an insecure baked-in credential. See README "Run locally".
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    # HikariCP connection pool - all non-secret operational tuning; safe defaults.
+    hikari:
+      pool-name: carddemo-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate - Flyway OWNS the schema; Hibernate only validates mappings.
+  # ---------------------------------------------------------------------------
+  jpa:
+    # Disable Open-Session-In-View: transaction boundaries stay in the service
+    # layer, matching the COBOL READ-UPDATE-REWRITE unit-of-work semantics.
+    open-in-view: false
+    # Keep default-profile logs quiet; verbose SQL belongs in application-local.yml.
+    show-sql: false
+    hibernate:
+      # CRITICAL: Flyway creates and owns the schema (10 tables + indexes + FK
+      # constraints + @Version optimistic-lock columns per AAP 0.4.3). Hibernate
+      # must ONLY VALIDATE the entity mapping against that schema - never
+      # create/alter it. Do NOT change to update/create/create-drop.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        # Explicit dialect (also auto-detected on PostgreSQL 16); version-agnostic
+        # in Hibernate 6.x.
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        # Store/normalize JDBC timestamps in UTC for deterministic, tz-safe values.
+        jdbc:
+          time_zone: UTC
+        # No SQL pretty-printing in the base profile (zero-noise build).
+        format_sql: false
+
+  # ---------------------------------------------------------------------------
+  # Flyway - schema + reference-data migrations
+  # (V1__schema.sql, V2__reference_data.sql, ...).
+  # ---------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    # Matches the sibling classpath folder src/main/resources/db/migration.
+    # NOTE: the db/seed CSVs are test/local load fixtures - NOT Flyway
+    # migrations - so they are deliberately excluded here.
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch (JCL -> Spring Batch). Jobs must NEVER auto-run on startup.
+  # ---------------------------------------------------------------------------
+  batch:
+    job:
+      # CRITICAL: do not launch batch jobs (DailyTransactionPostingJob,
+      # InterestCalculationJob, ...) at application startup. They are triggered
+      # explicitly (JobLauncher/CLI or the CI/CD workflow - the JCL-scheduling
+      # equivalent per AAP 0.4.4).
+      enabled: false
+    jdbc:
+      # Create Spring Batch's own metadata tables (BATCH_JOB_INSTANCE, ...) for
+      # PostgreSQL. These are kept separate from the Flyway-owned application
+      # schema. If the db/migration scripts later author the Batch metadata DDL
+      # themselves, switch this to `never` to avoid a conflict.
+      initialize-schema: always
+
+  # ---------------------------------------------------------------------------
+  # Jackson (JSON) - non-secret serialization defaults for the REST DTOs.
+  # ---------------------------------------------------------------------------
+  jackson:
+    # Omit null fields from responses.
+    default-property-inclusion: non_null
+    serialization:
+      # Emit ISO-8601 date/time strings, not numeric epoch timestamps.
+      write-dates-as-timestamps: false
+      # NOTE: no floating-point coercion is enabled anywhere - monetary values
+      # are BigDecimal (scale 2) and serialize faithfully as exact numbers.
+
+# =============================================================================
+# Actuator - health, readiness/liveness probes, metrics, Prometheus scrape
+# (Observability rule, AAP 0.8.2 / 0.9.5).
+# =============================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        # Expose EXACTLY the endpoints README/observability need - never "*".
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      # Enable the liveness/readiness probe sub-endpoints:
+      #   /actuator/health/liveness and /actuator/health/readiness
+      probes:
+        enabled: true
+      # Base profile: only show component details to authorized principals.
+      # The `local` profile may relax this to `always`.
+      show-details: when-authorized
+  health:
+    # Register the readiness/liveness state health indicators.
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
+  prometheus:
+    metrics:
+      export:
+        # Expose /actuator/prometheus (scraped by the compose Prometheus on :9090).
+        enabled: true
+  metrics:
+    tags:
+      # Tag every metric with the service name for Prometheus/Grafana filtering.
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      # Full sampling in the base profile for complete trace visibility during
+      # migration validation. May be tuned lower (e.g. 0.1) for high-volume prod.
+      probability: 1.0
+  otlp:
+    tracing:
+      # OTLP HTTP endpoint for span export (-> Tempo). Non-secret and overridable
+      # via OTLP_ENDPOINT; the local/compose profile points this at the Tempo
+      # service. Trace/span IDs propagate into logs automatically via MDC
+      # (traceId/spanId), consumed by logback-spring.xml - no extra property here.
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+
+# =============================================================================
+# springdoc / OpenAPI 3 - Swagger UI for the 17 REST controllers (one per screen)
+# =============================================================================
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+
+# =============================================================================
+# Server
+# =============================================================================
+server:
+  # Non-secret; defaults to 8080 (Dockerfile EXPOSE 8080), overridable via SERVER_PORT.
+  port: ${SERVER_PORT:8080}
+
+# =============================================================================
+# Logging levels (appender/pattern with correlation IDs live in logback-spring.xml).
+# The `local` profile may raise com.aws.carddemo to DEBUG.
+# =============================================================================
+logging:
+  level:
+    root: INFO
+    com.aws.carddemo: INFO
