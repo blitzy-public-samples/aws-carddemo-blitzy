@@ -1,0 +1,2 @@
+cust_id,first_name,middle_name,last_name,addr_line_1,addr_line_2,addr_line_3,state_cd,country_cd,addr_zip,phone_num_1,phone_num_2,ssn,govt_issued_id,dob,eft_account_id,pri_card_holder_ind,fico_credit_score
+900000010,Interest,T,Scenario,10 Test Way,,,TX,USA,75010,2145550010,,100000010,DL100000010,1980-01-01,,Y,750

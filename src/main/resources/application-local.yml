@@ -1,0 +1,116 @@
+# =============================================================================
+# CardDemo - `local` profile overrides  (application-local.yml)
+# =============================================================================
+# This file is the LOCAL-DEVELOPMENT profile overlay for the base
+# `application.yml`. Spring Boot activates it when the `local` profile is
+# selected, e.g.:
+#
+#     SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run
+#
+# (the root docker-compose stack and the documented developer workflow set this
+# variable). Because the filename is `application-local.yml`, the `local`
+# profile is implied by convention - there is deliberately NO
+# `spring.config.activate.on-profile` guard in this file.
+#
+# HOW THE MERGE WORKS
+#   Spring Boot loads `application.yml` first, then layers this file on top when
+#   the `local` profile is active. Properties are merged per individual key, so
+#   this file contains ONLY the local overrides / additions; every other value
+#   (Hikari pool sizing, Jackson, Spring Batch, springdoc, server port, the
+#   Hibernate `dialect` / `time_zone` properties, the Actuator exposure list,
+#   etc.) is INHERITED unchanged from the base `application.yml`.
+#
+# TARGET: the local `docker-compose` stack - PostgreSQL 16 + Prometheus (:9090,
+#   scrapes /actuator/prometheus) + Tempo (OTLP receiver: gRPC 4317 / HTTP 4318)
+#   + Grafana (:3000). See README "Run locally" and "Observability".
+#
+# SECRETS POLICY (NON-NEGOTIABLE - AAP 0.8.1 / 0.9.3)
+#   NO credentials are hardcoded here, even for local development. The database
+#   USERNAME and PASSWORD resolve EXCLUSIVELY from the DB_USERNAME / DB_PASSWORD
+#   environment variables with NO literal fallback - a missing value must fail
+#   fast rather than silently use a baked-in credential. Export them in your
+#   shell (or an UNCOMMITTED `.env`) before running, e.g.:
+#
+#       export DB_USERNAME=carddemo
+#       export DB_PASSWORD=<your-local-dev-password>   # local, non-production only
+#
+#   Only the connection URL carries a convenience default (host / port / db-name
+#   are NOT secrets), and it too remains overridable via DB_URL.
+# =============================================================================
+
+spring:
+  # ---------------------------------------------------------------------------
+  # Datasource - point at the local PostgreSQL 16 (docker-compose service
+  # `postgres`, published on localhost:5432). The URL gets a NON-SECRET default
+  # for convenience so a developer can start the app without exporting DB_URL;
+  # it stays overridable via DB_URL (e.g. when the app itself runs INSIDE the
+  # compose network the host becomes `postgres`). The username and password
+  # remain env-only with NO default - secrets are never baked in (see header).
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/${DB_NAME:carddemo}}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate - developer-friendly SQL visibility for local debugging.
+  # `ddl-auto` stays `validate`: Flyway (db/migration/V1__schema.sql) OWNS the
+  # schema even locally - Hibernate only validates the entity mapping and must
+  # NEVER create/alter tables. Do NOT change this to update/create/create-drop.
+  # ---------------------------------------------------------------------------
+  jpa:
+    # Log every SQL statement Hibernate issues (local troubleshooting only).
+    show-sql: true
+    hibernate:
+      # Unchanged from base - restated to make the local contract explicit and
+      # guard against accidental drift. Flyway owns the schema; validate only.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        # Pretty-print the logged SQL into readable multi-line form (local dev).
+        format_sql: true
+
+  # ---------------------------------------------------------------------------
+  # Flyway - migrations stay ENABLED (inherited from base). Explicitly disable
+  # the destructive `clean` command so an accidental `flyway:clean` cannot wipe
+  # the local database. This is a guard only; clean-on-startup is NOT enabled.
+  # ---------------------------------------------------------------------------
+  flyway:
+    clean-disabled: true
+
+# =============================================================================
+# Actuator / Observability - tuned for local visibility against the compose
+# Prometheus + Tempo + Grafana stack. The exposure list
+# (health,info,metrics,prometheus) is INHERITED from the base and intentionally
+# NOT re-listed here or widened to "*".
+# =============================================================================
+management:
+  endpoint:
+    health:
+      # Local convenience: show full health-component detail without auth. The
+      # base profile uses `when-authorized`; relaxing to `always` is safe on a
+      # developer machine and aids local troubleshooting.
+      show-details: always
+  tracing:
+    sampling:
+      # Sample 100% of traces locally so every request / batch step is visible
+      # in Tempo (matches base; restated to document the local intent).
+      probability: 1.0
+  otlp:
+    tracing:
+      # Export spans over OTLP HTTP to the local Tempo receiver (docker-compose
+      # `tempo`, HTTP port 4318). Overridable via OTLP_ENDPOINT - set it to
+      # http://tempo:4318/v1/traces when the app runs inside the compose network.
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+
+# =============================================================================
+# Logging - raise verbosity for local development. Appenders and the
+# correlation-ID pattern live in logback-spring.xml; here we only tune levels.
+# `root` stays at the inherited INFO.
+# =============================================================================
+logging:
+  level:
+    # Application code at DEBUG locally to trace business-logic flow.
+    com.aws.carddemo: DEBUG
+    # Flyway at INFO so migration apply / validate output is visible on startup.
+    org.flywaydb: INFO

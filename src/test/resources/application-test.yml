@@ -1,0 +1,143 @@
+# =============================================================================
+# CardDemo - `test`-profile Spring Boot configuration (automated tests)
+# =============================================================================
+# This is the TEST profile. It is activated when a test class declares
+# `@ActiveProfiles("test")` and is used by the CardDemo migration's automated
+# suite: unit slices, Testcontainers integration tests, and golden-file parity
+# tests (AAP 0.9.2).
+#
+#   * LAYERING - this file LAYERS OVER the base `src/main/resources/application.yml`.
+#     Spring loads `application.yml` first and then merges this profile document
+#     on top (profile-specific property sources win), so ONLY test-specific
+#     overrides/additions are declared here; everything else is INHERITED from the
+#     base. The filename (`application-test.yml`) implies the `test` profile, so no
+#     `spring.config.activate.on-profile` guard is required.
+#
+#   * NO SECRETS - this file contains NO database URL, username, or password. The
+#     integration-test datasource is supplied DYNAMICALLY AT RUNTIME by a
+#     Testcontainers PostgreSQL 16 container (Spring Boot `@ServiceConnection` or a
+#     `@DynamicPropertySource` test base class). Consequently `spring.datasource.*`
+#     is deliberately ABSENT here - it must never carry a baked-in credential
+#     (AAP 0.8.1 / 0.9.3). Pure unit slices that need no database never open one.
+#
+#   * SCHEMA OWNERSHIP - Flyway OWNS the schema. It runs the REAL production
+#     migrations (`classpath:db/migration`: V1__schema.sql, V2__reference_data.sql,
+#     ...) against the Testcontainers database, and Hibernate ONLY VALIDATES the
+#     `com.aws.carddemo.domain` entity mappings against that schema
+#     (`ddl-auto: validate`). This is the data-tier PARITY GUARD (AAP 0.4.3):
+#     because both `src/main/resources` and `src/test/resources` are on the test
+#     classpath, `classpath:db/migration` resolves to the actual shipped DDL.
+#
+#   * OFFLINE / HEADLESS - the profile is fully self-contained: no live OTLP
+#     collector, no live Prometheus, no interactive input. Tests run reproducibly
+#     via `./mvnw -B clean verify`. (The Observability rule's "verified locally"
+#     requirement in AAP 0.9.5 is satisfied by the `local` profile + docker-compose
+#     stack, NOT by this `test` profile.)
+#
+# Target platform: Java 25 (LTS) + Spring Boot 3.5.16, PostgreSQL 16 (Testcontainers),
+# Flyway, Spring Batch, Spring Data JPA.
+# =============================================================================
+
+spring:
+  # ---------------------------------------------------------------------------
+  # Datasource: intentionally NOT declared in this profile.
+  # The integration-test DB (postgres:16) is provided by Testcontainers, which
+  # injects url/username/password dynamically (via @ServiceConnection or
+  # @DynamicPropertySource). Declaring any literal connection value here would
+  # violate the no-hardcoded-credentials rule (AAP 0.8.1 / 0.9.3).
+  # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate - validate the entity mappings against the Flyway-authored
+  # schema; do NOT let Hibernate create or mutate the schema.
+  # ---------------------------------------------------------------------------
+  jpa:
+    # CRITICAL: keep `validate` (never create/update/create-drop). Integration
+    # tests must confirm the com.aws.carddemo.domain entities match the
+    # Flyway-authored schema EXACTLY - this is the data-tier parity guard.
+    hibernate:
+      ddl-auto: validate
+    # Transaction boundaries stay in the service layer (matches the COBOL
+    # READ-UPDATE-REWRITE unit-of-work); restated here for test clarity.
+    open-in-view: false
+    # Readable SQL in test logs aids diagnostics. NOTE: this logs SQL STATEMENTS
+    # only - it does NOT log bound parameter VALUES (see the logging section for
+    # the security rationale on why bind-parameter TRACE stays OFF).
+    show-sql: true
+    properties:
+      hibernate:
+        # Explicit dialect (also auto-detected on PostgreSQL 16); restated for
+        # test clarity and to match the base profile.
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        # Store/normalize JDBC timestamps in UTC for deterministic, tz-safe
+        # comparisons in golden-file parity assertions.
+        jdbc:
+          time_zone: UTC
+        # Pretty-print the SQL statements emitted by show-sql for readability.
+        format_sql: true
+
+  # ---------------------------------------------------------------------------
+  # Flyway - run the REAL production migrations against the Testcontainers DB.
+  # ---------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    # Resolves to the shipped migrations under src/main/resources/db/migration
+    # (on the test classpath). Do NOT point Flyway at db/seed - those CSVs are
+    # test/local load fixtures, not migrations.
+    locations: classpath:db/migration
+    # Defensive: forbid `flyway clean` from ever wiping the schema during tests.
+    # (Already the framework default in Spring Boot 3.5.x; pinned explicitly.)
+    clean-disabled: true
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch - jobs are launched EXPLICITLY by tests, never on startup.
+  # ---------------------------------------------------------------------------
+  batch:
+    job:
+      # CRITICAL: do NOT auto-run batch jobs (DailyTransactionPostingJob,
+      # InterestCalculationJob, StatementGenerationJob, TransactionReportJob, ...)
+      # when the test context starts. Golden-file parity tests launch each job
+      # explicitly (e.g. via JobLauncherTestUtils) so inputs and outputs are
+      # controlled and comparable row-for-row (AAP 0.9.2).
+      enabled: false
+    jdbc:
+      # Create Spring Batch's own metadata tables (BATCH_JOB_INSTANCE,
+      # BATCH_JOB_EXECUTION, BATCH_STEP_EXECUTION, ...) in the Testcontainers
+      # PostgreSQL so JobLauncher / JobRepository function. These are kept
+      # separate from the Flyway-owned application schema.
+      initialize-schema: always
+
+# =============================================================================
+# Observability (tests) - MUST stay offline. No collector/scrape dependency.
+# =============================================================================
+management:
+  otlp:
+    tracing:
+      export:
+        # Disable OTLP span export so tests never try to reach a Tempo/OTLP
+        # collector (none exists in CI). Tracing itself remains enabled, so
+        # trace/span IDs still populate the MDC for correlation-ID assertions;
+        # only the network EXPORT is switched off. (The base profile sets an
+        # OTLP endpoint and full sampling - both are neutralized here by turning
+        # export off, keeping the `test` profile fully self-contained.)
+        enabled: false
+
+# =============================================================================
+# Logging - raise the application package level for richer test diagnostics.
+# =============================================================================
+# SECURITY (AAP 0.7.3 L1 / 0.9.3): Hibernate bind-parameter TRACE is intentionally
+# NOT enabled. The loggers `org.hibernate.orm.jdbc.bind` and
+# `org.hibernate.type.descriptor.sql` would emit bound parameter VALUES, which
+# could include the card CVV (card.cvv_cd) or a user password (user_security) -
+# these must NEVER be logged. Only SQL statement text is shown (via show-sql),
+# never the parameter values.
+logging:
+  level:
+    # Keep framework noise low.
+    root: INFO
+    # Verbose application logs for test diagnostics.
+    com.aws.carddemo: DEBUG
+    # Surface Flyway migration steps (which V-scripts ran) during tests.
+    org.flywaydb: INFO
+    # Surface Spring Batch job/step lifecycle for parity-test troubleshooting.
+    org.springframework.batch: INFO
