@@ -1,152 +1,306 @@
-# Extending the Application
+# Extending & Continued Development
 
-This guide shows how to add functionality **the idiomatic way**, following the
-package-by-layer design in [architecture.md](../architecture.md), and lists
-**suggested next tasks** discovered during the migration review.
+This guide explains **how to add or modify functionality** in the migrated CardDemo
+application while preserving behavioral parity and passing the quality gates. It assumes you
+already have a working local setup (see [`./getting-started.md`](./getting-started.md)) and a
+working understanding of the credit-card domain (see [`./domain-context.md`](./domain-context.md)).
 
-> **Golden rules.**
-> 1. Every change must trace to a legacy construct — no new business features
->    (see [decision log](../decision-log.md) and the
->    [traceability matrix](../traceability-matrix.md)).
-> 2. Monetary values are always `BigDecimal` at scale 2 with an explicit
->    `RoundingMode` — never `double`/`float`.
-> 3. Jakarta namespace only (`jakarta.*`), no wildcard imports, constructor
->    injection only.
-> 4. Never edit anything under [`legacy/`](../../legacy) (see [Pitfalls](./pitfalls.md)).
-> 5. Keep the build at **zero warnings** and coverage at **≥ 80%**.
+> **Guardrail — read this first.** CardDemo is a **behavioral-parity re-platforming**, not a
+> rewrite. There is **no feature expansion beyond the COBOL scope**. "Extending" here means:
+> adding tests, refactoring within parity, wiring observability, or implementing already-scoped
+> behavior — **not** inventing new business capabilities. Every change must **preserve the
+> observable contracts** (screen fields, PF-key paths, batch reject codes, file record layouts,
+> return codes, and monetary computations), be reflected in
+> [`../traceability-matrix.md`](../traceability-matrix.md), and — if it involves any non-trivial
+> decision or deviation — be recorded in [`../decision-log.md`](../decision-log.md). External MQ
+> integration, RACF / mainframe-security replatform, and 3270 / BMS screen emulation are
+> **out of scope**.
+
+The COBOL source is retained **read-only under [`legacy/`](../../legacy)** for reference; never
+edit it (see [`./pitfalls.md`](./pitfalls.md)).
 
 ---
 
-## 1. The layers
+## 1. The layered architecture you must follow
+
+All classes live under the root package `com.aws.carddemo` in a **package-by-layer** arrangement
+(authoritatively described in [`../architecture.md`](../architecture.md)). Put new code in the
+package that matches its responsibility:
+
+| Package | Responsibility |
+|---------|----------------|
+| `config` | Spring configuration (`DataSourceConfig`, `BatchConfig`, `OpenApiConfig`, `ObservabilityConfig`, `SecurityConfig`, `JacksonConfig`) |
+| `domain` | JPA entities from copybook record layouts (`Customer`, `Account`, `Card`, `CardXref`, `Transaction`, `UserSecurity`, `TransactionType`, `TransactionCategory`, `DisclosureGroup`, `TransactionCategoryBalance`, `DailyTransaction`) |
+| `domain.type` | the `Money` value object — `BigDecimal` at scale 2 with `RoundingMode.HALF_UP` |
+| `repository` | one Spring Data JPA repository per entity (replaces VSAM file I/O) |
+| `dto` | request/response DTOs, one pair per BMS screen (from the symbolic copybooks) |
+| `mapper` | hand-written entity ↔ DTO mappers (no MapStruct) |
+| `web` | one `@RestController` per online program (17 controllers) |
+| `service` | business logic ported from COBOL paragraphs/sections |
+| `service.rule` | discrete validation rule components (Strategy pattern) — one per COBOL edit paragraph |
+| `batch` | Spring Batch job configs, with `reader` / `processor` / `writer` subpackages |
+| `exception` | typed exception model (`FileStatusException`, `RejectCode`, `GlobalExceptionHandler`, `CicsRespMapper`) |
+| `observability` | `CorrelationIdFilter` and tracing configuration |
+| `security` | `UserDetailsService` over `user_security` and role mapping |
+| `common.util` | shared utilities (`DateUtils`, `IdGenerator`, `FixedWidthCodec`) |
+
+### Online request flow
+
+An HTTP request enters the web layer and flows down through hand-written mappers to the service
+layer, which applies business rules and reaches PostgreSQL **only** through repositories:
+
+```mermaid
+graph LR
+    Client["REST client / OpenAPI UI"] --> W["web/ @RestController<br/>(HTTP + DTO in/out)"]
+    W --> M["mapper/<br/>(DTO / entity)"]
+    W --> S["service/ + service.rule/<br/>(business logic + validation)"]
+    S --> R["repository/<br/>(Spring Data JPA)"]
+    R --> DB[("PostgreSQL 16")]
+    Cross["observability/ + security/ + common.util/"] -.-> W
+    Cross -.-> S
+```
+
+- **`web/` (`@RestController`)** — owns only the HTTP surface: binds the request DTO, calls a
+  service, returns the response DTO. No business logic here.
+- **`mapper/`** — converts DTO ↔ entity with explicit, hand-written field mapping (keeps
+  field-level traceability visible).
+- **`service/` (+ `service.rule/`)** — holds the ported COBOL business logic and validation rules,
+  preserving control flow and evaluation order.
+- **`repository/`** — the only path to the database (Spring Data JPA over PostgreSQL 16).
+- **Cross-cutting** — `observability/`, `security/`, and `common.util/` feed all layers.
+
+### Batch flow
+
+The batch surface reuses the same service layer. A `batch/` `Job` is composed of chunk-oriented
+`Step`s, each built from a `reader` → `processor` → `writer`, with the processor delegating
+business logic to `service/`:
 
 ```
-web/         @RestController per online program   (HTTP surface)
-  ↓ mapper/  hand-written DTO ⇄ entity
-service/     business logic ported from COBOL paragraphs
-  service/rule/  one component per COBOL edit/validation paragraph
-repository/  Spring Data JPA (replaces VSAM file I/O)
-domain/      JPA entities (from copybook record layouts)
-  domain/type/  Money value object
-batch/       Spring Batch Job/Step/chunk (replaces JCL/batch programs)
-exception/   typed FILE STATUS / CICS RESP / reject-code translation
-common/, observability/, security/, config/   cross-cutting
+batch/ Job
+  └── Step (chunk-oriented)
+        reader/     FlatFileItemReader via FixedWidthCodec, or a paged repository reader
+        processor/  delegates business logic to service/
+        writer/     FlatFileItemWriter preserving exact record layouts, or a JPA writer
 ```
 
-Data flows top-to-bottom online; batch enters at `batch/` and reuses `service/`
-and `repository/`.
+---
+
+## 2. Walkthrough: add or modify an online endpoint
+
+To add or adjust a screen behavior, work top-down through the layers. Tie each step to the layer
+it belongs in:
+
+1. **DTOs (`dto/`).** Define or adjust the request/response DTO pair from the screen's BMS
+   symbolic copybook. **Preserve the BMS field names, maximum lengths, PIC-derived types, edit
+   rules, and PF-key action fields** (encode `Enter` / `PF3` / `PF7` / `PF8`, etc. as explicit
+   action fields — never a rendered terminal). Cross-check the field contract against
+   [`../traceability-matrix.md`](../traceability-matrix.md).
+2. **Validation (`service.rule/`).** Add input validation as **Bean Validation annotations** on
+   the DTO and/or a discrete **rule component under `service/rule/`** (Strategy pattern — **one
+   component per COBOL edit/validation paragraph**).
+3. **Business logic (`service/`).** Implement the behavior in the appropriate `service/` class,
+   **preserving the COBOL control flow and evaluation order** of the source paragraphs.
+4. **Mapper (`mapper/`).** Add a hand-written `mapper/` method for entity ↔ DTO. **Do not**
+   introduce MapStruct or any annotation-processor mapper — the hand-written choice is deliberate
+   and recorded in [`../decision-log.md`](../decision-log.md).
+5. **Controller (`web/`).** Expose the behavior through a `@RestController` that binds the request
+   DTO, calls the service, and returns the response DTO. Use **constructor injection** for every
+   dependency (never field `@Autowired`).
+6. **Data access (`repository/`).** Reach data **only** through `repository/` interfaces — no
+   direct SQL in services except through repository query methods. Reproduce VSAM browse patterns
+   as sorted/paged queries.
+7. **Tests.** Add **unit tests** (JUnit 5 + Mockito) for the service and rule components and
+   **Testcontainers integration tests** against a real PostgreSQL 16 for the repository/controller
+   path. Keep combined line coverage **≥ 80%** (JaCoCo gate).
+
+> **Preserve pseudo-conversational behavior.** Where a screen distinguishes first-time entry from
+> re-entry, model the `CDEMO-PGM-CONTEXT` first-time-vs-re-entry flag explicitly so screen
+> initialization matches the legacy. See [`./pitfalls.md`](./pitfalls.md).
 
 ---
 
-## 2. Add a new online screen (controller)
+## 3. Walkthrough: add or modify a batch job
 
-Work from the BMS map and its symbolic copybook, then the online program:
+Work from the batch program and its JCL trigger. Everything business-related lives in `service/`,
+so the online and batch surfaces share one implementation.
 
-1. **DTOs** — from the symbolic copybook in
-   [`legacy/cpy-bms/`](../../legacy/cpy-bms), create a `*Request` and `*Response`
-   pair under `dto/`. Preserve **every** field name, maximum length, PIC-derived
-   type, and edit rule. Encode PF-key actions (Enter/PF3/PF4/PF5/PF7/PF8/PF12) as
-   explicit action fields, not a rendered terminal.
-2. **Mapper** — add a hand-written mapper under `mapper/` for DTO ⇄ entity. Do
-   **not** introduce an annotation-processor mapper (see the mapper decision in the
-   [decision log](../decision-log.md)); explicit mapping preserves field-level
-   traceability.
-3. **Service** — port the online program's business paragraphs into a method on
-   the matching `service/` class, preserving control flow and evaluation order.
-   Each COBOL edit/validation paragraph becomes a component under `service/rule/`.
-4. **Controller** — add a `@RestController` under `web/` that binds the request
-   DTO, calls the service, and returns the response DTO. Model the
-   first-entry-vs-re-entry flag (`CDEMO-PGM-CONTEXT`) explicitly so screen
-   initialization matches the legacy.
-5. **Exceptions** — surface `FILE STATUS` / CICS `RESP` outcomes through the typed
-   hierarchy in `exception/` so the `GlobalExceptionHandler` maps them to the
-   correct HTTP status.
-6. **Tests** — unit-test the service/rules; add a controller slice test; assert
-   field contracts against the BMS map.
-7. **Traceability** — add the program's paragraphs and every DTO field / PF-key to
-   the [traceability matrix](../traceability-matrix.md).
+1. **Reader (`batch/reader/`).** For an external fixed-width file input, use a `FlatFileItemReader`
+   wired to the `FixedWidthCodec` so column positions and record lengths match the legacy layout
+   exactly. For a database-driven step, use a **paged repository reader** ordered by the key.
+2. **Processor (`batch/processor/`).** Put the per-item business logic here, **delegating to
+   `service/`** — do not duplicate business rules in the batch layer.
+3. **Writer (`batch/writer/`).** Use a `FlatFileItemWriter` that **preserves the exact record
+   layout** for external file outputs (e.g. the reject file), or a JPA writer for database output.
+4. **Job config (`batch/`).** Compose the step(s) into a `Job`. Map JCL step ordering and DD
+   dependencies to **step / flow ordering**; map SORT utilities to a Java `Comparator` or an
+   `ORDER BY` query; and map job return codes to batch exit codes **0 / 4 / 8** (for example,
+   posting returns a non-zero RC when rejects occur).
+5. **Scheduling.** Batch scheduling lives in the **CI/CD workflow** (`.github/workflows/ci.yml`) —
+   there is **no in-application scheduler**.
 
----
-
-## 3. Add a new batch job
-
-Work from the batch program and its JCL trigger:
-
-1. **Reader/Processor/Writer** — under `batch/reader|processor|writer/`, model the
-   sequential flow as a chunk-oriented step. External fixed-width files use
-   `FlatFileItemReader`/`Writer` with the `FixedWidthCodec` so column positions and
-   record lengths match the legacy layout exactly (e.g. the 430-byte DALYREJS
-   reject record).
-2. **Job config** — under `batch/`, compose the step(s) into a `Job`. Map JCL
-   step ordering and DD dependencies to step/flow ordering; map SORT utilities to a
-   Java `Comparator` or `ORDER BY`; map return codes to batch exit codes
-   **0 / 4 / 8** (e.g. posting returns **RC=4** when rejects occur).
-3. **Service reuse** — put business logic in `service/`, not in the batch
-   components, so online and batch share one implementation.
-4. **Tests** — add **golden-file** tests comparing output row-for-row against
-   fixtures derived from the legacy layouts and seed data. Interest must match the
-   COBOL formula to the cent.
-5. **Scheduling** — batch scheduling moves to the CI/CD workflow, not an in-app
-   scheduler.
+> **Parity anchors — do not drift.** Three batch computations carry the highest regression risk
+> and must be reproduced exactly (see [`./pitfalls.md`](./pitfalls.md)):
+>
+> - **Posting reject codes `100` / `101` / `102` / `103`** — reproduce the exact validation order
+>   and short-circuit behavior of [`legacy/cbl/CBTRN02C.cbl`](../../legacy/cbl/CBTRN02C.cbl);
+>   reordering changes which code a record receives.
+> - **Interest formula** — [`legacy/cbl/CBACT04C.cbl`](../../legacy/cbl/CBACT04C.cbl) computes
+>   `WS-MONTHLY-INT = (TRAN-CAT-BAL * DIS-INT-RATE) / 1200`, reproduced to the cent as
+>   `monthlyInterest = tranCatBal.multiply(intRate).divide(BigDecimal.valueOf(1200), 2, RoundingMode.HALF_UP)`.
+> - **`TRAN-ID` generation** — the increment-from-max parity of
+>   [`legacy/cbl/COTRN02C.cbl`](../../legacy/cbl/COTRN02C.cbl), centralized in `IdGenerator`.
+>
+> Assert these with **golden-file tests** comparing output row-for-row against fixtures derived
+> from the legacy layouts and seed data.
 
 ---
 
-## 4. Add or change a domain entity
+## 4. Walkthrough: schema change (Flyway)
 
-1. Derive fields from the copybook in [`legacy/cpy/`](../../legacy/cpy); monetary
-   fields → `BigDecimal` + `DECIMAL(x,2)`.
-2. Add a Flyway migration under `src/main/resources/db/migration/` (never edit an
-   applied migration; add a new `V*__*.sql`).
-3. Add the Spring Data repository under `repository/`. Reproduce VSAM browse
-   patterns as sorted/paged queries; reproduce alternate-index browses as indexed
-   `ORDER BY` queries — remember the transaction chronological index is on
-   **`proc_ts`** (see [Pitfalls](./pitfalls.md)).
-4. Use `@Version` optimistic locking to reproduce the READ-UPDATE-REWRITE
-   integrity (a documented intentional improvement).
+The database schema is managed by **Flyway** under
+[`src/main/resources/db/migration/`](../../src/main/resources/db/migration) (`V1__schema.sql`,
+`V2__reference_data.sql`, ...). To change the schema:
+
+1. **Add a new versioned migration** — **never edit a migration that has already been applied.**
+   Create the next `V*__*.sql` file.
+2. **Keep monetary columns `DECIMAL(x,2)`** to match the `BigDecimal` scale-2 discipline; never
+   store money as a floating-point type.
+3. **Add indexes and foreign keys consistent with [`../architecture.md`](../architecture.md).**
+   Formalize VSAM alternate indexes as B-tree indexes and application-enforced relationships as
+   real foreign keys (documented improvements — see [`../decision-log.md`](../decision-log.md)).
+4. **Seed data** lives under
+   [`src/main/resources/db/seed/`](../../src/main/resources/db/seed) and is derived from the
+   delimited ASCII files in [`legacy/data/ASCII/`](../../legacy/data/ASCII); keep seed rows
+   consistent with the reference-data migration.
+
+Add or change a domain entity alongside the migration: derive fields from the copybook in
+[`legacy/cpy/`](../../legacy/cpy) (monetary fields → `BigDecimal`), add the Spring Data repository
+under `repository/`, and use a JPA `@Version` column for optimistic locking to reproduce the COBOL
+READ-UPDATE-REWRITE integrity (an intentional improvement recorded in
+[`../decision-log.md`](../decision-log.md)).
 
 ---
 
-## 5. Before you open a pull request
+## 5. Repository conventions (MUST enforce)
 
-- `./mvnw -B clean verify` is green: **zero warnings**, tests pass, **JaCoCo ≥ 80%**.
-- `mvn -B dependency-check:check` reports **zero critical/high** CVEs.
-- No hardcoded secrets; the CVV is never logged or returned in full; passwords are
-  never logged.
-- New constructs are reflected in the [traceability matrix](../traceability-matrix.md);
-  any non-trivial decision or deviation has a [decision log](../decision-log.md) entry.
+These are hard rules — the build enforces most of them, and a violation will fail CI:
+
+- **Constructor injection only** — no field `@Autowired`. Declare dependencies `final` and inject
+  them through the constructor.
+- **Jakarta namespace only** — use `jakarta.*` (persistence, servlet, validation), **never**
+  `javax.*` (Spring Boot 3.x).
+- **`BigDecimal` scale 2 with `RoundingMode.HALF_UP` for ALL money** — `double` / `float` are
+  **prohibited** for monetary values; centralize monetary arithmetic through the `Money` value
+  object.
+- **No wildcard imports** — explicit imports only (keeps the build warning-free).
+- **Zero-warning build** — `./mvnw -B clean verify` must compile cleanly with no warnings.
+- **≥ 80% line coverage** — enforced by the JaCoCo gate.
+- **Zero critical/high CVEs** — enforced by OWASP `dependency-check` via `failBuildOnCVSS`.
+- **No hardcoded secrets** — all connection strings and secrets resolve from environment variables
+  (e.g. `${DB_URL}`, `${DB_USERNAME}`, `${DB_PASSWORD}`); **never log the card CVV or passwords**.
+- **Rationale goes in the decision log, not in code comments** — record the *why* in
+  [`../decision-log.md`](../decision-log.md).
+
+Versions are fixed for the whole project: **Java 25 (LTS)**, **Spring Boot 3.5.16**,
+**PostgreSQL 16**, and **springdoc-openapi 2.8.17**. Do not introduce alternative versions.
 
 ---
 
-## 6. Suggested next tasks
+## 6. Contribution workflow
 
-Discovered during the migration review; ordered roughly by priority.
+The contribution process follows the repository's
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md). Before sending a pull request, ensure that:
 
-1. **Land the application modules.** Materialize `src/main/java/**`,
-   `src/main/resources/**`, and `src/test/**` per the target structure in
-   [architecture.md](../architecture.md), starting with `domain/` + `repository/`
-   and the Flyway schema, then the core posting/interest batch jobs (highest
-   parity risk).
-2. **Golden-file parity harness.** Build fixtures from the legacy seed data and
-   assert row-for-row parity for posting, the 430-byte reject file, interest,
-   statements, and reports — this is the primary defense against decimal/ordering
-   drift.
-3. **Reject-path coverage.** A dedicated test per reject code (100/101/102/103)
+1. You are working against the **latest source on the `main` branch**.
+2. You have **checked existing open and recently merged pull requests** so you are not duplicating
+   work already addressed.
+3. You have **opened an issue to discuss any significant work** first — so your time is not wasted.
+
+Then, to submit a change:
+
+1. **Fork** the repository.
+2. Make a **focused change** — modify only what your contribution needs. Do **not** reformat
+   unrelated code; broad reformatting makes the real change hard to review.
+3. **Ensure local tests pass.** Run the full gate before submitting:
+   ```bash
+   ./mvnw -B clean verify
+   ```
+   This must be green: a **zero-warning compile under Java 25**, all unit + Testcontainers
+   integration tests passing, **JaCoCo ≥ 80%**, and the **OWASP dependency-check** reporting
+   **zero critical/high CVEs**.
+4. **Commit** to your fork using **clear commit messages**.
+5. **Open a pull request**, answering any default questions in the pull-request template.
+6. **Pay attention to the automated CI results** on the pull request and stay involved in the
+   conversation — address any failures reported.
+
+**Security issues.** If you discover a potential security vulnerability, **do not create a public
+GitHub issue**. Report it privately to AWS/Amazon Security via the
+[vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/).
+
+**Code of Conduct.** This project has adopted the
+[Amazon Open Source Code of Conduct](https://aws.github.io/code-of-conduct).
+
+**License.** Contributions are made under the **Apache License 2.0**; see the root
+[`LICENSE`](../../LICENSE). You will be asked to confirm the licensing of your contribution.
+
+---
+
+## 7. Explainability & traceability discipline
+
+Every change carries two documentation obligations:
+
+- **Record every non-trivial decision or deviation** in
+  [`../decision-log.md`](../decision-log.md) — capture the decision, the alternatives considered,
+  the rationale, and the risk. This is where design rationale belongs (not in code comments).
+- **Reflect every new or changed source construct** in
+  [`../traceability-matrix.md`](../traceability-matrix.md) — keep the mapping **bidirectional** and
+  at **100% COBOL-paragraph coverage**, with no gaps. Add the program's paragraphs and every DTO
+  field / PF-key you touch.
+
+---
+
+## 8. Suggested next tasks
+
+Discovered during the migration review; ordered roughly by priority. Each stays within parity and
+the no-feature-expansion boundary.
+
+1. **Land the application modules.** Materialize `src/main/java/**`, `src/main/resources/**`, and
+   `src/test/**` per the target structure in [`../architecture.md`](../architecture.md), starting
+   with `domain/` + `repository/` and the Flyway schema, then the core posting/interest batch jobs
+   (highest parity risk).
+2. **Golden-file parity harness.** Build fixtures from the legacy seed data and assert row-for-row
+   parity for posting, the reject file, interest, statements, and reports — the primary defense
+   against decimal/ordering drift.
+3. **Reject-path coverage.** A dedicated test per reject code (`100` / `101` / `102` / `103`)
    reproducing each legacy trigger condition in the exact validation order.
-4. **Field-contract tests.** Assert each screen DTO preserves the BMS field names,
-   lengths, types, edit rules, and PF-key actions (including PF4/PF5/PF12 where the
-   source program uses them).
-5. **Stand up the observability stack locally.** Add `docker-compose.yml`
-   (PostgreSQL + Prometheus + Tempo + Grafana), then verify correlation-id
-   propagation, traces, metrics, and the [Grafana dashboard template](../observability/grafana-dashboard.json)
-   against the running stack — at which point the observability docs can move from
-   "planned/designed" to "verified locally".
-6. **CI workflow.** Add `.github/workflows/ci.yml` to run `clean verify`, publish
-   JaCoCo, and run OWASP dependency-check with an NVD API key so the security gate
-   is fast and deterministic.
-7. **Maven wrapper.** Generate `mvnw`/`mvnw.cmd`/`.mvn/` so the exact Maven version
-   is reproducible.
-8. **Spring Boot lifecycle.** Track the Boot 3.5.x support status (OSS support has
-   ended for this line — see [decision log](../decision-log.md)); plan a supported
-   upgrade path before any production use.
+4. **Field-contract tests.** Assert each screen DTO preserves the BMS field names, lengths, types,
+   edit rules, and PF-key actions.
+5. **Stand up the observability stack locally.** Add `docker-compose.yml` (PostgreSQL + Prometheus
+   + Tempo + Grafana), then verify correlation-id propagation, traces, metrics, and the
+   [Grafana dashboard template](../observability/grafana-dashboard.json) against the running stack
+   — moving observability from "planned/designed" to "verified locally".
+6. **CI workflow.** Add `.github/workflows/ci.yml` to run `clean verify`, publish JaCoCo, and run
+   OWASP dependency-check with an NVD API key so the security gate is fast and deterministic.
+7. **Maven wrapper.** Generate `mvnw` / `mvnw.cmd` / `.mvn/` so the exact Maven version is
+   reproducible.
+8. **Spring Boot lifecycle.** Track the Boot 3.5.x support status and plan a supported upgrade path
+   before any production use (see [`../decision-log.md`](../decision-log.md)).
 9. **Data anomalies.** Carry the classified legacy source anomalies (see
-   [Pitfalls](./pitfalls.md) §7) into fixtures/tests as known conditions —
-   **classify, never edit** the legacy bytes.
+   [`./pitfalls.md`](./pitfalls.md)) into fixtures/tests as known conditions — **classify, never
+   edit** the legacy bytes.
+
+---
+
+## Related documentation
+
+- [`./getting-started.md`](./getting-started.md) — clean-machine setup, build, and run.
+- [`./domain-context.md`](./domain-context.md) — the credit-card business model and the legacy
+  authorities.
+- [`./pitfalls.md`](./pitfalls.md) — the traps to avoid (decimal fidelity, fixed-width layouts, the
+  alternate-index timestamp, the disclosure-group key, EBCDIC bytes).
+- [`../architecture.md`](../architecture.md) — the authoritative target-architecture map.
+- [`../decision-log.md`](../decision-log.md) — rationale for every non-trivial decision and
+  deviation.
+- [`../traceability-matrix.md`](../traceability-matrix.md) — bidirectional source-construct →
+  target mapping (100% paragraph coverage).
+- [`../../README.md`](../../README.md) — project overview and the Java build/run entry point.

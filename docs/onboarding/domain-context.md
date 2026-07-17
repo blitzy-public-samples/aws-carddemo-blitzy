@@ -1,199 +1,208 @@
-# Domain Context
+# CardDemo — Domain Context
 
-This document explains **what CardDemo does** and **where the authoritative
-behavior lives in the legacy source**, so you can reason about any change without
-guessing. CardDemo is an AWS-published mainframe modernization sample: a
-credit-card account-management system originally implemented in COBOL, CICS,
-VSAM, and JCL. The migration preserves 100% of its observable behavior and adds
-no business features.
+This document is a **functional primer** for developers who are new to the migrated
+CardDemo codebase. CardDemo is a **credit-card account-management application** —
+originally written in COBOL/CICS/VSAM/JCL and now re-platformed to **Java 25 (LTS) +
+Spring Boot 3.5.16** — and this Java re-platforming preserves **100% of the original
+COBOL business behavior with no new features**. The original COBOL source is retained
+read-only under [`legacy/`](../../legacy) for reference (relocated there during the
+migration and kept immutable — it is never edited).
 
-> **Authority principle.** The relocated COBOL/JCL/CSD/catalog files under
-> [`legacy/`](../../legacy) are the **single source of truth** for behavior. They
-> are retained read-only for reference and are **never edited** (see
-> [Pitfalls](./pitfalls.md)). When code and documentation disagree, the legacy
-> source wins.
-
----
-
-## 1. The business, in one paragraph
-
-CardDemo manages customers, their accounts, and the cards on those accounts.
-Cardholders accrue transactions; a nightly batch flow validates and posts those
-transactions to account balances, applies interest by disclosure group, and
-produces statements and reports. A small set of online screens lets clerks and
-administrators view and maintain customers, accounts, cards, and transactions,
-pay bills, request reports, and manage users. Authorization is role-based:
-**`A` = Administrator**, **`U` = regular User**.
+**Reader takeaway.** After reading this page you will understand the two kinds of user
+(the *actors*), the core business *entities*, the 17 online *screens*, and the 11 *batch
+jobs* — enough to make sense of the layered Java code. From here, continue to
+[`../architecture.md`](../architecture.md) for the layered design and data model, and to
+[`../traceability-matrix.md`](../traceability-matrix.md) for the exhaustive,
+paragraph-level COBOL→Java mapping.
 
 ---
 
-## 2. Core entities and their legacy record layouts
+## What CardDemo does
 
-Each VSAM dataset maps to one PostgreSQL table; each record layout is defined by
-a copybook under [`legacy/cpy/`](../../legacy/cpy). The monetary fields are COBOL
-packed decimal (`COMP-3`) and migrate to `DECIMAL(x,2)` / `BigDecimal` — never
-floating point.
+CardDemo is a **Credit Card management application**. It lets users manage **Accounts**,
+**Credit Cards**, **Transactions**, and **Bill Payments**. Around those four capabilities
+sit the supporting concerns you would expect of a card system: customers who own the
+accounts, a nightly batch flow that posts transactions to balances and applies interest,
+statements and reports, and administrative user management.
 
-| Entity (table) | Copybook | Record length | Key notes |
-|----------------|----------|---------------|-----------|
-| Customer (`customer`) | `CVCUS01Y.cpy` | 500 B | SSN / government ID / DOB are sensitive |
-| Account (`account`) | `CVACT01Y.cpy` | 300 B | 5 monetary fields; `ACCT-GROUP-ID` is a **grouping attribute**, not a foreign key (see §4) |
-| Card (`card`) | `CVACT02Y.cpy` | 150 B | CVV is sensitive |
-| Card cross-reference (`card_xref`) | `CVACT03Y.cpy` | 50 B | ties card ↔ account ↔ customer |
-| Transaction (`transaction`) | `CVTRA05Y.cpy` | 350 B | 16-char id; two timestamps — origination and **processing** (see §3) |
-| Daily transaction (`daily_transaction`) | `CVTRA06Y.cpy` | 350 B | staging input for posting |
-| User security (`user_security`) | `CSUSR01Y.cpy` | 80 B | role `A`/`U` |
-| Transaction type (`transaction_type`) | `CVTRA03Y.cpy` | reference | |
-| Transaction category (`transaction_category`) | `CVTRA04Y.cpy` | reference | compound key (type, category) |
-| Disclosure group (`disclosure_group`) | `CVTRA02Y.cpy` | 50 B | **compound** key (group, type, category); holds the interest rate |
-| Transaction-category balance (`tran_cat_balance`) | `CVTRA01Y.cpy` | 50 B | compound key (account, type, category) |
+### The two user types
 
-The relational schema, indexes, and foreign keys are described in
-[architecture — Data Model](../architecture.md) and mapped construct-by-construct
-in the [traceability matrix](../traceability-matrix.md).
+Authorization is role-based, and there are exactly **two roles**:
 
----
+- **Regular User** — performs the day-to-day / back-office functions: viewing and updating
+  accounts and cards, listing/viewing/adding transactions, requesting reports, and paying
+  bills.
+- **Admin User** — performs the admin-only functions, which in CardDemo means **user
+  management** (list, add, update, delete application users).
 
-## 3. Two transaction timestamps — get this right
+The role originates from the legacy COMMAREA condition names `CDEMO-USRTYP-ADMIN` (`'A'`)
+and `CDEMO-USRTYP-USER` (`'U'`) defined in
+[`legacy/cpy/COCOM01Y.cpy`](../../legacy/cpy/COCOM01Y.cpy). In the Java target this maps
+directly to the Spring Security roles **`ADMIN`** (`'A'`) and **`USER`** (`'U'`).
 
-`CVTRA05Y` defines **two** 26-character timestamps on the transaction record:
+### Demo logins (orientation only)
 
-- `TRAN-ORIG-TS` — origination timestamp, at offset 278.
-- `TRAN-PROC-TS` — **processing** timestamp, at offset 304.
+Two seeded logins are useful for orientation: **`ADMIN001`** (type `A` = Admin) and
+**`USER0001`** (type `U` = Regular User). They exist in the seeded `user_security` table
+and share a well-known demo passphrase (`PASSWORD`).
 
-The VSAM alternate index used for chronological browsing
-(`TRANSACT.VSAM.AIX`) is keyed on the **processing** timestamp: the catalog
-listing ([`legacy/catlg/LISTCAT.txt`](../../legacy/catlg/LISTCAT.txt)) shows the
-AIX with `KEYLEN=26` at `AXRKP=304`, i.e. `TRAN-PROC-TS`, and maps to the
-`proc_ts` column. Ordering transactions by origination time is **not** the legacy
-browse order. This distinction is a documented parity hotspot; see
-[Pitfalls](./pitfalls.md).
+> **These are legacy demo seed data, not a security recommendation.** The demo passphrase
+> is a convenience inherited from the original mainframe sample and must be re-secured
+> before any non-demo use. Credentials are externalized (never hardcoded); the seeded
+> value is stored as a hashed password, and password-hashing and CVV-handling hardening
+> are recorded as intentional security improvements in
+> [`../decision-log.md`](../decision-log.md). See
+> [`./getting-started.md`](./getting-started.md) for how to run the application and log in.
 
 ---
 
-## 4. The disclosure-group relationship — why there is no simple foreign key
+## Core domain entities
 
-An account carries a single `ACCT-GROUP-ID` (`CVACT01Y`, 10 chars). It is
-tempting to model this as `account.group_id → disclosure_group`, but the
-disclosure-group record (`CVTRA02Y`) has a **composite** primary key —
-group id **+** transaction type **+** transaction category — so a group id
-**alone is not unique** and cannot be a foreign-key target. The faithful design
-keeps `group_id` as a plain grouping attribute on `account` and performs
-disclosure lookups as composite `(group_id, type_cd, cat_cd)` queries at the
-application layer. This is recorded as an intentional, source-faithful deviation
-in the [decision log](../decision-log.md); see also [Pitfalls](./pitfalls.md).
+The business entities are JPA entities under the `com.aws.carddemo.domain` package, each
+mapped to one PostgreSQL 16 table (created and seeded by Flyway). Every entity derives from
+a legacy record layout (copybook) under [`legacy/cpy/`](../../legacy/cpy).
 
----
+| Entity | Java class (`com.aws.carddemo.domain`) | Table | Purpose |
+|--------|----------------------------------------|-------|---------|
+| Customer | `Customer` | `customer` | Cardholder personal data — name, address, SSN, date of birth (**SSN / DOB are sensitive**). |
+| Account | `Account` | `account` | Credit-card account — balances, credit limit, cycle credit/debit, expiration. All **monetary fields are `BigDecimal` / `DECIMAL(12,2)`**. |
+| Card | `Card` | `card` | A physical/virtual card — 16-char card number, CVV (**sensitive**), expiry, status. |
+| Card Cross-reference | `CardXref` | `card_xref` | Links **card ↔ account ↔ customer**. |
+| Transaction | `Transaction` | `transaction` | Posted transactions — 16-char id, amount (`BigDecimal` / `DECIMAL(11,2)`), type/category, origination and processing timestamps. |
 
-## 5. Online surfaces (screens)
+### Reference data
 
-Seventeen online programs, each with a CICS transaction id and a BMS map, become
-one REST controller + request/response DTO pair each. The DTOs preserve every
-BMS field name, length, PIC-derived type, edit rule, and PF-key action.
+The following reference and staging tables complete the model:
 
-| Txn | Program | Purpose |
-|-----|---------|---------|
-| CC00 | COSGN00C | Sign-on / authentication |
-| CM00 | COMEN01C | Main menu |
-| CA00 | COADM01C | Admin menu |
-| CAVW | COACTVWC | Account view |
-| CAUP | COACTUPC | Account update (largest program; extensive edit rules) |
-| CCLI | COCRDLIC | Card list |
-| CCDL | COCRDSLC | Card view |
-| CCUP | COCRDUPC | Card update |
-| CT00 | COTRN00C | Transaction list |
-| CT01 | COTRN01C | Transaction view |
-| CT02 | COTRN02C | Transaction add |
-| CR00 | CORPT00C | Transaction reports |
-| CB00 | COBIL00C | Bill payment |
-| CU00 | COUSR00C | List users |
-| CU01 | COUSR01C | Add user |
-| CU02 | COUSR02C | Update user |
-| CU03 | COUSR03C | Delete user |
+| Entity | Java class | Table | Notes |
+|--------|-----------|-------|-------|
+| Transaction Type | `TransactionType` | `transaction_type` | Lookup of transaction type codes. |
+| Transaction Category | `TransactionCategory` | `transaction_category` | Compound key `(type_cd, cat_cd)`. |
+| Disclosure Group | `DisclosureGroup` | `disclosure_group` | Compound key `(group_id, type_cd, cat_cd)`; holds the interest rate as `DECIMAL(6,2)`. |
+| Transaction Category Balance | `TransactionCategoryBalance` | `tran_cat_balance` | Compound key `(acct_id, type_cd, cat_cd)`; running balance as `DECIMAL(11,2)`; mutated by posting and interest calc. |
+| Daily Transaction (staging) | `DailyTransaction` | `daily_transaction` | Staging input consumed by the daily posting job. |
 
-> The CICS resource-definition file
-> [`legacy/csd/CARDDEMO.CSD`](../../legacy/csd/CARDDEMO.CSD) registers 18
-> transactions and 18 programs. One entry — transaction `CDV1` → program
-> `COCRDSEC` — has **no COBOL implementation** in `legacy/cbl/` and is therefore a
-> **source-only / reference-only** registry entry, not a production surface. Treat
-> the 17 programs above as the online surface set. Library and TDQUEUE entries in
-> the CSD are likewise reference-only.
+### How the entities relate
 
-Screen navigation was pseudo-conversational (CICS COMMAREA + `XCTL` +
-`RETURN TRANSID`); it becomes explicit server-side flow state and controller
-navigation. The first-entry-vs-re-entry flag (`CDEMO-PGM-CONTEXT`) must be
-modeled explicitly so screen initialization behaves identically.
+Relationships that were enforced only in COBOL application logic are, in the target, made
+into **real database foreign keys** — a documented integrity *improvement*, not a behavior
+change (see [`../decision-log.md`](../decision-log.md)):
+
+- `card` → `account`
+- `card_xref` → `customer` **and** `account`
+- `transaction` → `card`, `transaction_type`, and `transaction_category`
+- `tran_cat_balance` → `account` **and** `transaction_category`
+
+One relationship is deliberately **not** a single-column foreign key: an account carries a
+`group_id`, but `disclosure_group` has a **compound** primary key
+`(group_id, type_cd, cat_cd)`, so `group_id` **alone is not unique** and cannot be a
+foreign-key target. Faithfully to the COBOL original, `account.group_id` is kept as a plain
+grouping attribute and the applicable disclosure/interest row is resolved with a composite
+`(group_id, type_cd, cat_cd)` lookup at the application layer. This source-faithful choice
+is recorded in [`../decision-log.md`](../decision-log.md).
+
+> **The money rule (get this right once).** Every monetary amount is a `BigDecimal` at
+> **scale 2** with **`RoundingMode.HALF_UP`**, stored in `DECIMAL(x,2)` columns —
+> **never** `double` or `float`. The exact interest-formula parity detail lives in
+> [`./pitfalls.md`](./pitfalls.md).
 
 ---
 
-## 6. Batch flows
+## Online functions (screens)
 
-Batch programs under [`legacy/cbl/`](../../legacy/cbl) become Spring Batch jobs;
-their JCL triggers live under [`legacy/jcl/`](../../legacy/jcl). The core nightly
-flow and the reference/print jobs:
+The 17 online programs — each a CICS transaction backed by a BMS map — become one Spring
+MVC **REST controller** each, under `com.aws.carddemo.web`. The table below is the
+authoritative online surface.
 
-| Job | Program(s) | Trigger | Purpose |
-|-----|-----------|---------|---------|
-| Daily transaction validate | CBTRN01C | (daily validate) | read/validate daily input |
-| Daily transaction posting | CBTRN02C | `POSTTRAN.jcl` | post to balances; reject codes 100/101/102/103 |
-| Interest calculation | CBACT04C | `INTCALC.jcl` | interest by disclosure group |
-| Statement generation | CBSTM03A + CBSTM03B | `CREASTMT.JCL` | statements (subprogram → injected file service) |
-| Transaction report | CBTRN03C | `TRANREPT.prc` | transaction detail report |
-| Account/Card/Xref/Customer master print | CBACT01C / CBACT02C / CBACT03C / CBCUS01C | (master print) | reference prints |
-| Transaction combine | COMBTRAN (SORT) | `COMBTRAN` | combine/sort |
-| Transaction backup | TRANBKP (IDCAMS REPRO) | `TRANBKP` | copy/unload backup |
+| Transaction | Screen / Program | Java controller | Function | Access |
+|-------------|------------------|-----------------|----------|--------|
+| CC00 | COSGN00 / COSGN00C | `SignonController` | Signon | All |
+| CM00 | COMEN01 / COMEN01C | `MainMenuController` | Main Menu | Regular User |
+| CAVW | COACTVW / COACTVWC | `AccountViewController` | Account View | User |
+| CAUP | COACTUP / COACTUPC | `AccountUpdateController` | Account Update | User |
+| CCLI | COCRDLI / COCRDLIC | `CardListController` | Credit Card List | User |
+| CCDL | COCRDSL / COCRDSLC | `CardViewController` | Credit Card View | User |
+| CCUP | COCRDUP / COCRDUPC | `CardUpdateController` | Credit Card Update | User |
+| CT00 | COTRN00 / COTRN00C | `TransactionListController` | Transaction List | User |
+| CT01 | COTRN01 / COTRN01C | `TransactionViewController` | Transaction View | User |
+| CT02 | COTRN02 / COTRN02C | `TransactionAddController` | Transaction Add | User |
+| CR00 | CORPT00 / CORPT00C | `TransactionReportController` | Transaction Reports | User |
+| CB00 | COBIL00 / COBIL00C | `BillPaymentController` | Bill Payment | User |
+| CA00 | COADM01 / COADM01C | `AdminMenuController` | Admin Menu | Admin |
+| CU00 | COUSR00 / COUSR00C | `UserListController` | List Users | Admin |
+| CU01 | COUSR01 / COUSR01C | `UserAddController` | Add User | Admin |
+| CU02 | COUSR02 / COUSR02C | `UserUpdateController` | Update User | Admin |
+| CU03 | COUSR03 / COUSR03C | `UserDeleteController` | Delete User | Admin |
 
-Two behaviors are parity-critical and detailed in [Pitfalls](./pitfalls.md):
-
-- **Posting reject codes.** CBTRN02C validates in a fixed order and writes a
-  reason code: **100** cross-reference not found, **101** account not found,
-  **102** over credit limit, **103** transaction after account expiration.
-  Rejected records are written to the reject file (DALYREJS) with a running
-  count; the reject record is a **430-byte** layout (350-byte transaction image +
-  80-byte validation trailer), and the posting job returns **RC=4** when rejects
-  occur.
-- **Interest formula.** Reproduced to the cent with `BigDecimal`:
-  `monthlyInterest = tranCatBal × intRate ÷ 1200`, scale 2, `HALF_UP`
-  (CBACT04C).
-
-> `REPROCT.ctl` is an **IDCAMS `REPRO`** (copy/unload) control member, not a SORT
-> control member. Inline SORT card sequences (e.g. in `COMBTRAN`) are separate and
-> are traced independently in the [traceability matrix](../traceability-matrix.md).
-
----
-
-## 7. Seed and reference data
-
-Seed data lives under [`legacy/data/ASCII/`](../../legacy/data/ASCII) as
-**fixed-width, headerless** files (each record's width equals its copybook record
-length — they are **not** CSV/delimited). The EBCDIC datasets under
-[`legacy/data/EBCDIC/`](../../legacy/data/EBCDIC) are the on-mainframe binary
-snapshots and are byte-protected via [`.gitattributes`](../../.gitattributes).
-
-Two data facts that matter when seeding:
-
-- **Users** exist only in the EBCDIC `USRSEC` dataset (10 rows); there is no ASCII
-  `usrsec.txt`, so `user_security` seeds from the EBCDIC source.
-- **`ACCDATA`** in the EBCDIC directory is a **byte-exact alias** of `ACCTDATA`;
-  only `ACCTDATA.VSAM.KSDS` is authoritative.
-
-Seed (ASCII snapshot) and live (EBCDIC) row counts can differ; treat each as a
-point-in-time snapshot. Exact widths, row counts, and content hashes for every
-artifact are catalogued in the [traceability matrix](../traceability-matrix.md).
+In the Java target these BMS screens are re-expressed as **REST request/response DTOs that
+preserve every field name, length, type, edit rule, and PF-key action** — this is **not** a
+newly rendered web UI, and no screen behavior is added or removed (no feature expansion).
+The live endpoint catalog is available at the running application's Swagger UI
+(`/swagger-ui.html`); see [`./getting-started.md`](./getting-started.md) to run it locally,
+and [`../traceability-matrix.md`](../traceability-matrix.md) for the paragraph-level
+mapping from each program to its controller and service.
 
 ---
 
-## 8. Legacy authority map (where to look)
+## Batch jobs
 
-| You need… | Look in |
-|-----------|---------|
-| Record layouts / field types | [`legacy/cpy/`](../../legacy/cpy) (business), [`legacy/cpy-bms/`](../../legacy/cpy-bms) (screen symbolic maps) |
-| Online program logic | [`legacy/cbl/CO*.cbl`](../../legacy/cbl) |
-| Batch program logic | [`legacy/cbl/CB*.cbl`, `legacy/cbl/*.CBL`](../../legacy/cbl) |
-| Screen field/attribute/PF-key definitions | [`legacy/bms/`](../../legacy/bms) |
-| Batch triggers, dataset load/backup | [`legacy/jcl/`](../../legacy/jcl), [`legacy/proc/`](../../legacy/proc), [`legacy/ctl/`](../../legacy/ctl) |
-| Transaction/program/mapset/file catalog | [`legacy/csd/CARDDEMO.CSD`](../../legacy/csd/CARDDEMO.CSD) |
-| VSAM dataset attributes (key length, RKP, counts) | [`legacy/catlg/LISTCAT.txt`](../../legacy/catlg/LISTCAT.txt) |
+The batch programs become Spring Batch **Job**s under `com.aws.carddemo.batch`. Each derives
+from one or more legacy COBOL programs under [`legacy/cbl/`](../../legacy/cbl), triggered on
+the mainframe by JCL under [`legacy/jcl/`](../../legacy/jcl).
 
-Continue with [Extending the application](./extending.md) and
-[Pitfalls](./pitfalls.md).
+| Spring Batch Job | Source COBOL | Purpose | JCL trigger |
+|------------------|--------------|---------|-------------|
+| `DailyTransactionPostingJob` | CBTRN02C | Core posting: validate staged transactions and post to balances | `POSTTRAN.jcl` |
+| `DailyTransactionValidateJob` | CBTRN01C | Read and validate the daily-transaction input | (daily validate) |
+| `InterestCalculationJob` | CBACT04C | Apply disclosure-group interest to category balances | `INTCALC.jcl` |
+| `StatementGenerationJob` | CBSTM03A + CBSTM03B | Produce account statements (subprogram → injected file service) | `CREASTMT.JCL` |
+| `TransactionReportJob` | CBTRN03C | Transaction detail report | `TRANREPT.prc` |
+| `AccountMasterPrintJob` | CBACT01C | Read/print the account master | (master print) |
+| `CardMasterPrintJob` | CBACT02C | Read/print the card master | (master print) |
+| `XrefPrintJob` | CBACT03C | Read/print the card cross-reference | (master print) |
+| `CustomerMasterPrintJob` | CBCUS01C | Read/print the customer master | (master print) |
+| `TransactionCombineJob` | COMBTRAN (SORT) | Combine/sort transaction files | `COMBTRAN` |
+| `TransactionBackupJob` | TRANBKP (IDCAMS REPRO) | Back up the transaction master | `TRANBKP` |
+
+Job **scheduling** moves out of the application: the mainframe JCL schedule is reproduced by
+the CI/CD workflow (`.github/workflows/ci.yml`), not an in-app scheduler. A JCL **SORT** becomes a Java `Comparator` or an `ORDER BY` query, and the
+generation-data-group (GDG) backup becomes a scheduled database-backup step.
+
+---
+
+## Daily transaction posting flow
+
+Posting is the central business process, and it is **parity-critical**. In plain language:
+
+1. Daily transactions are **staged** in the `daily_transaction` table.
+2. The `DailyTransactionPostingJob` reads each staged record and **validates** it.
+3. A valid record is **posted** — its amount updates both the **account balance** and the
+   relevant **transaction-category balance** (`tran_cat_balance`).
+4. An invalid record is **rejected** with a numeric reason code.
+
+The four reject reasons are assigned in this **exact evaluation order**:
+
+- **100** — card / cross-reference not found
+- **101** — account not found
+- **102** — over credit limit
+- **103** — transaction received after account expiration
+
+The precise evaluation order, the reject-record layout, the batch return code, and the exact
+computations are parity traps detailed in [`./pitfalls.md`](./pitfalls.md) (anchored to
+[`legacy/cbl/CBTRN02C.cbl`](../../legacy/cbl/CBTRN02C.cbl)). Separately, the
+`InterestCalculationJob` applies each account's disclosure-group interest **rate** to its
+category balances; the exact interest formula (reproduced to the cent with `BigDecimal`,
+anchored to `legacy/cbl/CBACT04C.cbl`) is also documented in
+[`./pitfalls.md`](./pitfalls.md).
+
+---
+
+## Related documentation
+
+- [`./getting-started.md`](./getting-started.md) — run CardDemo locally (database, build, login).
+- [`./extending.md`](./extending.md) — how to add or modify a feature while preserving parity.
+- [`./pitfalls.md`](./pitfalls.md) — parity traps (posting order, interest formula) and suggested next tasks.
+- [`../architecture.md`](../architecture.md) — the layered design and the VSAM→PostgreSQL data model.
+- [`../traceability-matrix.md`](../traceability-matrix.md) — the exhaustive, bidirectional COBOL→Java mapping.
+- [`../decision-log.md`](../decision-log.md) — why key decisions were made (foreign keys, optimistic locking, security hardening).
+- [`../../README.md`](../../README.md) — project overview, build/run, and the full application inventory.

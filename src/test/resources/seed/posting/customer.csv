@@ -1,0 +1,2 @@
+cust_id,first_name,middle_name,last_name,addr_line_1,addr_line_2,addr_line_3,state_cd,country_cd,addr_zip,phone_num_1,phone_num_2,ssn,govt_issued_id,dob,eft_account_id,pri_card_holder_ind,fico_credit_score
+900000001,Posting,T,Scenario,1 Test Plaza,,,TX,USA,75001,2145550001,,100000001,DL100000001,1980-01-01,,Y,750
