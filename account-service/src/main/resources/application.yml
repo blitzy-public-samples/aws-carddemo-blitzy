@@ -1,0 +1,184 @@
+# =============================================================================
+# account-service — Base (default-profile) Spring Boot configuration
+# CardDemo Feature F-003 (Account inquiry + update) — Java 17 / Spring Boot 3.5.16
+# -----------------------------------------------------------------------------
+# This is the DEFAULT configuration loaded in every environment. Profile-specific
+# files override ONLY what differs:
+#   * application-docker.yml   -> container datasource (env-vars, no local fallback)
+#   * src/test/.../application-test.yml -> Testcontainers datasource for the suite
+# The active profile is chosen EXTERNALLY (docker via Dockerfile ENV, none for
+# local dev, test for the test suite); this base file never pins one.
+#
+# Authority: AAP 0.3.1, 0.4.2, 0.6.2 (exact-precision money), 0.6.6 (security).
+# All properties below wire together dependencies already declared in pom.xml
+# (spring-boot-starter web/data-jpa/validation/actuator, org.postgresql:postgresql,
+# flyway-core, flyway-database-postgresql, springdoc-openapi-starter-webmvc-ui).
+# This file defines NO schema (Flyway V1 owns DDL) and NO entities.
+# =============================================================================
+spring:
+  application:
+    # Service identity — surfaces in logs, actuator, and OpenAPI metadata.
+    name: account-service
+
+  # ---------------------------------------------------------------------------
+  # Datasource (PostgreSQL). Env-var placeholders with obviously-local dev
+  # defaults so NO real credentials are ever hard-coded (security parity, 0.6.6).
+  # The localhost/carddemo defaults are for local development ONLY; the docker
+  # profile removes the fallbacks and REQUIRES the env vars. The production
+  # datastore is Amazon RDS PostgreSQL (AAP 0.1.1 / 3.7.2).
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    password: ${SPRING_DATASOURCE_PASSWORD:carddemo}
+    driver-class-name: org.postgresql.Driver
+    # -------------------------------------------------------------------------
+    # Connection-pool + driver timeouts (F-05). Bound how long a request may block
+    # when PostgreSQL is unreachable so a database outage fails fast (a few seconds)
+    # instead of the HikariCP default of 30 s. Together with the `db` readiness-group
+    # membership below, an outage makes readiness report DOWN and API calls fail
+    # promptly rather than hanging.
+    # -------------------------------------------------------------------------
+    hikari:
+      # Max wait to acquire a pooled connection before throwing (default 30000 ms -> 3 s).
+      connection-timeout: 3000
+      # Max wait for the pool's connection-validation probe; MUST be < connection-timeout.
+      validation-timeout: 2000
+      # Retain startup fail-fast: a non-negative value makes Hikari validate the very first
+      # connection at pool initialization, so the app still refuses to start if the database
+      # is unreachable at boot. 1 ms keeps that fail-fast without adding measurable delay.
+      initialization-fail-timeout: 1
+      # PostgreSQL JDBC driver socket-level timeouts (SECONDS). connectTimeout bounds the TCP
+      # connect, socketTimeout bounds a blocked read on an established socket, loginTimeout
+      # bounds authentication. These cap the worst-case block below the Hikari ceiling.
+      data-source-properties:
+        connectTimeout: 2
+        socketTimeout: 10
+        loginTimeout: 2
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate. Flyway is the single source of truth for the schema, so
+  # Hibernate MUST NEVER create or alter it.
+  # ---------------------------------------------------------------------------
+  jpa:
+    hibernate:
+      # CRITICAL: validate only — Hibernate checks the Account @Entity against the
+      # Flyway-created `accounts` table and fails fast on any mismatch (AAP 0.4.2).
+      ddl-auto: validate
+    # Disable Open-Session-In-View: keeps the transaction boundary in the service
+    # layer and removes the startup warning.
+    open-in-view: false
+    # Never echo SQL to logs (sanitized logging, 0.6.6).
+    show-sql: false
+    # NOTE: no Hibernate dialect is set — Spring Boot 3.x auto-detects PostgreSQL.
+
+  # ---------------------------------------------------------------------------
+  # Flyway migrations. Applies V1__create_accounts_table.sql then
+  # V2__seed_accounts.sql at startup, using the primary datasource above.
+  # Requires flyway-core + flyway-database-postgresql (Flyway 10+ splits the
+  # per-engine module out of core).
+  # ---------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  # ---------------------------------------------------------------------------
+  # Jackson. CRITICAL (0.6.2): serialize BigDecimal as plain decimal text, never
+  # scientific notation, so monetary values (balances/limits, BigDecimal scale 2)
+  # render exactly in API responses.
+  # NOTE: JSON INPUT hardening is configured in code via the
+  # AccountServiceApplication#jsonHardeningCustomizer bean (it uses Jackson coercion
+  # + StreamReadConstraints configuration that has no YAML equivalent). It (a) rejects
+  # fractional/string `version` tokens and string money tokens rather than silently
+  # coercing them, and (b) applies conservative stream-read limits — document length,
+  # string length, nesting depth, number length (SEC-INPUT-1). A rejected token or an
+  # oversized/deeply nested body becomes a sanitized 400 via GlobalExceptionHandler
+  # (HttpMessageNotReadableException).
+  # ---------------------------------------------------------------------------
+  jackson:
+    generator:
+      write-bigdecimal-as-plain: true
+
+# HTTP listener port — MUST match the Dockerfile `EXPOSE 8080`.
+server:
+  port: 8080
+
+# -----------------------------------------------------------------------------
+# Actuator. Expose only the health endpoint (/actuator/health) and never reveal
+# datasource/db internals in the health body (security).
+# -----------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      # Expose Kubernetes-style probe endpoints in EVERY environment (not only when
+      # Kubernetes is auto-detected): /actuator/health/liveness and
+      # /actuator/health/readiness. (F-05)
+      probes:
+        enabled: true
+      # F-05: place the datasource (`db`) health indicator in the READINESS group so that,
+      # when PostgreSQL is unreachable, /actuator/health/readiness reports DOWN (HTTP 503)
+      # and an orchestrator stops routing traffic to this instance (the only business
+      # capability — account read/update — is unavailable without the database).
+      # Liveness deliberately does NOT include `db`: a transient DB outage must not cause a
+      # pod restart loop, only a readiness (traffic) withdrawal. show-details stays `never`,
+      # so the group still rolls up the db state into UP/DOWN without exposing datasource
+      # internals (endpoint URL, pool details) in the body.
+      group:
+        readiness:
+          include: readinessState,db
+
+# -----------------------------------------------------------------------------
+# Sanitized logging (0.6.6): NEVER log account numbers or monetary values in
+# plaintext. Application packages stay at INFO; the Hibernate SQL and
+# parameter-binding loggers are pinned to WARN so bound values (account_id,
+# current_balance, credit limits, ...) are never emitted at TRACE/DEBUG.
+# -----------------------------------------------------------------------------
+logging:
+  level:
+    root: INFO
+    com.aws.carddemo: INFO
+    org.hibernate.SQL: WARN
+    # CRITICAL: keep at WARN — Hibernate 6 logs bound parameter VALUES at TRACE here.
+    org.hibernate.orm.jdbc.bind: WARN
+    # Hibernate 5-style binder, kept at WARN as defense-in-depth for the same reason.
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN
+    # CQ-OBS-1: Flyway's FlywayExecutor logs "Database: <jdbc-url> (PostgreSQL x)" at INFO on every
+    # startup, which would print the datasource endpoint (e.g. the RDS host) into the logs. Pin it to
+    # WARN so that URL is never emitted; migration progress (logged by DbMigrate/DbValidate) stays at
+    # INFO, so operational visibility of applied migrations is preserved.
+    org.flywaydb.core.FlywayExecutor: WARN
+
+# -----------------------------------------------------------------------------
+# OpenAPI / springdoc (CQ-API-1). Pin the generated document to OpenAPI 3.0.1.
+# springdoc 2.8.x defaults to OpenAPI 3.1.0, but under 3.1 this springdoc/swagger-core
+# line mis-renders every scalar property `type` as "string" (numeric `format`s such as
+# int32/int64 and the numeric `minimum`/`maximum`/`multipleOf` facets are still emitted,
+# but the base `type` is wrong). That would publish the monetary BigDecimal fields and the
+# Long `version` as strings even though they serialize on the wire as JSON numbers
+# (e.g. "currentBalance":194.00). OpenAPI 3.0.1 renders them correctly — BigDecimal money
+# as `type: number` and Long/int as `type: integer` — so the published field-level @Schema
+# contract (types, formats, patterns, ranges, enums, examples) matches the actual JSON.
+# The AAP (§0.5.1) mandates "OpenAPI 3" generically; 3.0.1 satisfies that and is the more
+# widely consumed dialect. Integration test 4.11 asserts the generated /v3/api-docs contract.
+# -----------------------------------------------------------------------------
+springdoc:
+  api-docs:
+    version: openapi_3_0
+  # ---------------------------------------------------------------------------
+  # Swagger UI webjar version (SEC-DEP-1). The pom.xml <dependencyManagement>
+  # block pins org.webjars:swagger-ui to 5.32.8 to remediate the DOMPurify 3.3.2
+  # vulnerability (CVE-2026-41238/41239/41240) that ships in springdoc 2.8.17's
+  # default 5.32.2 webjar. springdoc-openapi-starter-common 2.8.17 hard-codes
+  # `springdoc.swagger-ui.version=5.32.2` in its bundled springdoc.config.properties,
+  # so its `/swagger-ui/**` resource handler would otherwise forward to the now-absent
+  # /webjars/swagger-ui/5.32.2/ path (HTTP 404). Pinning the version here keeps
+  # springdoc's UI path in lockstep with the security-overridden webjar actually on
+  # the classpath, so `/swagger-ui/index.html` continues to serve the fixed assets.
+  # Keep this value equal to the swagger-ui version in pom.xml.
+  swagger-ui:
+    version: 5.32.8

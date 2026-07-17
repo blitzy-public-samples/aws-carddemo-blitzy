@@ -1,0 +1,235 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      SPRING BOOT VERSION DECISION : CONFIRMED, DELIBERATE (NOT AN UNRESOLVED RISK).
+      The parent below pins spring-boot-starter-parent 3.5.16: the highest patch of the
+      Spring Boot 3.x line, exactly as mandated by AAP sections 0.5.1 and 0.7.2, which
+      "explicitly pin 'Spring Boot 3.x'", so the target pins the highest 3.x patch
+      (3.5.16).
+
+      DECISION (confirmed in refinement): this release REMAINS on Spring Boot 3.5.16 by
+      design. This is a settled, intentional engineering decision — NOT an open question
+      and NOT an unresolved risk. The module is deliberately NOT upgraded to the 4.1.x
+      line, and NO dependency version in this pom.xml is changed as part of this decision.
+      What was previously tracked as the "3.5.16 EOL" risk (originally surfaced as QA
+      F-14, INFO / dependency-lifecycle) is hereby CLOSED as an accepted, dispositioned
+      decision.
+
+      Known lifecycle fact (context only): the Spring Boot 3.5 line reached OPEN-SOURCE
+      end-of-life on 2026-06-30, so 3.5.16 no longer receives free community patches. AAP
+      section 0.7.2 records the migration to the (also Java-17-compatible) Spring Boot
+      4.1.x line as an "optional forward path (advisory, not adopted)"; the AAP is the
+      frozen, agreed-upon source of truth, so changing the major line is out of scope for
+      this module and would require an explicit AAP revision and approval, not a unilateral
+      bump here.
+
+      PLANNED FUTURE UPGRADE WINDOW (deployment governance): securing a supported channel
+      is scheduled as a separate, tested change — either (a) commercial / extended support
+      for the 3.x line (VMware Tanzu Spring), or (b) an approved, scheduled migration to
+      the 4.1.x line. This is documented in README.md under "Dependency and framework
+      lifecycle".
+
+      NOTE: this is a framework-version/support decision ONLY. No confirmed application-
+      library CVE is attributed to Spring Boot 3.5.16; the security overrides declared in
+      the properties and dependencyManagement blocks below independently pin remediated
+      versions of the transitive libraries that DID have published advisories.
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.16</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.aws.carddemo</groupId>
+    <artifactId>account-service</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>account-service</name>
+    <description>CardDemo Account Management microservice (Feature F-003) - account inquiry and update</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <springdoc.version>2.8.17</springdoc.version>
+
+        <!--
+          Security dependency overrides (centrally managed).
+          These properties override the versions the spring-boot-starter-parent:3.5.16
+          BOM would otherwise resolve, pinning each affected library to a fixed-or-newer
+          release that remediates known published vulnerabilities. They are parent-
+          compatible patch/minor bumps within the same line, so they do not change any
+          API used by the module. Reviewed and bumped as a set; revisit on each Boot/BOM
+          upgrade so the overrides never silently mask a newer managed fix.
+            * tomcat.version        10.1.55 -> 10.1.57  (embedded Tomcat, via spring-boot-starter-web)
+            * jackson-bom.version   2.21.4  -> 2.21.5   (whole Jackson BOM incl. jackson-databind)
+            * postgresql.version    42.7.11 -> 42.7.12  (pgJDBC driver)
+            * commons-lang3.version 3.17.0  -> 3.18.0   (transitive via spring-core/tomcat)
+            * logback.version       1.5.36  -> 1.5.38   (logback-core + logback-classic; CVE-2026-13006)
+          The test-scope commons-compress override is applied via <dependencyManagement>
+          below because it is NOT a spring-boot-starter-parent managed property.
+        -->
+        <tomcat.version>10.1.57</tomcat.version>
+        <jackson-bom.version>2.21.5</jackson-bom.version>
+        <postgresql.version>42.7.12</postgresql.version>
+        <commons-lang3.version>3.18.0</commons-lang3.version>
+        <logback.version>1.5.38</logback.version>
+    </properties>
+
+    <!--
+      Centrally managed version overrides for transitive dependencies that are NOT
+      exposed as spring-boot-starter-parent properties. Declaring them here forces the
+      chosen version everywhere they appear in the graph, regardless of scope.
+
+      commons-compress: Testcontainers (test scope) pulls in commons-compress 1.24.0,
+      which is affected by CVE-2024-25710 and CVE-2024-26308 (archive-processing
+      denial-of-service). Apache fixes these in 1.26.0; we pin 1.27.1 (the current
+      stable line, >= the 1.26.0 fix) which remains API-compatible with Testcontainers
+      1.21.4's archive handling.
+
+      swagger-ui: springdoc-openapi-starter-webmvc-ui 2.8.17 transitively bundles the
+      org.webjars:swagger-ui 5.32.2 front-end, which embeds DOMPurify 3.3.2. That
+      DOMPurify build is inside the vulnerable range 3.0.1-3.3.3 (CVE-2026-41238 /
+      CVE-2026-41239 / CVE-2026-41240 - prototype-pollution / template-sanitizer
+      bypass XSS; CWE-79 / CWE-1321) and is served on the unauthenticated Swagger UI
+      surface. We pin swagger-ui 5.32.8 (the first 5.32.x patch that bundles DOMPurify
+      >= 3.4.0 - specifically 3.4.11 - remediating all three CVEs). 5.32.8 is the same
+      minor line as 2.8.17's default 5.32.2, so it is a drop-in, API-compatible patch
+      that keeps springdoc pinned at the AAP-mandated 2.8.17 (§0.5.1: the 2.x line for
+      Spring Boot 3.x) while removing the vulnerable component from the runtime jar.
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-compress</artifactId>
+                <version>1.27.1</version>
+            </dependency>
+            <dependency>
+                <groupId>org.webjars</groupId>
+                <artifactId>swagger-ui</artifactId>
+                <version>5.32.8</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>${springdoc.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!--
+              Surefire runs the FAST tests during `mvn test`: plain unit tests and
+              @WebMvcTest slices. It EXCLUDES *IntegrationTest AND *PerformanceTest so the
+              Testcontainers-backed @SpringBootTest tests (which require a Docker daemon) do
+              NOT run in the ordinary `test` phase. Surefire's default include (**/*Test.java)
+              would otherwise pick up AccountApiIntegrationTest and AccountPerformanceTest and
+              force every `mvn test` (and every `mvn package`) to require Docker. Both slow,
+              Docker-backed suites therefore run only in the `verify` phase via Failsafe below.
+              Version is managed by spring-boot-starter-parent.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>**/*IntegrationTest.java</exclude>
+                        <exclude>**/*PerformanceTest.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+
+            <!--
+              Failsafe runs the SLOW, Docker-backed tests during `mvn verify` (integration-test
+              then verify goals). It INCLUDES *IntegrationTest (the AAP-named convention,
+              AAP section 0.3.1) AND *PerformanceTest, neither of which Failsafe's default
+              *IT / IT* / *ITCase patterns match, so `mvn verify` executes the Surefire suite
+              PLUS AccountApiIntegrationTest and AccountPerformanceTest against a real
+              PostgreSQL provisioned by Testcontainers. AccountPerformanceTest validates the
+              <=2s response-time target (Technical Specification section 2.4.2.1) under
+              concurrent load; like the integration test it needs a Docker daemon, so it is
+              deliberately kept out of the Docker-free `test` phase. The bound `verify` goal
+              fails the build if any integration OR performance test failed. Version is
+              managed by spring-boot-starter-parent.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <includes>
+                        <include>**/*IntegrationTest.java</include>
+                        <include>**/*PerformanceTest.java</include>
+                    </includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>integration-tests</id>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

@@ -1,0 +1,54 @@
+# ============================================================================
+# application-test.yml — account-service (CardDemo Feature F-003)
+# Spring profile: `test` (activated by @ActiveProfiles("test") in the
+# @SpringBootTest integration test AccountApiIntegrationTest).
+#
+# Points the booted Spring context at a REAL PostgreSQL provided by
+# Testcontainers so the integration test exercises the true migrated schema
+# (Flyway V1 DDL + V2 seed) with genuine PostgreSQL semantics — NUMERIC(12,2),
+# CHAR(1), DATE, and the account_id CHECK (~ '^[0-9]{11}$') POSIX-regex operator.
+# NEVER use H2 or any in-memory DB — parity depends on real PostgreSQL
+# (AAP 0.6.2 / 0.6.5). This file loads ON TOP of the base
+# src/main/resources/application.yml (also on the test classpath) and restates
+# the parity-critical JPA/Flyway/Jackson settings for robustness.
+#
+# CQ-CONFIG-1 (hermeticity): the datasource coordinates are DELIBERATELY NOT set
+# here. AccountApiIntegrationTest owns a lifecycle-managed @Container
+# PostgreSQLContainer and publishes spring.datasource.{url,username,password,
+# driver-class-name} via @DynamicPropertySource. Spring's dynamic test properties
+# have HIGHER precedence than the OS environment, so an ambient SPRING_DATASOURCE_*
+# variable can NOT hijack the test onto a different database; the container URL
+# always wins. (A previous revision hard-coded a `jdbc:tc:` URL here, which an
+# ambient SPRING_DATASOURCE_URL DID override — the defect this finding fixes.)
+# A @BeforeEach guard in the test additionally asserts the live connection points
+# at the container's mapped port, failing loudly if that invariant is ever broken.
+# ============================================================================
+spring:
+  # Flyway owns the schema; Hibernate only validates the Account @Entity.
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    show-sql: false
+  # Apply V1 (DDL) then V2 (50-row seed) at context startup.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  # Exact-precision monetary output: plain, scale-2 decimals; no scientific notation.
+  jackson:
+    generator:
+      write-bigdecimal-as-plain: true
+# Sanitized logging — never emit account numbers or monetary values (AAP 0.6.6).
+logging:
+  level:
+    root: INFO
+    com.aws.carddemo: INFO
+    org.hibernate.SQL: WARN
+    org.hibernate.orm.jdbc.bind: WARN
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN
+    # CQ-OBS-1: suppress the JDBC-URL-bearing INFO lines emitted at startup. Flyway's FlywayExecutor
+    # prints "Database: <jdbc-url> ...", and the Testcontainers container logger ("tc.<image>") prints
+    # "Container is started (JDBC URL: <jdbc-url>)". Pin both to WARN so the ephemeral container URL is
+    # never emitted to the test logs. The log-level assertion in AccountApiIntegrationTest enforces this.
+    org.flywaydb.core.FlywayExecutor: WARN
+    tc: WARN
