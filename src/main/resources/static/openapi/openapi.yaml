@@ -566,9 +566,17 @@ paths:
       operationId: deleteUser
       summary: Delete a user
       description: Deletes a user and returns the deleted user's display fields. CU03 / COUSR03C. Requires
-        role A (Admin).
+        role A (Admin). The request body carries the operator-keyed user id and the terminal PF-key action
+        of the two-step fetch-then-delete screen flow (ENTER fetches the record for confirmation; PF5 deletes
+        it), preserving the BMS COUSR03 field-level contract.
       parameters:
       - $ref: '#/components/parameters/UserIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserDeleteRequest'
       responses:
         '200':
           description: User deleted.
@@ -1885,6 +1893,29 @@ components:
       - $ref: '#/components/schemas/ScreenMetadata'
       - $ref: '#/components/schemas/MessageArea'
       - $ref: '#/components/schemas/UserDetail'
+    UserDeleteRequest:
+      type: object
+      description: Delete-user request. CU03 / COUSR03C. Requires role A (Admin). Carries the operator-keyed
+        user id and the terminal PF-key action of the two-step fetch-then-delete screen flow (ENTER fetches
+        the matching USRSEC record for confirmation; PF5 deletes it). Mirrors the bound Java record
+        UserDeleteRequest field-for-field so generated clients bind reliably.
+      properties:
+        userId:
+          allOf:
+          - $ref: '#/components/schemas/UserId'
+          description: Identifier of the user to look up and delete; the sole terminal-enterable field of
+            the Delete User map. Maps BMS field USRIDIN (PIC X(8)) of mapset COUSR03. This operator-keyed
+            value equals the {userId} path segment used to address the resource.
+          example: USER0001
+        action:
+          allOf:
+          - $ref: '#/components/schemas/PfKeyAction'
+          description: 'Terminal PF-key action submitted with this request (re-expresses 3270 PF-key
+            semantics per legacy/cpy/CSSTRPFY.cpy; not a rendered terminal). Supported on this screen:
+            ENTER=Fetch (for confirmation), PF5=Delete, PF4=Clear, PF3=Back.'
+          example: PF5
+      required:
+      - userId
     UserDeleteResponse:
       description: Delete-user result showing the deleted user's display fields. CU03 / COUSR03C.
       allOf:
