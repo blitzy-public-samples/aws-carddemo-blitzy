@@ -23,6 +23,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -35,6 +36,7 @@ import com.aws.carddemo.dto.UserDeleteRequest;
 import com.aws.carddemo.dto.UserDeleteResponse;
 import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.mapper.UserMapper;
+import com.aws.carddemo.observability.CorrelationIdFilter;
 import com.aws.carddemo.service.UserService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -44,6 +46,7 @@ import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
@@ -54,6 +57,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 /**
  * {@link org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest @WebMvcTest} slice test
@@ -138,6 +142,55 @@ class UserDeleteControllerTest {
     /** Response header carrying the next transaction id to navigate to ({@code CDEMO-TO-TRANID}). */
     private static final String HEADER_NEXT_TRANSACTION = "X-CardDemo-Next-Transaction";
 
+    /**
+     * MIME sniffing guard emitted by Spring Security's default header writers
+     * ({@code X-Content-Type-Options: nosniff}). Asserted by the shared
+     * production-filter contract (section&nbsp;K/L) so a future security change
+     * cannot silently drop the response-hardening headers.
+     */
+    private static final String HEADER_CONTENT_TYPE_OPTIONS = "X-Content-Type-Options";
+
+    /** Clickjacking guard emitted by Spring Security ({@code X-Frame-Options: DENY}). */
+    private static final String HEADER_FRAME_OPTIONS = "X-Frame-Options";
+
+    /**
+     * Cache-suppression header emitted by Spring Security
+     * ({@code Cache-Control: no-cache, no-store, max-age=0, must-revalidate}); the
+     * {@code no-store} directive keeps authenticated screen/PII payloads out of
+     * shared and browser caches.
+     */
+    private static final String HEADER_CACHE_CONTROL = "Cache-Control";
+
+    /** HTTP/1.0 cache-suppression companion header ({@code Pragma: no-cache}). */
+    private static final String HEADER_PRAGMA = "Pragma";
+
+    /** HTTP/1.0 expiry companion header ({@code Expires: 0}). */
+    private static final String HEADER_EXPIRES = "Expires";
+
+    /**
+     * Header listing the methods a matched route supports, emitted with a
+     * {@code 405 Method Not Allowed} per RFC&nbsp;7231&nbsp;&sect;6.5.5 (asserted by
+     * the wrong-method transport case).
+     */
+    private static final String HEADER_ALLOW = "Allow";
+
+    /**
+     * Challenge header emitted with a {@code 401 Unauthorized} by the HTTP&nbsp;Basic
+     * entry point (asserted by the unauthenticated public-path case).
+     */
+    private static final String HEADER_WWW_AUTHENTICATE = "WWW-Authenticate";
+
+    /**
+     * Canonical lower-case textual form of a {@link java.util.UUID} (8-4-4-4-12 hex
+     * groups). The {@link CorrelationIdFilter} substitutes a freshly generated
+     * {@code UUID.randomUUID()} whenever the inbound correlation header is absent or
+     * fails its allow-list, so a resolved-by-generation identifier always matches
+     * this shape. Used to prove the generated id is a bounded, opaque token and that
+     * a rejected hostile header was replaced by exactly such a token.
+     */
+    private static final String UUID_REGEX =
+            "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
+
     @Autowired
     private MockMvc mockMvc;
 
@@ -182,6 +235,66 @@ class UserDeleteControllerTest {
      */
     private String body(String userId, PfKeyAction action) throws Exception {
         return objectMapper.writeValueAsString(new UserDeleteRequest(userId, action));
+    }
+
+    // -------------------------------------------------------------------------
+    // Shared production-filter contract (F16)
+    //
+    // The following helpers assert the cross-cutting contract that the production
+    // servlet filter chain applies to EVERY response on this surface, independent
+    // of the business branch, and are reused across the protected (section K),
+    // public/error (section L), and invalid-input (section M) cases so the
+    // contract is proven uniformly rather than per screen:
+    //   * observability/CorrelationIdFilter echoes a bounded, opaque correlation
+    //     id on the response and exposes it via the SLF4J MDC for the duration of
+    //     the request;
+    //   * Spring Security's default header writers emit the response-hardening
+    //     headers (anti-sniff, anti-clickjacking, no-store cache suppression).
+    // This is the "reusable production-filter contract" required by review finding
+    // F16, expressed as helper methods scoped to the Delete User surface.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Asserts the Spring Security response-hardening headers are present on the
+     * given result exactly as the production filter chain emits them. Applied to
+     * success, navigation, and every error response so a future change to
+     * {@link SecurityConfig} cannot silently drop the response-hardening headers
+     * (which keep authenticated screen/PII payloads out of caches and defend
+     * against MIME sniffing and clickjacking).
+     *
+     * @param result the completed {@link MvcResult} whose response headers are
+     *               inspected
+     */
+    private static void assertHardeningHeaders(MvcResult result) {
+        var response = result.getResponse();
+        assertThat(response.getHeader(HEADER_CONTENT_TYPE_OPTIONS))
+                .as("X-Content-Type-Options").isEqualTo("nosniff");
+        assertThat(response.getHeader(HEADER_FRAME_OPTIONS))
+                .as("X-Frame-Options").isEqualTo("DENY");
+        assertThat(response.getHeader(HEADER_CACHE_CONTROL))
+                .as("Cache-Control").contains("no-store", "no-cache");
+        assertThat(response.getHeader(HEADER_PRAGMA))
+                .as("Pragma").isEqualTo("no-cache");
+        assertThat(response.getHeader(HEADER_EXPIRES))
+                .as("Expires").isEqualTo("0");
+    }
+
+    /**
+     * Asserts a correlation id was resolved by the {@link CorrelationIdFilter} and
+     * echoed on the response {@value CorrelationIdFilter#CORRELATION_ID_HEADER}
+     * header, and returns it so a caller can make further echo, sanitization, or
+     * header/body-consistency assertions.
+     *
+     * @param result the completed {@link MvcResult} whose response is inspected
+     * @return the resolved correlation id echoed on the response (never blank)
+     */
+    private static String resolvedCorrelationId(MvcResult result) {
+        String correlationId =
+                result.getResponse().getHeader(CorrelationIdFilter.CORRELATION_ID_HEADER);
+        assertThat(correlationId)
+                .as("echoed %s response header", CorrelationIdFilter.CORRELATION_ID_HEADER)
+                .isNotBlank();
+        return correlationId;
     }
 
     // -------------------------------------------------------------------------
@@ -479,5 +592,261 @@ class UserDeleteControllerTest {
                 "transactionName", "title01", "title02", "currentDate", "programName",
                 "currentTime", "userId", "firstName", "lastName", "userType", "errorMessage");
         assertThat(names).doesNotContain("password", "secUsrPwd", "pwd");
+    }
+
+    // -------------------------------------------------------------------------
+    // K. Production-filter contract on the protected path — correlation id
+    //    (generation / echo / sanitization / MDC cleanup) + hardening headers
+    // -------------------------------------------------------------------------
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("K1: a protected 200 carries a generated correlation id and the security-hardening headers, and cleans up the MDC")
+    void protectedResponse_carriesGeneratedCorrelationAndHardeningHeaders() throws Exception {
+        // No inbound correlation header: the filter must generate a fresh UUID and
+        // echo it, and Spring Security must emit the response-hardening headers.
+        MvcResult result = mockMvc.perform(get(ENDPOINT))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        assertThat(resolvedCorrelationId(result))
+                .as("a generated correlation id is a bounded, opaque UUID token")
+                .matches(UUID_REGEX);
+        assertHardeningHeaders(result);
+
+        // Thread-context hygiene: the filter removes its MDC key in a finally block
+        // once the request completes, so the id cannot leak onto a pooled request
+        // thread and contaminate a later, unrelated request. MockMvc runs the filter
+        // chain synchronously on this thread, so that cleanup has already executed by
+        // the time perform(...) returns.
+        assertThat(MDC.get(CorrelationIdFilter.CORRELATION_ID_MDC_KEY))
+                .as("correlation id is removed from the MDC after the request completes")
+                .isNull();
+
+        verify(userService, never()).listUsers(any(), any());
+        verify(userService, never()).deleteUser(any());
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("K2: a safe inbound correlation id is honored and echoed back unchanged")
+    void inboundCorrelationId_isEchoedVerbatim() throws Exception {
+        // A value drawn only from the filter's allow-list (letters/digits/._-).
+        String inbound = "delete-user-corr-0001";
+
+        MvcResult result = mockMvc.perform(get(ENDPOINT)
+                        .header(CorrelationIdFilter.CORRELATION_ID_HEADER, inbound))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        assertThat(resolvedCorrelationId(result))
+                .as("a safe upstream correlation id is preserved end to end")
+                .isEqualTo(inbound);
+        assertHardeningHeaders(result);
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("K3: a hostile inbound correlation id is rejected and replaced with a safe generated token")
+    void hostileInboundCorrelationId_isSanitized() throws Exception {
+        // An attempted log/response-header injection through the correlation header.
+        String hostile = "<script>alert('xss')</script>";
+
+        MvcResult result = mockMvc.perform(get(ENDPOINT)
+                        .header(CorrelationIdFilter.CORRELATION_ID_HEADER, hostile))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        // The disallowed value must be discarded in favor of a fresh UUID; the
+        // injected markup must never be reflected on the echoed header.
+        assertThat(resolvedCorrelationId(result))
+                .as("a hostile correlation header is replaced, never echoed")
+                .isNotEqualTo(hostile)
+                .doesNotContain("<", ">")
+                .matches(UUID_REGEX);
+        assertThat(result.getResponse().getContentAsString())
+                .as("the injected markup must not appear anywhere in the response body")
+                .doesNotContain(hostile);
+        assertHardeningHeaders(result);
+    }
+
+    // -------------------------------------------------------------------------
+    // L. Production-filter contract on the public / error paths — the same
+    //    correlation + hardening contract holds when a failure is raised inside
+    //    the security filter chain (401) and by the exception handler (404),
+    //    with the correlation id present in BOTH the header and the problem body.
+    // -------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("L1: an unauthenticated request emits RFC-7807 401 with the correlation id in header and body, plus the hardening headers")
+    void unauthenticated_errorPath_carriesUniformFilterContract() throws Exception {
+        // Because CorrelationIdFilter runs at HIGHEST_PRECEDENCE (ahead of the
+        // security chain), even a 401 raised before the DispatcherServlet carries
+        // the correlation id on the header and in the RFC-7807 problem body.
+        MvcResult result = mockMvc.perform(get(ENDPOINT))
+                .andExpect(status().isUnauthorized())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.title").value("Unauthorized"))
+                .andReturn();
+
+        String correlationId = resolvedCorrelationId(result);
+        assertThat(result.getResponse().getContentAsString())
+                .as("the problem body echoes the same correlation id as the response header")
+                .contains("\"correlationId\":\"" + correlationId + "\"");
+        assertThat(result.getResponse().getHeader(HEADER_WWW_AUTHENTICATE))
+                .as("HTTP Basic challenge is present on the 401")
+                .contains("Basic");
+        assertHardeningHeaders(result);
+
+        verify(userService, never()).listUsers(any(), any());
+        verify(userService, never()).deleteUser(any());
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("L2: a 404 error response carries the correlation id in header and body, plus the hardening headers")
+    void notFoundErrorPath_carriesUniformFilterContract() throws Exception {
+        when(userService.listUsers(eq("NOSUCH99"), any(Pageable.class)))
+                .thenReturn(Page.<UserSecurity>empty());
+
+        MvcResult result = mockMvc.perform(post(ENDPOINT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("NOSUCH99", PfKeyAction.ENTER)))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andReturn();
+
+        String correlationId = resolvedCorrelationId(result);
+        assertThat(result.getResponse().getContentAsString())
+                .as("the problem body echoes the same correlation id as the response header")
+                .contains("\"correlationId\":\"" + correlationId + "\"");
+        assertHardeningHeaders(result);
+
+        verify(userService, never()).deleteUser(any());
+    }
+
+    // -------------------------------------------------------------------------
+    // M. Per-surface invalid / hostile input coverage — each malformed transport
+    //    is rejected with the correct typed status BEFORE any business logic runs
+    //    (the service is never invoked), and no rejected value is echoed.
+    // -------------------------------------------------------------------------
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("M1: a malformed JSON body is rejected with 400 Malformed Request before any service call")
+    void malformedJson_returns400_serviceNeverInvoked() throws Exception {
+        mockMvc.perform(post(ENDPOINT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{ \"userId\": \"USER0001\", "))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.title").value("Malformed Request"));
+
+        verify(userService, never()).listUsers(any(), any());
+        verify(userService, never()).deleteUser(any());
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("M2: an unknown action enum value is rejected with 400 Malformed Request and is not echoed")
+    void hostileActionValue_returns400_serviceNeverInvoked() throws Exception {
+        String hostileAction = "DROP-TABLES";
+
+        String responseBody = mockMvc.perform(post(ENDPOINT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{ \"userId\": \"" + USER_ID + "\", \"action\": \"" + hostileAction + "\" }"))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.title").value("Malformed Request"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(responseBody)
+                .as("the rejected action value must not be echoed back")
+                .doesNotContain(hostileAction);
+        verify(userService, never()).listUsers(any(), any());
+        verify(userService, never()).deleteUser(any());
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("M3: an over-width userId (> 8) is rejected with 400 Validation Failed and the rejected value is never echoed")
+    void overWidthUserId_returns400_rejectedValueNotEchoed() throws Exception {
+        String overWidth = "USER000123"; // 10 chars — violates the COUSR03 PIC X(8) @Size(max = 8)
+
+        String responseBody = mockMvc.perform(post(ENDPOINT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{ \"userId\": \"" + overWidth + "\", \"action\": \"ENTER\" }"))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.title").value("Validation Failed"))
+                .andReturn().getResponse().getContentAsString();
+
+        // The offending field NAME is disclosed so the caller can correct the input,
+        // but the rejected VALUE is never echoed (it could carry sensitive input).
+        assertThat(responseBody)
+                .as("validation detail names the field but never echoes the rejected value")
+                .contains("userId")
+                .doesNotContain(overWidth);
+        verify(userService, never()).listUsers(any(), any());
+        verify(userService, never()).deleteUser(any());
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("M4: a non-JSON Content-Type is rejected with 415 Unsupported Media Type before any service call")
+    void unsupportedMediaType_returns415_serviceNeverInvoked() throws Exception {
+        mockMvc.perform(post(ENDPOINT)
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("USER0001"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.title").value("Unsupported Media Type"));
+
+        verify(userService, never()).listUsers(any(), any());
+        verify(userService, never()).deleteUser(any());
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("M5: an unsupported HTTP method is rejected with 405 Method Not Allowed and an Allow header")
+    void wrongHttpMethod_returns405_withAllowHeader() throws Exception {
+        MvcResult result = mockMvc.perform(put(ENDPOINT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(USER_ID, PfKeyAction.ENTER)))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.title").value("Method Not Allowed"))
+                .andReturn();
+
+        // The matched route exposes only GET (blank screen) and POST (submit).
+        assertThat(result.getResponse().getHeader(HEADER_ALLOW))
+                .as("Allow header lists the supported methods")
+                .contains("POST", "GET");
+        verify(userService, never()).listUsers(any(), any());
+        verify(userService, never()).deleteUser(any());
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("M6: a hostile but in-width userId that is not found yields 404 without ever reflecting the hostile value")
+    void hostileUserId_notFound_valueNotReflected() throws Exception {
+        String hostile = "<b>x</b>"; // exactly 8 chars — passes @Size(max = 8) yet is hostile
+        when(userService.listUsers(eq(hostile), any(Pageable.class)))
+                .thenReturn(Page.<UserSecurity>empty());
+
+        String responseBody = mockMvc.perform(post(ENDPOINT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(hostile, PfKeyAction.ENTER)))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.title").value("Record Not Found"))
+                .andExpect(jsonPath("$.detail").value(MSG_USER_ID_NOT_FOUND))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(responseBody)
+                .as("the not-found problem detail must not reflect the hostile input")
+                .doesNotContain(hostile)
+                .doesNotContain("<b>", "</b>");
+        verify(userService, never()).deleteUser(any());
     }
 }
