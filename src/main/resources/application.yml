@@ -1,0 +1,130 @@
+# =============================================================================
+# AWS CardDemo - base Spring Boot configuration (shared by ALL profiles)
+# -----------------------------------------------------------------------------
+# Net-new, framework-mandated deliverable for the COBOL -> Java/Spring Boot
+# migration (Spring Boot 3.5.16 / Java 25). There is no COBOL source equivalent.
+#
+# This base profile holds configuration common to every environment: DataSource,
+# JPA/Hibernate, Flyway, Spring Batch, Thymeleaf, and Actuator/Micrometer
+# observability. Environment-specific overrides live in the sibling files
+# application-dev.yml and application-test.yml (activated via spring.profiles.active).
+#
+# Scope guard (AAP 0.2.2 / 0.6.4 - no feature expansion): this file configures
+# ONLY PostgreSQL + JPA + Flyway + Spring Batch + Spring MVC/Thymeleaf +
+# Actuator/Micrometer. No MQ/JMS, Kafka, Redis, Db2, IMS, FTP/SFTP, or REST/SOAP
+# client configuration - none of those interfaces exist in the source system.
+# =============================================================================
+
+spring:
+  application:
+    # Logical service name; reused as the Micrometer 'application' metric tag below.
+    name: carddemo
+
+  datasource:
+    # Non-secret localhost default for the JDBC URL is acceptable for local dev;
+    # it is overridden per environment via the SPRING_DATASOURCE_URL env var.
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
+    # NO HARDCODED CREDENTIALS (AAP 0.7.1): the datasource username and password
+    # are supplied ONLY via the SPRING_DATASOURCE_USERNAME / SPRING_DATASOURCE_PASSWORD
+    # environment variables. They intentionally have NO ':default' fallback so that
+    # no credential is ever embedded in source or configuration.
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # Small connection pool sized for the local, single-node CardDemo workload.
+      pool-name: carddemo-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+
+  jpa:
+    hibernate:
+      # CRITICAL: Flyway (src/main/resources/db/migration) is the single source of
+      # truth for DDL. Hibernate must NEVER create/alter/drop schema; 'validate'
+      # only verifies that the JPA entity mappings match the Flyway-created tables.
+      ddl-auto: validate
+    # Disable Open Session In View: avoids the well-known startup warning and keeps
+    # transaction boundaries explicit in the service layer (zero-warning build goal).
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          # Persist and read timestamps in UTC for deterministic, environment-independent
+          # date/time behavior (parity with the mainframe's single-timezone processing).
+          time_zone: UTC
+        # Dialect is intentionally NOT pinned: Spring Boot 3.x auto-detects
+        # PostgreSQLDialect from the JDBC connection. If pinning ever becomes
+        # necessary, use: dialect: org.hibernate.dialect.PostgreSQLDialect
+    # Base profile stays quiet; the dev profile overrides show-sql to true.
+    show-sql: false
+
+  flyway:
+    # Flyway runs BEFORE Hibernate validation, guaranteeing the tables exist for
+    # spring.jpa.hibernate.ddl-auto=validate. Migrations applied in order:
+    # V1__schema.sql -> V2__reference_data.sql -> V3__indexes.sql.
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+
+  # EBCDIC/ASCII collation parity (AAP 0.6.6): the CardDemo PostgreSQL database
+  # should be created with 'C'/'POSIX' (bytewise) collation, and order-sensitive
+  # access uses an explicit ORDER BY on the CHAR key columns, so Java/PostgreSQL
+  # ordering reproduces the legacy COBOL 'SORT FIELDS=(TRAN-ID,A)' semantics.
+  # Enforcement lives in db/migration/V1__schema.sql (COLLATE "C") and in database
+  # creation - this note is a documentation pointer only.
+  batch:
+    job:
+      # CRITICAL: prevents the 13 migrated JCL-equivalent Spring Batch jobs from
+      # auto-running at application startup. Jobs are launched explicitly on demand.
+      enabled: false
+    jdbc:
+      # base/prod: do NOT auto-create the Spring Batch metadata tables
+      # ('embedded' behaves as 'never' for PostgreSQL). dev/test profiles override
+      # this to 'always'.
+      initialize-schema: embedded
+
+  thymeleaf:
+    # Base/prod caches compiled templates for performance; the dev profile
+    # overrides cache to false for live template editing.
+    cache: true
+    prefix: classpath:/templates/
+    suffix: .html
+    mode: HTML
+    encoding: UTF-8
+
+# -----------------------------------------------------------------------------
+# Observability (AAP Observability rule): least-exposure Actuator surface plus
+# Micrometer tracing and a Prometheus scrape endpoint. Structured JSON logging and
+# correlation IDs are configured in logback-spring.xml.
+# -----------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        # Expose ONLY these three endpoints (least exposure).
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        # Enable Kubernetes-style liveness/readiness health groups.
+        enabled: true
+      # Only reveal detailed health information to authorized principals.
+      show-details: when_authorized
+  tracing:
+    sampling:
+      # Sample 100% of traces locally so every request is observable during
+      # migration validation (Observability rule).
+      probability: 1.0
+  metrics:
+    tags:
+      # Tag every metric with the application name for dashboard filtering.
+      application: ${spring.application.name}
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.aws.carddemo: INFO

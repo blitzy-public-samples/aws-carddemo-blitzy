@@ -3,7 +3,20 @@
 - [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-card-demo-application)
 - [Description](#description)
 - [Technologies used](#technologies-used)
-- [Installation on the mainframe](#installation-on-the-mainframe)
+  - [Legacy (mainframe) stack](#legacy-mainframe-stack)
+  - [Target (Java) stack](#target-java-stack)
+- [Running the Java application](#running-the-java-application)
+  - [Prerequisites](#prerequisites)
+  - [Repository layout](#repository-layout)
+  - [Configuration](#configuration)
+  - [Build](#build)
+  - [Run](#run)
+  - [Batch jobs](#batch-jobs)
+  - [Observability](#observability)
+  - [Testing](#testing)
+- [Documentation](#documentation)
+- [Legacy mainframe installation (reference)](#legacy-mainframe-installation-reference)
+  - [Running full batch (legacy reference)](#running-full-batch-legacy-reference)
 - [Application Details](#application-details)
   - [User Functions](#user-functions)
   - [Admin Functions](#admin-functions)
@@ -23,6 +36,9 @@
 <br/>
 
 ## Description
+
+This repository now contains a **Java 25 / Spring Boot 3.5.16** migration of the original AWS CardDemo mainframe application. The migration preserves the existing business behavior while replacing the IBM z/OS COBOL/CICS/VSAM/JCL/BMS runtime with an idiomatic layered Spring Boot stack (Spring MVC + Thymeleaf, Spring Data JPA over PostgreSQL, Spring Batch, and Spring Security). The **original COBOL/CICS/JCL/BMS sources are retained read-only under [`legacy/`](./legacy)** for reference and traceability; they are not required to build or run the Java application.
+
 CardDemo is a Mainframe application designed and developed to test and showcase AWS and partner technology for mainframe migration and modernization use-cases such as discovery, migration, modernization, performance test, augmentation, service enablement, service extraction, test creation, test harness, etc.
 
 Note that the intent of this application is to provide mainframe coding scenarios to excercise analysis, transformation and migration tooling. So, the coding style is not uniform across the application
@@ -30,15 +46,166 @@ Note that the intent of this application is to provide mainframe coding scenario
 <br/>
 
 ## Technologies used
+
+### Legacy (mainframe) stack
+
+The original application &mdash; retained read-only under [`legacy/`](./legacy) &mdash; is built on:
+
 1. COBOL
 2. CICS
 3. VSAM
 4. JCL
 5. RACF
 
+### Target (Java) stack
+
+The migrated application is built on:
+
+1. **Java 25** (LTS) &mdash; language and runtime.
+2. **Spring Boot 3.5.16** &mdash; application framework, comprising:
+   * **Spring MVC** &mdash; controllers, one route per CICS transaction id (replaces the CICS online transaction handlers).
+   * **Spring Data JPA** &mdash; Hibernate repositories over PostgreSQL (replaces VSAM KSDS I/O).
+   * **Spring Batch** &mdash; chunk-oriented jobs (replaces JCL / JES2 batch).
+   * **Spring Security** &mdash; authentication and role authorities (replaces the application-level signon + RACF).
+   * **Thymeleaf** &mdash; server-rendered screens preserving the BMS field / label / PF-key contract.
+   * **Bean Validation (Jakarta)** &mdash; field edits (replaces program / BMS field validation).
+3. **PostgreSQL 18.4** (supported floor: 16) &mdash; relational store replacing VSAM.
+4. **Flyway** &mdash; schema and reference / seed-data migrations (replaces the IDCAMS `DEFINE CLUSTER` / `REPRO` data initialization).
+5. **Maven 3.9.9** &mdash; build orchestration, run via the bundled Maven Wrapper (`./mvnw`); no separate Maven install is required.
+6. **JUnit 5 + Testcontainers** &mdash; unit tests and integration tests against a real PostgreSQL container.
+7. **Micrometer Tracing + Prometheus + Spring Boot Actuator** &mdash; observability (structured logging, distributed tracing, metrics, and health checks).
+
 <br/>
 
-## Installation on the mainframe 
+## Running the Java application
+
+The migrated application builds and runs on any clean local machine; no mainframe or running COBOL environment is required.
+
+### Prerequisites
+
+* **JDK 25** (LTS) &mdash; required to compile and run the application.
+* **Maven** &mdash; no separate install needed; the bundled Maven Wrapper (`./mvnw` on macOS / Linux, `mvnw.cmd` on Windows) pins Maven **3.9.9**.
+* **PostgreSQL 18.x** (supported floor 16) running locally, **or Docker**. Docker is also required for the Testcontainers-based integration tests.
+* **Git** &mdash; to clone the repository.
+
+### Repository layout
+
+```
+carddemo/
+├── pom.xml                         Maven build (Spring Boot 3.5.16 parent BOM)
+├── mvnw, mvnw.cmd, .mvn/           Maven Wrapper (pinned to Maven 3.9.9)
+├── src/main/java/com/aws/carddemo/
+│   ├── config/                     DataSource, Security, Batch, Observability, Web configuration
+│   ├── domain/                     JPA entities (one per VSAM file) + enums
+│   ├── dto/                        CardDemoContext (COMMAREA), screen forms, feed / report models
+│   ├── repository/                 Spring Data JPA repositories (one per VSAM file)
+│   ├── service/                    @Service classes (one per COBOL program; methods = paragraphs)
+│   ├── web/                        Spring MVC controllers (one route per CICS transaction id)
+│   ├── batch/                      Spring Batch @Configuration jobs (one per business JCL job)
+│   ├── exception/                  FILE STATUS exception hierarchy + @ControllerAdvice handler
+│   ├── security/                   UserDetailsService + role authorities
+│   └── util/                       Date conversion, decimal helpers, fixed-width mappers
+├── src/main/resources/
+│   ├── application.yml             Base config (+ application-dev.yml / application-test.yml profiles)
+│   ├── db/migration/               Flyway migrations (V1__schema.sql, V2__reference_data.sql, V3__indexes.sql)
+│   ├── logback-spring.xml          Structured JSON logging with correlation IDs
+│   └── templates/                  Thymeleaf screens (preserve the BMS 24x80 contract)
+├── src/test/java/                  JUnit 5 unit + Testcontainers integration + parity tests
+├── legacy/                         Original COBOL / CICS / JCL / BMS / CPY / CSD / data (read-only)
+├── docs/                           Decision log, traceability matrix, onboarding, architecture diagrams
+├── blitzy-deck/                    Self-contained reveal.js executive presentation
+├── observability/                  Grafana dashboard template
+├── diagrams/                       Legacy flow diagrams and screen captures
+└── samples/                        Legacy sample JCL (reference only)
+```
+
+### Configuration
+
+Configuration is environment-driven and contains **no hardcoded secrets**. Two Spring profiles are provided: `dev` (local development) and `test` (used by the integration-test suite). The database connection is supplied entirely through environment variables:
+
+| Environment variable         | Purpose                             | Example (local dev)                         |
+| :--------------------------- | :---------------------------------- | :------------------------------------------ |
+| `SPRING_DATASOURCE_URL`      | JDBC URL of the PostgreSQL database | `jdbc:postgresql://localhost:5432/carddemo` |
+| `SPRING_DATASOURCE_USERNAME` | Database user                       | supplied via environment / secret manager   |
+| `SPRING_DATASOURCE_PASSWORD` | Database password                   | supplied via environment / secret manager   |
+
+On startup, **Flyway** runs automatically to create the schema (`V1__schema.sql`), seed reference and sample data (`V2__reference_data.sql`), and create the alternate-index equivalents (`V3__indexes.sql`), so a freshly created database is initialized with no manual steps.
+
+### Build
+
+```shell
+./mvnw clean verify
+```
+
+This compiles the sources with `--release 25`, runs the unit and Testcontainers integration tests, and enforces the quality gates: the **JaCoCo &ge; 80% line-coverage** gate and the **OWASP dependency-check zero critical / high CVE** gate. The build is configured to be zero-warning.
+
+For a quick local package without running the tests:
+
+```shell
+./mvnw -DskipTests package
+```
+
+### Run
+
+Start PostgreSQL and export the datasource environment variables (see [Configuration](#configuration)), then:
+
+```shell
+./mvnw spring-boot:run
+```
+
+To activate the local development profile explicitly:
+
+```shell
+./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+```
+
+Then open the application in a browser and sign on. As in the legacy system, two demo logins are provided as **seed data**:
+
+* `ADMIN001` &mdash; with the initially configured password &mdash; to manage users (admin functions).
+* `USER0001` &mdash; with the initially configured password &mdash; to access back-office (regular user) functions.
+
+These are seeded application user records. The **database** credentials, by contrast, are always supplied via the `SPRING_DATASOURCE_*` environment variables and are never embedded in source or configuration.
+
+### Batch jobs
+
+The batch workload that ran as JCL jobs on the mainframe is now implemented as **Spring Batch `Job`s** (chunk-oriented reader &rarr; processor &rarr; writer steps, with `Tasklet` steps for single-action utilities). Representative jobs include `PostTransactionJob` (daily transaction posting), `InterestCalcJob` (monthly interest calculation), and `StatementJob` (statement generation). Job parameters &mdash; for example the interest-calculation processing date &mdash; are supplied as Spring Batch `JobParameter`s, preserving the original JCL `PARM` semantics. See [`docs/traceability-matrix.md`](./docs/traceability-matrix.md) for the full JCL-job &rarr; Spring Batch job mapping.
+
+### Observability
+
+Observability ships with the application and is verifiable locally:
+
+* **Health / readiness** &mdash; `GET /actuator/health`.
+* **Metrics (Prometheus scrape)** &mdash; `GET /actuator/prometheus`.
+* **Structured logging** &mdash; JSON logging with correlation IDs is configured in [`src/main/resources/logback-spring.xml`](./src/main/resources/logback-spring.xml).
+* **Dashboard** &mdash; a Grafana dashboard template is provided at [`observability/grafana-dashboard.json`](./observability/grafana-dashboard.json).
+
+### Testing
+
+```shell
+./mvnw test      # unit tests only
+./mvnw verify    # unit + Testcontainers integration + parity tests, plus the coverage and CVE gates
+```
+
+**Docker must be running** for the Testcontainers-based integration tests, which start a real PostgreSQL container. The parity tests validate the Java results against the ASCII fixtures retained from the legacy system.
+
+<br/>
+
+## Documentation
+
+Companion documentation for the migration lives under [`docs/`](./docs):
+
+* [`docs/onboarding.md`](./docs/onboarding.md) &mdash; a clean-machine-to-running-application onboarding guide (setup, domain context, common pitfalls, how to extend the project, and suggested next tasks).
+* [`docs/decision-log.md`](./docs/decision-log.md) &mdash; every non-trivial migration decision with its alternatives, rationale, and risks.
+* [`docs/traceability-matrix.md`](./docs/traceability-matrix.md) &mdash; the bidirectional COBOL-construct &rarr; Java-artifact mapping (programs, copybooks, BMS maps, and JCL jobs).
+* [`docs/architecture/`](./docs/architecture) &mdash; Mermaid before / after architecture diagrams (the current z/OS state and the target Spring Boot state).
+
+A self-contained reveal.js executive-summary presentation is available at [`blitzy-deck/index.html`](./blitzy-deck/index.html).
+
+<br/>
+
+## Legacy mainframe installation (reference)
+
+> **Note:** The steps in this section and in [Running full batch (legacy reference)](#running-full-batch-legacy-reference) apply to the **original COBOL** retained under [`legacy/`](./legacy) and are kept for reference and traceability only. They are **not** required to build or run the migrated Java application &mdash; see [Running the Java application](#running-the-java-application) for that.
 
 To install this repository on the mainframe please follow the following steps
 
@@ -158,7 +325,9 @@ To install this repository on the mainframe please follow the following steps
      - Enter userid USER0001 and the initially configured password PASSWORD to access back office functions
    * For batch            : See the instructions for running full batch below.
 
-## Running full batch 
+## Running full batch (legacy reference)
+
+> **Note:** This section also applies to the original COBOL under [`legacy/`](./legacy) and is retained for reference only; in the migrated application the batch workload runs as Spring Batch jobs (see [Batch jobs](#batch-jobs)).
    
   * Execute the following JCLs in order
 
@@ -207,6 +376,8 @@ The Regular user can perform the user functions and the Admin users can only per
 <br/>
 
 ### Application Inventory
+
+In the migrated application, each online transaction id maps to a Spring MVC controller route, each COBOL program maps to a `@Service` (its numbered paragraphs becoming methods), and each batch JCL job maps to a Spring Batch `Job`. See [`docs/traceability-matrix.md`](./docs/traceability-matrix.md) for the complete mapping.
 
 #### **Online**
 
@@ -281,21 +452,27 @@ If you have questions or requests for improvement please raise an issue in the r
 
 ## Roadmap
 
-The following features are planned for upcoming releases
+The following features are **not implemented**; they remain on the future roadmap and are explicitly out of scope for the current migration, which preserves existing behavior without feature expansion:
 
 1. More database types
 
    1. Relational Database usage : Db2 
-   
+
    2. Hierachical database calls : IMS
 
 2. Integration
 
    * ftp, sftp
-   
+
    * Message queue integration
-   
+
    * Exposure of transactions for distributed application integration
+
+In addition, the following migration follow-ups are recommended but are **not delivered in this migration** (recorded under "Suggested next tasks" in [`docs/decision-log.md`](./docs/decision-log.md)):
+
+* Upgrade to **Spring Boot 4.x** &mdash; the Spring Boot 3.5 line reached open-source end-of-life on 2026-06-30, so future CVE patches require an upgrade.
+* Introduce **password hashing (BCrypt)** &mdash; replace the preserved cleartext password comparison (kept for behavioral parity) with a modern password-hashing scheme.
+* Add a **CI/CD pipeline** under `.github/workflows/**` &mdash; the repository currently has no CI pipeline.
 
 <br/>
 
