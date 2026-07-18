@@ -97,13 +97,19 @@ import java.util.Map;
  * this class {@code @StepScope} is an acceptable isolation upgrade that yields a fresh reader
  * instance per step execution; it is intentionally omitted now to avoid unnecessary proxying.
  *
- * <h2>Alternative &mdash; external fixed-width {@code DALYTRAN.PS} contract</h2>
- * The primary DB-backed reader above is used once the seed data has been loaded into
- * {@code daily_transaction}. For direct ingestion of the raw external file, the preserved 350-byte
- * fixed-width {@code DALYTRAN} record contract (AAP &sect;0.7.2 hotspot M2) can instead be read with
- * a Spring Batch {@code FlatFileItemReader<DailyTransaction>} whose {@code LineMapper} decodes each
- * line with {@link com.aws.carddemo.common.util.FixedWidthCodec}. The exact 0-based byte offsets
- * from {@code CVTRA06Y.cpy} and the corresponding codec calls are:
+ * <h2>Companion &mdash; external fixed-width {@code DALYTRAN.PS} ingestion</h2>
+ * This DB-backed reader operates on the {@code daily_transaction} staging table <em>after</em> it has
+ * been populated. Populating it from the raw external file is the job of the companion loader
+ * {@code batch/DailyTransactionLoadJob} (bean {@code dailyTransactionLoadJob}), whose
+ * {@code @StepScope} {@link DailyTransactionFileItemReader} is a
+ * {@code FlatFileItemReader<DailyTransaction>} that reads the preserved 350-byte fixed-width
+ * {@code DALYTRAN} record contract (AAP &sect;0.7.2 hotspot M2) and delegates the field decode to the
+ * stateless {@link DailyTransactionLineMapper}, which slices each line with
+ * {@link com.aws.carddemo.common.util.FixedWidthCodec}. The two readers are therefore complementary,
+ * not alternatives: the file reader is the ingestion front door that loads the staging table, and
+ * <em>this</em> repository reader is the downstream sequential read that feeds the validate and
+ * posting jobs. The exact 0-based byte offsets from {@code CVTRA06Y.cpy} and the corresponding codec
+ * calls used by that companion mapper are:
  * <pre>
  * Field         COBOL PIC    Offset  Len   FixedWidthCodec call
  * ------------  -----------  ------  ----  -----------------------------------------
@@ -128,8 +134,9 @@ import java.util.Map;
  * trailing {@code G} denotes a positive last digit 7, whereas a trailing right-brace denotes a
  * negative last digit 0). It must never be parsed with {@code new BigDecimal(String)}, and the
  * amount is always modeled as {@link java.math.BigDecimal} (scale 2), never a primitive
- * {@code double}/{@code float}. This alternative is documentation of the external-file ingestion
- * path; the primary path is the DB-backed reader configured by this class.
+ * {@code double}/{@code float}. That external-file ingestion path is now executable in
+ * {@link DailyTransactionLineMapper} / {@link DailyTransactionFileItemReader}; this class remains the
+ * downstream staging reader configured over the {@code daily_transaction} table.
  *
  * <h2>On {@code @SuppressWarnings("this-escape")}</h2>
  * The constructor establishes the reader's fixed configuration by invoking the inherited
@@ -145,6 +152,8 @@ import java.util.Map;
  * @see DailyTransaction
  * @see DailyTransactionRepository
  * @see RepositoryItemReader
+ * @see DailyTransactionFileItemReader
+ * @see DailyTransactionLineMapper
  * @see com.aws.carddemo.common.util.FixedWidthCodec
  */
 @Component

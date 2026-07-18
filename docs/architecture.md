@@ -9,9 +9,10 @@ preserving **100% of the existing business behavior and introducing no new busin
 The migration is performed **construct-by-construct** — each COBOL program, copybook, BMS map, and
 JCL job is faithfully reconstructed as an idiomatic Java/Spring equivalent (not an automated
 line-for-line transpilation), and every observable contract (screen field, PF-key path, batch reject
-code, file record layout, return code, and monetary computation) is preserved exactly. The original
-COBOL source is retained **read-only under `legacy/`** (formerly `app/`) for reference; it is never
-modified.
+code, file record layout, return code, and monetary computation) is preserved exactly, save for a
+small set of intentional, documented divergences recorded in the decision log (most notably the
+interest rounding standardized on `HALF_UP`, D31). The original COBOL source is retained **read-only
+under `legacy/`** (formerly `app/`) for reference; it is never modified.
 
 This file is the authoritative **architectural map** of the migration. It describes the *what* and
 *how* of the target design. The *why* behind each non-trivial decision lives in
@@ -37,9 +38,10 @@ The re-platforming is a tech-stack migration across three axes simultaneously �
   become cohesive service/component methods that preserve control flow and evaluation order.
 - **Language Environment (LE) runtime services → the JVM and `java.time`.** LE date intrinsics
   (e.g. `CEEDAYS`) become `java.time`; LE abends become controlled Java exceptions / batch failures.
-- **Every monetary computation preserved exactly via `BigDecimal`.** All decimal/monetary values use
+- **Every monetary computation uses exact `BigDecimal` arithmetic.** All decimal/monetary values use
   `java.math.BigDecimal` at **scale 2** with **`RoundingMode.HALF_UP`**; `double`/`float` are
-  **prohibited** for decimal values.
+  **prohibited** for decimal values. The `HALF_UP` standard (AAP §0.4.2) diverges from the legacy
+  interest `COMPUTE`, which truncates — an intentional, documented divergence (D31).
 
 Foundational constraints that shape every layer of the target:
 
@@ -385,9 +387,11 @@ reproduce sequential processing with restartability. The orchestration semantics
 
 ### Preserved-Computation Anchors
 
-Two computations in the batch layer carry the highest parity risk and are reproduced exactly; both
-are asserted by golden-file tests and tracked in [`./traceability-matrix.md`](./traceability-matrix.md),
-with rationale in [`./decision-log.md`](./decision-log.md).
+Two computations in the batch layer carry the highest parity risk and are reproduced with exact
+`BigDecimal` arithmetic (the interest rounding is standardized on `HALF_UP` per AAP §0.4.2 — an
+intentional, documented divergence from the legacy truncation, D31); both are asserted by golden-file
+tests and tracked in [`./traceability-matrix.md`](./traceability-matrix.md), with rationale in
+[`./decision-log.md`](./decision-log.md).
 
 1. **Interest calculation** — the `1300-COMPUTE-INTEREST` paragraph of `legacy/cbl/CBACT04C.cbl`
    computes `WS-MONTHLY-INT = (TRAN-CAT-BAL * DIS-INT-RATE) / 1200`. This is reproduced with

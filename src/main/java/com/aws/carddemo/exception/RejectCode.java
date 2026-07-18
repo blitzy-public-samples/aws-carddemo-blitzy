@@ -74,7 +74,8 @@ import java.util.Optional;
  * processing rather than producing a reject row. It therefore maps to a
  * {@code FileStatusException} / batch abend (return code {@code 8}), <em>not</em>
  * to a reject record, and is deliberately <strong>not</strong> a constant here.
- * Do not add {@code 109} (or any other value) to this enum.
+ * Do not add {@code 109} (or any other value) to this enum. The rationale is
+ * recorded in {@code docs/decision-log.md} as decision <strong>D38</strong>.
  *
  * <h2>Return-code context (owned by the batch layer)</h2>
  * The presence of rejects influences the batch job return code:
@@ -103,7 +104,12 @@ public enum RejectCode {
      * Reject {@code 101} — the account record was not found. Set in
      * {@code 1500-B-LOOKUP-ACCT} when {@code READ ACCOUNT-FILE ... INVALID KEY}
      * (CBTRN02C L397-L399), using the account id resolved from the
-     * cross-reference.
+     * cross-reference. This is a faithful, <em>defensive</em> reproduction of the
+     * COBOL branch: the relational target's {@code fk_card_xref_account} foreign
+     * key guarantees every cross-reference resolves to an existing account, so
+     * once {@link #INVALID_CARD_NUMBER} (100) has passed this branch is
+     * unreachable in production. The branch and its unit coverage are retained;
+     * see {@code docs/decision-log.md} decision <strong>D39</strong>.
      */
     ACCOUNT_NOT_FOUND(101, "ACCOUNT RECORD NOT FOUND"),
 

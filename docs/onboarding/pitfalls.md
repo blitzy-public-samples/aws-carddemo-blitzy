@@ -31,8 +31,12 @@ point cannot represent these decimal values exactly, and any drift compounds
 across postings. Centralize all monetary arithmetic in the `Money` value object
 so rounding and scale are applied in exactly one place.
 
-The single most sensitive computation is monthly interest. It must reproduce the
-COBOL `COMPUTE` **to the cent**. The legacy anchor is
+The single most sensitive computation is monthly interest. The AAP standardizes
+all monetary rounding on `RoundingMode.HALF_UP` (§0.4.2); the legacy COBOL
+`COMPUTE` has **no `ROUNDED` phrase and truncates**, so in the exact-half boundary
+case the Java result deliberately diverges from raw COBOL by a cent — an
+intentional, **documented divergence** (decision log **D31**). The golden fixtures
+encode the `HALF_UP` result. The legacy anchor is
 [`legacy/cbl/CBACT04C.cbl`](../../legacy/cbl/CBACT04C.cbl), paragraph
 **`1300-COMPUTE-INTEREST`**:
 
@@ -43,22 +47,24 @@ COBOL `COMPUTE` **to the cent**. The legacy anchor is
            = ( TRAN-CAT-BAL * DIS-INT-RATE) / 1200
 ```
 
-The Java equivalent (must match the COBOL result exactly) is:
+The Java equivalent (AAP §0.4.2 standard: `BigDecimal` scale 2, `HALF_UP`) is:
 
 ```java
 monthlyInterest = tranCatBal.multiply(intRate)
                             .divide(BigDecimal.valueOf(1200), 2, RoundingMode.HALF_UP);
 ```
 
-**Pitfall.** Choosing a different `RoundingMode`, dividing before multiplying, or
-letting an intermediate value carry a scale other than 2 changes the result by a
-cent — and that error **compounds** across every posting and interest run. This
-computation lives in `InterestCalculationJob` (using the `Money` value object).
+**Pitfall.** Choosing a `RoundingMode` other than the specified `HALF_UP`, dividing
+before multiplying, or letting an intermediate value carry a scale other than 2
+changes the result by a cent — and that error **compounds** across every posting
+and interest run. This computation lives in `InterestCalculationJob` (using the
+`Money` value object).
 
 **Mitigation.** Golden-file tests compare the Java batch output **row-for-row**
-against fixtures derived from the legacy record layouts and seed data; the
-interest result is asserted to the cent. See the validation criteria in the
-[traceability matrix](../traceability-matrix.md).
+against fixtures derived from the legacy record layouts and seed data; the interest
+result is asserted to the cent against those `HALF_UP` fixtures (which diverge from
+raw COBOL truncation only in the exact-half boundary case — decision log **D31**).
+See the validation criteria in the [traceability matrix](../traceability-matrix.md).
 
 ---
 

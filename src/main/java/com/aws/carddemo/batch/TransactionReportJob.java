@@ -79,8 +79,8 @@ import com.aws.carddemo.domain.Transaction;
  * <p>The legacy KSDS is read in physical {@code TRAN-ID} order and the report control-breaks on card
  * as cards happen to appear; the set-based reader instead orders {@code (cardNum, tranId)} so the
  * break is deterministic. This changes read <em>order</em> only, never report <em>content</em>, and
- * is recorded in {@code docs/decision-log.md}. This class only wires the components; it neither owns
- * nor edits that decision.</p>
+ * is recorded in {@code docs/decision-log.md} as decision <strong>D40</strong>. This class only wires
+ * the components; it neither owns nor edits that decision.</p>
  *
  * <h2>Spring Batch wiring and infrastructure contract</h2>
  * <ul>

@@ -49,9 +49,10 @@ no feature expansion; the original mainframe source is retained, read-only, unde
 5. [Build and test](#5-build-and-test)
 6. [Run the application](#6-run-the-application)
 7. [Verify it works](#7-verify-it-works)
-8. [Demo logins (legacy seed data)](#8-demo-logins-legacy-seed-data)
-9. [Troubleshooting](#9-troubleshooting)
-10. [Where to go next](#10-where-to-go-next)
+8. [Run the batch jobs](#8-run-the-batch-jobs)
+9. [Demo logins (legacy seed data)](#9-demo-logins-legacy-seed-data)
+10. [Troubleshooting](#10-troubleshooting)
+11. [Where to go next](#11-where-to-go-next)
 
 ---
 
@@ -159,7 +160,7 @@ docker compose ps
 ```
 
 Wait until the PostgreSQL service shows a healthy/running status. If it never
-becomes healthy, see [Troubleshooting](#9-troubleshooting).
+becomes healthy, see [Troubleshooting](#10-troubleshooting).
 
 ---
 
@@ -259,7 +260,7 @@ mvnw.cmd -B clean verify
 > Testcontainers, which starts its **own** PostgreSQL 16 container — you do **not**
 > need `docker compose up` for the tests, but the **Docker daemon must be
 > available**. If Docker is not running, the integration tests fail; see
-> [Troubleshooting](#9-troubleshooting).
+> [Troubleshooting](#10-troubleshooting).
 
 To run just the fast **unit tests** (no integration tests, no security scan)
 while iterating:
@@ -401,7 +402,109 @@ For the rationale behind the observability design, see
 ---
 
 
-## 8. Demo logins (legacy seed data)
+## 8. Run the batch jobs
+
+The batch pipelines are the JCL-equivalent execution surface. As noted in
+[Run the application](#6-run-the-application), **they never run on startup** — you launch each one
+explicitly by name against the packaged jar, with the web server disabled so the **process exit code
+equals the Spring Batch return code** (`0` = `COMPLETED`, `4` = completed with rejects, `8` = abend).
+
+**Prerequisites:** the [local stack is up](#3-start-the-local-dependencies-docker-compose), your
+[environment variables are exported](#4-configure-environment-variables) (including
+`SPRING_PROFILES_ACTIVE=local`), and you have built the jar
+(`./mvnw -B clean package` — see [Build and test](#5-build-and-test)).
+
+### Launch pattern
+
+```shell
+java -jar target/carddemo-1.0.0.jar \
+  --spring.main.web-application-type=none \
+  --spring.batch.job.enabled=true \
+  --spring.batch.job.name=<jobName> \
+  <parameter=value> ...
+```
+
+`<jobName>` is the job's Spring bean name. The in-scope pipelines and the parameters each one
+requires are:
+
+| Job (`--spring.batch.job.name`) | Purpose (legacy) | Required parameters | Output |
+|---|---|---|---|
+| `dailyTransactionLoadJob` | Ingest a raw 350-byte DALYTRAN fixed-width file into the `daily_transaction` staging table | `inputResource=<Spring resource URL>` (required; fail-fast — D30) | rows in `daily_transaction` |
+| `dailyTransactionValidateJob` | Validate staged daily transactions (CBTRN01C; read-only) | none | log only; `RC 0` |
+| `dailyTransactionPostingJob` | Post staged daily transactions and write rejects (POSTTRAN/CBTRN02C) | none (reads staged `daily_transaction` rows) | `./target/batch/DALYREJS.dat` |
+| `interestCalculationJob` | Monthly interest calculation (INTCALC/CBACT04C) | `parmDate=<YYYYMMDDHH>` (10 chars, e.g. `2022071800`; required — D33) | `./target/batch/SYSTRAN.dat` |
+| `transactionReportJob` | Date-range transaction report (TRANREPT/CBTRN03C) | `startDate=<YYYY-MM-DD>` `endDate=<YYYY-MM-DD>` (inclusive) | `./target/batch/DALYREPT.txt` |
+
+> `interestCalculationJob` and `dailyTransactionLoadJob` **fail fast** if their required parameter is
+> missing or blank (job-parameter validators — D33 / D30), so an empty launch surfaces a clear error
+> rather than corrupt output. This is also why these jobs are not part of the CI nightly
+> correlationId-only smoke loop (decision-log D14); they are exercised by the Testcontainers
+> integration-test suite instead.
+
+### Supply your own DALYTRAN fixture
+
+The posting and validate jobs read rows that have already been **staged** in the `daily_transaction`
+table. To process your own input, first load a raw fixed-width DALYTRAN file with
+`dailyTransactionLoadJob`. A ready-made 10-record sample lives at
+`src/test/resources/seed/dailytran-fixedwidth-sample.txt` (each record is exactly 350 bytes,
+ISO-8859-1, with overpunch-signed amounts):
+
+```shell
+# 1) Load a raw DALYTRAN file into the daily_transaction staging table.
+java -jar target/carddemo-1.0.0.jar \
+  --spring.main.web-application-type=none \
+  --spring.batch.job.enabled=true \
+  --spring.batch.job.name=dailyTransactionLoadJob \
+  inputResource=file:./src/test/resources/seed/dailytran-fixedwidth-sample.txt
+```
+
+`inputResource` is a Spring resource URL, so `file:./relative/path`, an absolute `file:/...` path, or
+`classpath:...` all work. Point it at your own 350-byte fixed-width file to stage your own data.
+
+### End-to-end example flow
+
+```shell
+# load -> validate -> post -> interest -> report
+J="java -jar target/carddemo-1.0.0.jar --spring.main.web-application-type=none --spring.batch.job.enabled=true"
+
+$J --spring.batch.job.name=dailyTransactionLoadJob \
+   inputResource=file:./src/test/resources/seed/dailytran-fixedwidth-sample.txt
+$J --spring.batch.job.name=dailyTransactionValidateJob
+$J --spring.batch.job.name=dailyTransactionPostingJob      # exit 4 if any record was rejected
+$J --spring.batch.job.name=interestCalculationJob parmDate=2022071800
+$J --spring.batch.job.name=transactionReportJob startDate=2022-07-01 endDate=2022-07-31
+```
+
+### Inspect the outputs
+
+Batch file outputs default to the **`./target/batch`** directory (each is overridable — see the table
+below). List and inspect them after a run:
+
+```shell
+ls -l ./target/batch
+# DALYREJS.dat  — rejected postings (430-byte record + trailing LF; reason codes 100/101/102/103)
+# SYSTRAN.dat   — interest transactions (350-byte records; TRAN-ID = parmDate + 6-digit suffix)
+# DALYREPT.txt  — transaction report (fixed-width 133-byte lines; card control-break + totals)
+```
+
+Override the output locations with these properties (command-line `--key=value`, environment
+variable, or `application.yml`) — no paths are hardcoded:
+
+| Property | Default |
+|---|---|
+| `carddemo.batch.posting.reject-directory` / `carddemo.batch.posting.reject-file` | `./target/batch` / `DALYREJS.dat` |
+| `carddemo.batch.interest.output-directory` / `carddemo.batch.interest.output-file` | `./target/batch` / `SYSTRAN.dat` |
+| `carddemo.batch.report.output-directory` / `carddemo.batch.report.output-file` | `./target/batch` / `DALYREPT.txt` |
+
+The same launch-by-name mechanism is what the CI workflow's scheduled batch job invokes for the
+read-only master-print and backup jobs (`accountMasterPrintJob`, `cardMasterPrintJob`,
+`xrefPrintJob`, `customerMasterPrintJob`, `transactionBackupJob`); see
+[`../decision-log.md`](../decision-log.md) (D14) and [`../architecture.md`](../architecture.md).
+
+---
+
+
+## 9. Demo logins (legacy seed data)
 
 When the application starts under the **`local` profile** (the default for the
 local `docker compose` stack and the documented `./mvnw spring-boot:run`
@@ -464,7 +567,7 @@ implemented.
 
 ---
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 | Symptom | Likely cause and fix |
 |---------|----------------------|
@@ -478,7 +581,7 @@ implemented.
 
 ---
 
-## 10. Where to go next
+## 11. Where to go next
 
 You now have a running, testable, modifiable CardDemo. Continue with:
 

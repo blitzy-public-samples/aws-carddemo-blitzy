@@ -112,9 +112,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  * account's interest transactions are still written to the file, but its {@code ACCT-CURR-BAL} is not
  * updated. This Java target <strong>intentionally finalizes the last account</strong> in
  * {@link #afterStep(StepExecution)}, a deliberate behavioral correction/deviation recorded in
- * {@code docs/decision-log.md} (which records how to revert to strict COBOL behavior if ever
- * required). Golden-file fixtures for the interest job's account balances must reflect this corrected
- * behavior. This class only references that decision; it does not own or edit the decision log.</p>
+ * {@code docs/decision-log.md} as decision <strong>D32</strong> (which also records how to revert to
+ * strict COBOL behavior if ever required &mdash; by removing the {@code afterStep} finalization).
+ * Golden-file fixtures for the interest job's account balances must reflect this corrected behavior.
+ * This class only references that decision; it does not own or edit the decision log.</p>
  *
  * <h2>Read-update-rewrite integrity (AAP H6)</h2>
  * <p>{@code 1050-UPDATE-ACCOUNT} is a COBOL READ-UPDATE-REWRITE cycle. In the relational target that
@@ -127,6 +128,15 @@ import org.springframework.transaction.support.TransactionTemplate;
  * The writer logs only non-sensitive operational metadata (record/account counts and account ids at
  * {@code INFO}/{@code DEBUG}); it never logs a full card number, CVV, SSN, password, or the assembled
  * record.</p>
+ *
+ * <h2>Concurrency &mdash; single launch per JVM</h2>
+ * <p>This writer is a singleton {@code @Component} holding per-run mutable state (the record counter,
+ * the last-account accumulator used for the end-of-run finalization, and the open output stream) that
+ * is reset in {@code beforeStep}. Running two {@code InterestCalculationJob} executions concurrently in
+ * the same JVM is therefore <strong>not</strong> supported. This matches the operating model in which
+ * each batch job is launched in its own process by the CI/CD scheduler (AAP &sect;0.4.4), so the
+ * constraint is faithful operational parity rather than a defect. The rationale and the
+ * {@code @StepScope} alternative are recorded in decision log D37.</p>
  *
  * @see InterestCalculationProcessor
  * @see FixedWidthCodec

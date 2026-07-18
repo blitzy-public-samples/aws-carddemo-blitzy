@@ -63,6 +63,17 @@ its Java target, while this log explains the reasoning behind the design those m
 | [D27](#d27--csrf-protection-disabled-stateless-http-basic-api) | F. Security | CSRF protection disabled (stateless HTTP Basic API) | Security posture |
 | [D28](#d28--no-cors-configuration-same-origin-only) | F. Security | No CORS configuration (same-origin-only) | Security posture (scope boundary) |
 | [D29](#d29--us-phone-number-edit-rule-fixes-a-latent-legacy-bug-optional-when-all-blank) | H. Validation & Edit-Rule Parity | US phone-number edit rule fixes a latent legacy bug (optional-when-all-blank) | **Intentional improvement** |
+| [D30](#d30--dalytran-raw-fixed-width-loader-executable-external-file-ingestion) | I. Batch Parity & Robustness | DALYTRAN raw fixed-width loader (executable external-file ingestion) | Contract preservation |
+| [D31](#d31--interest-rounding-uses-half_up-documented-divergence-from-cobol-truncation) | I. Batch Parity & Robustness | Interest rounding uses HALF_UP (documented divergence from COBOL truncation) | **Documented divergence** |
+| [D32](#d32--interest-last-account-finalization-corrects-a-latent-legacy-dead-else) | I. Batch Parity & Robustness | Interest last-account finalization (corrects a latent legacy dead-ELSE) | **Intentional improvement** |
+| [D33](#d33--interest-job-requires-the-parmdate-parameter-fail-fast-validator) | I. Batch Parity & Robustness | Interest job requires the parmDate parameter (fail-fast validator) | Robustness guard |
+| [D34](#d34--card-pan-masked-in-batch-operational-logs-pci-dss-first-6last-4) | I. Batch Parity & Robustness | Card PAN masked in batch operational logs (PCI-DSS first-6/last-4) | **Intentional improvement** |
+| [D35](#d35--atomic-reject-file-publish-with-a-substituting-iso-8859-1-encoder) | I. Batch Parity & Robustness | Atomic reject-file publish with a substituting ISO-8859-1 encoder | **Intentional improvement** |
+| [D36](#d36--fixed-width-records-are-lf-framed-and-embedded-delimiters-are-sanitized) | I. Batch Parity & Robustness | Fixed-width records are LF-framed and embedded delimiters are sanitized | Contract preservation |
+| [D37](#d37--batch-fixed-width-writers-require-a-single-launch-per-jvm) | I. Batch Parity & Robustness | Batch fixed-width writers require a single launch per JVM | Constraint documented |
+| [D38](#d38--reason-code-109-is-excluded-from-rejectcode-and-maps-to-return-code-8) | I. Batch Parity & Robustness | Reason code 109 excluded from RejectCode; maps to return code 8 | **Documented deviation** |
+| [D39](#d39--reject-101-account-not-found-is-an-unreachable-defensive-branch-under-the-cross-reference-foreign-key) | I. Batch Parity & Robustness | Reject 101 is an unreachable defensive branch under the cross-reference foreign key | Documented consequence |
+| [D40](#d40--transaction-report-read-order-is-cardnum-tranid-a-documented-deviation-from-physical-tran-id-order) | I. Batch Parity & Robustness | Transaction report read order is (cardNum, tranId) | **Documented deviation** |
 
 ---
 
@@ -300,22 +311,30 @@ its Java target, while this log explains the reasoning behind the design those m
 - **AAP references:** §0.1.3, §0.4.2, §0.7.1 (H3)
 - **Decision:** Represent **all monetary values** with a `Money` value object backed by **`BigDecimal` at
   scale 2** with an explicit **`RoundingMode.HALF_UP`**, and store them in `DECIMAL(x,2)` columns.
-  Monetary arithmetic is centralized in the value object. The interest computation is reproduced exactly:
-  the COBOL `COMPUTE WS-MONTHLY-INT = (TRAN-CAT-BAL * DIS-INT-RATE) / 1200` in `1300-COMPUTE-INTEREST`
+  Monetary arithmetic is centralized in the value object. The COBOL interest computation
+  `COMPUTE WS-MONTHLY-INT = (TRAN-CAT-BAL * DIS-INT-RATE) / 1200` in `1300-COMPUTE-INTEREST`
   (`legacy/cbl/CBACT04C.cbl`) becomes
-  `tranCatBal.multiply(intRate).divide(BigDecimal.valueOf(1200), 2, RoundingMode.HALF_UP)`.
+  `tranCatBal.multiply(intRate).divide(BigDecimal.valueOf(1200), 2, RoundingMode.HALF_UP)`. Note that
+  the legacy `COMPUTE` has no `ROUNDED` phrase and truncates, so applying the project-wide `HALF_UP`
+  standard here is a **documented divergence** in the exact-half boundary case — see
+  [D31](#d31--interest-rounding-uses-half_up-documented-divergence-from-cobol-truncation); it is not a
+  bit-for-bit reproduction of the truncating COBOL statement.
 - **Alternatives:** `double`/`float` primitives (rejected — binary floating point cannot represent decimal
   currency exactly); a scaled `long` "minor units" representation (workable but obscures the direct
   correspondence to the COBOL `PIC S9(n)V99` layouts and the `COMPUTE` expressions).
-- **Rationale:** COBOL monetary fields are `PIC S9(n)V99 COMP-3` packed decimals with well-defined
-  rounding. `BigDecimal` at fixed scale with an explicit rounding mode is the only representation that
-  reproduces that arithmetic bit-for-bit. `double`/`float` are prohibited for decimal values throughout
-  the codebase.
+- **Rationale:** COBOL monetary fields are `PIC S9(n)V99 COMP-3` packed decimals. `BigDecimal` at fixed
+  scale with an explicit rounding mode reproduces their **additive** arithmetic (the balance postings,
+  which are exact at scale 2) without drift, and standardizes the one rounding site — the interest
+  division — on `HALF_UP` per AAP §0.4.2. Where the legacy code truncated (the interest `COMPUTE`), that
+  standardization is an intentional, documented divergence (D31) rather than a bit-for-bit reproduction.
+  `double`/`float` are prohibited for decimal values throughout the codebase.
 - **Risk & mitigation:** Rounding-mode or intermediate-scale drift compounds across financial postings
   and would break parity to the cent. *Mitigation:* all arithmetic flows through the single `Money` value
   object so the scale and rounding mode are defined in one place, and golden-file parity tests assert the
-  Java output equals the legacy computation **to the cent** (see
-  [D21](#d21--testing-strategy-testcontainers-jacoco-80-golden-file-parity)).
+  Java output equals the expected fixtures **to the cent** (see
+  [D21](#d21--testing-strategy-testcontainers-jacoco-80-golden-file-parity)). The **sole** intentional
+  exception is the interest exact-half boundary, where the `HALF_UP` standard deliberately diverges from
+  the truncating COBOL `COMPUTE` (D31); the interest fixtures encode the `HALF_UP` result.
 
 ### D10 — Alternate indexes to B-tree indexes; VSAM browse to sorted/paged queries
 
@@ -524,15 +543,29 @@ its Java target, while this log explains the reasoning behind the design those m
   package`, and then **launches each implemented Spring Batch job by name** via
   `--spring.batch.job.enabled=true --spring.batch.job.name=<job>` with the web server disabled so the
   **process exit code equals the Spring Batch return code (`0` == `COMPLETED`)**, failing the workflow if
-  any job returns non-zero; (3) the jobs launched at this checkpoint are `accountMasterPrintJob`
-  (CBACT01C), `cardMasterPrintJob` (CBACT02C), `xrefPrintJob` (CBACT03C), `customerMasterPrintJob`
-  (CBCUS01C) and `transactionBackupJob` (TRANBKP / IDCAMS `REPRO`); the remaining mapped legacy jobs
-  (POSTTRAN/CBTRN02C, INTCALC/CBACT04C, CREASTMT/CBSTM03A, COMBTRAN/SORT) are implemented in **later
-  checkpoints** and are appended to the same launch list as each target program lands. Because the jobs
-  use **no `JobParametersIncrementer`**, each launch passes a **unique identifying `correlationId`**
-  parameter so nightly re-runs never hit `JobInstanceAlreadyCompleteException` (the value also propagates
-  as the batch correlation id). This launch-by-name mechanism is exercised locally (all five jobs return
-  `COMPLETED` / exit 0) and is what the CI job invokes. **Alternative / roadmap:** if per-run isolation
+  any job returns non-zero; (3) the jobs launched by the correlationId-only nightly loop are
+  `accountMasterPrintJob` (CBACT01C), `cardMasterPrintJob` (CBACT02C), `xrefPrintJob` (CBACT03C),
+  `customerMasterPrintJob` (CBCUS01C) and `transactionBackupJob` (TRANBKP / IDCAMS `REPRO`) — the
+  read-only jobs that need no job parameters and read the seeded demo rows. The in-scope transaction
+  pipelines are now **implemented at this checkpoint** — `dailyTransactionLoadJob` (the raw DALYTRAN
+  loader, D30), `dailyTransactionValidateJob` (CBTRN01C), `dailyTransactionPostingJob`
+  (POSTTRAN/CBTRN02C), `interestCalculationJob` (INTCALC/CBACT04C), `transactionReportJob`
+  (TRANREPT/CBTRN03C), and `transactionCombineJob` (COMBTRAN/SORT) — but they are **intentionally not
+  appended to the correlationId-only nightly loop**, because they require real job parameters
+  (`interestCalculationJob` requires `parmDate` per D33; `transactionReportJob` requires
+  `startDate`/`endDate`; `dailyTransactionLoadJob` requires `inputResource` per D30) or externally-staged
+  DALYTRAN input (`dailyTransactionPostingJob` and `dailyTransactionValidateJob` operate on the
+  `daily_transaction` staging table). A bare correlationId launch of those jobs would either fail fast at
+  the parameter validator or process zero rows, so forcing them into the smoke loop would be misleading.
+  Instead they are verified by the **Testcontainers integration-test suite** in the `build` job and are
+  documented for manual, parameterized launch in
+  [`docs/onboarding/getting-started.md`](./onboarding/getting-started.md) ("Run the batch jobs"). The
+  only remaining unimplemented mapped job is `StatementGenerationJob` (CREASTMT/CBSTM03A), deferred to a
+  later checkpoint. Because the jobs use **no `JobParametersIncrementer`**, each launch passes a
+  **unique identifying `correlationId`** parameter so nightly re-runs never hit
+  `JobInstanceAlreadyCompleteException` (the value also propagates as the batch correlation id). This
+  launch-by-name mechanism is exercised locally (the five nightly-loop jobs return `COMPLETED` / exit 0)
+  and is what the CI job invokes. **Alternative / roadmap:** if per-run isolation
   or richer orchestration is later required, a dedicated external scheduler (e.g. Argo/Airflow/Control-M)
   can host the launches without altering the reproducible `build` gate.
 - **Risk & mitigation:** Reordering steps, or a different chunk-commit boundary, could change outputs or
@@ -720,7 +753,9 @@ its Java target, while this log explains the reasoning behind the design those m
 - **Rationale:** An in-memory database cannot faithfully reproduce PostgreSQL 16 semantics
   (see [D7](#d7--postgresql-16-as-the-relational-target)), so Testcontainers exercises the exact engine
   used in production. The coverage gate enforces the ≥80% constraint objectively, and golden-file parity
-  is the decisive check that business outputs match the COBOL to the cent and byte.
+  is the decisive check that business outputs match the COBOL to the cent and byte (the sole documented
+exception being the interest exact-half rounding, where the `HALF_UP` standard diverges from the
+legacy truncation — D31).
 - **Risk & mitigation:** Testcontainers requires a working Docker daemon, which can be absent in some CI
   runners, and golden fixtures can drift if regenerated carelessly. *Mitigation:* CI provisions Docker
   for the integration phase; the Maven Failsafe plugin is bound so `*IT` tests run under `verify`; and
@@ -1006,6 +1041,446 @@ its Java target, while this log explains the reasoning behind the design those m
   corrected `NUMC` check as an inserted discrepancy. *Mitigation:* the deviation is recorded here as an
   intentional, behavior-preserving correction of a latent legacy defect, cross-referenced from the
   `UsPhoneRule` class Javadoc; the corrected all-blank optionality is covered by the rule's unit tests.
+
+---
+
+## I. Batch Parity & Robustness
+
+The decisions in this section were made while hardening the four in-scope daily-batch pipelines
+(load, validate, posting, interest) and the transaction report against QA findings. Each records a
+deliberate design choice — an added capability, a documented divergence from a literal COBOL
+translation, or a robustness guard — so that no behavior differs from the AAP without an explicit,
+reviewable rationale (Explainability rule, §0.8.2).
+
+### D30 — DALYTRAN raw fixed-width loader (executable external-file ingestion)
+
+- **Status:** Accepted
+- **Type:** Contract preservation (executable realization of a preserved external contract)
+- **AAP references:** §0.7.2 hotspot M2 (external fixed-width file contracts), §0.5.4 (batch layer),
+  §0.6.4 (decimal handling: `BigDecimal`, never floating point)
+- **Decision:** An executable Spring Batch loader (`batch/DailyTransactionLoadJob`, bean
+  `dailyTransactionLoadJob`) ingests the raw external, fixed-width `DALYTRAN` sequential file
+  (350-byte `DALYTRAN-RECORD`, copybook `legacy/cpy/CVTRA06Y.cpy`) directly into the
+  `daily_transaction` staging table. It is composed of a `@StepScope`
+  `batch/reader/DailyTransactionFileItemReader` (a `FlatFileItemReader<DailyTransaction>` reading
+  over `ISO-8859-1` so the `DALYTRAN-AMT` zoned-decimal overpunch byte survives intact), a stateless
+  `batch/reader/DailyTransactionLineMapper` that slices each record per the CVTRA06Y offset table with
+  `common/util/FixedWidthCodec`, and a `batch/writer/DailyTransactionStagingWriter` that inserts the
+  decoded rows. The amount field is decoded with `FixedWidthCodec.readSignedDecimal(...)` to a scale-2
+  `BigDecimal` and is **never** parsed with `new BigDecimal(String)` and never a primitive
+  `double`/`float`.
+- **Alternatives:**
+  1. *Rely on the `@Profile("local")` CSV seed loader (`config/LocalSeedDataLoader`) to populate the
+     staging table.* **Rejected:** the CSV loader consumes a pre-decoded, comma-delimited convenience
+     file that exists only for local development; it does not exercise the preserved 350-byte external
+     record contract and is not active outside the `local` profile, so a real daily batch would have no
+     operational path from the raw external file to the staging table.
+  2. *Add the fixed-width parsing inline to the existing DB-backed `DailyTransactionItemReader`.*
+     **Rejected:** that reader's role is the set-based, restartable sequential read of the already-loaded
+     staging table (the analog of the COBOL `READ DALYTRAN-FILE`); conflating ingestion with the
+     downstream read would blur two distinct responsibilities. The two readers are complementary — the
+     file reader is the front door that loads the table; the repository reader feeds validate/posting.
+- **Rationale:** The AAP preserves the external fixed-width file contracts as first-class parity
+  artifacts (§0.7.2 M2). Providing an executable loader closes the ingestion gap end-to-end (raw file →
+  staging table → validate/posting) using the same `FixedWidthCodec` overpunch decoding proven by the
+  codec's own unit tests, so monetary fidelity is preserved to the cent for the ingested amounts. The
+  input file location is a late-bound `inputResource` job parameter (no hard-coded path), and the job
+  declares a `JobParametersValidator` that fails fast when it is missing.
+- **Risk & mitigation:** An incorrect offset or the wrong charset would silently corrupt decoded values
+  (especially the signed amount). *Mitigation:* `DailyTransactionLineMapperTest` asserts the full
+  field-level decode of the shipped 350-byte fixture including positive (`+504.77`) and negative
+  (`-919.00`) overpunch amounts at scale 2, and the Testcontainers `DailyTransactionLoadJobTest` launches
+  the job against a real PostgreSQL 16 and asserts every fixture record lands in `daily_transaction` with
+  the expected decoded values, that the load is rerun-safe, and that a launch without `inputResource`
+  is rejected with `JobParametersInvalidException`.
+
+---
+
+### D31 — Interest rounding uses HALF_UP (documented divergence from COBOL truncation)
+
+- **Status:** Accepted
+- **Type:** **Documented divergence from a literal COBOL translation** (mandated by the AAP monetary standard)
+- **AAP references:** §0.4.2 (Money value object, `HALF_UP`), §0.7.1 hotspot H3 (COMP-3 monetary
+  fidelity), §0.9.2 (golden-file parity)
+- **Decision:** The monthly-interest computation in `batch/processor/InterestCalculationProcessor` —
+  the reproduction of `1300-COMPUTE-INTEREST` (`COMPUTE WS-MONTHLY-INT = (TRAN-CAT-BAL * DIS-INT-RATE)
+  / 1200`, `legacy/cbl/CBACT04C.cbl:L464-L465`) — is implemented as
+  `tranCatBal.multiply(intRate).divide(BigDecimal.valueOf(1200), 2, RoundingMode.HALF_UP)`. The legacy
+  `COMPUTE` carries **no `ROUNDED` phrase** and therefore **truncates** the intermediate result to
+  scale&nbsp;2, whereas the target applies **`RoundingMode.HALF_UP`**, the project-wide monetary
+  standard mandated by AAP §0.4.2. The two results are identical except in the exact-half boundary
+  case, where they intentionally differ: for example a raw category interest of `0.005` rounds to
+  `0.01` here versus `0.00` under COBOL truncation.
+- **Correction of prior documentation:** Earlier text in this log (D9) and in the
+  `InterestCalculationJob` Javadoc described the interest computation as reproduced "to the cent" /
+  "bit-for-bit". That was **inaccurate** for the exact-half case and is corrected here and in D9: the
+  interest amount matches the COBOL value for every input **except** the exact-half boundary, where the
+  HALF_UP standard deliberately diverges. Golden-file assertions therefore target the **HALF_UP**
+  result, not the truncated COBOL value.
+- **Alternatives:**
+  1. *Truncate to match COBOL bit-for-bit (`RoundingMode.DOWN`).* **Rejected:** it contradicts the AAP
+     §0.4.2 monetary standard (`HALF_UP` everywhere) and would make the interest job the lone
+     inconsistent rounding site in the system. The AAP is the frozen source of truth and itself
+     prescribes HALF_UP, so aligning to it is the parity-correct choice.
+  2. *Silently keep HALF_UP and leave the "to the cent" wording.* **Rejected:** it violates the
+     Explainability rule (every deviation must be an explicit, truthful decision-log entry).
+- **Rationale:** AAP §0.4.2 makes `HALF_UP` at scale 2 the authoritative monetary rounding rule for the
+  entire migration; the Money value object centralizes it. Honoring that standard (rather than the
+  legacy truncation) is compliance with the frozen specification, and recording the resulting boundary
+  divergence here — rather than papering over it with "to the cent" language — is what the
+  Explainability rule requires.
+- **Risk & mitigation:** A reviewer expecting literal COBOL parity might read the HALF_UP result as a
+  regression in the exact-half case. *Mitigation:* the divergence is documented here, cross-referenced
+  from the `InterestCalculationProcessor` and `InterestCalculationJob` Javadoc and from D9; the interest
+  unit tests assert the HALF_UP outcome (including the `0.005 → 0.01` category row), and the canonical
+  end-to-end run total (`37.51` across three generated interest transactions) reflects HALF_UP.
+
+### D32 — Interest last-account finalization (corrects a latent legacy dead-ELSE)
+
+- **Status:** Accepted
+- **Type:** **Intentional improvement (deviation from literal COBOL — corrects a latent defect)**
+- **AAP references:** §0.7.1 hotspot H3 (interest fidelity), §0.8.3 (deviations documented as
+  improvements), §0.7.1 hotspot H6 (read-update-rewrite integrity)
+- **Decision:** `batch/writer/InterestTransactionWriter` finalizes the **last** account of the interest
+  run (applies the `1050-UPDATE-ACCOUNT` control-break account update — add the accumulated interest to
+  `ACCT-CURR-BAL`, zero the cycle credit/debit) in its `afterStep(StepExecution)` callback, after the
+  final category-balance row has been processed.
+- **Legacy defect reproduced-then-corrected:** In CBACT04C the end-of-file branch
+  `ELSE PERFORM 1050-UPDATE-ACCOUNT` (`legacy/cbl/CBACT04C.cbl:L219-L220`) is **structurally
+  unreachable** under `PERFORM UNTIL END-OF-FILE = 'Y'` with the default `TEST BEFORE`: at loop-body
+  entry `END-OF-FILE` is always `'N'`, so the outer `IF` is always true and the `ELSE` never runs.
+  Consequently the legacy program **never applies the account balance update to the last account** —
+  its interest transactions are still written, but its `ACCT-CURR-BAL` is not updated. The Java target
+  applies the finalize to the last account as well, which is the evident intent of the control-break
+  design.
+- **Alternatives:** *Reproduce the dead-`ELSE` verbatim (skip the last account's balance update) for
+  line-for-line parity.* **Rejected:** it propagates a demonstrable balance error to the final account
+  of every run; AAP §0.8.3 frames such corrections as documented improvements, not parity violations.
+- **How to revert to strict COBOL behavior:** Should exact legacy parity ever be required, remove the
+  last-account finalization from `InterestTransactionWriter.afterStep(...)` (leaving the per-control-break
+  finalization in `write(...)` intact); the writer would then reproduce the legacy behavior of never
+  updating the last account's balance. This revert path is recorded here so the deviation is fully
+  reversible and auditable.
+- **Rationale:** The finalize is the correct control-break semantics and preserves monetary integrity
+  for the last account. Recording it here (and cross-referencing it from the writer Javadoc) satisfies
+  the Explainability rule and keeps the rationale out of code comments.
+- **Risk & mitigation:** Golden-file account-balance fixtures must reflect the corrected behavior; a
+  fixture derived from a raw legacy run would mismatch on the last account. *Mitigation:* the corrected
+  behavior is documented here and the interest job's golden fixtures/tests are built against it. The
+  account update participates in the chunk transaction with `@Version` optimistic locking (D18, AAP H6).
+
+### D33 — Interest job requires the parmDate parameter (fail-fast validator)
+
+- **Status:** Accepted
+- **Type:** Robustness guard (fail-fast parameterization)
+- **AAP references:** §0.4.4 (batch jobs launched explicitly / CI-CD), §0.5.4 (batch layer)
+- **Decision:** `batch/InterestCalculationJob` declares a `JobParametersValidator` that requires a
+  non-blank `parmDate` job parameter at launch. CBACT04C receives its run date as `PARM-DATE PIC X(10)`
+  via `PROCEDURE DIVISION USING` (the `INTCALC.jcl` `PARM='2022071800'`); in the target that value is
+  the `parmDate` parameter, late-bound by the `@StepScope` `InterestCalculationProcessor` and used to
+  seed the high-order ten characters of every generated interest `TRAN-ID`.
+- **Alternatives:**
+  1. *Declare no validator (the prior state) and rely on the processor consuming the parameter.*
+     **Rejected:** because `parmDate` is late-bound only when the step runs, omitting it fails deep
+     inside the step with an opaque SpEL/binding error, or (worse) silently produces malformed
+     transaction ids. QA flagged the absence of fail-fast validation.
+  2. *Also validate the calendar validity / format of the date.* **Rejected (kept minimal):** the
+     legacy `PARM-DATE` is a fixed-width positional field consumed positionally; the validator therefore
+     checks only presence/blankness, preserving the legacy contract without adding calendar rules the
+     COBOL never enforced at this boundary.
+- **Rationale:** Validating at launch converts a confusing in-step failure into a clear
+  `JobParametersInvalidException` naming the missing `parmDate`, matching the deterministic launch
+  contract of the other in-scope jobs (for example the `inputResource` validator of D30). It changes no
+  business logic — a run that already supplied `parmDate` behaves exactly as before.
+- **Risk & mitigation:** A launch script or CI step that previously omitted `parmDate` (and happened to
+  fail later) now fails immediately. *Mitigation:* the CI workflow and onboarding launch instructions
+  are updated to pass `parmDate` for the interest job; the validator message states the required format
+  (`CCYYMMDD` + two digits, e.g. `2022071800`). The fail-fast behavior is covered by an integration test.
+
+---
+
+### D34 — Card PAN masked in batch operational logs (PCI-DSS first-6/last-4)
+
+- **Status:** Accepted
+- **Type:** Intentional improvement (security / observability hardening; additive to D25)
+- **AAP references:** §0.8.2 (Observability rule — never log full PII), §0.7.3 / L1 (intentional legacy
+  security anti-patterns preserved), §0.9.3 (CVV never logged; passwords never logged)
+- **Decision:** The batch validate processor (`batch/processor/DailyTransactionValidateProcessor`,
+  CBTRN01C) masks the card number (PAN) in its operational anomaly log statements using a new
+  `common/util/PanMasker` helper that reveals only the first six and last four digits (for example
+  `9999999999999999` &rarr; `999999******9999`). The three affected log sites are the unverified-card
+  `WARN`, the account-not-found `WARN`, and the successful-read `DEBUG`. All other references to the card
+  number are left verbatim.
+- **Scope boundary (what is deliberately NOT masked):** The PAN remains verbatim in every **external
+  file contract and master-print output** — the DALYREJS reject image, the SYSTRAN interest
+  transactions, the transaction backup, and the account/card master-print reports — because those
+  reproduce the legacy record layouts byte-for-byte for behavioral parity (G3). Masking a PAN inside a
+  fixed-width record or a master-print line would be a parity regression, not an improvement. D25
+  established that the PAN is not part of the AAP sensitive-field set (CVV/SSN/government-id/date-of-birth)
+  and is rendered verbatim by master-print for parity; D25 explicitly anticipated that log-masking of the
+  PAN would be introduced "through a new decision entry" — this is that entry.
+- **Alternatives:**
+  1. *Leave the PAN unmasked in logs (the prior state).* **Rejected:** it contradicts the project's own
+     masking discipline (SSN/date-of-birth/government-id are fully redacted in DTO `toString()`; the CVV
+     and passwords are never logged) and the Observability rule's prohibition on logging full PII. QA
+     observed the full 16-digit PAN emitted at `WARN` (production-enabled) and `DEBUG`.
+  2. *Fully redact the PAN in logs (replace with a constant).* **Rejected:** the first-6/last-4 form is
+     the PCI-DSS display convention and preserves enough of the number for operational triage
+     (issuer/BIN and the last four) without exposing the account. Full redaction would reduce
+     diagnosability for no additional security benefit at these non-financial log sites.
+  3. *Mask at the logging-framework layer (a Logback pattern/converter).* **Rejected (kept local and
+     explicit):** a call-site helper keeps the masking visible and traceable in code and cannot be
+     accidentally bypassed by a logger reconfiguration; it also avoids masking the PAN where it is
+     legitimately required verbatim (the file contracts above), which a blanket framework filter could
+     not distinguish.
+- **Rationale:** This is a non-functional, additive hardening. It changes no business logic, no return
+  code, and no external record layout — the validate job remains read-only and returns RC&nbsp;0 with or
+  without anomalies. It aligns the batch logs with the masking discipline already applied elsewhere in
+  the codebase and with the Observability rule.
+- **Risk & mitigation:** An operator searching logs for a full PAN will no longer find it. *Mitigation:*
+  the first-6/last-4 form remains searchable and sufficient for triage; the raw PAN is still available in
+  the `daily_transaction` staging row and the preserved file contracts for authorized reconciliation. The
+  masking and the read-only RC&nbsp;0 behavior are covered by a Logback `ListAppender` integration test
+  that asserts the full PAN never appears in any emitted log event.
+
+---
+
+### D35 — Atomic reject-file publish with a substituting ISO-8859-1 encoder
+
+- **Status:** Accepted
+- **Type:** Intentional improvement (robustness / atomicity; no behavioral or layout change on clean data)
+- **AAP references:** §0.3.1 / §0.5.4 (DALYREJS external file contract), §0.7.1 / H4 (reject-code
+  semantics preserved), §0.9.6 (external file contracts byte/semantically preserved)
+- **Decision:** `batch/writer/DailyTransactionPostingWriter` writes the DALYREJS reject records to a
+  sibling temporary file (`<name>.tmp` in the same directory) through a `BufferedWriter` wrapping an
+  `OutputStreamWriter` whose ISO-8859-1 `CharsetEncoder` is configured with
+  `onUnmappableCharacter(REPLACE)` and `onMalformedInput(REPLACE)`. On a clean run (`afterStep` with no
+  I/O error) the temp file is published to the final `DALYREJS` path with an atomic move
+  (`Files.move(..., ATOMIC_MOVE)`, falling back to `REPLACE_EXISTING` only where an atomic move is
+  unsupported). A run counts as clean only when there was no reject-file I/O error **and** the step did
+  not fail for any other reason; on any failure the temp file is discarded and the previous good reject
+  file is left untouched (never destroyed, never left partial).
+- **Alternatives:**
+  1. *Keep the previous `Files.newBufferedWriter(path, ISO_8859_1)` with default options.* **Rejected:**
+     it opened the final file directly with `TRUNCATE_EXISTING` (destroying any prior good output up
+     front) and used the reporting encoder, which throws `UnmappableCharacterException` on the first
+     character &gt; `0xFF`. QA reproduced a single `☕` (U+2615) in a description causing the flush to
+     throw, the job to end RC&nbsp;8, and the entire `DALYREJS` file to be lost while the step context
+     still reported `rejectCount=1` (a metadata/file inconsistency).
+  2. *Catch the encoding exception and skip the offending record.* **Rejected:** silently dropping a
+     reject record would break the row-for-row reject parity and hide data; substitution with the
+     charset replacement byte preserves the record and its 430-byte framing while flagging the anomaly.
+  3. *Switch the reject file to UTF-8.* **Rejected:** the DALYREJS contract is a fixed-width,
+     one-byte-per-position ISO-8859-1 image (LRECL=430); UTF-8 would make a multi-byte character break
+     column alignment and the fixed record length.
+- **Rationale:** For faithfully EBCDIC-decoded staging data every character is already representable in
+  ISO-8859-1, so the substitution never fires and the published bytes are identical to before &mdash;
+  the golden DALYREJS output is unchanged. The change purely hardens two failure modes required by the
+  checkpoint atomicity criterion ("a file-write failure must leave no orphan/partial final file"): a
+  single un-encodable character no longer destroys the output, and a mid-write failure never overwrites
+  a prior good file. Reject codes, ordering, the 430-byte image + trailer, the trailing framing byte,
+  and the RC&nbsp;0/4/8 mapping are all preserved.
+- **Risk & mitigation:** The replacement byte (`?`) is indistinguishable from a literal `?` in the
+  data. *Mitigation:* this can only occur for a code point &gt; `0xFF`, which cannot arise from
+  correctly EBCDIC-decoded staging; the substitution is documented here and covered by an integration
+  test that injects a `>0xFF` character and asserts the file is still produced with the correct length
+  and record count. A second test asserts that a clean run's bytes are unchanged.
+
+---
+
+### D36 — Fixed-width records are LF-framed and embedded delimiters are sanitized
+
+- **Status:** Accepted
+- **Type:** Contract preservation (documenting an existing framing deviation + hardening it)
+- **AAP references:** §0.5.4 (fixed-width reader/writer layouts), §0.7.2 / M2 (external fixed-width file
+  contracts), §0.9.6 (external file contracts byte/semantically preserved)
+- **Decision:** The three fixed-width output writers (`DailyTransactionPostingWriter` DALYREJS 430&rarr;431,
+  `InterestTransactionWriter` SYSTRAN 350&rarr;351, `TransactionReportWriter` report 133&rarr;134) each
+  append a single line-feed (`0x0A`) after every fixed-length record as a physical record separator, and
+  `common/util/FixedWidthCodec.writeAlphanumeric` now replaces any line-feed (`0x0A`) or carriage-return
+  (`0x0D`) *inside* an alphanumeric field value with a space before the field is padded to width.
+- **Context:** Legacy `RECFM=F` datasets carry no in-band record delimiter (the access method frames
+  records by their fixed length). The Java target writes to a byte stream on an ordinary filesystem, so a
+  trailing `LF` is added to keep the output human-inspectable and consumable by line-oriented tooling.
+  This framing choice was previously documented only in code Javadoc, and `traceability-matrix.md`
+  documented the newline for INPUT seed files only.
+- **Alternatives:**
+  1. *Emit no delimiter (pure `RECFM=F` image).* **Rejected (kept LF):** the length-framed form is
+     preserved and reachable — every record is still exactly its fixed length, and an offset-based
+     reader (the companion `FixedWidthCodec` reader, D30) ignores the delimiter — but a plain trailing
+     `LF` keeps the files diff-able and greppable for local validation and golden comparison, which the
+     validation criteria rely on.
+  2. *Escape embedded delimiters (for example to a printable sequence).* **Rejected:** an escape would
+     change the field width and therefore the fixed record length; replacing one control character with
+     one space is a strict 1:1 substitution that preserves the column layout.
+  3. *Leave embedded `LF`/`CR` in field data (the prior state).* **Rejected:** QA showed that a
+     `DALYTRAN-DESC` containing an embedded `0x0A` produced two `0x0A` bytes for one record (the data
+     byte plus the framing byte), which a line-oriented reader mis-splits into two records. Sanitizing
+     the field content removes that ambiguity while keeping the trailing framing byte as the sole record
+     separator.
+- **Rationale:** Faithfully decoded staging data does not contain control characters in text fields, so
+  the sanitization is a no-op there and the golden output bytes are unchanged (a fast path returns the
+  value untouched when no delimiter is present). The change only removes an ambiguity for adversarial or
+  corrupt input, and it is applied centrally in `writeAlphanumeric` so all three writers — and the
+  report header/detail cells that route through it — are covered at once. The literal structural
+  segments placed via `putRaw` (for example `"-"` and `"Date Range: "`) contain no control characters and
+  are intentionally not affected.
+- **Risk & mitigation:** A downstream `RECFM=F` consumer expecting exactly LRECL bytes per record with no
+  separator must strip the trailing `LF`. *Mitigation:* the framing is now documented here and in the
+  traceability matrix; the record body remains exactly the fixed length, so a fixed-length reader that
+  skips one separator byte per record reads correctly. Sanitization and length invariance are covered by
+  a `FixedWidthCodec` unit test.
+
+---
+
+### D37 — Batch fixed-width writers require a single launch per JVM
+
+- **Status:** Accepted
+- **Type:** Constraint documented (no code change; operating-model boundary made explicit)
+- **AAP references:** §0.4.4 (each batch job launched by CI/CD), §0.7.2 / M4 (JCL orchestration &rarr;
+  Spring Batch + CI/CD scheduling)
+- **Decision:** The three fixed-width output writers are singleton `@Component` beans that hold per-run
+  mutable state (record/reject counters, running totals, last-account accumulator, and the open output
+  stream) reset in `beforeStep`. The supported operating model is therefore <strong>one job launch per
+  JVM process</strong>: two concurrent same-JVM executions of the same job are not supported. This is
+  documented in each writer's class Javadoc rather than changed in code.
+- **Alternatives:**
+  1. *Convert the writers to `@StepScope`.* **Considered and deferred:** step scope would give each step
+     execution its own writer instance and make concurrent same-JVM launches safe. It was not adopted
+     because it changes bean lifecycle and injection semantics across the batch layer with no benefit to
+     the supported operating model, and the checkpoint scope is behavioral parity of the pipelines, not a
+     concurrency redesign. It is recorded here as the clean forward path if in-JVM concurrency is ever
+     required.
+  2. *Add explicit synchronization / per-run state objects.* **Rejected:** more complex than
+     `@StepScope` for the same goal and still unnecessary under the process-per-job model.
+- **Rationale:** The legacy JCL ran one job step per address space, and the target launches each Spring
+  Batch job in its own process from the CI/CD scheduler; Spring Batch's own metadata locking already
+  serializes accidental concurrent launches of the same job instance (surfacing as a
+  `CannotAcquireLockException` rather than corrupt output). Documenting the constraint makes the design
+  boundary explicit and truthful, matching QA's accepted resolution ("make the writers `@StepScope`, or
+  document the single-launch-per-JVM constraint").
+- **Risk & mitigation:** A future change that launches two of these jobs in one JVM concurrently could
+  race on the shared counters/stream. *Mitigation:* the constraint is documented on all three writers and
+  here; the recorded `@StepScope` migration is the sanctioned remedy if that requirement arises.
+
+---
+
+### D38 — Reason code 109 is excluded from RejectCode and maps to return code 8
+
+- **Status:** Accepted
+- **Type:** Documented deviation (fault-handling hardening; the reject-reason set is preserved)
+- **AAP references:** §0.4.2 (exception translation &mdash; FILE STATUS / reject codes &rarr; typed
+  exceptions and batch return codes 0/4/8), §0.7.1 / H4 (batch posting reject-code semantics),
+  §0.9.2 (reject-path parity for codes 100/101/102/103)
+- **Decision:** The `RejectCode` enum models exactly the four pre-post validation reject reasons of
+  `CBTRN02C` — `100` (`INVALID_CARD_NUMBER`), `101` (`ACCOUNT_NOT_FOUND`), `102` (`OVER_CREDIT_LIMIT`),
+  and `103` (`ACCOUNT_EXPIRED`). Reason code `109`, set by `MOVE 109` in `2800-UPDATE-ACCOUNT-REC`
+  (CBTRN02C L556) when the account `REWRITE` returns `INVALID KEY`, is **deliberately excluded** from
+  the enum. It is not a validation reject reason: it arises in the posting phase *after* validation has
+  already passed, during the balance update, and never produces a reject row. In the Java target an
+  account that cannot be re-read for update at write time is treated as a hard integrity error — a
+  `FileStatusException` that fails the step and surfaces as batch **return code 8** — rather than as a
+  reject (`RC 4`) row. `109` is therefore never added to `RejectCode`.
+- **Legacy-versus-target note:** In the COBOL, `109` is latent — it is moved into the reason field
+  *after* the `reason == 0` gate, so `CBTRN02C` neither writes a reject nor abends on it; the record's
+  outcome is effectively silent. The target's promotion of the same condition to a fatal `RC 8` is the
+  intentional, caller-visible difference (a missing account at rewrite time is a genuine data-integrity
+  fault, not a business reject). Because the processor already validated that the account exists and the
+  writer re-reads it inside the same chunk-size-1 transaction, this branch is defensive and does not
+  trigger on a consistent dataset (see also D39 for the analogous 101 reasoning).
+- **Alternatives:**
+  1. *Add `109` as a fifth `RejectCode` constant and emit a reject row.* **Rejected:** it would
+     mis-model a posting-phase I/O abend as a pre-post validation reject, corrupt the `RC 4`-versus-`RC 8`
+     contract, and diverge from CBTRN02C, where `109` produces neither a reject row nor an `RC 4`.
+  2. *Silently swallow the rewrite failure (mirror the COBOL's latent behavior exactly).* **Rejected:**
+     a missing account at rewrite time is an integrity fault; failing fast on `RC 8` is the safer,
+     documented improvement and is preferable to silently losing a balance update.
+- **Rationale:** Keeping `RejectCode` to the four true reject reasons preserves the reject-path parity
+  the AAP mandates (§0.9.2) while routing the genuine I/O fault through the typed
+  `FileStatusException` &rarr; `RC 8` path (§0.4.2). The rationale previously lived only in code Javadoc
+  (`exception/RejectCode` scope note and `batch/writer/DailyTransactionPostingWriter` deviation note);
+  this entry is its decision-log home so the code cross-references now resolve, and it is reflected in
+  the traceability matrix.
+- **Risk & mitigation:** A reader could expect `109` among the reject codes. *Mitigation:* the exclusion
+  is documented on the enum, on the writer, here, and in the traceability matrix; the four reject codes
+  retain dedicated tests and the `RC 8` integrity path is covered by the posting writer's fault tests.
+
+---
+
+### D39 — Reject 101 (account not found) is an unreachable defensive branch under the cross-reference foreign key
+
+- **Status:** Accepted
+- **Type:** Documented consequence (behavior preserved; branch and its unit coverage retained)
+- **AAP references:** §0.7.1 / H4 (posting reject-code semantics and evaluation order), §0.4.3 /
+  §0.9.2 (real foreign-key constraints; reject-path parity)
+- **Decision:** The posting processor reproduces `CBTRN02C`'s two-stage lookup: `1500-A-LOOKUP-XREF`
+  (reject `100` when the card cross-reference is missing) followed, only while the reason is still zero,
+  by `1500-B-LOOKUP-ACCT` (reject `101` when the account resolved from the cross-reference is missing,
+  CBTRN02C L397-L399). Because the relational target adds a **real foreign key**
+  `fk_card_xref_account` on `card_xref.acct_id` &rarr; `account.acct_id` (see
+  [D8](#d8--real-foreign-key-constraints)), every cross-reference row is guaranteed to point at an
+  existing account. Consequently, once reject `100` has been passed (the cross-reference exists), the
+  account lookup can never miss and reject `101` is **unreachable in production**. The decision is to
+  **keep the `101` branch and its unit-level test coverage** as a faithful, defensive reproduction of
+  the COBOL, and to document that the foreign key — not a code change — is what renders it unreachable.
+- **Legacy-versus-target note:** Under the legacy VSAM, referential integrity between `CARDXREF` and
+  `ACCTFILE` was enforced only in application logic, so a dangling cross-reference (and therefore a live
+  `101`) was physically possible. Formalizing the relationship as a database foreign key (D8) removes
+  that possibility by construction. Reaching the `101` branch in QA therefore required dropping the
+  foreign key in an isolated test harness; it cannot occur against the migrated schema.
+- **Alternatives:**
+  1. *Delete the `101` branch as dead code.* **Rejected:** it is a real CBTRN02C reject reason and part
+     of the mandated reject-path parity (§0.9.2); removing it would drop a documented reject code and its
+     evaluation-order guarantee (100 short-circuits 101). It is defensive, not dead.
+  2. *Drop the foreign key so `101` can trigger at runtime.* **Rejected:** the foreign key is an
+     intentional integrity improvement (D8); weakening the schema to make a defensive branch reachable
+     would be a regression.
+- **Rationale:** Retaining the branch preserves 100&nbsp;% paragraph/reject parity with CBTRN02C while
+  the foreign key preserves data integrity; the two are complementary. Documenting the unreachability
+  keeps the traceability matrix honest (the branch maps to a real paragraph even though the FK guards it)
+  and explains why an integration test cannot exercise `101` without deliberately breaking the schema.
+- **Risk & mitigation:** A future schema change that removes the foreign key would silently make `101`
+  reachable again. *Mitigation:* the dependency is documented here and cross-referenced from D8; the
+  branch keeps unit coverage so the reject reason is exercised regardless of the FK.
+
+---
+
+### D40 — Transaction report read order is (cardNum, tranId), a documented deviation from physical TRAN-ID order
+
+- **Status:** Accepted
+- **Type:** Documented deviation (read order only; report content unchanged)
+- **AAP references:** §0.2.2 (SORT/MERGE &rarr; identical key ordering), §0.4.4
+  (`TransactionReportJob` &larr; CBTRN03C), §0.9.2 (behavioral parity — content preserved)
+- **Decision:** `CBTRN03C` reads the `TRANSACT` KSDS in physical primary-key (`TRAN-ID`) order and
+  control-breaks on card as cards happen to appear in that sequence. The set-based
+  `TransactionReportItemReader` instead orders the query
+  `ORDER BY t.cardNum ASC, t.tranId ASC` (reader L148) so the card control break is **deterministic**
+  rather than dependent on physical file order. The secondary `tranId` key preserves the legacy
+  within-card `TRAN-ID` ordering. This changes the report's detail **read/emit order** only; it never
+  changes report **content** — the per-card, per-page, and grand totals aggregate the same transactions
+  to the same values regardless of read order.
+- **Distinction from [D10](#d10--alternate-indexes-to-b-tree-indexes-vsam-browse-to-sortedpaged-queries):**
+  D10 covers the general data-tier transformation of VSAM alternate-index browses into sorted/paged
+  repository queries (an online and cross-cutting behavior-preservation decision). D40 is specifically
+  the **batch transaction report's control-break read order** — a distinct, report-scoped deviation.
+  This entry is its decision-log home; the `batch/TransactionReportJob` class Javadoc previously stated
+  the deviation was "recorded in docs/decision-log.md" without a target, and that cross-reference now
+  resolves here.
+- **Alternatives:**
+  1. *Read in physical primary-key (`tranId`) order to mirror the KSDS exactly.* **Rejected:** without a
+     card-major sort the card control break would depend on insertion order and could interleave cards,
+     producing malformed per-card subtotals. A deterministic, card-major order is the faithful intent of
+     a card-broken report and keeps the output stable across runs.
+  2. *Order by `cardNum` only.* **Rejected:** it would leave within-card detail order unspecified; adding
+     `tranId` as the secondary key preserves the legacy within-card `TRAN-ID` sequence.
+- **Rationale:** The report is a card-control-break report; a deterministic `(cardNum, tranId)` order is
+  the correct, content-preserving realization of that intent and matches the AAP's "identical key
+  ordering" guidance for SORT/MERGE work. Aggregation is performed in `BigDecimal` and is order-
+  independent, so totals are unaffected.
+- **Risk & mitigation:** A downstream consumer that depended on the exact physical `TRAN-ID` emit
+  sequence would see a different detail ordering. *Mitigation:* the change is content-preserving and the
+  golden-file report test asserts the canonical byte output; the deviation is documented here and
+  cross-referenced from the job Javadoc and the traceability matrix.
 
 ---
 

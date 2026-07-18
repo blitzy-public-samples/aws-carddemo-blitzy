@@ -17,10 +17,17 @@ package com.aws.carddemo.batch.writer;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.math.BigDecimal;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.Optional;
 
 import com.aws.carddemo.batch.processor.DailyTransactionPostingProcessor;
@@ -108,7 +115,8 @@ import org.springframework.stereotype.Component;
  * that cannot be re-read at write time as a hard integrity error &mdash; a
  * {@link FileStatusException} that fails the step (RC 8). {@code 109} is therefore
  * <strong>not</strong> a {@link RejectCode} constant. This intentional deviation is recorded in
- * {@code docs/decision-log.md} (owned by the documentation deliverable, not edited here). Because the
+ * {@code docs/decision-log.md} as decision <strong>D38</strong> (owned by the documentation
+ * deliverable, not edited here). Because the
  * processor already validated that the account exists and this writer re-reads it within the same
  * short chunk transaction, the branch is defensive and does not trigger on a consistent dataset.</p>
  *
@@ -129,6 +137,15 @@ import org.springframework.stereotype.Component;
  * <p>All monetary arithmetic uses {@link BigDecimal} at scale 2; {@code double}/{@code float} are
  * never used. Sensitive fields (SSN, CVV, password, full card number) and the assembled 430-byte
  * record are never logged; only the numeric reject counts and reason codes are logged.</p>
+ *
+ * <h2>Concurrency &mdash; single launch per JVM</h2>
+ * <p>This writer is a singleton {@code @Component} that holds per-run mutable state (the processed and
+ * reject counters and the open reject-file stream), reset in {@link #beforeStep(StepExecution)}. It is
+ * therefore <strong>not</strong> safe to run two {@code DailyTransactionPostingJob} executions
+ * concurrently in the same JVM. This matches the supported operating model &mdash; each batch job is
+ * launched in its own process by the CI/CD scheduler (AAP &sect;0.4.4), exactly as the legacy JCL ran
+ * one job step per address space &mdash; so the constraint is a faithful operational parity, not a
+ * regression. The rationale and the {@code @StepScope} alternative are recorded in decision log D37.</p>
  */
 @Component
 public class DailyTransactionPostingWriter
@@ -222,6 +239,12 @@ public class DailyTransactionPostingWriter
     /** Open reject-file writer for the current step, or {@code null} before/after the step. */
     private BufferedWriter rejectWriter;
 
+    /** Final published location of the reject file (only written on a clean run; see D35). */
+    private Path rejectFinalPath;
+
+    /** Temporary file the reject records are streamed into before the atomic publish (D35). */
+    private Path rejectTempPath;
+
     /** Sticky flag set on any reject-file I/O failure; drives the RC 8 mapping in {@code afterStep}. */
     private boolean ioError;
 
@@ -273,11 +296,30 @@ public class DailyTransactionPostingWriter
         this.rejectCount = 0L;
         this.ioError = false;
         this.rejectWriter = null;
+        this.rejectFinalPath = null;
+        this.rejectTempPath = null;
         try {
             Path dir = Path.of(rejectDirectory);
             Files.createDirectories(dir);
-            Path rejectPath = dir.resolve(rejectFileName);
-            this.rejectWriter = Files.newBufferedWriter(rejectPath, StandardCharsets.ISO_8859_1);
+            this.rejectFinalPath = dir.resolve(rejectFileName);
+            // Stream into a sibling temp file first; the final file is replaced atomically only on a
+            // clean run (afterStep). This guarantees a mid-write failure never destroys a prior good
+            // reject file, and the ".tmp" sibling lives in the same directory so the publish rename is
+            // an atomic same-filesystem operation. See decision log D35.
+            this.rejectTempPath = dir.resolve(rejectFileName + ".tmp");
+            // ISO-8859-1 encoder that SUBSTITUTES any character not representable in the charset
+            // (code point > 0xFF) and any malformed input with the charset replacement byte ('?')
+            // rather than throwing. This yields graceful degradation instead of losing the entire
+            // reject output to a single un-encodable character, while preserving one byte per field
+            // position so the 430-byte record framing is unchanged. See decision log D35.
+            CharsetEncoder encoder = StandardCharsets.ISO_8859_1.newEncoder()
+                    .onUnmappableCharacter(CodingErrorAction.REPLACE)
+                    .onMalformedInput(CodingErrorAction.REPLACE);
+            OutputStream out = Files.newOutputStream(rejectTempPath,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE);
+            this.rejectWriter = new BufferedWriter(new OutputStreamWriter(out, encoder));
         } catch (IOException e) {
             this.ioError = true;
             log.error("Unable to open reject file in directory '{}'", rejectDirectory, e);
@@ -384,7 +426,7 @@ public class DailyTransactionPostingWriter
      * INVALID KEY} sets latent reason {@code 109} and continues; the Java target treats an account
      * that cannot be re-read as a hard integrity error &mdash; a {@link FileStatusException} that
      * fails the step (RC 8) &mdash; rather than a {@link RejectCode}. See the class Javadoc and
-     * {@code docs/decision-log.md}. Because the processor already validated the account and this
+     * {@code docs/decision-log.md} decision <strong>D38</strong>. Because the processor already validated the account and this
      * re-read runs in the same short chunk transaction, the branch is defensive. The {@code @Version}
      * column reproduces last-writer integrity via optimistic locking (AAP H6).</p>
      *
@@ -520,6 +562,26 @@ public class DailyTransactionPostingWriter
             }
         }
 
+        // Atomic publish (D35): replace the prior good reject file with this run's temp file ONLY when
+        // the run completed cleanly (no reject-file I/O error AND the step did not fail for any other
+        // reason). On any failure the temp is discarded and the previous file is left untouched, so a
+        // failed run never destroys a prior good output and never leaves a partial final file.
+        boolean cleanRun = !ioError && stepExecution.getStatus() != BatchStatus.FAILED;
+        if (rejectTempPath != null && rejectFinalPath != null) {
+            if (cleanRun) {
+                try {
+                    publishRejectFileAtomically();
+                } catch (IOException e) {
+                    ioError = true;
+                    log.error("Error publishing rejects file from '{}' to '{}'",
+                            rejectTempPath, rejectFinalPath, e);
+                    deleteTempQuietly();
+                }
+            } else {
+                deleteTempQuietly();
+            }
+        }
+
         // Promote counts for observability/restart.
         stepExecution.getExecutionContext().putLong("transactionCount", transactionCount);
         stepExecution.getExecutionContext().putLong("rejectCount", rejectCount);
@@ -536,5 +598,34 @@ public class DailyTransactionPostingWriter
             return new ExitStatus("COMPLETED_WITH_REJECTS"); // RC 4
         }
         return ExitStatus.COMPLETED;                        // RC 0
+    }
+
+    /**
+     * Atomically publishes the temporary reject file to its final location, replacing any prior file.
+     * An atomic rename is attempted first (POSIX {@code rename(2)} semantics, so the final path is
+     * never observed in a partial state); if the platform cannot perform an atomic move, a
+     * replace-existing move is used as a fallback. See decision log D35.
+     *
+     * @throws IOException if neither the atomic nor the fallback move succeeds
+     */
+    private void publishRejectFileAtomically() throws IOException {
+        try {
+            Files.move(rejectTempPath, rejectFinalPath, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(rejectTempPath, rejectFinalPath, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /**
+     * Deletes the temporary reject file on a best-effort basis, logging (but not rethrowing) any
+     * failure. Used when the run did not complete cleanly so the temp is not left behind and the prior
+     * good final file is preserved.
+     */
+    private void deleteTempQuietly() {
+        try {
+            Files.deleteIfExists(rejectTempPath);
+        } catch (IOException e) {
+            log.warn("Unable to delete temporary reject file '{}'", rejectTempPath, e);
+        }
     }
 }

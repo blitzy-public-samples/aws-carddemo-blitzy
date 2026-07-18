@@ -124,9 +124,14 @@ it belongs in:
 Work from the batch program and its JCL trigger. Everything business-related lives in `service/`,
 so the online and batch surfaces share one implementation.
 
-1. **Reader (`batch/reader/`).** For an external fixed-width file input, use a `FlatFileItemReader`
+1. **Reader (`batch/reader/`).** For an **external fixed-width file input**, use a `FlatFileItemReader`
    wired to the `FixedWidthCodec` so column positions and record lengths match the legacy layout
-   exactly. For a database-driven step, use a **paged repository reader** ordered by the key.
+   exactly — the reference implementation is `DailyTransactionFileItemReader` in
+   `dailyTransactionLoadJob`, which ingests the raw 350-byte DALYTRAN file into the
+   `daily_transaction` staging table. For a **database-driven step**, use a paged/keyed
+   `RepositoryItemReader` (or `RepositoryItemReader`-backed reader) ordered by the key — this is what
+   the posting, validate, interest, and report steps use, because they read rows that have already
+   been staged in the database rather than a flat file.
 2. **Processor (`batch/processor/`).** Put the per-item business logic here, **delegating to
    `service/`** — do not duplicate business rules in the batch layer.
 3. **Writer (`batch/writer/`).** Use a `FlatFileItemWriter` that **preserves the exact record
@@ -145,8 +150,11 @@ so the online and batch surfaces share one implementation.
 >   and short-circuit behavior of [`legacy/cbl/CBTRN02C.cbl`](../../legacy/cbl/CBTRN02C.cbl);
 >   reordering changes which code a record receives.
 > - **Interest formula** — [`legacy/cbl/CBACT04C.cbl`](../../legacy/cbl/CBACT04C.cbl) computes
->   `WS-MONTHLY-INT = (TRAN-CAT-BAL * DIS-INT-RATE) / 1200`, reproduced to the cent as
+>   `WS-MONTHLY-INT = (TRAN-CAT-BAL * DIS-INT-RATE) / 1200`, reproduced with `BigDecimal` (scale 2,
+>   `HALF_UP` per AAP §0.4.2) as
 >   `monthlyInterest = tranCatBal.multiply(intRate).divide(BigDecimal.valueOf(1200), 2, RoundingMode.HALF_UP)`.
+>   The legacy `COMPUTE` has no `ROUNDED` phrase and truncates, so this is an intentional, documented
+>   divergence in the exact-half boundary case (decision log **D31**), not a bit-for-bit reproduction.
 > - **`TRAN-ID` generation** — the increment-from-max parity of
 >   [`legacy/cbl/COTRN02C.cbl`](../../legacy/cbl/COTRN02C.cbl), centralized in `IdGenerator`.
 >
@@ -264,28 +272,41 @@ Every change carries two documentation obligations:
 Discovered during the migration review; ordered roughly by priority. Each stays within parity and
 the no-feature-expansion boundary.
 
-1. **Land the application modules.** Materialize `src/main/java/**`, `src/main/resources/**`, and
-   `src/test/**` per the target structure in [`../architecture.md`](../architecture.md), starting
-   with `domain/` + `repository/` and the Flyway schema, then the core posting/interest batch jobs
-   (highest parity risk).
-2. **Golden-file parity harness.** Build fixtures from the legacy seed data and assert row-for-row
-   parity for posting, the reject file, interest, statements, and reports — the primary defense
-   against decimal/ordering drift.
-3. **Reject-path coverage.** A dedicated test per reject code (`100` / `101` / `102` / `103`)
-   reproducing each legacy trigger condition in the exact validation order.
-4. **Field-contract tests.** Assert each screen DTO preserves the BMS field names, lengths, types,
-   edit rules, and PF-key actions.
-5. **Stand up the observability stack locally.** Add `docker-compose.yml` (PostgreSQL + Prometheus
-   + Tempo + Grafana), then verify correlation-id propagation, traces, metrics, and the
-   [Grafana dashboard template](../observability/grafana-dashboard.json) against the running stack
-   — moving observability from "planned/designed" to "verified locally".
-6. **CI workflow.** Add `.github/workflows/ci.yml` to run `clean verify`, publish JaCoCo, and run
-   OWASP dependency-check with an NVD API key so the security gate is fast and deterministic.
-7. **Maven wrapper.** Generate `mvnw` / `mvnw.cmd` / `.mvn/` so the exact Maven version is
-   reproducible.
-8. **Spring Boot lifecycle.** Track the Boot 3.5.x support status and plan a supported upgrade path
+> **Already delivered at this milestone** (previously listed here as future work): the application
+> modules under `src/main/**` and `src/test/**`; the Flyway schema; the core batch pipelines
+> (`dailyTransactionLoadJob`, `dailyTransactionValidateJob`, `dailyTransactionPostingJob`,
+> `interestCalculationJob`, `transactionReportJob`, `transactionCombineJob`, plus the master-print
+> and backup jobs); the golden-file parity tests and the per-reject-code coverage
+> (`100` / `101` / `102` / `103`); the local observability stack (`docker-compose.yml` with
+> PostgreSQL + Prometheus + Tempo + Grafana, verified locally); the CI workflow
+> (`.github/workflows/ci.yml`); and the Maven wrapper (`mvnw` / `mvnw.cmd` / `.mvn/`). Those items are
+> removed from the list below.
+
+1. **Statement generation job (`CREASTMT` / `CBSTM03A` + `CBSTM03B`).** The one remaining unmapped
+   batch pipeline. Implement `StatementGenerationJob` with the `CBSTM03B` file I/O re-expressed as an
+   injected file service (see the CALL-graph mapping in
+   [`../traceability-matrix.md`](../traceability-matrix.md)); preserve the statement record layout via
+   `common/util/FixedWidthCodec`.
+2. **Real executed-COBOL golden fixtures.** The current golden files derive from the legacy record
+   layouts and seed data, not from a live legacy run (no running COBOL system is assumed —
+   [`../decision-log.md`](../decision-log.md), D21). If a legacy runtime becomes available, capture the
+   real POSTTRAN / INTCALC / report outputs and assert row-for-row against them, which would also
+   close the interest-rounding divergence question (HALF_UP vs. COBOL truncation, D31) against
+   authoritative output.
+3. **Field-contract tests for online DTOs.** Assert each screen DTO preserves the BMS field names,
+   lengths, types, edit rules, and PF-key actions.
+4. **`@StepScope` batch writers for in-JVM concurrency.** The three fixed-width writers are singletons
+   and therefore support one job launch per JVM (D37). Convert them to `@StepScope` if concurrent
+   same-JVM launches are ever required — the recorded, sanctioned forward path.
+5. **Parameterized scheduled batch flow.** The in-scope jobs need job parameters (`parmDate`,
+   `startDate` / `endDate`, `inputResource`) or externally-staged DALYTRAN input, so today they run via
+   the integration-test suite and manual launch (see
+   [`./getting-started.md`](./getting-started.md), "Run the batch jobs"). Add a parameterized scheduled
+   flow (load → validate → post → interest → report) when operational scheduling beyond the nightly
+   master-print/backup smoke loop is required.
+6. **Spring Boot lifecycle.** Track the Boot 3.5.x support status and plan a supported upgrade path
    before any production use (see [`../decision-log.md`](../decision-log.md)).
-9. **Data anomalies.** Carry the classified legacy source anomalies (see
+7. **Data anomalies.** Carry the classified legacy source anomalies (see
    [`./pitfalls.md`](./pitfalls.md)) into fixtures/tests as known conditions — **classify, never
    edit** the legacy bytes.
 

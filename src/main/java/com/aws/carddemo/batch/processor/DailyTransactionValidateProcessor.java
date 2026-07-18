@@ -17,6 +17,7 @@ package com.aws.carddemo.batch.processor;
 
 import java.util.Optional;
 
+import com.aws.carddemo.common.util.PanMasker;
 import com.aws.carddemo.domain.Account;
 import com.aws.carddemo.domain.CardXref;
 import com.aws.carddemo.domain.DailyTransaction;
@@ -149,8 +150,9 @@ public class DailyTransactionValidateProcessor
         Optional<CardXref> xref = cardXrefRepository.findById(item.getCardNum());
         if (xref.isEmpty()) {
             // COBOL INVALID KEY branch: card could not be verified; skip this record.
+            // PAN is masked for the operational log (PCI-DSS first-6/last-4); see decision log D34.
             log.warn("Card number {} could not be verified. Skipping transaction ID {}",
-                    item.getCardNum(), item.getDalytranId());
+                    PanMasker.mask(item.getCardNum()), item.getDalytranId());
             return item;
         }
 
@@ -160,12 +162,14 @@ public class DailyTransactionValidateProcessor
         Optional<Account> account = accountRepository.findById(acctId);
         if (account.isEmpty()) {
             // COBOL INVALID KEY branch: 'ACCOUNT <id> NOT FOUND'.
+            // PAN is masked for the operational log (PCI-DSS first-6/last-4); see decision log D34.
             log.warn("Account {} not found for card {} (transaction ID {})",
-                    acctId, item.getCardNum(), item.getDalytranId());
+                    acctId, PanMasker.mask(item.getCardNum()), item.getDalytranId());
         } else {
             // COBOL NOT INVALID KEY branch: 'SUCCESSFUL READ OF ACCOUNT FILE'.
+            // PAN is masked for the operational log (PCI-DSS first-6/last-4); see decision log D34.
             log.debug("Successful read of account {} for card {} (transaction ID {})",
-                    acctId, item.getCardNum(), item.getDalytranId());
+                    acctId, PanMasker.mask(item.getCardNum()), item.getDalytranId());
         }
 
         // Report-only pass: return the record unchanged (RC 0 even with anomalies).

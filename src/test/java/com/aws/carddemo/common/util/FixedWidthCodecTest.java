@@ -222,6 +222,50 @@ class FixedWidthCodecTest {
                 .hasSize(4);
     }
 
+    // ------------------------------------------------------------------------
+    // D36 - embedded record-delimiter (LF/CR) sanitization in alphanumeric fields
+    // ------------------------------------------------------------------------
+
+    @Test
+    void writeAlphanumericReplacesEmbeddedLineFeedWithSpace() {
+        // An embedded LF (0x0A) in field data must not survive to be confused with the physical
+        // record-framing newline; it is replaced by a space, preserving the field width.
+        String out = FixedWidthCodec.writeAlphanumeric("BAD\nDESC", 10);
+        assertThat(out).isEqualTo("BAD DESC  ").hasSize(10);
+        assertThat(out).doesNotContain("\n");
+    }
+
+    @Test
+    void writeAlphanumericReplacesEmbeddedCarriageReturnWithSpace() {
+        String out = FixedWidthCodec.writeAlphanumeric("A\rB", 5);
+        assertThat(out).isEqualTo("A B  ").hasSize(5);
+        assertThat(out).doesNotContain("\r");
+    }
+
+    @Test
+    void writeAlphanumericReplacesCrLfPairWithTwoSpaces() {
+        // Each control character maps 1:1 to a space, so a CRLF becomes two spaces (width preserved).
+        String out = FixedWidthCodec.writeAlphanumeric("X\r\nY", 6);
+        assertThat(out).isEqualTo("X  Y  ").hasSize(6);
+        assertThat(out).doesNotContain("\r").doesNotContain("\n");
+    }
+
+    @Test
+    void writeAlphanumericSanitizesBeforeTruncationPreservingWidth() {
+        // Sanitization happens before the over-width truncation, so the field is still exactly width.
+        String out = FixedWidthCodec.writeAlphanumeric("AB\nCDEFGH", 4);
+        assertThat(out).isEqualTo("AB C").hasSize(4);
+        assertThat(out).doesNotContain("\n");
+    }
+
+    @Test
+    void writeAlphanumericLeavesCleanDataByteForByteUnchanged() {
+        // Clean data (no embedded delimiters) is returned untouched -> golden output is unaffected.
+        assertThat(FixedWidthCodec.writeAlphanumeric("Abshire-Lowe", 20))
+                .isEqualTo("Abshire-Lowe        ")
+                .hasSize(20);
+    }
+
     // ========================================================================
     // Phase 5 - Numeric (PIC 9) read/write
     // ========================================================================

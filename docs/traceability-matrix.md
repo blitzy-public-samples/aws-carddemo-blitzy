@@ -11,7 +11,7 @@ The matrix additionally provides coverage at two further granularities, each **c
 - **Related documents:** [Architecture](./architecture.md) &middot; [Decision Log](./decision-log.md).
 - **Identifier fidelity:** COBOL paragraph names are preserved verbatim (uppercase, hyphenated); Java targets use the package-by-layer names defined in the architecture.
 
-Monetary parity anchor preserved exactly: interest = `tranCatBal.multiply(intRate).divide(BigDecimal.valueOf(1200), 2, RoundingMode.HALF_UP)` (`legacy/cbl/CBACT04C.cbl` 1300-COMPUTE-INTEREST, L464-L465). All monetary fields use `java.math.BigDecimal` (scale 2); no floating point.
+Monetary parity anchor: interest = `tranCatBal.multiply(intRate).divide(BigDecimal.valueOf(1200), 2, RoundingMode.HALF_UP)` (`legacy/cbl/CBACT04C.cbl` 1300-COMPUTE-INTEREST, L464-L465). All monetary fields use `java.math.BigDecimal` (scale 2); no floating point. Additive balance postings are exact at scale 2. The interest division applies the project-wide `HALF_UP` standard (AAP §0.4.2); because the legacy `COMPUTE` has no `ROUNDED` phrase and truncates, this is an intentional **documented divergence** in the exact-half boundary case (decision log [D31](./decision-log.md#d31--interest-rounding-uses-half_up-documented-divergence-from-cobol-truncation)), not a bit-for-bit reproduction.
 
 ## 1. Coverage Summary
 
@@ -788,7 +788,7 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 | `1110-GET-XREF-DATA` | Fetch cross-reference data | CardXrefRepository lookup |
 | `1200-GET-INTEREST-RATE` | Get disclosure-group interest rate | DisclosureGroupRepository.findByGroupAndTypeAndCategory |
 | `1200-A-GET-DEFAULT-INT-RATE` | Get default-group interest rate | DisclosureGroupRepository default-group lookup |
-| `1300-COMPUTE-INTEREST` | Compute monthly interest = (TRAN-CAT-BAL * DIS-INT-RATE)/1200 [legacy L464-L465] | InterestCalculationJob processor + domain/type/Money: tranCatBal.multiply(intRate).divide(BigDecimal.valueOf(1200), 2, HALF_UP) |
+| `1300-COMPUTE-INTEREST` | Compute monthly interest = (TRAN-CAT-BAL * DIS-INT-RATE)/1200 [legacy L464-L465] | InterestCalculationJob processor + domain/type/Money: tranCatBal.multiply(intRate).divide(BigDecimal.valueOf(1200), 2, HALF_UP) — HALF_UP is a documented divergence from the truncating COBOL COMPUTE in the exact-half case (decision log D31) |
 | `1300-B-WRITE-TX` | Write the interest transaction | TransactionRepository.save (interest txn) |
 | `1400-COMPUTE-FEES` | Compute fees | InterestCalculationJob processor (fee computation via Money) |
 | `9000-TCATBALF-CLOSE` | Close TransactionCategoryBalance file | TransactionCategoryBalanceRepository - Spring Data JPA (no explicit close) |
@@ -905,13 +905,13 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 | `1000-DALYTRAN-GET-NEXT` | Read daily transaction | FlatFileItemReader (daily-transaction input).read() (fixed-width via common/util/FixedWidthCodec) |
 | `1500-VALIDATE-TRAN` | Validate a daily transaction; drives reject codes (order preserved) | PostingService.validate -> RejectCode 100/101/102/103 (evaluation order preserved) |
 | `1500-A-LOOKUP-XREF` | Lookup card cross-reference; reject 100 if card not found [legacy L385] | PostingService -> CardXrefRepository lookup; RejectCode.CARD_XREF_NOT_FOUND (100) |
-| `1500-B-LOOKUP-ACCT` | Lookup account; 101 not-found, 102 over-limit (ACCT-CREDIT-LIMIT >= WS-TEMP-BAL) [L407], 103 after expiry [L417] | PostingService -> AccountRepository lookup; RejectCode 101/102/103 |
+| `1500-B-LOOKUP-ACCT` | Lookup account; 101 not-found, 102 over-limit (ACCT-CREDIT-LIMIT >= WS-TEMP-BAL) [L407], 103 after expiry [L417] | PostingService -> AccountRepository lookup; RejectCode 101/102/103. Reject 101 is a defensive branch rendered unreachable by the `fk_card_xref_account` foreign key (D8); the branch and its unit coverage are retained — see D39 |
 | `2000-POST-TRANSACTION` | Post a valid transaction (update balances, write txn) | PostingService.post (@Transactional): TransactionRepository.save + balance updates |
 | `2500-WRITE-REJECT-REC` | Write rejected record with reason code + running count | FlatFileItemWriter (reject) -> RejectCode + count; 430-byte reject layout (350-byte transaction image + 80-byte validation trailer — see D16 / CF1) via FixedWidthCodec |
 | `2700-UPDATE-TCATBAL` | Update transaction-category balance | PostingService -> TransactionCategoryBalanceRepository (create/update) |
 | `2700-A-CREATE-TCATBAL-REC` | Create category-balance row when absent | TransactionCategoryBalanceRepository.save (insert) |
 | `2700-B-UPDATE-TCATBAL-REC` | Update existing category-balance row | TransactionCategoryBalanceRepository.save (update, @Version) |
-| `2800-UPDATE-ACCOUNT-REC` | Update account balance (READ-UPDATE-REWRITE) | AccountRepository.save (@Version optimistic lock) |
+| `2800-UPDATE-ACCOUNT-REC` | Update account balance (READ-UPDATE-REWRITE); reason 109 on REWRITE INVALID KEY [L556] | AccountRepository.save (@Version optimistic lock). Reason 109 is excluded from the RejectCode enum (100-103 only) and maps to RC 8 via FileStatusException rather than to a reject row — see D38 |
 | `2900-WRITE-TRANSACTION-FILE` | Write the posted transaction record | TransactionRepository.save (insert) |
 | `9000-DALYTRAN-CLOSE` | Close daily transaction stream | FlatFileItemReader (daily-transaction input) - no explicit close (Spring Batch manages stream) |
 | `9100-TRANFILE-CLOSE` | Close Transaction file | TransactionRepository - Spring Data JPA (no explicit close) |
@@ -930,7 +930,7 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 | COBOL Paragraph | Purpose | Target Java (class#method or component) |
 |-----------------|---------|-----------------------------------------|
 | `0550-DATEPARM-READ` | Read report date-range parameters | JobParameters / date-parameter reader |
-| `1000-TRANFILE-GET-NEXT` | Read next Transaction record | TransactionReportJob reader - TransactionRepository (paged, key-ordered) / RepositoryItemReader.read() |
+| `1000-TRANFILE-GET-NEXT` | Read next Transaction record | TransactionReportJob reader - TransactionRepository (paged, key-ordered) / RepositoryItemReader.read(). Orders `(cardNum, tranId)` for a deterministic card control break — a content-preserving documented deviation from physical TRAN-ID order (see D40) |
 | `1100-WRITE-TRANSACTION-REPORT` | Write transaction report body | TransactionReportJob writer (report body) |
 | `1110-WRITE-PAGE-TOTALS` | Accumulate/write page totals | TransactionReportJob writer (page totals) |
 | `1120-WRITE-ACCOUNT-TOTALS` | Accumulate/write account totals | TransactionReportJob writer (account totals) |
@@ -1519,7 +1519,7 @@ The COBOL/mainframe runtime services have no paragraph-level representation; the
 | IDCAMS / SORT / MERGE utilities | JPA queries / Java Comparator / ORDER BY | Identical key ordering |
 | FILE STATUS / CICS RESP codes | Typed exception hierarchy (FileStatusException, CicsRespMapper, GlobalExceptionHandler) | HTTP status (online) / batch return codes (batch) |
 | Static/dynamic CALL | Spring bean method invocation (constructor injection) | Data-passing semantics preserved |
-| COMP-3 packed decimal | java.math.BigDecimal scale 2 + RoundingMode.HALF_UP | Bit-exact rounding parity (domain/type/Money) |
+| COMP-3 packed decimal | java.math.BigDecimal scale 2 + RoundingMode.HALF_UP | Additive postings exact at scale 2; the interest division standardizes on HALF_UP (AAP §0.4.2) — a documented divergence from the truncating COBOL COMPUTE in the exact-half case (domain/type/Money; decision log D31) |
 
 ## 7. Non-Paragraph Orchestration: JCL / PROC / CTL / CSD
 

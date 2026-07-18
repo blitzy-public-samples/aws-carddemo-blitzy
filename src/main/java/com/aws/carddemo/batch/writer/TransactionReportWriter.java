@@ -74,6 +74,13 @@ import org.springframework.stereotype.Component;
  * opened. {@link #afterStep(StepExecution)} performs the end-of-file finalization and closes the
  * file, mapping the outcome to a batch return code via the returned {@link ExitStatus}.</p>
  *
+ * <p>Because that per-run state (line/record counters, running totals, and the open output stream) is
+ * held on the singleton bean, running two {@code TransactionReportJob} executions concurrently in the
+ * same JVM is <strong>not</strong> supported. This matches the operating model in which each batch job
+ * is launched in its own process by the CI/CD scheduler (AAP &sect;0.4.4), so the single-launch-per-JVM
+ * constraint is faithful operational parity rather than a defect. The rationale and the
+ * {@code @StepScope} alternative are recorded in decision log D37.</p>
+ *
  * <h2>Parity notes</h2>
  * <ul>
  *   <li>All monetary running totals are {@link BigDecimal} at scale 2 with

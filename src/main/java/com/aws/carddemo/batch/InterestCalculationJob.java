@@ -20,6 +20,9 @@ import com.aws.carddemo.batch.reader.TransactionCategoryBalanceItemReader;
 import com.aws.carddemo.batch.writer.InterestTransactionWriter;
 import com.aws.carddemo.domain.TransactionCategoryBalance;
 import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersInvalidException;
+import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
@@ -37,10 +40,13 @@ import org.springframework.transaction.PlatformTransactionManager;
  * its single chunk-oriented {@code interestCalculationStep} (AAP sections 0.4.4 and 0.5.4).
  *
  * <p>This job is the single highest monetary-fidelity risk in the migration (AAP High-risk hotspot
- * <strong>H3</strong>): the monthly-interest computation must match the COBOL result to the cent,
- * which is asserted by golden-file tests (AAP &sect;0.7.1 H3, &sect;0.9.2). The parity-critical
- * arithmetic itself lives in the {@link InterestCalculationProcessor} (the formula and the
- * disclosure-group {@code DEFAULT} fallback) and the per-account roll-up lives in the
+ * <strong>H3</strong>): the monthly-interest computation applies the project-wide {@code BigDecimal}
+ * scale-2 {@link java.math.RoundingMode#HALF_UP} standard mandated by AAP &sect;0.4.2. That standard
+ * <em>intentionally diverges</em> from the legacy {@code COMPUTE}, which carries no {@code ROUNDED}
+ * phrase and therefore truncates; the divergence is a documented deviation (decision log D31), not a
+ * defect, so golden-file assertions target the HALF_UP result rather than the truncated COBOL value.
+ * The parity-critical arithmetic itself lives in the {@link InterestCalculationProcessor} (the
+ * formula and the disclosure-group {@code DEFAULT} fallback) and the per-account roll-up lives in the
  * {@link InterestTransactionWriter} (the control-break account update); this class is the
  * <em>orchestration</em> that wires those verified components into a runnable job.</p>
  *
@@ -117,19 +123,25 @@ import org.springframework.transaction.PlatformTransactionManager;
  * The COBOL {@code COMPUTE} carries no {@code ROUNDED} phrase and therefore truncates to scale&nbsp;2,
  * whereas the target intentionally applies {@link java.math.RoundingMode#HALF_UP}, the project-wide
  * monetary rounding standard (AAP &sect;0.4.2, &sect;0.7.1 H3). This is a deliberate, documented
- * deviation recorded in {@code docs/decision-log.md}; it is noted here so the choice is visible from
- * the job that owns the interest calculation. All monetary values are {@link java.math.BigDecimal}
- * at scale&nbsp;2; {@code double}/{@code float} are never used.
+ * deviation recorded in {@code docs/decision-log.md} as decision <strong>D31</strong>; it is noted
+ * here so the choice is visible from the job that owns the interest calculation. Consequently the
+ * interest result is <em>not</em> bit-for-bit identical to the truncating COBOL {@code COMPUTE} in the
+ * boundary case where the third decimal digit is exactly 5 (for example a raw {@code 0.005} rounds to
+ * {@code 0.01} here versus {@code 0.00} under COBOL truncation). All monetary values are
+ * {@link java.math.BigDecimal} at scale&nbsp;2; {@code double}/{@code float} are never used.
  *
  * <h2>Run parameter</h2>
  * CBACT04C receives {@code PARM-DATE PIC X(10)} (the {@code INTCALC.jcl} {@code PARM='2022071800'})
  * via {@code PROCEDURE DIVISION USING}. In the target this is the {@code parmDate} job parameter
  * (ten characters, {@code CCYYMMDD} + two trailing digits), late-bound by the {@code @StepScope}
  * processor via SpEL ({@code #{jobParameters['parmDate']}}); it seeds the high-order ten characters
- * of every generated interest {@code TRAN-ID}. Consistent with the other CardDemo batch jobs, no
- * {@code JobParametersValidator} is declared here: the requirement is satisfied by the processor
- * consuming the parameter, and the launcher (an explicit {@code JobLauncher}/{@code JobOperator} or
- * the CI/CD workflow) supplies it.
+ * of every generated interest {@code TRAN-ID}. Because the parameter is late-bound only when the step
+ * runs, this job declares a {@link JobParametersValidator} ({@link #parmDateValidator()}) that
+ * requires a non-blank {@code parmDate} at launch, so a caller who omits it fails fast with a clear
+ * {@link JobParametersInvalidException} instead of an opaque in-step binding error or a malformed
+ * generated {@code TRAN-ID}. The launcher (an explicit {@code JobLauncher}/{@code JobOperator} or the
+ * CI/CD workflow) supplies the parameter; the fail-fast contract is recorded in the decision log
+ * (D33).
  *
  * <h2>Return codes</h2>
  * The interest job has <strong>no reject path</strong> (unlike transaction posting). A clean run
@@ -193,6 +205,12 @@ public class InterestCalculationJob {
     private static final int CHUNK_SIZE = 1;
 
     /**
+     * Job parameter name for the CBACT04C run date ({@code PARM-DATE PIC X(10)}). Late-bound by the
+     * {@code @StepScope} {@link InterestCalculationProcessor} and required by {@link #parmDateValidator()}.
+     */
+    private static final String PARAM_PARM_DATE = "parmDate";
+
+    /**
      * Defines the {@code interestCalculationJob}: a single-step job that computes and posts monthly
      * interest per account, reproducing CBACT04C.
      *
@@ -214,9 +232,42 @@ public class InterestCalculationJob {
                                       Step interestCalculationStep,
                                       CorrelationIdJobListener correlationIdJobListener) {
         return new JobBuilder(JOB_NAME, jobRepository)
+                .validator(parmDateValidator())
                 .listener(correlationIdJobListener)
                 .start(interestCalculationStep)
                 .build();
+    }
+
+    /**
+     * Builds the {@link JobParametersValidator} that requires a non-blank {@code parmDate} parameter.
+     *
+     * <p>CBACT04C receives its run date as {@code PARM-DATE PIC X(10)} via {@code PROCEDURE DIVISION
+     * USING} (the {@code INTCALC.jcl} {@code PARM='2022071800'}); the value seeds the high-order ten
+     * characters of every generated interest {@code TRAN-ID}. Because the {@code @StepScope}
+     * {@link InterestCalculationProcessor} late-binds {@code parmDate} only when the step runs, a
+     * launch that omits it would otherwise fail deep inside the step with an opaque SpEL/binding error
+     * (or silently generate malformed transaction ids). Validating at launch fails fast with a clear
+     * {@link JobParametersInvalidException} instead, and is the fail-fast contract documented in the
+     * decision log (D33). The validator intentionally checks only presence/blankness, not calendar
+     * validity: the ten-character positional {@code CCYYMMDD}+2 contract mirrors the fixed-width COBOL
+     * {@code PARM-DATE} and is consumed positionally, exactly as the legacy program does.</p>
+     *
+     * @return a validator that rejects launches missing or blanking {@code parmDate}
+     */
+    private JobParametersValidator parmDateValidator() {
+        return new JobParametersValidator() {
+            @Override
+            public void validate(JobParameters parameters) throws JobParametersInvalidException {
+                String parmDate = (parameters == null) ? null : parameters.getString(PARAM_PARM_DATE);
+                if (parmDate == null || parmDate.isBlank()) {
+                    throw new JobParametersInvalidException(
+                            "Job parameter '" + PARAM_PARM_DATE + "' is required: supply the CBACT04C "
+                                    + "run date as ten characters (CCYYMMDD plus two trailing digits, "
+                                    + "for example parmDate=2022071800). It seeds the high-order ten "
+                                    + "characters of every generated interest TRAN-ID.");
+                }
+            }
+        };
     }
 
     /**

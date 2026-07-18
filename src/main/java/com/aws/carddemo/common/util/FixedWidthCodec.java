@@ -417,11 +417,38 @@ public final class FixedWidthCodec {
      */
     public static String writeAlphanumeric(String value, int length) {
         requirePositiveLength(length, "alphanumeric");
-        String text = (value == null) ? "" : value;
+        String text = (value == null) ? "" : sanitizeRecordDelimiters(value);
         if (text.length() > length) {
             return text.substring(0, length);
         }
         return padRight(text, length, PAD_SPACE);
+    }
+
+    /**
+     * Replaces embedded record-delimiter control characters &mdash; line feed ({@code 0x0A}) and
+     * carriage return ({@code 0x0D}) &mdash; inside an alphanumeric field value with spaces, so that a
+     * data byte inside a field can never be confused with the physical newline used to frame the
+     * fixed-width records on disk. The substitution is strictly one-for-one (one control character
+     * becomes one space), so the field's character width &mdash; and therefore the record's fixed
+     * length &mdash; is always preserved. Clean data (no embedded delimiters) is returned unchanged via
+     * a fast path, so byte-for-byte golden output is unaffected. The rationale and the retained
+     * trailing framing newline are recorded in decision log D36.
+     *
+     * @param value the raw field value (never {@code null} at the call site)
+     * @return the value with any embedded {@code LF}/{@code CR} replaced by spaces
+     */
+    private static String sanitizeRecordDelimiters(String value) {
+        // Fast path: the overwhelming majority of field values contain neither delimiter.
+        if (value.indexOf('\n') < 0 && value.indexOf('\r') < 0) {
+            return value;
+        }
+        char[] chars = value.toCharArray();
+        for (int i = 0; i < chars.length; i++) {
+            if (chars[i] == '\n' || chars[i] == '\r') {
+                chars[i] = ' ';
+            }
+        }
+        return new String(chars);
     }
 
     /**

@@ -64,7 +64,8 @@ import org.springframework.stereotype.Component;
  * order. The secondary {@code tranId} key preserves the legacy within-file {@code TRAN-ID} ordering
  * inside each card group. This is an <strong>intentional, documented deviation</strong>: it changes
  * the <em>read order</em> only, never the <em>content</em> &mdash; the same set of rows is returned,
- * grouped identically &mdash; and is recorded as such in {@code docs/decision-log.md}.
+ * grouped identically &mdash; and is recorded as such in {@code docs/decision-log.md} as decision
+ * <strong>D40</strong>.
  *
  * <h2>Query semantics</h2>
  * <ul>

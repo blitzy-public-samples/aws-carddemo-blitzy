@@ -133,6 +133,15 @@ jobs:
           JAR="$(ls target/carddemo-*.jar | head -n1)"
           echo "Launching Spring Batch jobs from ${JAR}"
           overall=0
+          # Scope of this nightly smoke loop: the read-only, no-parameter jobs that read the seeded
+          # demo rows and return COMPLETED without external input. The in-scope transaction pipelines
+          # (dailyTransactionLoadJob, dailyTransactionValidateJob, dailyTransactionPostingJob,
+          # interestCalculationJob, transactionReportJob, transactionCombineJob) are intentionally NOT
+          # launched here: they require real job parameters (parmDate; startDate/endDate; inputResource)
+          # or externally-staged DALYTRAN input, so a correlationId-only launch would fail fast at the
+          # parameter validator or process zero rows. Those jobs are verified by the Testcontainers
+          # integration suite in the `build` job and documented for manual, parameterized launch in
+          # docs/onboarding/getting-started.md ("Run the batch jobs"). See decision-log D14.
           for job in accountMasterPrintJob cardMasterPrintJob customerMasterPrintJob xrefPrintJob transactionBackupJob; do
             echo "::group::Launch ${job}"
             # A unique, identifying correlationId per launch makes each run a distinct Spring Batch

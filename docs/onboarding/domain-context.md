@@ -191,8 +191,9 @@ The precise evaluation order, the reject-record layout, the batch return code, a
 computations are parity traps detailed in [`./pitfalls.md`](./pitfalls.md) (anchored to
 [`legacy/cbl/CBTRN02C.cbl`](../../legacy/cbl/CBTRN02C.cbl)). Separately, the
 `InterestCalculationJob` applies each account's disclosure-group interest **rate** to its
-category balances; the exact interest formula (reproduced to the cent with `BigDecimal`,
-anchored to `legacy/cbl/CBACT04C.cbl`) is also documented in
+category balances; the interest formula (`BigDecimal` scale 2, `HALF_UP` per AAP §0.4.2 — an
+intentional, documented divergence from the legacy truncation in the exact-half boundary case,
+decision log **D31**; anchored to `legacy/cbl/CBACT04C.cbl`) is also documented in
 [`./pitfalls.md`](./pitfalls.md).
 
 ---
