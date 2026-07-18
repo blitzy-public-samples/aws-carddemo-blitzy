@@ -29,21 +29,26 @@ import org.junit.jupiter.api.Test;
  * {@code PIC S9(10)V99} monetary fields (credit limit, cash credit limit, current balance,
  * current-cycle credit, current-cycle debit).
  *
- * <p>These tests lock down the verbatim COBOL parity that defines the rule's contract:
+ * <p>These tests lock down the verbatim COBOL parity that defines the rule's contract:</p>
  * <ul>
- *   <li>a not-supplied value yields {@code "<field> must be supplied."} <em>with</em> a trailing
- *       period (COBOL {@code L2191});</li>
+ *   <li>a not-supplied value (COBOL {@code LOW-VALUES} / {@code SPACES}) yields
+ *       {@code "<field> must be supplied."} <em>with</em> a trailing period (COBOL {@code L2191});</li>
  *   <li>a value rejected by {@code FUNCTION TEST-NUMVAL-C} yields {@code "<field> is not valid"}
  *       <em>without</em> a trailing period (COBOL {@code L2209}) &mdash; the deliberate message
- *       asymmetry is asserted explicitly;</li>
- *   <li>zero is a <em>valid</em> signed amount (paragraph {@code 1250} performs no zero check,
- *       unlike {@code 1245-EDIT-NUM-REQD});</li>
+ *       asymmetry (no period, unlike the "must be supplied." message) is asserted explicitly;</li>
+ *   <li>zero is a <em>valid</em> signed amount &mdash; paragraph {@code 1250} performs no zero check,
+ *       the key behavioral difference from {@code NumericRequiredRule} ({@code 1245-EDIT-NUM-REQD});</li>
  *   <li>{@link SignedAmountRule#parseAmount(String)} yields a {@link BigDecimal} at scale&nbsp;2,
- *       truncating excess fractional digits toward zero to mirror a COBOL {@code MOVE} into
- *       {@code PIC S9(10)V99}.</li>
+ *       truncating excess fractional digits toward zero ({@code RoundingMode.DOWN}) to mirror a COBOL
+ *       {@code MOVE} into {@code PIC S9(10)V99}, or {@code null} when the value is malformed.</li>
  * </ul>
- * The representative field label is {@code "Credit Limit"}. This is a pure JUnit&nbsp;5 + AssertJ
- * unit test &mdash; no Spring context, no Mockito, and no database.
+ *
+ * <p>The representative field label is {@code "Credit Limit"}. Monetary values are compared with
+ * {@link BigDecimal} exclusively for exact decimal fidelity (AAP&nbsp;&sect;0.6.4), using
+ * {@link org.assertj.core.api.AbstractBigDecimalAssert#isEqualByComparingTo(BigDecimal)
+ * isEqualByComparingTo} for value equality and {@link BigDecimal#scale()} for the scale contract.
+ * This is a pure JUnit&nbsp;5 + AssertJ unit test &mdash; no Spring context, no Mockito, and no
+ * database; the stateless rule is exercised through a plain {@code new SignedAmountRule()}.</p>
  */
 class SignedAmountRuleTest {
 
@@ -54,21 +59,32 @@ class SignedAmountRuleTest {
     private final SignedAmountRule rule = new SignedAmountRule();
 
     // ---------------------------------------------------------------------------------------------
-    // (a) Not supplied -> "<field> must be supplied." (WITH trailing period)
+    // (a) Not supplied (null / empty / all-spaces) -> "<field> must be supplied." (WITH period)
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("(a) null value -> 'Credit Limit must be supplied.' (with period)")
+    @DisplayName("(a) null value (COBOL LOW-VALUES) -> 'Credit Limit must be supplied.' (with period)")
     void nullValue_mustBeSupplied() {
         ValidationResult result = rule.validate(FIELD, null);
 
         assertThat(result.isInvalid()).isTrue();
         assertThat(result.message()).isEqualTo("Credit Limit must be supplied.");
+        // A blank value has no numeric interpretation: parseAmount returns null.
         assertThat(rule.parseAmount(null)).isNull();
     }
 
     @Test
-    @DisplayName("(a) all-spaces value -> 'Credit Limit must be supplied.' (with period)")
+    @DisplayName("(a) empty value (COBOL SPACES / trim length 0) -> 'Credit Limit must be supplied.'")
+    void emptyValue_mustBeSupplied() {
+        ValidationResult result = rule.validate(FIELD, "");
+
+        assertThat(result.isInvalid()).isTrue();
+        assertThat(result.message()).isEqualTo("Credit Limit must be supplied.");
+        assertThat(rule.parseAmount("")).isNull();
+    }
+
+    @Test
+    @DisplayName("(a) all-spaces value (COBOL SPACES) -> 'Credit Limit must be supplied.' (with period)")
     void spacesValue_mustBeSupplied() {
         ValidationResult result = rule.validate(FIELD, "   ");
 
@@ -78,11 +94,11 @@ class SignedAmountRuleTest {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // (b) Well-formed positive amount -> valid, parseAmount == new BigDecimal("1000.00")
+    // (b) Well-formed positive amount -> valid; parseAmount == 1000.00 at scale 2
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("(b) '1000.00' -> valid and parseAmount == new BigDecimal(\"1000.00\")")
+    @DisplayName("(b) '1000.00' -> valid; parseAmount comparesTo 1000.00 with scale() == 2")
     void positiveAmount_isValidAndParses() {
         ValidationResult result = rule.validate(FIELD, "1000.00");
 
@@ -90,100 +106,107 @@ class SignedAmountRuleTest {
         assertThat(result.message()).isEmpty();
 
         BigDecimal parsed = rule.parseAmount("1000.00");
-        assertThat(parsed).isEqualTo(new BigDecimal("1000.00"));
+        assertThat(parsed).isEqualByComparingTo(new BigDecimal("1000.00"));
         assertThat(parsed.scale()).isEqualTo(2);
     }
 
     // ---------------------------------------------------------------------------------------------
-    // (c) Negative amount -> valid, parses to -500.00
+    // (c) Negative amount -> valid; parseAmount == -500.00 at scale 2
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("(c) '-500.00' -> valid and parseAmount == new BigDecimal(\"-500.00\")")
+    @DisplayName("(c) '-500.00' -> valid; parseAmount comparesTo -500.00 with scale() == 2")
     void negativeAmount_isValidAndParses() {
         ValidationResult result = rule.validate(FIELD, "-500.00");
 
         assertThat(result.isValid()).isTrue();
 
         BigDecimal parsed = rule.parseAmount("-500.00");
-        assertThat(parsed).isEqualTo(new BigDecimal("-500.00"));
+        assertThat(parsed).isEqualByComparingTo(new BigDecimal("-500.00"));
         assertThat(parsed.scale()).isEqualTo(2);
     }
 
     // ---------------------------------------------------------------------------------------------
-    // (d) Zero -> VALID (no zero rejection in paragraph 1250)
+    // (d) Zero -> VALID (paragraph 1250 has NO zero check; the key difference from 1245-EDIT-NUM-REQD)
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("(d) '0.00' -> VALID (zero is allowed; no zero check unlike NumericRequiredRule)")
+    @DisplayName("(d) '0.00' -> VALID (zero is allowed; NO zero rejection unlike NumericRequiredRule)")
     void zeroAmount_isValid() {
         ValidationResult result = rule.validate(FIELD, "0.00");
 
+        // Zero is explicitly NOT rejected here: 1250-EDIT-SIGNED-9V2 performs no FUNCTION NUMVAL = 0 test.
         assertThat(result.isValid()).isTrue();
+        assertThat(result.message()).isEmpty();
 
         BigDecimal parsed = rule.parseAmount("0.00");
-        assertThat(parsed).isEqualTo(new BigDecimal("0.00"));
+        assertThat(parsed).isEqualByComparingTo(new BigDecimal("0.00"));
         assertThat(parsed.scale()).isEqualTo(2);
     }
 
     // ---------------------------------------------------------------------------------------------
-    // (e) Malformed -> "<field> is not valid" (NO trailing period)
+    // (e) Malformed -> "<field> is not valid" (NO trailing period) + parseAmount == null
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("(e) '12.3X' -> 'Credit Limit is not valid' (NO trailing period)")
+    @DisplayName("(e) '12.3X' -> 'Credit Limit is not valid' (NO trailing period; parseAmount null)")
     void malformedAmount_isNotValid_noTrailingPeriod() {
         ValidationResult result = rule.validate(FIELD, "12.3X");
 
         assertThat(result.isInvalid()).isTrue();
         assertThat(result.message()).isEqualTo("Credit Limit is not valid");
-        // The malformed message deliberately carries NO trailing period (COBOL L2209).
+        // Verbatim parity: the malformed message deliberately carries NO trailing period (COBOL L2209),
+        // unlike the "must be supplied." message. Lock the no-period contract explicitly.
         assertThat(result.message()).doesNotEndWith(".");
         assertThat(rule.parseAmount("12.3X")).isNull();
     }
 
     // ---------------------------------------------------------------------------------------------
-    // (f) Thousands-grouped amount -> valid, parses to 1234.56
+    // (f) Comma thousands grouping -> valid; parseAmount == 1234.56 at scale 2
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("(f) '1,234.56' -> valid and parseAmount == new BigDecimal(\"1234.56\")")
+    @DisplayName("(f) '1,234.56' -> valid; parseAmount comparesTo 1234.56 with scale() == 2")
     void groupedAmount_isValidAndParses() {
         ValidationResult result = rule.validate(FIELD, "1,234.56");
 
         assertThat(result.isValid()).isTrue();
 
         BigDecimal parsed = rule.parseAmount("1,234.56");
-        assertThat(parsed).isEqualTo(new BigDecimal("1234.56"));
+        assertThat(parsed).isEqualByComparingTo(new BigDecimal("1234.56"));
         assertThat(parsed.scale()).isEqualTo(2);
     }
 
     // ---------------------------------------------------------------------------------------------
-    // (g) Excess fractional digits -> valid, TRUNCATED (RoundingMode.DOWN) to 1.23
+    // (g) Excess fractional digits -> valid; TRUNCATED (RoundingMode.DOWN), NOT rounded
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("(g) '1.239' -> valid and parseAmount truncates (DOWN) to 1.23")
+    @DisplayName("(g) '1.239' -> valid; parseAmount truncates DOWN to 1.23 (NOT rounded to 1.24)")
     void excessFraction_truncatesTowardZero() {
         ValidationResult result = rule.validate(FIELD, "1.239");
 
         assertThat(result.isValid()).isTrue();
 
         BigDecimal parsed = rule.parseAmount("1.239");
-        // RoundingMode.DOWN truncates (does not round): 1.239 -> 1.23, NOT 1.24.
-        assertThat(parsed).isEqualTo(new BigDecimal("1.23"));
+        // COBOL MOVE into PIC S9(10)V99 truncates; RoundingMode.DOWN yields 1.23, never 1.24.
+        assertThat(parsed).isEqualByComparingTo(new BigDecimal("1.23"));
+        assertThat(parsed).isNotEqualByComparingTo(new BigDecimal("1.24"));
         assertThat(parsed.scale()).isEqualTo(2);
 
         // Truncation is toward zero for negatives too: -1.239 -> -1.23 (not -1.24).
-        assertThat(rule.parseAmount("-1.239")).isEqualTo(new BigDecimal("-1.23"));
+        BigDecimal negative = rule.parseAmount("-1.239");
+        assertThat(negative).isEqualByComparingTo(new BigDecimal("-1.23"));
+        assertThat(negative).isNotEqualByComparingTo(new BigDecimal("-1.24"));
+        assertThat(negative.scale()).isEqualTo(2);
     }
 
     // ---------------------------------------------------------------------------------------------
-    // (h) Returned BigDecimal always has scale() == 2
+    // (h) Every successful parse returns a BigDecimal whose scale() is exactly 2
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("(h) parseAmount always returns scale() == 2 across integer, grouped, and long forms")
+    @DisplayName("(h) parseAmount always returns scale() == 2 (integer, grouped, leading-decimal forms)")
     void parseAmount_alwaysScaleTwo() {
         assertThat(rule.parseAmount("1000.00").scale()).isEqualTo(2);
         assertThat(rule.parseAmount("1234").scale()).isEqualTo(2);          // no decimal part
@@ -194,35 +217,35 @@ class SignedAmountRuleTest {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Additional NUMVAL-C parity cases (signs, currency, grouping) — reinforce behavioral parity.
+    // Additional NUMVAL-C grammar parity cases (signs, currency, grouping) reinforcing parity.
     // ---------------------------------------------------------------------------------------------
 
     @Test
     @DisplayName("trailing 'CR' denotes a negative amount (NUMVAL-C): '500.00CR' -> -500.00")
     void trailingCr_isNegative() {
         assertThat(rule.validate(FIELD, "500.00CR").isValid()).isTrue();
-        assertThat(rule.parseAmount("500.00CR")).isEqualTo(new BigDecimal("-500.00"));
+        assertThat(rule.parseAmount("500.00CR")).isEqualByComparingTo(new BigDecimal("-500.00"));
     }
 
     @Test
     @DisplayName("trailing 'DB' denotes a negative amount (NUMVAL-C): '500.00DB' -> -500.00")
     void trailingDb_isNegative() {
         assertThat(rule.validate(FIELD, "500.00DB").isValid()).isTrue();
-        assertThat(rule.parseAmount("500.00DB")).isEqualTo(new BigDecimal("-500.00"));
+        assertThat(rule.parseAmount("500.00DB")).isEqualByComparingTo(new BigDecimal("-500.00"));
     }
 
     @Test
     @DisplayName("trailing minus denotes a negative amount: '1000.00-' -> -1000.00")
     void trailingMinus_isNegative() {
         assertThat(rule.validate(FIELD, "1000.00-").isValid()).isTrue();
-        assertThat(rule.parseAmount("1000.00-")).isEqualTo(new BigDecimal("-1000.00"));
+        assertThat(rule.parseAmount("1000.00-")).isEqualByComparingTo(new BigDecimal("-1000.00"));
     }
 
     @Test
-    @DisplayName("leading currency symbol is accepted: '$1,234.56' -> 1234.56")
+    @DisplayName("leading currency symbol is accepted (NUMVAL-C): '$1,234.56' -> 1234.56")
     void leadingCurrency_isAccepted() {
         assertThat(rule.validate(FIELD, "$1,234.56").isValid()).isTrue();
-        assertThat(rule.parseAmount("$1,234.56")).isEqualTo(new BigDecimal("1234.56"));
+        assertThat(rule.parseAmount("$1,234.56")).isEqualByComparingTo(new BigDecimal("1234.56"));
     }
 
     @Test
@@ -236,17 +259,18 @@ class SignedAmountRuleTest {
     }
 
     @Test
-    @DisplayName("a value with both leading and trailing sign is rejected (single-sign grammar)")
-    void doubleSign_isNotValid() {
+    @DisplayName("a value carrying BOTH a leading and a trailing sign is rejected (single-sign grammar)")
+    void bothLeadingAndTrailingSign_isNotValid() {
         assertThat(rule.validate(FIELD, "+5-").isInvalid()).isTrue();
         assertThat(rule.parseAmount("+5-")).isNull();
     }
 
     @Test
-    @DisplayName("field label is trimmed before substitution (FUNCTION TRIM parity)")
+    @DisplayName("field label is trimmed before substitution into the message (FUNCTION TRIM parity)")
     void fieldLabel_isTrimmed() {
         ValidationResult result = rule.validate("  Credit Limit  ", "12.3X");
 
+        // Leading/trailing spaces of the label are removed, matching FUNCTION TRIM(WS-EDIT-VARIABLE-NAME).
         assertThat(result.message()).isEqualTo("Credit Limit is not valid");
     }
 }

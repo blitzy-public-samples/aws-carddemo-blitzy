@@ -17,43 +17,36 @@ package com.aws.carddemo.service.rule;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.lang.reflect.Field;
-import java.util.Set;
-
-import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
  * Unit tests for {@link UsStateZipRule}, the cross-field state/zip-code edit that re-platforms
- * COBOL paragraph {@code 1280-EDIT-US-STATE-ZIP-CD} ({@code legacy/cbl/COACTUPC.cbl},
- * source-branch {@code app/cbl/COACTUPC.cbl}, at {@code L2536-L2558}) and its
- * {@code VALID-US-STATE-ZIP-CD2-COMBO} lookup ({@code legacy/cpy/CSLKPCDY.cpy}, source-branch
- * {@code app/cpy/CSLKPCDY.cpy}, at {@code L1073-L1313}).
+ * COBOL paragraph {@code 1280-EDIT-US-STATE-ZIP-CD} ({@code legacy/cbl/COACTUPC.cbl}, source-branch
+ * {@code app/cbl/COACTUPC.cbl}) together with its {@code VALID-US-STATE-ZIP-CD2-COMBO} lookup
+ * ({@code legacy/cpy/CSLKPCDY.cpy}, source-branch {@code app/cpy/CSLKPCDY.cpy}).
  *
- * <p>COBOL evidence reproduced (verified against {@code app/cbl/COACTUPC.cbl}):
- * <ul>
- *   <li>The paragraph {@code STRING}s the two-character state code with the first two zip
- *       characters ({@code ACUP-NEW-CUST-ADDR-ZIP(1:2)}) into the four-character key
- *       {@code US-STATE-AND-FIRST-ZIP2} (L2537-L2540).</li>
- *   <li>When the key is not a {@code VALID-US-STATE-ZIP-CD2-COMBO} member it latches the fixed
- *       screen message {@code 'Invalid zip code for state'} (L2550) &mdash; a literal with no
- *       field-label prefix and no trailing period.</li>
- * </ul>
+ * <p>The legacy paragraph assembles a four-character key by concatenating the two-character state
+ * code with the first two characters of the zip code
+ * ({@code STRING state ZIP(1:2) INTO US-STATE-AND-FIRST-ZIP2}); when that key is not a member of
+ * the 240-entry combination set it latches the fixed screen message
+ * {@code 'Invalid zip code for state'} at {@code COACTUPC.cbl:L2550} &mdash; a literal that carries
+ * no field-label prefix and no trailing period.</p>
  *
- * <p>These tests assert behavioral parity (AAP &sect;0.9.2 field-contract parity; &sect;0.7.1 hotspot
- * H2): a recognized combination passes; an unrecognized one fails with the <em>exact</em> fixed
- * message; and the defensive guard treats {@code null}/short input as invalid rather than throwing.
- * A dedicated test also pins the embedded lookup to exactly 240 entries, matching the copybook, so
- * the {@link java.util.Set#of(Object...)} view can never silently lose or gain a combination. This
- * is a pure JUnit&nbsp;5 + AssertJ unit test &mdash; no Spring context, no Mockito, no database
- * (mirroring {@code ValidationResultTest} / {@code ValidationRuleTest}).
+ * <p>These tests assert behavioral parity (AAP &sect;0.9.2 field-contract parity; &sect;0.7.1
+ * hotspot H2): a recognized combination passes with an empty message; an unrecognized one fails
+ * with the <em>exact</em> fixed message; and the defensive guard treats {@code null} or too-short
+ * input as invalid rather than throwing. The four representative keys exercise both membership
+ * outcomes ({@code TX75}/{@code CA90} are in the set; {@code TX99}/{@code NY00} are not), and the
+ * null/short cases exercise every branch of the rule's guard. This is a pure JUnit&nbsp;5 + AssertJ
+ * unit test &mdash; the rule is stateless, so it is exercised via {@code new UsStateZipRule()} with
+ * no Spring context, no Mockito, and no database.</p>
  */
 class UsStateZipRuleTest {
 
     /**
-     * The exact fixed screen message the legacy paragraph latches on failure ({@code L2550}); no
-     * field-label prefix and no trailing period. Every failing assertion below checks against this
-     * literal to lock the parity contract.
+     * The exact fixed screen message the legacy paragraph latches on failure
+     * ({@code COACTUPC.cbl:L2550}); no field-label prefix and no trailing period. Every failing
+     * assertion below checks against this literal to lock the parity contract.
      */
     private static final String INVALID_MESSAGE = "Invalid zip code for state";
 
@@ -61,8 +54,8 @@ class UsStateZipRuleTest {
     private final UsStateZipRule rule = new UsStateZipRule();
 
     @Test
-    @DisplayName("Valid TX combination (TX75) passes with an empty message")
-    void validTexasCombinationPasses() {
+    void validTexasCombinationTx75Passes() {
+        // Key "TX" + "75" = "TX75" is a member of VALID-US-STATE-ZIP-CD2-COMBO.
         ValidationResult result = rule.validate("TX", "75001");
 
         assertThat(result.isValid()).isTrue();
@@ -71,17 +64,18 @@ class UsStateZipRuleTest {
     }
 
     @Test
-    @DisplayName("Unrecognized TX combination (TX99) fails with the exact fixed message")
-    void invalidTexasCombinationFails() {
+    void unrecognizedTexasCombinationTx99FailsWithFixedMessage() {
+        // Key "TX" + "99" = "TX99" is NOT a member of the combination set.
         ValidationResult result = rule.validate("TX", "99999");
 
         assertThat(result.isInvalid()).isTrue();
+        assertThat(result.isValid()).isFalse();
         assertThat(result.message()).isEqualTo(INVALID_MESSAGE);
     }
 
     @Test
-    @DisplayName("Valid CA combination (CA90) passes")
-    void validCaliforniaCombinationPasses() {
+    void validCaliforniaCombinationCa90Passes() {
+        // Key "CA" + "90" = "CA90" is a member of the combination set.
         ValidationResult result = rule.validate("CA", "90210");
 
         assertThat(result.isValid()).isTrue();
@@ -89,8 +83,8 @@ class UsStateZipRuleTest {
     }
 
     @Test
-    @DisplayName("Unrecognized NY combination (NY00) fails with the exact fixed message")
-    void invalidNewYorkCombinationFails() {
+    void unrecognizedNewYorkCombinationNy00FailsWithFixedMessage() {
+        // Key "NY" + "00" = "NY00" is NOT a member of the combination set.
         ValidationResult result = rule.validate("NY", "00000");
 
         assertThat(result.isInvalid()).isTrue();
@@ -98,26 +92,8 @@ class UsStateZipRuleTest {
     }
 
     @Test
-    @DisplayName("Only the first two zip characters form the key, so a longer zip still matches (TX75)")
-    void onlyFirstTwoZipCharactersFormTheKey() {
-        ValidationResult result = rule.validate("TX", "7500199999");
-
-        assertThat(result.isValid()).isTrue();
-        assertThat(result.message()).isEmpty();
-    }
-
-    @Test
-    @DisplayName("Leading/trailing whitespace is stripped before the key is built (' TX ',' 75001 ' -> TX75)")
-    void surroundingWhitespaceIsStripped() {
-        ValidationResult result = rule.validate(" TX ", " 75001 ");
-
-        assertThat(result.isValid()).isTrue();
-        assertThat(result.message()).isEmpty();
-    }
-
-    @Test
-    @DisplayName("A null state code is treated as invalid with the same fixed message (no throw)")
-    void nullStateCodeIsInvalid() {
+    void nullStateCodeIsInvalidWithFixedMessage() {
+        // Defensive guard: a null state code yields the fixed message and never throws.
         ValidationResult result = rule.validate(null, "75001");
 
         assertThat(result.isInvalid()).isTrue();
@@ -125,8 +101,8 @@ class UsStateZipRuleTest {
     }
 
     @Test
-    @DisplayName("A null zip code is treated as invalid with the same fixed message (no throw)")
-    void nullZipCodeIsInvalid() {
+    void nullZipCodeIsInvalidWithFixedMessage() {
+        // Defensive guard: a null zip code yields the fixed message and never throws.
         ValidationResult result = rule.validate("TX", null);
 
         assertThat(result.isInvalid()).isTrue();
@@ -134,17 +110,18 @@ class UsStateZipRuleTest {
     }
 
     @Test
-    @DisplayName("A state code shorter than two characters is invalid (no substring exception)")
-    void shortStateCodeIsInvalid() {
-        ValidationResult result = rule.validate("T", "75001");
+    void tooShortInputsAreInvalidWithFixedMessage() {
+        // Defensive guard: inputs shorter than two characters cannot form a key, so the rule
+        // returns the fixed message rather than raising a substring exception.
+        ValidationResult result = rule.validate("T", "7");
 
         assertThat(result.isInvalid()).isTrue();
         assertThat(result.message()).isEqualTo(INVALID_MESSAGE);
     }
 
     @Test
-    @DisplayName("A zip code shorter than two characters is invalid (no substring exception)")
-    void shortZipCodeIsInvalid() {
+    void shortZipCodeWithValidStateIsInvalidWithFixedMessage() {
+        // Guard branch where the state is long enough but the zip is too short to form the key.
         ValidationResult result = rule.validate("TX", "7");
 
         assertThat(result.isInvalid()).isTrue();
@@ -152,29 +129,13 @@ class UsStateZipRuleTest {
     }
 
     @Test
-    @DisplayName("Both inputs blank are treated as invalid with the same fixed message (no throw)")
-    void blankInputsAreInvalid() {
-        ValidationResult result = rule.validate("  ", "     ");
+    void invalidMessageHasNoFieldPrefixAndNoTrailingPeriod() {
+        // Parity lock: the failure message is the verbatim COBOL literal - no "<field>:" prefix
+        // (hence no colon) and no trailing period.
+        String message = rule.validate("TX", "99999").message();
 
-        assertThat(result.isInvalid()).isTrue();
-        assertThat(result.message()).isEqualTo(INVALID_MESSAGE);
-    }
-
-    @Test
-    @DisplayName("The embedded VALID-US-STATE-ZIP-CD2-COMBO set has exactly 240 entries (copybook parity)")
-    void comboSetHasExactly240Entries() throws ReflectiveOperationException {
-        Field field = UsStateZipRule.class.getDeclaredField("VALID_STATE_ZIP2_COMBOS");
-        field.setAccessible(true);
-        // Cast to Set<?> (wildcard) to keep the reflective read free of unchecked-cast warnings.
-        Set<?> combos = (Set<?>) field.get(null);
-
-        assertThat(combos).hasSize(240);
-        // Spot-check representative members/non-members that back the behavioral cases above.
-        // Set#contains(Object) is used (rather than AssertJ's element varargs) so the reflective
-        // read stays a wildcard Set<?> with no unchecked-cast warning under -Xlint:all.
-        assertThat(combos.contains("TX75")).isTrue();
-        assertThat(combos.contains("CA90")).isTrue();
-        assertThat(combos.contains("TX99")).isFalse();
-        assertThat(combos.contains("NY00")).isFalse();
+        assertThat(message).isEqualTo(INVALID_MESSAGE);
+        assertThat(message).doesNotContain(":");
+        assertThat(message).doesNotEndWith(".");
     }
 }

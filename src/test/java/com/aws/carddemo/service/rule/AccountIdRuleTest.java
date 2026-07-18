@@ -82,6 +82,9 @@ class AccountIdRuleTest {
         // proving the typo adds precisely one space beyond a "corrected" single-space form.
         assertThat(message.replaceAll(" {2}", " ")).hasSize(49);
         assertThat(EXPECTED_FILTER_MESSAGE).hasSize(50);
+        // Explicit typo lock: the verbatim literal must NOT equal the "corrected" single-space form.
+        assertThat(EXPECTED_FILTER_MESSAGE)
+                .isNotEqualTo("Account Filter must be a non-zero 11 digit number");
     }
 
     // ------------------------------------------------------------------
@@ -140,6 +143,9 @@ class AccountIdRuleTest {
         assertThat(rule.validate("Account Filter", "   ").isValid()).isTrue();
         // An all-spaces 11-char field (COBOL SPACES on a PIC X(11)) is still a blank/soft state.
         assertThat(rule.validate("Account Filter", "           ").isValid()).isTrue();
+        // The dedicated filter entry point honors the same soft-blank contract as validate().
+        assertThat(rule.validateAccountFilter("").isValid()).isTrue();
+        assertThat(rule.validateAccountFilter(null).isValid()).isTrue();
     }
 
     // ------------------------------------------------------------------
@@ -237,6 +243,7 @@ class AccountIdRuleTest {
 
         assertThat(rule.isElevenDigitNonZero(null)).isFalse();
         assertThat(rule.isElevenDigitNonZero("")).isFalse();
+        assertThat(rule.isElevenDigitNonZero("1234")).isFalse();         // 4 chars (too short)
         assertThat(rule.isElevenDigitNonZero("0000000000")).isFalse();   // 10 chars
         assertThat(rule.isElevenDigitNonZero("000000000000")).isFalse(); // 12 chars
         assertThat(rule.isElevenDigitNonZero("00000000000")).isFalse();  // all zeros

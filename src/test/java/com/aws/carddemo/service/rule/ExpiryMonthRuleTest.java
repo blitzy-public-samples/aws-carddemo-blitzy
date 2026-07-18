@@ -15,147 +15,271 @@
  */
 package com.aws.carddemo.service.rule;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
-import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.NullAndEmptySource;
-import org.junit.jupiter.params.provider.ValueSource;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Unit tests for {@link ExpiryMonthRule}, the Java migration of the COBOL edit paragraph
- * {@code 1250-EDIT-EXPIRY-MON} in {@code legacy/cbl/COCRDUPC.cbl} (L877&ndash;L912).
+ * {@code 1250-EDIT-EXPIRY-MON} in {@code legacy/cbl/COCRDUPC.cbl} (source branch
+ * {@code app/cbl/COCRDUPC.cbl}) of the CardDemo Card-Update transaction (CCUP).
  *
- * <p>These tests assert verbatim behavioral parity: the two-digit range {@code 01}&ndash;{@code 12}
- * is accepted; a blank field ({@code null}/{@code SPACES}), the COBOL {@code ZEROS} value
- * ({@code "00"}), a non-numeric value, and an out-of-range value are each rejected with the
- * single fixed message {@code "Card expiry month must be between 1 and 12"} taken from the
- * COBOL 88-level {@code CARD-EXPIRY-MONTH-NOT-VALID} at {@code legacy/cbl/COCRDUPC.cbl:L197-L198}.
- * The rule never throws (a defensive length bound keeps the internal parse within {@code int}
- * range even for pathologically long numeric input).</p>
+ * <p>The tests assert <em>verbatim behavioral parity</em> with the legacy paragraph and its
+ * fixed screen message. The COBOL logic is:</p>
+ * <pre>
+ *     1250-EDIT-EXPIRY-MON.
+ *         SET FLG-CARDEXPMON-NOT-OK TO TRUE
+ *         IF CCUP-NEW-EXPMON EQUAL LOW-VALUES OR SPACES OR ZEROS
+ *            SET CARD-EXPIRY-MONTH-NOT-VALID TO TRUE   GO TO EXIT   (legacy L883-L891)
+ *         END-IF
+ *         MOVE CCUP-NEW-EXPMON TO CARD-MONTH-CHECK               (PIC X(2) redefined PIC 9(2), L896)
+ *         IF VALID-MONTH                                          (88-level VALUES 1 THRU 12, L95/L898)
+ *            SET FLG-CARDEXPMON-ISVALID TO TRUE
+ *         ELSE
+ *            SET CARD-EXPIRY-MONTH-NOT-VALID TO TRUE
+ *         END-IF.
+ * </pre>
+ *
+ * <p>The single failure message is taken verbatim from the COBOL 88-level constant
+ * {@code CARD-EXPIRY-MONTH-NOT-VALID} at {@code legacy/cbl/COCRDUPC.cbl:L197-L198}:
+ * {@code "Card expiry month must be between 1 and 12"}. Every rejected value &mdash; blank
+ * ({@code null}/empty/whitespace, modeling COBOL {@code LOW-VALUES}/{@code SPACES}), an all-zero
+ * value (COBOL {@code ZEROS}, so {@code "00"} counts as blank), a non-numeric value, a value wider
+ * than the two-digit field, and a numeric value outside {@code 1}&ndash;{@code 12} &mdash; must
+ * yield that identical fixed message with no field-name substitution. A valid two-digit month
+ * {@code 01}&ndash;{@code 12} yields the shared valid outcome whose message is the empty string.</p>
+ *
+ * <p>The rule is stateless, so no Spring context, no Mockito, and no database are required: the
+ * class under test is exercised through a plain {@code new ExpiryMonthRule()} instance. The rule
+ * never throws to signal a validation failure, so the failure-path tests invoke it directly and
+ * assert on the returned {@link ValidationResult}; any thrown exception would fail the test.</p>
  */
 class ExpiryMonthRuleTest {
 
     /**
-     * The exact COBOL screen message; every failure path must reproduce it verbatim.
+     * The class under test, constructed directly because the rule is stateless and free of
+     * dependencies (no Spring wiring is needed to exercise it).
+     */
+    private final ExpiryMonthRule rule = new ExpiryMonthRule();
+
+    /**
+     * The exact COBOL screen message from {@code legacy/cbl/COCRDUPC.cbl:L197-L198}; every failure
+     * path must reproduce it verbatim (it is a fixed literal that never substitutes a field name).
      */
     private static final String MESSAGE = "Card expiry month must be between 1 and 12";
 
     /**
-     * An arbitrary field label; the rule must ignore it because the COBOL message is a fixed
-     * literal that never substitutes a field name.
+     * An arbitrary human-readable field label. Because the COBOL message is a fixed literal, the
+     * {@code fieldName} argument of {@link ExpiryMonthRule#validate(String, String)} is ignored;
+     * the tests pass this constant to honor the method contract and prove the argument has no
+     * effect on the outcome message.
      */
-    private static final String LABEL = "Card expiry month";
+    private static final String LABEL = "Expiry Month";
 
-    private final ExpiryMonthRule rule = new ExpiryMonthRule();
+    // ---------------------------------------------------------------------------------------------
+    // Valid months (VALID-MONTH: VALUES 1 THRU 12)
+    // ---------------------------------------------------------------------------------------------
 
-    @ParameterizedTest
-    @ValueSource(strings = {"01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"})
-    @DisplayName("Two-digit months 01-12 are valid (VALID-MONTH: VALUES 1 THRU 12)")
-    void twoDigitMonthsInRangeAreValid(String month) {
-        ValidationResult result = rule.validate(LABEL, month);
+    @Test
+    void validLowerBoundaryMonthIsAccepted() {
+        // "01" is the inclusive lower boundary of VALID-MONTH (1 THRU 12).
+        ValidationResult result = rule.validate(LABEL, "01");
 
-        assertTrue(result.isValid(), () -> "expected month '" + month + "' to be valid");
-        assertEquals("", result.message(), "a valid result carries the empty message");
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"1", "5", "9"})
-    @DisplayName("A bare single digit 1-9 is valid (strip + numeric parse treat it as month 1-9)")
-    void singleDigitMonthsInRangeAreValid(String month) {
-        ValidationResult result = rule.validate(LABEL, month);
-
-        assertTrue(result.isValid(), () -> "expected month '" + month + "' to be valid");
-        assertEquals("", result.message());
+        assertThat(result.isValid()).isTrue();
+        assertThat(result.isInvalid()).isFalse();
+        // A valid outcome carries the empty message (COBOL WS-RETURN-MSG-OFF / VALUE SPACES).
+        assertThat(result.message()).isEmpty();
     }
 
     @Test
-    @DisplayName("The canonical valid outcome is the shared ValidationResult.valid() singleton")
+    void validUpperBoundaryMonthIsAccepted() {
+        // "12" is the inclusive upper boundary of VALID-MONTH (1 THRU 12).
+        ValidationResult result = rule.validate(LABEL, "12");
+
+        assertThat(result.isValid()).isTrue();
+        assertThat(result.isInvalid()).isFalse();
+        assertThat(result.message()).isEmpty();
+    }
+
+    @Test
+    void representativeInRangeMonthsAreAccepted() {
+        // Representative two-digit months strictly inside the range are all accepted.
+        assertThat(rule.validate(LABEL, "02").isValid()).isTrue();
+        assertThat(rule.validate(LABEL, "06").isValid()).isTrue();
+        assertThat(rule.validate(LABEL, "09").isValid()).isTrue();
+        assertThat(rule.validate(LABEL, "11").isValid()).isTrue();
+    }
+
+    @Test
     void validOutcomeIsTheSharedSingleton() {
-        assertSame(ValidationResult.valid(), rule.validate(LABEL, "01"),
-                "a passing rule should return the cached valid() instance");
+        // A passing rule returns the cached ValidationResult.valid() instance (identity, not just
+        // equality), confirming the rule reuses the shared valid outcome.
+        assertThat(rule.validate(LABEL, "01")).isSameAs(ValidationResult.valid());
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"00", "0", "000"})
-    @DisplayName("Zero (COBOL ZEROS) is rejected with the fixed message")
-    void zeroIsRejected(String value) {
-        ValidationResult result = rule.validate(LABEL, value);
+    // ---------------------------------------------------------------------------------------------
+    // Blank / ZEROS rejection (COBOL: EQUAL LOW-VALUES OR SPACES OR ZEROS -> not valid)
+    // ---------------------------------------------------------------------------------------------
 
-        assertTrue(result.isInvalid(), () -> "expected '" + value + "' to be invalid");
-        assertEquals(MESSAGE, result.message());
-    }
+    @Test
+    void zerosValueIsRejectedAsBlank() {
+        // COBOL treats the figurative constant ZEROS as "not supplied": "00" is therefore invalid.
+        ValidationResult result = rule.validate(LABEL, "00");
 
-    @ParameterizedTest
-    @ValueSource(strings = {"13", "20", "99"})
-    @DisplayName("A numeric value above 12 is rejected with the fixed message")
-    void aboveRangeIsRejected(String value) {
-        ValidationResult result = rule.validate(LABEL, value);
-
-        assertTrue(result.isInvalid(), () -> "expected '" + value + "' to be invalid");
-        assertEquals(MESSAGE, result.message());
-    }
-
-    @ParameterizedTest
-    @NullAndEmptySource
-    @ValueSource(strings = {" ", "  ", "\t"})
-    @DisplayName("Blank input (null/LOW-VALUES, empty, and all-whitespace/SPACES) is rejected")
-    void blankIsRejected(String value) {
-        ValidationResult result = rule.validate(LABEL, value);
-
-        assertTrue(result.isInvalid(), "expected blank input to be invalid");
-        assertEquals(MESSAGE, result.message());
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"1A", "A1", "1a", "AB", "1.", "-1", "+1", "1/", "O1"})
-    @DisplayName("Non-numeric input fails the PIC 9(2) numeric class test with the fixed message")
-    void nonNumericIsRejected(String value) {
-        ValidationResult result = rule.validate(LABEL, value);
-
-        assertTrue(result.isInvalid(), () -> "expected '" + value + "' to be invalid");
-        assertEquals(MESSAGE, result.message());
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"001", "012", "013", "099", "99999999999", "00000000000000000000000000"})
-    @DisplayName("Input longer than the two-digit field is rejected and never throws (defensive bound)")
-    void overlongInputIsRejectedWithoutThrowing(String value) {
-        // "001" and "012" would parse to 1 and 12 respectively if the length were not bounded;
-        // the field is PIC X(2), so anything wider than two digits is out of contract. The very
-        // long values additionally prove that the parse can never overflow int (the rule never
-        // throws, honoring the ValidationRule contract).
-        ValidationResult result = assertDoesNotThrow(() -> rule.validate(LABEL, value));
-
-        assertTrue(result.isInvalid(), () -> "expected overlong '" + value + "' to be invalid");
-        assertEquals(MESSAGE, result.message());
-    }
-
-    @ParameterizedTest
-    @NullAndEmptySource
-    @ValueSource(strings = {"IGNORED", "Expiry Month", "   "})
-    @DisplayName("The field-name argument is ignored: the failure message is always the fixed literal")
-    void fieldNameArgumentIsIgnored(String fieldName) {
-        // Regardless of the label supplied, an invalid value yields the identical fixed message,
-        // proving the COBOL 88-level constant is emitted verbatim with no name substitution.
-        ValidationResult result = rule.validate(fieldName, "00");
-
-        assertTrue(result.isInvalid());
-        assertEquals(MESSAGE, result.message());
+        assertThat(result.isInvalid()).isTrue();
+        assertThat(result.isValid()).isFalse();
+        assertThat(result.message()).isEqualTo(MESSAGE);
     }
 
     @Test
-    @DisplayName("The rule is stateless and safe to reuse across successive, mixed invocations")
-    void ruleIsStatelessAcrossInvocations() {
-        assertTrue(rule.validate(LABEL, "07").isValid());
-        assertTrue(rule.validate(LABEL, "13").isInvalid());
-        assertTrue(rule.validate(LABEL, "12").isValid());
-        assertTrue(rule.validate(LABEL, null).isInvalid());
-        // The final valid call still returns the canonical singleton, confirming no drift.
-        assertSame(ValidationResult.valid(), rule.validate(LABEL, "01"));
+    void otherAllZeroFormsAreRejected() {
+        // Any all-zero digit string is the ZEROS value, regardless of width, and is rejected.
+        ValidationResult single = rule.validate(LABEL, "0");
+        assertThat(single.isInvalid()).isTrue();
+        assertThat(single.message()).isEqualTo(MESSAGE);
+
+        ValidationResult triple = rule.validate(LABEL, "000");
+        assertThat(triple.isInvalid()).isTrue();
+        assertThat(triple.message()).isEqualTo(MESSAGE);
+    }
+
+    @Test
+    void nullValueIsRejected() {
+        // null models COBOL LOW-VALUES -> the blank guard rejects it with the fixed message.
+        ValidationResult result = rule.validate(LABEL, null);
+
+        assertThat(result.isInvalid()).isTrue();
+        assertThat(result.message()).isEqualTo(MESSAGE);
+    }
+
+    @Test
+    void emptyValueIsRejected() {
+        // An empty string models COBOL SPACES / a trim length of zero -> rejected.
+        ValidationResult result = rule.validate(LABEL, "");
+
+        assertThat(result.isInvalid()).isTrue();
+        assertThat(result.message()).isEqualTo(MESSAGE);
+    }
+
+    @Test
+    void whitespaceValueIsRejected() {
+        // All-whitespace input (single space, multiple spaces, tab) models COBOL SPACES -> rejected.
+        ValidationResult oneSpace = rule.validate(LABEL, " ");
+        assertThat(oneSpace.isInvalid()).isTrue();
+        assertThat(oneSpace.message()).isEqualTo(MESSAGE);
+
+        ValidationResult manySpaces = rule.validate(LABEL, "   ");
+        assertThat(manySpaces.isInvalid()).isTrue();
+        assertThat(manySpaces.message()).isEqualTo(MESSAGE);
+
+        ValidationResult tab = rule.validate(LABEL, "\t");
+        assertThat(tab.isInvalid()).isTrue();
+        assertThat(tab.message()).isEqualTo(MESSAGE);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Out-of-range rejection (numeric value outside 1..12)
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    void aboveRangeMonthIsRejected() {
+        // "13" is numeric but greater than 12 -> fails VALID-MONTH with the fixed message.
+        ValidationResult result = rule.validate(LABEL, "13");
+
+        assertThat(result.isInvalid()).isTrue();
+        assertThat(result.isValid()).isFalse();
+        assertThat(result.message()).isEqualTo(MESSAGE);
+    }
+
+    @Test
+    void farAboveRangeMonthsAreRejected() {
+        // Larger two-digit numeric values remain out of range and are rejected.
+        ValidationResult twenty = rule.validate(LABEL, "20");
+        assertThat(twenty.isInvalid()).isTrue();
+        assertThat(twenty.message()).isEqualTo(MESSAGE);
+
+        ValidationResult ninetyNine = rule.validate(LABEL, "99");
+        assertThat(ninetyNine.isInvalid()).isTrue();
+        assertThat(ninetyNine.message()).isEqualTo(MESSAGE);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Non-numeric rejection (fails the PIC 9(2) numeric class test behind VALID-MONTH)
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    void nonNumericValueIsRejected() {
+        // A trailing letter, a leading letter, a lower-case letter, all letters, a decimal point,
+        // and an explicit sign each fail the implicit IS NUMERIC test and are rejected identically.
+        for (String value : new String[] {"1A", "A1", "1a", "AB", "1.", "-1", "+1"}) {
+            ValidationResult result = rule.validate(LABEL, value);
+
+            assertThat(result.isInvalid())
+                    .as("expected non-numeric value '%s' to be invalid", value)
+                    .isTrue();
+            assertThat(result.message())
+                    .as("expected the fixed message for non-numeric value '%s'", value)
+                    .isEqualTo(MESSAGE);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Overlong input (wider than the two-digit PIC X(2) field) is out of contract and never throws
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    void overlongNumericValueIsRejectedAndNeverThrows() {
+        // "001"/"012" would parse to 1/12 if the field width were not enforced; the field is
+        // PIC X(2), so anything wider than two digits is out of contract and rejected. The very
+        // long values additionally prove the internal parse can never overflow int: the rule
+        // never throws (honoring the ValidationRule contract), so invoking it directly and
+        // asserting on the result is sufficient -- a thrown exception would fail the test.
+        for (String value : new String[] {"001", "012", "99999999999",
+                "00000000000000000000000000"}) {
+            ValidationResult result = rule.validate(LABEL, value);
+
+            assertThat(result.isInvalid())
+                    .as("expected overlong value '%s' to be invalid", value)
+                    .isTrue();
+            assertThat(result.message())
+                    .as("expected the fixed message for overlong value '%s'", value)
+                    .isEqualTo(MESSAGE);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The field-name argument is ignored: the failure message is always the fixed literal
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    void fieldNameArgumentIsIgnored() {
+        // Regardless of the label supplied (including null and blank), an invalid value yields the
+        // identical fixed message, proving the COBOL 88-level constant is emitted verbatim with no
+        // field-name substitution.
+        for (String fieldName : new String[] {null, "", "   ", "IGNORED", "Expiry Month"}) {
+            ValidationResult result = rule.validate(fieldName, "00");
+
+            assertThat(result.isInvalid()).isTrue();
+            assertThat(result.message())
+                    .as("the failure message must not depend on the field label")
+                    .isEqualTo(MESSAGE);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Statelessness: repeated, mixed invocations do not drift
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    void ruleIsStatelessAcrossMixedInvocations() {
+        // A sequence of alternating valid and invalid inputs must produce independent, correct
+        // outcomes, confirming the rule holds no mutable state between calls.
+        assertThat(rule.validate(LABEL, "07").isValid()).isTrue();
+        assertThat(rule.validate(LABEL, "13").isInvalid()).isTrue();
+        assertThat(rule.validate(LABEL, "12").isValid()).isTrue();
+        assertThat(rule.validate(LABEL, null).isInvalid()).isTrue();
+
+        // The final valid call still returns the canonical shared singleton, confirming no drift.
+        assertThat(rule.validate(LABEL, "01")).isSameAs(ValidationResult.valid());
     }
 }

@@ -1,0 +1,8 @@
+# Golden EXPECTED post-state of the affected `tran_cat_balance` row after DailyTransactionPostingJob (legacy
+# CBTRN02C, 2700-B-UPDATE-TCATBAL-REC: ADD DALYTRAN-AMT TO TRAN-CAT-BAL) posts the VALID record R1 from
+# src/test/resources/seed/posting/. Columns are the canonical `tran_cat_balance` columns from V1__schema.sql;
+# the `version` optimistic-lock column is intentionally omitted (ignore or assert separately).
+# Pre-state bal 0.00 + DALYTRAN-AMT 100.00 = 100.00. Monetary `bal` is scale-2, compared to the cent (NEVER float).
+# The consuming test must ignore '#' comment lines.
+acct_id,type_cd,cat_cd,bal
+90000000001,01,1,100.00

@@ -15,119 +15,149 @@
  */
 package com.aws.carddemo.service.rule;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
-import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for {@link AlphanumOptionalRule}, the Java migration of COBOL edit paragraph
- * {@code 1240-EDIT-ALPHANUM-OPT} in {@code legacy/cbl/COACTUPC.cbl} (source
+ * Unit tests for {@link AlphanumOptionalRule}, the Java migration of the COBOL edit paragraph
+ * {@code 1240-EDIT-ALPHANUM-OPT} in {@code legacy/cbl/COACTUPC.cbl} (source-branch
  * {@code app/cbl/COACTUPC.cbl:L2061-L2107}).
  *
- * <p>The tests assert both halves of the legacy behavior in its exact evaluation order: a
- * not-supplied (blank) value is accepted because the field is optional, and a supplied value must
- * consist solely of ASCII letters, ASCII digits, and spaces &mdash; any other character produces
- * the verbatim screen message {@code "<field> can have numbers or alphabets only."}. The
- * ASCII-only character set ({@code legacy/cbl/COACTUPC.cbl:L586-L593}) is confirmed by a Unicode
- * counter-example that {@link Character#isLetterOrDigit(char)} would wrongly accept.</p>
+ * <p>COBOL evidence (verified against {@code app/cbl/COACTUPC.cbl}): the paragraph is the
+ * <em>optional</em> counterpart of {@code 1230-EDIT-ALPHANUM-REQD}. It first accepts a
+ * not-supplied field &mdash; {@code LOW-VALUES}, {@code SPACES}, or a {@code FUNCTION TRIM}
+ * length of zero (L2066-L2073) &mdash; as <strong>valid</strong> with no message, because the
+ * field is optional; it therefore never emits the "must be supplied." text. When a value is
+ * present the paragraph performs {@code INSPECT ... CONVERTING} of the 62 ASCII alphanumeric
+ * characters to spaces and tests whether the trimmed residue length is zero (L2078-L2087); a
+ * non-empty residue sets {@code INPUT-ERROR} and builds the screen message
+ * {@code STRING FUNCTION TRIM(WS-EDIT-VARIABLE-NAME) ' can have numbers or alphabets only.'
+ * ... INTO WS-RETURN-MSG} (L2090-L2098).</p>
+ *
+ * <p>These tests lock down that parity: a {@code null}, empty, or all-whitespace value is valid
+ * and carries the empty (never-{@code null}) message; a value made only of ASCII letters, ASCII
+ * digits, and spaces is valid; any other character is invalid with the exact, period-terminated
+ * message {@code "<field> can have numbers or alphabets only."}, which is a preserved parity
+ * contract and is asserted verbatim. The ASCII-only character set
+ * ({@code app/cbl/COACTUPC.cbl:L586-L593}) is confirmed by a non-ASCII Unicode counter-example
+ * that {@link Character#isLetterOrDigit(char)} would wrongly accept. This is a pure JUnit&nbsp;5 +
+ * AssertJ unit test &mdash; no Spring context, no Mockito, and no database (the rule is stateless).
  */
 class AlphanumOptionalRuleTest {
 
+    /** Field label under test (the COBOL {@code WS-EDIT-VARIABLE-NAME}). */
     private static final String FIELD = "Address Line 2";
+
+    /** The exact, verbatim COBOL screen message ({@code WS-RETURN-MSG}) for a residue failure. */
     private static final String EXPECTED_MESSAGE = "Address Line 2 can have numbers or alphabets only.";
 
+    /** The stateless rule under test; safe to reuse across cases (constructed directly, no Spring). */
     private final AlphanumOptionalRule rule = new AlphanumOptionalRule();
 
     @Test
-    @DisplayName("(a) null / empty / all-spaces are VALID because the field is optional")
-    void blankIsValid() {
-        assertTrue(rule.validate(FIELD, null).isValid(), "null models COBOL LOW-VALUES -> valid");
-        assertTrue(rule.validate(FIELD, "").isValid(), "empty models SPACES / trim length 0 -> valid");
-        assertTrue(rule.validate(FIELD, "   ").isValid(), "all spaces models SPACES -> valid");
+    void blankValuesAreValidWithNoMessage() {
+        // null models COBOL LOW-VALUES; "" and "   " model SPACES / FUNCTION TRIM length 0
+        // (legacy/cbl/COACTUPC.cbl:L2066-L2073). All are valid for an OPTIONAL field, and the
+        // optional paragraph never builds a message (no "must be supplied.").
+        ValidationResult fromNull = rule.validate(FIELD, null);
+        assertThat(fromNull.isValid()).as("null (LOW-VALUES) is valid for an optional field").isTrue();
+        assertThat(fromNull.message()).as("an unsupplied optional field carries no message").isEmpty();
+
+        ValidationResult fromEmpty = rule.validate(FIELD, "");
+        assertThat(fromEmpty.isValid()).as("empty (SPACES / trim length 0) is valid").isTrue();
+        assertThat(fromEmpty.message()).isEmpty();
+
+        ValidationResult fromSpaces = rule.validate(FIELD, "   ");
+        assertThat(fromSpaces.isValid()).as("all-whitespace (trim length 0) is valid").isTrue();
+        assertThat(fromSpaces.message()).isEmpty();
     }
 
     @Test
-    @DisplayName("a valid (blank) result carries the empty message, never null")
-    void blankResultCarriesEmptyMessage() {
-        assertEquals("", rule.validate(FIELD, null).message(), "valid result message is the empty string");
-    }
-
-    @Test
-    @DisplayName("(b) 'Suite 200' (letters + space + digits) is VALID")
     void alphanumericWithSpaceIsValid() {
+        // "Suite 200" -> letters, an embedded space, and digits are all in the allowed set
+        // {A-Z, a-z, 0-9, space}, so the INSPECT leaves a zero-length trimmed residue -> valid.
         ValidationResult result = rule.validate(FIELD, "Suite 200");
-        assertTrue(result.isValid(), "letters, a space, and digits are all in the allowed set");
-        assertEquals("", result.message());
+        assertThat(result.isValid()).as("letters, a space, and digits are all allowed").isTrue();
+        assertThat(result.message()).isEmpty();
     }
 
     @Test
-    @DisplayName("(c) 'C/O Jane' (contains '/') is INVALID with the exact COBOL message")
-    void slashIsInvalidWithExactMessage() {
+    void slashCharacterIsInvalidWithExactMessage() {
+        // "C/O Jane" contains '/', which is neither alphanumeric nor a space; the residue is
+        // non-empty, so INPUT-ERROR is set and WS-RETURN-MSG is built verbatim (L2090-L2098).
         ValidationResult result = rule.validate(FIELD, "C/O Jane");
-        assertTrue(result.isInvalid(), "the '/' character is neither alphanumeric nor a space");
-        assertFalse(result.isValid());
-        assertEquals(EXPECTED_MESSAGE, result.message(), "message must match COBOL WS-RETURN-MSG verbatim");
+        assertThat(result.isInvalid()).as("'/' is neither alphanumeric nor a space").isTrue();
+        assertThat(result.isValid()).isFalse();
+        assertThat(result.message()).as("message must match COBOL WS-RETURN-MSG verbatim")
+                .isEqualTo(EXPECTED_MESSAGE);
     }
 
     @Test
-    @DisplayName("(d) 'Bldg7' (letters immediately followed by a digit) is VALID")
-    void lettersThenDigitIsValid() {
-        assertTrue(rule.validate(FIELD, "Bldg7").isValid(), "adjacent letters and digits are allowed");
+    void lettersImmediatelyFollowedByDigitIsValid() {
+        // "Bldg7" -> adjacent letters and a digit are all in the allowed set -> valid.
+        ValidationResult result = rule.validate(FIELD, "Bldg7");
+        assertThat(result.isValid()).as("adjacent letters and digits are allowed").isTrue();
+        assertThat(result.message()).isEmpty();
     }
 
     @Test
-    @DisplayName("pure letters and pure digits are each VALID")
-    void pureLettersAndPureDigitsAreValid() {
-        assertTrue(rule.validate(FIELD, "MainStreet").isValid(), "all letters -> valid");
-        assertTrue(rule.validate(FIELD, "1234567890").isValid(), "all digits -> valid");
-        assertTrue(rule.validate(FIELD, "Main Street West").isValid(), "letters with interior spaces -> valid");
+    void pureLettersDigitsAndInteriorSpacesAreValid() {
+        // Each of these consists solely of the allowed set {A-Z, a-z, 0-9, space}.
+        assertThat(rule.validate(FIELD, "MainStreet").isValid()).as("all letters -> valid").isTrue();
+        assertThat(rule.validate(FIELD, "1234567890").isValid()).as("all digits -> valid").isTrue();
+        assertThat(rule.validate(FIELD, "Main Street West").isValid())
+                .as("letters with interior spaces -> valid").isTrue();
     }
 
     @Test
-    @DisplayName("common punctuation and symbols are each INVALID with the exact message")
-    void punctuationIsInvalid() {
-        for (String value : new String[] {
-                "12-34",   // hyphen
-                "St. Paul", // period
-                "A,B",     // comma
+    void punctuationAndSymbolsAreInvalidWithExactMessage() {
+        // Every value below contains exactly one disallowed character; because FIELD is fixed,
+        // each failure must produce the identical verbatim message.
+        String[] disallowed = {
+                "12-34",     // hyphen
+                "St. Paul",  // period
+                "A,B",       // comma
                 "user@host", // at-sign
-                "50%",     // percent
-                "#7",      // hash
-                "(200)",   // parentheses
-                "a_b"      // underscore
-        }) {
+                "50%",       // percent
+                "#7",        // hash
+                "(200)",     // parentheses
+                "a_b"        // underscore
+        };
+        for (String value : disallowed) {
             ValidationResult result = rule.validate(FIELD, value);
-            assertTrue(result.isInvalid(), "value '" + value + "' contains a disallowed character");
-            assertEquals(EXPECTED_MESSAGE, result.message(), "message for '" + value + "'");
+            assertThat(result.isInvalid()).as("value '%s' contains a disallowed character", value).isTrue();
+            assertThat(result.message()).as("message for '%s'", value).isEqualTo(EXPECTED_MESSAGE);
         }
     }
 
     @Test
-    @DisplayName("a leading/trailing padded field label is trimmed in the failure message")
-    void fieldLabelIsTrimmedInMessage() {
+    void paddedFieldLabelIsTrimmedIntoMessage() {
+        // The label is normalized with FUNCTION TRIM semantics (ValidationRule.label -> String.strip),
+        // so leading/trailing whitespace on the label does not leak into WS-RETURN-MSG.
         ValidationResult result = rule.validate("  Address Line 2  ", "C/O Jane");
-        assertEquals(EXPECTED_MESSAGE, result.message(), "label is normalized with FUNCTION TRIM semantics");
+        assertThat(result.isInvalid()).isTrue();
+        assertThat(result.message()).as("label is normalized with FUNCTION TRIM semantics")
+                .isEqualTo(EXPECTED_MESSAGE);
     }
 
     @Test
-    @DisplayName("a null field label yields a message with an empty label prefix (no NPE)")
-    void nullFieldLabelProducesEmptyPrefix() {
+    void nullFieldLabelYieldsBareMessage() {
+        // A null label normalizes to the empty string (ValidationRule.label), so the message is the
+        // bare literal ' can have numbers or alphabets only.' with its leading space preserved.
         ValidationResult result = rule.validate(null, "C/O Jane");
-        assertTrue(result.isInvalid());
-        assertEquals(" can have numbers or alphabets only.", result.message(),
-                "null label normalizes to the empty string per ValidationRule.label");
+        assertThat(result.isInvalid()).isTrue();
+        assertThat(result.message()).as("null label normalizes to the empty prefix")
+                .isEqualTo(" can have numbers or alphabets only.");
     }
 
     @Test
-    @DisplayName("ASCII-only fidelity: a non-ASCII Unicode letter is INVALID (parity vs isLetterOrDigit)")
-    void unicodeLetterIsInvalid() {
-        // 'café' contains U+00E9; Character.isLetterOrDigit would accept it, but the COBOL A-Za-z0-9
-        // class test (legacy/cbl/COACTUPC.cbl:L586-L593) does not, so the rule must reject it.
+    void nonAsciiUnicodeLetterIsInvalid() {
+        // "café" contains U+00E9; Character.isLetterOrDigit would accept it, but the COBOL A-Za-z0-9
+        // class test (app/cbl/COACTUPC.cbl:L586-L593) does not, so the rule must reject it to keep
+        // strict behavioral parity with the fixed 62-character ASCII conversion set.
         ValidationResult result = rule.validate(FIELD, "caf\u00e9");
-        assertTrue(result.isInvalid(), "non-ASCII letter must be rejected to preserve COBOL parity");
-        assertEquals(EXPECTED_MESSAGE, result.message());
+        assertThat(result.isInvalid()).as("a non-ASCII letter must be rejected for COBOL parity").isTrue();
+        assertThat(result.message()).isEqualTo(EXPECTED_MESSAGE);
     }
 }
