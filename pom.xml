@@ -379,8 +379,38 @@
                         </goals>
                         <configuration>
                             <rules>
+                                <!--
+                                  Whole-application floor: the combined unit + integration
+                                  line coverage must stay at or above the configured minimum
+                                  (AAP 0.9.2). This guards the aggregate.
+                                -->
                                 <rule>
                                     <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.coverage.minimum}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                                <!--
+                                  Per-package floor for the core business-logic package
+                                  `com.aws.carddemo.service` (QA MAJOR-1 / coverage
+                                  integrity). A bundle-only gate can mask a thinly-tested
+                                  core service behind well-tested peripheral packages; this
+                                  rule holds the service layer itself to the same >= 80% line
+                                  ratio so that a materially under-tested service (the report
+                                  proved AccountService and ReportService were) fails the
+                                  build. The PACKAGE element names the package exactly, so
+                                  the sibling `com.aws.carddemo.service.rule` package is not
+                                  in scope here (it is covered by the bundle rule).
+                                -->
+                                <rule>
+                                    <element>PACKAGE</element>
+                                    <includes>
+                                        <include>com.aws.carddemo.service</include>
+                                    </includes>
                                     <limits>
                                         <limit>
                                             <counter>LINE</counter>

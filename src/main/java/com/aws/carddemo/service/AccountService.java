@@ -28,11 +28,13 @@ import com.aws.carddemo.service.rule.ValidationResult;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.util.Locale;
 import java.util.Objects;
@@ -284,7 +286,25 @@ public class AccountService {
     private final UsSsnRule usSsnRule;
 
     /**
-     * Creates the service with its required collaborators.
+     * The clock used for every "current date" reference in the edit rules &mdash; most notably the
+     * {@code EDIT-DATE-OF-BIRTH} "must be in the past" comparison ({@link #editDateOfBirth}). It is
+     * a collaborator (never a direct {@code LocalDate.now()} call) so the date-of-birth boundary can
+     * be pinned deterministically in tests instead of depending on the wall clock. In production it
+     * is {@link Clock#systemDefaultZone()} (supplied by the primary constructor), so behavior is
+     * unchanged; a test supplies a fixed {@link Clock} through the package-private constructor to
+     * exercise the future-DOB rejection branch against a known reference date (QA MINOR finding).
+     * Never {@code null}.
+     */
+    private final Clock clock;
+
+    /**
+     * Creates the service with its required collaborators, using the system-default-zone clock for
+     * "current date" comparisons. This is the constructor Spring uses to build the singleton bean
+     * (it is the injection point; the {@link Autowired} annotation is required only because a second,
+     * package-private constructor exists for tests). It delegates to
+     * {@link #AccountService(AccountRepository, CustomerRepository, CardXrefRepository,
+     * DateValidationService, UsSsnRule, Clock)} with {@link Clock#systemDefaultZone()}, so the
+     * runtime date-of-birth boundary is the real wall clock exactly as before.
      *
      * @param accountRepository     repository for the {@code account} table (VSAM
      *                              {@code ACCTDATA} KSDS)
@@ -300,16 +320,44 @@ public class AccountService {
      *                              {@code 1265-EDIT-US-SSN}); the {@code 1200-EDIT-MAP-INPUTS}
      *                              SSN field delegates to this shared rule component
      */
+    @Autowired
     public AccountService(AccountRepository accountRepository,
                           CustomerRepository customerRepository,
                           CardXrefRepository cardXrefRepository,
                           DateValidationService dateValidationService,
                           UsSsnRule usSsnRule) {
+        this(accountRepository, customerRepository, cardXrefRepository,
+                dateValidationService, usSsnRule, Clock.systemDefaultZone());
+    }
+
+    /**
+     * Creates the service with an explicit {@link Clock}, allowing the "current date" reference used
+     * by the date-of-birth edit to be pinned deterministically. Package-private: it exists so unit
+     * tests can inject a fixed {@link Clock} and exercise the {@code EDIT-DATE-OF-BIRTH} future
+     * rejection branch against a known reference date without coupling to the wall clock (QA MINOR
+     * finding). Production wiring always goes through the public constructor, which supplies
+     * {@link Clock#systemDefaultZone()}.
+     *
+     * @param accountRepository     repository for the {@code account} table
+     * @param customerRepository    repository for the {@code customer} table
+     * @param cardXrefRepository    repository for the {@code card_xref} table
+     * @param dateValidationService the {@code CSUTLDTC} date-validation re-platform
+     * @param usSsnRule             the SSN edit rule
+     * @param clock                 the clock used for "current date" comparisons; must not be
+     *                              {@code null}
+     */
+    AccountService(AccountRepository accountRepository,
+                   CustomerRepository customerRepository,
+                   CardXrefRepository cardXrefRepository,
+                   DateValidationService dateValidationService,
+                   UsSsnRule usSsnRule,
+                   Clock clock) {
         this.accountRepository = accountRepository;
         this.customerRepository = customerRepository;
         this.cardXrefRepository = cardXrefRepository;
         this.dateValidationService = dateValidationService;
         this.usSsnRule = usSsnRule;
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     // ====================================================================================
@@ -1299,8 +1347,10 @@ public class AccountService {
             return;
         }
         // Date is valid; enforce "must be in the past" using the injected date service to parse.
+        // "Today" is read from the injected Clock (not a direct LocalDate.now()) so the boundary is
+        // deterministically pinnable in tests; in production the clock is the system default zone.
         LocalDate dob = dateValidationService.parse(composeDate(parts));
-        if (!dob.isBefore(LocalDate.now())) {
+        if (!dob.isBefore(LocalDate.now(clock))) {
             state.latch(FLD_DOB + SFX_DOB_FUTURE);
         }
     }

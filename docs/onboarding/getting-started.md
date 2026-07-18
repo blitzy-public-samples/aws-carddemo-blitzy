@@ -262,12 +262,21 @@ mvnw.cmd -B clean verify
 > available**. If Docker is not running, the integration tests fail; see
 > [Troubleshooting](#10-troubleshooting).
 
-To run just the fast **unit tests** (no integration tests, no security scan)
+To run the **whole test suite** without the coverage gate or the security scan
 while iterating:
 
 ```shell
 ./mvnw -B test
 ```
+
+This stops after the Maven `test` phase, so — unlike `verify` — it does **not**
+run the JaCoCo coverage report/gate or the OWASP dependency-check. It still runs
+**every** test: the integration tests are named `*Test` and execute in the
+`test` phase alongside the unit tests, so `./mvnw -B test` runs the
+Testcontainers integration tests too and therefore **also requires a running
+Docker daemon** (exactly as `verify` does). To narrow a run to a single class
+while iterating, use `./mvnw -B test -Dtest=<ClassName>` (Docker is still
+required when that class is a Testcontainers integration test).
 
 After a build, the human-readable coverage report is written to:
 

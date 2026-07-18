@@ -15,8 +15,10 @@
  */
 package com.aws.carddemo.service;
 
+import java.time.Clock;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.Objects;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +28,7 @@ import org.springframework.batch.core.JobExecutionException;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
@@ -256,9 +259,23 @@ public class ReportService {
     private final Job reportJob;
 
     /**
-     * Creates the report service with its collaborators. Constructor injection only; the
-     * constructor merely stores the references and invokes no overridable method, so it is
-     * safe against construction-time {@code this}-escape.
+     * The clock used to derive the "current date" for the Monthly and Yearly report ranges
+     * ({@link #monthlyReport}/{@link #yearlyReport}). It is a collaborator (never a direct
+     * {@code LocalDate.now()} call) so those derived ranges can be pinned deterministically in
+     * tests. In production it is {@link Clock#systemDefaultZone()} (supplied by the primary
+     * constructor), so behavior is unchanged. Never {@code null}.
+     */
+    private final Clock clock;
+
+    /**
+     * Creates the report service with its collaborators, using the system-default-zone clock for
+     * the Monthly/Yearly "current date" ranges. This is the constructor Spring uses to build the
+     * singleton bean (the {@link Autowired} annotation is required only because a second,
+     * package-private constructor exists for tests). It delegates to
+     * {@link #ReportService(DateValidationService, TransactionRepository, JobLauncher, Job, Clock)}
+     * with {@link Clock#systemDefaultZone()}, so the derived ranges use the real wall clock exactly
+     * as before. Constructor injection only; the constructor merely stores the references and
+     * invokes no overridable method, so it is safe against construction-time {@code this}-escape.
      *
      * @param dateValidationService the {@code CSUTLDTC} date-validation re-platform
      * @param transactionRepository the posted-transaction repository (diagnostic use only)
@@ -268,14 +285,39 @@ public class ReportService {
      *                              lazily ({@link Lazy}) since the batch job is a runtime bean
      *                              only needed on report submission, not at context startup
      */
+    @Autowired
     public ReportService(DateValidationService dateValidationService,
                          TransactionRepository transactionRepository,
                          JobLauncher jobLauncher,
                          @Lazy @Qualifier("transactionReportJob") Job reportJob) {
+        this(dateValidationService, transactionRepository, jobLauncher, reportJob,
+                Clock.systemDefaultZone());
+    }
+
+    /**
+     * Creates the report service with an explicit {@link Clock}, allowing the Monthly/Yearly
+     * "current date" ranges to be pinned deterministically. Package-private: it exists so unit tests
+     * can inject a fixed {@link Clock} and assert the derived ranges against a known reference date
+     * without coupling to the wall clock (QA MINOR finding). Production wiring always goes through
+     * the public constructor, which supplies {@link Clock#systemDefaultZone()}.
+     *
+     * @param dateValidationService the {@code CSUTLDTC} date-validation re-platform
+     * @param transactionRepository the posted-transaction repository (diagnostic use only)
+     * @param jobLauncher           the Spring Batch job launcher
+     * @param reportJob             the {@code transactionReportJob} bean
+     * @param clock                 the clock used for the Monthly/Yearly ranges; must not be
+     *                              {@code null}
+     */
+    ReportService(DateValidationService dateValidationService,
+                  TransactionRepository transactionRepository,
+                  JobLauncher jobLauncher,
+                  Job reportJob,
+                  Clock clock) {
         this.dateValidationService = dateValidationService;
         this.transactionRepository = transactionRepository;
         this.jobLauncher = jobLauncher;
         this.reportJob = reportJob;
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     /**
@@ -354,7 +396,9 @@ public class ReportService {
      * @return the confirmation or submission outcome
      */
     private ReportResult monthlyReport(ReportRequest request) {
-        final LocalDate today = LocalDate.now();
+        // "Today" is read from the injected Clock (not a direct LocalDate.now()) so the derived
+        // range is deterministically pinnable in tests; in production the clock is the system zone.
+        final LocalDate today = LocalDate.now(clock);
         final String startDate = today.withDayOfMonth(1).format(ISO_DATE);
         final String endDate = today.withDayOfMonth(today.lengthOfMonth()).format(ISO_DATE);
         return handleConfirmation(REPORT_NAME_MONTHLY, startDate, endDate, request.confirmFlag());
@@ -369,7 +413,9 @@ public class ReportService {
      * @return the confirmation or submission outcome
      */
     private ReportResult yearlyReport(ReportRequest request) {
-        final int year = LocalDate.now().getYear();
+        // "Current year" is read from the injected Clock (not a direct LocalDate.now()) so the
+        // derived range is deterministically pinnable in tests (see the class Clock field).
+        final int year = LocalDate.now(clock).getYear();
         final String startDate = LocalDate.of(year, 1, 1).format(ISO_DATE);
         final String endDate = LocalDate.of(year, 12, 31).format(ISO_DATE);
         return handleConfirmation(REPORT_NAME_YEARLY, startDate, endDate, request.confirmFlag());
